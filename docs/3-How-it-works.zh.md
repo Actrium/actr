@@ -124,13 +124,13 @@
 
 以下文档深入探讨了“实现内幕”中的特定主题，建议按我们推荐的逻辑顺序阅读：
 
-*   **[3.1. 起点 (The Beginning)](./3.1-The-beginning.zh.md)**
+*   **[3.1. 代码生成与附加机制 (Codegen and Attach)](./3.1-Attach-and-Codegen.zh.md)**
 *   **[3.2. `Context` 的设计哲学 (The Context Philosophy)](./3.2-The-Context-Philosophy.zh.md)**
 *   **[3.3. 应用 Protobuf 契约 (Application Proto Contract)](./3.3-Application-Proto-Contract.zh.md)**
 *   **[3.4. 信令机制 (Signaling)](./3.4-Signaling.zh.md)**
 *   **[3.5. 输入处理器核心 (Input Handler Internals)](./3.5-Input-Handler-Internals.zh.md)**
 *   **[3.6. 持久化邮箱 (The Persistent Mailbox)](./3.6-The-Persistent-Mailbox.zh.md)**
-*   **[3.7. 优先级与顺序 (Priority and Sequence)](./3.7-Priority-and-Sequence.zh.md)**
+*   **[3.7. 状态路径调度：优先级与顺序 (State Path Scheduling: Priority and Sequence)](./3.7-State-Path-Scheduling.zh.md)**
 *   **[3.8. 快车道核心 (Fast Path Internals)](./3.8-Fast-Path-Internals.zh.md)**
 *   **[3.9. 自动流绑定 (Automatic Stream Binding)](./3.9-Automatic-Stream-Binding.zh.md)**
 *   **[3.10. 快车道生命周期 (Fast Path Lifecycle)](./3.10-Fast-Path-Lifecycle.zh.md)**
