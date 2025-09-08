@@ -137,7 +137,11 @@ graph TB
 *   **`protoc` 编译器**:
     *   **Ubuntu/Debian**: `sudo apt update && sudo apt install protobuf-compiler`
     *   **macOS (Homebrew)**: `brew install protobuf`
-*   **本框架的代码生成插件**: `cargo install protoc-gen-actorframework`
+*   **本框架的代码生成插件**:
+    > [!NOTE]
+    > 功能规划中：本插件是框架设计的核心部分，但目前尚未作为独立工具发布。下面的安装命令暂时无法使用。
+
+    `# cargo install protoc-gen-actorframework`
 
 ### **2.2. 项目搭建**
 
