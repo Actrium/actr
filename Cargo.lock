@@ -2286,10 +2286,12 @@ dependencies = [
  "async-trait",
  "bytes",
  "heck",
+ "prettyplease",
  "proc-macro2",
  "prost",
  "prost-types",
  "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]

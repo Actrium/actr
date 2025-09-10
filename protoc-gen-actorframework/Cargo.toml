@@ -28,3 +28,7 @@ bytes = { workspace = true }
 # Utilities
 heck = { workspace = true }  # for case conversion (snake_case, PascalCase, etc.)
 async-trait = { workspace = true }
+
+# Pretty print
+syn = { version = "2", features = ["full"] }
+prettyplease = "0.2"

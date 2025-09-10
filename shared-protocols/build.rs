@@ -31,5 +31,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../proto");
     println!("cargo:rerun-if-changed=../target/debug/protoc-gen-actorframework");
 
+    // Try to run rustfmt on generated files in src/
+    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let src_dir = crate_dir.join("src");
+    if let Ok(entries) = std::fs::read_dir(&src_dir) {
+        let mut files = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(ext) = path.extension() {
+                if ext == "rs" {
+                    files.push(path);
+                }
+            }
+        }
+        if !files.is_empty() {
+            let mut cmd = std::process::Command::new("rustfmt");
+            cmd.arg("--edition").arg("2021");
+            for f in &files {
+                cmd.arg(f);
+            }
+            let _ = cmd.status();
+        }
+    }
+
     Ok(())
 }

@@ -1,1 +1,334 @@
-use super :: EchoRequest ; use super :: BatchEchoResponse ; use super :: EchoResponse ; use super :: BatchEchoRequest ; # [doc = r" Auto-generated LocalActor trait for #trait_ident"] # [async_trait :: async_trait] pub trait IEchoService : actor_rtc_framework :: local_actor :: LocalActor { async fn send_echo (& self , request : EchoRequest , context : std :: sync :: Arc < actor_rtc_framework :: context :: Context > ,) -> actor_rtc_framework :: error :: ActorResult < EchoResponse > ; async fn batch_echo (& self , request : BatchEchoRequest , context : std :: sync :: Arc < actor_rtc_framework :: context :: Context > ,) -> actor_rtc_framework :: error :: ActorResult < BatchEchoResponse > ; async fn stream_echo (& self , _request : EchoRequest , _context : std :: sync :: Arc < actor_rtc_framework :: context :: Context > ,) -> actor_rtc_framework :: error :: ActorResult < EchoResponse > { Err (actor_rtc_framework :: error :: ActorError :: Protocol ("Streaming method not yet implemented" . to_string ())) } } # [doc = r" Auto-generated RemoteActor client for #client_ident"] # [allow (dead_code)] pub struct EchoServiceClient { remote_actor : actor_rtc_framework :: remote_actor :: RemoteActor , } # [allow (dead_code)] impl EchoServiceClient { pub fn new (remote_actor : actor_rtc_framework :: remote_actor :: RemoteActor) -> Self { Self { remote_actor } } pub async fn connect (& self) -> actor_rtc_framework :: error :: ActorResult < () > { self . remote_actor . connect () . await } pub async fn disconnect (& self) -> actor_rtc_framework :: error :: ActorResult < () > { self . remote_actor . disconnect () . await } pub async fn send_echo (& self , request : EchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < EchoResponse > { self . remote_actor . call (request) . await } pub async fn batch_echo (& self , request : BatchEchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < BatchEchoResponse > { self . remote_actor . call (request) . await } pub async fn stream_echo (& self , message : EchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < () > { self . remote_actor . tell (message) . await } } # [doc = r" Auto-generated LocalActor adapter for #trait_ident"] pub struct EchoServiceAdapter ; impl actor_rtc_framework :: routing :: RouteProvider < dyn IEchoService > for EchoServiceAdapter { fn get_routes (actor : std :: sync :: Arc < dyn IEchoService >) -> Vec < actor_rtc_framework :: routing :: Route > { vec ! [actor_rtc_framework :: routing :: Route { method_name : "echo.EchoService/SendEcho" . to_string () , handler : { let actor_clone = actor . clone () ; Box :: new (move | ctx : std :: sync :: Arc < actor_rtc_framework :: context :: Context > , req_bytes : Vec < u8 > | { let actor_for_task = actor_clone . clone () ; Box :: pin (async move { use prost :: Message ; let request = EchoRequest :: decode (& * req_bytes) . map_err (| e | actor_rtc_framework :: error :: ActorError :: Protocol (format ! ("Failed to decode {}: {}" , "echo.EchoRequest" , e))) ? ; let response : EchoResponse = actor_for_task . send_echo (request , ctx) . await . map_err (| e | actor_rtc_framework :: error :: ActorError :: Business (format ! ("Method {} failed: {:?}" , "SendEcho" , e))) ? ; let mut buf = Vec :: new () ; response . encode (& mut buf) . map_err (| e | actor_rtc_framework :: error :: ActorError :: Protocol (format ! ("Failed to encode {}: {}" , "echo.EchoResponse" , e))) ? ; Ok (buf) }) as std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> }) as Box < dyn Fn (std :: sync :: Arc < actor_rtc_framework :: context :: Context > , Vec < u8 >) -> std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> + Send + Sync > } , } , actor_rtc_framework :: routing :: Route { method_name : "echo.EchoService/BatchEcho" . to_string () , handler : { let actor_clone = actor . clone () ; Box :: new (move | ctx : std :: sync :: Arc < actor_rtc_framework :: context :: Context > , req_bytes : Vec < u8 > | { let actor_for_task = actor_clone . clone () ; Box :: pin (async move { use prost :: Message ; let request = BatchEchoRequest :: decode (& * req_bytes) . map_err (| e | actor_rtc_framework :: error :: ActorError :: Protocol (format ! ("Failed to decode {}: {}" , "echo.BatchEchoRequest" , e))) ? ; let response : BatchEchoResponse = actor_for_task . batch_echo (request , ctx) . await . map_err (| e | actor_rtc_framework :: error :: ActorError :: Business (format ! ("Method {} failed: {:?}" , "BatchEcho" , e))) ? ; let mut buf = Vec :: new () ; response . encode (& mut buf) . map_err (| e | actor_rtc_framework :: error :: ActorError :: Protocol (format ! ("Failed to encode {}: {}" , "echo.BatchEchoResponse" , e))) ? ; Ok (buf) }) as std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> }) as Box < dyn Fn (std :: sync :: Arc < actor_rtc_framework :: context :: Context > , Vec < u8 >) -> std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> + Send + Sync > } , } , actor_rtc_framework :: routing :: Route { method_name : "echo.EchoService/StreamEcho" . to_string () , handler : { let actor_clone = actor . clone () ; Box :: new (move | ctx : std :: sync :: Arc < actor_rtc_framework :: context :: Context > , req_bytes : Vec < u8 > | { let actor_for_task = actor_clone . clone () ; Box :: pin (async move { use prost :: Message ; let message = EchoRequest :: decode (& * req_bytes) . map_err (| e | actor_rtc_framework :: error :: ActorError :: Protocol (format ! ("Failed to decode {}: {}" , "echo.EchoRequest" , e))) ? ; actor_for_task . stream_echo (message , ctx) . await . map_err (| e | actor_rtc_framework :: error :: ActorError :: Business (format ! ("Streaming method {} failed: {:?}" , "StreamEcho" , e))) ? ; Ok (Vec :: new ()) }) as std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> }) as Box < dyn Fn (std :: sync :: Arc < actor_rtc_framework :: context :: Context > , Vec < u8 >) -> std :: pin :: Pin < Box < dyn std :: future :: Future < Output = actor_rtc_framework :: error :: ActorResult < Vec < u8 >> > + Send >> + Send + Sync > } , } ,] } } # [doc = r" Blanket RouteProvider implementation for concrete types that implement the trait"] impl < T > actor_rtc_framework :: routing :: RouteProvider < T > for EchoServiceAdapter where T : IEchoService + Send + Sync + 'static , { fn get_routes (actor : std :: sync :: Arc < T >) -> Vec < actor_rtc_framework :: routing :: Route > { let trait_obj : std :: sync :: Arc < dyn IEchoService > = actor ; Self :: get_routes (trait_obj) } } # [doc = r" Auto-generated RemoteActor client manager for #manager_ident"] # [allow (dead_code)] pub struct EchoServiceClientManager { manager : std :: sync :: Arc < tokio :: sync :: RwLock < actor_rtc_framework :: remote_actor :: RemoteActorManager >> , } # [allow (dead_code)] impl EchoServiceClientManager { pub fn new (context : std :: sync :: Arc < actor_rtc_framework :: context :: Context >) -> Self { Self { manager : std :: sync :: Arc :: new (tokio :: sync :: RwLock :: new (actor_rtc_framework :: remote_actor :: RemoteActorManager :: new (context))) , } } pub async fn register_remote_actor (& self , actor_id : shared_protocols :: actor :: ActorId , service_address : Option < String > ,) -> actor_rtc_framework :: error :: ActorResult < () > { let mut manager = self . manager . write () . await ; manager . register_remote_actor (actor_id , stringify ! (EchoServiceClientManager) . to_string () , service_address ,) } pub async fn send_echo (& self , actor_id : & shared_protocols :: actor :: ActorId , request : EchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < EchoResponse > { if let Some (remote_actor) = { let manager_guard = self . manager . read () . await ; manager_guard . get_remote_actor (actor_id) . cloned () } { remote_actor . call (request) . await } else { Err (actor_rtc_framework :: error :: ActorError :: ActorNotFound { actor_id : format ! ("{}" , actor_id . serial_number) , }) } } pub async fn batch_echo (& self , actor_id : & shared_protocols :: actor :: ActorId , request : BatchEchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < BatchEchoResponse > { if let Some (remote_actor) = { let manager_guard = self . manager . read () . await ; manager_guard . get_remote_actor (actor_id) . cloned () } { remote_actor . call (request) . await } else { Err (actor_rtc_framework :: error :: ActorError :: ActorNotFound { actor_id : format ! ("{}" , actor_id . serial_number) , }) } } pub async fn stream_echo (& self , actor_id : & shared_protocols :: actor :: ActorId , message : EchoRequest ,) -> actor_rtc_framework :: error :: ActorResult < () > { if let Some (remote_actor) = { let manager_guard = self . manager . read () . await ; manager_guard . get_remote_actor (actor_id) . cloned () } { remote_actor . tell (message) . await } else { Err (actor_rtc_framework :: error :: ActorError :: ActorNotFound { actor_id : format ! ("{}" , actor_id . serial_number) , }) } } }
+use super::BatchEchoRequest;
+use super::BatchEchoResponse;
+use super::EchoRequest;
+use super::EchoResponse;
+/// Auto-generated LocalActor trait for #trait_ident
+#[async_trait::async_trait]
+pub trait IEchoService: actor_rtc_framework::local_actor::LocalActor {
+    async fn send_echo(
+        &self,
+        request: EchoRequest,
+        context: std::sync::Arc<actor_rtc_framework::context::Context>,
+    ) -> actor_rtc_framework::error::ActorResult<EchoResponse>;
+    async fn batch_echo(
+        &self,
+        request: BatchEchoRequest,
+        context: std::sync::Arc<actor_rtc_framework::context::Context>,
+    ) -> actor_rtc_framework::error::ActorResult<BatchEchoResponse>;
+    async fn stream_echo(
+        &self,
+        _request: EchoRequest,
+        _context: std::sync::Arc<actor_rtc_framework::context::Context>,
+    ) -> actor_rtc_framework::error::ActorResult<EchoResponse> {
+        Err(actor_rtc_framework::error::ActorError::Protocol(
+            "Streaming method not yet implemented".to_string(),
+        ))
+    }
+}
+/// Auto-generated RemoteActor client for #client_ident
+#[allow(dead_code)]
+pub struct EchoServiceClient {
+    remote_actor: actor_rtc_framework::remote_actor::RemoteActor,
+}
+#[allow(dead_code)]
+impl EchoServiceClient {
+    pub fn new(remote_actor: actor_rtc_framework::remote_actor::RemoteActor) -> Self {
+        Self { remote_actor }
+    }
+    pub async fn connect(&self) -> actor_rtc_framework::error::ActorResult<()> {
+        self.remote_actor.connect().await
+    }
+    pub async fn disconnect(&self) -> actor_rtc_framework::error::ActorResult<()> {
+        self.remote_actor.disconnect().await
+    }
+    pub async fn send_echo(
+        &self,
+        request: EchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<EchoResponse> {
+        self.remote_actor.call(request).await
+    }
+    pub async fn batch_echo(
+        &self,
+        request: BatchEchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<BatchEchoResponse> {
+        self.remote_actor.call(request).await
+    }
+    pub async fn stream_echo(
+        &self,
+        message: EchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<()> {
+        self.remote_actor.tell(message).await
+    }
+}
+/// Auto-generated LocalActor adapter for #trait_ident
+pub struct EchoServiceAdapter;
+impl actor_rtc_framework::routing::RouteProvider<dyn IEchoService> for EchoServiceAdapter {
+    fn get_routes(
+        actor: std::sync::Arc<dyn IEchoService>,
+    ) -> Vec<actor_rtc_framework::routing::Route> {
+        vec![
+            actor_rtc_framework::routing::Route {
+                method_name: "echo.EchoService/SendEcho".to_string(),
+                handler: {
+                    let actor_clone = actor.clone();
+                    Box::new(
+                        move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>,
+                              req_bytes: Vec<u8>| {
+                            let actor_for_task = actor_clone.clone();
+                            Box::pin(async move {
+                                use prost::Message;
+                                let request = EchoRequest::decode(&*req_bytes).map_err(|e| {
+                                    actor_rtc_framework::error::ActorError::Protocol(format!(
+                                        "Failed to decode {}: {}",
+                                        "echo.EchoRequest", e
+                                    ))
+                                })?;
+                                let response: EchoResponse =
+                                    actor_for_task.send_echo(request, ctx).await.map_err(|e| {
+                                        actor_rtc_framework::error::ActorError::Business(format!(
+                                            "Method {} failed: {:?}",
+                                            "SendEcho", e
+                                        ))
+                                    })?;
+                                let mut buf = Vec::new();
+                                response.encode(&mut buf).map_err(|e| {
+                                    actor_rtc_framework::error::ActorError::Protocol(format!(
+                                        "Failed to encode {}: {}",
+                                        "echo.EchoResponse", e
+                                    ))
+                                })?;
+                                Ok(buf)
+                            })
+                                as std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                >
+                        },
+                    )
+                        as Box<
+                            dyn Fn(
+                                    std::sync::Arc<actor_rtc_framework::context::Context>,
+                                    Vec<u8>,
+                                ) -> std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                > + Send
+                                + Sync,
+                        >
+                },
+            },
+            actor_rtc_framework::routing::Route {
+                method_name: "echo.EchoService/BatchEcho".to_string(),
+                handler: {
+                    let actor_clone = actor.clone();
+                    Box::new(
+                        move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>,
+                              req_bytes: Vec<u8>| {
+                            let actor_for_task = actor_clone.clone();
+                            Box::pin(async move {
+                                use prost::Message;
+                                let request =
+                                    BatchEchoRequest::decode(&*req_bytes).map_err(|e| {
+                                        actor_rtc_framework::error::ActorError::Protocol(format!(
+                                            "Failed to decode {}: {}",
+                                            "echo.BatchEchoRequest", e
+                                        ))
+                                    })?;
+                                let response: BatchEchoResponse =
+                                    actor_for_task.batch_echo(request, ctx).await.map_err(|e| {
+                                        actor_rtc_framework::error::ActorError::Business(format!(
+                                            "Method {} failed: {:?}",
+                                            "BatchEcho", e
+                                        ))
+                                    })?;
+                                let mut buf = Vec::new();
+                                response.encode(&mut buf).map_err(|e| {
+                                    actor_rtc_framework::error::ActorError::Protocol(format!(
+                                        "Failed to encode {}: {}",
+                                        "echo.BatchEchoResponse", e
+                                    ))
+                                })?;
+                                Ok(buf)
+                            })
+                                as std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                >
+                        },
+                    )
+                        as Box<
+                            dyn Fn(
+                                    std::sync::Arc<actor_rtc_framework::context::Context>,
+                                    Vec<u8>,
+                                ) -> std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                > + Send
+                                + Sync,
+                        >
+                },
+            },
+            actor_rtc_framework::routing::Route {
+                method_name: "echo.EchoService/StreamEcho".to_string(),
+                handler: {
+                    let actor_clone = actor.clone();
+                    Box::new(
+                        move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>,
+                              req_bytes: Vec<u8>| {
+                            let actor_for_task = actor_clone.clone();
+                            Box::pin(async move {
+                                use prost::Message;
+                                let message = EchoRequest::decode(&*req_bytes).map_err(|e| {
+                                    actor_rtc_framework::error::ActorError::Protocol(format!(
+                                        "Failed to decode {}: {}",
+                                        "echo.EchoRequest", e
+                                    ))
+                                })?;
+                                actor_for_task
+                                    .stream_echo(message, ctx)
+                                    .await
+                                    .map_err(|e| {
+                                        actor_rtc_framework::error::ActorError::Business(format!(
+                                            "Streaming method {} failed: {:?}",
+                                            "StreamEcho", e
+                                        ))
+                                    })?;
+                                Ok(Vec::new())
+                            })
+                                as std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                >
+                        },
+                    )
+                        as Box<
+                            dyn Fn(
+                                    std::sync::Arc<actor_rtc_framework::context::Context>,
+                                    Vec<u8>,
+                                ) -> std::pin::Pin<
+                                    Box<
+                                        dyn std::future::Future<
+                                                Output = actor_rtc_framework::error::ActorResult<
+                                                    Vec<u8>,
+                                                >,
+                                            > + Send,
+                                    >,
+                                > + Send
+                                + Sync,
+                        >
+                },
+            },
+        ]
+    }
+}
+/// Blanket RouteProvider implementation for concrete types that implement the trait
+impl<T> actor_rtc_framework::routing::RouteProvider<T> for EchoServiceAdapter
+where
+    T: IEchoService + Send + Sync + 'static,
+{
+    fn get_routes(actor: std::sync::Arc<T>) -> Vec<actor_rtc_framework::routing::Route> {
+        let trait_obj: std::sync::Arc<dyn IEchoService> = actor;
+        Self::get_routes(trait_obj)
+    }
+}
+/// Auto-generated RemoteActor client manager for #manager_ident
+#[allow(dead_code)]
+pub struct EchoServiceClientManager {
+    manager:
+        std::sync::Arc<tokio::sync::RwLock<actor_rtc_framework::remote_actor::RemoteActorManager>>,
+}
+#[allow(dead_code)]
+impl EchoServiceClientManager {
+    pub fn new(context: std::sync::Arc<actor_rtc_framework::context::Context>) -> Self {
+        Self {
+            manager: std::sync::Arc::new(tokio::sync::RwLock::new(
+                actor_rtc_framework::remote_actor::RemoteActorManager::new(context),
+            )),
+        }
+    }
+    pub async fn register_remote_actor(
+        &self,
+        actor_id: shared_protocols::actor::ActorId,
+        service_address: Option<String>,
+    ) -> actor_rtc_framework::error::ActorResult<()> {
+        let mut manager = self.manager.write().await;
+        manager.register_remote_actor(
+            actor_id,
+            stringify!(EchoServiceClientManager).to_string(),
+            service_address,
+        )
+    }
+    pub async fn send_echo(
+        &self,
+        actor_id: &shared_protocols::actor::ActorId,
+        request: EchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<EchoResponse> {
+        if let Some(remote_actor) = {
+            let manager_guard = self.manager.read().await;
+            manager_guard.get_remote_actor(actor_id).cloned()
+        } {
+            remote_actor.call(request).await
+        } else {
+            Err(actor_rtc_framework::error::ActorError::ActorNotFound {
+                actor_id: format!("{}", actor_id.serial_number),
+            })
+        }
+    }
+    pub async fn batch_echo(
+        &self,
+        actor_id: &shared_protocols::actor::ActorId,
+        request: BatchEchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<BatchEchoResponse> {
+        if let Some(remote_actor) = {
+            let manager_guard = self.manager.read().await;
+            manager_guard.get_remote_actor(actor_id).cloned()
+        } {
+            remote_actor.call(request).await
+        } else {
+            Err(actor_rtc_framework::error::ActorError::ActorNotFound {
+                actor_id: format!("{}", actor_id.serial_number),
+            })
+        }
+    }
+    pub async fn stream_echo(
+        &self,
+        actor_id: &shared_protocols::actor::ActorId,
+        message: EchoRequest,
+    ) -> actor_rtc_framework::error::ActorResult<()> {
+        if let Some(remote_actor) = {
+            let manager_guard = self.manager.read().await;
+            manager_guard.get_remote_actor(actor_id).cloned()
+        } {
+            remote_actor.tell(message).await
+        } else {
+            Err(actor_rtc_framework::error::ActorError::ActorNotFound {
+                actor_id: format!("{}", actor_id.serial_number),
+            })
+        }
+    }
+}

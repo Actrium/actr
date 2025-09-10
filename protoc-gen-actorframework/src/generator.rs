@@ -147,7 +147,7 @@ impl ActorTraitGenerator {
             #manager_content
         };
 
-        Ok(generated.to_string())
+        Ok(format_ts(&generated))
     }
 
     fn generate_local_service_trait_content(
@@ -244,7 +244,7 @@ impl ActorTraitGenerator {
             #trait_content
         };
 
-        Ok(generated.to_string())
+        Ok(format_ts(&generated))
     }
 
     fn generate_remote_client_proxy_content(
@@ -331,7 +331,7 @@ impl ActorTraitGenerator {
             #client_content
         };
 
-        Ok(generated.to_string())
+        Ok(format_ts(&generated))
     }
 
     fn generate_imports(&self, methods: &[MethodDescriptorProto]) -> Vec<proc_macro2::TokenStream> {
@@ -718,12 +718,11 @@ impl ActorAdapterGenerator {
                             method_name: #full_method_name.to_string(),
                             handler: {
                                 let actor_clone = actor.clone();
-                                Box::new(move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>, 
+                                Box::new(move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>,
                                                req_bytes: Vec<u8>| {
                                     let actor_for_task = actor_clone.clone();
                                     Box::pin(async move {
                                         use prost::Message;
-                                        
                                         // Deserialize request
                                         let request = #input_ident::decode(&*req_bytes)
                                             .map_err(|e| actor_rtc_framework::error::ActorError::Protocol(
@@ -742,10 +741,9 @@ impl ActorAdapterGenerator {
                                             .map_err(|e| actor_rtc_framework::error::ActorError::Protocol(
                                                 format!("Failed to encode {}: {}", #output_type, e)
                                             ))?;
-                                        
                                         Ok(buf)
                                     }) as std::pin::Pin<Box<dyn std::future::Future<Output = actor_rtc_framework::error::ActorResult<Vec<u8>>> + Send>>
-                                }) as Box<dyn Fn(std::sync::Arc<actor_rtc_framework::context::Context>, Vec<u8>) 
+                                }) as Box<dyn Fn(std::sync::Arc<actor_rtc_framework::context::Context>, Vec<u8>)
                                     -> std::pin::Pin<Box<dyn std::future::Future<Output = actor_rtc_framework::error::ActorResult<Vec<u8>>> + Send>> + Send + Sync>
                             },
                         }
@@ -758,12 +756,11 @@ impl ActorAdapterGenerator {
                             method_name: #full_method_name.to_string(),
                             handler: {
                                 let actor_clone = actor.clone();
-                                Box::new(move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>, 
+                                Box::new(move |ctx: std::sync::Arc<actor_rtc_framework::context::Context>,
                                                req_bytes: Vec<u8>| {
                                     let actor_for_task = actor_clone.clone();
                                     Box::pin(async move {
                                         use prost::Message;
-                                        
                                         // Deserialize message
                                         let message = #input_ident::decode(&*req_bytes)
                                             .map_err(|e| actor_rtc_framework::error::ActorError::Protocol(
@@ -779,7 +776,7 @@ impl ActorAdapterGenerator {
                                         // Return empty response for streaming/tell operations
                                         Ok(Vec::new())
                                     }) as std::pin::Pin<Box<dyn std::future::Future<Output = actor_rtc_framework::error::ActorResult<Vec<u8>>> + Send>>
-                                }) as Box<dyn Fn(std::sync::Arc<actor_rtc_framework::context::Context>, Vec<u8>) 
+                                }) as Box<dyn Fn(std::sync::Arc<actor_rtc_framework::context::Context>, Vec<u8>)
                                     -> std::pin::Pin<Box<dyn std::future::Future<Output = actor_rtc_framework::error::ActorResult<Vec<u8>>> + Send>> + Send + Sync>
                             },
                         }
@@ -824,7 +821,7 @@ impl ActorAdapterGenerator {
             }
         };
 
-        Ok(generated.to_string())
+        Ok(format_ts(&generated))
     }
 
     fn generate_remote_client_manager(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
@@ -923,7 +920,7 @@ impl ActorAdapterGenerator {
             }
         };
 
-        Ok(generated.to_string())
+        Ok(format_ts(&generated))
     }
 
     fn extract_message_type(&self, type_name: &str) -> Result<String> {
@@ -934,5 +931,12 @@ impl ActorAdapterGenerator {
         } else {
             Ok(cleaned.to_string())
         }
+    }
+}
+
+fn format_ts(ts: &proc_macro2::TokenStream) -> String {
+    match syn::parse2::<syn::File>(ts.clone()) {
+        Ok(file) => prettyplease::unparse(&file),
+        Err(_) => ts.to_string(),
     }
 }

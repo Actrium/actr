@@ -8,6 +8,7 @@ use prost_types::{
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
 
 mod generator;
 
@@ -129,7 +130,7 @@ fn generate_service_code(
             service_name.to_snake_case(),
             file_suffix
         )),
-        content: Some(combined_code),
+        content: Some(format_with_rustfmt_fallback(&combined_code)),
         insertion_point: None,
         generated_code_info: None,
     })
@@ -153,4 +154,37 @@ fn remove_duplicate_imports(code: &str) -> String {
     }
 
     result_lines.join("\n")
+}
+
+fn format_with_rustfmt_fallback(code: &str) -> String {
+    // First try syn+prettyplease
+    let pretty = match syn::parse_file(code) {
+        Ok(file) => prettyplease::unparse(&file),
+        Err(_) => code.to_string(),
+    };
+
+    // Then try rustfmt subprocess for stricter formatting (best effort)
+    if let Ok(mut child) = Command::new("rustfmt")
+        .arg("--emit")
+        .arg("stdout")
+        .arg("--edition")
+        .arg("2021")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(pretty.as_bytes());
+        }
+        if let Ok(output) = child.wait_with_output() {
+            if output.status.success() {
+                if let Ok(s) = String::from_utf8(output.stdout) {
+                    return s;
+                }
+            }
+        }
+    }
+
+    pretty
 }
