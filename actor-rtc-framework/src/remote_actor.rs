@@ -32,7 +32,10 @@ pub(crate) enum ConnectionState {
     /// 已连接
     Connected { connected_at: Instant },
     /// 连接失败
-    Failed { last_error: String, failed_at: Instant },
+    Failed {
+        last_error: String,
+        failed_at: Instant,
+    },
 }
 
 /// 远程 Actor 元数据
@@ -52,11 +55,7 @@ pub struct RemoteActorMetadata {
 
 impl RemoteActor {
     /// 创建新的远程 Actor 句柄
-    pub fn new(
-        actor_id: ActorId,
-        context: Arc<Context>,
-        type_name: String,
-    ) -> Self {
+    pub fn new(actor_id: ActorId, context: Arc<Context>, type_name: String) -> Self {
         Self {
             actor_id,
             connection_state: Arc::new(tokio::sync::RwLock::new(ConnectionState::Disconnected)),
@@ -103,13 +102,19 @@ impl RemoteActor {
         {
             let mut state = self.connection_state.write().await;
             if let ConnectionState::Connected { .. } = *state {
-                debug!("Already connected to actor: {}", self.actor_id.serial_number);
+                debug!(
+                    "Already connected to actor: {}",
+                    self.actor_id.serial_number
+                );
                 return Ok(());
             }
             *state = ConnectionState::Connecting;
         }
 
-        info!("Connecting to remote actor: {}", self.actor_id.serial_number);
+        info!(
+            "Connecting to remote actor: {}",
+            self.actor_id.serial_number
+        );
 
         // 尝试建立连接
         match self.context.connect_to(&self.actor_id).await {
@@ -118,11 +123,14 @@ impl RemoteActor {
                 *state = ConnectionState::Connected {
                     connected_at: Instant::now(),
                 };
-                
+
                 // 更新最后活动时间
                 *self.metadata.last_activity.write().await = Some(Instant::now());
-                
-                info!("Successfully connected to remote actor: {}", self.actor_id.serial_number);
+
+                info!(
+                    "Successfully connected to remote actor: {}",
+                    self.actor_id.serial_number
+                );
                 Ok(())
             }
             Err(e) => {
@@ -131,8 +139,11 @@ impl RemoteActor {
                     last_error: e.to_string(),
                     failed_at: Instant::now(),
                 };
-                
-                warn!("Failed to connect to remote actor {}: {}", self.actor_id.serial_number, e);
+
+                warn!(
+                    "Failed to connect to remote actor {}: {}",
+                    self.actor_id.serial_number, e
+                );
                 Err(e)
             }
         }
@@ -140,18 +151,27 @@ impl RemoteActor {
 
     /// 断开连接
     pub async fn disconnect(&self) -> ActorResult<()> {
-        info!("Disconnecting from remote actor: {}", self.actor_id.serial_number);
+        info!(
+            "Disconnecting from remote actor: {}",
+            self.actor_id.serial_number
+        );
 
         match self.context.disconnect_from(&self.actor_id).await {
             Ok(()) => {
                 let mut state = self.connection_state.write().await;
                 *state = ConnectionState::Disconnected;
-                
-                debug!("Successfully disconnected from remote actor: {}", self.actor_id.serial_number);
+
+                debug!(
+                    "Successfully disconnected from remote actor: {}",
+                    self.actor_id.serial_number
+                );
                 Ok(())
             }
             Err(e) => {
-                warn!("Failed to disconnect from remote actor {}: {}", self.actor_id.serial_number, e);
+                warn!(
+                    "Failed to disconnect from remote actor {}: {}",
+                    self.actor_id.serial_number, e
+                );
                 Err(e)
             }
         }
@@ -190,7 +210,10 @@ impl RemoteActor {
                 Ok(())
             }
             Err(e) => {
-                warn!("Failed to send tell message to {}: {}", self.actor_id.serial_number, e);
+                warn!(
+                    "Failed to send tell message to {}: {}",
+                    self.actor_id.serial_number, e
+                );
                 // 连接可能已断开，更新状态
                 let mut state = self.connection_state.write().await;
                 *state = ConnectionState::Failed {
@@ -225,7 +248,10 @@ impl RemoteActor {
                 Ok(response)
             }
             Err(e) => {
-                warn!("Failed to send call message to {}: {}", self.actor_id.serial_number, e);
+                warn!(
+                    "Failed to send call message to {}: {}",
+                    self.actor_id.serial_number, e
+                );
                 // 连接可能已断开，更新状态
                 let mut state = self.connection_state.write().await;
                 *state = ConnectionState::Failed {
@@ -396,7 +422,10 @@ impl RemoteActorManager {
     }
 
     /// 获取远程 Actor 句柄（异步版本，用于 Arc<RwLock<RemoteActorManager>>）
-    pub async fn get_remote_actor_async(manager: Arc<tokio::sync::RwLock<RemoteActorManager>>, actor_id: &ActorId) -> Option<RemoteActor> {
+    pub async fn get_remote_actor_async(
+        manager: Arc<tokio::sync::RwLock<RemoteActorManager>>,
+        actor_id: &ActorId,
+    ) -> Option<RemoteActor> {
         let manager_guard = manager.read().await;
         manager_guard.actors.get(&actor_id.serial_number).cloned()
     }
@@ -412,8 +441,10 @@ impl RemoteActorManager {
         if let Some(remote_actor) = self.actors.get(&serial_number) {
             // 先断开连接
             if let Err(e) = remote_actor.disconnect().await {
-                warn!("Failed to disconnect from remote actor {} during removal: {}", 
-                      serial_number, e);
+                warn!(
+                    "Failed to disconnect from remote actor {} during removal: {}",
+                    serial_number, e
+                );
             }
         }
 
@@ -424,7 +455,7 @@ impl RemoteActorManager {
     /// 连接到所有远程 Actor
     pub async fn connect_all(&self) -> Vec<ActorResult<()>> {
         let mut results = Vec::new();
-        
+
         for (serial_number, remote_actor) in &self.actors {
             debug!("Connecting to remote actor: {}", serial_number);
             let result = remote_actor.connect().await;
@@ -437,7 +468,7 @@ impl RemoteActorManager {
     /// 断开所有远程 Actor 连接
     pub async fn disconnect_all(&self) -> Vec<ActorResult<()>> {
         let mut results = Vec::new();
-        
+
         for (serial_number, remote_actor) in &self.actors {
             debug!("Disconnecting from remote actor: {}", serial_number);
             let result = remote_actor.disconnect().await;
@@ -450,7 +481,7 @@ impl RemoteActorManager {
     /// 获取所有已连接的远程 Actor ID
     pub async fn get_connected_actors(&self) -> Vec<ActorId> {
         let mut connected = Vec::new();
-        
+
         for (_, remote_actor) in &self.actors {
             if remote_actor.is_connected().await {
                 connected.push(remote_actor.get_actor_id().clone());
@@ -463,7 +494,7 @@ impl RemoteActorManager {
     /// 获取所有远程 Actor 统计信息
     pub async fn get_all_stats(&self) -> Vec<RemoteActorStats> {
         let mut stats = Vec::new();
-        
+
         for remote_actor in self.actors.values() {
             stats.push(remote_actor.get_connection_stats().await);
         }
@@ -474,7 +505,7 @@ impl RemoteActorManager {
     /// 清理超时的连接
     pub async fn cleanup_timeouts(&mut self) {
         let mut to_disconnect = Vec::new();
-        
+
         for (serial_number, remote_actor) in &self.actors {
             if remote_actor.is_connection_timeout().await {
                 to_disconnect.push(*serial_number);
@@ -485,7 +516,10 @@ impl RemoteActorManager {
             if let Some(remote_actor) = self.actors.get(&serial_number) {
                 warn!("Disconnecting timed out remote actor: {}", serial_number);
                 if let Err(e) = remote_actor.disconnect().await {
-                    warn!("Failed to disconnect timed out actor {}: {}", serial_number, e);
+                    warn!(
+                        "Failed to disconnect timed out actor {}: {}",
+                        serial_number, e
+                    );
                 }
             }
         }

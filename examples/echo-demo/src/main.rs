@@ -1,13 +1,13 @@
 //! Simple Echo Demo
-//! 
+//!
 //! 演示如何使用 Actor-RTC 框架创建一个简单的回声服务
 //! 使用生成的代码和新的简化 attach API
 
 use actor_rtc_framework::actor::ActorSystem;
 use actor_rtc_framework::context::Context;
-use actor_rtc_framework::local_actor::LocalActor;
-use actor_rtc_framework::lifecycle::ILifecycle;
 use actor_rtc_framework::error::ActorError;
+use actor_rtc_framework::lifecycle::ILifecycle;
+use actor_rtc_framework::local_actor::LocalActor;
 use actor_rtc_framework::routing::AttachableActor;
 use actor_rtc_framework::signaling::WebSocketSignaling;
 use async_trait::async_trait;
@@ -27,8 +27,8 @@ mod echo_service_actor {
     include!(concat!(env!("OUT_DIR"), "/echo_service_actor.rs"));
 }
 
-use echo::{EchoRequest, EchoResponse, BatchEchoRequest, BatchEchoResponse};
-use echo_service_actor::{IEchoService, EchoServiceAdapter};
+use echo::{BatchEchoRequest, BatchEchoResponse, EchoRequest, EchoResponse};
+use echo_service_actor::{EchoServiceAdapter, IEchoService};
 
 /// 简单的回声 Actor 实现
 pub struct SimpleEchoActor {
@@ -63,7 +63,11 @@ impl LocalActor for SimpleEchoActor {
         Ok(())
     }
 
-    async fn handle_state_message(&self, _ctx: Arc<Context>, _message: Vec<u8>) -> Result<(), ActorError> {
+    async fn handle_state_message(
+        &self,
+        _ctx: Arc<Context>,
+        _message: Vec<u8>,
+    ) -> Result<(), ActorError> {
         info!("📨 Received state message");
         Ok(())
     }
@@ -160,8 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // 获取配置
-    let signaling_url = env::var("SIGNALING_URL")
-        .unwrap_or_else(|_| "ws://localhost:8081".to_string());
+    let signaling_url =
+        env::var("SIGNALING_URL").unwrap_or_else(|_| "ws://localhost:8081".to_string());
     let actor_id_num: u64 = env::var("ACTOR_ID")
         .unwrap_or_else(|_| "1001".to_string())
         .parse()
@@ -190,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 创建 Actor 系统，使用简化的 attach API
     let actor_system = ActorSystem::new(actor_id.clone())
         .with_signaling(Box::new(signaling))
-        .attach(echo_actor);  // 简化的 attach API！
+        .attach(echo_actor); // 简化的 attach API！
 
     info!("✅ Actor system configured with simplified attach API");
 

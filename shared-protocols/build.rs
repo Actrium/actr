@@ -8,8 +8,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Configure tonic-build to generate actor framework adapter code
     tonic_build::configure()
-        .build_server(false)  // We're not building gRPC servers
-        .build_client(false)  // We're not building gRPC clients  
+        .build_server(false) // We're not building gRPC servers
+        .build_client(false) // We're not building gRPC clients
         .protoc_arg("--plugin=protoc-gen-actorframework=../target/debug/protoc-gen-actorframework")
         .protoc_arg("--actorframework_out=src")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile(
             &[
                 "../proto/webrtc.proto",
-                "../proto/actor.proto", 
+                "../proto/actor.proto",
                 "../proto/signaling.proto",
                 "../proto/echo.proto",
                 "../proto/media_streaming.proto",
@@ -30,6 +30,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tell cargo to re-run if any proto files change
     println!("cargo:rerun-if-changed=../proto");
     println!("cargo:rerun-if-changed=../target/debug/protoc-gen-actorframework");
-    
+
     Ok(())
 }

@@ -5,16 +5,16 @@
 
 use crate::error::{ActorError, ActorResult};
 use crate::messaging::InternalMessage;
+use bincode;
+use crc32fast::Hasher;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
-use bincode;
-use serde::{Deserialize, Serialize};
-use crc32fast::Hasher;
 
 /// Write-Ahead Log 条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +155,7 @@ impl PersistentMailbox {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        
+
         let wal_entry = WalEntry {
             offset,
             message: message.clone(),
@@ -167,7 +167,7 @@ impl PersistentMailbox {
         {
             let mut batch_buffer = self.batch_buffer.lock().await;
             batch_buffer.push(wal_entry.clone());
-            
+
             // 检查是否需要批量提交
             if batch_buffer.len() >= self.config.batch_commit_size {
                 self.commit_batch(&mut batch_buffer).await?;
@@ -238,9 +238,9 @@ impl PersistentMailbox {
         // 2. 加载最新快照
         let snapshot = self.load_latest_snapshot().await?;
         let recovery_start_offset = snapshot.as_ref().map(|s| s.log_offset).unwrap_or(0);
-        
+
         info!("Recovery starting from offset: {}", recovery_start_offset);
-        
+
         // 3. 重放日志 (从快照点开始)
         let replayed_messages = self.replay_wal_from_offset(recovery_start_offset).await?;
 
@@ -281,7 +281,10 @@ impl PersistentMailbox {
             corrupted_entries_skipped: replayed_messages.len() - valid_messages.len(),
         };
 
-        info!("Recovery completed in {:?}: {:?}", recovery_duration, recovery_info);
+        info!(
+            "Recovery completed in {:?}: {:?}",
+            recovery_duration, recovery_info
+        );
         Ok(recovery_info)
     }
 
@@ -341,10 +344,10 @@ impl PersistentMailbox {
     /// 优雅关闭邮箱 - 刷新所有待提交的数据
     pub async fn shutdown(&self) -> ActorResult<()> {
         info!("Shutting down persistent mailbox...");
-        
+
         // 刷新所有待提交的批量数据
         self.flush_batch().await?;
-        
+
         // 强制同步所有数据到磁盘
         {
             let mut writer = self.wal_writer.lock().await;
@@ -370,8 +373,9 @@ impl PersistentMailbox {
         // 序列化整个批次
         let mut batch_data = Vec::new();
         for entry in batch_buffer.iter() {
-            let entry_data = bincode::serialize(entry)
-                .map_err(|e| ActorError::IoError(format!("Failed to serialize WAL entry: {}", e)))?;
+            let entry_data = bincode::serialize(entry).map_err(|e| {
+                ActorError::IoError(format!("Failed to serialize WAL entry: {}", e))
+            })?;
 
             // 写入条目长度 + 条目数据
             let entry_length = entry_data.len() as u32;
@@ -398,7 +402,10 @@ impl PersistentMailbox {
             stats.total_wal_writes += batch_buffer.len() as u64;
         }
 
-        debug!("Successfully committed batch of {} entries", batch_buffer.len());
+        debug!(
+            "Successfully committed batch of {} entries",
+            batch_buffer.len()
+        );
 
         // 清空批量缓冲区
         batch_buffer.clear();
@@ -418,7 +425,7 @@ impl PersistentMailbox {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-            
+
         let wal_entry = WalEntry {
             offset,
             message,
@@ -435,15 +442,18 @@ impl PersistentMailbox {
     }
 
     /// 启动定期批量提交任务
-    pub async fn start_periodic_flush(&self, interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
+    pub async fn start_periodic_flush(
+        &self,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
         let mailbox = self.clone();
-        
+
         tokio::spawn(async move {
             let mut interval_timer = tokio::time::interval(interval);
-            
+
             loop {
                 interval_timer.tick().await;
-                
+
                 if let Err(e) = mailbox.flush_batch().await {
                     warn!("Failed to flush batch during periodic commit: {}", e);
                 }
@@ -470,7 +480,7 @@ impl PersistentMailbox {
             match reader.read_exact(&mut length_bytes) {
                 Ok(()) => {
                     let entry_length = u32::from_le_bytes(length_bytes) as usize;
-                    
+
                     // 读取条目数据
                     let mut entry_data = vec![0u8; entry_length];
                     if reader.read_exact(&mut entry_data).is_ok() {
@@ -478,7 +488,10 @@ impl PersistentMailbox {
                         if let Ok(entry) = bincode::deserialize::<WalEntry>(&entry_data) {
                             last_offset = entry.offset;
                         } else {
-                            warn!("Corrupted WAL entry found, stopping at offset: {}", last_offset);
+                            warn!(
+                                "Corrupted WAL entry found, stopping at offset: {}",
+                                last_offset
+                            );
                             break;
                         }
                     } else {
@@ -534,7 +547,7 @@ impl PersistentMailbox {
             match reader.read_exact(&mut length_bytes) {
                 Ok(()) => {
                     let entry_length = u32::from_le_bytes(length_bytes) as usize;
-                    
+
                     // 读取条目数据
                     let mut entry_data = vec![0u8; entry_length];
                     if reader.read_exact(&mut entry_data).is_ok() {
@@ -544,10 +557,13 @@ impl PersistentMailbox {
                                 // 验证校验和
                                 let expected_checksum = Self::calculate_checksum(&entry.message);
                                 if entry.checksum != expected_checksum {
-                                    warn!("Checksum mismatch for entry at offset {}, skipping", entry.offset);
+                                    warn!(
+                                        "Checksum mismatch for entry at offset {}, skipping",
+                                        entry.offset
+                                    );
                                     continue;
                                 }
-                                
+
                                 // 只重放大于起始偏移量的条目
                                 if entry.offset > start_offset {
                                     replayed_entries.push(entry);
@@ -570,7 +586,11 @@ impl PersistentMailbox {
             }
         }
 
-        info!("Replayed {} entries from offset {}", replayed_entries.len(), start_offset);
+        info!(
+            "Replayed {} entries from offset {}",
+            replayed_entries.len(),
+            start_offset
+        );
         Ok(replayed_entries)
     }
 
@@ -603,14 +623,17 @@ impl PersistentMailbox {
             match reader.read_exact(&mut length_bytes) {
                 Ok(()) => {
                     let entry_length = u32::from_le_bytes(length_bytes) as usize;
-                    
+
                     // 检查条目长度是否合理 (防止损坏导致的巨大值)
                     if entry_length > self.config.max_wal_size as usize {
-                        warn!("Suspicious entry length detected: {}, stopping validation", entry_length);
+                        warn!(
+                            "Suspicious entry length detected: {}, stopping validation",
+                            entry_length
+                        );
                         corruption_found = true;
                         break;
                     }
-                    
+
                     let mut entry_data = vec![0u8; entry_length];
                     if reader.read_exact(&mut entry_data).is_ok() {
                         match bincode::deserialize::<WalEntry>(&entry_data) {
@@ -629,16 +652,25 @@ impl PersistentMailbox {
         }
 
         if corruption_found {
-            warn!("WAL integrity check found {} entries with some corruption detected", entry_count);
+            warn!(
+                "WAL integrity check found {} entries with some corruption detected",
+                entry_count
+            );
         } else {
-            info!("WAL integrity check passed: {} entries verified", entry_count);
+            info!(
+                "WAL integrity check passed: {} entries verified",
+                entry_count
+            );
         }
 
         Ok(())
     }
 
     /// 验证重放消息的完整性和顺序
-    async fn validate_replayed_messages(&self, messages: &[WalEntry]) -> ActorResult<Vec<WalEntry>> {
+    async fn validate_replayed_messages(
+        &self,
+        messages: &[WalEntry],
+    ) -> ActorResult<Vec<WalEntry>> {
         debug!("Validating {} replayed messages", messages.len());
 
         let mut valid_messages = Vec::new();
@@ -647,21 +679,29 @@ impl PersistentMailbox {
         for entry in messages {
             // 检查偏移量顺序
             if entry.offset <= last_offset {
-                warn!("Out-of-order entry found: offset {} after {}, skipping", 
-                      entry.offset, last_offset);
+                warn!(
+                    "Out-of-order entry found: offset {} after {}, skipping",
+                    entry.offset, last_offset
+                );
                 continue;
             }
 
             // 验证校验和
             let expected_checksum = Self::calculate_checksum(&entry.message);
             if entry.checksum != expected_checksum {
-                warn!("Checksum validation failed for entry at offset {}, skipping", entry.offset);
+                warn!(
+                    "Checksum validation failed for entry at offset {}, skipping",
+                    entry.offset
+                );
                 continue;
             }
 
             // 检查时间戳合理性
             if entry.timestamp == 0 {
-                warn!("Invalid timestamp for entry at offset {}, skipping", entry.offset);
+                warn!(
+                    "Invalid timestamp for entry at offset {}, skipping",
+                    entry.offset
+                );
                 continue;
             }
 
@@ -669,8 +709,11 @@ impl PersistentMailbox {
             last_offset = entry.offset;
         }
 
-        info!("Message validation completed: {}/{} messages are valid", 
-              valid_messages.len(), messages.len());
+        info!(
+            "Message validation completed: {}/{} messages are valid",
+            valid_messages.len(),
+            messages.len()
+        );
 
         Ok(valid_messages)
     }

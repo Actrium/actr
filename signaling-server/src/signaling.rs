@@ -11,21 +11,21 @@ pub enum SignalingMessage {
         #[serde(rename = "actorId")]
         actor_id: ActorId,
     },
-    
+
     /// WebRTC Offer
     Offer {
         target: ActorId,
         source: ActorId,
         sdp: String,
     },
-    
+
     /// WebRTC Answer
     Answer {
         target: ActorId,
         source: ActorId,
         sdp: String,
     },
-    
+
     /// ICE Candidate
     IceCandidate {
         target: ActorId,
@@ -34,7 +34,7 @@ pub enum SignalingMessage {
         sdp_mid: Option<String>,
         sdp_mline_index: Option<u16>,
     },
-    
+
     /// Actor 消息路由
     ActorMessage {
         target: ActorId,
@@ -42,19 +42,19 @@ pub enum SignalingMessage {
         payload: String,
         message_type: String,
     },
-    
+
     /// 连接状态通知
     ConnectionStatus {
         actor_id: ActorId,
         status: ConnectionStatus,
     },
-    
+
     /// 错误消息
     Error {
         code: u32,
         message: String,
     },
-    
+
     /// 心跳消息
     Ping,
     Pong,
@@ -75,7 +75,7 @@ impl SignalingMessage {
         match self {
             SignalingMessage::Register { .. } => "register",
             SignalingMessage::Offer { .. } => "offer",
-            SignalingMessage::Answer { .. } => "answer", 
+            SignalingMessage::Answer { .. } => "answer",
             SignalingMessage::IceCandidate { .. } => "ice-candidate",
             SignalingMessage::ActorMessage { .. } => "actor-message",
             SignalingMessage::ConnectionStatus { .. } => "connection-status",
@@ -89,10 +89,10 @@ impl SignalingMessage {
     #[allow(dead_code)]
     pub fn target_actor(&self) -> Option<&ActorId> {
         match self {
-            SignalingMessage::Offer { target, .. } |
-            SignalingMessage::Answer { target, .. } |
-            SignalingMessage::IceCandidate { target, .. } |
-            SignalingMessage::ActorMessage { target, .. } => Some(target),
+            SignalingMessage::Offer { target, .. }
+            | SignalingMessage::Answer { target, .. }
+            | SignalingMessage::IceCandidate { target, .. }
+            | SignalingMessage::ActorMessage { target, .. } => Some(target),
             _ => None,
         }
     }
@@ -101,12 +101,12 @@ impl SignalingMessage {
     #[allow(dead_code)]
     pub fn source_actor(&self) -> Option<&ActorId> {
         match self {
-            SignalingMessage::Offer { source, .. } |
-            SignalingMessage::Answer { source, .. } |
-            SignalingMessage::IceCandidate { source, .. } |
-            SignalingMessage::ActorMessage { source, .. } => Some(source),
-            SignalingMessage::Register { actor_id } |
-            SignalingMessage::ConnectionStatus { actor_id, .. } => Some(actor_id),
+            SignalingMessage::Offer { source, .. }
+            | SignalingMessage::Answer { source, .. }
+            | SignalingMessage::IceCandidate { source, .. }
+            | SignalingMessage::ActorMessage { source, .. } => Some(source),
+            SignalingMessage::Register { actor_id }
+            | SignalingMessage::ConnectionStatus { actor_id, .. } => Some(actor_id),
             _ => None,
         }
     }

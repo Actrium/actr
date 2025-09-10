@@ -101,7 +101,8 @@ fn generate_service_code(
     let trait_code = trait_generator.generate(&service.method)?;
 
     // 生成 ActorAdapter/ClientManager based on file role
-    let adapter_generator = ActorAdapterGenerator::new(package_name, service_name, file_role.clone());
+    let adapter_generator =
+        ActorAdapterGenerator::new(package_name, service_name, file_role.clone());
     let adapter_code = adapter_generator.generate(&service.method)?;
 
     // 组合代码并去重imports
@@ -117,13 +118,17 @@ fn generate_service_code(
     // Generate appropriate file name based on role
     let file_suffix = match file_role {
         FileRole::LocalService => "_service",
-        FileRole::RemoteClient => "_client", 
+        FileRole::RemoteClient => "_client",
         FileRole::Mixed => "_actor",
         FileRole::MessageTypes => "_types",
     };
 
     Ok(File {
-        name: Some(format!("{}{}.rs", service_name.to_snake_case(), file_suffix)),
+        name: Some(format!(
+            "{}{}.rs",
+            service_name.to_snake_case(),
+            file_suffix
+        )),
         content: Some(combined_code),
         insertion_point: None,
         generated_code_info: None,
@@ -135,7 +140,7 @@ fn remove_duplicate_imports(code: &str) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut seen_imports = HashSet::new();
     let mut result_lines = Vec::new();
-    
+
     for line in lines {
         let trimmed = line.trim();
         if trimmed.starts_with("use ") && trimmed.ends_with(";") {
@@ -146,6 +151,6 @@ fn remove_duplicate_imports(code: &str) -> String {
             result_lines.push(line.to_string());
         }
     }
-    
+
     result_lines.join("\n")
 }

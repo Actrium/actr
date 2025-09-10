@@ -75,8 +75,9 @@ impl ActrConfig {
 
     /// Save configuration to a file
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| ActrConfigError::ValidationError(format!("Failed to serialize config: {}", e)))?;
+        let content = toml::to_string_pretty(self).map_err(|e| {
+            ActrConfigError::ValidationError(format!("Failed to serialize config: {}", e))
+        })?;
         std::fs::write(path, content)?;
         Ok(())
     }
@@ -137,9 +138,14 @@ impl PackageConfig {
         }
 
         // Validate package name format (basic validation)
-        if !self.name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(ActrConfigError::ValidationError(
-                "Package name can only contain alphanumeric characters, hyphens, and underscores".to_string(),
+                "Package name can only contain alphanumeric characters, hyphens, and underscores"
+                    .to_string(),
             ));
         }
 
@@ -171,7 +177,11 @@ user_service = { git = "https://github.com/org/protos.git", path = "user.proto",
         let config = ActrConfig::from_str(toml_content).unwrap();
         assert_eq!(config.package.name, "my-actor");
         assert_eq!(config.package.version, "0.1.0");
-        assert!(config.dependencies.protos.dependencies.contains_key("user_service"));
+        assert!(config
+            .dependencies
+            .protos
+            .dependencies
+            .contains_key("user_service"));
         assert!(config.routing.rules.contains_key("user.v1.GetUserRequest"));
     }
 

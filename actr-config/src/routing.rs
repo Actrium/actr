@@ -171,8 +171,14 @@ mod tests {
     #[test]
     fn test_routing_config() {
         let mut config = RoutingConfig::new();
-        config.add_rule("user.v1.GetUserRequest", RoutingRule::call("user.v1.UserService"));
-        config.add_rule("email.v1.SendEmailRequest", RoutingRule::tell("email.v1.EmailService"));
+        config.add_rule(
+            "user.v1.GetUserRequest",
+            RoutingRule::call("user.v1.UserService"),
+        );
+        config.add_rule(
+            "email.v1.SendEmailRequest",
+            RoutingRule::tell("email.v1.EmailService"),
+        );
 
         assert!(config.validate().is_ok());
         assert!(config.get_rule("user.v1.GetUserRequest").is_some());

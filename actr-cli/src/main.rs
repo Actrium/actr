@@ -1,7 +1,7 @@
 //! # actr-cli
-//! 
+//!
 //! Command line tool for Actor-RTC framework projects.
-//! 
+//!
 //! This tool provides commands for initializing, building, and running Actor-RTC projects.
 
 use anyhow::Result;
@@ -72,8 +72,7 @@ fn init_logging(verbose: bool, quiet: bool) -> Result<()> {
         "info"
     };
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(filter));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter));
 
     fmt()
         .with_env_filter(env_filter)

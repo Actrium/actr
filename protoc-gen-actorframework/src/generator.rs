@@ -111,9 +111,7 @@ impl ActorTraitGenerator {
         match self.file_role {
             FileRole::LocalService => self.generate_local_service_trait(methods),
             FileRole::RemoteClient => self.generate_remote_client_proxy(methods),
-            FileRole::Mixed => {
-                self.generate_mixed_file(methods)
-            }
+            FileRole::Mixed => self.generate_mixed_file(methods),
             FileRole::MessageTypes => {
                 // For message-only files, generate minimal code
                 Ok("// Message types only - no services defined".to_string())
@@ -124,18 +122,19 @@ impl ActorTraitGenerator {
     fn generate_mixed_file(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         // Generate imports only once at the top
         let imports = self.generate_imports(methods);
-        
+
         // Generate local trait content without imports
         let local_trait_content = self.generate_local_service_trait_content(methods)?;
-        
-        // Generate remote client content without imports  
+
+        // Generate remote client content without imports
         let remote_client_content = self.generate_remote_client_proxy_content(methods)?;
-        
+
         // Generate adapter content without imports using content-only methods
-        let adapter_generator = ActorAdapterGenerator::new(&self._package_name, &self.service_name, FileRole::Mixed);
+        let adapter_generator =
+            ActorAdapterGenerator::new(&self._package_name, &self.service_name, FileRole::Mixed);
         let adapter_content = adapter_generator.generate_local_service_adapter_content(methods)?;
         let manager_content = adapter_generator.generate_remote_client_manager_content(methods)?;
-        
+
         let generated = quote! {
             #(#imports)*
 
@@ -151,7 +150,10 @@ impl ActorTraitGenerator {
         Ok(generated.to_string())
     }
 
-    fn generate_local_service_trait_content(&self, methods: &[MethodDescriptorProto]) -> Result<proc_macro2::TokenStream> {
+    fn generate_local_service_trait_content(
+        &self,
+        methods: &[MethodDescriptorProto],
+    ) -> Result<proc_macro2::TokenStream> {
         let trait_name = format!("I{}", self.service_name);
         let trait_ident = Ident::new(&trait_name, Span::call_site());
 
@@ -235,7 +237,7 @@ impl ActorTraitGenerator {
     fn generate_local_service_trait(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let imports = self.generate_imports(methods);
         let trait_content = self.generate_local_service_trait_content(methods)?;
-        
+
         let generated = quote! {
             #(#imports)*
 
@@ -245,7 +247,10 @@ impl ActorTraitGenerator {
         Ok(generated.to_string())
     }
 
-    fn generate_remote_client_proxy_content(&self, methods: &[MethodDescriptorProto]) -> Result<proc_macro2::TokenStream> {
+    fn generate_remote_client_proxy_content(
+        &self,
+        methods: &[MethodDescriptorProto],
+    ) -> Result<proc_macro2::TokenStream> {
         let client_name = format!("{}Client", self.service_name);
         let client_ident = Ident::new(&client_name, Span::call_site());
 
@@ -319,7 +324,7 @@ impl ActorTraitGenerator {
     fn generate_remote_client_proxy(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let imports = self.generate_imports(methods);
         let client_content = self.generate_remote_client_proxy_content(methods)?;
-        
+
         let generated = quote! {
             #(#imports)*
 
@@ -396,7 +401,10 @@ impl ActorAdapterGenerator {
         }
     }
 
-    pub fn generate_local_service_adapter_content(&self, methods: &[MethodDescriptorProto]) -> Result<proc_macro2::TokenStream> {
+    pub fn generate_local_service_adapter_content(
+        &self,
+        methods: &[MethodDescriptorProto],
+    ) -> Result<proc_macro2::TokenStream> {
         let trait_name = format!("I{}", self.service_name);
         let adapter_name = format!("{}Adapter", self.service_name);
 
@@ -404,30 +412,33 @@ impl ActorAdapterGenerator {
         let adapter_ident = Ident::new(&adapter_name, Span::call_site());
 
         // Check if there are any ServerStream methods (which generate associated types)
-        let _has_associated_types = methods.iter().any(|method| {
-            StreamType::from_method(method) == StreamType::ServerStream
-        });
+        let _has_associated_types = methods
+            .iter()
+            .any(|method| StreamType::from_method(method) == StreamType::ServerStream);
 
         // Generate route creation for each method
         let mut route_creation_tokens = Vec::new();
-        
+
         for method in methods {
             let method_name = method.name();
             let method_ident = Ident::new(&method_name.to_snake_case(), Span::call_site());
-            
+
             let input_type = method.input_type().trim_start_matches('.');
             let input_ident = Ident::new(&input_type.split('.').last().unwrap(), Span::call_site());
-            
+
             let output_type = method.output_type().trim_start_matches('.');
-            let output_ident = Ident::new(&output_type.split('.').last().unwrap(), Span::call_site());
-            
-            let full_method_name = format!("{}.{}/{}", 
-                self._package_name.replace("_", "."), 
-                self.service_name, 
-                method_name);
-                
+            let output_ident =
+                Ident::new(&output_type.split('.').last().unwrap(), Span::call_site());
+
+            let full_method_name = format!(
+                "{}.{}/{}",
+                self._package_name.replace("_", "."),
+                self.service_name,
+                method_name
+            );
+
             let stream_type = StreamType::from_method(method);
-            
+
             match stream_type {
                 StreamType::Unary => {
                     route_creation_tokens.push(quote! {
@@ -526,8 +537,8 @@ impl ActorAdapterGenerator {
             }
 
             /// Blanket RouteProvider implementation for concrete types that implement the trait
-            impl<T> actor_rtc_framework::routing::RouteProvider<T> for #adapter_ident 
-            where 
+            impl<T> actor_rtc_framework::routing::RouteProvider<T> for #adapter_ident
+            where
                 T: #trait_ident + Send + Sync + 'static,
             {
                 fn get_routes(actor: std::sync::Arc<T>) -> Vec<actor_rtc_framework::routing::Route> {
@@ -540,25 +551,29 @@ impl ActorAdapterGenerator {
         Ok(content)
     }
 
-    pub fn generate_remote_client_manager_content(&self, methods: &[MethodDescriptorProto]) -> Result<proc_macro2::TokenStream> {
+    pub fn generate_remote_client_manager_content(
+        &self,
+        methods: &[MethodDescriptorProto],
+    ) -> Result<proc_macro2::TokenStream> {
         let manager_name = format!("{}ClientManager", self.service_name);
         let manager_ident = Ident::new(&manager_name, Span::call_site());
 
         // Generate method implementations for client manager
         let mut method_tokens = Vec::new();
-        
+
         for method in methods {
             let method_name = method.name();
             let method_ident = Ident::new(&method_name.to_snake_case(), Span::call_site());
-            
+
             let input_type = method.input_type().trim_start_matches('.');
             let input_ident = Ident::new(&input_type.split('.').last().unwrap(), Span::call_site());
-            
+
             let output_type = method.output_type().trim_start_matches('.');
-            let output_ident = Ident::new(&output_type.split('.').last().unwrap(), Span::call_site());
-            
+            let output_ident =
+                Ident::new(&output_type.split('.').last().unwrap(), Span::call_site());
+
             let stream_type = StreamType::from_method(method);
-            
+
             match stream_type {
                 StreamType::Unary => {
                     method_tokens.push(quote! {
@@ -669,9 +684,9 @@ impl ActorAdapterGenerator {
         let adapter_ident = Ident::new(&adapter_name, Span::call_site());
 
         // Check if there are any ServerStream methods (which generate associated types)
-        let has_associated_types = methods.iter().any(|method| {
-            StreamType::from_method(method) == StreamType::ServerStream
-        });
+        let has_associated_types = methods
+            .iter()
+            .any(|method| StreamType::from_method(method) == StreamType::ServerStream);
 
         // Generate route creation for each method
         let mut route_creation_tokens = Vec::new();
@@ -680,13 +695,18 @@ impl ActorAdapterGenerator {
             let method_name = method.name().to_snake_case();
             let method_ident = Ident::new(&method_name, Span::call_site());
             let stream_type = StreamType::from_method(method);
-            
+
             // Create the full method name for routing (e.g., "echo.EchoService/SendEcho")
-            let full_method_name = format!("{}.{}/{}", self._package_name, self.service_name, method.name());
+            let full_method_name = format!(
+                "{}.{}/{}",
+                self._package_name,
+                self.service_name,
+                method.name()
+            );
 
             let input_type = self.extract_message_type(method.input_type())?;
             let output_type = self.extract_message_type(method.output_type())?;
-            
+
             let input_ident = Ident::new(&input_type, Span::call_site());
             let output_ident = Ident::new(&output_type, Span::call_site());
 
@@ -775,9 +795,9 @@ impl ActorAdapterGenerator {
                 /// Auto-generated LocalActor adapter for #trait_ident
                 pub struct #adapter_ident;
 
-                impl<T> actor_rtc_framework::routing::RouteProvider<T> for #adapter_ident 
-                where 
-                    T: #trait_ident + Send + Sync + 'static 
+                impl<T> actor_rtc_framework::routing::RouteProvider<T> for #adapter_ident
+                where
+                    T: #trait_ident + Send + Sync + 'static
                 {
                     fn get_routes(actor: std::sync::Arc<T>) -> Vec<actor_rtc_framework::routing::Route> {
                         vec![
@@ -905,7 +925,6 @@ impl ActorAdapterGenerator {
 
         Ok(generated.to_string())
     }
-
 
     fn extract_message_type(&self, type_name: &str) -> Result<String> {
         // 移除包前缀，只保留类型名

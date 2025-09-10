@@ -119,7 +119,7 @@ impl Context {
     ///
     /// # 返回值
     /// 响应消息
-    /// 
+    ///
     /// # 说明
     /// 此方法使用 actr.toml 中的路由配置来确定目标服务
     pub async fn request<Req, Resp>(&self, request: Req) -> ActorResult<Resp>
@@ -528,11 +528,7 @@ impl ActorSystemHandle {
         Ok(())
     }
 
-    async fn route_request<Req, Resp>(
-        &self,
-        request: Req,
-        trace_id: &str,
-    ) -> ActorResult<Resp>
+    async fn route_request<Req, Resp>(&self, request: Req, trace_id: &str) -> ActorResult<Resp>
     where
         Req: prost::Message + Send + 'static,
         Resp: prost::Message + Default + Send + 'static,
@@ -579,11 +575,7 @@ impl ActorSystemHandle {
         }
     }
 
-    async fn route_notify<T>(
-        &self,
-        message: T,
-        trace_id: &str,
-    ) -> ActorResult<()>
+    async fn route_notify<T>(&self, message: T, trace_id: &str) -> ActorResult<()>
     where
         T: prost::Message + Send + 'static,
     {

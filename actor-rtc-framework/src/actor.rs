@@ -548,8 +548,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::routing::Route;
+    use async_trait::async_trait;
     use shared_protocols::actor::ActorTypeCode;
 
     #[derive(Default)]

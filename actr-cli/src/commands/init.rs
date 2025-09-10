@@ -43,7 +43,10 @@ impl Command for InitCommand {
                     project_path.display()
                 )));
             } else if self.directory_not_empty(&project_path)? {
-                warn!("Directory '{}' is not empty but doesn't appear to be an Actor-RTC project", project_path.display());
+                warn!(
+                    "Directory '{}' is not empty but doesn't appear to be an Actor-RTC project",
+                    project_path.display()
+                );
                 if !self.force {
                     return Err(ActrCliError::ProjectExists(
                         "Use --force to initialize in a non-empty directory".to_string(),
@@ -58,7 +61,7 @@ impl Command for InitCommand {
         // Generate the project from template
         let template = ProjectTemplate::load(&self.template)?;
         let context = TemplateContext::new(&self.name);
-        
+
         template.generate(&project_path, &context)?;
 
         // Create the actr.toml configuration file
@@ -78,10 +81,12 @@ impl Command for InitCommand {
 
 impl InitCommand {
     fn get_project_path(&self) -> Result<PathBuf> {
-        let base_path = self.path.as_ref()
+        let base_path = self
+            .path
+            .as_ref()
             .map(|p| p.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        
+
         Ok(base_path.join(&self.name))
     }
 
@@ -129,7 +134,10 @@ mod tests {
 
         let project_path = temp_dir.path().join(project_name);
         assert!(project_path.exists(), "Project directory should be created");
-        assert!(project_path.join("actr.toml").exists(), "actr.toml should be created");
+        assert!(
+            project_path.join("actr.toml").exists(),
+            "actr.toml should be created"
+        );
     }
 
     #[test]

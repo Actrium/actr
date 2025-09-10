@@ -1,7 +1,7 @@
 //! Command implementations for actr-cli
 
-pub mod init;
 pub mod build;
+pub mod init;
 pub mod run;
 
 use crate::error::Result;

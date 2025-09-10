@@ -327,7 +327,7 @@ impl InternalMessage {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-            
+
         Self {
             payload: message.encode_to_vec(),
             message_type: std::any::type_name::<T>().to_string(),

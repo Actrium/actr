@@ -1,13 +1,13 @@
 //! Echo Client Demo
-//! 
+//!
 //! 演示如何创建一个客户端 Actor 来调用 echo 服务
 
 use actor_rtc_framework::actor::ActorSystem;
 use actor_rtc_framework::context::Context;
-use actor_rtc_framework::local_actor::LocalActor;
-use actor_rtc_framework::lifecycle::ILifecycle;
 use actor_rtc_framework::error::ActorError;
-use actor_rtc_framework::routing::{AttachableActor, RouteProvider, Route};
+use actor_rtc_framework::lifecycle::ILifecycle;
+use actor_rtc_framework::local_actor::LocalActor;
+use actor_rtc_framework::routing::{AttachableActor, Route, RouteProvider};
 use actor_rtc_framework::signaling::WebSocketSignaling;
 use async_trait::async_trait;
 use shared_protocols::actor::{ActorId, ActorType, ActorTypeCode};
@@ -40,7 +40,10 @@ impl EchoClientActor {
 
     /// 发送 echo 请求
     async fn send_echo_request(&self, counter: u32) -> Result<(), ActorError> {
-        info!("📤 Sending echo request #{} to Actor {}", counter, self.target_actor_id);
+        info!(
+            "📤 Sending echo request #{} to Actor {}",
+            counter, self.target_actor_id
+        );
 
         let request = EchoRequest {
             message: format!("Hello from Echo Client! (Request #{})", counter),
@@ -89,13 +92,13 @@ impl LocalActor for EchoClientActor {
 
     async fn start(&self, _ctx: Arc<Context>) -> Result<(), ActorError> {
         info!("🚀 EchoClientActor started");
-        
+
         // 直接在这里发送请求，不使用 spawn
         // 等待系统稳定
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        
+
         info!("🎯 Starting echo test sequence...");
-        
+
         // 发送几个echo请求进行测试
         for i in 1..=3 {
             if let Err(e) = self.send_echo_request(i).await {
@@ -103,7 +106,7 @@ impl LocalActor for EchoClientActor {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        
+
         info!("✅ Echo client demo completed!");
         Ok(())
     }
@@ -113,7 +116,11 @@ impl LocalActor for EchoClientActor {
         Ok(())
     }
 
-    async fn handle_state_message(&self, _ctx: Arc<Context>, message: Vec<u8>) -> Result<(), ActorError> {
+    async fn handle_state_message(
+        &self,
+        _ctx: Arc<Context>,
+        message: Vec<u8>,
+    ) -> Result<(), ActorError> {
         let msg_str = String::from_utf8_lossy(&message);
         info!("📨 Received state message: {}", msg_str);
         Ok(())
@@ -133,15 +140,15 @@ impl LocalActor for EchoClientActor {
 impl ILifecycle for EchoClientActor {
     async fn on_start(&self, ctx: Arc<Context>) {
         ctx.log_info("🚀 EchoClientActor lifecycle started");
-        
+
         // 启动 echo 测试序列
         let self_clone = Self::new(self.actor_id.clone(), self.target_actor_id);
         tokio::spawn(async move {
             // 等待系统稳定
             tokio::time::sleep(Duration::from_millis(1000)).await;
-            
+
             info!("🎯 Starting echo test sequence...");
-            
+
             // 发送几个echo请求进行测试
             for i in 1..=3 {
                 if let Err(e) = self_clone.send_echo_request(i).await {
@@ -149,7 +156,7 @@ impl ILifecycle for EchoClientActor {
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            
+
             info!("✅ Echo client demo completed!");
         });
     }
@@ -185,8 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // 获取配置
-    let signaling_url = env::var("SIGNALING_URL")
-        .unwrap_or_else(|_| "ws://localhost:8081".to_string());
+    let signaling_url =
+        env::var("SIGNALING_URL").unwrap_or_else(|_| "ws://localhost:8081".to_string());
     let actor_id_num: u64 = env::var("ACTOR_ID")
         .unwrap_or_else(|_| "2001".to_string())
         .parse()

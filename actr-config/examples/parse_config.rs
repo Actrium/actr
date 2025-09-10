@@ -11,10 +11,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "../actr.toml".to_string());
 
     println!("🔧 Loading configuration from: {}", config_path);
-    
+
     // Load and parse the configuration
     let config = ActrConfig::from_file(&config_path)?;
-    
+
     println!("\n📦 Package Information:");
     println!("  Name: {}", config.package.name);
     println!("  Version: {}", config.package.version);
@@ -36,7 +36,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (name, dep) in &config.dependencies.protos.dependencies {
             println!("  {}: {}", name, dep.description());
             match dep {
-                ProtoDependency::Git { git, path, tag, branch, rev } => {
+                ProtoDependency::Git {
+                    git,
+                    path,
+                    tag,
+                    branch,
+                    rev,
+                } => {
                     println!("    Repository: {}", git);
                     println!("    Proto path: {}", path);
                     if let Some(tag) = tag {

@@ -173,11 +173,11 @@ mod tests {
     fn test_ensure_dir_exists() {
         let temp_dir = TempDir::new().unwrap();
         let test_path = temp_dir.path().join("test/nested/dir");
-        
+
         assert!(!test_path.exists());
         ensure_dir_exists(&test_path).unwrap();
         assert!(test_path.exists());
-        
+
         // Should not fail if directory already exists
         ensure_dir_exists(&test_path).unwrap();
     }
@@ -187,7 +187,7 @@ mod tests {
         // Test a simple command that should succeed
         let result = execute_command("echo", &["hello"], None).await;
         assert!(result.is_ok());
-        
+
         let output = result.unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("hello"));

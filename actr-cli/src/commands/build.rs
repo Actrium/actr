@@ -3,8 +3,8 @@
 use crate::commands::Command;
 use crate::error::{ActrCliError, Result};
 use crate::utils::{
-    check_required_tools, execute_command_streaming, get_target_dir,
-    is_actr_project, warn_if_not_actr_project,
+    check_required_tools, execute_command_streaming, get_target_dir, is_actr_project,
+    warn_if_not_actr_project,
 };
 use actr_config::{ActrConfig, ProtoDependency};
 use async_trait::async_trait;
@@ -61,7 +61,8 @@ impl Command for BuildCommand {
         // Resolve proto dependencies if we have a config
         if let Some(ref config) = config {
             if !self.skip_proto_deps {
-                self.resolve_proto_dependencies(config, &project_root).await?;
+                self.resolve_proto_dependencies(config, &project_root)
+                    .await?;
             }
         }
 
@@ -115,7 +116,9 @@ impl BuildCommand {
 
         for (name, dependency) in &config.dependencies.protos.dependencies {
             info!("Resolving dependency: {}", name);
-            let proto_path = self.resolve_single_dependency(name, dependency, temp_dir.path()).await?;
+            let proto_path = self
+                .resolve_single_dependency(name, dependency, temp_dir.path())
+                .await?;
             resolved_protos.insert(name.clone(), proto_path);
         }
 
@@ -126,7 +129,11 @@ impl BuildCommand {
         for (name, source_path) in resolved_protos {
             let dest_path = protos_dir.join(format!("{}.proto", name));
             std::fs::copy(&source_path, &dest_path)?;
-            debug!("Copied {} to {}", source_path.display(), dest_path.display());
+            debug!(
+                "Copied {} to {}",
+                source_path.display(),
+                dest_path.display()
+            );
         }
 
         info!("✅ Proto dependencies resolved");
@@ -140,15 +147,20 @@ impl BuildCommand {
         temp_dir: &Path,
     ) -> Result<PathBuf> {
         match dependency {
-            ProtoDependency::Git { git, path, tag, branch, rev } => {
-                self.resolve_git_dependency(name, git, path, tag, branch, rev, temp_dir).await
+            ProtoDependency::Git {
+                git,
+                path,
+                tag,
+                branch,
+                rev,
+            } => {
+                self.resolve_git_dependency(name, git, path, tag, branch, rev, temp_dir)
+                    .await
             }
             ProtoDependency::Http { url } => {
                 self.resolve_http_dependency(name, url, temp_dir).await
             }
-            ProtoDependency::Local { path } => {
-                Ok(PathBuf::from(path))
-            }
+            ProtoDependency::Local { path } => Ok(PathBuf::from(path)),
         }
     }
 
@@ -165,7 +177,7 @@ impl BuildCommand {
         debug!("Resolving git dependency: {} from {}", name, git_url);
 
         let repo_dir = temp_dir.join(format!("git_{}", name));
-        
+
         // Clone the repository
         let repo = git2::Repository::clone(git_url, &repo_dir)?;
 
@@ -179,7 +191,7 @@ impl BuildCommand {
         }
 
         let proto_file_path = repo_dir.join(proto_path);
-        
+
         if !proto_file_path.exists() {
             return Err(ActrCliError::ProtoDependency(format!(
                 "Proto file '{}' not found in git repository '{}'",
@@ -217,13 +229,14 @@ impl BuildCommand {
         if !response.status().is_success() {
             return Err(ActrCliError::ProtoDependency(format!(
                 "Failed to download proto from '{}': HTTP {}",
-                url, response.status()
+                url,
+                response.status()
             )));
         }
 
         let content = response.text().await?;
         let file_path = temp_dir.join(format!("{}.proto", name));
-        
+
         std::fs::write(&file_path, content)?;
         Ok(file_path)
     }
@@ -239,7 +252,7 @@ impl BuildCommand {
         let main_rs_content = self.create_main_rs_template(config)?;
         let src_dir = project_root.join("src");
         std::fs::create_dir_all(&src_dir)?;
-        
+
         let main_rs_path = src_dir.join("main.rs");
         std::fs::write(main_rs_path, main_rs_content)?;
 
@@ -343,7 +356,12 @@ async fn main() -> anyhow::Result<()> {{
 
         if !has_plugin {
             info!("🔧 Building protoc-gen-actorframework plugin first...");
-            execute_command_streaming("cargo", &["build", "--bin", "protoc-gen-actorframework"], Some(project_root)).await?;
+            execute_command_streaming(
+                "cargo",
+                &["build", "--bin", "protoc-gen-actorframework"],
+                Some(project_root),
+            )
+            .await?;
         }
 
         let shared_protocols_dir = project_root.join("shared-protocols/src");
@@ -356,13 +374,25 @@ async fn main() -> anyhow::Result<()> {{
 
             let protoc_args = vec![
                 "--proto_path=proto".to_string(),
-                format!("--plugin=protoc-gen-actorframework={}", plugin_path.display()),
+                format!(
+                    "--plugin=protoc-gen-actorframework={}",
+                    plugin_path.display()
+                ),
                 "--actorframework_out=shared-protocols/src".to_string(),
-                proto_file.file_name().unwrap().to_string_lossy().to_string(),
+                proto_file
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
             ];
 
             // Run protoc with our plugin
-            execute_command_streaming("protoc", &protoc_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(), Some(project_root)).await?;
+            execute_command_streaming(
+                "protoc",
+                &protoc_args.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                Some(project_root),
+            )
+            .await?;
         }
 
         info!("✅ Proto code generation completed");
@@ -373,7 +403,7 @@ async fn main() -> anyhow::Result<()> {{
         info!("🔧 Building Rust project");
 
         let mut args = vec!["build"];
-        
+
         if self.release {
             args.push("--release");
         }
@@ -426,7 +456,9 @@ mod tests {
             path: proto_file.to_string_lossy().to_string(),
         };
 
-        let result = cmd.resolve_single_dependency("test", &dependency, temp_dir.path()).await;
+        let result = cmd
+            .resolve_single_dependency("test", &dependency, temp_dir.path())
+            .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), proto_file);
     }

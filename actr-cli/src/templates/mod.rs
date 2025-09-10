@@ -93,7 +93,8 @@ anyhow = "1.0"
 
 [build-dependencies]
 tonic-build = "0.10"
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // src/lib.rs for auto-runner mode
@@ -154,7 +155,8 @@ impl ILifecycle for {{project_name_pascal}}Actor {
         true
     }
 }
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // proto/greeter.proto
@@ -178,7 +180,8 @@ message GreetResponse {
 service GreeterService {
     rpc Greet(GreetRequest) returns (GreetResponse);
 }
-"#.to_string(),
+"#
+            .to_string(),
         );
 
         // build.rs
@@ -285,7 +288,9 @@ fn to_pascal_case(s: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             }
         })
         .collect()

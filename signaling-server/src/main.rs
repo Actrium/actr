@@ -1,11 +1,11 @@
+use futures_util::{SinkExt, StreamExt};
 use shared_protocols::actor::{ActorId, ActorType};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -32,7 +32,7 @@ pub struct ClientConnection {
 impl SignalingServer {
     pub fn new() -> Self {
         let (broadcast_tx, _) = broadcast::channel(1000);
-        
+
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
             broadcast_tx,
@@ -47,7 +47,7 @@ impl SignalingServer {
         while let Ok((stream, addr)) = listener.accept().await {
             let clients = self.clients.clone();
             let broadcast_tx = self.broadcast_tx.clone();
-            
+
             tokio::spawn(async move {
                 if let Err(e) = handle_connection(stream, addr, clients, broadcast_tx).await {
                     error!("处理连接时发生错误: {}", e);
@@ -88,12 +88,12 @@ async fn handle_connection(
 
     // 分离读写流
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    
+
     // 处理客户端消息的任务
     let clients_for_receive = clients.clone();
     let broadcast_tx_for_receive = broadcast_tx.clone();
     let client_id_for_receive = client_id.clone();
-    
+
     let receive_task = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
             match msg {
@@ -103,7 +103,9 @@ async fn handle_connection(
                         &client_id_for_receive,
                         &clients_for_receive,
                         &broadcast_tx_for_receive,
-                    ).await {
+                    )
+                    .await
+                    {
                         error!("处理客户端消息错误: {}", e);
                         break;
                     }
@@ -119,7 +121,7 @@ async fn handle_connection(
                 _ => {}
             }
         }
-        
+
         // 清理客户端
         cleanup_client(&client_id_for_receive, &clients_for_receive).await;
     });
@@ -157,7 +159,7 @@ async fn handle_client_message(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 首先解析为 JSON 值来处理格式不匹配
     let json_value: serde_json::Value = serde_json::from_str(text)?;
-    
+
     // 检查消息类型
     if let Some(message_type) = json_value.get("messageType").and_then(|v| v.as_str()) {
         match message_type {
@@ -165,12 +167,15 @@ async fn handle_client_message(
                 // 手动解析注册消息
                 if let Some(actor_id_json) = json_value.get("actorId") {
                     let actor_id = parse_actor_id_from_json(actor_id_json)?;
-                    
+
                     // 处理注册逻辑
                     let mut clients_guard = clients.write().await;
                     if let Some(client) = clients_guard.get_mut(client_id) {
                         client.actor_id = Some(actor_id.clone());
-                        info!("📝 客户端 {} 注册为 Actor {}", client_id, actor_id.serial_number);
+                        info!(
+                            "📝 客户端 {} 注册为 Actor {}",
+                            client_id, actor_id.serial_number
+                        );
                     }
                 }
             }
@@ -178,9 +183,9 @@ async fn handle_client_message(
                 // 对于其他消息类型，尝试标准反序列化
                 let msg: SignalingMessage = serde_json::from_str(text)?;
                 match &msg {
-                    SignalingMessage::Offer { target, .. } |
-                    SignalingMessage::Answer { target, .. } |
-                    SignalingMessage::IceCandidate { target, .. } => {
+                    SignalingMessage::Offer { target, .. }
+                    | SignalingMessage::Answer { target, .. }
+                    | SignalingMessage::IceCandidate { target, .. } => {
                         route_message_to_target(&msg, target, clients).await?;
                     }
                     _ => {
@@ -195,29 +200,32 @@ async fn handle_client_message(
 }
 
 /// 从 JSON 解析 ActorId（处理格式不匹配）
-fn parse_actor_id_from_json(json: &serde_json::Value) -> Result<ActorId, Box<dyn std::error::Error>> {
-    let serial_number = json.get("serialNumber")
+fn parse_actor_id_from_json(
+    json: &serde_json::Value,
+) -> Result<ActorId, Box<dyn std::error::Error>> {
+    let serial_number = json
+        .get("serialNumber")
         .and_then(|v| v.as_str())
         .ok_or("Missing serialNumber")?
         .parse::<u64>()?;
-    
+
     let actor_type = if let Some(type_json) = json.get("type") {
         Some(ActorType {
-            code: type_json.get("code")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0) as i32,
-            name: type_json.get("name")
+            code: type_json.get("code").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+            name: type_json
+                .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            manufacturer: type_json.get("manufacturer")
+            manufacturer: type_json
+                .get("manufacturer")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         })
     } else {
         None
     };
-    
+
     Ok(ActorId {
         serial_number,
         r#type: actor_type,
@@ -231,17 +239,21 @@ async fn route_message_to_target(
     clients: &Arc<RwLock<HashMap<String, ClientConnection>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let clients_guard = clients.read().await;
-    
+
     // 查找目标 Actor 的客户端连接
-    let target_client = clients_guard
-        .values()
-        .find(|client| {
-            client.actor_id.as_ref()
-                .map_or(false, |id| id.serial_number == target.serial_number)
-        });
+    let target_client = clients_guard.values().find(|client| {
+        client
+            .actor_id
+            .as_ref()
+            .map_or(false, |id| id.serial_number == target.serial_number)
+    });
 
     if let Some(_target_client) = target_client {
-        info!("📤 路由消息到 Actor {}: {:?}", target.serial_number, msg.message_type());
+        info!(
+            "📤 路由消息到 Actor {}: {:?}",
+            target.serial_number,
+            msg.message_type()
+        );
         // 这里需要直接发送给特定客户端，暂时记录日志
         // 在实际实现中，我们需要维护每个客户端的发送通道
     } else {
@@ -252,10 +264,7 @@ async fn route_message_to_target(
 }
 
 /// 清理客户端连接
-async fn cleanup_client(
-    client_id: &str,
-    clients: &Arc<RwLock<HashMap<String, ClientConnection>>>,
-) {
+async fn cleanup_client(client_id: &str, clients: &Arc<RwLock<HashMap<String, ClientConnection>>>) {
     let mut clients_guard = clients.write().await;
     if let Some(client) = clients_guard.remove(client_id) {
         if let Some(actor_id) = client.actor_id {
@@ -270,13 +279,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
 
     let server = SignalingServer::new();
     let addr = std::env::var("SIGNALING_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
-    
+
     server.start(&addr).await?;
     Ok(())
 }

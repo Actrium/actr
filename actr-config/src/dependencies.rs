@@ -57,7 +57,13 @@ impl ProtoDependency {
     /// Validate the dependency configuration
     pub fn validate(&self) -> Result<()> {
         match self {
-            ProtoDependency::Git { git, path, tag, branch, rev } => {
+            ProtoDependency::Git {
+                git,
+                path,
+                tag,
+                branch,
+                rev,
+            } => {
                 // Validate git URL
                 if git.is_empty() {
                     return Err(ActrConfigError::InvalidDependency(
@@ -105,8 +111,15 @@ impl ProtoDependency {
     /// Get a human-readable description of this dependency
     pub fn description(&self) -> String {
         match self {
-            ProtoDependency::Git { git, tag, branch, rev, .. } => {
-                let version = tag.as_ref()
+            ProtoDependency::Git {
+                git,
+                tag,
+                branch,
+                rev,
+                ..
+            } => {
+                let version = tag
+                    .as_ref()
                     .map(|t| format!("@{}", t))
                     .or_else(|| branch.as_ref().map(|b| format!("#{}", b)))
                     .or_else(|| rev.as_ref().map(|r| format!(":{}", &r[..8])))
