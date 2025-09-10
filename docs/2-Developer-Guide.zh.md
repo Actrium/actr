@@ -127,9 +127,92 @@ graph TB
 *   启动时 (⑧, ⑨)，`ActorSystem` 使用生成的 `适配器` 来了解你的 Actor 的能力，并填充其内部的**路由表**。
 *   运行时 (⑩-⑯)，`ActorSystem` 的**输入处理器**会对所有网络流量进行分诊，将**状态类消息**交给**通用调度器**处理，将**流式数据**交给**快车道**处理，最终都将调用到你实现的 Actor 方法上。
 
-## **2. 快速入门：构建一个 WebRTC 回声服务**
+## **2. 快速入门：使用自动运行器模式**
+
+> [!TIP]
+> **推荐用于快速开发**
+> 
+> 此模式是上手框架最快的方式。您只需关注业务逻辑，由 `actr-cli` 工具自动处理项目构建和程序启动的样板代码。此模式下，您**不应**创建 `src/main.rs` 文件。
+> 
+> 关于此模式的详细工作原理，请参阅 **[《2.4 项目清单 (actr.toml) 与命令行工具 (actr-cli)》](./2.4-Project-Manifest-and-CLI.zh.md)**。
 
 本节将指导你完成一个完整的、可通过 WebRTC 数据通道进行回声测试的 Actor 服务。
+
+### **2.1. 环境准备**
+
+*   **Rust 工具链**: `rustup toolchain install stable`
+*   **`protoc` 编译器**: 
+    *   **Ubuntu/Debian**: `sudo apt update && sudo apt install protobuf-compiler`
+    *   **macOS (Homebrew)**: `brew install protobuf`
+*   **本框架的命令行工具**:
+    `# cargo install actr-cli` (功能规划中)
+
+### **2.2. 项目搭建**
+
+#### **Step 1: 创建项目与配置 `actr.toml`**
+
+```bash
+# 使用 cli 工具初始化项目骨架
+actr-cli init webrtc-echo-actor
+cd webrtc-echo-actor
+```
+
+这会创建一个包含 `actr.toml` 和 `echo.proto` 示例的项目。
+
+#### **Step 2: 实现 Actor 业务逻辑 (`src/lib.rs`)**
+
+在自动运行器模式下，你的所有代码都在库文件 `src/lib.rs` 中。
+
+```rust
+// src/lib.rs
+
+// --- 引入生成的代码 ---
+pub mod echo { tonic::include_proto!("echo"); }
+// 这是我们插件生成的适配器和 trait
+include!(concat!(env!("OUT_DIR"), "/echo_actor.rs"));
+
+// --- 业务逻辑与启动 ---
+use echo::{EchoRequest, EchoResponse};
+use echo_actor::IEchoService;
+use actor_framework::Context;
+use async_trait::async_trait;
+use std::sync::Arc;
+
+// 1. 定义 Actor 状态
+#[derive(Default)]
+struct MyEchoActor;
+
+// 2. 为 Actor 实现业务 trait
+#[async_trait]
+impl IEchoService for MyEchoActor {
+    async fn send_echo(&self, request: EchoRequest, _context: Arc<Context>) -> Result<EchoResponse, ActorError> {
+        println!("收到消息: '{}'", request.message);
+        let reply = format!("回声: {}", request.message);
+        Ok(EchoResponse { reply })
+    }
+}
+
+// 3. 实现 AttachableActor trait，启用自动适配器推断
+impl AttachableActor for MyEchoActor {
+    type Adapter = EchoServiceAdapter;
+}
+```
+
+#### **Step 3: 构建与运行**
+
+```bash
+# cli 工具会自动处理代码生成和编译
+actr-cli build
+
+# 运行编译好的 Actor
+actr-cli run
+```
+
+## **3. 高级设置：使用库模式（自定义 Main）**
+
+当您需要将 `ActorSystem` **嵌入到一个已有的应用中**，或者当“自动运行器模式”无法满足您对配置、初始化等方面的精细控制需求时，您就应该选择“库模式”。此模式下，您需要亲手编写 `src/main.rs` 文件来组装和启动应用，从而获得最大的灵活性。
+
+以下是手动设置一个回声服务的完整步骤：
 
 ### **2.1. 环境准备**
 
@@ -293,8 +376,9 @@ include!(concat!(env!("OUT_DIR"), "/echo_actor.rs"));
 
 // --- 业务逻辑与启动 ---
 use echo::{EchoRequest, EchoResponse};
-use echo_actor::IEchoService;
-use actor_framework::{Context, ActorSystem};
+use echo_actor::{IEchoService, EchoServiceAdapter};  // 添加生成的适配器
+use actor_framework::{Context, ActorSystem, ActorError};
+use actor_framework::routing::AttachableActor;
 use async_trait::async_trait;
 use std::sync::Arc;
 use signaling::WebSocketSignaling;
@@ -306,18 +390,23 @@ struct MyEchoActor;
 // 2. 为 Actor 实现业务 trait
 #[async_trait]
 impl IEchoService for MyEchoActor {
-    async fn send_echo(&self, request: EchoRequest, _context: Arc<Context>) -> Result<EchoResponse, tonic::Status> {
+    async fn send_echo(&self, request: EchoRequest, _context: Arc<Context>) -> Result<EchoResponse, ActorError> {
         println!("收到消息: '{}'", request.message);
         let reply = format!("回声: {}", request.message);
         Ok(EchoResponse { reply })
     }
 }
 
+// 3. 实现 AttachableActor trait，启用自动适配器推断
+impl AttachableActor for MyEchoActor {
+    type Adapter = EchoServiceAdapter;
+}
+
 // 3. 程序入口
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. 实例化 Actor（注意：每个进程只能有一个Actor）
-    let actor = Arc::new(MyEchoActor::default());
+    let actor = MyEchoActor::default();
     
     // 5. 实例化信令适配器
     let signaling_adapter = WebSocketSignaling::new("wss://your-signaling-server.com/ws");
@@ -326,9 +415,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. 组装并启动 ActorSystem
     // 注意：attach() 返回一个新的类型状态，防止重复attach
-    let system = ActorSystem::new()
+    let system = ActorSystem::new(actor_id)
         .with_signaling(Box::new(signaling_adapter))
-        .attach(actor);  // 一次性操作：将本地唯一Actor附加到系统
+        .attach(actor);  // 简化的attach API，自动推断适配器类型
     
     // 只有attached后的system才能start
     system.start().await?;
@@ -339,9 +428,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## **3. 核心 API 与最佳实践**
 
-*   **`ActorSystem`**: 每个进程的Actor运行时。使用 `.with_signaling()` 配置信令，使用 `.attach()` 将本地唯一的 Actor 附加到系统（只能调用一次），最后用 `.start()` 启动。
+*   **`ActorSystem`**: 每个进程的Actor运行时。使用 `.with_signaling()` 配置信令，使用 `.attach(actor)` 将本地唯一的 Actor 附加到系统（只能调用一次），最后用 `.start()` 启动。简化的 attach API 通过 `AttachableActor` trait 自动推断适配器类型。
+*   **`RouteProvider` Trait**: 连接业务逻辑与 ActorSystem 运行时的桥梁。由代码生成器自动为每个 `.proto` 服务生成对应的适配器（如 `EchoServiceAdapter`），无需手动实现。
 *   **`Signaling` Trait**: 框架与外界信令服务器沟通的桥梁，是你唯一需要为不同信令协议编写的适配层。
 *   **`Context` 对象**: Actor 在运行时与系统交互的句柄。用它来获取调用者信息 (`get_caller_id`)、记录日志 (`logger`)、安排延迟任务 (`schedule_tell`)。
 *   **状态管理**: 将 Actor 的状态封装在 `struct` 中。对于需要在异步方法间共享的可变状态，请使用 `tokio::sync::Mutex`。
-*   **错误处理**: 在你的 `trait` 方法实现中，返回 `Err(tonic::Status::...)` 来向对等端传递结构化的业务错误。
+*   **错误处理**: 在你的 `trait` 方法实现中，返回 `Err(ActorError::...)` 来向对等端传递结构化的业务错误。可使用 `ActorError::Business` 传递业务逻辑错误。
 *   **测试**: 你的 `Actor` `struct` 可以被独立进行单元测试。只需模拟 `Request` 和 `Context`，然后断言其方法的返回值即可，无需任何网络组件。

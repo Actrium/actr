@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package actor;
+
+// Actor Identity (AID) 定义
+
+enum ActorTypeCode {
+  PREDEFINED     = 0;             // Predefined actor, typically system-level and independent of any user (e.g. built-in services)
+  ANONYMOUS      = 1;             // Anonymous actor, representing an unauthenticated or guest user
+  AUTHENTICATED  = 2;             // Authenticated actor, bound to a verified user identity
+}
+
+message ActorType {
+  ActorTypeCode code = 1;
+  optional string manufacturer = 2;
+  string name = 3;                // Actor identifier within the tenant scope; varies by type:
+                                  //   - PREDEFINED: typically a functional or system-defined name
+                                  //   - ANONYMOUS: may be a device fingerprint or session ID
+                                  //   - AUTHENTICATED: typically a user ID
+}
+
+message ActorId {
+  uint64 serial_number  = 1;      // Since the ActorIdBytes specification defines a length limit of 54 for this field,
+                                  // the actual length here should be based on that.
+  ActorType type        = 2;
+}
+
+message ActorIdBytes {            // the Bytes expression of ActorId
+  bytes value           = 1;
+}
+
+enum BitLayoutOfActorIdBytes {    // The bit layout of the ActorIdBytes type, which is the byte expression of ActorId
+  LEN_REST_UNSPECIFIED  = 0;
+  LEN_SERIAL_NUMBER     = 54;
+  LEN_TYPE_CODE         = 2;
+}
+
+message ActorIdStr {              // The general string representation of ActorId, which is formed by concatenating hex(serial_number), 
+                                  // type::code, type::manufacturer and type::name, with each separated by a colon.
+  string value = 1;
+}
+
+message AIdCredential {
+  bytes encrypted_token    = 1;   // Encrypted token associated with the actor
+  uint32 token_key_id      = 2;   // Key ID used for token encryption
+}
+
+message AIdAllocationRequest {
+  ActorType actor_type  = 1;
+  uint32 tenant_id      = 2;
+}
+
+message AIdAllocationResponse {
+  ActorIdStr actor_id      = 1;   // Allocated actor ID (unique identifier)
+  AIdCredential credential = 2;   // AId credential
+  bytes psk                = 3;   // Additional pre-shared key for secure communication
+  uint64 expr_time         = 4;   // Token expiration time (UTC timestamp)
+}
+
+message ErrorResponse {
+  uint32 code = 1;
+  string msg  = 2;
+}
+
+message AIdAllocationResult {
+  oneof result {
+    AIdAllocationResponse success = 1;
+    ErrorResponse error           = 2;
+  }
+}
+
+// AclRule 定义了一条访问控制规则，它基于 ActorType
+message AclRule {
+  ActorType source_type = 1;
+  ActorType target_type = 2;
+  enum Permission {
+    DENY = 0;
+    ALLOW = 1;
+  }
+  Permission permission = 3;
+}
+
+// Acl 是一组访问控制规则的集合
+message Acl {
+  repeated AclRule rules = 1;
+}

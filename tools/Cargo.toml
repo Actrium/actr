@@ -1,0 +1,38 @@
+[package]
+name = "actr-tools"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test-client"
+path = "src/test_client.rs"
+
+[[bin]]
+name = "signaling-test"
+path = "src/signaling_test.rs"
+
+[dependencies]
+# 本地协议定义
+shared-protocols = { path = "../shared-protocols" }
+
+# 网络和异步
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+
+# 序列化
+serde_json = { workspace = true }
+url = { workspace = true }
+
+# 工具
+uuid = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4.4", features = ["derive"] }
+
+# 日志
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# 测试
+# criterion = { workspace = true, optional = true } # 当前未使用
+colored = "2.0"

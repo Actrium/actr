@@ -1,0 +1,27 @@
+[package]
+name = "actr-config"
+version = "0.1.0"
+edition = "2021"
+description = "Configuration file parser and project manifest support for Actor-RTC framework"
+
+[dependencies]
+# Serialization and configuration parsing
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# File system operations
+relative-path = "1.9"
+
+# URL handling for proto dependencies
+url = { workspace = true }
+
+# Optional git support
+git2 = { version = "0.18", optional = true }
+
+[features]
+default = ["git-support"]
+git-support = ["git2"]

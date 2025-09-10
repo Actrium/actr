@@ -1,0 +1,30 @@
+[package]
+name = "protoc-gen-actorframework"
+version = "0.1.0"
+edition = "2021"
+description = "Protobuf compiler plugin for Actor-RTC framework code generation"
+license = "MIT"
+
+[[bin]]
+name = "protoc-gen-actorframework"
+path = "src/main.rs"
+
+[dependencies]
+# Protocol buffer support
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+# Code generation utilities
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+
+# Error handling
+# thiserror = { workspace = true } # 当前未使用
+anyhow = { workspace = true }
+
+# I/O utilities
+bytes = { workspace = true }
+
+# Utilities
+heck = { workspace = true }  # for case conversion (snake_case, PascalCase, etc.)
+async-trait = { workspace = true }

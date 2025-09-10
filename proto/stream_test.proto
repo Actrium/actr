@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package stream_test;
+
+message TestRequest {
+  string message = 1;
+}
+
+message TestResponse {
+  string reply = 1;
+}
+
+service StreamTestService {
+  // Unary method
+  rpc UnaryCall(TestRequest) returns (TestResponse);
+  
+  // Client streaming 
+  rpc ClientStream(stream TestRequest) returns (TestResponse);
+  
+  // Server streaming
+  rpc ServerStream(TestRequest) returns (stream TestResponse);
+  
+  // Bidirectional streaming
+  rpc BiDirectional(stream TestRequest) returns (stream TestResponse);
+}

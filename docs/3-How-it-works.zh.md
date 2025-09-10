@@ -21,18 +21,18 @@
     *   `ActorSystem`: 顶层协调器，拥有所有核心组件，负责应用的完整生命周期管理。
     *   `Signaling Adapter`: 配套的、与信令服务器通信的桥梁，由开发者根据具体信令协议提供。
     *   `Input Handler`: 原始网络流量的第一个接触点，执行高效的流量分诊。
-    *   `Mailbox`: 状态路径的入口，一个带优先级的消息邮箱。它负责接收并暂存所有由 `Input Handler` 分诊后的控制流消息。其内部由两个队列（高优、普通）构成，以保证关键信令的优先处理。
+    *   `Mailbox`: 一个逻辑概念，代表 Actor 的持久化事务入口。其物理实现基于**事务日志 (WAL)**，并包含两个供调度器使用的**内存优先级队列**（高优、普通），以保证消息的持久性和关键信令的优先处理。
     *   `Scheduler`: 状态路径的核心驱动力。它运行一个事件循环，根据优先级策略从 `Mailbox` 中拉取消息，并决定下一个要执行的任务。
     *   `Route Table (路由表)`: 一个高效的哈希表（方法名 -> 处理函数），是 `Scheduler` 进行路由分发的依据。它在 `ActorSystem` 启动时，通过 `Adapter` 收集所有 `Actor` 的可调用方法并构建而成。
     *   `Fast Path Registry`: **快车道 (Fast Path)** 的核心。一个并发安全的哈希表，映射了流ID到直接的处理回调函数。
-    *   `ActorAdapter`: 由代码生成插件创建的“胶水代码”。它的核心职责是在**应用启动时**，为 `Actor` 的每一个可调用方法生成对应的处理器（闭包），并最终填充到 `Route Table` 中。
+    *   `Actor 适配器 (Actor Adapter)`: 由代码生成插件创建的“胶水代码”。它的核心职责是在**应用启动时**，为 `Actor` 的每一个可调用方法生成对应的处理器（闭包），并最终填充到 `Route Table` 中。
 
 *   **一次方法调用的生命周期（状态路径）**
     1.  **流量进入**: 外部 `WebRTC Peer` 通过一个数据通道发送 Protobuf 消息。
     2.  **分诊 (`Input Handler`)**: `Input Handler` 解析消息元数据，识别出是控制流消息，并将其送入 **Mailbox** 的对应优先级队列中。
     3.  **调度 (`Scheduler`)**: `Scheduler` 的事件循环按照优先级，从 **Mailbox** 中取出该消息。
     4.  **路由 (Routing)**: `Scheduler` 从消息中提取方法全名（如 "echo.EchoService/SendEcho"），并使用 **`Route Table`** 以此为 `key` 查找到对应的方法处理器。
-    5.  **执行处理器 (Execute Handler)**: 查找到的处理器，是一个在应用启动时由 `ActorAdapter` 所创建的、包含了完整处理逻辑的闭包。`Scheduler` 直接调用这个闭包处理器。
+    6.  **执行处理器 (Execute Handler)**: 查找到的处理器，是一个在应用启动时由 `Actor 适配器` 所创建的、包含了完整处理逻辑的闭包。`Scheduler` 直接调用这个闭包处理器。
     6.  **执行业务 (`Actor`)**: 闭包处理器内部，会完成反序列化、创建 `Context`、并最终调用用户 `Actor` 的 `trait` 方法。
     7.  **响应**: 序列化后的响应字节流通过 WebRTC 数据通道发回给对等端。
 
@@ -91,11 +91,11 @@
 
 ## **高级模式的实现支持**
 
-*   **`Streaming` 的实现**
-    `OpenStream` 方法调用在**状态路径**上完成。其处理器（在启动时由 `ActorAdapter` 创建）负责在 `Actor` 中创建流的状态，并在**快车道 (Fast Path)** 的 `Fast Path Registry` 中注册一个与 `stream_id` 关联的回调。后续的数据块则完全通过**快车道 (Fast Path)** 进行处理。
+    *   **`Streaming` 的实现**
+    `OpenStream` 方法调用在**状态路径**上完成。其处理器（在启动时由 `Actor 适配器` 创建）负责在 `Actor` 中创建流的状态，并在**快车道 (Fast Path)** 的 `Fast Path Registry` 中注册一个与 `stream_id` 关联的回调。后续的数据块则完全通过**快车道 (Fast Path)** 进行处理。
 
 *   **`Pub/Sub` 的实现**
-    `Subscribe` 方法调用在**状态路径**上完成，其处理器（在启动时由 `ActorAdapter` 创建）在 `Actor` 中记录订阅关系，并请求 `ActorSystem` 为该订阅者建立一个“服务器->客户端”的长期推送通道。`Publish` 方法调用亦在**状态路径**上完成，其处理器同样在 `Actor` 中查找到所有订阅者，并通过 `Context` 请求 `ActorSystem` 向这些订阅者的推送通道发送 `Publication` 消息。
+    `Subscribe` 方法调用在**状态路径**上完成，其处理器（在启动时由 `Actor 适配器` 创建）在 `Actor` 中记录订阅关系，并请求 `ActorSystem` 为该订阅者建立一个“服务器->客户端”的长期推送通道。`Publish` 方法调用亦在**状态路径**上完成，其处理器同样在 `Actor` 中查找到所有订阅者，并通过 `Context` 请求 `ActorSystem` 向这些订阅者的推送通道发送 `Publication` 消息。
 
 ---
 

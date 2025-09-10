@@ -1,3 +1,26 @@
 
+# Build outputs
+/target/
+**/*.rs.bk
 
+# Logs
+logs/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime files
 .status
+
+# Generated proto files
+*.pb.go
+**/*_pb.rs

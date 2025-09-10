@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package file_transfer;
+
+// 文件信息
+message FileInfo {
+  string filename = 1;
+  uint64 size = 2;
+  string mime_type = 3;
+  string checksum = 4;     // SHA256 哈希
+  uint64 created_at = 5;
+  uint64 modified_at = 6;
+}
+
+// 文件块数据
+message FileChunk {
+  string transfer_id = 1;
+  uint32 chunk_index = 2;
+  uint32 total_chunks = 3;
+  bytes data = 4;
+  string checksum = 5;     // 此块的 SHA256 哈希
+}
+
+// 开始文件传输请求
+message StartTransferRequest {
+  FileInfo file_info = 1;
+  uint32 chunk_size = 2;   // 每块大小（字节）
+  string transfer_id = 3;
+}
+
+message StartTransferResponse {
+  bool accepted = 1;
+  string message = 2;
+  string transfer_id = 3;
+  uint32 suggested_chunk_size = 4;
+}
+
+// 传输进度
+message TransferProgress {
+  string transfer_id = 1;
+  uint32 chunks_received = 2;
+  uint32 total_chunks = 3;
+  uint64 bytes_transferred = 4;
+  uint64 total_bytes = 5;
+  double progress_percent = 6;
+}
+
+// 传输完成通知
+message TransferComplete {
+  string transfer_id = 1;
+  bool success = 2;
+  string message = 3;
+  optional string final_checksum = 4;
+}
+
+// 传输错误
+message TransferError {
+  string transfer_id = 1;
+  uint32 error_code = 2;
+  string error_message = 3;
+  optional uint32 failed_chunk_index = 4;
+}
+
+// 重传请求
+message RetransmitRequest {
+  string transfer_id = 1;
+  repeated uint32 chunk_indices = 2;
+}
+
+message RetransmitResponse {
+  string transfer_id = 1;
+  bool accepted = 2;
+  string message = 3;
+}
+
+// 取消传输
+message CancelTransferRequest {
+  string transfer_id = 1;
+  string reason = 2;
+}
+
+message CancelTransferResponse {
+  string transfer_id = 1;
+  bool acknowledged = 2;
+}
+
+// 获取传输状态
+message GetTransferStatusRequest {
+  string transfer_id = 1;
+}
+
+message TransferStatus {
+  enum Status {
+    PENDING = 0;
+    IN_PROGRESS = 1;
+    COMPLETED = 2;
+    FAILED = 3;
+    CANCELLED = 4;
+  }
+  
+  string transfer_id = 1;
+  Status status = 2;
+  TransferProgress progress = 3;
+  optional TransferError error = 4;
+}
+
+// 文件传输服务定义
+service FileTransferService {
+  // 开始文件传输
+  rpc StartTransfer(StartTransferRequest) returns (StartTransferResponse);
+  
+  // 发送文件块（使用快车道）
+  rpc SendChunk(FileChunk) returns (TransferProgress);
+  
+  // 请求重传特定块
+  rpc RequestRetransmit(RetransmitRequest) returns (RetransmitResponse);
+  
+  // 获取传输状态
+  rpc GetTransferStatus(GetTransferStatusRequest) returns (TransferStatus);
+  
+  // 取消传输
+  rpc CancelTransfer(CancelTransferRequest) returns (CancelTransferResponse);
+  
+  // 流式传输进度通知
+  rpc ProgressStream(stream TransferProgress) returns (stream TransferProgress);
+}

@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "actor-rtc-framework",        # 框架核心 crate
+    "shared-protocols",           # 协议定义 crate  
+    "protoc-gen-actorframework",  # protobuf 编译器插件
+    "actr-config",                # 配置文件解析
+    "actr-cli", 
+    "signaling-server",           # 信令服务器
+    "examples/echo-demo",         # Echo 服务端演示
+    "examples/echo-client",       # Echo 客户端演示
+    # "tools",                 # 测试工具 (暂时禁用，有编译错误)
+    # "examples/media-demo",        # 媒体流示例 (规划)
+    # "examples/file-transfer-demo", # 文件传输示例 (规划)
+]
+
+[workspace.dependencies]
+# WebRTC and networking
+webrtc = "0.11"
+tokio = { version = "1.0", features = ["full"] }
+tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+futures-util = "0.3"
+
+# Protocol definitions and serialization
+tonic = "0.10"
+tonic-build = "0.10"
+prost = "0.12"
+prost-types = "0.12"
+
+# Async traits and utilities
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Logging and error handling
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Network utilities
+url = "2.4"
+
+# File system utilities
+relative-path = "1.9"
+
+# Git support
+git2 = "0.18"
+
+# Command line tools
+clap = { version = "4.4", features = ["derive", "cargo"] }
+
+# Additional utilities for CLI
+fs_extra = "1.3"
+tempfile = "3.8"
+reqwest = { version = "0.11", features = ["stream"] }
+cargo_metadata = "0.18"
+handlebars = "5.1"
+
+# Testing
+criterion = "0.5"
+
+# Code generation utilities  
+quote = "1.0"
+proc-macro2 = "1.0"
+heck = "0.5"
+bytes = "1.0"
