@@ -340,9 +340,7 @@ impl RpcRequest for {input_type} {{
         // 手动添加 #[async_trait] 属性，避免 quote! 宏插入空格
         let router_impl = format!("#[async_trait]\n{router_impl_without_attr}");
 
-        Ok(format!(
-            "{workload_struct}\n{router_struct}\n{router_impl}"
-        ))
+        Ok(format!("{workload_struct}\n{router_struct}\n{router_impl}"))
     }
 
     /// 生成 Workload 实现

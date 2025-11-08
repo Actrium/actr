@@ -7,13 +7,11 @@ use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
 /// WebRTC configuration
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct WebRtcConfig {
     /// ICE service device list
     pub ice_servers: Vec<IceServer>,
 }
-
 
 /// ICE service device configuration
 #[derive(Clone, Debug)]

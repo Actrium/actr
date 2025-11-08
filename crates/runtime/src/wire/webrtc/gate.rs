@@ -12,7 +12,9 @@ use crate::inbound::DataStreamRegistry;
 use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActorResult, ActrId, DataStream, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{
+    self, ActorResult, ActrId, DataStream, PayloadType, ProtocolError, RpcEnvelope,
+};
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -157,7 +159,11 @@ impl WebRtcGate {
                                             // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
                                             // Convert Bytes to Vec<u8> (Mailbox uses Vec)
                                             match mailbox
-                                                .enqueue(from_bytes.clone(), data.to_vec(), priority)
+                                                .enqueue(
+                                                    from_bytes.clone(),
+                                                    data.to_vec(),
+                                                    priority,
+                                                )
                                                 .await
                                             {
                                                 Ok(msg_id) => {
@@ -199,7 +205,9 @@ impl WebRtcGate {
                                         match ActrId::decode(&from_bytes[..]) {
                                             Ok(sender_id) => {
                                                 // Dispatch to DataStreamRegistry (async callback invocation)
-                                                data_stream_registry.dispatch(chunk, sender_id).await;
+                                                data_stream_registry
+                                                    .dispatch(chunk, sender_id)
+                                                    .await;
                                             }
                                             Err(e) => {
                                                 tracing::error!(
@@ -254,9 +262,9 @@ impl WebRtcGate {
     ) -> RuntimeResult<()> {
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
-        response_envelope.encode(&mut buf).map_err(|e| {
-            RuntimeError::Other(anyhow::anyhow!("Failed to encode response: {e}"))
-        })?;
+        response_envelope
+            .encode(&mut buf)
+            .map_err(|e| RuntimeError::Other(anyhow::anyhow!("Failed to encode response: {e}")))?;
 
         // Send
         self.coordinator.send_message(target, &buf).await?;

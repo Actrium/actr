@@ -5,8 +5,7 @@
 use prost_types::MethodDescriptorProto;
 
 /// PayloadType enum values matching proto definition
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PayloadType {
     #[default]
     RpcReliable = 0,
@@ -40,7 +39,6 @@ impl PayloadType {
         }
     }
 }
-
 
 /// Extract PayloadType option from method descriptor
 ///

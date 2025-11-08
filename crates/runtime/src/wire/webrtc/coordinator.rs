@@ -831,7 +831,9 @@ impl WebRtcCoordinator {
                             let peer_id_bytes = peer_id_clone.encode_to_vec();
 
                             // Send to aggregation channel (include PayloadType)
-                            if let Err(e) = message_tx_clone.send((peer_id_bytes, data, payload_type)) {
+                            if let Err(e) =
+                                message_tx_clone.send((peer_id_bytes, data, payload_type))
+                            {
                                 tracing::error!("❌ Message aggregation failed: {:?}", e);
                                 break;
                             }
@@ -1175,9 +1177,7 @@ impl WebRtcCoordinator {
 
         // 1. Create new Offer (includes all tracks: old + new)
         let offer = peer_connection.create_offer(None).await.map_err(|e| {
-            RuntimeError::Other(anyhow::anyhow!(
-                "Failed to create renegotiation offer: {e}"
-            ))
+            RuntimeError::Other(anyhow::anyhow!("Failed to create renegotiation offer: {e}"))
         })?;
         let offer_sdp = offer.sdp.clone();
 
@@ -1243,9 +1243,7 @@ impl WebRtcCoordinator {
                 offer_sdp,
             )
             .map_err(|e| {
-                RuntimeError::Other(anyhow::anyhow!(
-                    "Failed to parse renegotiation offer: {e}"
-                ))
+                RuntimeError::Other(anyhow::anyhow!("Failed to parse renegotiation offer: {e}"))
             })?;
         peer_connection
             .set_remote_description(offer)

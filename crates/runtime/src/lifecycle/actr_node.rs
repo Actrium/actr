@@ -434,7 +434,9 @@ impl<W: Workload> ActrNode<W> {
                 // Set local_id
                 gate.set_local_id(actor_id.clone()).await;
 
-                tracing::info!("✅ WebRtcGate created with shared pending_requests and DataStreamRegistry");
+                tracing::info!(
+                    "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
+                );
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.7. Set outproc_gate in ContextFactory (completing initialization)

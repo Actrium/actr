@@ -153,9 +153,8 @@ impl InprocOutGate {
         use actr_protocol::prost::Message as ProstMessage;
 
         // Deserialize to get stream_id
-        let stream = actr_protocol::DataStream::decode(&*data).map_err(|e| {
-            ProtocolError::DecodeError(format!("Failed to decode DataStream: {e}"))
-        })?;
+        let stream = actr_protocol::DataStream::decode(&*data)
+            .map_err(|e| ProtocolError::DecodeError(format!("Failed to decode DataStream: {e}")))?;
 
         tracing::debug!(
             "📤 InprocOutGate::send_data_stream stream_id={}, sequence={}",

@@ -297,7 +297,7 @@ impl SignalingClient for WebSocketSignalingClient {
             availability: availability as i32,
             power_reserve,
             mailbox_backlog,
-            sticky_client_ids: vec![],  // TODO: Implement sticky session tracking
+            sticky_client_ids: vec![], // TODO: Implement sticky session tracking
         };
 
         let flow = signaling_envelope::Flow::ActrToServer(ActrToSignaling {

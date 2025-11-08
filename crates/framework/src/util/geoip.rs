@@ -123,7 +123,8 @@ impl GeoIpService {
             .timeout(std::time::Duration::from_secs(300)) // 5 分钟超时
             .build()?;
 
-        let response = client.get(&url)
+        let response = client
+            .get(&url)
             .send()
             .context("Failed to download GeoLite2 database")?;
 
@@ -147,8 +148,8 @@ impl GeoIpService {
             let path_in_archive = entry.path()?;
 
             if path_in_archive.extension() == Some(std::ffi::OsStr::new("mmdb"))
-                && path_in_archive.to_string_lossy().contains("GeoLite2-City") {
-
+                && path_in_archive.to_string_lossy().contains("GeoLite2-City")
+            {
                 // 创建父目录
                 if let Some(parent) = db_path.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -159,7 +160,11 @@ impl GeoIpService {
                 std::io::copy(&mut entry, &mut output)?;
 
                 let size = std::fs::metadata(db_path)?.len();
-                info!("✅ GeoIP database downloaded to {:?} ({:.1} MB)", db_path, size as f64 / 1_048_576.0);
+                info!(
+                    "✅ GeoIP database downloaded to {:?} ({:.1} MB)",
+                    db_path,
+                    size as f64 / 1_048_576.0
+                );
                 return Ok(());
             }
         }

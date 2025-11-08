@@ -289,7 +289,6 @@ pub mod unregister_response {
 /// For P2P latency-based routing, consider adding:
 ///    - optional uint64 signaling_rtt_ms = 4;  // Node-to-Signaling RTT
 ///    - LatencyReport message for P2P measurements
-///
 /// See RouteCandidatesRequest.LOWEST_LATENCY for design discussion.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Ping {
