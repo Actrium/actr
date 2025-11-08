@@ -1,0 +1,454 @@
+//! OutprocTransportManager - Cross-process transport manager
+//!
+//! Manages transport layer for multiple Dests, providing unified send/recv interface
+//!
+//! # Naming Convention
+//! - **OutprocTransportManager**: Manages cross-process communication (WebRTC, WebSocket)
+//! - **InprocTransportManager**: Manages intra-process communication (mpsc channels)
+//!
+//! These two form a symmetric design, handling different transport scenarios
+
+use super::Dest; // Re-exported from actr-framework
+use super::dest_transport::DestTransport;
+use super::error::{NetworkError, NetworkResult};
+use super::wire_handle::WireHandle;
+use actr_protocol::{ActrId, PayloadType};
+use async_trait::async_trait;
+use either::Either;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Notify, RwLock};
+
+/// Wire builder trait: asynchronously creates Wire components based on Dest
+///
+/// Implement this trait to customize Wire layer component creation logic (e.g., WebRTC, WebSocket)
+#[async_trait]
+pub trait WireBuilder: Send + Sync {
+    /// Create Wire handle list to specified Dest
+    ///
+    /// # Arguments
+    /// - `dest`: Target destination
+    ///
+    /// # Returns
+    /// - Wire handle list (may contain multiple types: WebSocket, WebRTC, etc.)
+    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>>;
+}
+
+/// Destination transport state
+///
+/// Uses Either to manage connection lifecycle:
+/// - Left: Connecting state with shared Notify (multiple waiters)
+/// - Right: Connected state with DestTransport
+type DestState = Either<Arc<Notify>, Arc<DestTransport>>;
+
+/// OutprocTransportManager - Cross-process transport manager
+///
+/// Responsibilities:
+/// - Manage transport layer for multiple Dests (each Dest maps to one DestTransport)
+/// - Create DestTransport on-demand (lazy initialization)
+/// - Provide unified send/recv interface
+/// - Support custom connection factories
+/// - Prevent duplicate connection creation using Either state machine
+///
+/// # Comparison with InprocTransportManager
+/// - **OutprocTransportManager**: Cross-process, uses WebRTC/WebSocket
+/// - **InprocTransportManager**: Intra-process, uses mpsc channels, zero serialization
+///
+/// # State Machine
+/// ```text
+/// None → Connecting(Notify) → Connected(Transport)
+///         ↓                      ↓
+///      (multiple waiters)     (ready)
+/// ```
+pub struct OutprocTransportManager {
+    /// Local Actor ID
+    local_id: ActrId,
+
+    /// Dest → DestState mapping (Either state machine)
+    transports: Arc<RwLock<HashMap<Dest, DestState>>>,
+
+    /// Wire builder (used to create Wire handles for new DestTransport)
+    conn_factory: Arc<dyn WireBuilder>,
+}
+
+impl OutprocTransportManager {
+    /// Create new OutprocTransportManager
+    ///
+    /// # Arguments
+    /// - `local_id`: Local Actor ID
+    /// - `conn_factory`: Wire builder, asynchronously creates Wire handle list based on Dest
+    pub fn new(local_id: ActrId, conn_factory: Arc<dyn WireBuilder>) -> Self {
+        Self {
+            local_id,
+            transports: Arc::new(RwLock::new(HashMap::new())),
+            conn_factory,
+        }
+    }
+
+    /// Get or create DestTransport for specified Dest
+    ///
+    /// # Arguments
+    /// - `dest`: Target destination
+    ///
+    /// # Returns
+    /// - DestTransport for this Dest (Arc-shared)
+    ///
+    /// # State Machine
+    /// Uses Either to prevent duplicate connections:
+    /// 1. If Connected → return transport
+    /// 2. If Connecting → wait for notify, then retry
+    /// 3. If None → insert Connecting(notify), create connection outside lock
+    pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
+        loop {
+            // 1. Fast path: check current state
+            let state_opt = {
+                let transports = self.transports.read().await;
+                transports.get(dest).cloned()
+            };
+
+            match state_opt {
+                // Already connected - fast path
+                Some(Either::Right(transport)) => {
+                    tracing::debug!("📦 Reusing existing DestTransport: {:?}", dest);
+                    return Ok(transport);
+                }
+                // Currently connecting - wait for completion
+                Some(Either::Left(notify)) => {
+                    tracing::debug!("⏳ Waiting for ongoing connection: {:?}", dest);
+                    notify.notified().await;
+                    // Retry after notification
+                    continue;
+                }
+                // Not exists - need to create
+                None => {
+                    // Enter slow path
+                }
+            }
+
+            // 2. Slow path: try to become the creator
+            let notify = {
+                let mut transports = self.transports.write().await;
+
+                // Double-check: may have been created while waiting for write lock
+                match transports.get(dest) {
+                    Some(Either::Right(transport)) => {
+                        return Ok(Arc::clone(transport));
+                    }
+                    Some(Either::Left(notify)) => {
+                        // Another thread is creating, wait for it
+                        Arc::clone(notify)
+                    }
+                    None => {
+                        // We are the creator, insert Connecting state
+                        let notify = Arc::new(Notify::new());
+                        transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));
+                        tracing::debug!("🔄 Inserted Connecting state for: {:?}", dest);
+                        Arc::clone(&notify)
+                    }
+                }
+            };
+
+            // Check if we are the creator (notify was just created)
+            let is_creator = {
+                let transports = self.transports.read().await;
+                matches!(transports.get(dest), Some(Either::Left(n)) if Arc::ptr_eq(n, &notify))
+            };
+
+            if !is_creator {
+                // Wait for the actual creator
+                tracing::debug!("⏳ Another thread is creating connection: {:?}", dest);
+                notify.notified().await;
+                continue;
+            }
+
+            // 3. We are the creator - create connections OUTSIDE lock
+            tracing::info!("🚀 Creating new connection for: {:?}", dest);
+
+            let result = async {
+                let connections = self.conn_factory.create_connections(dest).await?;
+
+                if connections.is_empty() {
+                    return Err(NetworkError::ConfigurationError(format!(
+                        "Connection factory returned no connections: {dest:?}"
+                    )));
+                }
+
+                tracing::info!(
+                    "✨ Creating DestTransport: {:?} ({} connections)",
+                    dest,
+                    connections.len()
+                );
+                let transport = DestTransport::new(dest.clone(), connections).await?;
+                Ok(Arc::new(transport))
+            }
+            .await;
+
+            // 4. Update state and notify waiters
+            let mut transports = self.transports.write().await;
+
+            match result {
+                Ok(transport) => {
+                    tracing::info!("✅ Connection established: {:?}", dest);
+                    transports.insert(dest.clone(), Either::Right(Arc::clone(&transport)));
+                    drop(transports);
+                    notify.notify_waiters();
+                    return Ok(transport);
+                }
+                Err(e) => {
+                    tracing::error!("❌ Connection failed: {:?}: {}", dest, e);
+                    transports.remove(dest);
+                    drop(transports);
+                    notify.notify_waiters();
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    /// Send message to specified Dest
+    ///
+    /// # Arguments
+    /// - `dest`: Target destination
+    /// - `payload_type`: Message type
+    /// - `data`: Message data
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// mgr.send(&dest, PayloadType::RpcSignal, b"hello").await?;
+    /// ```
+    pub async fn send(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> NetworkResult<()> {
+        tracing::debug!(
+            "📤 [OutprocTransportManager] Sending to {:?}: type={:?}, size={}",
+            dest,
+            payload_type,
+            data.len()
+        );
+
+        // Get or create DestTransport for this Dest
+        let transport = self.get_or_create_transport(dest).await?;
+
+        // Send through DestTransport
+        transport.send(payload_type, data).await
+    }
+
+    /// Close DestTransport for specified Dest
+    ///
+    /// # Arguments
+    /// - `dest`: Target destination
+    pub async fn close_transport(&self, dest: &Dest) -> NetworkResult<()> {
+        let mut transports = self.transports.write().await;
+
+        if let Some(state) = transports.remove(dest) {
+            match state {
+                Either::Right(transport) => {
+                    tracing::info!("🔌 Closing DestTransport: {:?}", dest);
+                    transport.close().await?;
+                }
+                Either::Left(_notify) => {
+                    tracing::debug!("⏸️ Removed Connecting state for: {:?}", dest);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Close all DestTransports
+    pub async fn close_all(&self) -> NetworkResult<()> {
+        let mut transports = self.transports.write().await;
+
+        tracing::info!(
+            "🔌 Closing all DestTransports (count: {})",
+            transports.len()
+        );
+
+        for (dest, state) in transports.drain() {
+            match state {
+                Either::Right(transport) => {
+                    if let Err(e) = transport.close().await {
+                        tracing::warn!("❌ Failed to close DestTransport {:?}: {}", dest, e);
+                    }
+                }
+                Either::Left(_notify) => {
+                    tracing::debug!("⏸️ Skipped Connecting state for: {:?}", dest);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get count of currently managed Dests
+    pub async fn dest_count(&self) -> usize {
+        self.transports.read().await.len()
+    }
+
+    /// Get local Actor ID
+    #[inline]
+    pub fn local_id(&self) -> &ActrId {
+        &self.local_id
+    }
+
+    /// List all connected Dests
+    pub async fn list_dests(&self) -> Vec<Dest> {
+        self.transports.read().await.keys().cloned().collect()
+    }
+
+    /// Check if connection to specified Dest exists
+    pub async fn has_dest(&self, dest: &Dest) -> bool {
+        self.transports.read().await.contains_key(dest)
+    }
+
+    /// Spawn health checker background task with smart reconnect
+    ///
+    /// Periodically checks all DestTransport health status:
+    /// - If some connections failed → trigger smart reconnect (reuse working connections)
+    /// - If all connections failed → remove entire DestTransport
+    ///
+    /// # Arguments
+    /// - `interval`: Health check interval (recommended: 10-30 seconds)
+    ///
+    /// # Returns
+    /// - JoinHandle for the background task (can be used to cancel)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mgr = Arc::new(OutprocTransportManager::new(local_id, factory));
+    /// let health_check_handle = mgr.spawn_health_checker(Duration::from_secs(10));
+    /// ```
+    pub fn spawn_health_checker(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+        let transports = Arc::clone(&self.transports);
+        let conn_factory = Arc::clone(&self.conn_factory);
+
+        tokio::spawn(async move {
+            let mut interval_timer = tokio::time::interval(interval);
+            interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval_timer.tick().await;
+
+                // Collect unhealthy Dests and retry/remove
+                {
+                    let transports_read = transports.read().await;
+
+                    for (dest, state) in transports_read.iter() {
+                        // Only check Connected transports, skip Connecting
+                        if let Either::Right(transport) = state {
+                            let healthy = transport.has_healthy_connection().await;
+                            let dest_clone = dest.clone(); // Clone before using
+
+                            if !healthy {
+                                // All connections failed - schedule for removal
+                                tracing::warn!(
+                                    "💀 All connections failed for {:?}, will remove",
+                                    dest_clone
+                                );
+                                drop(transports_read);
+
+                                // Remove entire DestTransport
+                                let mut transports_write = transports.write().await;
+                                if let Some(Either::Right(transport)) =
+                                    transports_write.remove(&dest_clone)
+                                {
+                                    tracing::info!(
+                                        "🗑️  Removing completely failed DestTransport: {:?}",
+                                        dest_clone
+                                    );
+                                    if let Err(e) = transport.close().await {
+                                        tracing::warn!(
+                                            "❌ Failed to close DestTransport {:?}: {}",
+                                            dest_clone,
+                                            e
+                                        );
+                                    }
+                                }
+
+                                return; // Exit early, will check again next interval
+                            } else {
+                                // At least one connection is working
+                                // Try to reconnect failed ones (smart reconnect)
+                                tracing::debug!(
+                                    "🔄 Triggering smart reconnect for: {:?}",
+                                    dest_clone
+                                );
+                                if let Err(e) = transport
+                                    .retry_failed_connections(&dest_clone, conn_factory.as_ref())
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "❌ Smart reconnect failed for {:?}: {}",
+                                        dest_clone,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+impl Drop for OutprocTransportManager {
+    fn drop(&mut self) {
+        tracing::debug!("🗑️  OutprocTransportManager dropped");
+        // Note: async cleanup requires external call to close_all()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestFactory;
+
+    #[async_trait]
+    impl WireBuilder for TestFactory {
+        async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<WireHandle>> {
+            // Test factory: returns empty list (real usage requires actual connections)
+            Ok(vec![])
+        }
+    }
+
+    fn create_test_factory() -> Arc<dyn WireBuilder> {
+        Arc::new(TestFactory)
+    }
+
+    #[tokio::test]
+    async fn test_transport_manager_creation() {
+        let local_id = ActrId::default();
+        let factory = create_test_factory();
+        let mgr = OutprocTransportManager::new(local_id.clone(), factory);
+
+        assert_eq!(mgr.dest_count().await, 0);
+        assert_eq!(mgr.local_id(), &local_id);
+    }
+
+    #[tokio::test]
+    async fn test_list_dests() {
+        let local_id = ActrId::default();
+        let factory = create_test_factory();
+        let mgr = OutprocTransportManager::new(local_id, factory);
+
+        let dests = mgr.list_dests().await;
+        assert_eq!(dests.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_has_dest() {
+        let local_id = ActrId::default();
+        let factory = create_test_factory();
+        let mgr = OutprocTransportManager::new(local_id, factory);
+
+        let dest = Dest::shell();
+        assert!(!mgr.has_dest(&dest).await);
+    }
+}

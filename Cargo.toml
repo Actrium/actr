@@ -1,71 +1,127 @@
+[package]
+name = "actr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Actor-RTC: A WebRTC-native actor framework for distributed real-time systems"
+keywords = ["actor", "webrtc", "distributed", "realtime", "p2p"]
+categories = ["network-programming", "asynchronous", "web-programming"]
+
+[dependencies]
+# 核心依赖 - 全部重新导出
+actr-protocol.workspace = true
+actr-framework.workspace = true
+actr-runtime = { workspace = true, optional = true }
+actr-config = { workspace = true, optional = true }
+
+# 常用依赖
+async-trait.workspace = true
+
+[features]
+default = ["runtime", "config"]
+
+# Runtime 支持 - 包含完整的 ActorSystem 运行时
+runtime = ["dep:actr-runtime"]
+
+# Config 支持 - 包含配置文件解析
+config = ["dep:actr-config"]
+
+# 完整功能
+full = ["runtime", "config"]
+
 [workspace]
 resolver = "2"
 members = [
-    "actor-rtc-framework",        # 框架核心 crate
-    "shared-protocols",           # 协议定义 crate  
-    "protoc-gen-actorframework",  # protobuf 编译器插件
-    "actr-config",                # 配置文件解析
-    "actr-cli", 
-    "signaling-server",           # 信令服务器
-    "examples/echo-demo",         # Echo 服务端演示
-    "examples/echo-client",       # Echo 客户端演示
-    # "tools",                 # 测试工具 (暂时禁用，有编译错误)
-    # "examples/media-demo",        # 媒体流示例 (规划)
-    # "examples/file-transfer-demo", # 文件传输示例 (规划)
+    # === Core Crates (核心 crate) ===
+    "crates/protocol",
+    "crates/version",
+    "crates/config",
+    "crates/framework",
+    "crates/framework-protoc-codegen",
+    "crates/runtime",
+    "crates/runtime-mailbox",
 ]
 
+# === Examples (示例) ===
+# Examples 已独立在 workspace 之外，模拟外部用户使用场景
+# Examples are now independent from the workspace to simulate external usage
+exclude = [
+    "examples/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/actor-rtc/actr"
+authors = ["Actor-RTC Contributors"]
+
 [workspace.dependencies]
-# WebRTC and networking
-webrtc = "0.11"
-tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = { version = "0.20", features = ["native-tls"] }
+# === Internal Dependencies (内部依赖) ===
+actr-protocol = { path = "crates/protocol" }
+actr-version = { path = "crates/version" }
+actr-config = { path = "crates/config" }
+actr-framework = { path = "crates/framework" }
+actr-runtime = { path = "crates/runtime" }
+actr-mailbox = { path = "crates/runtime-mailbox" }
+
+# === Async Runtime (异步运行时) ===
+tokio = { version = "1.48", features = ["full"] }
+async-trait = "0.1"
 futures-util = "0.3"
 
-# Protocol definitions and serialization
-tonic = "0.10"
-tonic-build = "0.10"
-prost = "0.12"
-prost-types = "0.12"
-
-# Async traits and utilities
-async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
-
-# Logging and error handling
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1.0"
-anyhow = "1.0"
-
-# Serialization
+# === Serialization (序列化) ===
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
+bytes = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 
-# Network utilities
-url = "2.4"
+# === Utilities (工具库) ===
+uuid = { version = "1.18", features = ["v4", "serde"] }
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2.5"
 
-# File system utilities
-relative-path = "1.9"
+# === Logging (日志) ===
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Git support
-git2 = "0.18"
+# === WebRTC (WebRTC) ===
+webrtc = "0.14"
 
-# Command line tools
-clap = { version = "4.4", features = ["derive", "cargo"] }
+# === Storage (存储) ===
+rusqlite = { version = "0.32", features = ["bundled"] }
 
-# Additional utilities for CLI
-fs_extra = "1.3"
-tempfile = "3.8"
-reqwest = { version = "0.11", features = ["stream"] }
-cargo_metadata = "0.18"
-handlebars = "5.1"
+# === Networking (网络) ===
+tokio-tungstenite = "0.20"
+tokio-test = "0.4"
+dashmap = "5.5"
+crossbeam = "0.8"
 
-# Testing
-criterion = "0.5"
-
-# Code generation utilities  
+# === Code Generation (代码生成) ===
 quote = "1.0"
 proc-macro2 = "1.0"
 heck = "0.5"
-bytes = "1.0"
+
+# === CLI Tools (CLI 工具) ===
+clap = { version = "4.5", features = ["derive", "cargo"] }
+fs_extra = "1.3"
+tempfile = "3.23"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = false

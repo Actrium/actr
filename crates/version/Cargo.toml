@@ -1,0 +1,27 @@
+[package]
+name = "actr-version"
+version = "0.1.0"
+edition = "2024"
+description = "Protocol compatibility analysis library using semantic proto analysis"
+license = "Apache-2.0"
+keywords = ["actor", "protobuf", "compatibility", "breaking-changes", "protocol"]
+repository = "https://github.com/actor-rtc/actr-version"
+readme = "README.md"
+
+[dependencies]
+# Core dependencies for service compatibility analysis
+actr-protocol = { path = "../protocol" }  # ServiceSpec and protocol types
+proto-sign = { git = "https://github.com/actor-rtc/proto-sign" }  # Semantic proto analysis
+
+# Serialization support
+serde = { version = "1.0", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Time handling for fingerprint metadata
+chrono = { version = "0.4", features = ["serde"] }
+
+# Cryptographic hashing
+sha2 = "0.10"

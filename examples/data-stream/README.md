@@ -1,0 +1,179 @@
+# DataStream API Example
+
+This example demonstrates the DataStream API for streaming application data between Actors.
+
+## Overview
+
+The DataStream API provides a Fast Path for streaming non-media data (file transfers, game state updates, custom protocols) between Actors without going through the RPC envelope mechanism.
+
+**Key Concepts:**
+- **DataStream**: Protocol buffer message for streaming data chunks
+- **Stream ID**: Identifies a specific data stream (e.g., "file-transfer")
+- **Sequence Number**: Ensures ordered delivery of chunks
+- **Fast Path**: Bypasses RPC envelope for lower latency
+
+## Architecture
+
+```
+Sender (datastream.Sender)
+  └─ SenderWorkload
+      └─ ctx.send_data_stream(&dest, chunk)
+           │
+           ├─ RuntimeContext::send_data_stream()
+           ├─ OutGate::send_data_stream()
+           └─ OutprocOutGate::send_data_stream()
+                │
+                └─ OutprocTransportManager::send()
+                     └─ WebRTC DataChannel / WebSocket
+
+Receiver (datastream.Receiver)
+  └─ ReceiverWorkload
+      └─ ctx.register_stream("file-transfer", callback)
+           │
+           └─ DataStreamRegistry::register()
+                │
+                └─ InboundPacketDispatcher::dispatch()
+                     └─ Callback invoked with DataStream
+```
+
+## Components
+
+### Sender
+- **sender/src/main.rs**: Entry point, creates ActrSystem and starts node
+- **sender/src/sender_workload.rs**: Workload that sends 10 data chunks
+
+### Receiver
+- **receiver/src/main.rs**: Entry point, creates ActrSystem and starts node
+- **receiver/src/receiver_workload.rs**: Workload that registers callback to receive chunks
+
+## Running the Example
+
+### Prerequisites
+
+1. **Signaling Server** must be running:
+   ```bash
+   cd /d/actor-rtc/actr-signaling/signaling-server
+   cargo run
+   ```
+
+2. **Build the examples**:
+   ```bash
+   cd examples/data-stream/receiver
+   cargo build
+
+   cd ../sender
+   cargo build
+   ```
+
+### Option 1: Manual Start (Recommended for debugging)
+
+Terminal 1 - Start Receiver:
+```bash
+cd examples/data-stream/receiver
+RUST_LOG=info cargo run
+```
+
+Terminal 2 - Start Sender (after receiver is ready):
+```bash
+cd examples/data-stream/sender
+RUST_LOG=info cargo run
+```
+
+### Option 2: Use start script
+
+```bash
+./start.sh
+```
+
+## Expected Output
+
+### Receiver Output:
+```
+🚀 DataStream Receiver starting
+✅ ActrSystem created
+✅ ActrNode started!
+🎉 Receiver ready to receive data streams
+📦 Received chunk #1: stream_id=file-transfer, sequence=0, size=67 bytes
+📄 Content preview: Chunk #0: Hello from DataStream API! This is chunk number 0.
+📦 Received chunk #2: stream_id=file-transfer, sequence=1, size=67 bytes
+...
+📊 Final statistics:
+   Total chunks received: 10
+   Total bytes received: 670
+```
+
+### Sender Output:
+```
+🚀 DataStream Sender starting
+✅ ActrSystem created
+✅ ActrNode started!
+📤 SenderWorkload will start sending after 3 seconds...
+📤 Sending chunk #0 (sequence=0, size=67 bytes)
+✅ Chunk #0 sent successfully
+📤 Sending chunk #1 (sequence=1, size=67 bytes)
+✅ Chunk #1 sent successfully
+...
+✅ All chunks sent!
+```
+
+## Key API Methods
+
+### Sender Side
+
+```rust
+use actr_protocol::DataStream;
+use actr_framework::{Context, Dest};
+
+// Create DataStream chunk
+let chunk = DataStream {
+    stream_id: "file-transfer".to_string(),
+    sequence: 0,
+    payload: bytes::Bytes::from("Hello!"),
+    metadata: vec![],
+    timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
+};
+
+// Send to receiver
+let dest = Dest::Actor(receiver_id);
+ctx.send_data_stream(&dest, chunk).await?;
+```
+
+### Receiver Side
+
+```rust
+// Register callback for stream_id
+ctx.register_stream("file-transfer".to_string(), |chunk: DataStream, sender_id: ActrId| {
+    Box::pin(async move {
+        println!("Received chunk: sequence={}, size={}", chunk.sequence, chunk.payload.len());
+        Ok(())
+    })
+}).await?;
+
+// Unregister when done
+ctx.unregister_stream("file-transfer").await?;
+```
+
+## Use Cases
+
+- **File Transfer**: Stream large files in chunks
+- **Game State Sync**: Send game state updates at high frequency
+- **Custom Protocols**: Implement your own streaming protocols
+- **Log Streaming**: Stream application logs to monitoring services
+- **Sensor Data**: Stream IoT sensor data
+
+## Comparison with RPC
+
+| Feature | RPC (call/tell) | DataStream |
+|---------|----------------|------------|
+| Use Case | Request-response | Streaming data |
+| Overhead | Higher (RpcEnvelope) | Lower (direct protobuf) |
+| Ordering | Single request | Sequence numbers |
+| Callback | Per-message handler | Stream callback |
+| Best For | Commands, queries | Bulk data, high frequency |
+
+## Next Steps
+
+1. Try modifying chunk size and frequency
+2. Implement proper file transfer with error handling
+3. Add flow control and backpressure
+4. Experiment with StreamLatencyFirst vs StreamReliable PayloadTypes

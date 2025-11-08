@@ -1,0 +1,366 @@
+//! WebRtcGate - WebRTC-based OutboundGate implementation
+//!
+//! Uses WebRtcCoordinator to send/receive messages, implementing cross-process RPC communication
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{RwLock, oneshot};
+
+use super::coordinator::WebRtcCoordinator;
+use crate::error::{RuntimeError, RuntimeResult};
+use crate::inbound::DataStreamRegistry;
+use actr_framework::Bytes;
+use actr_mailbox::{Mailbox, MessagePriority};
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{self, ActorResult, ActrId, DataStream, PayloadType, ProtocolError, RpcEnvelope};
+
+/// WebRTC Gate - OutboundGate implementation
+///
+/// # Responsibilities
+/// - Implement OutboundGate trait
+/// - Send messages using WebRtcCoordinator
+/// - Serialize/deserialize RpcEnvelope (Protobuf)
+/// - Track pending requests and match responses (by request_id)
+/// - Route messages by PayloadType (RPC → Mailbox, DataStream → Registry)
+///
+/// # Design Principles
+/// - Response reuses Request's request_id (standard RPC semantics)
+/// - Use pending_requests to distinguish: exists = Response, doesn't exist = Request
+/// - Gateway layer doesn't deserialize payloads, raw bytes go directly to Mailbox
+/// - **IMPORTANT**: pending_requests should be shared with OutprocOutGate
+pub struct WebRtcGate {
+    /// Local Actor ID
+    local_id: Arc<RwLock<Option<ActrId>>>,
+
+    /// WebRTC signaling coordinator
+    coordinator: Arc<WebRtcCoordinator>,
+
+    /// Pending requests (request_id → response channel)
+    /// Used to determine if received message is Response (key exists) or Request (key doesn't exist)
+    /// **Shared with OutprocOutGate** to ensure correct Response routing
+    /// Can send success (Ok(Bytes)) or error (Err(ProtocolError))
+    pending_requests:
+        Arc<RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>>,
+
+    /// DataStream registry for fast-path message routing
+    data_stream_registry: Arc<DataStreamRegistry>,
+}
+
+impl WebRtcGate {
+    /// Create new WebRtcGate with shared pending_requests and DataStreamRegistry
+    ///
+    /// # Arguments
+    /// - `coordinator`: WebRtcCoordinator instance
+    /// - `pending_requests`: Shared pending requests (should be same as OutprocOutGate)
+    /// - `data_stream_registry`: DataStream registry for fast-path routing
+    pub fn new(
+        coordinator: Arc<WebRtcCoordinator>,
+        pending_requests: Arc<
+            RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>,
+        >,
+        data_stream_registry: Arc<DataStreamRegistry>,
+    ) -> Self {
+        Self {
+            local_id: Arc::new(RwLock::new(None)),
+            coordinator,
+            pending_requests,
+            data_stream_registry,
+        }
+    }
+
+    /// Set local Actor ID
+    pub async fn set_local_id(&self, actor_id: ActrId) {
+        *self.local_id.write().await = Some(actor_id);
+    }
+
+    /// Start message receive loop (called by ActrSystem/ActrNode)
+    ///
+    /// # Arguments
+    /// - `mailbox`: message queue for persisting inbound requests
+    ///
+    /// # Architecture
+    /// According to three-loop architecture design (framework-runtime-architecture.zh.md):
+    /// - WebRtcGate belongs to outer loop (Transport layer)
+    /// - Mailbox belongs to inner loop (state path)
+    /// - Message flow: WebRTC → WebRtcGate → Mailbox/DataStreamRegistry → Scheduler → ActrNode
+    ///
+    /// # Message Routing Logic
+    /// - Route based on PayloadType:
+    ///   - RpcReliable/RpcSignal: Deserialize RpcEnvelope, check pending_requests, enqueue to Mailbox
+    ///   - StreamReliable/StreamLatencyFirst: Deserialize DataStream, dispatch to DataStreamRegistry
+    pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> RuntimeResult<()> {
+        let coordinator = self.coordinator.clone();
+        let pending_requests = self.pending_requests.clone();
+        let data_stream_registry = self.data_stream_registry.clone();
+
+        tokio::spawn(async move {
+            loop {
+                // Receive message from WebRtcCoordinator (now includes PayloadType)
+                match coordinator.receive_message().await {
+                    Ok(Some((from_bytes, data, payload_type))) => {
+                        tracing::debug!(
+                            "📨 WebRtcGate received message: {} bytes, PayloadType: {:?}",
+                            data.len(),
+                            payload_type
+                        );
+
+                        // Route based on PayloadType
+                        match payload_type {
+                            PayloadType::RpcReliable | PayloadType::RpcSignal => {
+                                // RPC path: deserialize RpcEnvelope and route
+                                match RpcEnvelope::decode(&data[..]) {
+                                    Ok(envelope) => {
+                                        let request_id = envelope.request_id.clone();
+
+                                        // Determine if Response or Request
+                                        let mut pending = pending_requests.write().await;
+                                        if let Some(response_tx) = pending.remove(&request_id) {
+                                            // Response - Wake up waiting caller (bypassing disk, fast path)
+                                            drop(pending); // Release lock
+                                            tracing::debug!(
+                                                "📬 Received RPC Response: request_id={}",
+                                                request_id
+                                            );
+
+                                            // Convert envelope to result
+                                            let result = match (envelope.payload, envelope.error) {
+                                                (Some(payload), None) => Ok(payload),
+                                                (None, Some(error)) => {
+                                                    Err(actr_protocol::ProtocolError::TransportError(
+                                                        format!(
+                                                            "RPC error {}: {}",
+                                                            error.code, error.message
+                                                        ),
+                                                    ))
+                                                }
+                                                _ => Err(actr_protocol::ProtocolError::DecodeError(
+                                                    "Invalid RpcEnvelope: payload and error fields inconsistent"
+                                                        .to_string(),
+                                                )),
+                                            };
+                                            let _ = response_tx.send(result);
+                                        } else {
+                                            // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
+                                            drop(pending); // Release lock
+                                            tracing::debug!(
+                                                "📥 Received RPC Request: request_id={}",
+                                                request_id
+                                            );
+
+                                            // Determine priority based on PayloadType
+                                            let priority = match payload_type {
+                                                PayloadType::RpcSignal => MessagePriority::High,
+                                                PayloadType::RpcReliable => MessagePriority::Normal,
+                                                _ => MessagePriority::Normal,
+                                            };
+
+                                            // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
+                                            // Convert Bytes to Vec<u8> (Mailbox uses Vec)
+                                            match mailbox
+                                                .enqueue(from_bytes.clone(), data.to_vec(), priority)
+                                                .await
+                                            {
+                                                Ok(msg_id) => {
+                                                    tracing::debug!(
+                                                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
+                                                        msg_id,
+                                                        priority
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        "❌ Mailbox enqueue failed: {:?}",
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "❌ Failed to deserialize RpcEnvelope: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
+                                // DataStream path: deserialize and dispatch to registry
+                                match DataStream::decode(&data[..]) {
+                                    Ok(chunk) => {
+                                        tracing::debug!(
+                                            "📦 Received DataStream: stream_id={}, seq={}, {} bytes",
+                                            chunk.stream_id,
+                                            chunk.sequence,
+                                            chunk.payload.len()
+                                        );
+
+                                        // Decode sender ActrId
+                                        match ActrId::decode(&from_bytes[..]) {
+                                            Ok(sender_id) => {
+                                                // Dispatch to DataStreamRegistry (async callback invocation)
+                                                data_stream_registry.dispatch(chunk, sender_id).await;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "❌ Failed to decode sender ActrId: {:?}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "❌ Failed to deserialize DataStream: {:?}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            PayloadType::MediaRtp => {
+                                tracing::warn!(
+                                    "⚠️ MediaRtp received in WebRtcGate (should use RTCTrackRemote)"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Message receive failed: {:?}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Send response (called by Mailbox handler loop)
+    ///
+    /// # Arguments
+    /// - `target`: response target ActrId (original request sender)
+    /// - `response_envelope`: response RpcEnvelope (**must reuse original request_id**)
+    ///
+    /// # Design Principle
+    /// - Response reuses Request's request_id (caller is responsible)
+    /// - Receiver matches to pending_requests by request_id and wakes up waiting caller
+    pub async fn send_response(
+        &self,
+        target: &ActrId,
+        response_envelope: RpcEnvelope,
+    ) -> RuntimeResult<()> {
+        // Serialize RpcEnvelope (Protobuf)
+        let mut buf = Vec::new();
+        response_envelope.encode(&mut buf).map_err(|e| {
+            RuntimeError::Other(anyhow::anyhow!("Failed to encode response: {e}"))
+        })?;
+
+        // Send
+        self.coordinator.send_message(target, &buf).await?;
+        tracing::debug!(
+            "📤 Sent response: request_id={}, {} bytes",
+            response_envelope.request_id,
+            buf.len()
+        );
+        Ok(())
+    }
+}
+
+impl WebRtcGate {
+    /// Send request and wait for response (bidirectional communication)
+    ///
+    /// # Implementation Details
+    /// - RpcEnvelope's request_id uniquely identifies this RPC call
+    /// - Response will reuse the same request_id, receiver matches via pending_requests
+    /// - 30 second timeout protection
+    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+        let request_id = envelope.request_id.clone();
+        tracing::debug!(
+            "📤 WebRtcGate::send_request to {:?}, request_id={}",
+            target,
+            request_id
+        );
+
+        // Create response channel and register
+        let (response_tx, response_rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_requests.write().await;
+            pending.insert(request_id.clone(), response_tx);
+        }
+
+        // Serialize RpcEnvelope (Protobuf)
+        let mut buf = Vec::new();
+        envelope
+            .encode(&mut buf)
+            .map_err(|e| ProtocolError::SerializationError(e.to_string()))?;
+
+        // Send message
+        self.coordinator
+            .send_message(target, &buf)
+            .await
+            .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
+
+        tracing::debug!(
+            "📤 Sent request: request_id={}, {} bytes",
+            request_id,
+            buf.len()
+        );
+
+        // Wait for response (30 second timeout)
+        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
+            Ok(Ok(result)) => {
+                // result is ActorResult<Bytes>, propagate it
+                tracing::debug!("📬 Received response: request_id={}", request_id);
+                result
+            }
+            Ok(Err(_)) => {
+                // Cleanup pending request
+                self.pending_requests.write().await.remove(&request_id);
+                Err(ProtocolError::TransportError(
+                    "Response channel closed".to_string(),
+                ))
+            }
+            Err(_) => {
+                // Timeout, cleanup pending request
+                self.pending_requests.write().await.remove(&request_id);
+                Err(ProtocolError::TransportError("Request timeout".to_string()))
+            }
+        }
+    }
+
+    /// Send one-way message (no response expected)
+    ///
+    /// # Implementation Details
+    /// - Different from send_request only in that it doesn't register pending_requests and doesn't wait for response
+    /// - RpcEnvelope request_id still needs to be set (for logging and tracing)
+    pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        let request_id = envelope.request_id.clone();
+        tracing::debug!(
+            "📤 WebRtcGate::send_message to {:?}, request_id={}",
+            target,
+            request_id
+        );
+
+        // Serialize RpcEnvelope (Protobuf)
+        let mut buf = Vec::new();
+        envelope
+            .encode(&mut buf)
+            .map_err(|e| ProtocolError::SerializationError(e.to_string()))?;
+
+        // Send message (don't register pending_requests)
+        self.coordinator
+            .send_message(target, &buf)
+            .await
+            .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
+
+        tracing::debug!(
+            "📤 Sent one-way message: request_id={}, {} bytes",
+            request_id,
+            buf.len()
+        );
+        Ok(())
+    }
+}

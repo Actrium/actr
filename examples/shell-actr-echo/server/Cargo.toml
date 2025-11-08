@@ -1,0 +1,32 @@
+[package]
+name = "echo-real-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+# 独立项目，不属于父 workspace
+[workspace]
+
+[dependencies]
+# Actor-RTC Framework Dependencies
+actr-framework = { path = "../../../crates/framework" }
+actr-protocol = { path = "../../../crates/protocol" }
+actr-runtime = { path = "../../../crates/runtime" }
+actr-config = { path = "../../../crates/config" }
+
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.0"
+
+# Protobuf
+prost = "0.14"
+prost-types = "0.14"
+bytes = "1.0"
+
+# Error handling
+anyhow = "1.0"
+
+[build-dependencies]
+prost-build = "0.14"

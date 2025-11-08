@@ -3,6 +3,9 @@
 /target/
 **/*.rs.bk
 
+# Generated protobuf code
+actr-protocol/src/generated/
+
 # Logs
 logs/
 *.log
@@ -24,3 +27,16 @@ Thumbs.db
 # Generated proto files
 *.pb.go
 **/*_pb.rs
+
+# Runtime database files
+*.db
+*.db-shm
+*.db-wal
+
+# Actrix integration files
+actrix-*.toml
+actrix-*.db*
+ACTRIX*.md
+
+# Demo logs
+.demo_logs/

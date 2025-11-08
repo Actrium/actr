@@ -1,0 +1,32 @@
+[package]
+name = "actr-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "Unified protocol, types, and URI parsing for Actor-RTC framework"
+license = "Apache-2.0"
+keywords = ["actor", "protobuf", "types", "protocol", "uri"]
+repository = "https://github.com/actor-rtc/actr-protocol"
+readme = "README.md"
+
+[dependencies]
+# Protocol buffer support (using prost with proto2)
+prost = "0.14.1"
+prost-types = "0.14.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Bytes handling (zero-copy for protobuf bytes fields)
+bytes = "1.10"
+
+# Time and UUID for signaling protocol
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[build-dependencies]
+# Protocol buffer compilation (using prost-build)
+prost-build = "0.14.1"
+glob = "0.3"

@@ -1,0 +1,28 @@
+edition = 1
+
+exports = [
+  "examples/test.proto"
+]
+
+[package]
+name = "test-service"
+manufacturer = "acme"
+type = "test-service"
+description = "Test configuration"
+
+[dependencies]
+user-service = {}
+payment = { actr_type = "acme:payment-service", fingerprint = "service_semantic:abc123..." }
+
+[scripts]
+run = "cargo run"
+test = "cargo test"
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm = 1001
+
+[system.discovery]
+visible = true

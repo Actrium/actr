@@ -1,0 +1,32 @@
+[package]
+name = "actr-config"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Configuration file parser and project manifest support for Actor-RTC framework"
+license = "Apache-2.0"
+
+[dependencies]
+# Protocol definitions (local path)
+actr-protocol = { path = "../protocol" }
+
+# Version management (local path)
+actr-version = { path = "../version" }
+
+# Serialization and configuration parsing
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Error handling
+thiserror = "1.0"
+
+# URL handling for proto dependencies
+url = "2.5"
+
+# Time handling for lock files
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+# JSON serialization for tests
+serde_json = "1.0"
+tempfile = "3.23"

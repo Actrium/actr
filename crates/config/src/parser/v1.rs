@@ -1,0 +1,341 @@
+//! Edition 1 configuration parser
+
+use crate::config::{Config, Dependency, PackageInfo, ProtoFile};
+use crate::error::{ConfigError, Result};
+use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
+use actr_protocol::{Acl, ActrType, Realm};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use url::Url;
+
+/// Edition 1 格式的解析器
+pub struct ParserV1 {
+    base_dir: PathBuf,
+}
+
+impl ParserV1 {
+    pub fn new(config_path: impl AsRef<Path>) -> Self {
+        let base_dir = config_path
+            .as_ref()
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Self { base_dir }
+    }
+
+    pub fn parse(&self, mut raw: RawConfig) -> Result<Config> {
+        // 1. 处理继承
+        let raw = if let Some(parent_path) = raw.inherit.take() {
+            self.merge_inheritance(raw, parent_path)?
+        } else {
+            raw
+        };
+
+        // 2. 验证必需字段
+        self.validate_required_fields(&raw)?;
+
+        // 3. 解析 package
+        let package = self.parse_package(&raw.package)?;
+
+        // 4. 解析 exports
+        let exports = self.parse_exports(&raw.exports)?;
+
+        // 5. 获取 realm
+        let self_realm = Realm {
+            realm_id: raw
+                .system
+                .deployment
+                .realm
+                .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
+        };
+
+        // 6. 解析 dependencies
+        let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
+
+        // 7. 解析 signaling URL
+        let signaling_url = Url::parse(
+            &raw.system
+                .signaling
+                .url
+                .ok_or(ConfigError::MissingField("system.signaling.url"))?,
+        )
+        .map_err(ConfigError::InvalidUrl)?;
+
+        // 8. 解析 ACL
+        let acl = if let Some(acl_value) = raw.acl {
+            Some(self.parse_acl(acl_value)?)
+        } else {
+            None
+        };
+
+        // 9. 构建最终配置
+        Ok(Config {
+            package,
+            exports,
+            dependencies,
+            signaling_url,
+            realm: self_realm,
+            visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
+            acl,
+            mailbox_path: raw.system.storage.mailbox_path,
+            tags: raw.package.tags,
+            scripts: raw.scripts,
+        })
+    }
+
+    fn parse_package(&self, raw: &RawPackageConfig) -> Result<PackageInfo> {
+        let actr_type = ActrType {
+            manufacturer: raw.manufacturer.clone(),
+            name: raw.type_name.clone(),
+        };
+
+        Ok(PackageInfo {
+            name: raw.name.clone(),
+            actr_type,
+            description: raw.description.clone(),
+            authors: raw.authors.clone().unwrap_or_default(),
+            license: raw.license.clone(),
+        })
+    }
+
+    fn parse_exports(&self, paths: &[PathBuf]) -> Result<Vec<ProtoFile>> {
+        paths
+            .iter()
+            .map(|path| {
+                let full_path = self.base_dir.join(path);
+                let content = std::fs::read_to_string(&full_path)
+                    .map_err(|e| ConfigError::ProtoFileNotFound(full_path.clone(), e))?;
+                Ok(ProtoFile {
+                    path: full_path,
+                    content,
+                })
+            })
+            .collect()
+    }
+
+    fn parse_dependencies(
+        &self,
+        deps: &HashMap<String, RawDependency>,
+        self_realm: &Realm,
+    ) -> Result<Vec<Dependency>> {
+        deps.iter()
+            .map(|(alias, raw_dep)| {
+                let (realm_id, actr_type_str, fingerprint) = match raw_dep {
+                    RawDependency::Empty {} => {
+                        // 空依赖声明：使用别名作为 actr_type，无指纹
+                        (None, alias.clone(), None)
+                    }
+                    RawDependency::WithFingerprint {
+                        realm,
+                        actr_type,
+                        fingerprint,
+                    } => {
+                        let type_str = actr_type.as_ref().unwrap_or(alias).clone();
+                        (*realm, type_str, Some(fingerprint.clone()))
+                    }
+                };
+
+                // 解析 ActrType
+                let actr_type = self.parse_actr_type(&actr_type_str)?;
+
+                // 确定 realm
+                let realm = Realm {
+                    realm_id: realm_id.unwrap_or(self_realm.realm_id),
+                };
+
+                Ok(Dependency {
+                    alias: alias.clone(),
+                    realm,
+                    actr_type,
+                    fingerprint,
+                })
+            })
+            .collect()
+    }
+
+    fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
+        // 支持两种格式：
+        // 1. "service-name" -> manufacturer = "", name = "service-name"
+        // 2. "manufacturer:service-name"
+        if let Some((manufacturer, name)) = s.split_once(':') {
+            Ok(ActrType {
+                manufacturer: manufacturer.to_string(),
+                name: name.to_string(),
+            })
+        } else {
+            Ok(ActrType {
+                manufacturer: String::new(),
+                name: s.to_string(),
+            })
+        }
+    }
+
+    fn parse_acl(&self, _value: toml::Value) -> Result<Acl> {
+        // TODO: Implement proper ACL parsing when actr-protocol supports serde
+        // For now, return an empty ACL
+        Ok(Acl { rules: vec![] })
+    }
+
+    fn merge_inheritance(&self, child: RawConfig, parent_path: PathBuf) -> Result<RawConfig> {
+        let parent_full_path = self.base_dir.join(&parent_path);
+        let mut parent = RawConfig::from_file(&parent_full_path)?;
+
+        // 检查 edition 一致性
+        if parent.edition != child.edition {
+            return Err(ConfigError::EditionMismatch {
+                parent: parent.edition,
+                child: child.edition,
+            });
+        }
+
+        // 递归处理父配置的继承
+        let parent = if let Some(grandparent) = parent.inherit.take() {
+            self.merge_inheritance(parent, grandparent)?
+        } else {
+            parent
+        };
+
+        // 合并逻辑
+        Ok(RawConfig {
+            edition: child.edition, // 已验证一致
+            inherit: None,
+            package: child.package, // package 不继承
+            exports: {
+                let mut p = parent.exports;
+                p.extend(child.exports);
+                p
+            },
+            dependencies: {
+                let mut d = parent.dependencies;
+                d.extend(child.dependencies);
+                d
+            },
+            system: self.merge_system_config(parent.system, child.system),
+            acl: child.acl.or(parent.acl),
+            scripts: {
+                let mut s = parent.scripts;
+                s.extend(child.scripts);
+                s
+            },
+        })
+    }
+
+    fn merge_system_config(
+        &self,
+        parent: RawSystemConfig,
+        child: RawSystemConfig,
+    ) -> RawSystemConfig {
+        RawSystemConfig {
+            signaling: crate::raw::RawSignalingConfig {
+                url: child.signaling.url.or(parent.signaling.url),
+            },
+            deployment: crate::raw::RawDeploymentConfig {
+                realm: child.deployment.realm.or(parent.deployment.realm),
+            },
+            discovery: crate::raw::RawDiscoveryConfig {
+                visible: child.discovery.visible.or(parent.discovery.visible),
+            },
+            storage: crate::raw::RawStorageConfig {
+                mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
+            },
+        }
+    }
+
+    fn validate_required_fields(&self, raw: &RawConfig) -> Result<()> {
+        if raw.system.signaling.url.is_none() {
+            return Err(ConfigError::MissingField("system.signaling.url"));
+        }
+        if raw.system.deployment.realm.is_none() {
+            return Err(ConfigError::MissingField("system.deployment.realm"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RawConfig;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_parse_basic_config() {
+        let toml_content = r#"
+edition = 1
+exports = ["proto/test.proto"]
+
+[package]
+name = "test-service"
+manufacturer = "acme"
+type = "test-service"
+
+[dependencies]
+user-service = {}
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm = 1001
+
+[scripts]
+run = "cargo run"
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("Actr.toml");
+
+        // 创建 proto 文件
+        let proto_dir = tmpdir.path().join("proto");
+        fs::create_dir_all(&proto_dir).unwrap();
+        fs::write(proto_dir.join("test.proto"), "syntax = \"proto3\";").unwrap();
+
+        // 写入配置
+        fs::write(&config_path, toml_content).unwrap();
+
+        // 解析
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let config = parser.parse(raw).unwrap();
+
+        assert_eq!(config.package.name, "test-service");
+        assert_eq!(config.realm.realm_id, 1001);
+        assert_eq!(config.dependencies.len(), 1);
+        assert_eq!(config.exports.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_cross_realm_dependency() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+type = "test"
+
+[dependencies]
+shared = { actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("Actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let config = parser.parse(raw).unwrap();
+
+        let dep = config.get_dependency("shared").unwrap();
+        assert_eq!(dep.realm.realm_id, 9999);
+        assert_eq!(dep.actr_type.name, "logging-service");
+        assert!(dep.is_cross_realm(&config.realm));
+    }
+}

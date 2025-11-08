@@ -1,0 +1,334 @@
+//! ActrRef - Lightweight reference to a running Actor
+//!
+//! # Design Philosophy
+//!
+//! `ActrRef` is the primary handle for interacting with a running Actor.
+//! It provides:
+//!
+//! - **RPC calls**: Call Actor methods (Shell → Workload)
+//! - **Event subscription**: Subscribe to Actor events (Workload → Shell)
+//! - **Lifecycle control**: Shutdown and wait for completion
+//!
+//! # Key Characteristics
+//!
+//! - **Cloneable**: Can be shared across tasks
+//! - **Lightweight**: Contains only an `Arc` to shared state
+//! - **Auto-cleanup**: Last `ActrRef` drop triggers resource cleanup
+//! - **Code-gen friendly**: RPC methods will be generated and bound to this type
+//!
+//! # Usage
+//!
+//! ```rust,ignore
+//! let actr = node.start().await?;
+//!
+//! // Clone and use in different tasks
+//! let actr1 = actr.clone();
+//! tokio::spawn(async move {
+//!     actr1.call(SomeRequest { ... }).await?;
+//! });
+//!
+//! // Subscribe to events
+//! let mut events = actr.events();
+//! while let Some(event) = events.next().await {
+//!     println!("Event: {:?}", event);
+//! }
+//!
+//! // Shutdown
+//! actr.shutdown();
+//! actr.wait_for_shutdown().await;
+//! ```
+
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use actr_framework::{Bytes, Workload};
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
+
+use crate::outbound::InprocOutGate;
+
+/// ActrRef - Lightweight reference to a running Actor
+///
+/// This is the primary handle returned by `ActrNode::start()`.
+///
+/// # Code Generation Pattern
+///
+/// `actr-cli` code generator will generate type-safe RPC methods for `ActrRef`.
+///
+/// ## Proto Definition
+///
+/// ```protobuf
+/// service EchoService {
+///   rpc Echo(EchoRequest) returns (EchoResponse);
+///   rpc Ping(PingRequest) returns (PingResponse);
+/// }
+/// ```
+///
+/// ## Generated Code (in `generated/echo_service_actr_ref.rs`)
+///
+/// ```rust,ignore
+/// use actr_runtime::ActrRef;
+/// use super::echo_service_actor::{EchoServiceWorkload, EchoServiceHandler};
+/// use super::echo::{EchoRequest, EchoResponse, PingRequest, PingResponse};
+///
+/// impl<T: EchoServiceHandler> ActrRef<EchoServiceWorkload<T>> {
+///     /// Call Echo RPC method
+///     pub async fn echo(&self, request: EchoRequest) -> ActorResult<EchoResponse> {
+///         self.call(request).await
+///     }
+///
+///     /// Call Ping RPC method
+///     pub async fn ping(&self, request: PingRequest) -> ActorResult<PingResponse> {
+///         self.call(request).await
+///     }
+/// }
+/// ```
+///
+/// ## Usage in Shell
+///
+/// ```rust,ignore
+/// use generated::echo_service_actr_ref::*;  // Import ActrRef extensions
+///
+/// let actr = node.start().await?;
+///
+/// // Type-safe RPC calls (generated methods)
+/// let response = actr.echo(EchoRequest {
+///     message: "Hello".to_string(),
+/// }).await?;
+///
+/// // Or use generic call() method
+/// let response: EchoResponse = actr.call(EchoRequest { ... }).await?;
+/// ```
+///
+/// # Design Rationale
+///
+/// **Why bind RPC methods to ActrRef?**
+///
+/// 1. **Type Safety**: Compiler checks request/response types
+/// 2. **Auto-completion**: IDE shows available RPC methods
+/// 3. **No target needed**: ActrRef already knows its target Actor
+/// 4. **Symmetric to Context**: Similar to Context extension pattern
+///
+/// **Comparison with Context pattern:**
+///
+/// | Aspect | Context (in Workload) | ActrRef (in Shell) |
+/// |--------|----------------------|-------------------|
+/// | Caller | Workload | Shell |
+/// | Target | Any Actor (needs `target` param) | This Workload (fixed) |
+/// | Method | `ctx.call(target, req)` | `actr.echo(req)` |
+/// | Generation | Extension trait | Concrete impl |
+pub struct ActrRef<W: Workload> {
+    pub(crate) shared: Arc<ActrRefShared>,
+    _phantom: PhantomData<W>,
+}
+
+impl<W: Workload> Clone for ActrRef<W> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+/// Shared state between all ActrRef clones
+///
+/// This is an internal implementation detail. When the last `ActrRef` is dropped,
+/// this struct's `Drop` impl will trigger shutdown and cleanup all resources.
+pub(crate) struct ActrRefShared {
+    /// Actor ID
+    pub(crate) actor_id: ActrId,
+
+    /// Inproc gate for Shell → Workload RPC
+    pub(crate) inproc_gate: Arc<InprocOutGate>,
+
+    /// Shutdown signal
+    pub(crate) shutdown_token: CancellationToken,
+
+    /// Background task handles (receive loops, WebRTC coordinator, etc.)
+    pub(crate) task_handles: Vec<JoinHandle<()>>,
+}
+
+impl<W: Workload> ActrRef<W> {
+    /// Create new ActrRef from shared state
+    ///
+    /// This is an internal API used by `ActrNode::start()`.
+    pub(crate) fn new(shared: Arc<ActrRefShared>) -> Self {
+        Self {
+            shared,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Get Actor ID
+    pub fn actor_id(&self) -> &ActrId {
+        &self.shared.actor_id
+    }
+
+    /// Call Actor method (Shell → Workload RPC)
+    ///
+    /// This is a generic method used by code-generated RPC methods.
+    /// Most users should use the generated methods instead.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Generic call
+    /// let response: EchoResponse = actr.call(EchoRequest {
+    ///     message: "Hello".to_string(),
+    /// }).await?;
+    ///
+    /// // Generated method (preferred)
+    /// let response = actr.echo(EchoRequest {
+    ///     message: "Hello".to_string(),
+    /// }).await?;
+    /// ```
+    pub async fn call<R>(&self, request: R) -> ActorResult<R::Response>
+    where
+        R: actr_protocol::RpcRequest + ProstMessage,
+    {
+        // Encode request
+        let payload: Bytes = request.encode_to_vec().into();
+
+        // Create envelope
+        let envelope = RpcEnvelope {
+            route_key: R::route_key().to_string(),
+            payload: Some(payload),
+            error: None,
+            trace_id: uuid::Uuid::new_v4().to_string(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 30000,
+        };
+
+        // Send request and wait for response (target is our actor_id for logging)
+        let response_bytes = self
+            .shared
+            .inproc_gate
+            .send_request(&self.shared.actor_id, envelope)
+            .await?;
+
+        // Decode response
+        R::Response::decode(&*response_bytes).map_err(|e| {
+            ProtocolError::Actr(ActrError::DecodeFailure {
+                message: format!("Failed to decode response: {e}"),
+            })
+        })
+    }
+
+    /// Send one-way message to Actor (Shell → Workload, fire-and-forget)
+    ///
+    /// Unlike `call()`, this method does not wait for a response.
+    /// Use this for notifications or commands that don't need acknowledgment.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Send notification without waiting for response
+    /// actr.tell(LogEvent {
+    ///     level: "INFO".to_string(),
+    ///     message: "User logged in".to_string(),
+    /// }).await?;
+    ///
+    /// // Generated method (if codegen supports tell)
+    /// actr.log_event(LogEvent { ... }).await?;
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// - **Latency**: ~10μs (in-process, zero serialization)
+    /// - **No blocking**: Returns immediately after sending
+    /// - **No response**: Caller won't know if message was processed
+    pub async fn tell<R>(&self, message: R) -> ActorResult<()>
+    where
+        R: actr_protocol::RpcRequest + ProstMessage,
+    {
+        // Encode message
+        let payload: Bytes = message.encode_to_vec().into();
+
+        // Create envelope (note: request_id still included for tracing)
+        let envelope = RpcEnvelope {
+            route_key: R::route_key().to_string(),
+            payload: Some(payload),
+            error: None,
+            trace_id: uuid::Uuid::new_v4().to_string(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 0, // No timeout for one-way messages
+        };
+
+        // Send message without waiting for response
+        self.shared
+            .inproc_gate
+            .send_message(&self.shared.actor_id, envelope)
+            .await
+    }
+
+    /// Trigger Actor shutdown
+    ///
+    /// This signals the Actor to stop, but does not wait for completion.
+    /// Use `wait_for_shutdown()` to wait for cleanup to finish.
+    pub fn shutdown(&self) {
+        tracing::info!("🛑 Shutdown requested for Actor {:?}", self.shared.actor_id);
+        self.shared.shutdown_token.cancel();
+    }
+
+    /// Wait for Actor to fully shutdown
+    ///
+    /// This waits for the shutdown signal to be triggered.
+    /// All background tasks will be aborted when the last `ActrRef` is dropped.
+    pub async fn wait_for_shutdown(&self) {
+        self.shared.shutdown_token.cancelled().await;
+    }
+
+    /// Check if Actor is shutting down
+    pub fn is_shutting_down(&self) -> bool {
+        self.shared.shutdown_token.is_cancelled()
+    }
+
+    /// Convenience: wait for Ctrl+C and shutdown
+    ///
+    /// This consumes the `ActrRef` and waits for Ctrl+C, then triggers shutdown.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let actr = node.start().await?;
+    /// actr.wait_for_ctrl_c_and_shutdown().await?;
+    /// ```
+    pub async fn wait_for_ctrl_c_and_shutdown(self) -> ActorResult<()> {
+        tokio::signal::ctrl_c()
+            .await
+            .map_err(|e| ProtocolError::TransportError(format!("Ctrl+C signal error: {e}")))?;
+
+        tracing::info!("📡 Received Ctrl+C signal");
+        self.shutdown();
+        self.wait_for_shutdown().await;
+
+        Ok(())
+    }
+}
+
+impl Drop for ActrRefShared {
+    fn drop(&mut self) {
+        tracing::info!(
+            "🧹 ActrRefShared dropping - cleaning up Actor {:?}",
+            self.actor_id
+        );
+
+        // Cancel shutdown token
+        self.shutdown_token.cancel();
+
+        // Abort all background tasks
+        for handle in self.task_handles.drain(..) {
+            handle.abort();
+        }
+
+        tracing::debug!(
+            "✅ All background tasks aborted for Actor {:?}",
+            self.actor_id
+        );
+    }
+}

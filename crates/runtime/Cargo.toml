@@ -1,0 +1,63 @@
+[package]
+name = "actr-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runtime layer for Actor-RTC framework - actor system, scheduler, and orchestration"
+keywords = ["actor", "runtime", "scheduler", "system", "orchestration"]
+categories = ["concurrency", "asynchronous", "development-tools"]
+
+[dependencies]
+# === Foundation Layer (基础层) ===
+actr-protocol.workspace = true
+actr-framework.workspace = true
+actr-version.workspace = true
+actr-config.workspace = true
+
+# === Runtime 子 crate ===
+actr-mailbox = { path = "../runtime-mailbox" }
+
+# === 异步运行时 ===
+tokio.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = "0.27"
+
+# === 调度和并发 ===
+tokio-util = "0.7"
+dashmap = "5.5"
+crossbeam = "0.8"
+either = "1.15"
+
+# === 工具库 ===
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+num_cpus = "1.17"
+webrtc = "0.14"
+url = "2.5"
+prost-types = "0.14"
+rand = "0.8"
+
+# === 序列化 ===
+serde.workspace = true
+serde_json.workspace = true
+bytes = "1.10"
+
+# === 日志记录 ===
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# 移除了可选依赖项，因为相关功能模块尚未实现
+# 当实际需要 metrics, tower, hyper 等功能时再添加
+
+# 目前没有可选功能特性，移除 features 部分以简化配置
+# 当需要添加可选功能时再重新引入
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.23"
+prost = "0.14"
