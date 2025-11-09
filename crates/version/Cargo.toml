@@ -7,7 +7,6 @@ description = "Protocol compatibility analysis library using semantic proto anal
 license.workspace = true
 keywords = ["actor", "protobuf", "compatibility", "breaking-changes", "protocol"]
 repository = "https://github.com/actor-rtc/actr-version"
-readme = "README.md"
 
 [dependencies]
 # Core dependencies for service compatibility analysis
