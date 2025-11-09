@@ -16,6 +16,7 @@ actr-protocol.workspace = true
 actr-framework.workspace = true
 actr-runtime = { workspace = true, optional = true }
 actr-config = { workspace = true, optional = true }
+actr-version = { workspace = true, optional = true }
 
 # 常用依赖
 async-trait.workspace = true
@@ -26,8 +27,8 @@ default = ["runtime", "config"]
 # Runtime 支持 - 包含完整的 ActorSystem 运行时
 runtime = ["dep:actr-runtime"]
 
-# Config 支持 - 包含配置文件解析
-config = ["dep:actr-config"]
+# Config 支持 - 包含配置文件解析和版本分析
+config = ["dep:actr-config", "dep:actr-version"]
 
 # 完整功能
 full = ["runtime", "config"]
