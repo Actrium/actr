@@ -62,12 +62,12 @@ authors = ["Actor-RTC Contributors"]
 
 [workspace.dependencies]
 # === Internal Dependencies (内部依赖) ===
-actr-protocol = { path = "crates/protocol" }
-actr-version = { path = "crates/version" }
-actr-config = { path = "crates/config" }
-actr-framework = { path = "crates/framework" }
-actr-runtime = { path = "crates/runtime" }
-actr-mailbox = { path = "crates/runtime-mailbox" }
+actr-protocol = { path = "crates/protocol", version = "0.1" }
+actr-version = { path = "crates/version", version = "0.1" }
+actr-config = { path = "crates/config", version = "0.1" }
+actr-framework = { path = "crates/framework", version = "0.1" }
+actr-runtime = { path = "crates/runtime", version = "0.1" }
+actr-mailbox = { path = "crates/runtime-mailbox", version = "0.1" }
 
 # === Async Runtime (异步运行时) ===
 tokio = { version = "1.48", features = ["full"] }

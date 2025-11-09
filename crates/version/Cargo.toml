@@ -10,8 +10,8 @@ repository = "https://github.com/actor-rtc/actr-version"
 
 [dependencies]
 # Core dependencies for service compatibility analysis
-actr-protocol = { path = "../protocol" }  # ServiceSpec and protocol types
-proto-sign = { git = "https://github.com/actor-rtc/proto-sign" }  # Semantic proto analysis
+actr-protocol = { path = "../protocol", version = "0.1" }  # ServiceSpec and protocol types
+proto-sign = { git = "https://github.com/actor-rtc/proto-sign", version = "0.1" }  # Semantic proto analysis
 
 # Serialization support
 serde = { version = "1.0", features = ["derive"] }
