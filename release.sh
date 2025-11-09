@@ -268,9 +268,13 @@ verify_crate_publish() {
 
     # 只验证打包，不验证依赖（因为依赖的 crate 可能还未发布）
     # 使用 --no-verify 跳过 build 验证
-    cargo package --allow-dirty --no-verify -p "$crate_name" > /dev/null 2>&1
-
-    log_success "$crate_name 打包验证通过"
+    if cargo package --allow-dirty --no-verify -p "$crate_name" > /dev/null 2>&1; then
+        log_success "$crate_name 打包验证通过"
+        return 0
+    else
+        log_error "$crate_name 打包验证失败"
+        return 1
+    fi
 }
 
 # 发布单个 crate
