@@ -1,10 +1,11 @@
 [package]
 name = "actr-config"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Configuration file parser and project manifest support for Actor-RTC framework"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 # Protocol definitions (local path)
