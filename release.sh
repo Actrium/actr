@@ -266,9 +266,11 @@ verify_crate_publish() {
 
     log_step "验证 $crate_name 发布配置..."
 
-    pushd "$crate_path" > /dev/null
-    cargo publish --dry-run --allow-dirty
-    popd > /dev/null
+    if [[ "$crate_path" == "." ]]; then
+        cargo publish --dry-run --allow-dirty -p "$crate_name"
+    else
+        cargo publish --dry-run --allow-dirty -p "$crate_name"
+    fi
 
     log_success "$crate_name 验证通过"
 }
@@ -285,9 +287,7 @@ publish_crate() {
 
     log_step "发布 $crate_name 到 crates.io..."
 
-    pushd "$crate_path" > /dev/null
-    cargo publish
-    popd > /dev/null
+    cargo publish -p "$crate_name"
 
     # 等待 crates.io 索引更新
     log_info "等待 crates.io 索引更新... (30 秒)"
