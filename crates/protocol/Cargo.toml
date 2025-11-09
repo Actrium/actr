@@ -7,7 +7,6 @@ description = "Unified protocol, types, and URI parsing for Actor-RTC framework"
 license.workspace = true
 keywords = ["actor", "protobuf", "types", "protocol", "uri"]
 repository = "https://github.com/actor-rtc/actr-protocol"
-readme = "README.md"
 
 [dependencies]
 # Protocol buffer support (using prost with proto2)
