@@ -339,11 +339,7 @@ create_git_tag() {
 
     log_info "创建 Git 标签: $tag"
 
-    # 提交版本变更
-    git add -A
-    git commit -m "Release version $version"
-
-    # 创建标签
+    # 创建标签（版本变更已经在之前提交了）
     git tag -a "$tag" -m "Release $version"
 
     # 推送到远程
@@ -411,6 +407,12 @@ main() {
 
     log_info "更新最终 Cargo.lock..."
     cargo update --workspace
+
+    # 提交版本变更（在创建 tag 前）
+    if [[ "$DRY_RUN" == false ]]; then
+        git add -A
+        git commit -m "Release version $NEW_VERSION"
+    fi
 
     create_git_tag "$NEW_VERSION"
 
