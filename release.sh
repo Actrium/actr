@@ -398,7 +398,12 @@ main() {
     log_info "更新 Cargo.lock..."
     cargo update --workspace
 
-    replace_path_with_version "$NEW_VERSION"
+    # Dry-run 模式：使用 path 依赖验证
+    # 实际发布模式：替换为 version 依赖
+    if [[ "$DRY_RUN" == false ]]; then
+        replace_path_with_version "$NEW_VERSION"
+    fi
+
     run_tests
     publish_all_crates
 
