@@ -168,8 +168,7 @@ update_version() {
     log_info "更新 workspace 版本号: $CURRENT_VERSION -> $new_version"
 
     # 更新 workspace.package.version
-    sed -i.bak "s/^\(\[workspace\.package\]\)/\1\nversion = \"$new_version\"/" Cargo.toml || \
-    sed -i.bak "/^\[workspace\.package\]/,/^\[/ s/^version = \"$CURRENT_VERSION\"/version = \"$new_version\"/" Cargo.toml
+    sed -i.bak "/^\[workspace\.package\]/,/^\[/ s/^version = \"[^\"]*\"/version = \"$new_version\"/" Cargo.toml
 
     rm -f Cargo.toml.bak
 
