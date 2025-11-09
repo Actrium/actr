@@ -264,13 +264,13 @@ verify_crate_publish() {
     local crate_path=$1
     local crate_name=$2
 
-    log_step "验证 $crate_name 发布配置..."
+    log_step "验证 $crate_name 打包配置..."
 
-    # 使用 --no-verify 跳过 build 验证，因为有些 crate (如 actr-protocol)
-    # 的 build.rs 会生成代码到 src/ 而不是 OUT_DIR
-    cargo publish --dry-run --allow-dirty --no-verify -p "$crate_name"
+    # 只验证打包，不验证依赖（因为依赖的 crate 可能还未发布）
+    # 使用 --no-verify 跳过 build 验证
+    cargo package --allow-dirty --no-verify -p "$crate_name" > /dev/null 2>&1
 
-    log_success "$crate_name 验证通过"
+    log_success "$crate_name 打包验证通过"
 }
 
 # 发布单个 crate
