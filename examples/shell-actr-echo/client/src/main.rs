@@ -1,15 +1,15 @@
 use anyhow::Result;
-use tracing::info;
 use std::collections::HashMap;
+use tracing::info;
 
-mod generated;
-mod client_workload;
 mod app_side;
+mod client_workload;
+mod generated;
 
-use actr_protocol::{ActrType, Realm, ActrId};
+use actr_protocol::{ActrId, ActrType, Realm};
 use actr_runtime::prelude::*;
-use client_workload::ClientWorkload;
 use app_side::AppSide;
+use client_workload::ClientWorkload;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
         realm: Realm { realm_id: 0 },
         visible_in_discovery: true,
         acl: None,
-        mailbox_path: None,  // Use in-memory database
+        mailbox_path: None, // Use in-memory database
         tags: vec!["dev".to_string(), "client".to_string()],
         scripts: HashMap::new(),
     };

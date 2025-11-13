@@ -1,13 +1,13 @@
 //! Relay Client Workload - forwards media frames to actr-b
 
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
-use bytes::Bytes;
 
-use actr_protocol::{ActrType, RpcEnvelope, ActrId};
-use actr_framework::{Workload, Context, Dest, MessageDispatcher};
 use crate::generated::media_relay::{RelayFrameRequest, RelayFrameResponse};
+use actr_framework::{Context, Dest, MessageDispatcher, Workload};
+use actr_protocol::{ActrId, ActrType, RpcEnvelope};
 
 /// Client Workload that forwards frames to remote actr-b
 pub struct RelayClientWorkload {
@@ -48,8 +48,9 @@ impl MessageDispatcher for RelayClientDispatcher {
         envelope: RpcEnvelope,
         ctx: &C,
     ) -> actr_protocol::ActorResult<Bytes> {
-        let payload = envelope.payload.as_ref()
-            .ok_or_else(|| actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string()))?;
+        let payload = envelope.payload.as_ref().ok_or_else(|| {
+            actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string())
+        })?;
         let request: RelayFrameRequest = prost::Message::decode(&**payload)
             .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
 
@@ -59,15 +60,14 @@ impl MessageDispatcher for RelayClientDispatcher {
             })
         })?;
 
-        let server_id = workload.server_id.lock().await
-            .clone()
-            .ok_or_else(|| actr_protocol::ProtocolError::TransportError(
-                "Server ID not configured".to_string()
-            ))?;
+        let server_id = workload.server_id.lock().await.clone().ok_or_else(|| {
+            actr_protocol::ProtocolError::TransportError("Server ID not configured".to_string())
+        })?;
 
         info!(
             "[RelayClientWorkload] Forwarding frame #{} ({} bytes) to actr-b via WebRTC P2P",
-            frame.frame_number, frame.data.len()
+            frame.frame_number,
+            frame.data.len()
         );
 
         // Call remote server via Dest::Actor

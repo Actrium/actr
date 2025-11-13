@@ -6,11 +6,11 @@ mod generated;
 mod relay_client_workload;
 
 use generated::media_relay::*;
-use relay_client_workload::RelayClientWorkload;
 use media_relay_common::{MediaSource, TestPatternSource};
+use relay_client_workload::RelayClientWorkload;
 
+use actr_protocol::{ActrId, ActrType, Realm};
 use actr_runtime::prelude::*;
-use actr_protocol::{ActrType, Realm, ActrId};
 use tracing::info;
 
 #[tokio::main]
@@ -107,8 +107,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Call local workload via ActrRef, which forwards to remote actr-b
             match actr_ref.call(request).await {
                 Ok(response) => {
-                    info!("   ✅ 帧 #{} 已发送，服务器确认: success={}, received_at={}",
-                          i, response.success, response.received_at);
+                    info!(
+                        "   ✅ 帧 #{} 已发送，服务器确认: success={}, received_at={}",
+                        i, response.success, response.received_at
+                    );
                 }
                 Err(e) => {
                     info!("   ❌ 帧 #{} 发送失败: {:?}", i, e);

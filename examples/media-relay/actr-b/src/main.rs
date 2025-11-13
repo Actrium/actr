@@ -5,8 +5,8 @@
 mod generated;
 mod relay_service;
 
-use relay_service::RelayService;
 use generated::relay_service_actor::RelayServiceWorkload;
+use relay_service::RelayService;
 
 use actr_runtime::prelude::*;
 use tracing::info;

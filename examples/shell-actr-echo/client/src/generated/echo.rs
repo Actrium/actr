@@ -3,15 +3,15 @@
 /// Echo 请求
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EchoRequest {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
 }
 /// Echo 响应
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EchoResponse {
-    #[prost(string, tag="1")]
+    #[prost(string, tag = "1")]
     pub reply: ::prost::alloc::string::String,
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub timestamp: u64,
 }
 // @@protoc_insertion_point(module)

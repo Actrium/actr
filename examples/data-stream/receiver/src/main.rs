@@ -4,16 +4,16 @@
 //! - RPC for control messages (StartTransfer, EndTransfer)
 //! - DataStream API for fast path data transmission
 
-mod generated;
 mod file_transfer_service;
+mod generated;
 
 use file_transfer_service::FileTransferService;
 use generated::file_transfer_service_actor::FileTransferServiceWorkload;
 
-use actr_runtime::prelude::*;
 use actr_protocol::{ActrType, Realm};
-use tracing::{info, error};
+use actr_runtime::prelude::*;
 use std::collections::HashMap;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,7 +1,7 @@
 //! Echo service implementation
 
-use crate::generated::echo_service_actor::EchoServiceHandler;
 use crate::generated::echo::{EchoRequest, EchoResponse};
+use crate::generated::echo_service_actor::EchoServiceHandler;
 use actr_framework::Context;
 use actr_protocol::ActorResult;
 use async_trait::async_trait;
@@ -46,18 +46,19 @@ mod tests {
         let service = EchoService::new();
 
         // Create a minimal context for testing
-        use actr_runtime::ContextFactory;
-        use actr_runtime::outbound::{OutGate, InprocOutGate};
-        use actr_runtime::transport::InprocTransportManager;
-        use actr_runtime::inbound::{DataStreamRegistry, MediaFrameRegistry};
         use actr_protocol::ActrId;
+        use actr_runtime::ContextFactory;
+        use actr_runtime::inbound::{DataStreamRegistry, MediaFrameRegistry};
+        use actr_runtime::outbound::{InprocOutGate, OutGate};
+        use actr_runtime::transport::InprocTransportManager;
         use std::sync::Arc;
 
         let test_id = ActrId::default();
         // Create two separate InprocTransportManager instances (bidirectional)
         let shell_to_workload = Arc::new(InprocTransportManager::new());
         let workload_to_shell = Arc::new(InprocTransportManager::new());
-        let inproc_gate = OutGate::InprocOut(Arc::new(InprocOutGate::new(shell_to_workload.clone())));
+        let inproc_gate =
+            OutGate::InprocOut(Arc::new(InprocOutGate::new(shell_to_workload.clone())));
         let data_stream_registry = Arc::new(DataStreamRegistry::new());
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
         let context_factory = ContextFactory::new(

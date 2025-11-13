@@ -1,8 +1,8 @@
 //! Relay Service Implementation - receives and displays media frames
 
-use async_trait::async_trait;
 use actr_framework::Context;
 use actr_protocol::ActorResult;
+use async_trait::async_trait;
 
 use crate::generated::media_relay::*;
 use crate::generated::relay_service_actor::RelayServiceHandler;
@@ -49,11 +49,11 @@ impl RelayServiceHandler for RelayService {
 
         let received_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| actr_protocol::ProtocolError::Actr(
-                actr_protocol::ActrError::DecodeFailure {
+            .map_err(|e| {
+                actr_protocol::ProtocolError::Actr(actr_protocol::ActrError::DecodeFailure {
                     message: format!("SystemTime error: {}", e),
-                }
-            ))?
+                })
+            })?
             .as_millis() as u64;
 
         Ok(RelayFrameResponse {

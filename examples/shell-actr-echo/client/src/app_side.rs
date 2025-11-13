@@ -1,8 +1,8 @@
-use tracing::{info, error};
+use tracing::{error, info};
 
-use actr_runtime::prelude::*;
 use crate::client_workload::ClientWorkload;
 use crate::generated::echo::EchoRequest;
+use actr_runtime::prelude::*;
 
 pub struct AppSide {
     pub actr_ref: ActrRef<ClientWorkload>,
@@ -14,7 +14,7 @@ impl AppSide {
         println!("===== Echo Client App =====");
         println!("Type messages to send to server (type 'quit' to exit):");
 
-        use tokio::io::{stdin, BufReader, AsyncBufReadExt};
+        use tokio::io::{AsyncBufReadExt, BufReader, stdin};
         let stdin = stdin();
         let mut reader = BufReader::new(stdin).lines();
 

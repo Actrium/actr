@@ -2,14 +2,14 @@
 //!
 //! 使用 ActorSystem 启动，通过 signaling server 注册
 
-mod generated;
 mod echo_service;
+mod generated;
 
 use echo_service::EchoService;
 use generated::echo_service_actor::EchoServiceWorkload;
 
 use actr_runtime::prelude::*;
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         realm: Realm { realm_id: 0 },
         visible_in_discovery: true,
         acl: None,
-        mailbox_path: None,  // Use in-memory database
+        mailbox_path: None, // Use in-memory database
         tags: vec!["dev".to_string(), "example".to_string()],
         scripts: HashMap::new(),
     };

@@ -1,9 +1,9 @@
 //! FileTransfer Service Implementation - Receiver
 
-use crate::generated::file_transfer_service_actor::FileTransferServiceHandler;
 use crate::generated::file_transfer::*;
-use actr_runtime::prelude::*;
+use crate::generated::file_transfer_service_actor::FileTransferServiceHandler;
 use actr_protocol::{ActorResult, DataStream};
+use actr_runtime::prelude::*;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -93,7 +93,11 @@ impl FileTransferServiceHandler for FileTransferService {
         }).await?;
 
         tracing::info!("✅ DataStream callback registered for '{}'", stream_id);
-        tracing::info!("   Ready to receive {} chunks ({} bytes)", chunk_count, total_size);
+        tracing::info!(
+            "   Ready to receive {} chunks ({} bytes)",
+            chunk_count,
+            total_size
+        );
 
         Ok(StartTransferResponse {
             ready: true,
@@ -116,7 +120,10 @@ impl FileTransferServiceHandler for FileTransferService {
 
         // 取消注册回调
         ctx.unregister_stream(&req.stream_id).await?;
-        tracing::info!("✅ DataStream callback unregistered for '{}'", req.stream_id);
+        tracing::info!(
+            "✅ DataStream callback unregistered for '{}'",
+            req.stream_id
+        );
 
         // 获取统计信息
         let chunks = *self.chunks_received.lock().await;

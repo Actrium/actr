@@ -1,12 +1,12 @@
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, error};
-use bytes::Bytes;
+use tracing::{error, info};
 
-use actr_protocol::{ActrType, RpcEnvelope};
-use actr_framework::{Workload, Context, Dest};
-use actr_runtime::prelude::*;
 use crate::generated::echo::{EchoRequest, EchoResponse};
+use actr_framework::{Context, Dest, Workload};
+use actr_protocol::{ActrType, RpcEnvelope};
+use actr_runtime::prelude::*;
 
 pub struct ClientWorkload {
     pub server_id: Arc<Mutex<Option<ActrId>>>,
@@ -46,10 +46,14 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
         envelope: RpcEnvelope,
         ctx: &C,
     ) -> actr_protocol::ActorResult<Bytes> {
-        info!("[ClientWorkload] Received request from App, route_key={}", envelope.route_key);
+        info!(
+            "[ClientWorkload] Received request from App, route_key={}",
+            envelope.route_key
+        );
 
-        let payload = envelope.payload.as_ref()
-            .ok_or_else(|| actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string()))?;
+        let payload = envelope.payload.as_ref().ok_or_else(|| {
+            actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string())
+        })?;
         let request: EchoRequest = actr_protocol::prost::Message::decode(&**payload)
             .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
 
@@ -61,7 +65,7 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
             None => {
                 error!("[ClientWorkload] Server ID not set");
                 return Err(actr_protocol::ProtocolError::TransportError(
-                    "Server ID not configured".to_string()
+                    "Server ID not configured".to_string(),
                 ));
             }
         };
@@ -71,8 +75,13 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
         // Call remote server via Dest::Actor
         let response: EchoResponse = ctx.call(&Dest::Actor(server_id), request).await?;
 
-        info!("[ClientWorkload] Got response from server: {}", response.reply);
+        info!(
+            "[ClientWorkload] Got response from server: {}",
+            response.reply
+        );
 
-        Ok(Bytes::from(actr_protocol::prost::Message::encode_to_vec(&response)))
+        Ok(Bytes::from(actr_protocol::prost::Message::encode_to_vec(
+            &response,
+        )))
     }
 }

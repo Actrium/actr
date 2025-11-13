@@ -4,31 +4,31 @@
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MediaFrame {
     /// Frame data (raw bytes)
-    #[prost(bytes="vec", tag="1")]
+    #[prost(bytes = "vec", tag = "1")]
     pub data: ::prost::alloc::vec::Vec<u8>,
     /// RTP timestamp (90kHz)
-    #[prost(uint32, tag="2")]
+    #[prost(uint32, tag = "2")]
     pub timestamp: u32,
     /// Codec type (VP8, H264, etc.)
-    #[prost(string, tag="3")]
+    #[prost(string, tag = "3")]
     pub codec: ::prost::alloc::string::String,
     /// Sequential frame number
-    #[prost(uint32, tag="4")]
+    #[prost(uint32, tag = "4")]
     pub frame_number: u32,
 }
 /// Request to relay a frame
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RelayFrameRequest {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub frame: ::core::option::Option<MediaFrame>,
 }
 /// Response after relaying
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RelayFrameResponse {
-    #[prost(bool, tag="1")]
+    #[prost(bool, tag = "1")]
     pub success: bool,
     /// Timestamp when received
-    #[prost(uint64, tag="2")]
+    #[prost(uint64, tag = "2")]
     pub received_at: u64,
 }
 // @@protoc_insertion_point(module)

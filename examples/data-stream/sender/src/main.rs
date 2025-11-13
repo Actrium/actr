@@ -6,13 +6,15 @@
 
 mod generated;
 
-use generated::file_transfer::*;
+use actr_framework::{Context, Dest, MessageDispatcher, Workload};
+use actr_protocol::{
+    ActorResult, ActrError, ActrType, DataStream, ProtocolError, Realm, RpcEnvelope,
+};
 use actr_runtime::prelude::*;
-use actr_protocol::{ActrType, Realm, DataStream, ActrError, ProtocolError, RpcEnvelope, ActorResult};
-use actr_framework::{Workload, MessageDispatcher, Context, Dest};
-use tracing::{info, error};
-use std::collections::HashMap;
 use bytes::Bytes;
+use generated::file_transfer::*;
+use std::collections::HashMap;
+use tracing::{error, info};
 // use prost::Message as ProstMessage;  // 未使用
 
 // Sender workload that performs file transfer in on_start
@@ -41,11 +43,18 @@ impl Workload for SenderWorkload {
 
         // Receiver identification via environment variables with sensible defaults
         // Defaults align with the receiver example in this repo
-        let receiver_manufacturer = std::env::var("ACTR_RECEIVER_MANUFACTURER").unwrap_or_else(|_| "acme".to_string());
-        let receiver_type_name = std::env::var("ACTR_RECEIVER_TYPE").unwrap_or_else(|_| "file_transfer.FileTransferService".to_string());
-        let receiver_serial: u64 = std::env::var("ACTR_RECEIVER_SERIAL").ok().and_then(|s| s.parse().ok()).unwrap_or(1000);
-        let receiver_realm_id: u32 = std::env::var("ACTR_REALM_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-
+        let receiver_manufacturer =
+            std::env::var("ACTR_RECEIVER_MANUFACTURER").unwrap_or_else(|_| "acme".to_string());
+        let receiver_type_name = std::env::var("ACTR_RECEIVER_TYPE")
+            .unwrap_or_else(|_| "file_transfer.FileTransferService".to_string());
+        let receiver_serial: u64 = std::env::var("ACTR_RECEIVER_SERIAL")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        let receiver_realm_id: u32 = std::env::var("ACTR_REALM_ID")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
 
         let receiver_type = ActrType {
             manufacturer: receiver_manufacturer,
@@ -53,7 +62,9 @@ impl Workload for SenderWorkload {
         };
 
         let receiver_id = ActrId {
-            realm: Realm { realm_id: receiver_realm_id },
+            realm: Realm {
+                realm_id: receiver_realm_id,
+            },
             serial_number: receiver_serial,
             r#type: receiver_type.clone(),
         };
@@ -84,11 +95,16 @@ impl Workload for SenderWorkload {
             chunk_count: chunks.len() as u32,
         };
 
-        let start_resp: StartTransferResponse = ctx.call(&Dest::Actor(receiver_id.clone()), start_req).await?;
+        let start_resp: StartTransferResponse = ctx
+            .call(&Dest::Actor(receiver_id.clone()), start_req)
+            .await?;
 
         if !start_resp.ready {
             error!("❌ Receiver not ready: {}", start_resp.message);
-            return Err(ProtocolError::TransportError(format!("Receiver not ready: {}", start_resp.message)));
+            return Err(ProtocolError::TransportError(format!(
+                "Receiver not ready: {}",
+                start_resp.message
+            )));
         }
 
         info!("✅ StartTransfer RPC succeeded: {}", start_resp.message);
@@ -105,7 +121,8 @@ impl Workload for SenderWorkload {
                 timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
             };
 
-            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream).await?;
+            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream)
+                .await?;
 
             let progress = ((i + 1) as f64 / chunks.len() as f64 * 100.0) as u32;
             info!(
