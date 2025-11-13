@@ -142,19 +142,7 @@ use super::{proto_module}::*;
             let payload_type = extract_payload_type_or_default(method);
 
             // 生成 PayloadType 枚举路径（不能用 quote! 因为会加引号）
-            let payload_type_code = match payload_type {
-                crate::payload_type_extractor::PayloadType::RpcReliable => {
-                    "PayloadType::RpcReliable"
-                }
-                crate::payload_type_extractor::PayloadType::RpcSignal => "PayloadType::RpcSignal",
-                crate::payload_type_extractor::PayloadType::StreamReliable => {
-                    "PayloadType::StreamReliable"
-                }
-                crate::payload_type_extractor::PayloadType::StreamLatencyFirst => {
-                    "PayloadType::StreamLatencyFirst"
-                }
-                crate::payload_type_extractor::PayloadType::MediaRtp => "PayloadType::MediaRtp",
-            };
+            let payload_type_code = payload_type.as_rust_variant();
 
             // 手动构造代码字符串避免 quote! 添加引号
             let impl_code = format!(
@@ -180,11 +168,7 @@ impl RpcRequest for {input_type} {{
             impls.push(impl_code);
         }
 
-        Ok(impls
-            .iter()
-            .map(|i| i.to_string())
-            .collect::<Vec<_>>()
-            .join("\n\n"))
+        Ok(impls.join("\n\n"))
     }
 
     /// 生成 Handler trait
@@ -230,8 +214,7 @@ impl RpcRequest for {input_type} {{
             pub trait #handler_trait_ident: Send + Sync + 'static {
                 #(#method_sigs)*
             }
-        }
-        .to_string();
+        };
 
         // 手动添加 #[async_trait] 属性，避免 quote! 宏插入空格
         Ok(format!("#[async_trait]\n{handler_trait_without_attr}"))
@@ -298,8 +281,7 @@ impl RpcRequest for {input_type} {{
                     Self(handler)
                 }
             }
-        }
-        .to_string();
+        };
 
         let router_struct = quote! {
             /// Message dispatcher - 零大小类型 (ZST)
@@ -312,8 +294,7 @@ impl RpcRequest for {input_type} {{
             /// - 静态 match 派发，约 5-10ns
             /// - 编译器完全内联
             pub struct #router_ident<T: #handler_trait_ident>(std::marker::PhantomData<T>);
-        }
-        .to_string();
+        };
 
         let router_impl_without_attr = quote! {
             impl<T: #handler_trait_ident> MessageDispatcher for #router_ident<T> {
@@ -334,8 +315,7 @@ impl RpcRequest for {input_type} {{
                     }
                 }
             }
-        }
-        .to_string();
+        };
 
         // 手动添加 #[async_trait] 属性，避免 quote! 宏插入空格
         let router_impl = format!("#[async_trait]\n{router_impl_without_attr}");
@@ -509,8 +489,12 @@ async fn main() -> ActorResult<()> {{
     }
 
     /// 生成客户端使用文档
-    fn generate_client_usage_docs(&self, _methods: &[MethodDescriptorProto]) -> Result<String> {
+    fn generate_client_usage_docs(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let service_name_snake = self.service_name.to_snake_case();
+        let method_name_snake = methods
+            .first()
+            .map(|m| m.name().to_snake_case())
+            .unwrap_or("unknown_method".to_string());
 
         Ok(format!(
             r#"/*
@@ -525,7 +509,7 @@ async fn call_remote_service(ctx: &Context) -> ActorResult<()> {{
 
     // 类型安全的远程调用
     let response = ctx.{service_name_snake}()
-        .method_name(request)
+        .{method_name_snake}(request)
         .await?;
 
     Ok(())

@@ -1,6 +1,6 @@
 [package]
 name = "actr-framework-protoc-codegen"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,8 +10,8 @@ categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
 # Framework dependencies
-actr-framework = { path = "../framework" }
-actr-protocol = { path = "../protocol" }
+actr-framework = { path = "../framework", version = "0.1" }
+actr-protocol = { path = "../protocol", version = "0.1" }
 
 # Protobuf support
 prost = "0.14"
