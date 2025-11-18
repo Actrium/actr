@@ -106,6 +106,26 @@ impl<W: Workload> ActrNode<W> {
         self.inproc_mgr.clone()
     }
 
+    /// Get ActorId (if registration has completed)
+    pub fn actor_id(&self) -> Option<&ActrId> {
+        self.actor_id.as_ref()
+    }
+
+    /// Get credential (if registration has completed)
+    pub fn credential(&self) -> Option<&AIdCredential> {
+        self.credential.as_ref()
+    }
+
+    /// Get signaling client (for manual control such as UnregisterRequest)
+    pub fn signaling_client(&self) -> Arc<dyn SignalingClient> {
+        self.signaling_client.clone()
+    }
+
+    /// Get shutdown token for this node
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
+    }
+
     /// Handle incoming message envelope
     ///
     /// # Performance Analysis
@@ -309,6 +329,11 @@ impl<W: Workload> ActrNode<W> {
             })?;
 
         // Handle RegisterResponse oneof result
+        //
+        // Collect background task handles (including unregister task) so they can be managed
+        // by ActrRefShared later.
+        let mut task_handles = Vec::new();
+
         match register_response.result {
             Some(register_response::Result::Success(register_ok)) => {
                 let actor_id = register_ok.actr_id;
@@ -456,6 +481,86 @@ impl<W: Workload> ActrNode<W> {
                 self.webrtc_gate = Some(gate.clone());
 
                 tracing::info!("✅ WebRTC infrastructure initialized");
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.8. Spawn dedicated Unregister task (best-effort, with timeout)
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                //
+                // This task:
+                // - Waits for shutdown_token to be cancelled (e.g., wait_for_ctrl_c_and_shutdown)
+                // - Then sends UnregisterRequest via signaling client with a timeout
+                //
+                // NOTE: we push its JoinHandle into task_handles so it can be aborted
+                // by ActrRefShared::Drop if needed.
+                {
+                    let shutdown = self.shutdown_token.clone();
+                    let client = self.signaling_client.clone();
+                    let actor_id_for_unreg = actor_id.clone();
+                    let credential_for_unreg = credential.clone();
+                    let webrtc_coordinator = self.webrtc_coordinator.clone();
+
+                    let unregister_handle = tokio::spawn(async move {
+                        // Wait for shutdown signal
+                        shutdown.cancelled().await;
+                        tracing::info!(
+                            "📡 Shutdown signal received2, sending UnregisterRequest for Actor {:?}",
+                            actor_id_for_unreg
+                        );
+
+                        // 1. 先关闭所有 WebRTC peer 连接（如果存在）
+                        if let Some(coord) = webrtc_coordinator {
+                            if let Err(e) = coord.close_all_peers().await {
+                                tracing::warn!(
+                                    "⚠️ Failed to close all WebRTC peers before UnregisterRequest: {}",
+                                    e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "✅ All WebRTC peers closed before UnregisterRequest"
+                                );
+                            }
+                        } else {
+                            tracing::debug!(
+                                "WebRTC coordinator not found before UnregisterRequest (no WebRTC?)"
+                            );
+                        }
+
+                        // 2. 再发送 UnregisterRequest，设置一个超时（例如 5 秒）
+                        let result = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            client.send_unregister_request(
+                                actor_id_for_unreg.clone(),
+                                credential_for_unreg.clone(),
+                                Some("Graceful shutdown".to_string()),
+                            ),
+                        )
+                        .await;
+                        tracing::info!("UnregisterRequest result: {:?}", result);
+                        match result {
+                            Ok(Ok(_)) => {
+                                tracing::info!(
+                                    "✅ UnregisterRequest sent to signaling server for Actor {:?}",
+                                    actor_id_for_unreg
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(
+                                    "⚠️ Failed to send UnregisterRequest for Actor {:?}: {}",
+                                    actor_id_for_unreg,
+                                    e
+                                );
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "⚠️ UnregisterRequest timeout (5s) for Actor {:?}",
+                                    actor_id_for_unreg
+                                );
+                            }
+                        }
+                    });
+
+                    task_handles.push(unregister_handle);
+                }
             }
             Some(register_response::Result::Error(error)) => {
                 tracing::error!(
@@ -487,11 +592,6 @@ impl<W: Workload> ActrNode<W> {
         // 2. Transport layer initialization (completed via WebRTC infrastructure)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         tracing::info!("✅ Transport layer initialized via WebRTC infrastructure");
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 3. Collect task handles before converting to Arc
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        let mut task_handles = Vec::new();
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 3.1 Convert to Arc (before starting background loops)
@@ -988,7 +1088,7 @@ impl<W: Workload> ActrNode<W> {
             actor_id: actor_id_for_shell.clone(),
             inproc_gate,
             shutdown_token: shutdown_token.clone(),
-            task_handles,
+            task_handles: tokio::sync::Mutex::new(task_handles),
         });
 
         // Create ActrRef

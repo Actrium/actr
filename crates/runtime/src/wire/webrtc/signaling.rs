@@ -5,9 +5,10 @@
 use crate::transport::error::{NetworkError, NetworkResult};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
-    RegisterResponse, ServiceAvailabilityState, SignalingEnvelope, actr_to_signaling,
-    peer_to_signaling, signaling_envelope, signaling_to_actr,
+    self, AIdCredential, ActrId, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
+    RegisterResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest,
+    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope,
+    signaling_to_actr,
 };
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
@@ -116,6 +117,17 @@ pub trait SignalingClient: Send + Sync {
         &self,
         request: RegisterRequest,
     ) -> NetworkResult<RegisterResponse>;
+
+    /// Send UnregisterRequest to signaling server (Actr → Signaling flow)
+    ///
+    /// This is used when an Actor is shutting down gracefully and wants to
+    /// proactively notify the signaling server that it is no longer available.
+    async fn send_unregister_request(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+        reason: Option<String>,
+    ) -> NetworkResult<UnregisterResponse>;
 
     /// Send center skip（Registerafter stream process ，using ActrToSignaling）
     async fn send_heartbeat(
@@ -283,6 +295,40 @@ impl SignalingClient for WebSocketSignalingClient {
                 ));
             }
         }
+    }
+
+    async fn send_unregister_request(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+        reason: Option<String>,
+    ) -> NetworkResult<UnregisterResponse> {
+        // Build UnregisterRequest payload
+        let request = UnregisterRequest {
+            actr_id: actor_id.clone(),
+            reason,
+        };
+
+        // Wrap into ActrToSignaling flow
+        let flow = signaling_envelope::Flow::ActrToServer(ActrToSignaling {
+            source: actor_id,
+            credential,
+            payload: Some(actr_to_signaling::Payload::UnregisterRequest(request)),
+        });
+
+        // Send envelope (fire-and-forget)
+        let envelope = self.create_envelope(flow).await;
+        self.send_envelope(envelope).await?;
+
+        // Do not wait for UnregisterResponse here because the signaling stream
+        // is also consumed by WebRtcCoordinator. Waiting could race with that loop
+        // and lead to spurious timeouts. Treat Unregister as best-effort.
+        // not wait for the response , because the signaling stream have multi customers use it, fixme: should wait for the response
+        Ok(UnregisterResponse {
+            result: Some(actr_protocol::unregister_response::Result::Success(
+                actr_protocol::unregister_response::UnregisterOk {},
+            )),
+        })
     }
 
     async fn send_heartbeat(

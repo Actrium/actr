@@ -177,6 +177,8 @@ impl WebRtcCoordinator {
                                     tracing::warn!("⚠️ ActrRelay missing payload");
                                 }
                             }
+                        } else {
+                            tracing::warn!("⚠️ ActrRelay missing flow: {:?}", envelope.flow);
                         }
                     }
                     Ok(None) => {
@@ -194,6 +196,43 @@ impl WebRtcCoordinator {
 
             tracing::info!("🛑 WebRtcCoordinator signaling loop exited");
         });
+
+        Ok(())
+    }
+
+    /// Close all peer connections and clear internal peer state.
+    ///
+    /// This is typically called during shutdown to ensure that all
+    /// RTCPeerConnection instances are closed and associated state
+    /// (pending ICE candidates, WebRtcConnection state) is dropped.
+    pub async fn close_all_peers(&self) -> RuntimeResult<()> {
+        tracing::info!("🔻 Closing all WebRTC peer connections");
+
+        // Take snapshot of peers and clear map
+        let peers_snapshot: Vec<Arc<RTCPeerConnection>> = {
+            let mut peers = self.peers.write().await;
+            let conns: Vec<Arc<RTCPeerConnection>> =
+                peers.values().map(|p| p.peer_connection.clone()).collect();
+            peers.clear();
+            conns
+        };
+
+        // Clear pending ICE candidates
+        {
+            let mut pending = self.pending_candidates.write().await;
+            pending.clear();
+        }
+
+        // Close each RTCPeerConnection
+        for pc in peers_snapshot {
+            tracing::info!("🔻 Closing PeerConnection");
+
+            if let Err(e) = pc.close().await {
+                tracing::warn!("⚠️ Failed to close PeerConnection: {}", e);
+            } else {
+                tracing::info!("✅ PeerConnection closed");
+            }
+        }
 
         Ok(())
     }

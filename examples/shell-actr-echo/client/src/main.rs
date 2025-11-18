@@ -15,7 +15,12 @@ use client_workload::ClientWorkload;
 async fn main() -> Result<()> {
     // Initialize tracing with env filter support (RUST_LOG)
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
+        .with_file(true)
+        .with_line_number(true)
         .init();
 
     info!("🚀 Echo Client App - Actor-RTC Standard Pattern");
@@ -71,6 +76,10 @@ async fn main() -> Result<()> {
         actr_ref: actr_ref.clone(),
     };
     app_side.run().await;
+    // shutdown actr node
+    actr_ref.shutdown();
+    actr_ref.wait_for_shutdown().await;
+
 
     info!("👋 Application shut down");
     Ok(())

@@ -40,6 +40,8 @@
 
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -148,7 +150,7 @@ pub(crate) struct ActrRefShared {
     pub(crate) shutdown_token: CancellationToken,
 
     /// Background task handles (receive loops, WebRTC coordinator, etc.)
-    pub(crate) task_handles: Vec<JoinHandle<()>>,
+    pub(crate) task_handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl<W: Workload> ActrRef<W> {
@@ -281,6 +283,35 @@ impl<W: Workload> ActrRef<W> {
     /// All background tasks will be aborted when the last `ActrRef` is dropped.
     pub async fn wait_for_shutdown(&self) {
         self.shared.shutdown_token.cancelled().await;
+        // Take ownership of the current handles so we can await them as Futures.
+        let mut guard = self.shared.task_handles.lock().await;
+        let handles = std::mem::take(&mut *guard);
+        drop(guard);
+        tracing::debug!("Waiting for tasks to complete: {:?}", handles.len());
+        // All tasks have been asked to shut down; wait for them with a timeout,
+        // and abort any that don't finish in time to avoid leaking background work.
+        for handle in handles {
+            let sleep = tokio::time::sleep(Duration::from_secs(5));
+            tokio::pin!(handle);
+            tokio::pin!(sleep);
+
+            tokio::select! {
+                res = &mut handle => {
+                    match res {
+                        Ok(_) => {
+                            tracing::debug!("Task completed");
+                        }
+                        Err(e) => {
+                            tracing::error!("Task failed: {:?}", e);
+                        }
+                    }
+                }
+                _ = sleep => {
+                    tracing::warn!("Task timed out after 5s, aborting");
+                    handle.abort();
+                }
+            }
+        }
     }
 
     /// Check if Actor is shutting down
@@ -288,9 +319,8 @@ impl<W: Workload> ActrRef<W> {
         self.shared.shutdown_token.is_cancelled()
     }
 
-    /// Convenience: wait for Ctrl+C and shutdown
     ///
-    /// This consumes the `ActrRef` and waits for Ctrl+C, then triggers shutdown.
+    /// This consumes the `ActrRef` and waits for signal (Ctrl+C / SIGTERM) , then triggers shutdown.
     ///
     /// # Example
     ///
@@ -299,11 +329,36 @@ impl<W: Workload> ActrRef<W> {
     /// actr.wait_for_ctrl_c_and_shutdown().await?;
     /// ```
     pub async fn wait_for_ctrl_c_and_shutdown(self) -> ActorResult<()> {
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|e| ProtocolError::TransportError(format!("Ctrl+C signal error: {e}")))?;
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
 
-        tracing::info!("📡 Received Ctrl+C signal");
+            let mut sigint = signal(SignalKind::interrupt()).map_err(|e| {
+                ProtocolError::TransportError(format!("Signal handler error (SIGINT): {e}"))
+            })?;
+            let mut sigterm = signal(SignalKind::terminate()).map_err(|e| {
+                ProtocolError::TransportError(format!("Signal handler error (SIGTERM): {e}"))
+            })?;
+
+            tokio::select! {
+                _ = sigint.recv() => {
+                    tracing::info!("📡 Received SIGINT (Ctrl+C) signal");
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("📡 Received SIGTERM signal");
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .map_err(|e| ProtocolError::TransportError(format!("Ctrl+C signal error: {e}")))?;
+
+            tracing::info!("📡 Received Ctrl+C signal");
+        }
+
         self.shutdown();
         self.wait_for_shutdown().await;
 
@@ -321,9 +376,15 @@ impl Drop for ActrRefShared {
         // Cancel shutdown token
         self.shutdown_token.cancel();
 
-        // Abort all background tasks
-        for handle in self.task_handles.drain(..) {
-            handle.abort();
+        // Abort all background tasks (best-effort)
+        if let Ok(mut handles) = self.task_handles.try_lock() {
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+        } else {
+            tracing::warn!(
+                "⚠️ Failed to lock task_handles mutex during Drop; some tasks may still be running"
+            );
         }
 
         tracing::debug!(

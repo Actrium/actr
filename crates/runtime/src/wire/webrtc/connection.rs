@@ -138,7 +138,8 @@ impl WebRtcConnection {
                 RTCDataChannelInit {
                     ordered: Some(false),
                     max_retransmits: Some(3),
-                    max_packet_life_time: Some(100),
+                    // max_packet_life_time ,max_retransmits cannot be set at the same time
+                    max_packet_life_time: None,
                     protocol: Some("".to_string()),
                     negotiated: Some(channel_id),
                 }
