@@ -290,8 +290,10 @@ impl WebRtcCoordinator {
         let peer_connection = self.negotiator.create_peer_connection().await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
-        // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>)
+        // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>) and
+        //    install state-change handler for cleanup on terminal states.
         let webrtc_conn = WebRtcConnection::new(Arc::clone(&peer_connection_arc));
+        webrtc_conn.install_state_change_handler();
 
         // 3. Pre-create negotiated DataChannel for Reliable to trigger ICE gathering
         // Both sides will create the same channel ID, so this works for both offerer and answerer
@@ -470,8 +472,10 @@ impl WebRtcCoordinator {
         let peer_connection = self.negotiator.create_peer_connection().await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
-        // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>)
+        // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>) and
+        //    install state-change handler for cleanup on terminal states.
         let webrtc_conn = WebRtcConnection::new(Arc::clone(&peer_connection_arc));
+        webrtc_conn.install_state_change_handler();
 
         // 3. Pre-create negotiated DataChannel for Reliable to trigger ICE gathering
         // Both sides will create the same channel ID, so this works for both offerer and answerer

@@ -71,6 +71,68 @@ impl WebRtcConnection {
         }
     }
 
+    /// Install a state-change handler on the underlying RTCPeerConnection.
+    ///
+    /// This keeps `connected` in sync with the WebRTC connection state and
+    /// proactively closes the PeerConnection and clears internal caches when
+    /// entering a terminal state (Disconnected/Failed/Closed).
+    pub fn install_state_change_handler(&self) {
+        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+
+        let this = self.clone();
+
+        self.peer_connection
+            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+                let this = this.clone();
+
+                Box::pin(async move {
+                    // Treat New/Connecting/Connected as "connected"; others as disconnected.
+                    let is_connected = matches!(
+                        state,
+                        RTCPeerConnectionState::New
+                            | RTCPeerConnectionState::Connecting
+                            | RTCPeerConnectionState::Connected
+                    );
+
+                    // Update flag and detect transitions from connected -> disconnected.
+                    let was_connected = {
+                        let mut flag = this.connected.write().await;
+                        let prev = *flag;
+                        *flag = is_connected;
+                        prev
+                    };
+
+                    tracing::info!(
+                        "🔄 WebRtcConnection peer state changed: {:?}, connected={}",
+                        state,
+                        is_connected
+                    );
+
+                    // For terminal states, proactively close the connection and let
+                    // `close()` perform all resource cleanup. Only trigger when we
+                    // transition from connected -> disconnected to avoid loops.
+                    // not support ice restart, FIXME: ice restart
+                    if was_connected
+                        && matches!(
+                            state,
+                            RTCPeerConnectionState::Disconnected
+                                | RTCPeerConnectionState::Failed
+                                | RTCPeerConnectionState::Closed
+                        )
+                    {
+                        tracing::info!(
+                            "🔻 WebRtcConnection entering terminal state {:?}, calling close()",
+                            state
+                        );
+
+                        if let Err(e) = this.close().await {
+                            tracing::warn!("⚠️ WebRtcConnection::close() failed: {}", e);
+                        }
+                    }
+                })
+            }));
+    }
+
     /// establish Connect（WebRTC Connect already alreadyvia signaling establish ， this in only is mark record ）
     pub async fn connect(&self) -> NetworkResult<()> {
         *self.connected.write().await = true;
