@@ -136,6 +136,19 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
         }
     }
 
+    // Start the periodic cleanup task for the ServiceRegistry memory table (cleanup expired services, avoid stale connections)
+    {
+        let registry_for_cleanup = server.service_registry.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5 分钟
+            loop {
+                interval.tick().await;
+                let mut registry = registry_for_cleanup.write().await;
+                registry.cleanup_expired_services();
+            }
+        });
+    }
+
     // 初始化速率限制器（如果配置存在）
     if let Some(signaling_config) = &config.services.signaling {
         let rate_limit_config = &signaling_config.server.rate_limit;

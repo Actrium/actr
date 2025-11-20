@@ -264,15 +264,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    async fn create_test_backend() -> SqliteBackend {
-        let temp_dir = tempdir().unwrap();
-
+    async fn create_test_backend(path: &Path) -> SqliteBackend {
         let config = SqliteConfig {};
         SqliteBackend::new(
             &config,
             3600,
             crate::crypto::KeyEncryptor::no_encryption(),
-            temp_dir.path(),
+            path,
         )
         .await
         .unwrap()
@@ -280,14 +278,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_init() {
-        let backend = create_test_backend().await;
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
         let count = backend.get_key_count().await.unwrap();
         assert_eq!(count, 0);
     }
 
     #[tokio::test]
     async fn test_generate_and_query() {
-        let backend = create_test_backend().await;
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
 
         // 生成密钥
         let key_pair = backend.generate_and_store_key().await.unwrap();
@@ -313,7 +313,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_nonexistent_key() {
-        let backend = create_test_backend().await;
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
 
         let public_key = backend.get_public_key(999).await.unwrap();
         assert_eq!(public_key, None);
@@ -327,7 +328,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_key_count() {
-        let backend = create_test_backend().await;
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
 
         assert_eq!(backend.get_key_count().await.unwrap(), 0);
 

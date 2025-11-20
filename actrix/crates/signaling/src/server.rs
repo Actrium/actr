@@ -96,17 +96,25 @@ pub struct SignalingServerHandle {
 
 impl SignalingServerHandle {
     /// 创建 SignalingEnvelope
-    fn create_envelope(&self, flow: signaling_envelope::Flow) -> SignalingEnvelope {
+    fn create_envelope(
+        &self,
+        flow: signaling_envelope::Flow,
+        reply_for: Option<&str>,
+    ) -> SignalingEnvelope {
         SignalingEnvelope {
             envelope_version: 1,
             envelope_id: Uuid::new_v4().to_string(),
-            reply_for: None,
+            reply_for: reply_for.map(|id| id.to_string()),
             timestamp: prost_types::Timestamp {
                 seconds: chrono::Utc::now().timestamp(),
                 nanos: 0,
             },
             flow: Some(flow),
         }
+    }
+
+    fn create_new_envelope(&self, flow: signaling_envelope::Flow) -> SignalingEnvelope {
+        self.create_envelope(flow, None)
     }
 }
 
@@ -248,7 +256,7 @@ async fn handle_client_envelope(
             message: e,
         };
         let error_envelope =
-            server.create_envelope(signaling_envelope::Flow::EnvelopeError(error_response));
+            server.create_new_envelope(signaling_envelope::Flow::EnvelopeError(error_response));
         send_envelope_to_client(client_id, error_envelope, server).await?;
         return Ok(());
     }
@@ -264,10 +272,10 @@ async fn handle_client_envelope(
             handle_peer_to_server(peer_to_server, client_id, server, &envelope.envelope_id).await?;
         }
         Some(signaling_envelope::Flow::ActrToServer(actr_to_server)) => {
-            handle_actr_to_server(actr_to_server, client_id, server).await?;
+            handle_actr_to_server(actr_to_server, client_id, server, &envelope.envelope_id).await?;
         }
         Some(signaling_envelope::Flow::ActrRelay(relay)) => {
-            handle_actr_relay(relay, client_id, server).await?;
+            handle_actr_relay(relay, client_id, server, &envelope.envelope_id).await?;
         }
         Some(signaling_envelope::Flow::EnvelopeError(error)) => {
             error!(
@@ -628,6 +636,7 @@ async fn handle_actr_to_server(
     actr_to_server: ActrToSignaling,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = actr_to_server.source.clone();
 
@@ -648,6 +657,7 @@ async fn handle_actr_to_server(
             401,
             &format!("Credential validation failed: {e}"),
             server,
+            Some(request_envelope_id),
         )
         .await?;
         return Ok(());
@@ -655,25 +665,26 @@ async fn handle_actr_to_server(
 
     match actr_to_server.payload {
         Some(actr_to_signaling::Payload::Ping(ping)) => {
-            handle_ping(source, ping, client_id, server).await?;
+            handle_ping(source, ping, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::UnregisterRequest(req)) => {
-            handle_unregister(source, req, client_id, server).await?;
+            handle_unregister(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::CredentialUpdateRequest(req)) => {
-            handle_credential_update(source, req, client_id, server).await?;
+            handle_credential_update(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::DiscoveryRequest(req)) => {
-            handle_discovery_request(source, req, client_id, server).await?;
+            handle_discovery_request(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::RouteCandidatesRequest(req)) => {
-            handle_route_candidates_request(source, req, client_id, server).await?;
+            handle_route_candidates_request(source, req, client_id, server, request_envelope_id)
+                .await?;
         }
         Some(actr_to_signaling::Payload::SubscribeActrUpRequest(req)) => {
-            handle_subscribe_actr_up(source, req, client_id, server).await?;
+            handle_subscribe_actr_up(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::UnsubscribeActrUpRequest(req)) => {
-            handle_unsubscribe_actr_up(source, req, client_id, server).await?;
+            handle_unsubscribe_actr_up(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::Error(error)) => {
             error!(
@@ -695,6 +706,7 @@ async fn handle_ping(
     ping: Ping,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "💓 收到 Actor {} 心跳: availability={}, power_reserve={:.2}, mailbox_backlog={:.2}, sticky_clients={}",
@@ -728,7 +740,7 @@ async fn handle_ping(
         payload: Some(signaling_to_actr::Payload::Pong(pong)),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
 
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
@@ -741,6 +753,7 @@ async fn handle_unregister(
     req: actr_protocol::UnregisterRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "👋 Actor {} 注销: reason={:?}",
@@ -760,7 +773,7 @@ async fn handle_unregister(
         payload: Some(signaling_to_actr::Payload::UnregisterResponse(response)),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     // 清理客户端连接
@@ -774,6 +787,7 @@ async fn handle_actr_relay(
     relay: ActrRelay,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = relay.source.clone();
     let target = &relay.target;
@@ -796,6 +810,7 @@ async fn handle_actr_relay(
             401,
             &format!("Credential validation failed: {e}"),
             server,
+            Some(request_envelope_id),
         )
         .await?;
         return Ok(());
@@ -812,7 +827,7 @@ async fn handle_actr_relay(
     if let Some(target_client) = target_client {
         // 重新构造 envelope 并转发
         let flow = signaling_envelope::Flow::ActrRelay(relay);
-        let forward_envelope = server.create_envelope(flow);
+        let forward_envelope = server.create_new_envelope(flow);
 
         let mut buf = Vec::new();
         forward_envelope.encode(&mut buf)?;
@@ -865,6 +880,13 @@ async fn cleanup_client(client_id: &str, server: &SignalingServerHandle) {
     if let Some(client) = clients_guard.remove(client_id) {
         if let Some(actor_id) = client.actor_id {
             info!("🧹 清理 Actor {} 的连接", actor_id.serial_number);
+
+            // Remove all services for this Actor from the ServiceRegistry to avoid stale ghost instances
+            server
+                .service_registry
+                .write()
+                .await
+                .unregister_actor(&actor_id);
         }
 
         // 移除消息速率限制器
@@ -880,6 +902,7 @@ async fn handle_credential_update(
     _req: actr_protocol::CredentialUpdateRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "🔑 处理 Actor {} 的 Credential 更新请求",
@@ -901,7 +924,7 @@ async fn handle_credential_update(
                 payload: Some(signaling_to_actr::Payload::Error(error_response)),
             });
 
-            let response_envelope = server.create_envelope(flow);
+            let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
             send_envelope_to_client(client_id, response_envelope, server).await?;
             return Ok(());
         }
@@ -951,7 +974,7 @@ async fn handle_credential_update(
                         payload: Some(signaling_to_actr::Payload::RegisterResponse(response)),
                     });
 
-                    let response_envelope = server.create_envelope(flow);
+                    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
                     send_envelope_to_client(client_id, response_envelope, server).await?;
 
                     info!("✅ Credential 更新成功");
@@ -969,7 +992,7 @@ async fn handle_credential_update(
                         payload: Some(signaling_to_actr::Payload::Error(error_response)),
                     });
 
-                    let response_envelope = server.create_envelope(flow);
+                    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
                     send_envelope_to_client(client_id, response_envelope, server).await?;
                 }
                 None => {
@@ -985,7 +1008,7 @@ async fn handle_credential_update(
                         payload: Some(signaling_to_actr::Payload::Error(error_response)),
                     });
 
-                    let response_envelope = server.create_envelope(flow);
+                    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
                     send_envelope_to_client(client_id, response_envelope, server).await?;
                 }
             }
@@ -1003,7 +1026,7 @@ async fn handle_credential_update(
                 payload: Some(signaling_to_actr::Payload::Error(error_response)),
             });
 
-            let response_envelope = server.create_envelope(flow);
+            let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
             send_envelope_to_client(client_id, response_envelope, server).await?;
         }
     }
@@ -1017,6 +1040,7 @@ async fn handle_discovery_request(
     req: actr_protocol::DiscoveryRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "🔍 处理 Actor {} 的 Discovery 请求: manufacturer={:?}, limit={}",
@@ -1082,7 +1106,7 @@ async fn handle_discovery_request(
         payload: Some(signaling_to_actr::Payload::DiscoveryResponse(response)),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
@@ -1094,6 +1118,7 @@ async fn handle_route_candidates_request(
     req: actr_protocol::RouteCandidatesRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "🎯 处理 Actor {} 的 RouteCandidates 请求: target_type={}/{}",
@@ -1171,7 +1196,7 @@ async fn handle_route_candidates_request(
         )),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
@@ -1183,6 +1208,7 @@ async fn handle_subscribe_actr_up(
     req: actr_protocol::SubscribeActrUpRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "📢 Actor {} 订阅服务上线事件: target_type={}/{}",
@@ -1207,7 +1233,7 @@ async fn handle_subscribe_actr_up(
         )),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
@@ -1219,6 +1245,7 @@ async fn handle_unsubscribe_actr_up(
     req: actr_protocol::UnsubscribeActrUpRequest,
     client_id: &str,
     server: &SignalingServerHandle,
+    request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "🔕 Actor {} 取消订阅服务上线事件: target_type={}/{}",
@@ -1252,7 +1279,7 @@ async fn handle_unsubscribe_actr_up(
         )),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
@@ -1265,6 +1292,7 @@ async fn send_error_response(
     code: u32,
     message: &str,
     server: &SignalingServerHandle,
+    reply_for: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let error_response = ErrorResponse {
         code,
@@ -1276,7 +1304,7 @@ async fn send_error_response(
         payload: Some(signaling_to_actr::Payload::Error(error_response)),
     });
 
-    let response_envelope = server.create_envelope(flow);
+    let response_envelope = server.create_envelope(flow, reply_for);
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
