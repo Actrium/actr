@@ -38,7 +38,6 @@ use actr_protocol::{
     signaling_to_actr,
 };
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
-use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use std::collections::HashMap;
@@ -59,8 +58,6 @@ use crate::service_registry::ServiceRegistry;
 pub struct SignalingServer {
     /// 已连接的客户端
     pub clients: Arc<RwLock<HashMap<String, ClientConnection>>>,
-    /// ActorId 分配器 - 简单的自增计数器（已废弃，改用 AIS 分配）
-    pub next_serial_number: Arc<std::sync::atomic::AtomicU64>,
     /// 服务注册表
     pub service_registry: Arc<RwLock<ServiceRegistry>>,
     /// Presence 订阅管理器
@@ -89,7 +86,6 @@ pub struct ClientConnection {
 #[derive(Debug, Clone)]
 pub struct SignalingServerHandle {
     pub clients: Arc<RwLock<HashMap<String, ClientConnection>>>,
-    pub next_serial_number: Arc<std::sync::atomic::AtomicU64>,
     pub service_registry: Arc<RwLock<ServiceRegistry>>,
     pub presence_manager: Arc<RwLock<PresenceManager>>,
     pub ais_client: Option<Arc<crate::ais_client::AisClient>>,
@@ -124,7 +120,6 @@ impl SignalingServer {
     pub fn new() -> Self {
         Self {
             clients: Arc::new(RwLock::new(HashMap::new())),
-            next_serial_number: Arc::new(std::sync::atomic::AtomicU64::new(1000)), // 保留用于后备模式
             service_registry: Arc::new(RwLock::new(ServiceRegistry::new())),
             presence_manager: Arc::new(RwLock::new(PresenceManager::new())),
             ais_client: None, // 在 axum_router 中初始化
@@ -355,93 +350,80 @@ async fn handle_register_request(
     }
 
     // 通过 AIS 分配 ActorId 和 Credential
-    let (actor_id, credential) = if let Some(ais_client) = &server.ais_client {
-        // 方案 A: 调用 AIS 完成注册（生产模式）
-        match ais_client
-            .refresh_credential(request.realm.realm_id, request.actr_type.clone())
-            .await
-        {
-            Ok(ais_response) => {
-                // 解析 AIS 响应
-                match ais_response.result {
-                    Some(register_response::Result::Success(register_ok)) => {
-                        info!(
-                            "✅ AIS 分配 ActorId: realm={}, serial={}",
-                            register_ok.actr_id.realm.realm_id, register_ok.actr_id.serial_number
-                        );
-                        (register_ok.actr_id, register_ok.credential)
-                    }
-                    Some(register_response::Result::Error(err)) => {
-                        error!(
-                            "❌ AIS 注册失败: code={}, message={}",
-                            err.code, err.message
-                        );
-                        send_register_error(
-                            client_id,
-                            err.code,
-                            &err.message,
-                            server,
-                            request_envelope_id,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    None => {
-                        error!("❌ AIS 返回空响应");
-                        send_register_error(
-                            client_id,
-                            500,
-                            "AIS returned empty response",
-                            server,
-                            request_envelope_id,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
+    let ais_client = match &server.ais_client {
+        Some(client) => client,
+        None => {
+            error!(
+                "❌ AIS 未配置，无法处理注册请求 (realm={}, type={}/{})",
+                request.realm.realm_id, request.actr_type.manufacturer, request.actr_type.name
+            );
+            send_register_error(
+                client_id,
+                500,
+                "AIS not configured; registration is unavailable",
+                server,
+                request_envelope_id,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let (actor_id, credential) = match ais_client
+        .refresh_credential(request.realm.realm_id, request.actr_type.clone())
+        .await
+    {
+        Ok(ais_response) => {
+            // 解析 AIS 响应
+            match ais_response.result {
+                Some(register_response::Result::Success(register_ok)) => {
+                    info!(
+                        "✅ AIS 分配 ActorId: realm={}, serial={}",
+                        register_ok.actr_id.realm.realm_id, register_ok.actr_id.serial_number
+                    );
+                    (register_ok.actr_id, register_ok.credential)
+                }
+                Some(register_response::Result::Error(err)) => {
+                    error!(
+                        "❌ AIS 注册失败: code={}, message={}",
+                        err.code, err.message
+                    );
+                    send_register_error(
+                        client_id,
+                        err.code,
+                        &err.message,
+                        server,
+                        request_envelope_id,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                None => {
+                    error!("❌ AIS 返回空响应");
+                    send_register_error(
+                        client_id,
+                        500,
+                        "AIS returned empty response",
+                        server,
+                        request_envelope_id,
+                    )
+                    .await?;
+                    return Ok(());
                 }
             }
-            Err(e) => {
-                error!("❌ 调用 AIS 失败: {}", e);
-                send_register_error(
-                    client_id,
-                    500,
-                    &format!("Failed to call AIS: {e}"),
-                    server,
-                    request_envelope_id,
-                )
-                .await?;
-                return Ok(());
-            }
         }
-    } else {
-        // 方案 B: 本地简单分配（后备模式，仅用于测试）
-        warn!(
-            "⚠️  AIS 未配置，使用本地简单分配模式 (realm={})",
-            request.realm.realm_id
-        );
-
-        let serial_number = server
-            .next_serial_number
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-        let actor_id = ActrId {
-            realm: request.realm,
-            serial_number,
-            r#type: request.actr_type.clone(),
-        };
-
-        // 生成临时 credential（仅用于测试）
-        let credential = AIdCredential {
-            encrypted_token: Bytes::from(vec![0u8; 32]),
-            token_key_id: 1,
-        };
-
-        info!(
-            "✅ 本地分配 ActorId: realm={}, serial={}",
-            actor_id.realm.realm_id, actor_id.serial_number
-        );
-
-        (actor_id, credential)
+        Err(e) => {
+            error!("❌ 调用 AIS 失败: {}", e);
+            send_register_error(
+                client_id,
+                500,
+                &format!("Failed to call AIS: {e}"),
+                server,
+                request_envelope_id,
+            )
+            .await?;
+            return Ok(());
+        }
     };
 
     // 注册服务到 ServiceRegistry（存储 ServiceSpec 和 ACL）

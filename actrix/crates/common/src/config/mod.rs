@@ -489,7 +489,25 @@ impl ActrixConfig {
 
         // 验证 Signaling 配置（如果启用）
         if self.is_signaling_enabled() {
-            if self.services.signaling.is_none() {
+            if let Some(ref signaling) = self.services.signaling {
+                if signaling.dependencies.ks.is_none()
+                    && !(self.is_ks_enabled() && self.services.ks.is_some())
+                {
+                    errors.push(
+                    "Signaling dependencies.ks is not configured; enable KS (bitmask + services.ks) to use local defaults"
+                        .to_string(),
+                );
+                }
+
+                if signaling.dependencies.ais.is_none()
+                    && !(self.is_ais_enabled() && self.services.ais.is_some())
+                {
+                    errors.push(
+                    "Signaling dependencies.ais is not configured; enable AIS (bitmask + services.ais) to use local defaults"
+                        .to_string(),
+                );
+                }
+            } else {
                 errors.push(
                     "Signaling service is enabled (ENABLE_SIGNALING bit is set) but services.signaling configuration is missing"
                         .to_string(),
@@ -866,5 +884,51 @@ mod tests {
                     .any(|e| e.contains("bit is not set in enable bitmask"))
             );
         }
+    }
+
+    #[test]
+    fn test_signaling_dependencies_require_local_services_when_missing_clients() {
+        let mut config = ActrixConfig::default();
+        config.enable = ENABLE_SIGNALING;
+        config.services.signaling = Some(SignalingConfig {
+            server: signaling::SignalingServerConfig::default(),
+            dependencies: signaling::SignalingDependencies::default(),
+        });
+        config.services.ks = None;
+        config.services.ais = None;
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Signaling dependencies.ks is not configured"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("Signaling dependencies.ais is not configured"))
+        );
+    }
+
+    #[test]
+    fn test_signaling_dependencies_accept_local_services_when_enabled() {
+        let mut config = ActrixConfig::default();
+        config.enable = ENABLE_SIGNALING | ENABLE_KS | ENABLE_AIS;
+        config.services.signaling = Some(SignalingConfig {
+            server: signaling::SignalingServerConfig::default(),
+            dependencies: signaling::SignalingDependencies::default(),
+        });
+        config.services.ks = Some(KsServiceConfig {
+            ..Default::default()
+        });
+        config.services.ais = Some(AisConfig {
+            server: ais::AisServerConfig::default(),
+            dependencies: ais::AisDependencies::default(),
+        });
+
+        let result = config.validate();
+        assert!(result.is_ok());
     }
 }
