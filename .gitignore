@@ -3,9 +3,6 @@
 /target/
 **/*.rs.bk
 
-# Generated protobuf code
-actr-protocol/src/generated/
-
 # Logs
 logs/
 *.log

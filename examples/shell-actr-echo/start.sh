@@ -7,6 +7,7 @@
 #   ./start.sh "你好世界"    # Send custom message
 
 set -e
+set -o pipefail
 
 # Colors for output
 RED='\033[0;31m'

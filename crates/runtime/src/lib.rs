@@ -145,11 +145,11 @@
 //! - Intra-process zero-copy channels
 //! - SQLite-backed mailbox with priorities
 //! - Context factory for message handling
+//! - Basic service discovery helpers (RouteCandidates)
 //!
 //! ### ⏳ Pending
 //!
 //! - Health checks and metrics collection
-//! - Service discovery and registration
 //! - Prometheus metrics export
 //! - Distributed tracing integration
 //!
@@ -278,8 +278,7 @@ pub mod prelude {
     // WebRTC subsystem
     pub use crate::wire::webrtc::{
         AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-        SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
-        WebSocketSignalingClient,
+        WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator, WebSocketSignalingClient,
     };
 
     // Mailbox subsystem

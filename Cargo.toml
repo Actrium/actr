@@ -48,9 +48,7 @@ members = [
 # === Examples (示例) ===
 # Examples 已独立在 workspace 之外，模拟外部用户使用场景
 # Examples are now independent from the workspace to simulate external usage
-exclude = [
-    "examples/*",
-]
+exclude = ["examples/*"]
 
 [workspace.package]
 version = "0.1.0"
@@ -98,7 +96,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webrtc = "0.14"
 
 # === Storage (存储) ===
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 
 # === Networking (网络) ===
 tokio-tungstenite = "0.20"

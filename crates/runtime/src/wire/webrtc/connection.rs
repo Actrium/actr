@@ -21,6 +21,7 @@ pub struct WebRtcConnection {
     /// underlying RTCPeerConnection
     peer_connection: Arc<RTCPeerConnection>,
 
+    // TODO: useless property, remove this
     /// DataChannel Cache：PayloadType → DataChannel（4 types use DataChannel）
     /// index reference mapping：RpcReliable(0), RpcSignal(1), StreamReliable(2), StreamLatencyFirst(3)
     data_channels: Arc<RwLock<[Option<Arc<RTCDataChannel>>; 4]>>,
@@ -184,6 +185,7 @@ impl WebRtcConnection {
         // This allows both sides to create the same channel without on_data_channel callback
         let channel_id = payload_type as u16;
 
+        // TODO: remove negotiated flag to use auto-negotiation
         match payload_type {
             PayloadType::RpcSignal | PayloadType::RpcReliable => {
                 // reliable ordered transmission
@@ -197,10 +199,10 @@ impl WebRtcConnection {
             }
             PayloadType::StreamLatencyFirst => {
                 // partial reliable transmission (low latency priority)
+                // NOTE: WebRTC spec forbids setting both max_retransmits and max_packet_life_time.
                 RTCDataChannelInit {
                     ordered: Some(false),
                     max_retransmits: Some(3),
-                    // max_packet_life_time ,max_retransmits cannot be set at the same time
                     max_packet_life_time: None,
                     protocol: Some("".to_string()),
                     negotiated: Some(channel_id),

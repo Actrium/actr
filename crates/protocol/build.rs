@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use glob::glob;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let generated_dir = PathBuf::from("src/generated");
-    std::fs::create_dir_all(&generated_dir)?;
+    let generated_dir = PathBuf::from(std::env::var("OUT_DIR").map_err(
+        |_| "OUT_DIR environment variable is not set. This script must be run by cargo.",
+    )?);
 
     // Collect all .proto files using glob
     let proto_files: Vec<String> = glob("proto/**/*.proto")?

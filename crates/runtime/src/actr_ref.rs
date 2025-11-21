@@ -38,7 +38,6 @@
 //! actr.wait_for_shutdown().await;
 //! ```
 
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -49,6 +48,7 @@ use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
 
+use crate::lifecycle::ActrNode;
 use crate::outbound::InprocOutGate;
 
 /// ActrRef - Lightweight reference to a running Actor
@@ -123,14 +123,14 @@ use crate::outbound::InprocOutGate;
 /// | Generation | Extension trait | Concrete impl |
 pub struct ActrRef<W: Workload> {
     pub(crate) shared: Arc<ActrRefShared>,
-    _phantom: PhantomData<W>,
+    pub(crate) node: Arc<ActrNode<W>>,
 }
 
 impl<W: Workload> Clone for ActrRef<W> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
-            _phantom: PhantomData,
+            node: Arc::clone(&self.node),
         }
     }
 }
@@ -157,16 +157,24 @@ impl<W: Workload> ActrRef<W> {
     /// Create new ActrRef from shared state
     ///
     /// This is an internal API used by `ActrNode::start()`.
-    pub(crate) fn new(shared: Arc<ActrRefShared>) -> Self {
-        Self {
-            shared,
-            _phantom: PhantomData,
-        }
+    pub(crate) fn new(shared: Arc<ActrRefShared>, node: Arc<ActrNode<W>>) -> Self {
+        Self { shared, node }
     }
 
     /// Get Actor ID
     pub fn actor_id(&self) -> &ActrId {
         &self.shared.actor_id
+    }
+
+    /// Discover remote actors of the specified type via signaling server.
+    pub async fn discover_route_candidates(
+        &self,
+        target_type: &actr_protocol::ActrType,
+        candidate_count: u32,
+    ) -> ActorResult<Vec<ActrId>> {
+        self.node
+            .discover_route_candidates(target_type, candidate_count)
+            .await
     }
 
     /// Call Actor method (Shell → Workload RPC)

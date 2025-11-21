@@ -11,13 +11,13 @@
 // Include generated protobuf code from prost
 pub mod generated {
     pub mod actr {
-        include!("generated/actr.rs");
+        include!(concat!(env!("OUT_DIR"), "/actr.rs"));
     }
     pub mod signaling {
-        include!("generated/signaling.rs");
+        include!(concat!(env!("OUT_DIR"), "/signaling.rs"));
     }
     pub mod webrtc {
-        include!("generated/webrtc.rs");
+        include!(concat!(env!("OUT_DIR"), "/webrtc.rs"));
     }
 }
 

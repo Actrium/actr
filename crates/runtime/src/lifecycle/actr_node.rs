@@ -2,7 +2,10 @@
 
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    ActorResult, ActrId, ActrType, PayloadType, RouteCandidatesRequest, RpcEnvelope,
+    route_candidates_request,
+};
 use futures_util::FutureExt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -124,6 +127,81 @@ impl<W: Workload> ActrNode<W> {
     /// Get shutdown token for this node
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown_token.clone()
+    }
+
+    /// Discover remote actors of the specified type via signaling server.
+    ///
+    /// This requests best route candidates via `RouteCandidatesRequest` using the node's existing registration.
+    ///
+    /// The method returns the ordered list of candidate `ActrId`s reported by the signaling server.
+    ///
+    /// # Errors
+    /// - Returns `InvalidStateTransition` if the node is not started (no actor_id/credential).
+    ///   The node must be started via `start()` before calling this method.
+    /// - Returns `TransportError` if the signaling client is not connected.
+    pub async fn discover_route_candidates(
+        &self,
+        target_type: &ActrType,
+        candidate_count: u32,
+    ) -> ActorResult<Vec<ActrId>> {
+        // Check if node is started (has actor_id and credential)
+        let actor_id = self.actor_id.as_ref().ok_or_else(|| {
+            actr_protocol::ProtocolError::InvalidStateTransition(
+                "Node is not started. Call start() first.".to_string(),
+            )
+        })?;
+
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            actr_protocol::ProtocolError::InvalidStateTransition(
+                "Node is not started. Call start() first.".to_string(),
+            )
+        })?;
+
+        // Check if the signaling client is connected
+        if !self.signaling_client.is_connected() {
+            return Err(actr_protocol::ProtocolError::TransportError(
+                "Signaling client is not connected.".to_string(),
+            ));
+        }
+
+        let client = self.signaling_client.as_ref();
+
+        let criteria = route_candidates_request::NodeSelectionCriteria {
+            candidate_count,
+            ranking_factors: Vec::new(),
+            minimal_dependency_requirement: None,
+            minimal_health_requirement: None,
+        };
+
+        let route_request = RouteCandidatesRequest {
+            target_type: target_type.clone(),
+            criteria: Some(criteria),
+            client_location: None,
+        };
+
+        let route_response = client
+            .send_route_candidates_request(actor_id.clone(), credential.clone(), route_request)
+            .await
+            .map_err(|e| {
+                actr_protocol::ProtocolError::TransportError(format!(
+                    "Route candidates request failed: {e}"
+                ))
+            })?;
+
+        match route_response.result {
+            Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
+                Ok(success.candidates)
+            }
+            Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
+                Err(actr_protocol::ProtocolError::TransportError(format!(
+                    "Route candidates error {}: {}",
+                    err.code, err.message
+                )))
+            }
+            None => Err(actr_protocol::ProtocolError::TransportError(
+                "Invalid route candidates response: missing result".to_string(),
+            )),
+        }
     }
 
     /// Handle incoming message envelope
@@ -1092,7 +1170,7 @@ impl<W: Workload> ActrNode<W> {
         });
 
         // Create ActrRef
-        let actr_ref = ActrRef::new(actr_ref_shared);
+        let actr_ref = ActrRef::new(actr_ref_shared, node_ref);
 
         tracing::info!("✅ ActrRef created (Shell → Workload communication handle)");
 

@@ -11,7 +11,7 @@ authors = []
 [dependencies]
 
 [system.signaling]
-url = "ws://localhost:8081/"
+url = "ws://localhost:8081/signaling/ws"
 
 [system.deployment]
 realm = 1001
