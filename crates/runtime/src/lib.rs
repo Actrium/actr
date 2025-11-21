@@ -194,10 +194,7 @@ pub use actr_ref::ActrRef;
 pub use lifecycle::{ActrNode, ActrSystem};
 
 // Layer 3: Inbound dispatch layer
-pub use inbound::{
-    DataStreamCallback, DataStreamRegistry, InboundPacket, InboundPacketDispatcher,
-    MediaFrameRegistry, MediaTrackCallback,
-};
+pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
 
 // Re-export MediaSample and MediaType from framework (dependency inversion)
 pub use actr_framework::{MediaSample, MediaType};
@@ -262,8 +259,7 @@ pub mod prelude {
 
     // Layer 3: Inbound dispatch layer
     pub use crate::inbound::{
-        DataStreamCallback, DataStreamRegistry, InboundPacket, InboundPacketDispatcher,
-        MediaFrameRegistry, MediaTrackCallback,
+        DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback,
     };
 
     // Re-export MediaSample and MediaType from framework (dependency inversion)

@@ -59,7 +59,7 @@ runtime 采用 4 层架构设计：
 ├─────────────────────────────────────────┤
 │  Layer 2: Outbound/Inbound              │  出入站门抽象
 │    - OutGate (InprocOut/OutprocOut)     │
-│    - InboundPacketDispatcher            │
+│    - WebRtcGate / Inproc 接收循环        │
 ├─────────────────────────────────────────┤
 │  Layer 1: Transport (DataLane)          │  传输通道抽象
 │    - DataLane (Mpsc/WebRtcDataChannel)  │
@@ -98,12 +98,17 @@ runtime 采用 4 层架构设计：
 
 ### 3.2 入站处理（inbound/）
 
-**InboundPacketDispatcher**：
-- 职责：根据 PayloadType 将入站消息路由到不同处理器
+**WebRtcGate**：
+- 职责：消费 `WebRtcCoordinator` 聚合的入站数据，直接根据 PayloadType 分发
 - 路由规则：
-  - RpcReliable/RpcSignal → Mailbox（状态路径）
-  - StreamReliable/StreamLatencyFirst → DataStreamRegistry（快车道）
-  - MediaRtp → MediaFrameRegistry（快车道）
+  - RpcReliable/RpcSignal → Mailbox（按优先级入队，同时处理 pending_requests）
+  - StreamReliable/StreamLatencyFirst → DataStreamRegistry（快车道回调）
+  - MediaRtp → 直接丢弃并提示应走 WebRTC Track（MediaFrameRegistry 由 PeerConnection 注册）
+
+**Inproc 接收循环**：
+- 职责：`ActrNode` 内的两个 tokio 循环（Shell→Workload、Workload→Shell）直接从 `InprocTransportManager` 的 `DataLane::Mpsc` 收包
+- Shell→Workload：解出 `RpcEnvelope` 后调用 `handle_incoming()`
+- Workload→Shell：根据 `request_id` 调用 `complete_response()` 唤醒请求方
 
 **DataStreamRegistry**：
 - 职责：管理 DataStream 回调注册表（stream_id → callback）

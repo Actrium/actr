@@ -32,7 +32,7 @@ Receiver (datastream.Receiver)
            │
            └─ DataStreamRegistry::register()
                 │
-                └─ InboundPacketDispatcher::dispatch()
+                └─ WebRtcGate::dispatch_stream()
                      └─ Callback invoked with DataStream
 ```
 

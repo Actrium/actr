@@ -24,7 +24,7 @@ use std::sync::Arc;
 ///
 /// - 使用 **enum dispatch** 而非 trait object，避免虚函数调用
 /// - **零成本抽象**：编译时准确确定类型
-/// - **完全独立**：仅用于出站（Outbound），与 InboundPacketDispatcher 完全分离
+/// - **完全独立**：仅用于出站（Outbound），不包含任何入站路由逻辑
 ///
 /// # 性能
 ///
