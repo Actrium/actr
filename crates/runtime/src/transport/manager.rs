@@ -334,61 +334,65 @@ impl OutprocTransportManager {
             loop {
                 interval_timer.tick().await;
 
-                // Collect unhealthy Dests and retry/remove
-                {
+                // Collect snapshot of connected Dests first (no async under lock)
+                let snapshot: Vec<(Dest, Arc<DestTransport>)> = {
                     let transports_read = transports.read().await;
 
-                    for (dest, state) in transports_read.iter() {
-                        // Only check Connected transports, skip Connecting
-                        if let Either::Right(transport) = state {
-                            let healthy = transport.has_healthy_connection().await;
-                            let dest_clone = dest.clone(); // Clone before using
-
-                            if !healthy {
-                                // All connections failed - schedule for removal
-                                tracing::warn!(
-                                    "💀 All connections failed for {:?}, will remove",
-                                    dest_clone
-                                );
-                                drop(transports_read);
-
-                                // Remove entire DestTransport
-                                let mut transports_write = transports.write().await;
-                                if let Some(Either::Right(transport)) =
-                                    transports_write.remove(&dest_clone)
-                                {
-                                    tracing::info!(
-                                        "🗑️  Removing completely failed DestTransport: {:?}",
-                                        dest_clone
-                                    );
-                                    if let Err(e) = transport.close().await {
-                                        tracing::warn!(
-                                            "❌ Failed to close DestTransport {:?}: {}",
-                                            dest_clone,
-                                            e
-                                        );
-                                    }
-                                }
-
-                                return; // Exit early, will check again next interval
+                    transports_read
+                        .iter()
+                        .filter_map(|(dest, state)| {
+                            // Only check Connected transports, skip Connecting
+                            if let Either::Right(transport) = state {
+                                Some((dest.clone(), Arc::clone(transport)))
                             } else {
-                                // At least one connection is working
-                                // Try to reconnect failed ones (smart reconnect)
-                                tracing::debug!(
-                                    "🔄 Triggering smart reconnect for: {:?}",
-                                    dest_clone
-                                );
-                                if let Err(e) = transport
-                                    .retry_failed_connections(&dest_clone, conn_factory.as_ref())
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        "❌ Smart reconnect failed for {:?}: {}",
-                                        dest_clone,
-                                        e
-                                    );
-                                }
+                                None
                             }
+                        })
+                        .collect()
+                };
+
+                // Process each Dest outside of the lock
+                for (dest_clone, transport) in snapshot {
+                    let healthy = transport.has_healthy_connection().await;
+
+                    if !healthy {
+                        // All connections failed - schedule for removal
+                        tracing::warn!(
+                            "💀 All connections failed for {:?}, will remove",
+                            dest_clone
+                        );
+
+                        // Remove entire DestTransport
+                        let mut transports_write = transports.write().await;
+                        if let Some(Either::Right(transport)) = transports_write.remove(&dest_clone)
+                        {
+                            tracing::info!(
+                                "🗑️  Removing completely failed DestTransport: {:?}",
+                                dest_clone
+                            );
+                            // Drop lock before awaiting close
+                            drop(transports_write);
+
+                            if let Err(e) = transport.close().await {
+                                tracing::warn!(
+                                    "❌ Failed to close DestTransport {:?}: {}",
+                                    dest_clone,
+                                    e
+                                );
+                            }
+                        } else {
+                            // State changed between snapshot and removal; skip safely
+                            drop(transports_write);
+                        }
+                    } else {
+                        // At least one connection is working
+                        // Try to reconnect failed ones (smart reconnect)
+                        tracing::debug!("🔄 Triggering smart reconnect for: {:?}", dest_clone);
+                        if let Err(e) = transport
+                            .retry_failed_connections(&dest_clone, conn_factory.as_ref())
+                            .await
+                        {
+                            tracing::warn!("❌ Smart reconnect failed for {:?}: {}", dest_clone, e);
                         }
                     }
                 }
