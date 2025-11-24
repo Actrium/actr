@@ -1,6 +1,0 @@
-# Build artifacts
-target/
-Cargo.lock
-
-# Log files
-*.log
