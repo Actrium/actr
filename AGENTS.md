@@ -10,10 +10,10 @@
 - `cargo build` — standard local build; run from the workspace root to compile every crate.
 - `cargo check` — fast type/lint verification; run after editing any crate to ensure shared interfaces still compile.
 - `cargo test` — executes the full test suite, including per-crate tests in `crates/*`.
-- `cd /Users/kaito/Project/ar/actr && actr gen --input=../echo-service/proto --output=../echo-service/src/generated --clean` — regenerates protobuf + actor scaffolding for the `echo-service` sample.
+- `actr gen --input=../echo-service/proto --output=../echo-service/src/generated --clean` — regenerates protobuf + actor scaffolding for the `echo-service` sample (run from workspace root).
 
 ## Coding Style & Naming Conventions
-- Follow Rust 2021/2024 idioms: four-space indentation, snake_case for modules/functions, CamelCase for types.
+- Follow Rust 2024 idioms: four-space indentation, snake_case for modules/functions, CamelCase for types.
 - Run `rustfmt` (same options used by `actr gen`) before committing: `cargo fmt --all`.
 - Keep comments concise and purposeful; prefer English for inline docs even when user-facing docs are localized.
 

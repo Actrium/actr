@@ -4,8 +4,12 @@
 
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
 use crate::outbound::OutGate;
+use crate::wire::webrtc::SignalingClient;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
-use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope, RpcRequest};
+use actr_protocol::{
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ProtocolError, RouteCandidatesRequest,
+    RpcEnvelope, RpcRequest, route_candidates_request,
+};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
@@ -34,6 +38,8 @@ pub struct RuntimeContext {
     outproc_gate: Option<OutGate>,                 // 远程 Actor 调用 - 延迟初始化
     data_stream_registry: Arc<DataStreamRegistry>, // DataStream 回调注册表
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack 回调注册表
+    signaling_client: Arc<dyn SignalingClient>,
+    credential: AIdCredential,
 }
 
 impl RuntimeContext {
@@ -49,6 +55,8 @@ impl RuntimeContext {
     /// - `outproc_gate`: 跨进程通信 gate（可能为 None，等待 WebRTC 初始化）
     /// - `data_stream_registry`: DataStream 回调注册表
     /// - `media_frame_registry`: MediaTrack 回调注册表
+    /// - `signaling_client`: 用于路由发现的信令客户端
+    /// - `credential`: 该 Actor 的凭证（调用信令接口时使用）
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub fn new(
         self_id: ActrId,
@@ -59,6 +67,8 @@ impl RuntimeContext {
         outproc_gate: Option<OutGate>,
         data_stream_registry: Arc<DataStreamRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
+        signaling_client: Arc<dyn SignalingClient>,
+        credential: AIdCredential,
     ) -> Self {
         Self {
             self_id,
@@ -69,6 +79,8 @@ impl RuntimeContext {
             outproc_gate,
             data_stream_registry,
             media_frame_registry,
+            signaling_client,
+            credential,
         }
     }
 
@@ -241,6 +253,55 @@ impl Context for RuntimeContext {
             bytes::Bytes::from(payload),
         )
         .await
+    }
+
+    async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
+        if !self.signaling_client.is_connected() {
+            return Err(ProtocolError::TransportError(
+                "Signaling client is not connected.".to_string(),
+            ));
+        }
+
+        let criteria = route_candidates_request::NodeSelectionCriteria {
+            candidate_count: 1,
+            ranking_factors: Vec::new(),
+            minimal_dependency_requirement: None,
+            minimal_health_requirement: None,
+        };
+
+        let request = RouteCandidatesRequest {
+            target_type: target_type.clone(),
+            criteria: Some(criteria),
+            client_location: None,
+        };
+
+        let response = self
+            .signaling_client
+            .send_route_candidates_request(self.self_id.clone(), self.credential.clone(), request)
+            .await
+            .map_err(|e| {
+                ProtocolError::TransportError(format!("Route candidates request failed: {e}"))
+            })?;
+
+        match response.result {
+            Some(actr_protocol::route_candidates_response::Result::Success(ok)) => {
+                ok.candidates.into_iter().next().ok_or_else(|| {
+                    ProtocolError::TargetNotFound(format!(
+                        "No route candidates for type {}.{}",
+                        target_type.manufacturer, target_type.name
+                    ))
+                })
+            }
+            Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
+                Err(ProtocolError::TransportError(format!(
+                    "Route candidates error {}: {}",
+                    err.code, err.message
+                )))
+            }
+            None => Err(ProtocolError::TransportError(
+                "Route candidates response missing result".to_string(),
+            )),
+        }
     }
 
     // ========== Fast Path: MediaTrack Methods ==========

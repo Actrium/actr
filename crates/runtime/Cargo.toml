@@ -23,7 +23,7 @@ tokio.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = { workspace = true }
 
 # === 调度和并发 ===
 tokio-util = "0.7"

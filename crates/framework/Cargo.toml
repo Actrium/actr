@@ -10,7 +10,7 @@ actr-protocol = { path = "../protocol" }
 async-trait = "0.1"
 bytes = "1.10"
 futures-util = "0.3"
-tokio = { version = "1", features = ["full"] }
+tokio.workspace = true
 uuid = { version = "1.18", features = ["v4"] }
 
 # Optional dependencies for utilities
@@ -23,4 +23,9 @@ tar = { version = "0.4", optional = true }
 
 [features]
 default = []
-geoip = ["maxminddb", "reqwest", "flate2", "tar"]  # GeoIP with auto-download support
+geoip = [
+    "maxminddb",
+    "reqwest",
+    "flate2",
+    "tar",
+] # GeoIP with auto-download support

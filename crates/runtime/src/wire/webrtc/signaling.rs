@@ -172,6 +172,77 @@ pub trait SignalingClient: Send + Sync {
     fn get_stats(&self) -> SignalingStats;
 }
 
+/// Dummy signaling client for tests and examples where signaling is not exercised.
+#[derive(Debug, Default, Clone)]
+pub struct DummySignalingClient;
+
+#[async_trait]
+impl SignalingClient for DummySignalingClient {
+    async fn connect(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn send_register_request(
+        &self,
+        _request: RegisterRequest,
+    ) -> NetworkResult<RegisterResponse> {
+        Err(NetworkError::NotImplemented(
+            "DummySignalingClient.send_register_request".to_string(),
+        ))
+    }
+
+    async fn send_unregister_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _reason: Option<String>,
+    ) -> NetworkResult<UnregisterResponse> {
+        Ok(UnregisterResponse::default())
+    }
+
+    async fn send_heartbeat(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _availability: ServiceAvailabilityState,
+        _power_reserve: f32,
+        _mailbox_backlog: f32,
+    ) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn send_route_candidates_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _request: RouteCandidatesRequest,
+    ) -> NetworkResult<RouteCandidatesResponse> {
+        Err(NetworkError::ServiceDiscoveryError(
+            "DummySignalingClient.send_route_candidates_request".to_string(),
+        ))
+    }
+
+    async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+        Ok(None)
+    }
+
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn get_stats(&self) -> SignalingStats {
+        SignalingStats::default()
+    }
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,

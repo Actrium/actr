@@ -272,6 +272,11 @@ impl<W: Workload> ActrNode<W> {
                 "Actor ID not set - node must be started before handling messages".to_string(),
             )
         })?;
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            actr_protocol::ProtocolError::InvalidStateTransition(
+                "Credential not set - node must be started before handling messages".to_string(),
+            )
+        })?;
 
         let ctx = self
             .context_factory
@@ -282,6 +287,7 @@ impl<W: Workload> ActrNode<W> {
                 caller_id, // caller_id from transport layer (MessageRecord.from)
                 &envelope.trace_id,
                 &envelope.request_id,
+                credential,
             );
 
         // 2. Static MessageRouter dispatch (zero-cost abstraction)
@@ -443,6 +449,7 @@ impl<W: Workload> ActrNode<W> {
                 self.actor_id = Some(actor_id.clone());
                 self.credential = Some(credential.clone());
 
+                // Persist identity into ContextFactory for later Context creation
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -685,6 +692,16 @@ impl<W: Workload> ActrNode<W> {
                 )
             })?
             .clone();
+        let credential = self
+            .credential
+            .as_ref()
+            .ok_or_else(|| {
+                actr_protocol::ProtocolError::InvalidStateTransition(
+                    "Credential not set - node must be started before handling messages"
+                        .to_string(),
+                )
+            })?
+            .clone();
 
         let actor_id_for_shell = actor_id.clone();
         let shutdown_token = self.shutdown_token.clone();
@@ -735,6 +752,7 @@ impl<W: Workload> ActrNode<W> {
                 None,        // caller_id
                 "bootstrap", // trace_id
                 "bootstrap", // request_id
+                &credential,
             );
         node_ref.workload.on_start(&ctx).await?;
         tracing::info!("✅ Lifecycle hook on_start completed");

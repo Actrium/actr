@@ -6,7 +6,8 @@ use crate::context::RuntimeContext;
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
 use crate::outbound::OutGate;
 use crate::transport::InprocTransportManager;
-use actr_protocol::ActrId;
+use crate::wire::webrtc::SignalingClient;
+use actr_protocol::{AIdCredential, ActrId};
 use std::sync::Arc;
 
 /// Context factory
@@ -35,6 +36,9 @@ pub struct ContextFactory {
 
     /// MediaTrack 回调注册表
     pub(crate) media_frame_registry: Arc<MediaFrameRegistry>,
+
+    /// Signaling client for discovery
+    pub(crate) signaling_client: Arc<dyn SignalingClient>,
 }
 
 impl ContextFactory {
@@ -61,6 +65,7 @@ impl ContextFactory {
         workload_to_shell: Arc<InprocTransportManager>,
         data_stream_registry: Arc<DataStreamRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
+        signaling_client: Arc<dyn SignalingClient>,
     ) -> Self {
         Self {
             inproc_gate,
@@ -69,6 +74,7 @@ impl ContextFactory {
             workload_to_shell,
             data_stream_registry,
             media_frame_registry,
+            signaling_client,
         }
     }
 
@@ -110,6 +116,7 @@ impl ContextFactory {
         caller_id: Option<&ActrId>,
         trace_id: &str,
         request_id: &str,
+        credential: &AIdCredential,
     ) -> RuntimeContext {
         RuntimeContext::new(
             self_id.clone(),
@@ -120,6 +127,8 @@ impl ContextFactory {
             self.outproc_gate.clone(), // Clone Option<OutGate>
             self.data_stream_registry.clone(), // Clone Arc<DataStreamRegistry>
             self.media_frame_registry.clone(), // Clone Arc<MediaFrameRegistry>
+            self.signaling_client.clone(),
+            credential.clone(),
         )
     }
 
@@ -128,7 +137,7 @@ impl ContextFactory {
     /// # 用途
     ///
     /// 用于 on_start/on_stop 钩子，无 caller_id
-    pub fn create_bootstrap(&self, self_id: &ActrId) -> RuntimeContext {
+    pub fn create_bootstrap(&self, self_id: &ActrId, credential: &AIdCredential) -> RuntimeContext {
         RuntimeContext::new(
             self_id.clone(),
             None,
@@ -138,6 +147,8 @@ impl ContextFactory {
             self.outproc_gate.clone(),
             self.data_stream_registry.clone(),
             self.media_frame_registry.clone(),
+            self.signaling_client.clone(),
+            credential.clone(),
         )
     }
 }

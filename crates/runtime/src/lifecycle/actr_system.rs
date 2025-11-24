@@ -82,6 +82,17 @@ impl ActrSystem {
         );
         tracing::info!("✅ Dead Letter Queue initialized");
 
+        // Initialize signaling client (using WebSocketSignalingClient implementation)
+        let signaling_config = SignalingConfig {
+            server_url: config.signaling_url.clone(),
+            connection_timeout: 30,
+            heartbeat_interval: 30,
+            reconnect_config: ReconnectConfig::default(),
+            auth_config: None,
+        };
+        let signaling_client: Arc<dyn SignalingClient> =
+            Arc::new(WebSocketSignalingClient::new(signaling_config));
+
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Initialize inproc infrastructure (Shell/Local communication - immediately available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -118,20 +129,10 @@ impl ActrSystem {
             workload_to_shell.clone(),
             data_stream_registry,
             media_frame_registry,
+            signaling_client.clone(),
         );
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Workload)");
-
-        // Initialize signaling client (using WebSocketSignalingClient implementation)
-        let signaling_config = SignalingConfig {
-            server_url: config.signaling_url.clone(),
-            connection_timeout: 30,
-            heartbeat_interval: 30,
-            reconnect_config: ReconnectConfig::default(),
-            auth_config: None,
-        };
-        let signaling_client: Arc<dyn SignalingClient> =
-            Arc::new(WebSocketSignalingClient::new(signaling_config));
 
         tracing::info!("✅ ActrSystem initialized");
 

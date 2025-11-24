@@ -197,7 +197,7 @@ impl<W: Workload> ActrRef<W> {
     /// ```
     pub async fn call<R>(&self, request: R) -> ActorResult<R::Response>
     where
-        R: actr_protocol::RpcRequest + ProstMessage,
+        R: actr_protocol::RpcRequest,
     {
         // Encode request
         let payload: Bytes = request.encode_to_vec().into();

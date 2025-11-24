@@ -1,6 +1,6 @@
 //! Context trait - Execution context interface for actors
 
-use actr_protocol::{ActorResult, ActrId, DataStream};
+use actr_protocol::{ActorResult, ActrId, ActrType, DataStream};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
@@ -155,6 +155,12 @@ pub trait Context: Send + Sync {
     /// - `target`: Target destination
     /// - `chunk`: DataStream to send
     async fn send_data_stream(&self, target: &crate::Dest, chunk: DataStream) -> ActorResult<()>;
+
+    /// Discover a remote Actor of the specified type via the signaling server.
+    ///
+    /// Returns a route candidate or an error if none are available. Concrete
+    /// selection strategy is decided by the Context implementation.
+    async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId>;
 
     // ========== Fast Path: MediaTrack Methods (WebRTC Native) ==========
 

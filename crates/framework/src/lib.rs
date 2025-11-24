@@ -128,6 +128,9 @@ mod workload;
 // Optional utilities module
 pub mod util;
 
+// Test helpers (lightweight Context implementation)
+pub mod test_support;
+
 // Public re-exports
 pub use context::{Context, MediaSample, MediaType};
 pub use dest::Dest;
