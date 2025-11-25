@@ -1,17 +1,19 @@
 [package]
 name = "actr-framework-protoc-codegen"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Protoc plugin for generating actr-framework code from protobuf definitions"
+repository = "https://github.com/actor-rtc/actr"
+readme = "README.md"
 keywords = ["actor", "codegen", "protobuf", "protoc", "plugin"]
 categories = ["development-tools", "development-tools::build-utils"]
 
 [dependencies]
 # Framework dependencies
-actr-framework = { path = "../framework", version = "0.1" }
-actr-protocol = { path = "../protocol", version = "0.1" }
+actr-framework.workspace = true
+actr-protocol.workspace = true
 
 # Protobuf support
 prost = "0.14"

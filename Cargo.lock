@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "actr-config"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-protocol",
  "actr-version",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework-protoc-codegen"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "actr-mailbox"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "bytes",
  "chrono",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "actr-version"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -2178,8 +2178,9 @@ dependencies = [
 
 [[package]]
 name = "proto-sign"
-version = "0.1.0"
-source = "git+https://github.com/actor-rtc/proto-sign#56fddf21880167b8a065c0f2d8487e570271e73a"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cf45daf5c0c3525013f93bd52fbe7cd5c96c1f463fabaac08e4ba3752882f91"
 dependencies = [
  "anyhow",
  "clap",

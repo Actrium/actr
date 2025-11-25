@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Persistent mailbox layer for the Actor-RTC framework, backed by SQLite."
+repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "mailbox", "storage", "persistence", "sqlite"]
 categories = ["database", "data-structures", "asynchronous"]
 

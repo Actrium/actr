@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Runtime layer for Actor-RTC framework - actor system, scheduler, and orchestration"
+repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "runtime", "scheduler", "system", "orchestration"]
 categories = ["concurrency", "asynchronous", "development-tools"]
 
@@ -16,7 +17,7 @@ actr-version.workspace = true
 actr-config.workspace = true
 
 # === Runtime 子 crate ===
-actr-mailbox = { path = "../runtime-mailbox" }
+actr-mailbox.workspace = true
 
 # === 异步运行时 ===
 tokio.workspace = true
