@@ -501,20 +501,24 @@ impl WebRtcCoordinator {
                 let channel_id = dc.id();
                 let label = dc.label();
 
-                let payload_type = channel_id.and_then(|id| PayloadType::from_i32(id as i32));
+                let payload_type = PayloadType::try_from(i32::from(channel_id)).ok();
 
                 match payload_type {
                     Some(pt) => {
-                        if let Err(e) = conn.register_received_data_channel(dc, pt).await {
+                        let channel_clone = Arc::clone(&dc);
+                        if let Err(e) = conn
+                            .register_received_data_channel(channel_clone, pt)
+                            .await
+                        {
                             tracing::warn!(
-                                "❌ Failed to register received DataChannel label={} id={:?}: {}",
+                                "❌ Failed to register received DataChannel label={} id={}: {}",
                                 label,
                                 channel_id,
                                 e
                             );
                         } else {
                             tracing::debug!(
-                                "📨 Registered DataChannel from offerer label={} id={:?}",
+                                "📨 Registered DataChannel from offerer label={} id={}",
                                 label,
                                 channel_id
                             );
@@ -522,7 +526,7 @@ impl WebRtcCoordinator {
                     }
                     None => {
                         tracing::warn!(
-                            "❓ Ignoring DataChannel with unmapped id={:?} label={}",
+                            "❓ Ignoring DataChannel with unmapped id={} label={}",
                             channel_id,
                             label
                         );
