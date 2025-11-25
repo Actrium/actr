@@ -17,6 +17,6 @@ pub use coordinator::WebRtcCoordinator;
 pub use gate::WebRtcGate;
 pub use negotiator::{IceServer, WebRtcConfig, WebRtcNegotiator};
 pub use signaling::{
-    AuthConfig, AuthType, ReconnectConfig, SignalingClient, SignalingConfig, SignalingStats,
-    WebSocketSignalingClient,
+    AuthConfig, AuthType, ConnectionState, ReconnectConfig, SignalingClient, SignalingConfig,
+    SignalingStats, WebSocketSignalingClient, spawn_signaling_reconnector,
 };

@@ -646,6 +646,12 @@ impl<W: Workload> ActrNode<W> {
 
                     task_handles.push(unregister_handle);
                 }
+
+                // Spawn signaling auto-reconnect helper that reacts immediately to disconnect events.
+                crate::wire::webrtc::spawn_signaling_reconnector(
+                    self.signaling_client.clone(),
+                    self.shutdown_token.clone(),
+                );
             }
             Some(register_response::Result::Error(error)) => {
                 tracing::error!(

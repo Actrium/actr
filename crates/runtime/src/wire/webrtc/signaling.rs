@@ -19,8 +19,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -170,77 +171,15 @@ pub trait SignalingClient: Send + Sync {
 
     /// GetConnect statistics info
     fn get_stats(&self) -> SignalingStats;
+    /// Subscribe to connection state changes (Connected/Disconnected).
+    fn subscribe_state(&self) -> watch::Receiver<ConnectionState>;
 }
 
-/// Dummy signaling client for tests and examples where signaling is not exercised.
-#[derive(Debug, Default, Clone)]
-pub struct DummySignalingClient;
-
-#[async_trait]
-impl SignalingClient for DummySignalingClient {
-    async fn connect(&self) -> NetworkResult<()> {
-        Ok(())
-    }
-
-    async fn disconnect(&self) -> NetworkResult<()> {
-        Ok(())
-    }
-
-    async fn send_register_request(
-        &self,
-        _request: RegisterRequest,
-    ) -> NetworkResult<RegisterResponse> {
-        Err(NetworkError::NotImplemented(
-            "DummySignalingClient.send_register_request".to_string(),
-        ))
-    }
-
-    async fn send_unregister_request(
-        &self,
-        _actor_id: ActrId,
-        _credential: AIdCredential,
-        _reason: Option<String>,
-    ) -> NetworkResult<UnregisterResponse> {
-        Ok(UnregisterResponse::default())
-    }
-
-    async fn send_heartbeat(
-        &self,
-        _actor_id: ActrId,
-        _credential: AIdCredential,
-        _availability: ServiceAvailabilityState,
-        _power_reserve: f32,
-        _mailbox_backlog: f32,
-    ) -> NetworkResult<()> {
-        Ok(())
-    }
-
-    async fn send_route_candidates_request(
-        &self,
-        _actor_id: ActrId,
-        _credential: AIdCredential,
-        _request: RouteCandidatesRequest,
-    ) -> NetworkResult<RouteCandidatesResponse> {
-        Err(NetworkError::ServiceDiscoveryError(
-            "DummySignalingClient.send_route_candidates_request".to_string(),
-        ))
-    }
-
-    async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
-        Ok(())
-    }
-
-    async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
-        Ok(None)
-    }
-
-    fn is_connected(&self) -> bool {
-        true
-    }
-
-    fn get_stats(&self) -> SignalingStats {
-        SignalingStats::default()
-    }
+/// High-level signaling connection state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connected,
 }
 
 /// WebSocket signaling clientImplementation
@@ -260,7 +199,7 @@ pub struct WebSocketSignalingClient {
         Option<futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
     >,
     /// connection status
-    connected: AtomicBool,
+    connected: Arc<AtomicBool>,
     /// statistics info
     stats: Arc<AtomicSignalingStats>,
     /// Envelope count number device
@@ -272,23 +211,27 @@ pub struct WebSocketSignalingClient {
     inbound_tx: tokio::sync::Mutex<mpsc::UnboundedSender<SignalingEnvelope>>,
     /// Background receive task handle to allow graceful shutdown
     receiver_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Connection state broadcast channel
+    state_tx: watch::Sender<ConnectionState>,
 }
 
 impl WebSocketSignalingClient {
     /// Create new WebSocket signaling client
     pub fn new(config: SignalingConfig) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+        let (state_tx, _state_rx) = watch::channel(ConnectionState::Disconnected);
         Self {
             config,
             ws_sink: tokio::sync::Mutex::new(None),
             ws_stream: tokio::sync::Mutex::new(None),
-            connected: AtomicBool::new(false),
+            connected: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(AtomicSignalingStats::default()),
             envelope_counter: tokio::sync::Mutex::new(0),
             pending_replies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             inbound_rx: Arc::new(tokio::sync::Mutex::new(inbound_rx)),
             inbound_tx: tokio::sync::Mutex::new(inbound_tx),
             receiver_task: tokio::sync::Mutex::new(None),
+            state_tx,
         }
     }
 
@@ -333,6 +276,87 @@ impl WebSocketSignalingClient {
         let (tx, rx) = mpsc::unbounded_channel();
         *self.inbound_tx.lock().await = tx;
         *self.inbound_rx.lock().await = rx;
+    }
+
+    /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
+    ///
+    /// This does not perform any retry logic; callers that want retries should wrap this.
+    async fn establish_connection_once(&self) -> NetworkResult<()> {
+        let url = self.config.server_url.clone();
+        let timeout_secs = self.config.connection_timeout;
+
+        // Connect with an optional timeout. A timeout of 0 means "no timeout".
+        let connect_result = if timeout_secs == 0 {
+            connect_async(url.as_str()).await
+        } else {
+            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+            tokio::time::timeout(timeout_duration, connect_async(url.as_str()))
+                .await
+                .map_err(|_| {
+                    NetworkError::ConnectionError(format!(
+                        "Signaling connect timeout after {}s",
+                        timeout_secs
+                    ))
+                })?
+        }?;
+
+        let (ws_stream, _) = connect_result;
+
+        // Split read/write halves and initialize client state
+        let (sink, stream) = ws_stream.split();
+
+        *self.ws_sink.lock().await = Some(sink);
+        *self.ws_stream.lock().await = Some(stream);
+        self.connected.store(true, Ordering::Release);
+        // Notify listeners that we are now connected
+        let _ = self.state_tx.send(ConnectionState::Connected);
+
+        self.stats.connections.fetch_add(1, Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Connect to signaling server with retry and exponential backoff based on reconnect_config.
+    async fn connect_with_retries(&self) -> NetworkResult<()> {
+        let cfg = &self.config.reconnect_config;
+
+        // If reconnect is disabled, just attempt once.
+        if !cfg.enabled {
+            return self.establish_connection_once().await;
+        }
+
+        let mut attempt: u32 = 0;
+        let mut delay_secs = cfg.initial_delay.max(1);
+
+        loop {
+            attempt += 1;
+
+            match self.establish_connection_once().await {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("Signaling connect attempt {} failed: {e:?}", attempt);
+
+                    if attempt >= cfg.max_attempts {
+                        tracing::error!(
+                            "Signaling connect failed after {} attempts, giving up",
+                            attempt
+                        );
+                        return Err(e);
+                    }
+
+                    let sleep_secs = delay_secs.min(cfg.max_delay.max(1));
+                    tracing::info!("Retry signaling connect after {}s", sleep_secs);
+                    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+
+                    // Exponential backoff for next attempt
+                    delay_secs = ((delay_secs as f64) * cfg.backoff_multiplier)
+                        .round()
+                        .max(1.0) as u64;
+                }
+            }
+        }
     }
 
     /// Send envelope and wait for response with timeout and error handling.
@@ -388,7 +412,9 @@ impl WebSocketSignalingClient {
         let pending = self.pending_replies.clone();
         let inbound_tx = { self.inbound_tx.lock().await.clone() };
         let stats = self.stats.clone();
-
+        let connected = self.connected.clone();
+        let state_tx = self.state_tx.clone();
+        tracing::debug!("Start receiver");
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
@@ -396,7 +422,7 @@ impl WebSocketSignalingClient {
                         match SignalingEnvelope::decode(&data[..]) {
                             Ok(envelope) => {
                                 stats.messages_received.fetch_add(1, Ordering::Relaxed);
-
+                                tracing::debug!("Received message: {:?}", envelope);
                                 if let Some(reply_for) = envelope.reply_for.clone() {
                                     let mut pending_guard = pending.lock().await;
                                     if let Some(sender) = pending_guard.remove(&reply_for) {
@@ -409,9 +435,16 @@ impl WebSocketSignalingClient {
                                         continue;
                                     }
                                 }
-
+                                tracing::debug!(
+                                    "Unmatched or push message -> forward to inbound channel"
+                                );
                                 // Unmatched or push message -> forward to inbound channel
-                                let _ = inbound_tx.send(envelope);
+                                if let Err(e) = inbound_tx.send(envelope) {
+                                    stats.errors.fetch_add(1, Ordering::Relaxed);
+                                    tracing::warn!(
+                                        "Failed to send envelope to inbound channel: {e:?}"
+                                    );
+                                }
                             }
                             Err(e) => {
                                 stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -425,9 +458,15 @@ impl WebSocketSignalingClient {
                     Err(e) => {
                         stats.errors.fetch_add(1, Ordering::Relaxed);
                         tracing::error!("Signaling receive error: {e}");
+                        break;
                     }
                 }
             }
+
+            // Reaching here means the underlying WebSocket stream has terminated.
+            connected.store(false, Ordering::Release);
+            stats.disconnections.fetch_add(1, Ordering::Relaxed);
+            let _ = state_tx.send(ConnectionState::Disconnected);
         });
 
         *self.receiver_task.lock().await = Some(handle);
@@ -437,23 +476,8 @@ impl WebSocketSignalingClient {
 #[async_trait]
 impl SignalingClient for WebSocketSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
-        let (ws_stream, _) = connect_async(self.config.server_url.as_str()).await?;
-
-        // distribute apart read write stream
-        let (sink, stream) = ws_stream.split();
-
-        *self.ws_sink.lock().await = Some(sink);
-        *self.ws_stream.lock().await = Some(stream);
-        self.connected.store(true, Ordering::Release);
-
-        // Ensure inbound channel is fresh for this session
-        self.reset_inbound_channel().await;
-
-        // Start background receiver to demux replies and push messages
+        self.connect_with_retries().await?;
         self.start_receiver().await;
-
-        self.stats.connections.fetch_add(1, Ordering::Relaxed);
-
         Ok(())
     }
 
@@ -626,7 +650,12 @@ impl SignalingClient for WebSocketSignalingClient {
         let mut rx = self.inbound_rx.lock().await;
         match rx.recv().await {
             Some(envelope) => Ok(Some(envelope)),
-            None => Ok(None),
+            None => {
+                tracing::error!("Inbound channel closed");
+                Err(NetworkError::ConnectionError(
+                    "Inbound channel closed".to_string(),
+                ))
+            }
         }
     }
 
@@ -637,6 +666,51 @@ impl SignalingClient for WebSocketSignalingClient {
     fn get_stats(&self) -> SignalingStats {
         self.stats.snapshot()
     }
+
+    fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
+        self.state_tx.subscribe()
+    }
+}
+
+/// Spawn a helper task that listens to connection state changes and proactively reconnects
+/// when the signaling client transitions to Disconnected.
+pub fn spawn_signaling_reconnector(client: Arc<dyn SignalingClient>, shutdown: CancellationToken) {
+    let mut state_rx = client.subscribe_state();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    tracing::info!("🛑 Stopping signaling reconnect helper due to shutdown");
+                    break;
+                }
+                changed = state_rx.changed() => {
+                    if changed.is_err() {
+                        tracing::info!("Signaling state channel closed, stopping reconnect helper");
+                        break;
+                    }
+
+                    if *state_rx.borrow() == ConnectionState::Disconnected {
+                        // Double-check shutdown state to avoid reconnecting after shutdown
+                        if shutdown.is_cancelled() {
+                            tracing::info!(
+                                "Shutdown already requested when disconnect event observed; skipping reconnect"
+                            );
+                            break;
+                        }
+
+                        tracing::warn!("📡 Signaling state is DISCONNECTED, attempting reconnect");
+                        if let Err(e) = client.connect().await {
+                            tracing::error!("❌ Signaling reconnect failed: {e}");
+                        } else {
+                            tracing::info!("✅ Signaling reconnect succeeded");
+                        }
+
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// signaling statistics info
@@ -717,5 +791,180 @@ impl AtomicSignalingStats {
             heartbeats_received: self.heartbeats_received.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as UsizeOrdering};
+    use tokio_util::sync::CancellationToken;
+
+    /// Simple fake SignalingClient implementation for testing the reconnect helper.
+    struct FakeSignalingClient {
+        state_tx: watch::Sender<ConnectionState>,
+        connect_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl SignalingClient for FakeSignalingClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            self.connect_calls.fetch_add(1, UsizeOrdering::SeqCst);
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<()> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            unimplemented!("not needed in tests");
+        }
+
+        fn is_connected(&self) -> bool {
+            // Derived from last published state; keep implementation simple for tests.
+            *self.state_tx.borrow() == ConnectionState::Connected
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
+            self.state_tx.subscribe()
+        }
+    }
+
+    fn make_fake_client() -> (Arc<FakeSignalingClient>, watch::Sender<ConnectionState>) {
+        let (state_tx, _rx) = watch::channel(ConnectionState::Disconnected);
+        let client = Arc::new(FakeSignalingClient {
+            state_tx: state_tx.clone(),
+            connect_calls: Arc::new(AtomicUsize::new(0)),
+        });
+        (client, state_tx)
+    }
+
+    #[tokio::test]
+    async fn test_spawn_signaling_reconnector_does_not_trigger_on_connected() {
+        let (fake_client, state_tx) = make_fake_client();
+        let shutdown = CancellationToken::new();
+
+        // Upcast to trait object
+        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
+        spawn_signaling_reconnector(client_trait, shutdown.clone());
+
+        // Send a Connected state (should not trigger reconnect)
+        let _ = state_tx.send(ConnectionState::Connected);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
+        assert_eq!(
+            calls, 0,
+            "connect() should not be called on Connected state"
+        );
+
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn test_spawn_signaling_reconnector_triggers_connect_on_disconnect() {
+        let (fake_client, state_tx) = make_fake_client();
+        let shutdown = CancellationToken::new();
+
+        // Upcast to trait object
+        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
+        spawn_signaling_reconnector(client_trait, shutdown.clone());
+
+        // Simulate a disconnect event
+        let _ = state_tx.send(ConnectionState::Disconnected);
+
+        // Give the helper some time to observe the event and call connect()
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
+        assert!(
+            calls >= 1,
+            "expected at least one reconnect attempt, got {}",
+            calls
+        );
+
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn test_spawn_signaling_reconnector_stops_on_shutdown_before_disconnect() {
+        let (fake_client, state_tx) = make_fake_client();
+        let shutdown = CancellationToken::new();
+
+        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
+        spawn_signaling_reconnector(client_trait, shutdown.clone());
+
+        // Immediately signal shutdown
+        shutdown.cancel();
+
+        // Then send a disconnect event after shutdown
+        let _ = state_tx.send(ConnectionState::Disconnected);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
+        assert_eq!(calls, 0, "reconnect helper should not run after shutdown");
+    }
+
+    #[test]
+    fn test_websocket_signaling_client_initial_state_disconnected() {
+        // Build a minimal config; URL doesn't need to be reachable for this test.
+        let config = SignalingConfig {
+            server_url: Url::parse("ws://example.com/signaling/ws").unwrap(),
+            connection_timeout: 30,
+            heartbeat_interval: 30,
+            reconnect_config: ReconnectConfig::default(),
+            auth_config: None,
+        };
+
+        let client = WebSocketSignalingClient::new(config);
+        let state_rx = client.subscribe_state();
+        assert_eq!(*state_rx.borrow(), ConnectionState::Disconnected);
     }
 }
