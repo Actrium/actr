@@ -16,6 +16,7 @@ message SessionDescription {
     OFFER = 0;
     ANSWER = 1;
     RENEGOTIATION_OFFER = 2;
+    ICE_RESTART_OFFER = 3;
   }
   required Type type = 1;
   required string sdp = 2;

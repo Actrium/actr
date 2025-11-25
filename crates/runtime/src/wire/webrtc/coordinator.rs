@@ -160,6 +160,11 @@ impl WebRtcCoordinator {
                                                 "⚠️ Received RenegotiationOffer, not supported yet"
                                             );
                                         }
+                                        SdpType::IceRestartOffer => {
+                                            tracing::warn!(
+                                                "⚠️ Received IceRestartOffer, not supported yet"
+                                            );
+                                        }
                                     }
                                 }
                                 Some(actr_relay::Payload::IceCandidate(ice)) => {
@@ -173,6 +178,16 @@ impl WebRtcCoordinator {
                                     {
                                         tracing::error!("❌ Failed to handle ICE Candidate: {}", e);
                                     }
+                                }
+                                Some(actr_relay::Payload::RoleNegotiation(_)) => {
+                                    tracing::trace!(
+                                        "📥 Received RoleNegotiation payload; ignored by WebRtcCoordinator"
+                                    );
+                                }
+                                Some(actr_relay::Payload::RoleAssignment(_)) => {
+                                    tracing::trace!(
+                                        "📥 Received RoleAssignment payload; ignored by WebRtcCoordinator"
+                                    );
                                 }
                                 None => {
                                     tracing::warn!("⚠️ ActrRelay missing payload");

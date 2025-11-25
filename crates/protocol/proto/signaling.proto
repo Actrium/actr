@@ -88,5 +88,21 @@ message ActrRelay {
   oneof payload {
     webrtc.IceCandidate ice_candidate = 10;
     webrtc.SessionDescription session_description = 11;
+    // Decide offerer vs answerer before SDP exchange
+    RoleNegotiation role_negotiation = 12;
+    RoleAssignment role_assignment = 13;
   }
+}
+
+// Initiate role arbitration between two Actr peers (who will create the Offer)
+message RoleNegotiation {
+  required actr.ActrId from = 1;
+  required actr.ActrId to = 2;
+  required string tenant_id = 3;
+}
+
+// Signaling server assigns the offerer role to one side
+message RoleAssignment {
+  required actr.ActrId to = 1;
+  required bool is_offerer = 2;
 }
