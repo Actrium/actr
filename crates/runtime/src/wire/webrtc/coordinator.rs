@@ -34,6 +34,7 @@ use actr_protocol::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::TrackLocalWriter;
@@ -477,12 +478,43 @@ impl WebRtcCoordinator {
         let webrtc_conn = WebRtcConnection::new(Arc::clone(&peer_connection_arc));
         webrtc_conn.install_state_change_handler();
 
-        // 3. Pre-create negotiated DataChannel for Reliable to trigger ICE gathering
-        // Both sides will create the same channel ID, so this works for both offerer and answerer
-        let _reliable_lane = webrtc_conn
-            .get_lane(actr_protocol::PayloadType::RpcReliable)
-            .await?;
-        tracing::debug!("Pre-created Reliable DataChannel for ICE gathering (answerer)");
+        // 3. Register on_data_channel handler to reuse negotiated channels created by the offerer
+        let conn_for_data_channel = webrtc_conn.clone();
+        peer_connection_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
+            let conn = conn_for_data_channel.clone();
+            Box::pin(async move {
+                let channel_id = dc.id();
+                let label = dc.label();
+
+                let payload_type = channel_id.and_then(|id| PayloadType::from_i32(id as i32));
+
+                match payload_type {
+                    Some(pt) => {
+                        if let Err(e) = conn.register_received_data_channel(dc, pt).await {
+                            tracing::warn!(
+                                "❌ Failed to register received DataChannel label={} id={:?}: {}",
+                                label,
+                                channel_id,
+                                e
+                            );
+                        } else {
+                            tracing::debug!(
+                                "📨 Registered DataChannel from offerer label={} id={:?}",
+                                label,
+                                channel_id
+                            );
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            "❓ Ignoring DataChannel with unmapped id={:?} label={}",
+                            channel_id,
+                            label
+                        );
+                    }
+                }
+            })
+        }));
 
         // 3.5. Pre-create media tracks for sending (MUST be done before creating Answer)
         // Create a default video track for demo purposes
