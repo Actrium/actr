@@ -506,9 +506,7 @@ impl WebRtcCoordinator {
                 match payload_type {
                     Some(pt) => {
                         let channel_clone = Arc::clone(&dc);
-                        if let Err(e) = conn
-                            .register_received_data_channel(channel_clone, pt)
-                            .await
+                        if let Err(e) = conn.register_received_data_channel(channel_clone, pt).await
                         {
                             tracing::warn!(
                                 "❌ Failed to register received DataChannel label={} id={}: {}",
