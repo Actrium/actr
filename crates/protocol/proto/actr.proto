@@ -299,3 +299,20 @@ message UnsubscribeActrUpResponse {
 message ActrUpEvent {
   required ActrId actor_id = 1;
 }
+
+// =========================================================================
+// WebRTC Role Negotiation
+// =========================================================================
+
+// Initiate role arbitration between two Actr peers (who will create the Offer)
+message RoleNegotiation {
+  required ActrId from = 1;
+  required ActrId to = 2;
+  required string tenant_id = 3;
+}
+
+// Signaling server assigns the offerer role to one side
+message RoleAssignment {
+  required ActrId to = 1;
+  required bool is_offerer = 2;
+}

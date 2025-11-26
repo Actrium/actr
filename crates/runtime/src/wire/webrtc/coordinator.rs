@@ -500,13 +500,15 @@ impl WebRtcCoordinator {
             Box::pin(async move {
                 let channel_id = dc.id();
                 let label = dc.label();
+                let dc_for_registration = Arc::clone(&dc);
 
                 let payload_type = PayloadType::try_from(i32::from(channel_id)).ok();
 
                 match payload_type {
                     Some(pt) => {
-                        let channel_clone = Arc::clone(&dc);
-                        if let Err(e) = conn.register_received_data_channel(channel_clone, pt).await
+                        if let Err(e) = conn
+                            .register_received_data_channel(dc_for_registration, pt)
+                            .await
                         {
                             tracing::warn!(
                                 "❌ Failed to register received DataChannel label={} id={}: {}",
