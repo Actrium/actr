@@ -1,6 +1,6 @@
 //! WebRTC negotiator
 //!
-//! Responsible for WebRTC Connect's Offer/Answer protocol quotient 。
+//! Responsible for WebRTC Connect's Offer/Answer protocol quotient
 
 use crate::transport::error::NetworkResult;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -52,6 +52,11 @@ impl WebRtcNegotiator {
     ///
     /// # Returns
     /// newCreate's PeerConnection
+    #[tracing::instrument(
+        level = "info",
+        skip(self),
+        fields(ice_servers = self.config.ice_servers.len())
+    )]
     pub async fn create_peer_connection(&self) -> NetworkResult<RTCPeerConnection> {
         use webrtc::api::APIBuilder;
         use webrtc::api::media_engine::MediaEngine;
@@ -150,6 +155,7 @@ impl WebRtcNegotiator {
     ///
     /// # Returns
     /// Offer SDP string (ICE candidates sent separately via on_ice_candidate callback)
+    #[tracing::instrument(level = "info", skip_all)]
     pub async fn create_offer(&self, peer_connection: &RTCPeerConnection) -> NetworkResult<String> {
         // Note: Negotiated DataChannel should be created BEFORE calling this method
         // to trigger ICE gathering (done in coordinator.rs)
@@ -177,6 +183,11 @@ impl WebRtcNegotiator {
     /// # Arguments
     /// - `peer_connection`: PeerConnection
     /// - `answer_sdp`: Answer SDP string
+    #[tracing::instrument(
+        level = "info",
+        skip_all,
+        fields(answer_len = answer_sdp.len())
+    )]
     pub async fn handle_answer(
         &self,
         peer_connection: &RTCPeerConnection,
@@ -199,6 +210,7 @@ impl WebRtcNegotiator {
     ///
     /// # Returns
     /// Answer SDP string (ICE candidates sent separately)
+    #[tracing::instrument(level = "info", skip_all)]
     pub async fn create_answer(
         &self,
         peer_connection: &RTCPeerConnection,
@@ -231,6 +243,11 @@ impl WebRtcNegotiator {
     /// # Arguments
     /// - `peer_connection`: PeerConnection
     /// - `candidate`: ICE Candidate string
+    #[tracing::instrument(
+        level = "trace",
+        skip_all,
+        fields(candidate_len = candidate.len())
+    )]
     pub async fn add_ice_candidate(
         &self,
         peer_connection: &RTCPeerConnection,

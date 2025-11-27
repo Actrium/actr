@@ -146,12 +146,12 @@
 //! - SQLite-backed mailbox with priorities
 //! - Context factory for message handling
 //! - Basic service discovery helpers (RouteCandidates)
+//! - Distributed tracing integration (feature `opentelemetry`, Jaeger/OTLP)
 //!
 //! ### ⏳ Pending
 //!
 //! - Health checks and metrics collection
 //! - Prometheus metrics export
-//! - Distributed tracing integration
 //!
 //! ## Usage Note
 //!
@@ -180,11 +180,14 @@ pub mod context;
 pub mod context_factory;
 pub mod error;
 pub mod monitoring;
+pub mod observability;
 pub mod resource;
 
 // TODO: Implement health check and metrics collection modules
 // pub mod health;
 // pub mod metrics;
+
+pub use observability::{ObservabilityGuard, TracingGuard, init_observability};
 
 // Re-export core types
 pub use actr_protocol::{ActorResult, ActrId, ActrType, ProtocolError};

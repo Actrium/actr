@@ -1,6 +1,6 @@
 [package]
 name = "actr-runtime"
-version.workspace = true
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -51,12 +51,20 @@ bytes = "1.10"
 # === 日志记录 ===
 tracing.workspace = true
 tracing-subscriber.workspace = true
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 
-# 移除了可选依赖项，因为相关功能模块尚未实现
-# 当实际需要 metrics, tower, hyper 等功能时再添加
-
-# 目前没有可选功能特性，移除 features 部分以简化配置
-# 当需要添加可选功能时再重新引入
+[features]
+default = []
+opentelemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "actr-config/opentelemetry",
+]
 
 [dev-dependencies]
 tokio-test = "0.4"

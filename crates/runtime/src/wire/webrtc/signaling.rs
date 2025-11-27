@@ -2,10 +2,12 @@
 //!
 //! Based on protobuf Definition'ssignalingprotocol, using SignalingEnvelope conclude construct
 
+#[cfg(feature = "opentelemetry")]
+use super::trace;
 use crate::transport::error::{NetworkError, NetworkResult};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
+    AIdCredential, ActrId, ActrIdExt, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
     RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse, ServiceAvailabilityState,
     SignalingEnvelope, UnregisterRequest, UnregisterResponse, actr_to_signaling, peer_to_signaling,
     signaling_envelope, signaling_to_actr,
@@ -22,6 +24,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 use url::Url;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -267,6 +270,8 @@ impl WebSocketSignalingClient {
                 seconds: chrono::Utc::now().timestamp(),
                 nanos: 0,
             },
+            traceparent: None,
+            tracestate: None,
             flow: Some(flow),
         }
     }
@@ -567,6 +572,7 @@ impl SignalingClient for WebSocketSignalingClient {
         })
     }
 
+    #[instrument(level = "debug", skip_all, fields(actor_id = actor_id.to_string_repr()))]
     async fn send_heartbeat(
         &self,
         actor_id: ActrId,
@@ -628,7 +634,17 @@ impl SignalingClient for WebSocketSignalingClient {
         ))
     }
 
-    async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()> {
+    #[allow(unused_mut)]
+    #[instrument(skip_all, fields(envelope_id = envelope.envelope_id))]
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(envelope_id = %envelope.envelope_id)
+    )]
+    async fn send_envelope(&self, mut envelope: SignalingEnvelope) -> NetworkResult<()> {
+        #[cfg(feature = "opentelemetry")]
+        trace::inject_current_span(&mut envelope);
+
         let mut sink_guard = self.ws_sink.lock().await;
 
         if let Some(sink) = sink_guard.as_mut() {

@@ -93,6 +93,9 @@ pub struct RawSystemConfig {
 
     #[serde(default)]
     pub storage: RawStorageConfig,
+
+    #[serde(default)]
+    pub tracing: RawTracingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -117,6 +120,25 @@ pub struct RawDiscoveryConfig {
 pub struct RawStorageConfig {
     #[serde(default)]
     pub mailbox_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawTracingConfig {
+    /// Log level (e.g., "info", "debug", "warn").
+    /// Used when RUST_LOG environment variable is not set. Default: "info".
+    #[serde(default)]
+    pub log_level: Option<String>,
+
+    #[serde(default)]
+    pub enabled: Option<bool>,
+
+    /// OTLP/Jaeger endpoint (gRPC). Default: http://localhost:4317
+    #[serde(default)]
+    pub endpoint: Option<String>,
+
+    /// Optional override for service name. Default: package.name
+    #[serde(default)]
+    pub service_name: Option<String>,
 }
 
 fn default_edition() -> u32 {

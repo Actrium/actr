@@ -10,6 +10,8 @@ pub mod coordinator;
 pub mod gate;
 pub mod negotiator;
 pub mod signaling;
+#[cfg(feature = "opentelemetry")]
+pub(crate) mod trace;
 
 // Re-export core center Type
 pub use connection::WebRtcConnection;

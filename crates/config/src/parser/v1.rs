@@ -1,5 +1,6 @@
 //! Edition 1 configuration parser
 
+use crate::config::ObservabilityConfig;
 use crate::config::{Config, Dependency, PackageInfo, ProtoFile};
 use crate::error::{ConfigError, Result};
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
@@ -7,6 +8,8 @@ use actr_protocol::{Acl, ActrType, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use url::Url;
+
+const DEFAULT_TRACING_ENDPOINT: &str = "http://localhost:4317";
 
 /// Edition 1 格式的解析器
 pub struct ParserV1 {
@@ -53,13 +56,14 @@ impl ParserV1 {
         let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
 
         // 7. 解析 signaling URL
-        let signaling_url = Url::parse(
-            &raw.system
-                .signaling
-                .url
-                .ok_or(ConfigError::MissingField("system.signaling.url"))?,
-        )
-        .map_err(ConfigError::InvalidUrl)?;
+        let signaling_url_str = raw
+            .system
+            .signaling
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("system.signaling.url"))?;
+
+        let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
 
         // 8. 解析 ACL
         let acl = if let Some(acl_value) = raw.acl {
@@ -68,7 +72,10 @@ impl ParserV1 {
             None
         };
 
-        // 9. 构建最终配置
+        // 9. 解析 tracing 配置
+        let tracing = self.parse_tracing(&raw.system, &package);
+
+        // 10. 构建最终配置
         Ok(Config {
             package,
             exports,
@@ -80,6 +87,7 @@ impl ParserV1 {
             mailbox_path: raw.system.storage.mailbox_path,
             tags: raw.package.tags,
             scripts: raw.scripts,
+            tracing,
         })
     }
 
@@ -176,6 +184,31 @@ impl ParserV1 {
         Ok(Acl { rules: vec![] })
     }
 
+    fn parse_tracing(
+        &self,
+        raw_system: &RawSystemConfig,
+        package: &PackageInfo,
+    ) -> ObservabilityConfig {
+        ObservabilityConfig {
+            log_level: raw_system
+                .tracing
+                .log_level
+                .clone()
+                .unwrap_or_else(|| "info".to_string()),
+            enabled: raw_system.tracing.enabled.unwrap_or(false),
+            endpoint: raw_system
+                .tracing
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TRACING_ENDPOINT.to_string()),
+            service_name: raw_system
+                .tracing
+                .service_name
+                .clone()
+                .unwrap_or_else(|| package.name.clone()),
+        }
+    }
+
     fn merge_inheritance(&self, child: RawConfig, parent_path: PathBuf) -> Result<RawConfig> {
         let parent_full_path = self.base_dir.join(&parent_path);
         let mut parent = RawConfig::from_file(&parent_full_path)?;
@@ -237,6 +270,12 @@ impl ParserV1 {
             },
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
+            },
+            tracing: crate::raw::RawTracingConfig {
+                log_level: child.tracing.log_level.or(parent.tracing.log_level.clone()),
+                enabled: child.tracing.enabled.or(parent.tracing.enabled),
+                endpoint: child.tracing.endpoint.or(parent.tracing.endpoint),
+                service_name: child.tracing.service_name.or(parent.tracing.service_name),
             },
         }
     }

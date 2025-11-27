@@ -14,6 +14,8 @@ message SignalingEnvelope {
   required string envelope_id = 2;               // unique id for this message
   optional string reply_for = 3;                 // correlation to a previous envelope
   required google.protobuf.Timestamp timestamp = 4; // enqueue time (server clock)
+  optional string traceparent = 5;               // W3C trace context header value
+  optional string tracestate = 6;                // W3C trace state header value
 
   oneof flow {
     PeerToSignaling peer_to_server = 10;

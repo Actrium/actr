@@ -41,6 +41,9 @@ pub struct Config {
 
     /// 脚本命令
     pub scripts: HashMap<String, String>,
+
+    /// Observability configuration (logging + tracing)
+    pub tracing: ObservabilityConfig,
 }
 
 /// 包信息
@@ -86,6 +89,23 @@ pub struct Dependency {
 
     /// 服务指纹
     pub fingerprint: Option<String>,
+}
+
+/// Observability configuration (logging + tracing) resolved from raw config
+#[derive(Debug, Clone)]
+pub struct ObservabilityConfig {
+    /// Log level (e.g., "info", "debug", "warn").
+    /// Used when RUST_LOG environment variable is not set. Default: "info".
+    pub log_level: String,
+
+    /// Whether to enable distributed tracing
+    pub enabled: bool,
+
+    /// OTLP/Jaeger gRPC endpoint
+    pub endpoint: String,
+
+    /// Service name reported to the tracing backend
+    pub service_name: String,
 }
 
 // ============================================================================
@@ -305,6 +325,12 @@ mod tests {
             mailbox_path: None,
             tags: vec![],
             scripts: HashMap::new(),
+            tracing: ObservabilityConfig {
+                log_level: "info".to_string(),
+                enabled: false,
+                endpoint: "http://localhost:4317".to_string(),
+                service_name: "test-service".to_string(),
+            },
         };
 
         // 测试依赖查找
