@@ -32,7 +32,6 @@ use std::sync::Arc;
 pub struct RuntimeContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
-    trace_id: String,
     request_id: String,
     inproc_gate: OutGate,                          // Shell/Local 调用 - 立即可用
     outproc_gate: Option<OutGate>,                 // 远程 Actor 调用 - 延迟初始化
@@ -49,7 +48,6 @@ impl RuntimeContext {
     ///
     /// - `self_id`: 当前 Actor 的 ID
     /// - `caller_id`: 调用方 Actor ID（可选）
-    /// - `trace_id`: 分布式追踪 ID
     /// - `request_id`: 当前请求唯一 ID
     /// - `inproc_gate`: 进程内通信 gate（立即可用）
     /// - `outproc_gate`: 跨进程通信 gate（可能为 None，等待 WebRTC 初始化）
@@ -61,7 +59,6 @@ impl RuntimeContext {
     pub fn new(
         self_id: ActrId,
         caller_id: Option<ActrId>,
-        trace_id: String,
         request_id: String,
         inproc_gate: OutGate,
         outproc_gate: Option<OutGate>,
@@ -73,7 +70,6 @@ impl RuntimeContext {
         Self {
             self_id,
             caller_id,
-            trace_id,
             request_id,
             inproc_gate,
             outproc_gate,
@@ -128,10 +124,6 @@ impl Context for RuntimeContext {
         self.caller_id.as_ref()
     }
 
-    fn trace_id(&self) -> &str {
-        &self.trace_id
-    }
-
     fn request_id(&self) -> &str {
         &self.request_id
     }
@@ -147,16 +139,24 @@ impl Context for RuntimeContext {
         // 2. 从 RpcRequest trait 获取 route_key（编译时确定）
         let route_key = R::route_key().to_string();
 
-        // 3. 构造 RpcEnvelope（继承当前 Context 的追踪信息）
-        let envelope = RpcEnvelope {
+        // 3. 构造 RpcEnvelope（使用 W3C tracing）
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
             route_key,
             payload: Some(payload),
             error: None,
-            trace_id: self.trace_id.clone(), // 继承 trace_id，保持调用链追踪
+            traceparent: None,
+            tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(), // 生成新的 request_id
             metadata: vec![],
             timeout_ms: 30000, // 默认 30 秒超时
         };
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
         let gate = self.select_gate(target)?;
@@ -185,15 +185,23 @@ impl Context for RuntimeContext {
         let route_key = R::route_key().to_string();
 
         // 3. 构造 RpcEnvelope（fire-and-forget 语义）
-        let envelope = RpcEnvelope {
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
             route_key,
             payload: Some(payload),
             error: None,
-            trace_id: self.trace_id.clone(),
+            traceparent: None,
+            tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
             timeout_ms: 0, // 0 表示不等待响应
         };
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
         let gate = self.select_gate(target)?;

@@ -9,6 +9,7 @@ use actr_protocol::{
 use futures_util::FutureExt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 use crate::context_factory::ContextFactory;
 use crate::transport::InprocTransportManager;
@@ -251,17 +252,15 @@ impl<W: Workload> ActrNode<W> {
         // Log received message
         if let Some(caller) = caller_id {
             tracing::debug!(
-                "📨 Handling incoming message: route_key={}, caller={}, trace_id={}, request_id={}",
+                "📨 Handling incoming message: route_key={}, caller={}, request_id={}",
                 envelope.route_key,
                 caller.to_string_repr(),
-                envelope.trace_id,
                 envelope.request_id
             );
         } else {
             tracing::debug!(
-                "📨 Handling incoming message: route_key={}, trace_id={}, request_id={}",
+                "📨 Handling incoming message: route_key={}, request_id={}",
                 envelope.route_key,
-                envelope.trace_id,
                 envelope.request_id
             );
         }
@@ -285,7 +284,6 @@ impl<W: Workload> ActrNode<W> {
             .create(
                 actor_id,
                 caller_id, // caller_id from transport layer (MessageRecord.from)
-                &envelope.trace_id,
                 &envelope.request_id,
                 credential,
             );
@@ -318,7 +316,7 @@ impl<W: Workload> ActrNode<W> {
                     severity = 8,
                     error_category = "handler_panic",
                     route_key = envelope.route_key,
-                    trace_id = envelope.trace_id,
+                    request_id = %envelope.request_id,
                     "❌ Handler panicked: {}",
                     panic_info
                 );
@@ -336,7 +334,6 @@ impl<W: Workload> ActrNode<W> {
         // 3. Log result
         match &result {
             Ok(_) => tracing::debug!(
-                trace_id = %envelope.trace_id,
                 request_id = %envelope.request_id,
                 route_key = %envelope.route_key,
                 "✅ Message handled successfully"
@@ -344,7 +341,6 @@ impl<W: Workload> ActrNode<W> {
             Err(e) => tracing::error!(
                 severity = 6,
                 error_category = "handler_error",
-                trace_id = %envelope.trace_id,
                 request_id = %envelope.request_id,
                 route_key = %envelope.route_key,
                 "❌ Message handling failed: {:?}", e
@@ -756,7 +752,6 @@ impl<W: Workload> ActrNode<W> {
             .create(
                 &actor_id,
                 None,        // caller_id
-                "bootstrap", // trace_id
                 "bootstrap", // request_id
                 &credential,
             );
@@ -794,29 +789,46 @@ impl<W: Workload> ActrNode<W> {
                                 match envelope_result {
                                     Ok(envelope) => {
                                         let request_id = envelope.request_id.clone();
+                                        let span = tracing::info_span!("webrtc.receive_rpc", request_id = %request_id);
+                                        // Extract and set tracing context from envelope
+                                        #[cfg(feature = "opentelemetry")]
+                                        {
+                                            use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
+                                            set_parent_from_rpc_envelope(&span, &envelope);
+                                        }
+
                                         tracing::debug!("📨 Workload received REQUEST from Shell: request_id={}", request_id);
 
                                         // Shell calls have no caller_id (local process communication)
-                                        match node.handle_incoming(envelope.clone(), None).await {
+                                        #[cfg(feature = "opentelemetry")]
+                                        let span_for_inject = span.clone();
+                                        match node.handle_incoming(envelope.clone(), None).instrument(span).await {
                                             Ok(response_bytes) => {
                                                 // Send RESPONSE back via workload_to_shell
                                                 // Keep same route_key (no prefix needed - separate channels!)
-                                                let response_envelope = RpcEnvelope {
+                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                let mut response_envelope = RpcEnvelope {
                                                     route_key: envelope.route_key.clone(),
                                                     payload: Some(response_bytes),
                                                     error: None,
-                                                    trace_id: envelope.trace_id.clone(),
+                                                    traceparent: None,
+                                                    tracestate: None,
                                                     request_id: request_id.clone(),
                                                     metadata: Vec::new(),
                                                     timeout_ms: 30000,
                                                 };
+                                                // Inject tracing context
+                                                #[cfg(feature = "opentelemetry")]
+                                                {
+                                                    use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+                                                    inject_span_context_to_rpc(&span_for_inject, &mut response_envelope);
+                                                }
 
                                                 // Send via Workload → Shell channel
                                                 if let Err(e) = response_tx.send_message(PayloadType::RpcReliable, None, response_envelope).await {
                                                     tracing::error!(
                                                         severity = 7,
                                                         error_category = "transport_error",
-                                                        trace_id = %envelope.trace_id,
                                                         request_id = %request_id,
                                                         "❌ Failed to send RESPONSE to Shell: {:?}", e
                                                     );
@@ -826,7 +838,6 @@ impl<W: Workload> ActrNode<W> {
                                                 tracing::error!(
                                                     severity = 6,
                                                     error_category = "handler_error",
-                                                    trace_id = %envelope.trace_id,
                                                     request_id = %request_id,
                                                     route_key = %envelope.route_key,
                                                     "❌ Workload message handling failed: {:?}", e
@@ -838,21 +849,28 @@ impl<W: Workload> ActrNode<W> {
                                                     message: e.to_string(),
                                                 };
 
-                                                let error_envelope = RpcEnvelope {
+                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                let mut error_envelope = RpcEnvelope {
                                                     route_key: envelope.route_key.clone(),
                                                     payload: None,
                                                     error: Some(error_response),
-                                                    trace_id: envelope.trace_id.clone(),
+                                                    traceparent: envelope.traceparent.clone(),
+                                                    tracestate: envelope.tracestate.clone(),
                                                     request_id: request_id.clone(),
                                                     metadata: Vec::new(),
                                                     timeout_ms: 30000,
                                                 };
+                                                // Inject tracing context
+                                                #[cfg(feature = "opentelemetry")]
+                                                {
+                                                    use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+                                                    inject_span_context_to_rpc(&tracing::Span::current(), &mut error_envelope);
+                                                }
 
                                                 if let Err(e) = response_tx.send_message(PayloadType::RpcReliable, None, error_envelope).await {
                                                     tracing::error!(
                                                         severity = 7,
                                                         error_category = "transport_error",
-                                                        trace_id = %envelope.trace_id,
                                                         request_id = %request_id,
                                                         "❌ Failed to send ERROR response to Shell: {:?}", e
                                                     );
@@ -920,7 +938,6 @@ impl<W: Workload> ActrNode<W> {
                                                     tracing::warn!(
                                                         severity = 4,
                                                         error_category = "orphan_response",
-                                                        trace_id = %envelope.trace_id,
                                                         request_id = %envelope.request_id,
                                                         "⚠️  No pending request found for response: {:?}", e
                                                     );
@@ -935,7 +952,6 @@ impl<W: Workload> ActrNode<W> {
                                                     tracing::warn!(
                                                         severity = 4,
                                                         error_category = "orphan_response",
-                                                        trace_id = %envelope.trace_id,
                                                         request_id = %envelope.request_id,
                                                         "⚠️  No pending request found for error response: {:?}", e
                                                     );
@@ -945,7 +961,6 @@ impl<W: Workload> ActrNode<W> {
                                                 tracing::error!(
                                                     severity = 7,
                                                     error_category = "protocol_error",
-                                                    trace_id = %envelope.trace_id,
                                                     request_id = %envelope.request_id,
                                                     "❌ Invalid RpcEnvelope: both payload and error are present or both absent"
                                                 );
@@ -1019,7 +1034,6 @@ impl<W: Workload> ActrNode<W> {
 
                                                 if caller_id_ref.is_none() {
                                                     tracing::warn!(
-                                                        trace_id = %envelope.trace_id,
                                                         request_id = %request_id,
                                                         "⚠️  Failed to decode caller_id from MessageRecord.from"
                                                     );
@@ -1034,21 +1048,28 @@ impl<W: Workload> ActrNode<W> {
                                                             match caller_id_result {
                                                                 Ok(caller) => {
                                                                     // Construct response RpcEnvelope (reuse request_id!)
-                                                                    let response_envelope = RpcEnvelope {
+                                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                                    let mut response_envelope = RpcEnvelope {
                                                                         request_id,  // Reuse!
                                                                         route_key: envelope.route_key.clone(),
                                                                         payload: Some(response_bytes),
                                                                         error: None,
-                                                                        trace_id: envelope.trace_id.clone(),
+                                                                        traceparent: envelope.traceparent.clone(),
+                                                                        tracestate: envelope.tracestate.clone(),
                                                                         metadata: Vec::new(),  // Response doesn't need extra metadata
                                                                         timeout_ms: 30000,
                                                                     };
+                                                                    // Inject tracing context
+                                                                    #[cfg(feature = "opentelemetry")]
+                                                                    {
+                                                                        use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+                                                                        inject_span_context_to_rpc(&tracing::Span::current(), &mut response_envelope);
+                                                                    }
 
                                                                     if let Err(e) = gate.send_response(&caller, response_envelope).await {
                                                                         tracing::error!(
                                                                             severity = 7,
                                                                             error_category = "transport_error",
-                                                                            trace_id = %envelope.trace_id,
                                                                             request_id = %envelope.request_id,
                                                                             "❌ Failed to send response: {:?}", e
                                                                         );
@@ -1058,7 +1079,6 @@ impl<W: Workload> ActrNode<W> {
                                                                     tracing::error!(
                                                                         severity = 8,
                                                                         error_category = "protobuf_decode",
-                                                                        trace_id = %envelope.trace_id,
                                                                         request_id = %envelope.request_id,
                                                                         "❌ Failed to decode caller_id: {:?}", e
                                                                     );
@@ -1071,7 +1091,6 @@ impl<W: Workload> ActrNode<W> {
                                                             tracing::error!(
                                                                 severity = 9,
                                                                 error_category = "mailbox_error",
-                                                                trace_id = %envelope.trace_id,
                                                                 request_id = %envelope.request_id,
                                                                 message_id = %msg_record.id,
                                                                 "❌ Mailbox ACK failed: {:?}", e
@@ -1082,7 +1101,6 @@ impl<W: Workload> ActrNode<W> {
                                                         tracing::error!(
                                                             severity = 6,
                                                             error_category = "handler_error",
-                                                            trace_id = %envelope.trace_id,
                                                             request_id = %envelope.request_id,
                                                             route_key = %envelope.route_key,
                                                             "❌ handle_incoming failed: {:?}", e

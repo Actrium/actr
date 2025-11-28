@@ -56,10 +56,12 @@ fn init_subscriber(
         .with_target(true)
         .with_level(true)
         .with_line_number(true)
-        .with_file(true)
-        .with_filter(env_filter);
+        .with_file(true);
 
-    let _ = tracing_subscriber::registry().with(fmt_layer).try_init();
+    let _ = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .try_init();
     Ok(ObservabilityGuard::default())
 }
 
@@ -69,15 +71,17 @@ fn init_subscriber(
     env_filter: EnvFilter,
 ) -> RuntimeResult<ObservabilityGuard> {
     if cfg.tracing_enabled {
+        let provider = build_otel_provider(cfg)?;
+        let tracer = provider.tracer("actr-runtime");
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
         let fmt_layer = fmt::layer()
             .with_target(true)
             .with_level(true)
             .with_line_number(true)
-            .with_file(true)
-            .with_filter(env_filter.clone());
+            .with_file(true);
 
-        let (otel_layer, provider) = build_otel_layer(cfg, env_filter.clone())?;
         let _ = tracing_subscriber::registry()
+            .with(env_filter)
             .with(otel_layer)
             .with(fmt_layer)
             .try_init();
@@ -89,22 +93,18 @@ fn init_subscriber(
             .with_target(true)
             .with_level(true)
             .with_line_number(true)
-            .with_file(true)
-            .with_filter(env_filter.clone());
+            .with_file(true);
 
-        let _ = tracing_subscriber::registry().with(fmt_layer).try_init();
+        let _ = tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .try_init();
         Ok(ObservabilityGuard::default())
     }
 }
 
 #[cfg(feature = "opentelemetry")]
-fn build_otel_layer(
-    config: &ObservabilityConfig,
-    env_filter: EnvFilter,
-) -> RuntimeResult<(
-    impl tracing_subscriber::Layer<tracing_subscriber::Registry>,
-    SdkTracerProvider,
-)> {
+fn build_otel_provider(config: &ObservabilityConfig) -> RuntimeResult<SdkTracerProvider> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(config.tracing_endpoint.clone())
@@ -128,10 +128,5 @@ fn build_otel_layer(
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
-    let tracer = tracer_provider.tracer("actr-runtime");
-    let otel_layer = tracing_opentelemetry::layer()
-        .with_tracer(tracer)
-        .with_filter(env_filter);
-
-    Ok((otel_layer, tracer_provider))
+    Ok(tracer_provider)
 }

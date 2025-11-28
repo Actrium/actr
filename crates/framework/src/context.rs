@@ -7,7 +7,7 @@ use futures_util::future::BoxFuture;
 /// Context - Actor execution context interface
 ///
 /// Defines the complete interface for Actor interaction with the system, including:
-/// - Context data access (self_id, trace_id, etc.)
+/// - Context data access (self_id, request_id, etc.)
 /// - Communication capabilities (call, tell)
 ///
 /// # Design Principles
@@ -27,7 +27,6 @@ use futures_util::future::BoxFuture;
 /// async fn my_handler<C: Context>(ctx: &C) {
 ///     // Access data
 ///     let id = ctx.self_id();
-///     let trace = ctx.trace_id();
 ///
 ///     // Type-safe call
 ///     let response = ctx.call(&target, request).await?;
@@ -45,11 +44,6 @@ pub trait Context: Send + Sync {
     /// - `Some(caller_id)`: Called by another Actor
     /// - `None`: System internal call (e.g., lifecycle hooks)
     fn caller_id(&self) -> Option<&ActrId>;
-
-    /// Get the distributed trace ID
-    ///
-    /// Remains constant throughout the call chain, used for log correlation and request path tracing.
-    fn trace_id(&self) -> &str;
 
     /// Get the unique request ID
     ///

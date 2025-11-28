@@ -29,10 +29,13 @@ message RpcEnvelope {
     // Business errors should be in the response message payload
     optional ErrorResponse error = 3;
 
-    required string trace_id = 100;
-    required string request_id = 101;
-    repeated MetadataEntry metadata = 102;
-    required int64 timeout_ms = 103;
+    // W3C trace context header values (for distributed tracing)
+    optional string traceparent = 100;  // W3C trace context header value
+    optional string tracestate = 101;  // W3C trace state header value
+
+    required string request_id = 102;
+    repeated MetadataEntry metadata = 103;
+    required int64 timeout_ms = 104;
 }
 
 // DataStream - Application data stream packet (Fast Path)

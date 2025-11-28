@@ -203,15 +203,23 @@ impl<W: Workload> ActrRef<W> {
         let payload: Bytes = request.encode_to_vec().into();
 
         // Create envelope
-        let envelope = RpcEnvelope {
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
             error: None,
-            trace_id: uuid::Uuid::new_v4().to_string(),
+            traceparent: None,
+            tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
             timeout_ms: 30000,
         };
+        // Inject tracing context
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         // Send request and wait for response (target is our actor_id for logging)
         let response_bytes = self
@@ -259,15 +267,23 @@ impl<W: Workload> ActrRef<W> {
         let payload: Bytes = message.encode_to_vec().into();
 
         // Create envelope (note: request_id still included for tracing)
-        let envelope = RpcEnvelope {
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
             error: None,
-            trace_id: uuid::Uuid::new_v4().to_string(),
+            traceparent: None,
+            tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
             timeout_ms: 0, // No timeout for one-way messages
         };
+        // Inject tracing context
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         // Send message without waiting for response
         self.shared

@@ -104,7 +104,6 @@ impl ContextFactory {
     ///
     /// - `self_id`: 当前 Actor ID
     /// - `caller_id`: 调用方 Actor ID（可选）
-    /// - `trace_id`: 分布式追踪 ID
     /// - `request_id`: 请求唯一 ID
     ///
     /// # 返回
@@ -114,14 +113,12 @@ impl ContextFactory {
         &self,
         self_id: &ActrId,
         caller_id: Option<&ActrId>,
-        trace_id: &str,
         request_id: &str,
         credential: &AIdCredential,
     ) -> RuntimeContext {
         RuntimeContext::new(
             self_id.clone(),
             caller_id.cloned(),
-            trace_id.to_string(),
             request_id.to_string(),
             self.inproc_gate.clone(), // Clone OutGate enum（Arc 内部，开销低）
             self.outproc_gate.clone(), // Clone Option<OutGate>
@@ -141,7 +138,6 @@ impl ContextFactory {
         RuntimeContext::new(
             self_id.clone(),
             None,
-            uuid::Uuid::new_v4().to_string(),
             uuid::Uuid::new_v4().to_string(),
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),

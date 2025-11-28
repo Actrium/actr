@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "actr-mailbox"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bytes",
  "chrono",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "actr-config",
  "actr-framework",

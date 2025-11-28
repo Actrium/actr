@@ -13,17 +13,15 @@ use futures_util::future::BoxFuture;
 pub struct DummyContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
-    trace_id: String,
     request_id: String,
 }
 
 impl DummyContext {
-    /// Create a new dummy context with random trace/request ids.
+    /// Create a new dummy context with random request id.
     pub fn new(self_id: ActrId) -> Self {
         Self {
             self_id,
             caller_id: None,
-            trace_id: uuid::Uuid::new_v4().to_string(),
             request_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -31,12 +29,6 @@ impl DummyContext {
     /// Set caller id (useful for tests that verify propagation).
     pub fn with_caller_id(mut self, caller_id: Option<ActrId>) -> Self {
         self.caller_id = caller_id;
-        self
-    }
-
-    /// Override trace id for deterministic testing.
-    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
-        self.trace_id = trace_id.into();
         self
     }
 
@@ -61,10 +53,6 @@ impl Context for DummyContext {
 
     fn caller_id(&self) -> Option<&ActrId> {
         self.caller_id.as_ref()
-    }
-
-    fn trace_id(&self) -> &str {
-        &self.trace_id
     }
 
     fn request_id(&self) -> &str {
@@ -135,12 +123,9 @@ mod tests {
     #[tokio::test]
     async fn dummy_context_exposes_ids() {
         let id = ActrId::default();
-        let ctx = DummyContext::new(id.clone())
-            .with_trace_id("t1")
-            .with_request_id("r1");
+        let ctx = DummyContext::new(id.clone()).with_request_id("r1");
 
         assert_eq!(ctx.self_id(), &id);
-        assert_eq!(ctx.trace_id(), "t1");
         assert_eq!(ctx.request_id(), "r1");
     }
 }

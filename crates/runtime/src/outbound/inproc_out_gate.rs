@@ -163,15 +163,23 @@ impl InprocOutGate {
         );
 
         // Wrap in RpcEnvelope for transport
-        let envelope = RpcEnvelope {
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
             route_key: "fast_path.data_stream".to_string(),
             payload: Some(data),
             error: None,
-            trace_id: uuid::Uuid::new_v4().to_string(),
+            traceparent: None,
+            tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
             timeout_ms: 0,
         };
+        // Inject tracing context
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         self.transport
             .send_message(payload_type, Some(stream.stream_id), envelope)

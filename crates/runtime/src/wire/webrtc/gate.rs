@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, oneshot};
+use tracing::instrument;
 
 use super::coordinator::WebRtcCoordinator;
 use crate::error::{RuntimeError, RuntimeResult};
@@ -13,7 +14,7 @@ use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    self, ActorResult, ActrId, DataStream, PayloadType, ProtocolError, RpcEnvelope,
+    self, ActorResult, ActrId, ActrIdExt, DataStream, PayloadType, ProtocolError, RpcEnvelope,
 };
 
 /// WebRTC Gate - OutboundGate implementation
@@ -75,6 +76,87 @@ impl WebRtcGate {
         *self.local_id.write().await = Some(actor_id);
     }
 
+    /// Handle RpcEnvelope message (Response or Request)
+    ///
+    /// # Arguments
+    /// - `envelope`: Deserialized RpcEnvelope
+    /// - `from_bytes`: Sender's ActrId bytes (for Mailbox enqueue)
+    /// - `data`: Original message bytes (for Mailbox enqueue)
+    /// - `payload_type`: PayloadType to determine priority
+    /// - `pending_requests`: Shared pending requests map
+    /// - `mailbox`: Mailbox for enqueueing requests
+    ///
+    /// # Behavior
+    /// - If request_id exists in pending_requests: Response → wake up waiting caller
+    /// - If request_id doesn't exist: Request → enqueue to Mailbox
+    async fn handle_envelope(
+        envelope: RpcEnvelope,
+        from_bytes: Vec<u8>,
+        data: Bytes,
+        payload_type: PayloadType,
+        pending_requests: Arc<
+            RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>,
+        >,
+        mailbox: Arc<dyn Mailbox>,
+    ) {
+        // Extract and set tracing context from envelope
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
+            let span = tracing::info_span!("webrtc.receive_rpc", request_id = %envelope.request_id);
+            set_parent_from_rpc_envelope(&span, &envelope);
+            let _guard = span.enter();
+        }
+        let request_id = envelope.request_id.clone();
+
+        // Determine if Response or Request
+        let mut pending = pending_requests.write().await;
+        if let Some(response_tx) = pending.remove(&request_id) {
+            // Response - Wake up waiting caller (bypassing disk, fast path)
+            drop(pending); // Release lock
+            tracing::debug!("📬 Received RPC Response: request_id={}", request_id);
+
+            // Convert envelope to result
+            let result = match (envelope.payload, envelope.error) {
+                (Some(payload), None) => Ok(payload),
+                (None, Some(error)) => Err(actr_protocol::ProtocolError::TransportError(format!(
+                    "RPC error {}: {}",
+                    error.code, error.message
+                ))),
+                _ => Err(actr_protocol::ProtocolError::DecodeError(
+                    "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
+                )),
+            };
+            let _ = response_tx.send(result);
+        } else {
+            // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
+            drop(pending); // Release lock
+            tracing::debug!("📥 Received RPC Request: request_id={}", request_id);
+
+            // Determine priority based on PayloadType
+            let priority = match payload_type {
+                PayloadType::RpcSignal => MessagePriority::High,
+                PayloadType::RpcReliable => MessagePriority::Normal,
+                _ => MessagePriority::Normal,
+            };
+
+            // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
+            // Convert Bytes to Vec<u8> (Mailbox uses Vec)
+            match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
+                Ok(msg_id) => {
+                    tracing::debug!(
+                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
+                        msg_id,
+                        priority
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("❌ Mailbox enqueue failed: {:?}", e);
+                }
+            }
+        }
+    }
+
     /// Start message receive loop (called by ActrSystem/ActrNode)
     ///
     /// # Arguments
@@ -112,74 +194,25 @@ impl WebRtcGate {
                                 // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
-                                        let request_id = envelope.request_id.clone();
-
-                                        // Determine if Response or Request
-                                        let mut pending = pending_requests.write().await;
-                                        if let Some(response_tx) = pending.remove(&request_id) {
-                                            // Response - Wake up waiting caller (bypassing disk, fast path)
-                                            drop(pending); // Release lock
-                                            tracing::debug!(
-                                                "📬 Received RPC Response: request_id={}",
-                                                request_id
-                                            );
-
-                                            // Convert envelope to result
-                                            let result = match (envelope.payload, envelope.error) {
-                                                (Some(payload), None) => Ok(payload),
-                                                (None, Some(error)) => {
-                                                    Err(actr_protocol::ProtocolError::TransportError(
-                                                        format!(
-                                                            "RPC error {}: {}",
-                                                            error.code, error.message
-                                                        ),
-                                                    ))
-                                                }
-                                                _ => Err(actr_protocol::ProtocolError::DecodeError(
-                                                    "Invalid RpcEnvelope: payload and error fields inconsistent"
-                                                        .to_string(),
-                                                )),
-                                            };
-                                            let _ = response_tx.send(result);
-                                        } else {
-                                            // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
-                                            drop(pending); // Release lock
-                                            tracing::debug!(
-                                                "📥 Received RPC Request: request_id={}",
-                                                request_id
-                                            );
-
-                                            // Determine priority based on PayloadType
-                                            let priority = match payload_type {
-                                                PayloadType::RpcSignal => MessagePriority::High,
-                                                PayloadType::RpcReliable => MessagePriority::Normal,
-                                                _ => MessagePriority::Normal,
-                                            };
-
-                                            // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
-                                            // Convert Bytes to Vec<u8> (Mailbox uses Vec)
-                                            match mailbox
-                                                .enqueue(
-                                                    from_bytes.clone(),
-                                                    data.to_vec(),
-                                                    priority,
-                                                )
-                                                .await
-                                            {
-                                                Ok(msg_id) => {
-                                                    tracing::debug!(
-                                                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
-                                                        msg_id,
-                                                        priority
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "❌ Mailbox enqueue failed: {:?}",
-                                                        e
-                                                    );
-                                                }
-                                            }
+                                        let fut = Self::handle_envelope(
+                                            envelope,
+                                            from_bytes,
+                                            data,
+                                            payload_type,
+                                            pending_requests.clone(),
+                                            mailbox.clone(),
+                                        );
+                                        #[cfg(feature = "opentelemetry")]
+                                        {
+                                            use tracing::Instrument;
+                                            let span = tracing::info_span!("webrtc.receive_rpc");
+                                            // Note: envelope is already moved, so we can't set parent here
+                                            // The parent is set inside handle_envelope instead
+                                            fut.instrument(span).await;
+                                        }
+                                        #[cfg(not(feature = "opentelemetry"))]
+                                        {
+                                            fut.await;
                                         }
                                     }
                                     Err(e) => {
@@ -255,11 +288,20 @@ impl WebRtcGate {
     /// # Design Principle
     /// - Response reuses Request's request_id (caller is responsible)
     /// - Receiver matches to pending_requests by request_id and wakes up waiting caller
+    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+    #[instrument(skip_all)]
     pub async fn send_response(
         &self,
         target: &ActrId,
-        response_envelope: RpcEnvelope,
+        mut response_envelope: RpcEnvelope,
     ) -> RuntimeResult<()> {
+        // Inject tracing context before serialization
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut response_envelope);
+        }
+
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope
@@ -284,7 +326,13 @@ impl WebRtcGate {
     /// - RpcEnvelope's request_id uniquely identifies this RPC call
     /// - Response will reuse the same request_id, receiver matches via pending_requests
     /// - 30 second timeout protection
-    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+    #[instrument(skip_all, fields(target = %target.to_string_repr(), request_id = %envelope.request_id))]
+    pub async fn send_request(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<Bytes> {
         let request_id = envelope.request_id.clone();
         tracing::debug!(
             "📤 WebRtcGate::send_request to {:?}, request_id={}",
@@ -297,6 +345,13 @@ impl WebRtcGate {
         {
             let mut pending = self.pending_requests.write().await;
             pending.insert(request_id.clone(), response_tx);
+        }
+
+        // Inject tracing context before serialization
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
         }
 
         // Serialize RpcEnvelope (Protobuf)
@@ -344,13 +399,26 @@ impl WebRtcGate {
     /// # Implementation Details
     /// - Different from send_request only in that it doesn't register pending_requests and doesn't wait for response
     /// - RpcEnvelope request_id still needs to be set (for logging and tracing)
-    pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+    #[instrument(skip_all, fields(target = %target.to_string_repr(), request_id = %envelope.request_id))]
+    pub async fn send_message(
+        &self,
+        target: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
         let request_id = envelope.request_id.clone();
         tracing::debug!(
             "📤 WebRtcGate::send_message to {:?}, request_id={}",
             target,
             request_id
         );
+
+        // Inject tracing context before serialization
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
 
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
