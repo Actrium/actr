@@ -72,8 +72,8 @@ impl ParserV1 {
             None
         };
 
-        // 9. 解析 tracing 配置
-        let tracing = self.parse_tracing(&raw.system, &package);
+        // 9. 解析 observability 配置
+        let observability = self.parse_observability(&raw.system, &package);
 
         // 10. 构建最终配置
         Ok(Config {
@@ -87,7 +87,7 @@ impl ParserV1 {
             mailbox_path: raw.system.storage.mailbox_path,
             tags: raw.package.tags,
             scripts: raw.scripts,
-            tracing,
+            observability,
         })
     }
 
@@ -184,26 +184,26 @@ impl ParserV1 {
         Ok(Acl { rules: vec![] })
     }
 
-    fn parse_tracing(
+    fn parse_observability(
         &self,
         raw_system: &RawSystemConfig,
         package: &PackageInfo,
     ) -> ObservabilityConfig {
         ObservabilityConfig {
-            log_level: raw_system
-                .tracing
-                .log_level
+            filter_level: raw_system
+                .observability
+                .filter_level
                 .clone()
                 .unwrap_or_else(|| "info".to_string()),
-            enabled: raw_system.tracing.enabled.unwrap_or(false),
-            endpoint: raw_system
-                .tracing
-                .endpoint
+            tracing_enabled: raw_system.observability.tracing_enabled.unwrap_or(false),
+            tracing_endpoint: raw_system
+                .observability
+                .tracing_endpoint
                 .clone()
                 .unwrap_or_else(|| DEFAULT_TRACING_ENDPOINT.to_string()),
-            service_name: raw_system
-                .tracing
-                .service_name
+            tracing_service_name: raw_system
+                .observability
+                .tracing_service_name
                 .clone()
                 .unwrap_or_else(|| package.name.clone()),
         }
@@ -271,11 +271,23 @@ impl ParserV1 {
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
             },
-            tracing: crate::raw::RawTracingConfig {
-                log_level: child.tracing.log_level.or(parent.tracing.log_level.clone()),
-                enabled: child.tracing.enabled.or(parent.tracing.enabled),
-                endpoint: child.tracing.endpoint.or(parent.tracing.endpoint),
-                service_name: child.tracing.service_name.or(parent.tracing.service_name),
+            observability: crate::raw::RawObservabilityConfig {
+                filter_level: child
+                    .observability
+                    .filter_level
+                    .or(parent.observability.filter_level.clone()),
+                tracing_enabled: child
+                    .observability
+                    .tracing_enabled
+                    .or(parent.observability.tracing_enabled),
+                tracing_endpoint: child
+                    .observability
+                    .tracing_endpoint
+                    .or(parent.observability.tracing_endpoint),
+                tracing_service_name: child
+                    .observability
+                    .tracing_service_name
+                    .or(parent.observability.tracing_service_name),
             },
         }
     }

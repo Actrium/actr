@@ -26,3 +26,9 @@ realm = 1001
 
 [system.discovery]
 visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "test-service"

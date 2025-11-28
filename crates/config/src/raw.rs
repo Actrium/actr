@@ -95,7 +95,7 @@ pub struct RawSystemConfig {
     pub storage: RawStorageConfig,
 
     #[serde(default)]
-    pub tracing: RawTracingConfig,
+    pub observability: RawObservabilityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -123,22 +123,22 @@ pub struct RawStorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RawTracingConfig {
-    /// Log level (e.g., "info", "debug", "warn").
+pub struct RawObservabilityConfig {
+    /// Filter level (e.g., "info", "debug", "warn", "info,webrtc=debug").
     /// Used when RUST_LOG environment variable is not set. Default: "info".
     #[serde(default)]
-    pub log_level: Option<String>,
+    pub filter_level: Option<String>,
 
     #[serde(default)]
-    pub enabled: Option<bool>,
+    pub tracing_enabled: Option<bool>,
 
-    /// OTLP/Jaeger endpoint (gRPC). Default: http://localhost:4317
+    /// OTLP/Jaeger gRPC endpoint. Default: http://localhost:4317
     #[serde(default)]
-    pub endpoint: Option<String>,
+    pub tracing_endpoint: Option<String>,
 
-    /// Optional override for service name. Default: package.name
+    /// Service name reported to the tracing backend. Default: package.name
     #[serde(default)]
-    pub service_name: Option<String>,
+    pub tracing_service_name: Option<String>,
 }
 
 fn default_edition() -> u32 {

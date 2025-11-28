@@ -572,7 +572,7 @@ impl SignalingClient for WebSocketSignalingClient {
         })
     }
 
-    #[instrument(level = "debug", skip_all, fields(actor_id = actor_id.to_string_repr()))]
+    #[instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))]
     async fn send_heartbeat(
         &self,
         actor_id: ActrId,
@@ -635,7 +635,6 @@ impl SignalingClient for WebSocketSignalingClient {
     }
 
     #[allow(unused_mut)]
-    #[instrument(skip_all, fields(envelope_id = envelope.envelope_id))]
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -643,7 +642,7 @@ impl SignalingClient for WebSocketSignalingClient {
     )]
     async fn send_envelope(&self, mut envelope: SignalingEnvelope) -> NetworkResult<()> {
         #[cfg(feature = "opentelemetry")]
-        trace::inject_current_span(&mut envelope);
+        trace::inject_span_context(&tracing::Span::current(), &mut envelope);
 
         let mut sink_guard = self.ws_sink.lock().await;
 

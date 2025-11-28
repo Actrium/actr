@@ -30,13 +30,15 @@ use crate::inbound::MediaFrameRegistry;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, ActrRelay, ActrTypeExt, PayloadType, SignalingEnvelope,
-    actr_relay, session_description::Type as SdpType, signaling_envelope,
+    AIdCredential, ActrId, ActrIdExt, ActrRelay, PayloadType, SignalingEnvelope, actr_relay,
+    session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::Instrument;
+#[cfg(feature = "opentelemetry")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -86,6 +88,10 @@ pub struct WebRtcCoordinator {
 
     /// MediaTrack callback registry (for WebRTC native media streams)
     media_frame_registry: Arc<MediaFrameRegistry>,
+
+    /// Root tracing contexts for connection initiation (ActrId → Context)
+    #[cfg(feature = "opentelemetry")]
+    root_context_map: Arc<RwLock<HashMap<ActrId, opentelemetry::Context>>>,
 }
 
 impl WebRtcCoordinator {
@@ -109,6 +115,8 @@ impl WebRtcCoordinator {
             message_rx: Arc::new(Mutex::new(message_rx)),
             message_tx,
             media_frame_registry,
+            #[cfg(feature = "opentelemetry")]
+            root_context_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -167,6 +175,15 @@ impl WebRtcCoordinator {
                     Some(actr_relay::Payload::SessionDescription(sd)) => match sd.r#type() {
                         SdpType::Offer => {
                             tracing::info!("📥 Received Offer from {}", source_repr);
+                            #[cfg(feature = "opentelemetry")]
+                            {
+                                // Get context from current tracing span (not OpenTelemetry context)
+                                let root_ctx = tracing::Span::current().context();
+                                self.root_context_map
+                                    .write()
+                                    .await
+                                    .insert(source.clone(), root_ctx);
+                            }
                             if let Err(e) = self.handle_offer(&source, sd.sdp).await {
                                 tracing::error!("❌ Failed to handle Offer: {}", e);
                             }
@@ -237,6 +254,13 @@ impl WebRtcCoordinator {
             pending.clear();
         }
 
+        // Clear root tracing contexts (if enabled)
+        #[cfg(feature = "opentelemetry")]
+        {
+            let mut ctx_map = self.root_context_map.write().await;
+            ctx_map.clear();
+        }
+
         // Close each RTCPeerConnection
         for pc in peers_snapshot {
             tracing::info!("🔻 Closing PeerConnection");
@@ -253,7 +277,7 @@ impl WebRtcCoordinator {
 
     /// Send ActrRelay message (internal helper method)
     #[tracing::instrument(
-        level = "debug",
+        level = "info",
         skip_all,
         fields(target = %target.to_string_repr())
     )]
@@ -302,8 +326,7 @@ impl WebRtcCoordinator {
         level = "info",
         skip_all,
         fields(
-            target.id = %target.to_string_repr(),
-            target.kind = %target.r#type.to_string_repr()
+            target_id = %target.to_string_repr()
         )
     )]
     pub async fn initiate_connection(
@@ -396,10 +419,14 @@ impl WebRtcCoordinator {
         // 5. Set ICE candidate callback (local ICE candidate collection)
         let coordinator = Arc::downgrade(self);
         let target_id = target.clone();
+        #[cfg(feature = "opentelemetry")]
+        let root_context_map = self.root_context_map.clone();
         peer_connection_arc.on_ice_candidate(Box::new(
             move |candidate: Option<RTCIceCandidate>| {
                 let coordinator = coordinator.clone();
                 let target_id = target_id.clone();
+                #[cfg(feature = "opentelemetry")]
+                let root_context_map = root_context_map.clone();
                 Box::pin(async move {
                     if let Some(cand) = candidate {
                         if let Some(coord) = coordinator.upgrade() {
@@ -420,10 +447,24 @@ impl WebRtcCoordinator {
                             };
 
                             let payload = actr_relay::Payload::IceCandidate(ice_candidate);
-                            if let Err(e) = coord.send_actr_relay(&target_id, payload).await {
+                            let span = tracing::info_span!(
+                                "send_ice_candidate",
+                                target_id = %target_id.to_string_repr()
+                            );
+                            // Get root context at callback execution time (not at setup time)
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some(ctx) =
+                                root_context_map.read().await.get(&target_id).cloned()
+                            {
+                                span.set_parent(ctx);
+                            }
+
+                            if let Err(e) = coord
+                                .send_actr_relay(&target_id, payload)
+                                .instrument(span)
+                                .await
+                            {
                                 tracing::error!("❌ Failed to send ICE Candidate: {}", e);
-                            } else {
-                                tracing::trace!("✅ Sent ICE Candidate");
                             }
                         }
                     }
@@ -481,8 +522,7 @@ impl WebRtcCoordinator {
         level = "info",
         skip_all,
         fields(
-            remote.id = %from.to_string_repr(),
-            offer_len = offer_sdp.len()
+            remote_id = %from.to_string_repr()
         )
     )]
     async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> RuntimeResult<()> {
@@ -615,10 +655,14 @@ impl WebRtcCoordinator {
         // 5. Set ICE candidate callback (local ICE candidate collection)
         let coordinator = Arc::downgrade(self);
         let target_id = from.clone();
+        #[cfg(feature = "opentelemetry")]
+        let root_context_map = self.root_context_map.clone();
         peer_connection_arc.on_ice_candidate(Box::new(
             move |candidate: Option<RTCIceCandidate>| {
                 let coordinator = coordinator.clone();
                 let target_id = target_id.clone();
+                #[cfg(feature = "opentelemetry")]
+                let root_context_map = root_context_map.clone();
                 Box::pin(async move {
                     if let Some(cand) = candidate {
                         if let Some(coord) = coordinator.upgrade() {
@@ -639,10 +683,23 @@ impl WebRtcCoordinator {
                             };
 
                             let payload = actr_relay::Payload::IceCandidate(ice_candidate);
-                            if let Err(e) = coord.send_actr_relay(&target_id, payload).await {
+                            let span = tracing::info_span!(
+                                "send_ice_candidate",
+                                target_id = %target_id.to_string_repr()
+                            );
+                            // Get root context at callback execution time (not at setup time)
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some(ctx) =
+                                root_context_map.read().await.get(&target_id).cloned()
+                            {
+                                span.set_parent(ctx);
+                            }
+                            if let Err(e) = coord
+                                .send_actr_relay(&target_id, payload)
+                                .instrument(span)
+                                .await
+                            {
                                 tracing::error!("❌ Failed to send ICE Candidate: {}", e);
-                            } else {
-                                tracing::trace!("✅ Sent ICE Candidate");
                             }
                         }
                     }
@@ -990,8 +1047,20 @@ impl WebRtcCoordinator {
                 "🔗 First send to {}, initiating WebRTC connection",
                 target.to_string_repr()
             );
-
-            let ready_rx = self.initiate_connection(target).await?;
+            let root_span =
+                tracing::info_span!("initiate_connection", target_id = %target.to_string_repr());
+            #[cfg(feature = "opentelemetry")]
+            {
+                let root_ctx = root_span.context();
+                self.root_context_map
+                    .write()
+                    .await
+                    .insert(target.clone(), root_ctx);
+            }
+            let ready_rx = self
+                .initiate_connection(target)
+                .instrument(root_span)
+                .await?;
 
             // Wait for connection to be ready (30s timeout)
             match tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx).await {
@@ -1090,7 +1159,21 @@ impl WebRtcCoordinator {
             "🔨 [Factory] Initiating new WebRTC connection: {:?}",
             target_id.to_string_repr()
         );
-        let ready_rx = self.initiate_connection(target_id).await?;
+        let root_span =
+            tracing::info_span!("create_connection", target_id = %target_id.to_string_repr());
+        #[cfg(feature = "opentelemetry")]
+        {
+            let root_ctx = root_span.context();
+            self.root_context_map
+                .write()
+                .await
+                .insert(target_id.clone(), root_ctx);
+        }
+
+        let ready_rx = self
+            .initiate_connection(target_id)
+            .instrument(root_span)
+            .await?;
 
         // 4. Wait for connection to be ready (30s timeout)
         tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx)
@@ -1263,7 +1346,17 @@ impl WebRtcCoordinator {
         tracing::info!("✅ Added track to PeerConnection: {}", track_id);
 
         // 3. Trigger SDP renegotiation
+        let root_span = tracing::info_span!("add_track", target_id = %target.to_string_repr());
+        #[cfg(feature = "opentelemetry")]
+        {
+            let root_ctx = root_span.context();
+            self.root_context_map
+                .write()
+                .await
+                .insert(target.clone(), root_ctx);
+        }
         self.renegotiate_connection(target, &peer_connection)
+            .instrument(root_span)
             .await?;
 
         tracing::info!("✅ Dynamic track added successfully: {}", track_id);

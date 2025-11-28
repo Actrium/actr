@@ -187,7 +187,7 @@ pub mod resource;
 // pub mod health;
 // pub mod metrics;
 
-pub use observability::{ObservabilityGuard, TracingGuard, init_observability};
+pub use observability::{ObservabilityGuard, init_observability};
 
 // Re-export core types
 pub use actr_protocol::{ActorResult, ActrId, ActrType, ProtocolError};

@@ -8,23 +8,19 @@ use opentelemetry::{
 };
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// Inject the current span into a signaling envelope (no-op if span is invalid).
-pub(crate) fn inject_current_span(envelope: &mut SignalingEnvelope) {
-    inject_span_context(&Span::current(), envelope);
-}
-
 /// Set the given span's parent from the envelope context (or current Context if invalid).
 pub(crate) fn set_parent_from_envelope(span: &Span, envelope: &SignalingEnvelope) {
     let context = extract_trace_context(envelope);
     span.set_parent(context);
 }
 
-fn inject_span_context(span: &Span, envelope: &mut SignalingEnvelope) {
+pub(crate) fn inject_span_context(span: &Span, envelope: &mut SignalingEnvelope) {
     let mut injector = EnvelopeInjector(envelope);
     let context = span.context();
     let span_ref = context.span();
     let span_context = span_ref.span_context();
     if !span_context.is_valid() {
+        tracing::warn!("⚠️ inject_span_context: span context is not valid, skipping injection");
         return;
     }
 
