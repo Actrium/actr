@@ -42,6 +42,8 @@ pub struct Config {
     /// 脚本命令
     pub scripts: HashMap<String, String>,
 
+    /// WebRTC 配置
+    pub webrtc: WebRtcConfig,
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 }
@@ -91,6 +93,35 @@ pub struct Dependency {
     pub fingerprint: Option<String>,
 }
 
+/// ICE 传输策略
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum IceTransportPolicy {
+    /// 使用所有可用候选（默认）
+    #[default]
+    All,
+    /// 仅使用 TURN 中继候选
+    Relay,
+}
+
+/// ICE 服务器配置
+#[derive(Clone, Debug, Default)]
+pub struct IceServer {
+    /// 服务器 URL 列表
+    pub urls: Vec<String>,
+    /// 用户名（TURN 服务器需要）
+    pub username: Option<String>,
+    /// 凭证（TURN 服务器需要）
+    pub credential: Option<String>,
+}
+
+/// WebRTC 配置
+#[derive(Clone, Debug, Default)]
+pub struct WebRtcConfig {
+    /// ICE 服务器列表
+    pub ice_servers: Vec<IceServer>,
+    /// ICE 传输策略（All 或 Relay）
+    pub ice_transport_policy: IceTransportPolicy,
+}
 /// Observability configuration (logging + tracing) resolved from raw config
 #[derive(Debug, Clone)]
 pub struct ObservabilityConfig {
@@ -325,6 +356,7 @@ mod tests {
             mailbox_path: None,
             tags: vec![],
             scripts: HashMap::new(),
+            webrtc: WebRtcConfig::default(),
             observability: ObservabilityConfig {
                 filter_level: "info".to_string(),
                 tracing_enabled: false,

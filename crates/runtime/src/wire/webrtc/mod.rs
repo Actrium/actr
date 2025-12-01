@@ -11,13 +11,15 @@ pub mod gate;
 pub mod negotiator;
 pub mod signaling;
 pub(crate) mod trace;
+pub mod turn_credential;
 
 // Re-export core center Type
 pub use connection::WebRtcConnection;
 pub use coordinator::WebRtcCoordinator;
 pub use gate::WebRtcGate;
-pub use negotiator::{IceServer, WebRtcConfig, WebRtcNegotiator};
+pub use negotiator::{IceServer, IceTransportPolicy, WebRtcConfig, WebRtcNegotiator};
 pub use signaling::{
     AuthConfig, AuthType, ConnectionState, ReconnectConfig, SignalingClient, SignalingConfig,
     SignalingStats, WebSocketSignalingClient, spawn_signaling_reconnector,
 };
+pub use turn_credential::{TurnClaims, TurnCredentialBuilder, TurnCredentialError, TurnToken};

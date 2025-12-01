@@ -192,6 +192,7 @@ impl OutprocTransportManager {
                     tracing::info!("✅ Connection established: {:?}", dest);
                     transports.insert(dest.clone(), Either::Right(Arc::clone(&transport)));
                     drop(transports);
+                    self.spawn_ready_monitor(dest.clone(), Arc::clone(&transport));
                     notify.notify_waiters();
                     return Ok(transport);
                 }
@@ -304,6 +305,48 @@ impl OutprocTransportManager {
     /// Check if connection to specified Dest exists
     pub async fn has_dest(&self, dest: &Dest) -> bool {
         self.transports.read().await.contains_key(dest)
+    }
+
+    /// Monitor a DestTransport ready-set and remove it when all connections are gone.
+    fn spawn_ready_monitor(&self, dest: Dest, transport: Arc<DestTransport>) {
+        let transports = Arc::clone(&self.transports);
+        tokio::spawn(async move {
+            let mut rx = transport.watch_ready();
+            let mut had_ready = !rx.borrow().is_empty();
+
+            loop {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+                let ready = rx.borrow().clone();
+
+                if ready.is_empty() && had_ready {
+                    // Only remove if the same transport is still mapped.
+                    let mut map = transports.write().await;
+                    let matched = matches!(
+                        map.get(&dest),
+                        Some(Either::Right(existing)) if Arc::ptr_eq(existing, &transport)
+                    );
+                    if matched {
+                        map.remove(&dest);
+                        drop(map);
+
+                        tracing::warn!(
+                            "🧹 Removing DestTransport for {:?} after all connections closed",
+                            dest
+                        );
+                        if let Err(e) = transport.close().await {
+                            tracing::warn!("⚠️ Failed to close DestTransport {:?}: {}", dest, e);
+                        }
+                    }
+                    break;
+                }
+
+                if !ready.is_empty() {
+                    had_ready = true;
+                }
+            }
+        });
     }
 
     /// Spawn health checker background task with smart reconnect

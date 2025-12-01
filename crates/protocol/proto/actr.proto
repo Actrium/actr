@@ -313,6 +313,5 @@ message RoleNegotiation {
 
 // Signaling server assigns the offerer role to one side
 message RoleAssignment {
-  required ActrId to = 1;
-  required bool is_offerer = 2;
+  required bool is_offerer = 1;
 }

@@ -132,6 +132,29 @@ impl WirePool {
 
         let conn_type = ConnType::from(&connection);
 
+        // Listen for DataChannel close events and mark WebRTC connection as failed in the pool.
+        if let WireHandle::WebRTC(rtc) = &connection {
+            let connections_for_close = Arc::clone(&self.connections);
+            let ready_tx_for_close = self.ready_tx.clone();
+            let conn_type_for_close = conn_type;
+            let rtc_clone = rtc.clone();
+            tokio::spawn(async move {
+                rtc_clone
+                    .add_data_channel_close_handler(move |_payload_type| {
+                        let connections = Arc::clone(&connections_for_close);
+                        let ready_tx = ready_tx_for_close.clone();
+                        async move {
+                            {
+                                let mut conns = connections.write().await;
+                                conns[conn_type_for_close.as_index()] = Some(WireStatus::Failed);
+                            }
+                            WirePool::broadcast_ready_connections(&connections, &ready_tx).await;
+                        }
+                    })
+                    .await;
+            });
+        }
+
         tokio::spawn(async move {
             // Initialize status
             {

@@ -95,6 +95,7 @@ pub struct RawSystemConfig {
     pub storage: RawStorageConfig,
 
     #[serde(default)]
+    pub webrtc: RawWebRtcConfig,
     pub observability: RawObservabilityConfig,
 }
 
@@ -122,6 +123,21 @@ pub struct RawStorageConfig {
     pub mailbox_path: Option<PathBuf>,
 }
 
+/// WebRTC 配置
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawWebRtcConfig {
+    /// STUN 服务器 URL 列表 (例如 ["stun:localhost:3478"])
+    #[serde(default)]
+    pub stun_urls: Vec<String>,
+
+    /// TURN 服务器 URL 列表 (例如 ["turn:localhost:3478"])
+    #[serde(default)]
+    pub turn_urls: Vec<String>,
+
+    /// 是否强制使用 TURN 中继 (默认 false)
+    #[serde(default)]
+    pub force_relay: bool,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawObservabilityConfig {
     /// Filter level (e.g., "info", "debug", "warn", "info,webrtc=debug").

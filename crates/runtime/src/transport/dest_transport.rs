@@ -7,9 +7,10 @@ use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
 use super::route_table::PayloadTypeExt;
 use super::wire_handle::WireHandle;
-use super::wire_pool::{ConnType, RetryConfig, WirePool};
+use super::wire_pool::{ConnType, ReadySet, RetryConfig, WirePool};
 use actr_protocol::PayloadType;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// DestTransport - Transport layer manager for a single destination
 ///
@@ -101,7 +102,24 @@ impl DestTransport {
                                 payload_type
                             );
                             // Convert to Bytes (zero-copy)
-                            return lane.send(bytes::Bytes::copy_from_slice(data)).await;
+                            let payload = bytes::Bytes::copy_from_slice(data);
+                            let result = lane.send(payload.clone()).await;
+
+                            // If DataChannel is closed, drop cache and retry once.
+                            if let Err(NetworkError::DataChannelError(msg)) = &result {
+                                if msg.contains("closed") {
+                                    tracing::warn!(
+                                        "♻️ DataChannel closed for {:?}, invalidating lane and retrying once",
+                                        payload_type
+                                    );
+                                    conn.invalidate_lane(payload_type).await;
+                                    if let Ok(new_lane) = conn.get_lane(payload_type).await {
+                                        return new_lane.send(payload).await;
+                                    }
+                                }
+                            }
+
+                            return result;
                         }
                         Err(e) => {
                             tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
@@ -193,5 +211,10 @@ impl DestTransport {
             }
         }
         false
+    }
+
+    /// Subscribe to ready-set changes (used for manager-side cleanup).
+    pub fn watch_ready(&self) -> watch::Receiver<ReadySet> {
+        self.conn_mgr.watch_ready()
     }
 }

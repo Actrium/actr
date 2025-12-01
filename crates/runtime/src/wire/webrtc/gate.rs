@@ -23,7 +23,7 @@ use actr_protocol::{
 /// - Implement OutboundGate trait
 /// - Send messages using WebRtcCoordinator
 /// - Serialize/deserialize RpcEnvelope (Protobuf)
-/// - Track pending requests and match responses (by request_id)
+/// - Track pending requests and match responses (by r  equest_id)
 /// - Route messages by PayloadType (RPC → Mailbox, DataStream → Registry)
 ///
 /// # Design Principles
@@ -313,128 +313,6 @@ impl WebRtcGate {
         tracing::debug!(
             "📤 Sent response: request_id={}, {} bytes",
             response_envelope.request_id,
-            buf.len()
-        );
-        Ok(())
-    }
-}
-
-impl WebRtcGate {
-    /// Send request and wait for response (bidirectional communication)
-    ///
-    /// # Implementation Details
-    /// - RpcEnvelope's request_id uniquely identifies this RPC call
-    /// - Response will reuse the same request_id, receiver matches via pending_requests
-    /// - 30 second timeout protection
-    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-    #[instrument(skip_all, fields(target = %target.to_string_repr(), request_id = %envelope.request_id))]
-    pub async fn send_request(
-        &self,
-        target: &ActrId,
-        mut envelope: RpcEnvelope,
-    ) -> ActorResult<Bytes> {
-        let request_id = envelope.request_id.clone();
-        tracing::debug!(
-            "📤 WebRtcGate::send_request to {:?}, request_id={}",
-            target,
-            request_id
-        );
-
-        // Create response channel and register
-        let (response_tx, response_rx) = oneshot::channel();
-        {
-            let mut pending = self.pending_requests.write().await;
-            pending.insert(request_id.clone(), response_tx);
-        }
-
-        // Inject tracing context before serialization
-        #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
-            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-        }
-
-        // Serialize RpcEnvelope (Protobuf)
-        let mut buf = Vec::new();
-        envelope
-            .encode(&mut buf)
-            .map_err(|e| ProtocolError::SerializationError(e.to_string()))?;
-
-        // Send message
-        self.coordinator
-            .send_message(target, &buf)
-            .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
-
-        tracing::debug!(
-            "📤 Sent request: request_id={}, {} bytes",
-            request_id,
-            buf.len()
-        );
-
-        // Wait for response (30 second timeout)
-        match tokio::time::timeout(std::time::Duration::from_secs(30), response_rx).await {
-            Ok(Ok(result)) => {
-                // result is ActorResult<Bytes>, propagate it
-                tracing::debug!("📬 Received response: request_id={}", request_id);
-                result
-            }
-            Ok(Err(_)) => {
-                // Cleanup pending request
-                self.pending_requests.write().await.remove(&request_id);
-                Err(ProtocolError::TransportError(
-                    "Response channel closed".to_string(),
-                ))
-            }
-            Err(_) => {
-                // Timeout, cleanup pending request
-                self.pending_requests.write().await.remove(&request_id);
-                Err(ProtocolError::TransportError("Request timeout".to_string()))
-            }
-        }
-    }
-
-    /// Send one-way message (no response expected)
-    ///
-    /// # Implementation Details
-    /// - Different from send_request only in that it doesn't register pending_requests and doesn't wait for response
-    /// - RpcEnvelope request_id still needs to be set (for logging and tracing)
-    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-    #[instrument(skip_all, fields(target = %target.to_string_repr(), request_id = %envelope.request_id))]
-    pub async fn send_message(
-        &self,
-        target: &ActrId,
-        mut envelope: RpcEnvelope,
-    ) -> ActorResult<()> {
-        let request_id = envelope.request_id.clone();
-        tracing::debug!(
-            "📤 WebRtcGate::send_message to {:?}, request_id={}",
-            target,
-            request_id
-        );
-
-        // Inject tracing context before serialization
-        #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
-            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-        }
-
-        // Serialize RpcEnvelope (Protobuf)
-        let mut buf = Vec::new();
-        envelope
-            .encode(&mut buf)
-            .map_err(|e| ProtocolError::SerializationError(e.to_string()))?;
-
-        // Send message (don't register pending_requests)
-        self.coordinator
-            .send_message(target, &buf)
-            .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
-
-        tracing::debug!(
-            "📤 Sent one-way message: request_id={}, {} bytes",
-            request_id,
             buf.len()
         );
         Ok(())

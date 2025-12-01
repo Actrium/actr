@@ -113,7 +113,7 @@ impl DataLane {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-
+                tracing::debug!("🔄 WebRTC DataChannel send");
                 // Zero-copy: directly use the passed Bytes
                 data_channel
                     .send(&data)
@@ -219,6 +219,7 @@ impl DataLane {
         match self {
             DataLane::WebRtcDataChannel { rx, .. } | DataLane::WebSocket { rx, .. } => {
                 let mut receiver = rx.lock().await;
+                tracing::debug!("🔄 WebRTC DataLane recv: {:?}", receiver);
                 receiver.recv().await.ok_or_else(|| {
                     NetworkError::ChannelClosed("DataLane receiver closed".to_string())
                 })

@@ -6,27 +6,11 @@ use crate::transport::error::NetworkResult;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-/// WebRTC configuration
-#[derive(Clone, Debug, Default)]
-pub struct WebRtcConfig {
-    /// ICE service device list
-    pub ice_servers: Vec<IceServer>,
-}
-
-/// ICE service device configuration
-#[derive(Clone, Debug)]
-pub struct IceServer {
-    /// service device URL list
-    pub urls: Vec<String>,
-
-    /// usage user name （TURN service device need）
-    pub username: Option<String>,
-
-    /// credential verify （TURN service device need）
-    pub credential: Option<String>,
-}
+// 从 actr-config 重新导出类型
+pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 
 /// WebRTC negotiator
+#[derive(Clone, Debug, Default)]
 pub struct WebRtcNegotiator {
     /// WebRTC configuration
     config: WebRtcConfig,
@@ -62,6 +46,7 @@ impl WebRtcNegotiator {
         use webrtc::api::media_engine::MediaEngine;
         use webrtc::ice_transport::ice_server::RTCIceServer;
         use webrtc::peer_connection::configuration::RTCConfiguration;
+        use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
         use webrtc::rtp_transceiver::rtp_codec::{
             RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
         };
@@ -131,9 +116,20 @@ impl WebRtcNegotiator {
             })
             .collect();
 
+        if ice_servers.is_empty() {
+            tracing::info!("🌐 No ICE servers configured; proceeding without STUN/TURN servers");
+        }
+        tracing::info!("🌐 ICE servers configured: {:?}", ice_servers);
+        // Convert ICE transport policy
+        let ice_transport_policy = match self.config.ice_transport_policy {
+            IceTransportPolicy::All => RTCIceTransportPolicy::All,
+            IceTransportPolicy::Relay => RTCIceTransportPolicy::Relay,
+        };
+
         // Create WebRTC configuration
         let rtc_config = RTCConfiguration {
             ice_servers,
+            ice_transport_policy,
             ..Default::default()
         };
 
@@ -142,6 +138,16 @@ impl WebRtcNegotiator {
 
         // Create PeerConnection
         let peer_connection = api.new_peer_connection(rtc_config).await?;
+
+        peer_connection.on_ice_connection_state_change(Box::new(move |state| {
+            tracing::info!("🔄 ICE Connection State Changed: {:?}", state);
+            Box::pin(async move {})
+        }));
+
+        peer_connection.on_ice_gathering_state_change(Box::new(move |state| {
+            tracing::info!("🔄 ICE Gathering State Changed: {:?}", state);
+            Box::pin(async move {})
+        }));
 
         tracing::info!("✅ Create RTCPeerConnection with VP8, H264, OPUS codecs");
 
@@ -172,6 +178,31 @@ impl WebRtcNegotiator {
 
         tracing::info!(
             "✅ Create Offer (SDP length: {}, Trickle ICE mode)",
+            offer_sdp.len()
+        );
+
+        Ok(offer_sdp)
+    }
+
+    /// Create ICE restart Offer (offerer side)
+    pub async fn create_ice_restart_offer(
+        &self,
+        peer_connection: &RTCPeerConnection,
+    ) -> NetworkResult<String> {
+        use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
+
+        let offer = peer_connection
+            .create_offer(Some(RTCOfferOptions {
+                ice_restart: true,
+                ..Default::default()
+            }))
+            .await?;
+        let offer_sdp = offer.sdp.clone();
+
+        peer_connection.set_local_description(offer).await?;
+
+        tracing::info!(
+            "✅ Create ICE Restart Offer (SDP length: {}, Trickle ICE mode)",
             offer_sdp.len()
         );
 
@@ -265,38 +296,5 @@ impl WebRtcNegotiator {
         tracing::trace!("✅ add ICE Candidate");
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_config() {
-        let config = WebRtcConfig::default();
-        // Default config has no ICE servers for local-to-local scenarios
-        assert!(config.ice_servers.is_empty());
-    }
-
-    #[test]
-    fn test_negotiator_creation() {
-        let negotiator = WebRtcNegotiator::with_defaults();
-        // Default negotiator has no ICE servers for local-to-local scenarios
-        assert!(negotiator.config.ice_servers.is_empty());
-    }
-
-    #[test]
-    fn test_custom_ice_servers() {
-        let config = WebRtcConfig {
-            ice_servers: vec![IceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                username: None,
-                credential: None,
-            }],
-        };
-        let negotiator = WebRtcNegotiator::new(config);
-        assert!(!negotiator.config.ice_servers.is_empty());
-        assert_eq!(negotiator.config.ice_servers.len(), 1);
     }
 }

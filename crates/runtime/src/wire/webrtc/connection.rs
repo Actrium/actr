@@ -4,13 +4,18 @@ use crate::transport::DataLane;
 use crate::transport::{NetworkError, NetworkResult};
 use actr_protocol::PayloadType;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use tokio::sync::{RwLock, mpsc};
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
+
+type ChannelCloseHandler =
+    Arc<dyn Fn(PayloadType) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Type alias for media track storage (track_id → (Track, Sender))
 type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>)>>>;
@@ -40,6 +45,12 @@ pub struct WebRtcConnection {
     /// MediaTrack not Cachein array in ，using HashMap
     lane_cache: Arc<RwLock<[Option<DataLane>; 4]>>,
 
+    /// Handlers invoked when any DataChannel closes
+    channel_close_handlers: Arc<RwLock<Vec<ChannelCloseHandler>>>,
+
+    /// Ensure close handler only fires once per connection lifetime
+    channel_close_notified: Arc<AtomicBool>,
+
     /// connection status
     connected: Arc<RwLock<bool>>,
 }
@@ -68,6 +79,8 @@ impl WebRtcConnection {
             track_sequence_numbers: Arc::new(RwLock::new(HashMap::new())),
             track_ssrcs: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new([None, None, None, None])),
+            channel_close_handlers: Arc::new(RwLock::new(Vec::new())),
+            channel_close_notified: Arc::new(AtomicBool::new(false)),
             connected: Arc::new(RwLock::new(true)),
         }
     }
@@ -77,9 +90,52 @@ impl WebRtcConnection {
     /// This keeps `connected` in sync with the WebRTC connection state and
     /// proactively closes the PeerConnection and clears internal caches when
     /// entering a terminal state (Disconnected/Failed/Closed).
-    pub fn install_state_change_handler(&self) {
-        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+    pub(crate) async fn handle_state_change(&self, state: RTCPeerConnectionState) {
+        // Treat New/Connecting/Connected as "connected"; others as disconnected.
+        let is_connected = matches!(
+            state,
+            RTCPeerConnectionState::New
+                | RTCPeerConnectionState::Connecting
+                | RTCPeerConnectionState::Connected
+        );
 
+        // Update flag and detect transitions from connected -> disconnected.
+        let was_connected = {
+            let mut flag = self.connected.write().await;
+            let prev = *flag;
+            *flag = is_connected;
+            prev
+        };
+
+        tracing::info!(
+            "🔄 WebRtcConnection peer state changed: {:?}, connected={}",
+            state,
+            is_connected
+        );
+
+        // For terminal states, proactively close the connection and let
+        // `close()` perform all resource cleanup. Only trigger when we
+        // transition from connected -> disconnected to avoid loops.
+        // On terminal transition, let upper layer decide whether to
+        // trigger ICE restart; here we just close.
+        if was_connected && matches!(state, RTCPeerConnectionState::Closed) {
+            tracing::info!(
+                "🔻 WebRtcConnection entering terminal state {:?}, calling close()",
+                state
+            );
+
+            if let Err(e) = self.close().await {
+                tracing::warn!("⚠️ WebRtcConnection::close() failed: {}", e);
+            }
+        }
+    }
+
+    /// Install a state-change handler on the underlying RTCPeerConnection.
+    ///
+    /// This keeps `connected` in sync with the WebRTC connection state and
+    /// proactively closes the PeerConnection and clears internal caches when
+    /// entering a terminal state (Disconnected/Failed/Closed).
+    pub fn install_state_change_handler(&self) {
         let this = self.clone();
 
         self.peer_connection
@@ -87,49 +143,7 @@ impl WebRtcConnection {
                 let this = this.clone();
 
                 Box::pin(async move {
-                    // Treat New/Connecting/Connected as "connected"; others as disconnected.
-                    let is_connected = matches!(
-                        state,
-                        RTCPeerConnectionState::New
-                            | RTCPeerConnectionState::Connecting
-                            | RTCPeerConnectionState::Connected
-                    );
-
-                    // Update flag and detect transitions from connected -> disconnected.
-                    let was_connected = {
-                        let mut flag = this.connected.write().await;
-                        let prev = *flag;
-                        *flag = is_connected;
-                        prev
-                    };
-
-                    tracing::info!(
-                        "🔄 WebRtcConnection peer state changed: {:?}, connected={}",
-                        state,
-                        is_connected
-                    );
-
-                    // For terminal states, proactively close the connection and let
-                    // `close()` perform all resource cleanup. Only trigger when we
-                    // transition from connected -> disconnected to avoid loops.
-                    // not support ice restart, FIXME: ice restart
-                    if was_connected
-                        && matches!(
-                            state,
-                            RTCPeerConnectionState::Disconnected
-                                | RTCPeerConnectionState::Failed
-                                | RTCPeerConnectionState::Closed
-                        )
-                    {
-                        tracing::info!(
-                            "🔻 WebRtcConnection entering terminal state {:?}, calling close()",
-                            state
-                        );
-
-                        if let Err(e) = this.close().await {
-                            tracing::warn!("⚠️ WebRtcConnection::close() failed: {}", e);
-                        }
-                    }
+                    this.handle_state_change(state).await;
                 })
             }));
     }
@@ -138,6 +152,44 @@ impl WebRtcConnection {
     pub async fn connect(&self) -> NetworkResult<()> {
         *self.connected.write().await = true;
         Ok(())
+    }
+
+    /// Replace existing close handlers with a new one.
+    pub async fn set_data_channel_close_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(PayloadType) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let mut handlers = self.channel_close_handlers.write().await;
+        handlers.clear();
+        handlers.push(Arc::new(move |payload_type| {
+            Box::pin(handler(payload_type))
+        }));
+        self.channel_close_notified.store(false, Ordering::SeqCst);
+    }
+
+    /// Add an additional close handler (handlers fire once collectively).
+    pub async fn add_data_channel_close_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(PayloadType) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let mut handlers = self.channel_close_handlers.write().await;
+        handlers.push(Arc::new(move |payload_type| {
+            Box::pin(handler(payload_type))
+        }));
+        self.channel_close_notified.store(false, Ordering::SeqCst);
+    }
+
+    async fn notify_data_channel_closed(&self, payload_type: PayloadType) {
+        if self.channel_close_notified.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let handlers = { self.channel_close_handlers.read().await.clone() };
+        for handler in handlers {
+            handler(payload_type).await;
+        }
     }
 
     /// Checkwhether already Connect
@@ -235,12 +287,41 @@ impl WebRtcConnection {
         let idx = payload_type as usize;
 
         // 1. CheckCache
+        let mut need_recreate = false;
         {
             let cache = self.lane_cache.read().await;
             if let Some(lane) = &cache[idx] {
-                tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
-                return Ok(lane.clone());
+                // If the cached lane is backed by a DataChannel, ensure it is still open.
+                if let DataLane::WebRtcDataChannel { data_channel, .. } = lane {
+                    use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+                    let state = data_channel.ready_state();
+                    if matches!(
+                        state,
+                        RTCDataChannelState::Closed | RTCDataChannelState::Closing
+                    ) {
+                        tracing::warn!(
+                            "♻️ Cached DataChannel for {:?} is {:?}, recreating lane",
+                            payload_type,
+                            state
+                        );
+                        need_recreate = true;
+                    } else {
+                        tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
+                        return Ok(lane.clone());
+                    }
+                } else {
+                    tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
+                    return Ok(lane.clone());
+                }
             }
+        }
+
+        if need_recreate {
+            // Clear stale cache entries before recreating.
+            let mut cache = self.lane_cache.write().await;
+            cache[idx] = None;
+            let mut channels = self.data_channels.write().await;
+            channels[idx] = None;
         }
 
         // 2. Createnew DataLane
@@ -255,6 +336,18 @@ impl WebRtcConnection {
         tracing::info!("✨ WebRtcConnection Createnew DataLane: {:?}", payload_type);
 
         Ok(lane)
+    }
+
+    /// Invalidate cached lane/DataChannel for given payload type.
+    ///
+    /// Used when the underlying DataChannel has transitioned to Closed and needs
+    /// to be recreated on next `get_lane` call.
+    pub async fn invalidate_lane(&self, payload_type: PayloadType) {
+        let idx = payload_type as usize;
+        let mut cache = self.lane_cache.write().await;
+        cache[idx] = None;
+        let mut channels = self.data_channels.write().await;
+        channels[idx] = None;
     }
 
     /// inner part Method：Create DataChannel Lane（ not carry Cache）
@@ -277,6 +370,45 @@ impl WebRtcConnection {
             .create_data_channel(&label, Some(dc_config))
             .await?;
 
+        let channel_id = data_channel.id();
+        let payload_type_for_error = payload_type;
+        let label_for_error = label.clone();
+        data_channel.on_error(Box::new(move |error| {
+            let payload_type = payload_type_for_error;
+            let label = label_for_error.clone();
+            let channel_id = channel_id;
+            tracing::warn!(
+                "⚠️ WebRTC DataChannel error [{}] (payload_type={:?}, channel_id={}): {:?}",
+                label,
+                payload_type,
+                channel_id,
+                error
+            );
+            Box::pin(async move {})
+        }));
+
+        let this_for_close = self.clone();
+        let payload_type_for_close = payload_type;
+        let label_for_close = label.clone();
+        let channel_id_for_close = channel_id;
+        data_channel.on_close(Box::new(move || {
+            let this = this_for_close.clone();
+            let payload_type = payload_type_for_close;
+            let label = label_for_close.clone();
+            let channel_id = channel_id_for_close;
+            Box::pin(async move {
+                tracing::warn!(
+                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?}, channel_id={})",
+                    label,
+                    payload_type,
+                    channel_id
+                );
+                // Invalidate cached lane when DataChannel closes
+                this.invalidate_lane(payload_type).await;
+                this.notify_data_channel_closed(payload_type).await;
+            })
+        }));
+
         // CreateReceive channel （using Bytes）
         let (tx, rx) = mpsc::channel(100);
 
@@ -286,6 +418,7 @@ impl WebRtcConnection {
             move |msg: webrtc::data_channel::data_channel_message::DataChannelMessage| {
                 // zero-copy： directly using msg.data (Bytes)
                 let data = msg.data;
+                tracing::debug!("🔄 WebRTC DataChannel message received1111: {:?}", data);
                 let tx = tx_clone.clone();
                 Box::pin(async move {
                     if let Err(e) = tx.send(data).await {
@@ -440,6 +573,49 @@ impl WebRtcConnection {
         }
 
         let idx = payload_type as usize;
+        let channel_id = data_channel.id();
+        let label = format!("{payload_type:?}");
+
+        // Set error handler
+        let payload_type_for_error = payload_type;
+        let label_for_error = label.clone();
+        let channel_id_for_error = channel_id;
+        data_channel.on_error(Box::new(move |error| {
+            let payload_type = payload_type_for_error;
+            let label = label_for_error.clone();
+            let channel_id = channel_id_for_error;
+            tracing::warn!(
+                "⚠️ WebRTC DataChannel error [{}] (payload_type={:?}, channel_id={}): {:?}",
+                label,
+                payload_type,
+                channel_id,
+                error
+            );
+            Box::pin(async move {})
+        }));
+
+        // Set close handler
+        let this_for_close = self.clone();
+        let payload_type_for_close = payload_type;
+        let label_for_close = label.clone();
+        let channel_id_for_close = channel_id;
+        data_channel.on_close(Box::new(move || {
+            let this = this_for_close.clone();
+            let payload_type = payload_type_for_close;
+            let label = label_for_close.clone();
+            let channel_id = channel_id_for_close;
+            Box::pin(async move {
+                tracing::warn!(
+                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?}, channel_id={})",
+                    label,
+                    payload_type,
+                    channel_id
+                );
+                // Invalidate cached lane when DataChannel closes
+                this.invalidate_lane(payload_type).await;
+                this.notify_data_channel_closed(payload_type).await;
+            })
+        }));
 
         // Create receive channel
         let (tx, rx) = mpsc::channel(100);

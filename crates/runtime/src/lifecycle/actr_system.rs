@@ -167,6 +167,7 @@ impl ActrSystem {
             signaling_client: self.signaling_client,
             actor_id: None,              // Obtained after startup
             credential: None,            // Obtained after startup
+            psk: None,                   // Obtained after startup (for TURN auth)
             webrtc_coordinator: None,    // Created after startup
             webrtc_gate: None,           // Created after startup
             inproc_mgr: None,            // Set after startup

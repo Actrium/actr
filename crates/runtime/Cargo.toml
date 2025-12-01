@@ -42,15 +42,20 @@ webrtc = "0.14"
 url = "2.5"
 prost-types = "0.14"
 rand = "0.8"
+dotenvy = "0.15"
 
 # === 序列化 ===
 serde.workspace = true
 serde_json.workspace = true
 bytes = "1.10"
 
+# === TURN authentication ===
+hex = "0.4"
+
 # === 日志记录 ===
 tracing.workspace = true
 tracing-subscriber.workspace = true
+base64 = "0.22.1"
 opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }

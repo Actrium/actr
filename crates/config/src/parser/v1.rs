@@ -1,7 +1,10 @@
 //! Edition 1 configuration parser
 
 use crate::config::ObservabilityConfig;
-use crate::config::{Config, Dependency, PackageInfo, ProtoFile};
+use crate::config::{
+    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile, WebRtcConfig,
+};
+
 use crate::error::{ConfigError, Result};
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
 use actr_protocol::{Acl, ActrType, Realm};
@@ -72,6 +75,8 @@ impl ParserV1 {
             None
         };
 
+        // 9. 解析 WebRTC 配置
+        let webrtc = self.parse_webrtc(&raw.system.webrtc);
         // 9. 解析 observability 配置
         let observability = self.parse_observability(&raw.system, &package);
 
@@ -87,6 +92,7 @@ impl ParserV1 {
             mailbox_path: raw.system.storage.mailbox_path,
             tags: raw.package.tags,
             scripts: raw.scripts,
+            webrtc,
             observability,
         })
     }
@@ -184,6 +190,39 @@ impl ParserV1 {
         Ok(Acl { rules: vec![] })
     }
 
+    fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> WebRtcConfig {
+        let mut ice_servers = Vec::new();
+
+        // 解析 STUN URLs
+        if !raw.stun_urls.is_empty() {
+            ice_servers.push(IceServer {
+                urls: raw.stun_urls.clone(),
+                username: None,
+                credential: None,
+            });
+        }
+
+        // 解析 TURN URLs（凭证在运行时动态生成）
+        if !raw.turn_urls.is_empty() {
+            ice_servers.push(IceServer {
+                urls: raw.turn_urls.clone(),
+                username: None,
+                credential: None,
+            });
+        }
+
+        // 解析 ICE 传输策略
+        let ice_transport_policy = if raw.force_relay {
+            IceTransportPolicy::Relay
+        } else {
+            IceTransportPolicy::All
+        };
+
+        WebRtcConfig {
+            ice_servers,
+            ice_transport_policy,
+        }
+    }
     fn parse_observability(
         &self,
         raw_system: &RawSystemConfig,
@@ -270,6 +309,19 @@ impl ParserV1 {
             },
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
+            },
+            webrtc: crate::raw::RawWebRtcConfig {
+                stun_urls: if child.webrtc.stun_urls.is_empty() {
+                    parent.webrtc.stun_urls
+                } else {
+                    child.webrtc.stun_urls
+                },
+                turn_urls: if child.webrtc.turn_urls.is_empty() {
+                    parent.webrtc.turn_urls
+                } else {
+                    child.webrtc.turn_urls
+                },
+                force_relay: child.webrtc.force_relay || parent.webrtc.force_relay,
             },
             observability: crate::raw::RawObservabilityConfig {
                 filter_level: child

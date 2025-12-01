@@ -104,6 +104,14 @@ impl WireHandle {
             _ => None,
         }
     }
+
+    /// Invalidate cached lane for WebRTC connections (no-op for WebSocket).
+    #[inline]
+    pub async fn invalidate_lane(&self, payload_type: PayloadType) {
+        if let WireHandle::WebRTC(rtc) = self {
+            rtc.invalidate_lane(payload_type).await;
+        }
+    }
 }
 
 /// Wire connection status

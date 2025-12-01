@@ -1,10 +1,11 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
 use actr_framework::{Bytes, Workload};
+use actr_mailbox::{DeadLetterQueue, Mailbox};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActorResult, ActrId, ActrType, PayloadType, RouteCandidatesRequest, RpcEnvelope,
-    route_candidates_request,
+    AIdCredential, ActorResult, ActrId, ActrType, PayloadType, RegisterRequest,
+    RouteCandidatesRequest, RpcEnvelope, register_response, route_candidates_request,
 };
 use futures_util::FutureExt;
 use std::sync::Arc;
@@ -16,8 +17,6 @@ use crate::transport::InprocTransportManager;
 
 // Use types from sub-crates
 use crate::wire::webrtc::{SignalingClient, WebRtcConfig};
-use actr_mailbox::{DeadLetterQueue, Mailbox};
-use actr_protocol::{AIdCredential, RegisterRequest, register_response};
 
 // Use extension traits from actr-protocol
 use actr_protocol::{ActrIdExt, ActrTypeExt};
@@ -55,6 +54,9 @@ pub struct ActrNode<W: Workload> {
 
     /// Actor Credential (obtained after startup, used for subsequent authentication messages)
     pub(crate) credential: Option<AIdCredential>,
+
+    /// Pre-shared key for TURN authentication (obtained from registration)
+    pub(crate) psk: Option<Vec<u8>>,
 
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::coordinator::WebRtcCoordinator>>,
@@ -437,6 +439,7 @@ impl<W: Workload> ActrNode<W> {
                 if register_ok.psk.is_some() {
                     tracing::debug!("🔑 Received PSK (bootstrap keying material)");
                 }
+
                 if let Some(expires_at) = &register_ok.credential_expires_at {
                     tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
                 }
@@ -444,6 +447,13 @@ impl<W: Workload> ActrNode<W> {
                 // Store ActrId and Credential
                 self.actor_id = Some(actor_id.clone());
                 self.credential = Some(credential.clone());
+
+                // Pass identity to signaling client so reconnect URLs carry auth info.
+                self.signaling_client
+                    .set_reconnect_identity(actor_id.clone(), credential.clone())
+                    .await;
+                // Store PSK and public_key for TURN authentication
+                self.psk = register_ok.psk.as_ref().map(|b| b.to_vec());
 
                 // Persist identity into ContextFactory for later Context creation
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -479,13 +489,17 @@ impl<W: Workload> ActrNode<W> {
                     .media_frame_registry
                     .clone();
 
+                // Build WebRtcConfig from Actr.toml configuration
+                let webrtc_config =
+                    self.build_webrtc_config(&self.config.webrtc, &actor_id, &credential);
+
                 // Create WebRtcCoordinator
                 let coordinator =
                     Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
                         actor_id.clone(),
                         credential.clone(),
                         self.signaling_client.clone(),
-                        WebRtcConfig::default(),
+                        webrtc_config,
                         media_frame_registry,
                     ));
 
@@ -1217,5 +1231,95 @@ impl<W: Workload> ActrNode<W> {
         tracing::info!("✅ ActrRef created (Shell → Workload communication handle)");
 
         Ok(actr_ref)
+    }
+
+    /// Build WebRtcConfig from Actr.toml configuration
+    ///
+    /// Creates ICE servers configuration based on:
+    /// - ICE server URLs from Actr.toml (stun_urls, turn_urls)
+    /// - PSK and public_key received from registration
+    /// - ice_transport_policy from Actr.toml (force_relay)
+    fn build_webrtc_config(
+        &self,
+        config_webrtc: &actr_config::WebRtcConfig,
+        actor_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> WebRtcConfig {
+        use crate::wire::webrtc::{IceServer, TurnCredentialBuilder};
+
+        // Build ICE servers list from Actr.toml configuration
+        let mut ice_servers = Vec::new();
+
+        for server in &config_webrtc.ice_servers {
+            // Check if this is a TURN server (URLs start with "turn:" or "turns:")
+            let is_turn_server = server
+                .urls
+                .iter()
+                .any(|url| url.starts_with("turn:") || url.starts_with("turns:"));
+
+            if is_turn_server {
+                // TURN server: need to generate credentials dynamically
+                if let Some(psk) = &self.psk {
+                    // Build TURN credentials using PSK
+                    let builder = TurnCredentialBuilder::new(
+                        self.config.realm.realm_id,
+                        credential.token_key_id,
+                        actor_id.clone(),
+                        psk,
+                    )
+                    .expires_in(3600); // 1 hour expiry
+
+                    // Use realm name from config for TURN credential generation
+                    let turn_realm = format!("realm_{}", self.config.realm.realm_id);
+
+                    match builder.build(&turn_realm) {
+                        Ok((username, password)) => {
+                            tracing::info!(
+                                "🔐 TURN credentials generated for realm: {}",
+                                turn_realm
+                            );
+                            tracing::debug!(
+                                "🔐 TURN username length: {}, credential length: {}",
+                                username.len(),
+                                password.len()
+                            );
+
+                            ice_servers.push(IceServer {
+                                urls: server.urls.clone(),
+                                username: Some(username),
+                                credential: Some(password),
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("❌ Failed to build TURN credentials: {:?}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        "⚠️ TURN server configured but PSK not available from registration"
+                    );
+                }
+            } else {
+                // STUN server: no credentials needed
+                ice_servers.push(IceServer {
+                    urls: server.urls.clone(),
+                    username: None,
+                    credential: None,
+                });
+            }
+        }
+
+        // Use ice_transport_policy from Actr.toml configuration
+        let ice_transport_policy = match config_webrtc.ice_transport_policy {
+            actr_config::IceTransportPolicy::Relay => {
+                crate::wire::webrtc::IceTransportPolicy::Relay
+            }
+            actr_config::IceTransportPolicy::All => crate::wire::webrtc::IceTransportPolicy::All,
+        };
+
+        WebRtcConfig {
+            ice_servers,
+            ice_transport_policy,
+        }
     }
 }

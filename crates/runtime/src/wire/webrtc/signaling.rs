@@ -13,6 +13,7 @@ use actr_protocol::{
     signaling_envelope, signaling_to_actr,
 };
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,6 +34,9 @@ use url::Url;
 
 /// Default timeout in seconds for waiting for signaling response
 const RESPONSE_TIMEOUT_SECS: u64 = 5;
+// WebSocket-level keepalive to detect silent half-open connections
+const PING_INTERVAL_SECS: u64 = 5;
+const PONG_TIMEOUT_SECS: u64 = 10;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // configurationType
@@ -176,6 +180,9 @@ pub trait SignalingClient: Send + Sync {
     fn get_stats(&self) -> SignalingStats;
     /// Subscribe to connection state changes (Connected/Disconnected).
     fn subscribe_state(&self) -> watch::Receiver<ConnectionState>;
+
+    /// Set identity used for reconnect URL parameters (actor_id + credential).
+    async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential);
 }
 
 /// High-level signaling connection state.
@@ -188,12 +195,16 @@ pub enum ConnectionState {
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
+    /// Reconnect identity (actor_id + credential) to attach as URL params on reconnects
+    reconnect_identity: tokio::sync::Mutex<Option<(ActrId, AIdCredential)>>,
     /// WebSocket write end （using Mutex Implementation interior mutability ）
-    ws_sink: tokio::sync::Mutex<
-        Option<
-            futures_util::stream::SplitSink<
-                WebSocketStream<MaybeTlsStream<TcpStream>>,
-                tokio_tungstenite::tungstenite::Message,
+    ws_sink: Arc<
+        tokio::sync::Mutex<
+            Option<
+                futures_util::stream::SplitSink<
+                    WebSocketStream<MaybeTlsStream<TcpStream>>,
+                    tokio_tungstenite::tungstenite::Message,
+                >,
             >,
         >,
     >,
@@ -214,8 +225,12 @@ pub struct WebSocketSignalingClient {
     inbound_tx: tokio::sync::Mutex<mpsc::UnboundedSender<SignalingEnvelope>>,
     /// Background receive task handle to allow graceful shutdown
     receiver_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Background ping task to detect half-open connections
+    ping_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Connection state broadcast channel
     state_tx: watch::Sender<ConnectionState>,
+    /// Last time we saw inbound traffic (pong/any message), unix epoch seconds
+    last_pong: Arc<AtomicU64>,
 }
 
 impl WebSocketSignalingClient {
@@ -225,7 +240,7 @@ impl WebSocketSignalingClient {
         let (state_tx, _state_rx) = watch::channel(ConnectionState::Disconnected);
         Self {
             config,
-            ws_sink: tokio::sync::Mutex::new(None),
+            ws_sink: Arc::new(tokio::sync::Mutex::new(None)),
             ws_stream: tokio::sync::Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(AtomicSignalingStats::default()),
@@ -234,7 +249,10 @@ impl WebSocketSignalingClient {
             inbound_rx: Arc::new(tokio::sync::Mutex::new(inbound_rx)),
             inbound_tx: tokio::sync::Mutex::new(inbound_tx),
             receiver_task: tokio::sync::Mutex::new(None),
+            ping_task: tokio::sync::Mutex::new(None),
             state_tx,
+            last_pong: Arc::new(AtomicU64::new(0)),
+            reconnect_identity: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -283,13 +301,30 @@ impl WebSocketSignalingClient {
         *self.inbound_rx.lock().await = rx;
     }
 
+    /// Build signaling URL, attaching actor identity/token if available for reconnects.
+    async fn build_url_with_identity(&self) -> Url {
+        let mut url = self.config.server_url.clone();
+        if let Some((actor_id, credential)) = self.reconnect_identity.lock().await.clone() {
+            let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
+            let token_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&credential.encrypted_token);
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("actor_id", &actor_str);
+                pairs.append_pair("token", &token_b64);
+                pairs.append_pair("token_key_id", &credential.token_key_id.to_string());
+            }
+        }
+        url
+    }
+
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
     async fn establish_connection_once(&self) -> NetworkResult<()> {
-        let url = self.config.server_url.clone();
+        let url = self.build_url_with_identity().await;
         let timeout_secs = self.config.connection_timeout;
-
+        tracing::debug!("Establishing connection to URL: {}", url.as_str());
         // Connect with an optional timeout. A timeout of 0 means "no timeout".
         let connect_result = if timeout_secs == 0 {
             connect_async(url.as_str()).await
@@ -313,6 +348,7 @@ impl WebSocketSignalingClient {
         *self.ws_sink.lock().await = Some(sink);
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
+        self.last_pong.store(current_unix_secs(), Ordering::Release);
         // Notify listeners that we are now connected
         let _ = self.state_tx.send(ConnectionState::Connected);
 
@@ -419,11 +455,14 @@ impl WebSocketSignalingClient {
         let stats = self.stats.clone();
         let connected = self.connected.clone();
         let state_tx = self.state_tx.clone();
+        let last_pong = self.last_pong.clone();
         tracing::debug!("Start receiver");
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Binary(data)) => {
+                        // Any inbound traffic counts as liveness
+                        last_pong.store(current_unix_secs(), Ordering::Release);
                         match SignalingEnvelope::decode(&data[..]) {
                             Ok(envelope) => {
                                 stats.messages_received.fetch_add(1, Ordering::Relaxed);
@@ -457,6 +496,14 @@ impl WebSocketSignalingClient {
                             }
                         }
                     }
+                    Ok(tokio_tungstenite::tungstenite::Message::Pong(_)) => {
+                        tracing::debug!("Received pong");
+                        last_pong.store(current_unix_secs(), Ordering::Release);
+                    }
+                    Ok(tokio_tungstenite::tungstenite::Message::Ping(_)) => {
+                        tracing::debug!("Received ping");
+                        last_pong.store(current_unix_secs(), Ordering::Release);
+                    }
                     Ok(_) => {
                         tracing::warn!("Received non-binary frame, ignoring");
                     }
@@ -476,6 +523,70 @@ impl WebSocketSignalingClient {
 
         *self.receiver_task.lock().await = Some(handle);
     }
+
+    /// Spawn background ping task to detect half-open connections where writes do not fail but peer is gone.
+    async fn start_ping_task(&self) {
+        let mut existing = self.ping_task.lock().await;
+        if let Some(handle) = existing.as_ref() {
+            if handle.is_finished() {
+                existing.take();
+            } else {
+                return;
+            }
+        }
+
+        let sink = self.ws_sink.clone();
+        let connected = self.connected.clone();
+        let state_tx = self.state_tx.clone();
+        let last_pong = self.last_pong.clone();
+
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(PING_INTERVAL_SECS)).await;
+
+                if !connected.load(Ordering::Acquire) {
+                    break;
+                }
+
+                // Send ping; mark disconnect on failure.
+                let mut sink_guard = sink.lock().await;
+                if let Some(sink) = sink_guard.as_mut() {
+                    if let Err(e) = sink
+                        .send(tokio_tungstenite::tungstenite::Message::Ping(
+                            Vec::new().into(),
+                        ))
+                        .await
+                    {
+                        tracing::warn!("Signaling ping send failed: {e}");
+                        connected.store(false, Ordering::Release);
+                        let _ = state_tx.send(ConnectionState::Disconnected);
+                        break;
+                    }
+                } else {
+                    tracing::warn!("Signaling not connected");
+                    connected.store(false, Ordering::Release);
+                    let _ = state_tx.send(ConnectionState::Disconnected);
+                    break;
+                }
+                drop(sink_guard);
+
+                // Check for stale pong
+                let now = current_unix_secs();
+                let last = last_pong.load(Ordering::Acquire);
+                if now.saturating_sub(last) > PONG_TIMEOUT_SECS {
+                    tracing::warn!(
+                        "Signaling pong timeout (last seen {}s ago), marking disconnected",
+                        now.saturating_sub(last)
+                    );
+                    connected.store(false, Ordering::Release);
+                    let _ = state_tx.send(ConnectionState::Disconnected);
+                    break;
+                }
+            }
+        });
+
+        *existing = Some(handle);
+    }
 }
 
 #[async_trait]
@@ -483,6 +594,7 @@ impl SignalingClient for WebSocketSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
         self.connect_with_retries().await?;
         self.start_receiver().await;
+        self.start_ping_task().await;
         Ok(())
     }
 
@@ -501,6 +613,10 @@ impl SignalingClient for WebSocketSignalingClient {
 
         // Stop receiver task if running
         if let Some(handle) = self.receiver_task.lock().await.take() {
+            handle.abort();
+        }
+        // Stop ping task if running
+        if let Some(handle) = self.ping_task.lock().await.take() {
             handle.abort();
         }
 
@@ -654,7 +770,7 @@ impl SignalingClient for WebSocketSignalingClient {
             sink.send(msg).await?;
 
             self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
-
+            tracing::debug!("Stats: {:?}", self.stats.snapshot());
             Ok(())
         } else {
             Err(NetworkError::ConnectionError("Not connected".to_string()))
@@ -684,6 +800,11 @@ impl SignalingClient for WebSocketSignalingClient {
 
     fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
         self.state_tx.subscribe()
+    }
+
+    async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential) {
+        let mut guard = self.reconnect_identity.lock().await;
+        *guard = Some((actor_id, credential));
     }
 }
 
@@ -809,6 +930,14 @@ impl AtomicSignalingStats {
     }
 }
 
+fn current_unix_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,6 +948,7 @@ mod tests {
     struct FakeSignalingClient {
         state_tx: watch::Sender<ConnectionState>,
         connect_calls: Arc<AtomicUsize>,
+        reconnect_identity: tokio::sync::Mutex<Option<(ActrId, AIdCredential)>>,
     }
 
     #[async_trait]
@@ -888,6 +1018,11 @@ mod tests {
         fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
             self.state_tx.subscribe()
         }
+
+        async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential) {
+            let mut guard = self.reconnect_identity.lock().await;
+            *guard = Some((actor_id, credential));
+        }
     }
 
     fn make_fake_client() -> (Arc<FakeSignalingClient>, watch::Sender<ConnectionState>) {
@@ -895,6 +1030,7 @@ mod tests {
         let client = Arc::new(FakeSignalingClient {
             state_tx: state_tx.clone(),
             connect_calls: Arc::new(AtomicUsize::new(0)),
+            reconnect_identity: tokio::sync::Mutex::new(None),
         });
         (client, state_tx)
     }
