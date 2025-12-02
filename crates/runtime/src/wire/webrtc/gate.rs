@@ -13,9 +13,7 @@ use crate::inbound::DataStreamRegistry;
 use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    self, ActorResult, ActrId, ActrIdExt, DataStream, PayloadType, ProtocolError, RpcEnvelope,
-};
+use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
 
 /// WebRTC Gate - OutboundGate implementation
 ///

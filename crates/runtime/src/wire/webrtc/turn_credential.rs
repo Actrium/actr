@@ -4,70 +4,7 @@
 //! 该模块与 actrix 项目中的 TURN 认证器兼容。
 
 use actr_protocol::ActrId;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::{Deserialize, Serialize};
-
-/// TURN 认证 Claims
-///
-/// 此结构体包含加密的 token，会被 JSON 序列化后作为 username 传递给 TURN 服务器。
-/// 与 actrix/crates/turn/src/claims.rs 中的 Claims 结构兼容。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnClaims {
-    /// 租户 ID (Realm ID)
-    pub tid: String,
-
-    /// 密钥 ID
-    pub key_id: String,
-
-    /// 加密的 token (base64 编码)
-    #[serde(
-        serialize_with = "serialize_base64",
-        deserialize_with = "deserialize_base64"
-    )]
-    pub token: Vec<u8>,
-}
-
-/// Token 明文结构
-///
-/// 此结构需要使用公钥加密后存入 TurnClaims.token。
-/// 与 actrix/crates/turn/src/token.rs 中的 Token 结构兼容。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnToken {
-    /// 过期时间 (Unix timestamp)
-    pub exp: Option<u64>,
-
-    /// 租户 ID
-    pub tenant: String,
-
-    /// ActorId (可选)
-    pub id: Option<ActrId>,
-
-    /// Actor 类型
-    pub act_type: String,
-
-    /// 预共享密钥 (hex 编码)
-    pub psk: String,
-
-    /// 可选设备指纹
-    pub device_fingerprint: Option<String>,
-}
-
-/// 序列化为 base64 字符串
-fn serialize_base64<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&STANDARD.encode(bytes))
-}
-
-/// 从 base64 字符串反序列化
-fn deserialize_base64<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    STANDARD.decode(s).map_err(serde::de::Error::custom)
-}
+pub use actr_protocol::turn::{Claims as TurnClaims, Token as TurnToken};
 
 /// TURN 凭据生成器
 ///
@@ -136,7 +73,7 @@ impl TurnCredentialBuilder {
         // 1. 创建 Token 结构
         let token = TurnToken {
             exp: self.expiry,
-            tenant: self.realm_id.to_string(),
+            tenant_id: self.realm_id,
             id: Some(self.actor_id),
             act_type: self.actor_type,
             psk: self.psk.clone(),
@@ -147,7 +84,7 @@ impl TurnCredentialBuilder {
         let token_bytes = serde_json::to_vec(&token)
             .map_err(|e| TurnCredentialError::Serialization(e.to_string()))?;
 
-        // 3. 注意: 不使用 ECIES 加密，因为：
+        // TODO: 使用 ECIES 加密
         //    - 加密后的数据太大，超过 STUN username 属性的 763 字节限制
         //    - PSK 是随机数据，本身不包含敏感信息
         //    - 网络层通过 TURN over TLS 保护
@@ -155,8 +92,8 @@ impl TurnCredentialBuilder {
 
         // 4. 创建 Claims（使用未加密的 token）
         let claims = TurnClaims {
-            tid: self.realm_id.to_string(),
-            key_id: self.key_id.to_string(),
+            tenant_id: self.realm_id,
+            key_id: self.key_id,
             token: token_bytes,
         };
 
@@ -191,6 +128,7 @@ pub enum TurnCredentialError {
 mod tests {
     use super::*;
     use actr_protocol::{ActrType, Realm};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     #[test]
     fn test_turn_token_serialization() {
@@ -205,7 +143,7 @@ mod tests {
 
         let token = TurnToken {
             exp: Some(1700000000),
-            tenant: "0".to_string(),
+            tenant_id: 0,
             id: Some(actor_id),
             act_type: "acme/echo-service".to_string(),
             psk: "abc123".to_string(),
@@ -214,20 +152,20 @@ mod tests {
 
         let json = serde_json::to_string(&token).unwrap();
         assert!(json.contains("\"psk\":\"abc123\""));
-        assert!(json.contains("\"tenant\":\"0\""));
+        assert!(json.contains("\"tenant_id\":0"));
     }
 
     #[test]
     fn test_turn_claims_serialization() {
         let claims = TurnClaims {
-            tid: "0".to_string(),
-            key_id: "1".to_string(),
+            tenant_id: 0,
+            key_id: 1,
             token: vec![1, 2, 3, 4],
         };
 
         let json = serde_json::to_string(&claims).unwrap();
-        assert!(json.contains("\"tid\":\"0\""));
-        assert!(json.contains("\"key_id\":\"1\""));
+        assert!(json.contains("\"tenant_id\":0"));
+        assert!(json.contains("\"key_id\":1"));
 
         // token 应该是 base64 编码
         let expected_base64 = STANDARD.encode(&[1, 2, 3, 4]);

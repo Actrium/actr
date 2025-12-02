@@ -31,6 +31,7 @@ pub mod actr_ext;
 pub mod error;
 pub mod message;
 pub mod name;
+pub mod turn;
 pub mod uri;
 
 // Re-export key utilities for convenience

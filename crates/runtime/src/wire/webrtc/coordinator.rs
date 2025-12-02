@@ -250,7 +250,6 @@ impl WebRtcCoordinator {
             Some(signaling_envelope::Flow::ActrRelay(relay)) => {
                 let source = relay.source;
                 let target = relay.target;
-                let source_repr = source.to_string_repr();
                 match relay.payload {
                     Some(actr_relay::Payload::SessionDescription(sd)) => match sd.r#type() {
                         SdpType::Offer => {

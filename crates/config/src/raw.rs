@@ -96,6 +96,7 @@ pub struct RawSystemConfig {
 
     #[serde(default)]
     pub webrtc: RawWebRtcConfig,
+    #[serde(default)]
     pub observability: RawObservabilityConfig,
 }
 
