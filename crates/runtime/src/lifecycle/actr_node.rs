@@ -98,6 +98,144 @@ fn protocol_error_to_code(err: &actr_protocol::ProtocolError) -> u32 {
     }
 }
 
+/// Check ACL permission for incoming request
+///
+/// # Arguments
+/// - `caller_id`: The ActrId of the caller (None for local calls)
+/// - `target_id`: The ActrId of the target (self)
+/// - `acl`: ACL rules from configuration
+///
+/// # Returns
+/// - `Ok(true)`: Permission granted
+/// - `Ok(false)`: Permission denied
+/// - `Err`: ACL check failed (treat as deny)
+///
+/// # ACL Evaluation Logic
+/// 1. If no caller_id (local call), always allow
+/// 2. If no ACL configured, allow by default (permissive mode for backward compatibility)
+/// 3. If ACL configured but rules are empty, deny all (secure by default)
+/// 4. Iterate through ACL rules in order (first match wins)
+///    - Check if caller matches any principal in the rule
+///    - If matched, return the rule's permission (ALLOW/DENY)
+/// 5. If no rule matches, deny by default (secure by default)
+fn check_acl_permission(
+    caller_id: Option<&ActrId>,
+    target_id: &ActrId,
+    acl: Option<&actr_protocol::Acl>,
+) -> Result<bool, String> {
+    // 1. Local calls (no caller_id) are always allowed
+    if caller_id.is_none() {
+        tracing::trace!("ACL: Local call, allowing");
+        return Ok(true);
+    }
+
+    let caller = caller_id.unwrap();
+
+    // 2. No ACL configured - allow by default
+    let acl_rules = match acl {
+        Some(acl) => acl,
+        None => {
+            tracing::trace!(
+                "ACL: No ACL configured, allowing {} -> {}",
+                caller.to_string_repr(),
+                target_id.to_string_repr()
+            );
+            return Ok(true);
+        }
+    };
+
+    // 3. If ACL is configured but has no rules, deny all (secure by default)
+    if acl_rules.rules.is_empty() {
+        tracing::warn!(
+            "ACL: ACL configured but no rules defined, denying {} -> {} (default deny)",
+            caller.to_string_repr(),
+            target_id.to_string_repr()
+        );
+        return Ok(false);
+    }
+
+    // 4. Iterate through ACL rules (first match wins)
+    for (rule_idx, rule) in acl_rules.rules.iter().enumerate() {
+        // Check if caller matches any principal in this rule
+        let mut matched = false;
+
+        // If no principals specified, skip this rule (empty allow list = no match)
+        if rule.principals.is_empty() {
+            tracing::trace!(
+                "ACL: Rule {} has empty principals list, skipping (no match)",
+                rule_idx
+            );
+            continue;
+        }
+
+        // Check each principal
+        for principal in &rule.principals {
+            if matches_principal(caller, principal) {
+                matched = true;
+                tracing::trace!(
+                    "ACL: Rule {} matched principal: caller={}, principal_realm={:?}, principal_type={:?}",
+                    rule_idx,
+                    caller.to_string_repr(),
+                    principal.realm.as_ref().map(|r| r.realm_id),
+                    principal.actr_type.as_ref().map(|t| &t.name)
+                );
+                break;
+            }
+        }
+
+        // If matched, return the permission
+        if matched {
+            let permission = rule.permission;
+            let is_allow = permission == actr_protocol::acl_rule::Permission::Allow as i32;
+
+            tracing::debug!(
+                "ACL: Rule {} matched, permission={} for {} -> {}",
+                rule_idx,
+                if is_allow { "ALLOW" } else { "DENY" },
+                caller.to_string_repr(),
+                target_id.to_string_repr()
+            );
+
+            return Ok(is_allow);
+        }
+    }
+
+    // 5. No rule matched - deny by default (secure by default)
+    tracing::warn!(
+        "ACL: No matching rule found, denying {} -> {} (default deny)",
+        caller.to_string_repr(),
+        target_id.to_string_repr()
+    );
+    Ok(false)
+}
+
+/// Check if a caller matches a principal
+///
+/// A principal matches if:
+/// - If principal.realm is specified, it must match caller.realm
+/// - If principal.actr_type is specified, it must match caller.type
+/// - If both are None, principal matches all (should not happen in practice)
+fn matches_principal(caller: &ActrId, principal: &actr_protocol::acl_rule::Principal) -> bool {
+    // Check realm match (if specified)
+    if let Some(ref principal_realm) = principal.realm {
+        if caller.realm.realm_id != principal_realm.realm_id {
+            return false;
+        }
+    }
+
+    // Check type match (if specified)
+    if let Some(ref principal_type) = principal.actr_type {
+        if caller.r#type.manufacturer != principal_type.manufacturer
+            || caller.r#type.name != principal_type.name
+        {
+            return false;
+        }
+    }
+
+    // If we reach here, all specified fields matched
+    true
+}
+
 impl<W: Workload> ActrNode<W> {
     /// Get Inproc Transport Manager
     ///
@@ -267,12 +405,46 @@ impl<W: Workload> ActrNode<W> {
             );
         }
 
-        // 1. Create Context with caller_id from transport layer
+        // 0. Get actor_id early for ACL check
         let actor_id = self.actor_id.as_ref().ok_or_else(|| {
             actr_protocol::ProtocolError::InvalidStateTransition(
                 "Actor ID not set - node must be started before handling messages".to_string(),
             )
         })?;
+
+        // 0.1. ACL Permission Check (before processing message)
+        let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
+            .map_err(|err_msg| {
+                actr_protocol::ProtocolError::TransportError(format!(
+                    "ACL check failed: {}",
+                    err_msg
+                ))
+            })?;
+
+        if !acl_allowed {
+            tracing::warn!(
+                severity = 5,
+                error_category = "acl_denied",
+                request_id = %envelope.request_id,
+                route_key = %envelope.route_key,
+                caller = %caller_id.map(|c| c.to_string_repr()).unwrap_or_else(|| "<none>".to_string()),
+                "🚫 ACL: Permission denied"
+            );
+
+            return Err(actr_protocol::ProtocolError::Actr(
+                actr_protocol::ActrError::PermissionDenied {
+                    message: format!(
+                        "ACL denied: {} is not allowed to call {}",
+                        caller_id
+                            .map(|c| c.to_string_repr())
+                            .unwrap_or_else(|| "<unknown>".to_string()),
+                        actor_id.to_string_repr()
+                    ),
+                },
+            ));
+        }
+
+        // 1. Create Context with caller_id from transport layer
         let credential = self.credential.as_ref().ok_or_else(|| {
             actr_protocol::ProtocolError::InvalidStateTransition(
                 "Credential not set - node must be started before handling messages".to_string(),

@@ -36,6 +36,10 @@ pub enum ActrError {
     /// Feature not yet implemented
     #[error("Feature not yet implemented: {feature}")]
     NotImplemented { feature: String },
+
+    /// ACL 权限拒绝
+    #[error("Permission denied: {message}")]
+    PermissionDenied { message: String },
 }
 
 /// Helpers for `ActrType` string conversions

@@ -68,19 +68,20 @@ impl ParserV1 {
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
 
-        // 8. 解析 ACL
+        // 8. 解析 WebRTC 配置
+        let webrtc = self.parse_webrtc(&raw.system.webrtc);
+
+        // 9. 解析 observability 配置
+        let observability = self.parse_observability(&raw.system, &package);
+
+        // 10. 解析 ACL (从顶级 acl 读取，放在最后以避免 partial move)
         let acl = if let Some(acl_value) = raw.acl {
             Some(self.parse_acl(acl_value)?)
         } else {
             None
         };
 
-        // 9. 解析 WebRTC 配置
-        let webrtc = self.parse_webrtc(&raw.system.webrtc);
-        // 9. 解析 observability 配置
-        let observability = self.parse_observability(&raw.system, &package);
-
-        // 10. 构建最终配置
+        // 11. 构建最终配置
         Ok(Config {
             package,
             exports,
@@ -184,10 +185,144 @@ impl ParserV1 {
         }
     }
 
-    fn parse_acl(&self, _value: toml::Value) -> Result<Acl> {
-        // TODO: Implement proper ACL parsing when actr-protocol supports serde
-        // For now, return an empty ACL
-        Ok(Acl { rules: vec![] })
+    fn parse_acl(&self, value: toml::Value) -> Result<Acl> {
+        use actr_protocol::AclRule;
+        use actr_protocol::acl_rule::{Permission, Principal};
+
+        // Parse [[acl.rules]] array
+        let rules_array = value
+            .get("rules")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ConfigError::InvalidAcl("ACL must have 'rules' array".to_string()))?;
+
+        let mut rules = Vec::new();
+
+        for (idx, rule_value) in rules_array.iter().enumerate() {
+            let rule_table = rule_value.as_table().ok_or_else(|| {
+                ConfigError::InvalidAcl(format!("ACL rule {} must be a table", idx))
+            })?;
+
+            // Parse permission (required)
+            let permission_str = rule_table
+                .get("permission")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ConfigError::InvalidAcl(format!("ACL rule {} missing 'permission' field", idx))
+                })?;
+
+            let permission = match permission_str.to_uppercase().as_str() {
+                "ALLOW" => Permission::Allow as i32,
+                "DENY" => Permission::Deny as i32,
+                _ => {
+                    return Err(ConfigError::InvalidAcl(format!(
+                        "Invalid permission '{}' in ACL rule {}, expected 'ALLOW' or 'DENY'",
+                        permission_str, idx
+                    )));
+                }
+            };
+
+            // Parse principals - support both old 'principals' and new 'types' format
+            let principals = if let Some(types_value) = rule_table.get("types") {
+                // New format: types = ["acme:allowed-client", "acme:admin"]
+                let types_array = types_value.as_array().ok_or_else(|| {
+                    ConfigError::InvalidAcl(format!("ACL rule {} 'types' must be an array", idx))
+                })?;
+
+                let mut principals_list = Vec::new();
+                for (t_idx, type_value) in types_array.iter().enumerate() {
+                    let type_str = type_value.as_str().ok_or_else(|| {
+                        ConfigError::InvalidAcl(format!(
+                            "ACL rule {} type {} must be a string",
+                            idx, t_idx
+                        ))
+                    })?;
+
+                    // Parse "manufacturer:name" format
+                    let actr_type = self.parse_actr_type(type_str)?;
+
+                    principals_list.push(Principal {
+                        realm: None, // No realm specified in types format
+                        actr_type: Some(actr_type),
+                    });
+                }
+                principals_list
+            } else if let Some(principals_value) = rule_table.get("principals") {
+                // Old format: principals = [{ realm = 0, actr_type = ... }]
+                let principals_array = principals_value.as_array().ok_or_else(|| {
+                    ConfigError::InvalidAcl(format!(
+                        "ACL rule {} 'principals' must be an array",
+                        idx
+                    ))
+                })?;
+
+                let mut principals_list = Vec::new();
+                for (p_idx, principal_value) in principals_array.iter().enumerate() {
+                    let principal_table = principal_value.as_table().ok_or_else(|| {
+                        ConfigError::InvalidAcl(format!(
+                            "ACL rule {} principal {} must be a table",
+                            idx, p_idx
+                        ))
+                    })?;
+
+                    // Parse optional realm
+                    let realm = if let Some(realm_value) = principal_table.get("realm") {
+                        let realm_id = realm_value.as_integer().ok_or_else(|| {
+                            ConfigError::InvalidAcl(format!(
+                                "ACL rule {} principal {} realm must be an integer",
+                                idx, p_idx
+                            ))
+                        })? as u32;
+                        Some(actr_protocol::Realm { realm_id })
+                    } else {
+                        None
+                    };
+
+                    // Parse optional actr_type
+                    let actr_type = if let Some(type_value) = principal_table.get("actr_type") {
+                        if let Some(type_str) = type_value.as_str() {
+                            Some(self.parse_actr_type(type_str)?)
+                        } else if let Some(type_table) = type_value.as_table() {
+                            // Support inline table: { manufacturer = "acme", name = "service" }
+                            let manufacturer = type_table
+                                .get("manufacturer")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = type_table
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| {
+                                    ConfigError::InvalidAcl(format!(
+                                        "ACL rule {} principal {} actr_type must have 'name' field",
+                                        idx, p_idx
+                                    ))
+                                })?
+                                .to_string();
+                            Some(ActrType { manufacturer, name })
+                        } else {
+                            return Err(ConfigError::InvalidAcl(format!(
+                                "ACL rule {} principal {} actr_type must be a string or table",
+                                idx, p_idx
+                            )));
+                        }
+                    } else {
+                        None
+                    };
+
+                    principals_list.push(Principal { realm, actr_type });
+                }
+                principals_list
+            } else {
+                Vec::new()
+            };
+
+            rules.push(AclRule {
+                principals,
+                permission,
+            });
+        }
+
+        Ok(Acl { rules })
     }
 
     fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> WebRtcConfig {
