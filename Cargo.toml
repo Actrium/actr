@@ -97,6 +97,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
+pwrzv = "0.6.2"
 
 # === Logging (日志) ===
 tracing = "0.1"

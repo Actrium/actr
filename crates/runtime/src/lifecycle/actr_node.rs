@@ -578,7 +578,102 @@ impl<W: Workload> ActrNode<W> {
                 tracing::info!("✅ WebRTC infrastructure initialized");
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8. Spawn dedicated Unregister task (best-effort, with timeout)
+                // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                {
+                    let shutdown = self.shutdown_token.clone();
+                    let client = self.signaling_client.clone();
+                    let actor_id_for_heartbeat = actor_id.clone();
+                    let credential_for_heartbeat = credential.clone();
+                    let mailbox_for_heartbeat = self.mailbox.clone();
+
+                    // Use interval from registration response, default to 30s
+                    let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
+                    let heartbeat_interval = if heartbeat_interval_secs > 0 {
+                        std::time::Duration::from_secs(heartbeat_interval_secs as u64)
+                    } else {
+                        std::time::Duration::from_secs(30)
+                    };
+
+                    let heartbeat_handle = tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(heartbeat_interval);
+                        // Skip the first tick (fires immediately)
+                        interval.tick().await;
+
+                        loop {
+                            tokio::select! {
+                                _ = shutdown.cancelled() => {
+                                    tracing::info!("💓 Heartbeat task received shutdown signal");
+                                    break;
+                                }
+                                _ = interval.tick() => {
+                                    // Get real power reserve from pwrzv (0.0 to 1.0)
+                                    let power_reserve = pwrzv::get_power_reserve_level_direct()
+                                        .await
+                                        .unwrap_or(1.0); // Default to full capacity on error
+
+                                    // Get mailbox backlog from mailbox stats
+                                    // Calculate backlog ratio: (queued + inflight) / typical_capacity
+                                    // A typical_capacity of 1000 means 100 messages = 10% backlog
+                                    const TYPICAL_CAPACITY: f32 = 1000.0;
+                                    let mailbox_backlog = match mailbox_for_heartbeat.status().await {
+                                        Ok(stats) => {
+                                            let total_messages = (stats.queued_messages + stats.inflight_messages) as f32;
+                                            let backlog_ratio = (total_messages / TYPICAL_CAPACITY).min(1.0);
+                                            backlog_ratio
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("⚠️ Failed to get mailbox stats: {}", e);
+                                            0.0
+                                        }
+                                    };
+
+                                    // Determine availability based on power reserve and mailbox backlog
+                                    let availability = if power_reserve > 0.8 && mailbox_backlog < 0.5 {
+                                        actr_protocol::ServiceAvailabilityState::Full
+                                    } else if power_reserve > 0.5 && mailbox_backlog < 0.8 {
+                                        actr_protocol::ServiceAvailabilityState::Degraded
+                                    } else if power_reserve > 0.2 && mailbox_backlog < 0.95 {
+                                        actr_protocol::ServiceAvailabilityState::Overloaded
+                                    } else {
+                                        actr_protocol::ServiceAvailabilityState::Unavailable
+                                    };
+
+                                    if let Err(e) = client.send_heartbeat(
+                                        actor_id_for_heartbeat.clone(),
+                                        credential_for_heartbeat.clone(),
+                                        availability,
+                                        power_reserve,
+                                        mailbox_backlog,
+                                    ).await {
+                                        tracing::warn!(
+                                            "⚠️ Failed to send heartbeat: {}",
+                                            e
+                                        );
+                                    } else {
+                                        tracing::debug!(
+                                            "💓 Heartbeat sent for Actor {} (power_reserve={:.2}, mailbox_backlog={:.2}, availability={:?})",
+                                            actor_id_for_heartbeat.serial_number,
+                                            power_reserve,
+                                            mailbox_backlog,
+                                            availability
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        tracing::info!("✅ Heartbeat task terminated gracefully");
+                    });
+
+                    task_handles.push(heartbeat_handle);
+                }
+                tracing::info!(
+                    "✅ Heartbeat task started (interval: {}s)",
+                    register_ok.signaling_heartbeat_interval_secs
+                );
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 //
                 // This task:

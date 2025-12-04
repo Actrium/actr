@@ -43,6 +43,7 @@ url = "2.5"
 prost-types = "0.14"
 rand = "0.8"
 dotenvy = "0.15"
+pwrzv.workspace = true
 
 # === 序列化 ===
 serde.workspace = true
