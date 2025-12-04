@@ -29,6 +29,8 @@
 //! ```
 
 use actr_protocol::{ActrId, ActrType};
+use actrix_common::TenantError;
+use actrix_common::tenant::acl::ActorAcl;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -188,6 +190,97 @@ impl PresenceManager {
             .get(target_type)
             .map(|subscribers| subscribers.iter().any(|id| id == subscriber))
             .unwrap_or(false)
+    }
+
+    /// Get subscribers with ACL filtering
+    ///
+    /// Returns only subscribers that are allowed to discover the target actor
+    /// based on ACL rules
+    ///
+    /// # Arguments
+    ///
+    /// - `target_actor_id`: The actor that came online
+    ///
+    /// # Returns
+    ///
+    /// List of subscriber ActorIds that passed ACL checks
+    pub async fn get_subscribers_with_acl(&self, target_actor_id: &ActrId) -> Vec<ActrId> {
+        let target_type = &target_actor_id.r#type;
+        let subscribers = self.get_subscribers(target_type);
+        let total_count = subscribers.len(); // Save count before moving
+
+        let mut allowed_subscribers = Vec::new();
+
+        for subscriber_id in subscribers {
+            // ACL check: can subscriber discover target?
+            match Self::check_discovery_acl(subscriber_id, target_actor_id).await {
+                Ok(true) => {
+                    allowed_subscribers.push(subscriber_id.clone());
+                }
+                Ok(false) => {
+                    debug!(
+                        subscriber = %subscriber_id.serial_number,
+                        target = %target_actor_id.serial_number,
+                        "ACL denied discovery notification"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        subscriber = %subscriber_id.serial_number,
+                        target = %target_actor_id.serial_number,
+                        error = %e,
+                        "ACL check failed, denying notification"
+                    );
+                }
+            }
+        }
+
+        info!(
+            target_type = ?target_type,
+            total_subscribers = total_count,
+            allowed_subscribers = allowed_subscribers.len(),
+            "ACL filtering completed for presence notification"
+        );
+
+        allowed_subscribers
+    }
+
+    /// Check if discovery is allowed between two actors based on ACL rules
+    ///
+    /// # Arguments
+    ///
+    /// - `from_actor`: Subscriber actor ID
+    /// - `to_actor`: Target actor ID
+    ///
+    /// # Returns
+    ///
+    /// Returns true if discovery is allowed based on ACL rules
+    async fn check_discovery_acl(
+        from_actor: &ActrId,
+        to_actor: &ActrId,
+    ) -> Result<bool, TenantError> {
+        // Extract realm and actor types
+        let from_realm = from_actor.realm.realm_id.to_string();
+        let to_realm = to_actor.realm.realm_id.to_string();
+
+        // Only check ACL if actors are in the same realm (tenant)
+        if from_realm != to_realm {
+            debug!(
+                from_realm = %from_realm,
+                to_realm = %to_realm,
+                "Cross-realm discovery denied"
+            );
+            return Ok(false);
+        }
+
+        // 使用完整的 manufacturer:type 格式
+        let from_type = format!(
+            "{}:{}",
+            from_actor.r#type.manufacturer, from_actor.r#type.name
+        );
+        let to_type = format!("{}:{}", to_actor.r#type.manufacturer, to_actor.r#type.name);
+
+        ActorAcl::can_discover(&from_realm, &from_type, &to_type).await
     }
 }
 

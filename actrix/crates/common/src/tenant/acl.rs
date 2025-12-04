@@ -49,8 +49,13 @@ impl ActorAcl {
         }
     }
 
-    /// 保存访问控制规则到数据库 (仅测试)
-    #[cfg(test)]
+    /// Save ACL rule to database
+    ///
+    /// Inserts a new rule or updates existing one based on rowid.
+    ///
+    /// # Returns
+    ///
+    /// Returns the rowid of the saved ACL rule
     pub async fn save(&mut self) -> Result<i64, TenantError> {
         let db = get_database();
         let pool = db.get_pool();
@@ -87,9 +92,16 @@ impl ActorAcl {
         }
     }
 
-    /// 根据 ID 删除访问控制规则 (仅测试)
-    #[cfg(test)]
-    pub(crate) async fn delete_by_id(id: i64) -> Result<u64, TenantError> {
+    /// Delete ACL rule by ID
+    ///
+    /// # Arguments
+    ///
+    /// - `id`: ACL rule rowid
+    ///
+    /// # Returns
+    ///
+    /// Returns number of deleted rows (0 or 1)
+    pub async fn delete_by_id(id: i64) -> Result<u64, TenantError> {
         let db = get_database();
         let pool = db.get_pool();
 
@@ -106,9 +118,16 @@ impl ActorAcl {
         }
     }
 
-    /// 根据 ID 获取访问控制规则 (仅测试)
-    #[cfg(test)]
-    pub(crate) async fn get(id: i64) -> Result<Option<Self>, TenantError> {
+    /// Get ACL rule by ID
+    ///
+    /// # Arguments
+    ///
+    /// - `id`: ACL rule rowid
+    ///
+    /// # Returns
+    ///
+    /// Returns the ACL rule if found, None otherwise
+    pub async fn get(id: i64) -> Result<Option<Self>, TenantError> {
         let db = get_database();
         let pool = db.get_pool();
 
@@ -161,6 +180,49 @@ impl ActorAcl {
 
     pub fn access(&self) -> bool {
         self.access
+    }
+
+    /// Check if discovery is allowed between two actor types
+    ///
+    /// Used for Presence notification filtering and service discovery
+    ///
+    /// # Arguments
+    ///
+    /// - `tenant_id`: Tenant ID
+    /// - `from_type`: Source actor type
+    /// - `to_type`: Target actor type
+    ///
+    /// # Returns
+    ///
+    /// Returns true if discovery is allowed, false otherwise.
+    /// Default policy: deny if no rule exists (secure by default)
+    pub async fn can_discover(
+        tenant_id: &str,
+        from_type: &str,
+        to_type: &str,
+    ) -> Result<bool, TenantError> {
+        match Self::get_by_types(tenant_id, from_type, to_type).await? {
+            Some(acl) => {
+                tracing::debug!(
+                    tenant_id = %tenant_id,
+                    from_type = %from_type,
+                    to_type = %to_type,
+                    access = acl.access(),
+                    "ACL rule found"
+                );
+                Ok(acl.access())
+            }
+            None => {
+                // Default policy: deny if no rule exists
+                tracing::debug!(
+                    tenant_id = %tenant_id,
+                    from_type = %from_type,
+                    to_type = %to_type,
+                    "No ACL rule found, denying discovery (default policy)"
+                );
+                Ok(false)
+            }
+        }
     }
 }
 

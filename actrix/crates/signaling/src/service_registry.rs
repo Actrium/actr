@@ -9,6 +9,8 @@
 //! - **后台写入**：不阻塞主逻辑，异步写入数据库
 
 use actr_protocol::{ActrId, ActrType};
+use actrix_common::TenantError;
+use actrix_common::tenant::acl::ActorAcl;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -669,6 +671,94 @@ impl ServiceRegistry {
         }
 
         results
+    }
+
+    /// Discover services by ActrType with ACL filtering
+    ///
+    /// Returns only services that the requester is allowed to discover
+    /// based on ACL rules
+    ///
+    /// # Arguments
+    ///
+    /// - `requester_id`: Actor requesting discovery
+    /// - `target_type`: Target service type
+    ///
+    /// # Returns
+    ///
+    /// List of ServiceInfo that match the service type and pass ACL check
+    pub async fn discover_with_acl(
+        &self,
+        requester_id: &ActrId,
+        target_type: &ActrType,
+    ) -> Result<Vec<ServiceInfo>, TenantError> {
+        let all_services = self.find_by_actr_type(target_type);
+        let total_count = all_services.len(); // Save count before moving
+
+        let mut allowed_services = Vec::new();
+
+        for service in all_services {
+            // Skip self
+            if &service.actor_id == requester_id {
+                continue;
+            }
+
+            // ACL check: can requester discover this service?
+            let can_discover = Self::check_discovery_acl(requester_id, &service.actor_id).await?;
+
+            if can_discover {
+                allowed_services.push(service);
+            } else {
+                debug!(
+                    requester = %requester_id.serial_number,
+                    service = %service.actor_id.serial_number,
+                    "ACL denied service discovery"
+                );
+            }
+        }
+
+        info!(
+            requester = %requester_id.serial_number,
+            target_type = ?target_type,
+            total_services = total_count,
+            allowed_services = allowed_services.len(),
+            "Service discovery completed with ACL filtering"
+        );
+
+        Ok(allowed_services)
+    }
+
+    /// Check if discovery is allowed between two actors based on ACL rules
+    ///
+    /// # Arguments
+    ///
+    /// - `from_actor`: Actor requesting discovery
+    /// - `to_actor`: Target actor
+    ///
+    /// # Returns
+    ///
+    /// Returns true if discovery is allowed based on ACL rules
+    async fn check_discovery_acl(
+        from_actor: &ActrId,
+        to_actor: &ActrId,
+    ) -> Result<bool, TenantError> {
+        // Extract realm and actor types
+        let from_realm = from_actor.realm.realm_id.to_string();
+        let to_realm = to_actor.realm.realm_id.to_string();
+
+        // Only check ACL if actors are in the same realm (tenant)
+        if from_realm != to_realm {
+            debug!(
+                from_realm = %from_realm,
+                to_realm = %to_realm,
+                "Cross-realm discovery denied"
+            );
+            return Ok(false);
+        }
+
+        let from_type = &from_actor.r#type.name;
+        let to_type = &to_actor.r#type.name;
+
+        ActorAcl::can_discover(&from_realm, from_type, to_type).await
     }
 }
 

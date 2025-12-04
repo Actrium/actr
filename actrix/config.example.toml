@@ -240,3 +240,22 @@ realm = "actrix.example.com"
 # advertised_port = 3478
 # relay_port_range = "49152-65535"
 # realm = "actrix.example.com"
+
+# ACL (Access Control List) Configuration
+[acl]
+# Enable ACL enforcement for Presence, Discovery, and Relay
+# When enabled, ACL checks are performed for:
+# - Presence notifications (ActrUpEvent)
+# - Service discovery (DiscoveryRequest)
+# - WebRTC relay (ActrRelay)
+enabled = true
+
+# Default policy when no ACL rule exists
+# - "deny": Deny discovery/relay if no ACL rule found (recommended, secure by default)
+# - "allow": Allow discovery/relay if no ACL rule found (insecure, use only for testing)
+default_policy = "deny"
+
+# Note: ACL rules are stored in SQLite database (actoracl table)
+# Example rules (inserted via SQL or application API):
+# INSERT INTO actoracl (tenant_id, from_type, to_type, access) VALUES ('tenant1', 'user', 'service', 1);
+# INSERT INTO actoracl (tenant_id, from_type, to_type, access) VALUES ('tenant1', 'anonymous', 'admin', 0);
