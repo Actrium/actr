@@ -7,24 +7,9 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
 
 // 导入生成的 protobuf 代码
-pub mod proto {
-    // 先包含 supervisor 的定义（提供 NonceCredential）
-    pub mod supervisor {
-        pub mod v1 {
-            tonic::include_proto!("supervisor.v1");
-        }
-    }
-
-    // 再包含 KS 的定义
-    pub mod ks {
-        pub mod v1 {
-            tonic::include_proto!("ks.v1");
-        }
-    }
-}
-
-pub use proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
-pub use proto::ks::v1::*;
+use actrix_proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
+use actrix_proto::ks::v1::*;
+use actrix_proto::supervisor::v1::NonceCredential;
 
 /// KS gRPC 服务状态
 #[derive(Clone)]
@@ -51,7 +36,7 @@ impl KsGrpcService {
     /// 验证请求的 nonce 凭证
     async fn verify_credential(
         &self,
-        credential: &proto::supervisor::v1::NonceCredential,
+        credential: &NonceCredential,
         request_payload: &str,
     ) -> Result<(), KsError> {
         // 将 protobuf NonceCredential 转换为 nonce_auth::NonceCredential

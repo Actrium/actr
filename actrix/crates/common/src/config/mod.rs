@@ -304,7 +304,7 @@ impl ActrixConfig {
     /// 检查是否启用了 Supervisor 客户端
     pub fn is_supervisor_enabled(&self) -> bool {
         self.supervisor.as_ref().is_some_and(|config| {
-            !config.node_id.trim().is_empty() && !config.server_addr.trim().is_empty()
+            !config.client.node_id.trim().is_empty() && !config.client.endpoint.trim().is_empty()
         })
     }
 
@@ -599,6 +599,13 @@ impl ActrixConfig {
             if self.observability.log.output == "file" && !self.observability.log.rotate {
                 errors.push("Warning: Production environment should enable log rotation (observability.log.rotate = true)".to_string());
             }
+        }
+
+        // Supervisor 配置校验
+        if let Some(ref supervisor) = self.supervisor
+            && let Err(e) = supervisor.validate()
+        {
+            errors.push(format!("Supervisor configuration error: {e}"));
         }
 
         if errors.is_empty() {

@@ -2,8 +2,8 @@ syntax = "proto2";
 
 package ks.v1;
 
-// 导入 supervisor 的 NonceCredential 定义
-import "supervisor.proto";
+// Import NonceCredential from supervisor common definitions
+import "common.proto";
 
 // Key Server 服务定义
 // 负责生成和管理椭圆曲线密钥对

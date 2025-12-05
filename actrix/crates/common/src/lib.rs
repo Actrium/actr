@@ -19,7 +19,7 @@ pub use error::{
     BaseError, ConfigError, DatabaseError, NetworkError, Result, SerializationError, StorageError,
     ValidationError,
 };
-pub use monitoring::ServiceStatus;
+pub use monitoring::{ServiceCollector, ServiceInfo, ServiceState, ServiceType};
 pub use storage::SqliteNonceStorage;
 pub use tenant::{ActorAcl, Tenant, TenantError};
 pub use types::{ActrId, PeerId, TenantId};
@@ -33,6 +33,6 @@ pub mod token {
 // Create a status module for backward compatibility
 pub mod status {
     pub mod services {
-        pub use crate::monitoring::ServiceStatus;
+        pub use crate::monitoring::ServiceState;
     }
 }

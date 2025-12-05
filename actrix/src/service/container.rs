@@ -3,11 +3,9 @@
 //\! 管理各种服务的容器和生命周期
 //! 服务容器模块 - 封装不同类型的服务
 
-use super::{
-    AisService, KsHttpService, SignalingService, StunService, SupervisorService, TurnService,
-};
+use super::{AisService, KsHttpService, SignalingService, StunService, TurnService};
 use super::{HttpRouterService, IceService};
-use crate::service::info::ServiceInfo;
+use actrix_common::ServiceInfo;
 use axum::Router;
 use url::Url;
 
@@ -15,7 +13,6 @@ use url::Url;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ServiceContainer {
-    Supervit(SupervisorService),
     Signaling(SignalingService),
     Ais(AisService),
     Ks(KsHttpService),
@@ -24,11 +21,6 @@ pub enum ServiceContainer {
 }
 
 impl ServiceContainer {
-    /// 创建Supervit服务容器 (supervisor client)
-    pub fn supervisor(service: SupervisorService) -> Self {
-        Self::Supervit(service)
-    }
-
     /// 创建Signaling服务容器
     pub fn signaling(service: SignalingService) -> Self {
         Self::Signaling(service)
@@ -57,7 +49,6 @@ impl ServiceContainer {
     #[allow(dead_code)]
     pub fn service_type(&self) -> &'static str {
         match self {
-            ServiceContainer::Supervit(_) => "Supervit",
             ServiceContainer::Signaling(_) => "Signaling",
             ServiceContainer::Ais(_) => "AIS",
             ServiceContainer::Ks(_) => "KS",
@@ -68,7 +59,6 @@ impl ServiceContainer {
 
     pub fn info(&self) -> &ServiceInfo {
         match self {
-            ServiceContainer::Supervit(service) => service.info(),
             ServiceContainer::Signaling(service) => service.info(),
             ServiceContainer::Ais(service) => service.info(),
             ServiceContainer::Ks(service) => service.info(),
@@ -80,10 +70,7 @@ impl ServiceContainer {
     pub fn is_http_router(&self) -> bool {
         matches!(
             self,
-            ServiceContainer::Supervit(_)
-                | ServiceContainer::Signaling(_)
-                | ServiceContainer::Ais(_)
-                | ServiceContainer::Ks(_)
+            ServiceContainer::Signaling(_) | ServiceContainer::Ais(_) | ServiceContainer::Ks(_)
         )
     }
 
@@ -94,7 +81,6 @@ impl ServiceContainer {
     /// 获取路由前缀（仅适用于 HTTP 路由服务）
     pub fn route_prefix(&self) -> Option<&str> {
         match self {
-            ServiceContainer::Supervit(service) => Some(service.route_prefix()),
             ServiceContainer::Signaling(service) => Some(service.route_prefix()),
             ServiceContainer::Ais(service) => Some(service.route_prefix()),
             ServiceContainer::Ks(service) => Some(service.route_prefix()),
@@ -105,7 +91,6 @@ impl ServiceContainer {
     /// 构建路由器（仅适用于 HTTP 路由服务）
     pub async fn build_router(&mut self) -> Option<Result<Router, anyhow::Error>> {
         match self {
-            ServiceContainer::Supervit(service) => Some(service.build_router().await),
             ServiceContainer::Signaling(service) => Some(service.build_router().await),
             ServiceContainer::Ais(service) => Some(service.build_router().await),
             ServiceContainer::Ks(service) => Some(service.build_router().await),
@@ -116,7 +101,6 @@ impl ServiceContainer {
     /// 服务启动回调（仅适用于 HTTP 路由服务）
     pub async fn on_start(&mut self, base_url: Url) -> Option<Result<(), anyhow::Error>> {
         match self {
-            ServiceContainer::Supervit(service) => Some(service.on_start(base_url).await),
             ServiceContainer::Signaling(service) => Some(service.on_start(base_url).await),
             ServiceContainer::Ais(service) => Some(service.on_start(base_url).await),
             ServiceContainer::Ks(service) => Some(service.on_start(base_url).await),

@@ -24,7 +24,7 @@ const BASE_URL = 'https://localhost:8443';
 
 export default function () {
   // 1. Health Check
-  let healthRes = http.get(`${BASE_URL}/supervisor/health`, {
+  let healthRes = http.get(`${BASE_URL}/ks/health`, {
     tags: { name: 'HealthCheck' },
   });
 
@@ -36,7 +36,7 @@ export default function () {
   sleep(0.1);
 
   // 2. Metrics Endpoint
-  let metricsRes = http.get(`${BASE_URL}/supervisor/metrics`, {
+  let metricsRes = http.get(`${BASE_URL}/metrics`, {
     tags: { name: 'Metrics' },
   });
 

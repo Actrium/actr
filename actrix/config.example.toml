@@ -84,9 +84,9 @@ service_name = "actrix"
 endpoint = "http://127.0.0.1:4317"
 
 # Process management (optional)
-# pid_file = "/var/run/actrix.pid"
-# user = "actrix"    # Drop privileges to this user after binding ports
-# group = "actrix"   # Drop privileges to this group
+# pid = "/var/run/actrix.pid"  # (optional)
+# user = "actrix"  # (optional) Drop privileges to this user after binding ports
+# group = "actrix"  # (optional) Drop privileges to this group
 
 # ============================================================================
 # Network Binding Configuration
@@ -140,49 +140,134 @@ realm = "actrix.example.com"
 # ============================================================================
 # All HTTP services share the instance-level HTTP/HTTPS port (bind.http/bind.https)
 #
-# # Key Server (KS) Configuration
-# # Service enablement is controlled by the bitmask (enable field)
-# # Set ENABLE_KS bit (16) in the enable field to enable this service
-# [services.ks]
-#
-# [services.ks.storage]
-# backend = "sqlite"
-# key_ttl_seconds = 3600
-#
-# [services.ks.storage.sqlite]
-# path = "ks.db"
-#
-# # AIS (Actor Identity Service) Configuration
-# # Service enablement is controlled by the bitmask (enable field)
-# # Set ENABLE_AIS bit (8) in the enable field to enable this service
-# [services.ais]
-#
-# [services.ais.server]
-#
-# # AIS automatically uses local KS if enabled, or configure explicitly:
+# Key Server (KS) Configuration (optional)
+# Service enablement is controlled by the bitmask (enable field)
+# Set ENABLE_KS bit (16) in the enable field to enable this service
+[services.ks]
+
+[services.ks.storage]
+backend = "sqlite"
+key_ttl_seconds = 3600
+
+[services.ks.storage.sqlite]
+path = "ks.db"
+
+# AIS (Actor Identity Service) Configuration (optional)
+# Service enablement is controlled by the bitmask (enable field)
+# Set ENABLE_AIS bit (8) in the enable field to enable this service
+[services.ais]
+
+[services.ais.server]
+# signaling_heartbeat_interval_secs = 30  # (optional, default: 30)
+# token_ttl_secs = 3600  # (optional, default: 3600)
+
+# AIS automatically uses local KS if enabled, or configure explicitly (optional):
 # [services.ais.dependencies.ks]
 # endpoint = "http://remote-ks:50052"  # gRPC endpoint
+
+# Signaling Service Configuration (optional)
+# Service enablement is controlled by the bitmask (enable field)
+# Set ENABLE_SIGNALING bit (1) in the enable field to enable this service
+[services.signaling]
+
+[services.signaling.server]
+ws_path = "/signaling"
+
+# Rate limiting configuration (optional, all have defaults)
+# [services.signaling.server.rate_limit.connection]
+# enabled = true  # (optional, default: true)
+# per_minute = 5  # (optional, default: 5)
+# burst_size = 10  # (optional, default: 10)
+# max_concurrent_per_ip = 100  # (optional, default: 100)
 #
-# # Signaling Service Configuration
-# # Service enablement is controlled by the bitmask (enable field)
-# # Set ENABLE_SIGNALING bit (1) in the enable field to enable this service
-# [services.signaling]
+# [services.signaling.server.rate_limit.message]
+# enabled = true  # (optional, default: true)
+# per_second = 10  # (optional, default: 10)
+# burst_size = 50  # (optional, default: 50)
+
+# Signaling dependencies (optional, auto-discovered if local services enabled)
+# [services.signaling.dependencies.ks]
+# endpoint = "http://remote-ks:50052"  # (optional)
 #
-# [services.signaling.server]
-# ws_path = "/signaling"
+# [services.signaling.dependencies.ais]
+# endpoint = "http://remote-ais:8080"  # (optional)
 
 # ============================================================================
 # Supervisor Platform Integration (optional)
 # ============================================================================
-# [supervisor]
-# # Management platform registration endpoint
-# addr = "https://supervisor.example.com/api/resources/register"
+# Enable Supervisor platform integration by configuring the [supervisor] section.
+# This enables both:
+#   - Supervisord gRPC service (listens on ip:port, implements SupervisedService)
+#   - Supervisor client (connects to endpoint, registers node and reports status)
 #
-# # Unique identifier for this service instance
-# associated_id = "actrix-prod-01"
-#
-# # Shared secret for management platform communication (hex-encoded)
-# secret = "deadbeef1234567890abcdef"
+[supervisor]
+# Connection timeout in seconds (optional, default: 30)
+connect_timeout_secs = 30
+
+# Status report interval in seconds (optional, default: 60)
+# How often to send status reports to Supervisor
+status_report_interval_secs = 60
+
+# Health check interval in seconds (optional, default: 30)
+# How often to perform health checks with Supervisor
+health_check_interval_secs = 30
+
+# Enable TLS for connections to Supervisor (optional, default: false)
+enable_tls = false
+
+# TLS domain for certificate verification (required when enable_tls is true)
+# Must match the certificate's Common Name (CN) or Subject Alternative Name (SAN)
+# tls_domain = "supervisor.example.com"  # (required if enable_tls = true)
+
+# Client certificate path for mTLS (optional)
+# If provided, both client_cert and client_key must be set
+# client_cert = "/path/to/client-cert.pem"  # (optional)
+
+# Client private key path for mTLS (optional)
+# Must be provided together with client_cert
+# client_key = "/path/to/client-key.pem"  # (optional)
+
+# CA certificate path for server certificate verification (optional)
+# If not provided, system default CAs are used
+# ca_cert = "/path/to/ca-cert.pem"  # (optional)
+
+# Maximum allowed clock skew in seconds (optional, default: 300)
+# Used for nonce-auth timestamp validation
+max_clock_skew_secs = 300
+
+[supervisor.supervisord]
+# Optional human readable node name
+node_name = "actrix-edge-01"
+
+# Supervisord gRPC bind IP address (optional, default: "0.0.0.0")
+# Network interface IP address to bind the supervisord gRPC service
+ip = "0.0.0.0"
+
+# Supervisord gRPC bind port (optional, default: 50055)
+# Port number for the supervisord gRPC service to listen on
+port = 50055
+
+# Supervisord gRPC advertised IP address (optional, default: "127.0.0.1")
+# Public IP address that Supervisor will use to connect back to this node
+# In NAT environments, this is typically the router's public IP
+advertised_ip = "127.0.0.1"
+
+[supervisor.client]
+# Copy these values from Supervisor management platform after creating a node
+# Node unique identifier (required)
+# Must be unique within the Supervisor platform
+node_id = "actrix-node-01"
+
+# Optional display name (defaults to node_id if omitted)
+# name = "actrix-edge-01"  # (optional)
+
+# Shared secret for nonce-auth authentication (required)
+# Hex-encoded, must be at least 64 hex characters (32 bytes)
+shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# Supervisor gRPC server endpoint (required)
+# Format: http://hostname:port or https://hostname:port
+endpoint = "http://supervisor.example.com:50051"
 
 # ============================================================================
 # Production Configuration Example

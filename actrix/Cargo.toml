@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "deploy"]
+members = ["crates/*"]
 # supervit 已重构为 gRPC 模式，可以启用
 resolver = "2"
 
@@ -26,6 +26,9 @@ actr-framework = { version = "0.1.3" }
 actr-protocol = { version = "0.1.3" }
 prost = "0.14.1"
 prost-types = "0.14.1"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
 tracing = "0.1.43"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -133,7 +136,7 @@ signaling = { path = "./crates/signaling" }
 stun = { path = "./crates/stun" }
 turn = { path = "./crates/turn" }
 ais = { path = "./crates/ais" }
-# supervit = { path = "./crates/supervit" }  # TODO: 需要重构以使用 actr-protocol
+supervit = { path = "./crates/supervit" }
 ks = { path = "./crates/ks" }
 rand = "0.9.1"
 futures = "0.3.31"
@@ -154,7 +157,7 @@ ecies = { workspace = true }
 reqwest = { workspace = true }
 typetag = "0.2.20"
 pwrzv = { workspace = true }
-tonic = { version = "0.14", features = ["tls-ring"] }
+tonic = { workspace = true }
 prometheus = "0.13"
 lazy_static = "1.4"
 

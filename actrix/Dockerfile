@@ -1,7 +1,7 @@
 # Actrix WebRTC 辅助服务器 Docker 镜像
 
 # 构建阶段
-FROM rust:1.75-bookworm as builder
+FROM rust:1.88-bookworm as builder
 
 WORKDIR /build
 

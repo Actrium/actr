@@ -1,0 +1,104 @@
+syntax = "proto2";
+
+package supervisor.v1;
+
+// ============================================================================
+// Authentication credential (nonce-auth compatible)
+// ============================================================================
+
+// NonceCredential is used for authentication in all RPC requests
+// Compatible with nonce-auth library's NonceCredential structure
+message NonceCredential {
+  // Unix timestamp (second precision) for time window validation
+  required uint64 timestamp = 1;
+  // UUID v4 format random nonce to ensure request uniqueness
+  required string nonce = 2;
+  // Base64 encoded HMAC-SHA256 signature: HMAC-SHA256(secret, timestamp + nonce + payload)
+  required string signature = 3;
+}
+
+// ============================================================================
+// Resource type enumeration
+// ============================================================================
+
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  STUN = 1;
+  TURN = 2;
+  SIGNALING = 3;
+  AIS = 4;
+  KS = 5;
+}
+
+// ============================================================================
+// Configuration type enumeration
+// ============================================================================
+
+enum ConfigType {
+  CONFIG_TYPE_UNSPECIFIED = 0;
+  TURN_REALM = 1;
+  STUN_BIND_ADDRESS = 2;
+  LOG_LEVEL = 3;
+  SERVICE_ENABLED = 4;
+  CUSTOM = 99;
+}
+
+// ============================================================================
+// System metrics (shared)
+// ============================================================================
+
+message SystemMetrics {
+  // CPU usage
+  required double cpu_usage_percent = 1;
+
+  // Memory usage
+  required uint64 memory_used_bytes = 2;
+  required uint64 memory_total_bytes = 3;
+  required double memory_usage_percent = 4;
+
+  // Network traffic
+  required uint64 network_rx_bytes = 5;
+  required uint64 network_tx_bytes = 6;
+
+  // Disk usage
+  required uint64 disk_used_bytes = 7;
+  required uint64 disk_total_bytes = 8;
+
+  // System load averages
+  required double load_average_1m = 9;
+  optional double load_average_5m = 10;
+  optional double load_average_15m = 11;
+}
+
+// ============================================================================
+// Service status (shared)
+// ============================================================================
+
+message ServiceStatus {
+  required string name = 1;                 // Service identifier
+  required ResourceType type = 2;           // Service type (routing basis)
+  required bool is_healthy = 3;             // Health status (scheduling core)
+  required uint32 active_connections = 4;   // Connection count (load assessment)
+  required uint64 total_requests = 5;       // Total requests (traffic monitoring)
+  required uint64 failed_requests = 6;      // Failed requests (quality monitoring)
+  required double average_latency_ms = 7;   // Latency (performance monitoring)
+  optional string url = 8;                  // Service URL (external access)
+  optional uint32 port = 9;                 // Service port (internal services may not need)
+  optional string domain = 10;              // Service domain (not needed for internal IP access)
+}
+
+// ============================================================================
+// Tenant information (shared)
+// ============================================================================
+
+message TenantInfo {
+  required string tenant_id = 1;            // Tenant identifier
+  required string name = 2;                 // Tenant name
+  required bool enabled = 3;                // Enabled status
+  required int64 created_at = 4;            // Creation timestamp
+  optional int64 updated_at = 5;            // Update timestamp (empty if never updated)
+  required bytes public_key = 6;            // Public key for authentication
+  required string key_id = 7;               // Key ID for key rotation
+  repeated ResourceType use_servers = 8;    // Allowed server types
+  required uint64 version = 9;              // Realm version (assigned by Boss for sync tracking)
+}

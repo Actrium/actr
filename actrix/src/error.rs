@@ -33,10 +33,6 @@ pub enum Error {
     #[error("TURN service error: {0}")]
     Turn(#[from] turn::TurnError),
 
-    // TODO: 监管服务错误 - 暂时禁用，等待重构
-    // #[error("Supervisor service error: {0}")]
-    // Supervisor(Box<supervit::SupervitError>),
-
     // ========== 系统级错误 ==========
     /// I/O 操作错误
     #[error("I/O error: {0}")]
@@ -74,13 +70,6 @@ impl From<actrix_common::error::BaseError> for Error {
         Error::Base(Box::new(err))
     }
 }
-
-// TODO: 暂时禁用 supervit 错误转换，等待重构
-// impl From<supervit::SupervitError> for Error {
-//     fn from(err: supervit::SupervitError) -> Self {
-//         Error::Supervisor(Box::new(err))
-//     }
-// }
 
 /// 统一的 Result 类型
 ///

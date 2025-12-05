@@ -162,7 +162,7 @@ anyhow::Error      (应用层)
 │             │                         │                            │
 │    ┌────────┴────────┐       ┌────────┴────────┐                  │
 │    │ /ks/*           │       │ STUN Server     │                  │
-│    │ /supervisor/*   │       │ TURN Server     │                  │
+│    │ /signaling/*    │       │ TURN Server     │                  │
 │    └────────┬────────┘       └────────┬────────┘                  │
 │             │                         │                            │
 │    ┌────────┴─────────────────────────┴────────┐                  │
@@ -191,7 +191,7 @@ Internet
     ├─ TCP:8443 (HTTPS)
     │   ├─ /ks/generate       → KS Service
     │   ├─ /ks/secret/{id}    → KS Service
-    │   └─ /supervisor/health → Supervisor Service
+    │   └─ /ks/health         → KS Service
     │
     └─ UDP:3478 (ICE)
         ├─ STUN (Binding Request/Response)
@@ -220,7 +220,6 @@ actrix/
 │       ├── trace.rs              # HTTP Trace Layer (OpenTelemetry)
 │       ├── http/                 # HTTP 服务实现
 │       │   ├── ks.rs             # KsHttpService
-│       │   ├── managed.rs        # SupervisorService
 │       │   ├── ais.rs            # AisService (已禁用)
 │       │   └── signaling.rs      # SignalingService (已禁用)
 │       └── ice/                  # ICE 服务实现
@@ -332,12 +331,11 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()>
 
 ```rust
 pub enum ServiceContainer {
-    Supervit(SupervisorService),
+    Signaling(SignalingService),
+    Ais(AisService),
     Ks(KsHttpService),
     Stun(StunService),
     Turn(TurnService),
-    // Signaling(SignalingService),  // 已禁用
-    // Ais(AisService),              // 已禁用
 }
 ```
 
@@ -465,13 +463,13 @@ CREATE TABLE nonce (
 ├─────────────────────────────────────────────┤
 │  Routes:                                    │
 │  ├─ /ks/*          → KsHttpService          │
-│  └─ /supervisor/*  → SupervisorService      │
+│  └─ /signaling/*   → SignalingService       │
 └─────────────────────────────────────────────┘
 ```
 
 **服务说明**:
 - **KS** (`/ks/*`): 密钥管理服务。**注意**: 默认使用本地 SQLite 数据库，因此是有状态的 (stateful)，不支持开箱即用的集群化。
-- **Supervisor** (`/supervisor/*`): 服务注册和监控
+- **Signaling** (`/signaling/*`): WebSocket 信令服务，提供房间协商和心跳
 
 **代码位置**: `src/service/manager.rs:251-315`
 
@@ -772,7 +770,7 @@ endpoint = "http://localhost:4317"
 每个服务提供健康检查端点：
 
 - KS: `/ks/health`
-- Supervisor: `/supervisor/health`
+- Global metrics: `/metrics`
 
 ---
 
@@ -813,8 +811,9 @@ endpoint = "http://localhost:4317"
 10. ServiceManager::new(config, shutdown_tx.clone()) 并根据 config 启用项添加服务
     ├─ if is_turn_enabled(): add TurnService
     ├─ if is_stun_enabled(): add StunService
-    ├─ if is_ks_enabled(): add KsHttpService
-    └─ if is_supervisor_enabled(): add SupervisorService
+    ├─ if is_signaling_enabled(): add SignalingService
+    ├─ if is_ais_enabled(): add AisService
+    └─ if is_ks_enabled(): add KsHttpService
     ↓
 11. service_manager.start_all() -> Vec<JoinHandle<()>>
     ├─ 启动 ICE 服务（每个任务共享 shutdown_tx）

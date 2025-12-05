@@ -11,7 +11,7 @@ echo "结果目录: $RESULTS_DIR"
 echo
 
 # 检查服务是否运行
-if ! curl -k -s https://localhost:8443/supervisor/health > /dev/null 2>&1; then
+if ! curl -k -s https://localhost:8443/ks/health > /dev/null 2>&1; then
     echo "❌ 服务未运行，请先启动 actrix"
     exit 1
 fi
@@ -23,7 +23,7 @@ echo
 echo "1️⃣  Health Check 基准测试..."
 if command -v wrk &> /dev/null; then
     wrk -t4 -c100 -d30s --latency \
-        https://localhost:8443/supervisor/health \
+        https://localhost:8443/ks/health \
         > "$RESULTS_DIR/wrk_health.txt" 2>&1
 
     echo "  ✅ 完成"
@@ -38,7 +38,7 @@ echo
 echo "2️⃣  Metrics Endpoint 基准测试..."
 if command -v wrk &> /dev/null; then
     wrk -t4 -c100 -d30s --latency \
-        https://localhost:8443/supervisor/metrics \
+        https://localhost:8443/metrics \
         > "$RESULTS_DIR/wrk_metrics.txt" 2>&1
 
     echo "  ✅ 完成"

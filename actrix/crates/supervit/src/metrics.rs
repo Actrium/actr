@@ -1,7 +1,8 @@
 //! System metrics collection using pwrzv
 
 use crate::error::{Result, SupervitError};
-use crate::generated::{ServiceStatus, SystemMetrics};
+use actrix_proto::{ServiceStatus, SystemMetrics};
+use std::sync::Arc;
 use tracing::warn;
 
 /// 收集系统指标
@@ -40,11 +41,22 @@ pub async fn collect_system_metrics() -> Result<SystemMetrics> {
     })
 }
 
-/// 收集服务状态（需要从 actrix 服务管理器获取）
-pub fn collect_service_status() -> Vec<ServiceStatus> {
-    // TODO: 从 ServiceManager 获取真实服务状态
-    // 当前返回空列表，后续集成时实现
-    Vec::new()
+/// 服务状态提供者类型（用于 ReportRequest）
+pub type ServiceStatusProviderForReport = Arc<dyn Fn() -> Vec<ServiceStatus> + Send + Sync>;
+
+/// 收集服务状态
+///
+/// 如果提供了 `service_status_provider`，则使用它来获取服务状态；
+/// 否则返回空列表（向后兼容）。
+pub fn collect_service_status(
+    service_status_provider: Option<ServiceStatusProviderForReport>,
+) -> Vec<ServiceStatus> {
+    if let Some(provider) = service_status_provider {
+        provider()
+    } else {
+        // 向后兼容：如果没有提供 provider，返回空列表
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

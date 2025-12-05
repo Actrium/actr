@@ -2,10 +2,10 @@
 //!
 //! 提供椭圆曲线密钥生成和管理的 HTTP API 服务
 
-use crate::service::ServiceType;
-use crate::service::{HttpRouterService, info::ServiceInfo};
+use crate::service::HttpRouterService;
 use actrix_common::config::ActrixConfig;
 use actrix_common::storage::nonce::SqliteNonceStorage;
+use actrix_common::{ServiceInfo, ServiceType};
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::Router;

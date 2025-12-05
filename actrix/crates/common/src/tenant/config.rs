@@ -155,6 +155,24 @@ impl TenantConfig {
     pub fn value(&self) -> &str {
         &self.value
     }
+
+    /// 更新配置值
+    pub fn set_value(&mut self, value: String) {
+        self.value = value;
+    }
+
+    /// 删除指定租户的所有配置
+    pub async fn delete_by_tenant(tenant_id: i64) -> Result<u64, TenantError> {
+        let db = get_database();
+        let pool = db.get_pool();
+
+        let result = sqlx::query("DELETE FROM tenantconfig WHERE tenant_id = ?")
+            .bind(tenant_id)
+            .execute(pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
 }
 
 #[cfg(test)]

@@ -3,8 +3,8 @@
 //! 提供 nonce-auth 与 gRPC protobuf 之间的转换和封装
 
 use crate::error::{Result, SupervitError};
-use crate::generated::NonceCredential as ProtoCredential;
 use ::nonce_auth::{CredentialBuilder, NonceCredential};
+use actrix_proto::NonceCredential as ProtoCredential;
 
 /// 将 nonce-auth 凭证转换为 protobuf 格式
 ///

@@ -9,10 +9,26 @@ pub struct SupervitConfig {
     /// 节点唯一标识符
     pub node_id: String,
 
+    /// 节点可读名称（可选，未设置时使用 node_id）
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// This field is skipped by serde during serialization and deserialization and must be set via code logic.
+    #[serde(skip, default)]
+    pub location_tag: String,
+
     /// Supervisor gRPC 服务器地址
     /// 格式: http://hostname:port 或 https://hostname:port
     /// 示例: "http://supervisor.example.com:50051"
-    pub server_addr: String,
+    pub endpoint: String,
+
+    /// Supervisord gRPC advertised address (for Supervisor callback)
+    ///
+    /// This is the address that Supervisor will use to connect back to this node.
+    /// Format: "ip:port" (e.g., "203.0.113.10:50055")
+    /// This value is typically passed from SupervisorConfig.advertised_addr().
+    #[serde(default = "default_agent_addr")]
+    pub agent_addr: String,
 
     /// 连接超时（秒）
     #[serde(default = "default_connect_timeout")]
@@ -50,6 +66,14 @@ pub struct SupervitConfig {
     /// 最大允许的时钟偏差（秒）
     #[serde(default = "default_max_clock_skew")]
     pub max_clock_skew_secs: u64,
+
+    /// 可选的自由格式位置描述（与 location_tag 区分）
+    #[serde(default)]
+    pub location: Option<String>,
+
+    /// 可选的服务标签（应用于全部服务）
+    #[serde(default)]
+    pub service_tags: Vec<String>,
 }
 
 fn default_connect_timeout() -> u64 {
@@ -68,11 +92,18 @@ fn default_max_clock_skew() -> u64 {
     300 // 5 分钟
 }
 
+fn default_agent_addr() -> String {
+    "0.0.0.0:50055".to_string()
+}
+
 impl Default for SupervitConfig {
     fn default() -> Self {
         Self {
             node_id: String::new(),
-            server_addr: "http://localhost:50051".to_string(),
+            name: None,
+            location_tag: String::new(),
+            endpoint: "http://localhost:50051".to_string(),
+            agent_addr: default_agent_addr(),
             connect_timeout_secs: default_connect_timeout(),
             status_report_interval_secs: default_status_interval(),
             health_check_interval_secs: default_health_check_interval(),
@@ -83,6 +114,8 @@ impl Default for SupervitConfig {
             ca_cert: None,
             shared_secret: None,
             max_clock_skew_secs: default_max_clock_skew(),
+            location: None,
+            service_tags: Vec::new(),
         }
     }
 }
@@ -94,15 +127,21 @@ impl SupervitConfig {
             return Err(SupervitError::Config("node_id cannot be empty".to_string()));
         }
 
-        if self.server_addr.is_empty() {
+        if self.endpoint.is_empty() {
             return Err(SupervitError::Config(
-                "server_addr cannot be empty".to_string(),
+                "endpoint cannot be empty".to_string(),
             ));
         }
 
-        if !self.server_addr.starts_with("http://") && !self.server_addr.starts_with("https://") {
+        if self.agent_addr.is_empty() {
             return Err(SupervitError::Config(
-                "server_addr must start with http:// or https://".to_string(),
+                "agent_addr cannot be empty".to_string(),
+            ));
+        }
+
+        if !self.endpoint.starts_with("http://") && !self.endpoint.starts_with("https://") {
+            return Err(SupervitError::Config(
+                "endpoint must start with http:// or https://".to_string(),
             ));
         }
 
@@ -152,7 +191,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = SupervitConfig::default();
-        assert_eq!(config.server_addr, "http://localhost:50051");
+        assert_eq!(config.endpoint, "http://localhost:50051");
         assert_eq!(config.connect_timeout_secs, 30);
     }
 
@@ -169,7 +208,7 @@ mod tests {
     fn test_validate_invalid_url() {
         let config = SupervitConfig {
             node_id: "test-node".to_string(),
-            server_addr: "invalid-url".to_string(),
+            endpoint: "invalid-url".to_string(),
             ..Default::default()
         };
         assert!(config.validate().is_err());
@@ -179,7 +218,7 @@ mod tests {
     fn test_validate_valid_config() {
         let config = SupervitConfig {
             node_id: "test-node".to_string(),
-            server_addr: "http://localhost:50051".to_string(),
+            endpoint: "http://localhost:50051".to_string(),
             ..Default::default()
         };
         assert!(config.validate().is_ok());

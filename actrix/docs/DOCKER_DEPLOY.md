@@ -181,7 +181,7 @@ make docker-build
 
 ```dockerfile
 # 构建阶段
-FROM rust:1.75 as builder
+FROM rust:1.88 as builder
 WORKDIR /build
 COPY . .
 RUN cargo build --release

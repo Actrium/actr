@@ -784,7 +784,7 @@ async fn start_ice_service(
 
 **文件**: `src/service/manager.rs:49-74`
 
-服务通过 SupervitClient 的 StreamStatus 自动上报到管理平台：
+服务通过 SupervitClient 的 Report RPC 自动上报到管理平台：
 
 ```rust
 pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
@@ -800,11 +800,15 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
         }
     };
 
-    // 服务注册通过 SupervitClient 的 StreamStatus 自动完成
+    // 服务注册通过 SupervitClient 的 Report RPC 自动完成
     info!(
         "Service registration via gRPC: {} services will be reported to {}",
         services.len(),
-        managed_config.server_addr
+        managed_config
+            .client
+            .as_ref()
+            .map(|c| c.endpoint.as_str())
+            .unwrap_or("<missing endpoint>")
     );
 
     Ok(())
@@ -813,7 +817,7 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
 
 **实现方式**:
 
-- 服务状态通过 SupervitClient 的双向 gRPC 流自动上报
+- 服务状态通过 SupervitClient 的 Unary RPC 自动上报
 - 不需要手动构建和发送注册负载
 - SupervitClient 在其他地方初始化并管理连接
 
@@ -907,11 +911,6 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
         let mut manager = ServiceManager::new(config.clone(), shutdown_tx.clone());
 
         // 6. 根据配置注册服务
-        if config.is_supervisor_enabled() {
-            manager.add_service(ServiceContainer::supervisor(SupervisorService::new(
-                config.clone(),
-            )));
-        }
         if config.is_signaling_enabled() {
             manager.add_service(ServiceContainer::signaling(SignalingService::new(
                 config.clone(),
@@ -1101,12 +1100,6 @@ path = "/var/lib/actrix/ks.db"
 enable = true
 service_name = "actrix-prod"
 endpoint = "http://localhost:4317"
-
-# 管理平台 (可选)
-[supervisor]
-associated_id = "actrix-01-resource-id"
-secret = "hex-encoded-secret"
-addr = "https://supervisor.example.com/api/register"
 ```
 
 ---
@@ -1437,7 +1430,7 @@ sudo journalctl -u actrix -f
 
 ```dockerfile
 # 构建阶段
-FROM rust:1.75-bullseye as builder
+FROM rust:1.88-bullseye as builder
 
 WORKDIR /build
 COPY . .
@@ -1714,8 +1707,6 @@ INFO Starting ICE service: STUN
 INFO STUN service bound to 0.0.0.0:3478
 INFO Starting ICE service: TURN
 INFO TURN service bound to 0.0.0.0:3478
-INFO Registering to management platform at https://supervisor.example.com/api/register
-INFO Successfully registered service to management platform
 INFO All services started successfully
 ```
 

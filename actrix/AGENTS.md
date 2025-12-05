@@ -12,7 +12,7 @@
 
 - **代码库**: https://github.com/actor-rtc/actrix
 - **许可证**: Apache 2.0
-- **Rust 版本**: 1.83+ (Edition 2024)
+- **Rust 版本**: 1.88+ (Edition 2024)
 - **架构**: Workspace 多 crate 架构
 
 ## 代码规范

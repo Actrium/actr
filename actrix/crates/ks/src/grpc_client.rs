@@ -1,7 +1,10 @@
 //! KS gRPC 客户端
 
 use crate::error::KsError;
-use crate::grpc_handlers::proto;
+use actrix_proto::ks::v1::{
+    GenerateKeyRequest, GetSecretKeyRequest, HealthCheckRequest, key_server_client::KeyServerClient,
+};
+use actrix_proto::supervisor::v1::NonceCredential;
 use base64::prelude::*;
 use ecies::{PublicKey, SecretKey};
 use nonce_auth::CredentialBuilder;
@@ -9,8 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, info};
-
-pub use proto::ks::v1::key_server_client::KeyServerClient;
 
 /// KS gRPC 客户端配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -140,13 +141,13 @@ impl GrpcClient {
             .sign(request_data.as_bytes())?;
 
         // 转换为 protobuf NonceCredential
-        let credential = proto::supervisor::v1::NonceCredential {
+        let credential = NonceCredential {
             timestamp: nonce_credential.timestamp,
             nonce: nonce_credential.nonce,
             signature: nonce_credential.signature,
         };
 
-        let request = tonic::Request::new(proto::ks::v1::GenerateKeyRequest { credential });
+        let request = tonic::Request::new(GenerateKeyRequest { credential });
 
         debug!("Requesting key generation from KS via gRPC");
 
@@ -193,14 +194,13 @@ impl GrpcClient {
             .sign(request_data.as_bytes())?;
 
         // 转换为 protobuf NonceCredential
-        let credential = proto::supervisor::v1::NonceCredential {
+        let credential = NonceCredential {
             timestamp: nonce_credential.timestamp,
             nonce: nonce_credential.nonce,
             signature: nonce_credential.signature,
         };
 
-        let request =
-            tonic::Request::new(proto::ks::v1::GetSecretKeyRequest { key_id, credential });
+        let request = tonic::Request::new(GetSecretKeyRequest { key_id, credential });
 
         debug!("Fetching secret key {} from KS via gRPC", key_id);
 
@@ -233,7 +233,7 @@ impl GrpcClient {
 
     /// 健康检查
     pub async fn health_check(&mut self) -> Result<String, KsError> {
-        let request = tonic::Request::new(proto::ks::v1::HealthCheckRequest {});
+        let request = tonic::Request::new(HealthCheckRequest {});
 
         let response = self
             .client

@@ -1,0 +1,169 @@
+syntax = "proto2";
+
+package supervisor.v1;
+
+import "common.proto";
+
+// ============================================================================
+// SupervisedService - Implemented by Node, called by Supervisor
+// ============================================================================
+
+service SupervisedService {
+  // ------------ Configuration management ------------
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+  // ------------ Tenant management ------------
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse);
+  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
+  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse);
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  // ------------ Node control ------------
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+// ============================================================================
+// Configuration management
+// ============================================================================
+
+message UpdateConfigRequest {
+  required ConfigType config_type = 1;      // Configuration type
+  required string config_key = 2;           // Configuration key
+  required string config_value = 3;         // Configuration value
+  required bool apply_immediately = 4;      // Whether to apply immediately
+  required NonceCredential credential = 5;  // Authentication credential
+}
+
+message UpdateConfigResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional string old_value = 3;            // Old value (for rollback)
+}
+
+message GetConfigRequest {
+  required ConfigType config_type = 1;      // Configuration type
+  required string config_key = 2;           // Configuration key
+  required NonceCredential credential = 3;  // Authentication credential
+}
+
+message GetConfigResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional string config_value = 3;         // Configuration value
+}
+
+// ============================================================================
+// Tenant management
+// ============================================================================
+
+// ------------ CreateTenant ------------
+
+message CreateTenantRequest {
+  required string tenant_id = 1;            // Tenant identifier
+  required string name = 2;                 // Tenant name
+  required bytes public_key = 3;            // Public key (authentication)
+  optional bytes secret_key = 4;            // Secret key (optional, some scenarios only need public key)
+  required bool enabled = 5;                // Enabled status
+  required string key_id = 6;               // Key ID (for key rotation)
+  repeated ResourceType use_servers = 7;    // Allowed server types
+  required NonceCredential credential = 8;  // Authentication credential
+  required uint64 version = 9;              // Realm version (assigned by Boss)
+}
+
+message CreateTenantResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional TenantInfo tenant = 3;           // Created tenant info
+}
+
+// ------------ GetTenant ------------
+
+message GetTenantRequest {
+  required string tenant_id = 1;            // Tenant identifier
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message GetTenantResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional TenantInfo tenant = 3;           // Tenant info
+}
+
+// ------------ UpdateTenant ------------
+
+message UpdateTenantRequest {
+  required string tenant_id = 1;            // Tenant identifier
+  optional string name = 2;                 // New name (optional update)
+  optional bool enabled = 3;                // New enabled status (optional update)
+  required NonceCredential credential = 4;  // Authentication credential
+}
+
+message UpdateTenantResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional TenantInfo tenant = 3;           // Updated tenant info
+}
+
+// ------------ DeleteTenant ------------
+
+message DeleteTenantRequest {
+  required string tenant_id = 1;            // Tenant identifier
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message DeleteTenantResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+}
+
+// ------------ ListTenants ------------
+
+message ListTenantsRequest {
+  optional uint32 page_size = 1;            // Page size
+  optional string page_token = 2;           // Page token for pagination
+  required NonceCredential credential = 3;  // Authentication credential
+}
+
+message ListTenantsResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  repeated TenantInfo tenants = 3;          // Tenant list
+  optional string next_page_token = 4;      // Next page token
+  required uint32 total_count = 5;          // Total count (for pagination)
+}
+
+// ============================================================================
+// Node control
+// ============================================================================
+
+message GetNodeInfoRequest {
+  required NonceCredential credential = 1;  // Authentication credential
+}
+
+message GetNodeInfoResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  required string node_id = 3;              // Node identifier
+  required string name = 4;                 // Node name
+  required string version = 5;              // Node version
+  required string location_tag = 6;         // Geographic location tag
+  required int64 uptime_secs = 7;           // Uptime in seconds
+  optional SystemMetrics current_metrics = 8;  // Current system metrics
+  repeated ServiceStatus services = 9;      // Service status list
+}
+
+message ShutdownRequest {
+  required bool graceful = 1;               // Whether to shutdown gracefully
+  optional int32 timeout_secs = 2;          // Graceful shutdown timeout
+  optional string reason = 3;               // Shutdown reason
+  required NonceCredential credential = 4;  // Authentication credential
+}
+
+message ShutdownResponse {
+  required bool accepted = 1;               // Whether shutdown request accepted
+  optional string error_message = 2;        // Error message on failure
+  optional int64 estimated_shutdown_time = 3;  // Estimated shutdown timestamp
+}

@@ -21,7 +21,7 @@ brew install k6      # macOS
 ### 1. Health Check 基准
 ```bash
 # wrk 测试
-wrk -t4 -c100 -d30s --latency https://localhost:8443/supervisor/health
+wrk -t4 -c100 -d30s --latency https://localhost:8443/ks/health
 
 # 预期结果:
 # - RPS: > 10,000
@@ -31,7 +31,7 @@ wrk -t4 -c100 -d30s --latency https://localhost:8443/supervisor/health
 
 ### 2. Metrics Endpoint 基准
 ```bash
-wrk -t4 -c100 -d30s --latency https://localhost:8443/supervisor/metrics
+wrk -t4 -c100 -d30s --latency https://localhost:8443/metrics
 
 # 预期结果:
 # - RPS: > 5,000

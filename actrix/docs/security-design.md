@@ -12,10 +12,14 @@
 **现有配置：**
 ```rust
 SupervisorConfig {
-    node_id: String,
-    server_addr: String,
+    connect_timeout_secs: u64,
+    status_report_interval_secs: u64,
+    health_check_interval_secs: u64,
     enable_tls: bool,
     tls_domain: Option<String>,
+    max_clock_skew_secs: u64,
+    supervisord: Option<SupervisordConfig>,
+    client: Option<SupervisorClientConfig>,
 }
 ```
 
@@ -24,7 +28,7 @@ SupervisorConfig {
 #### P0 - 关键缺陷
 
 1. **无应用层认证**
-   - 任何知道 `server_addr` 的客户端都可以连接
+   - 任何知道 `endpoint` 的客户端都可以连接
    - 无法验证客户端身份
    - 风险：冒充节点、数据投毒
 
@@ -64,7 +68,7 @@ SupervisorConfig {
 | 威胁 | 攻击者能力 | 影响 | 当前防护 | 建议防护 |
 |------|----------|------|---------|---------|
 | **中间人攻击** | 网络嗅探、流量篡改 | 数据泄露、篡改 | ✅ TLS | ✅ TLS (已足够) |
-| **节点冒充** | 获取 server_addr | 完全控制 | ❌ 无 | ⚠️ 需要 mTLS 或 Token |
+| **节点冒充** | 获取 endpoint | 完全控制 | ❌ 无 | ⚠️ 需要 mTLS 或 Token |
 | **重放攻击** | 截获合法请求 | 重复执行操作 | ❌ 无 | ⚠️ 需要 Nonce/Timestamp |
 | **权限提升** | 获取低权限凭证 | 访问高权限功能 | ❌ 无 | ⚠️ 需要 RBAC |
 | **内网攻击** | 内网访问 | 绕过 TLS | ❌ 无 | ⚠️ 需要应用层认证 |
@@ -122,12 +126,21 @@ SupervisorConfig {
 
 ```toml
 [supervisor]
-node_id = "actrix-01"
-server_addr = "https://supervisor.example.com:50051"
 enable_tls = true
 tls_domain = "supervisor.example.com"
+max_clock_skew_secs = 300
 
-# 客户端证书认证
+[supervisor.supervisord]
+ip = "0.0.0.0"
+port = 50055
+advertised_ip = "203.0.113.10"
+
+[supervisor.client]
+node_id = "actrix-01"
+endpoint = "https://supervisor.example.com:50051"
+shared_secret = "<replace-with-hex>"
+
+# 客户端证书认证（可选）
 client_cert = "/etc/actrix/certs/client.crt"
 client_key = "/etc/actrix/certs/client.key"
 ca_cert = "/etc/actrix/certs/ca.crt"
@@ -147,7 +160,7 @@ let tls_config = ClientTlsConfig::new()
     .ca_certificate(Certificate::from_pem(&ca_cert))
     .identity(Identity::from_pem(&client_cert, &client_key));
 
-let channel = Endpoint::from_shared(config.server_addr)?
+let channel = Endpoint::from_shared(config.endpoint)?
     .tls_config(tls_config)?
     .connect()
     .await?;
@@ -313,27 +326,31 @@ permissions = ["*"]  # 所有权限
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorConfig {
-    // 基础配置
-    pub node_id: String,
-    pub server_addr: String,
-
-    // L1: TLS 配置
+    pub connect_timeout_secs: u64,
+    pub status_report_interval_secs: u64,
+    pub health_check_interval_secs: u64,
     pub enable_tls: bool,
     pub tls_domain: Option<String>,
     pub client_cert: Option<String>,
     pub client_key: Option<String>,
     pub ca_cert: Option<String>,
-
-    // L2: 认证配置
-    pub shared_secret: String,  // hex 编码的共享密钥
-
-    // L3: 防重放配置
     pub max_clock_skew_secs: u64,
+    pub supervisord: Option<SupervisordConfig>,
+    pub client: Option<SupervisorClientConfig>,
+}
 
-    // 连接配置
-    pub connect_timeout_secs: u64,
-    pub status_report_interval_secs: u64,
-    pub health_check_interval_secs: u64,
+pub struct SupervisorClientConfig {
+    pub node_id: String,
+    pub name: Option<String>,
+    pub endpoint: String,
+    pub shared_secret: Option<String>,
+}
+
+pub struct SupervisordConfig {
+    pub node_name: Option<String>,
+    pub ip: String,
+    pub port: u16,
+    pub advertised_ip: String,
 }
 ```
 
@@ -349,7 +366,7 @@ pub struct SupervitClient {
 impl SupervitClient {
     pub async fn connect(&mut self) -> Result<()> {
         // 1. 配置 TLS
-        let mut endpoint = Endpoint::from_shared(self.config.server_addr.clone())?;
+        let mut endpoint = Endpoint::from_shared(self.config.endpoint.clone())?;
 
         if self.config.enable_tls {
             let tls_config = self.build_tls_config()?;
@@ -465,21 +482,26 @@ openssl rand -hex 32  # 输出 64 字符的 hex 字符串
 **节点配置（actrix-node-01）：**
 ```toml
 [supervisor]
-node_id = "actrix-01"
-server_addr = "https://supervisor.example.com:50051"
-
-# L1: TLS
+connect_timeout_secs = 30
+status_report_interval_secs = 60
+health_check_interval_secs = 30
 enable_tls = true
 tls_domain = "supervisor.example.com"
+max_clock_skew_secs = 300
+
+[supervisor.supervisord]
+node_name = "actrix-01"
+ip = "0.0.0.0"
+port = 50055
+advertised_ip = "203.0.113.10"
+
+[supervisor.client]
+node_id = "actrix-01"
+endpoint = "https://supervisor.example.com:50051"
+shared_secret = "a1b2c3d4e5f6...64位hex字符串"
 client_cert = "/etc/actrix/certs/client-actrix-01-cert.pem"
 client_key = "/etc/actrix/certs/client-actrix-01-key.pem"
 ca_cert = "/etc/actrix/certs/ca-cert.pem"
-
-# L2: 认证
-shared_secret = "a1b2c3d4e5f6...64位hex字符串"
-
-# L3: 防重放
-max_clock_skew_secs = 300
 ```
 
 **Supervisor 配置：**

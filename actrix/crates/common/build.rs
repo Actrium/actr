@@ -311,7 +311,13 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
 
         // Tracing config fields
         "service_name" => "\"actrix\"".to_string(),
-        "endpoint" => "\"http://127.0.0.1:4317\"".to_string(),
+        "endpoint" => {
+            if section_prefix.contains("supervisor") {
+                "\"http://localhost:50051\"".to_string()
+            } else {
+                "\"http://127.0.0.1:4317\"".to_string()
+            }
+        }
 
         // Network config fields
         "domain_name" => "\"localhost\"".to_string(),
@@ -337,9 +343,12 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         "realm" => "\"actor-rtc.local\"".to_string(),
 
         // Supervisor config
-        "associated_id" => "\"\"".to_string(),
+        "node_id" => "\"\"".to_string(),
         "secret" => "\"\"".to_string(),
-        "addr" => "\"ws://localhost:3000/supervisor\"".to_string(),
+        "shared_secret" => {
+            "\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"".to_string()
+        }
+        "node_name" => "\"actrix-node\"".to_string(),
 
         // Default fallback
         _ => "\"\"".to_string(),

@@ -15,9 +15,11 @@ use clap::Parser;
 use observability::init_observability;
 use service::{
     AisService, KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService,
-    StunService, SupervisorService, TurnService,
+    StunService, SupervisordGrpcService, TurnService,
 };
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use supervit::{SupervitClient, SupervitConfig};
 use tokio::task::JoinHandle;
 
 use tracing::{error, info, warn};
@@ -223,6 +225,13 @@ impl ApplicationLauncher {
     ) -> Result<()> {
         info!("🚀 启动 WebRTC 辅助服务器集群");
 
+        // First initialize the database,
+        // ensure it is ready before any service that may access it starts
+        actrix_common::storage::db::set_db_path(&config.sqlite_path)
+            .await
+            .map_err(|e| Error::custom(format!("数据库初始化失败: {e}")))?;
+        info!("✅ 数据库初始化完成");
+
         // 初始化全局关闭通道（供所有服务共享）
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(10);
 
@@ -231,6 +240,10 @@ impl ApplicationLauncher {
 
         // 如果启用 KS，构建 gRPC 服务 future
         let mut handle_futs: Vec<JoinHandle<()>> = Vec::new();
+
+        let mut service_manager =
+            Self::create_service_manager(config.clone(), shutdown_tx.clone()).await?;
+
         if config.is_ks_enabled() {
             info!("启动 KS gRPC 服务器...");
             let grpc_addr = "127.0.0.1:50052".parse().map_err(|e| {
@@ -244,14 +257,108 @@ impl ApplicationLauncher {
 
             handle_futs.push(grpc_future);
         }
+
+        if let Some(supervisor_cfg) = &config.supervisor {
+            if supervisor_cfg.shared_secret().trim().is_empty() {
+                return Err(Error::service_startup(
+                    "supervisor.client.shared_secret cannot be empty, refusing to start Supervisord gRPC service"
+                        .to_string(),
+                ));
+            }
+
+            info!("启动 Supervisord gRPC 服务器...");
+            let bind_addr_str = supervisor_cfg.supervisord.bind_addr();
+
+            let bind_addr: SocketAddr = bind_addr_str.parse().map_err(|e| {
+                Error::service_startup(format!(
+                    "Failed to parse supervisord bind address {}: {}",
+                    bind_addr_str, e
+                ))
+            })?;
+
+            // Get service collector from service manager
+            let service_collector = service_manager.service_collector();
+
+            let mut grpc_service = SupervisordGrpcService::new(
+                supervisor_cfg.clone(),
+                config.sqlite_path.clone(),
+                config.location_tag.clone(),
+                service_collector,
+            );
+            let grpc_future = grpc_service
+                .start(bind_addr, shutdown_tx.clone())
+                .await
+                .map_err(|e| Error::service_startup(format!("Supervisord gRPC 初始化失败: {e}")))?;
+            handle_futs.push(grpc_future);
+        }
+
         // wait for gRPC service to start
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        let mut service_manager =
-            Self::create_service_manager(config.clone(), shutdown_tx.clone()).await?;
         let handle_futures = service_manager.start_all().await?;
         handle_futs.extend(handle_futures);
         info!("启动所有服务...");
+
+        // Start supervit after all services are started
+        if config.is_supervisor_enabled()
+            && let Some(supervisor_cfg) = &config.supervisor
+        {
+            let shared_secret = supervisor_cfg.shared_secret();
+            let node_id = supervisor_cfg.node_id();
+            let endpoint = supervisor_cfg.endpoint();
+
+            let supervisord_cfg = &supervisor_cfg.supervisord;
+            let client_config = SupervitConfig {
+                node_id: node_id.to_string(),
+                name: Some(supervisor_cfg.node_name().to_string()),
+                location_tag: config.location_tag.clone(),
+                endpoint: endpoint.to_string(),
+                agent_addr: supervisord_cfg.advertised_addr(),
+                connect_timeout_secs: supervisor_cfg.connect_timeout_secs,
+                status_report_interval_secs: supervisor_cfg.status_report_interval_secs,
+                health_check_interval_secs: supervisor_cfg.health_check_interval_secs,
+                enable_tls: supervisor_cfg.enable_tls,
+                tls_domain: supervisor_cfg.tls_domain.clone(),
+                client_cert: supervisor_cfg.client_cert.clone(),
+                client_key: supervisor_cfg.client_key.clone(),
+                ca_cert: supervisor_cfg.ca_cert.clone(),
+                shared_secret: Some(shared_secret.to_string()),
+                max_clock_skew_secs: supervisor_cfg.max_clock_skew_secs,
+                location: None,
+                service_tags: Vec::new(),
+            };
+
+            // Get service collector from service manager
+            let service_collector = service_manager.service_collector();
+
+            info!("Starting Supervit client (register and status reporting)...");
+            let register_handle = tokio::spawn(async move {
+                // ServiceCollector now uses ServiceInfo internally, so we can pass it directly
+                match SupervitClient::new(client_config.clone(), service_collector) {
+                    Ok(mut client) => {
+                        if let Err(e) = client.connect().await {
+                            warn!("Supervit client connect failed: {}", e);
+                            return;
+                        }
+
+                        if let Err(e) = client.register_node().await {
+                            warn!("Register node failed: {}", e);
+                        } else {
+                            info!("✅ Node registered successfully with services");
+                        }
+
+                        if let Err(e) = client.start_status_reporting().await {
+                            warn!("Start status reporting failed: {}", e);
+                        } else {
+                            info!("✅ Status reporting started");
+                        }
+                    }
+                    Err(e) => warn!("Create supervit client failed: {}", e),
+                }
+            });
+
+            handle_futs.push(register_handle);
+        }
 
         // 端口绑定完成后，切换用户和组
         info!("服务启动完成，准备切换用户权限...");
@@ -282,7 +389,8 @@ impl ApplicationLauncher {
         shutdown_tx: tokio::sync::broadcast::Sender<()>,
     ) -> Result<ServiceManager> {
         info!("📊 计划启动的服务:");
-        actrix_common::storage::db::set_db_path(&config.sqlite_path).await?;
+        // 数据库已在 run_services_with_privilege_drop 中提前初始化，
+        // 以确保 SupervisordGrpcService 可以安全处理 RPC 回调
 
         // 初始化 Prometheus metrics registry
         let registry = &actrix_common::metrics::REGISTRY;
@@ -322,12 +430,6 @@ impl ApplicationLauncher {
         }
 
         // 添加HTTP路由服务 - 每个服务独立控制
-        if config.is_supervisor_enabled() {
-            info!("  - Supervisor Client Service (/supervisor)");
-            let supervisor_service = SupervisorService::new(config.clone());
-            service_manager.add_service(ServiceContainer::supervisor(supervisor_service));
-        }
-
         if config.is_signaling_enabled() {
             info!("  - Signaling WebSocket Service (/signaling)");
             let signaling_service = SignalingService::new(config.clone());
@@ -374,9 +476,6 @@ impl ApplicationLauncher {
             for (protocol, http_url, _ws_url) in &urls {
                 info!("📡 {} 服务器监听在: {}", protocol, http_url);
                 info!("🔧 可用的API端点:");
-                if config.is_supervisor_enabled() {
-                    info!("  - {}/supervisor/health", http_url);
-                }
                 if config.is_signaling_enabled() {
                     info!("  - {}/signaling/ws", _ws_url);
                 }
@@ -396,6 +495,16 @@ impl ApplicationLauncher {
         if config.is_ks_enabled() {
             info!("🔌 gRPC 服务:");
             info!("  - KS gRPC Server: 127.0.0.1:50052");
+        }
+        if config.is_supervisor_enabled()
+            && let Some(supervisor_cfg) = &config.supervisor
+        {
+            let supervisord_cfg = &supervisor_cfg.supervisord;
+            info!(
+                "  - Supervisord gRPC Server: {} (advertised: {})",
+                supervisord_cfg.bind_addr(),
+                supervisord_cfg.advertised_addr()
+            );
         }
     }
 }

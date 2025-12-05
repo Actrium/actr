@@ -27,8 +27,8 @@ axum = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 # gRPC dependencies
-tonic = { version = "0.14", features = ["tls-ring"] }
-tonic-prost = "0.14"
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 tokio-stream = "0.1.17"
@@ -68,6 +68,7 @@ hex = { workspace = true }
 async-trait = "0.1"
 
 # Internal dependencies
+actrix-proto = { path = "../actrix-proto" }
 # Note: circular dependency avoided - base depends on ks for client types
 
 # Monitoring
@@ -79,6 +80,3 @@ tower = "0.5"
 hyper = "1.0"
 tempfile = { workspace = true }
 toml = { workspace = true }
-
-[build-dependencies]
-tonic-prost-build = "0.14"

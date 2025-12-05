@@ -16,58 +16,25 @@ pub mod container;
 pub mod grpc;
 pub mod http;
 pub mod ice;
-pub mod info;
 pub mod manager;
 pub mod trace;
 
+use actrix_common::{ServiceInfo, ServiceState};
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::Router;
-use info::ServiceInfo;
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use strum::Display;
-// TODO: supervit 暂时禁用，等待重构
-// use supervit::ResourceType;
 use tracing::info;
 use url::Url;
 
 // 重新导出服务实现
-pub use grpc::KsGrpcService;
-pub use http::{AisService, KsHttpService, SignalingService, SupervisorService};
+pub use grpc::{KsGrpcService, SupervisordGrpcService};
+pub use http::{AisService, KsHttpService, SignalingService};
 pub use ice::{StunService, TurnService};
 
 // 重新导出核心组件
 pub use container::ServiceContainer;
 pub use manager::ServiceManager;
-
-// 重新导出 ServiceStatus 类型供外部使用
-pub use actrix_common::status::services::ServiceStatus;
-
-/// 服务类型
-#[derive(Debug, Clone, Serialize, Deserialize, Display, PartialEq, Eq)]
-pub enum ServiceType {
-    Stun,
-    Turn,
-    Signaling,
-    Supervisor,
-    Ais,
-    Ks,
-}
-
-// TODO: supervit 暂时禁用，等待重构
-// impl From<ServiceType> for ResourceType {
-//     fn from(service_type: ServiceType) -> Self {
-//         match service_type {
-//             ServiceType::Signaling => ResourceType::Signaling,
-//             ServiceType::Stun => ResourceType::Stun,
-//             ServiceType::Turn => ResourceType::Turn,
-//             ServiceType::Supervisor => ResourceType::Supervisor,
-//             ServiceType::Ais => ResourceType::Authority, // AIS 使用 Authority 资源类型
-//             ServiceType::Ks => ResourceType::Authority,  // KS 使用 Authority 资源类型
-//         }
-//     }
-// }
 
 /// HTTP路由服务的核心 trait - 为 axum 提供路由器
 #[async_trait]
@@ -90,7 +57,7 @@ pub trait HttpRouterService: Send + Sync + Debug {
     /// 服务停止回调
     async fn on_stop(&mut self) -> Result<()> {
         info!("HTTP router service '{}' stopped", self.info().name);
-        self.info_mut().status = ServiceStatus::Unknown;
+        self.info_mut().status = ServiceState::Unknown;
         Ok(())
     }
 
@@ -117,7 +84,7 @@ pub trait IceService: Send + Sync + Debug {
     /// 停止ICE服务
     async fn stop(&mut self) -> Result<()> {
         info!("ICE service '{}' stopped", self.info().name);
-        self.info_mut().status = ServiceStatus::Unknown;
+        self.info_mut().status = ServiceState::Unknown;
         Ok(())
     }
 

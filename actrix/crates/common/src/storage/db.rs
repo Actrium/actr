@@ -146,3 +146,8 @@ pub fn get_database() -> &'static Database {
         .get()
         .expect("Database not initialized. Call set_db_path first.")
 }
+
+/// 检查数据库是否已初始化
+pub fn is_database_initialized() -> bool {
+    GLOBAL_DATABASE.get().is_some()
+}

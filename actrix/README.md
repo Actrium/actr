@@ -3,7 +3,7 @@
 A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Key Server (KS), and service coordination for the Actor-RTC ecosystem.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 
 ## Features
 
@@ -11,7 +11,6 @@ A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, 
 - **STUN Server**: NAT traversal assistance (UDP 3478)
 - **TURN Server**: Media relay for restricted networks with LRU authentication cache (+40% performance)
 - **Key Server (KS)**: ECIES cryptographic key generation and management
-- **Supervisor Client**: Service registration and health reporting
 
 ### Infrastructure
 - ⚡ **High Performance**: LRU caching, async runtime, non-blocking I/O
@@ -168,10 +167,6 @@ http://localhost:16686
 - `GET /ks/public/keys` - List all public keys
 - `GET /ks/health` - Health check
 
-### Supervisor - `/supervisor/*`
-
-- `POST /supervisor/health` - Report service health
-
 ## Deployment
 
 ### Systemd Service
@@ -217,7 +212,7 @@ cargo bench
 
 ### Prerequisites
 
-- Rust 1.83+ (Edition 2024)
+- Rust 1.88+ (Edition 2024)
 - SQLite 3.x
 - OpenSSL (for certificates)
 

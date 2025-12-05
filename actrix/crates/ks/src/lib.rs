@@ -24,7 +24,9 @@ pub use config::KsServiceConfig;
 pub use crypto::{KekSource, KeyEncryptor};
 pub use error::KsError;
 pub use grpc_client::{GrpcClient, GrpcClientConfig};
-pub use grpc_handlers::{KeyServer, KeyServerServer, KsGrpcService, create_grpc_service};
+pub use grpc_handlers::{KsGrpcService, create_grpc_service};
+// Re-export proto types from actrix-proto
+pub use actrix_proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
 pub use handlers::{KSState, create_ks_state, create_router, get_stats, register_ks_metrics};
 pub use storage::{KeyStorage, StorageConfig};
 pub use types::{

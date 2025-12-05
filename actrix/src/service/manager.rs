@@ -4,15 +4,14 @@
 //! 服务管理器模块 - 负责管理多个服务的生命周期
 
 use super::{HttpRouterService, IceService};
-use crate::service::ServiceType;
 use crate::service::container::ServiceContainer;
-use crate::service::info::ServiceInfo;
-use actrix_common::{TlsConfigurer, config::ActrixConfig};
+use actrix_common::{
+    ServiceCollector, ServiceInfo, ServiceType, TlsConfigurer, config::ActrixConfig,
+};
 use anyhow::Result;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
@@ -23,7 +22,7 @@ use url::Url;
 pub struct ServiceManager {
     services: Vec<ServiceContainer>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
-    collected_service_info: Arc<RwLock<HashMap<String, ServiceInfo>>>, // 收集的服务信息
+    service_collector: ServiceCollector,
     config: ActrixConfig,
 }
 
@@ -33,7 +32,7 @@ impl ServiceManager {
         Self {
             services: Vec::new(),
             shutdown_tx,
-            collected_service_info: Arc::new(RwLock::new(HashMap::new())),
+            service_collector: ServiceCollector::new(),
             config,
         }
     }
@@ -58,15 +57,12 @@ impl ServiceManager {
             }
         };
 
-        // gRPC 模式下，服务注册通过 SupervitClient 的 StreamStatus 自动完成
+        // gRPC 模式下，服务注册通过 SupervitClient 的 Report RPC 自动完成
         info!(
             "Service registration via gRPC mode: {} services will be reported through SupervitClient to {}",
             services.len(),
-            managed_config.server_addr
+            managed_config.client.endpoint
         );
-
-        // TODO: 如果需要，可以在这里初始化 SupervitClient 并启动状态上报
-        // 目前假设 SupervitClient 已在其他地方初始化
 
         Ok(())
     }
@@ -117,13 +113,7 @@ impl ServiceManager {
             notify.notified().await;
         }
 
-        let services = self
-            .collected_service_info
-            .read()
-            .map_err(|e| anyhow::anyhow!("Failed to read collected service info: {e}"))?
-            .values()
-            .cloned()
-            .collect();
+        let services = self.service_collector.values().await;
         // 注册HTTP、ICE服务到管理平台
         self.register_services(services).await?;
 
@@ -197,8 +187,6 @@ impl ServiceManager {
             }
         };
 
-        let collected_service_info = self.collected_service_info.clone();
-
         // 构建合并的路由器
         let mut app = Router::new();
         let mut http_services_info = Vec::new();
@@ -235,10 +223,9 @@ impl ServiceManager {
                     let start_result = match service.on_start(public_url.clone()).await {
                         Some(result) => {
                             // 更新服务信息到收集器
-                            collected_service_info
-                                .write()
-                                .map_err(|e| anyhow::anyhow!("Failed to write service info: {e}"))?
-                                .insert(service_name.clone(), service.info().clone());
+                            self.service_collector
+                                .insert(service_name.clone(), service.info().clone())
+                                .await;
                             result
                         }
                         None => Ok(()),
@@ -330,7 +317,6 @@ impl ServiceManager {
         let shutdown_rx = self.shutdown_tx.subscribe();
         let shutdown_tx = self.shutdown_tx.clone();
         let service_name = service.info().name.clone();
-        let collected_service_info = self.collected_service_info.clone();
         let bind_addr = self.config.bind.ice.domain_name.clone();
         let config = self.config.clone();
 
@@ -346,10 +332,7 @@ impl ServiceManager {
                 let info = rx
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to receive STUN service info: {e}"))?;
-                collected_service_info
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("Failed to write STUN service info: {e}"))?
-                    .insert(info.name.clone(), info);
+                self.service_collector.insert(info.name.clone(), info).await;
                 notify.notify_one();
                 Ok(handle)
             }
@@ -365,10 +348,9 @@ impl ServiceManager {
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to receive TURN service info: {e}"))?;
 
-                collected_service_info
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("Failed to write TURN service info: {e}"))?
-                    .insert(info.name.clone(), info.clone());
+                self.service_collector
+                    .insert(info.name.clone(), info.clone())
+                    .await;
                 // turn 服务需要注册两个服务，一个是turn，一个是stun
 
                 let mut stun_info =
@@ -379,12 +361,9 @@ impl ServiceManager {
                         .map_err(|e| anyhow::anyhow!("Failed to parse STUN URL: {e}"))?,
                 );
 
-                collected_service_info
-                    .write()
-                    .map_err(|e| {
-                        anyhow::anyhow!("Failed to write STUN info for TURN service: {e}")
-                    })?
-                    .insert(stun_info.name.clone(), stun_info);
+                self.service_collector
+                    .insert(stun_info.name.clone(), stun_info)
+                    .await;
                 notify.notify_one();
                 Ok(handle)
             }
@@ -398,14 +377,18 @@ impl ServiceManager {
         }
     }
 
-    /// 停止所有服务
+    /// Return service registry handle for accessing service statuses
+    pub fn service_collector(&self) -> ServiceCollector {
+        self.service_collector.clone()
+    }
+
+    /// Stop all services
     pub async fn stop_all(&mut self) -> Result<()> {
         info!("Stopping all services");
 
         let _ = self.shutdown_tx.send(());
         for service in &mut self.services {
             match service {
-                ServiceContainer::Supervit(s) => s.on_stop().await.unwrap(),
                 ServiceContainer::Signaling(s) => s.on_stop().await.unwrap(),
                 ServiceContainer::Ais(s) => s.on_stop().await.unwrap(),
                 ServiceContainer::Stun(s) => s.stop().await.unwrap(),
@@ -419,7 +402,7 @@ impl ServiceManager {
     }
 }
 
-/// Prometheus metrics 端点处理器
+/// Prometheus metrics endpoint handler
 async fn metrics_handler() -> String {
     actrix_common::metrics::export_metrics()
 }

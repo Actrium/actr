@@ -54,13 +54,24 @@ realm = "actor-rtc.local"
 location_tag = "default-location"
 
 # [supervisor]
-# node_id = ""
-# server_addr = ""
 # connect_timeout_secs = ""
 # status_report_interval_secs = ""
 # health_check_interval_secs = ""
 # enable_tls = ""
 # tls_domain = ""
+# client_cert = ""
+# client_key = ""
+# ca_cert = ""
+# max_clock_skew_secs = ""
+# [supervisor.supervisord]
+# node_name = "actrix-node"
+# ip = "0.0.0.0"
+# port = 8080
+# advertised_ip = "127.0.0.1"
+# [supervisor.client]
+# node_id = ""
+# endpoint = "http://localhost:50051"
+# shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 
 [services]

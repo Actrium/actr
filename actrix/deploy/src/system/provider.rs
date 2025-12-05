@@ -91,7 +91,7 @@ pub trait SystemProvider {
     fn is_port_available(&self, port: u16) -> bool;
 
     /// 配置防火墙规则（可选实现）
-    fn configure_firewall(&self, port: u16, protocol: FirewallProtocol) -> Result<()> {
+    fn configure_firewall(&self, _port: u16, _protocol: FirewallProtocol) -> Result<()> {
         // 默认实现：什么都不做
         println!(
             "⚠️  Firewall configuration not implemented for {}",

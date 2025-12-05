@@ -48,30 +48,28 @@ impl<'a> EnhancedSelect<'a> {
     }
 
     pub fn interact(self) -> Result<SelectResult> {
-        loop {
-            // Check if Ctrl+C was pressed before showing the menu
-            if let Some(ref interrupted) = self.interrupted {
-                if interrupted.load(Ordering::SeqCst) {
-                    return Ok(SelectResult::Interrupted);
-                }
+        // Check if Ctrl+C was pressed before showing the menu
+        if let Some(ref interrupted) = self.interrupted {
+            if interrupted.load(Ordering::SeqCst) {
+                return Ok(SelectResult::Interrupted);
             }
+        }
 
-            // Use dialoguer's select but catch interruption
-            match Select::with_theme(self.theme)
-                .with_prompt(&self.prompt)
-                .items(&self.items)
-                .default(0)
-                .interact_opt()
-            {
-                Ok(Some(selection)) => return Ok(SelectResult::Selected(selection)),
-                Ok(None) => {
-                    // This happens when user presses Ctrl+C
-                    return Ok(SelectResult::Interrupted);
-                }
-                Err(_) => {
-                    // All errors are treated as interruptions now
-                    return Ok(SelectResult::Interrupted);
-                }
+        // Use dialoguer's select but catch interruption
+        match Select::with_theme(self.theme)
+            .with_prompt(&self.prompt)
+            .items(&self.items)
+            .default(0)
+            .interact_opt()
+        {
+            Ok(Some(selection)) => Ok(SelectResult::Selected(selection)),
+            Ok(None) => {
+                // This happens when user presses Ctrl+C
+                Ok(SelectResult::Interrupted)
+            }
+            Err(_) => {
+                // All errors are treated as interruptions now
+                Ok(SelectResult::Interrupted)
             }
         }
     }

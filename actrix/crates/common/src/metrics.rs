@@ -6,7 +6,10 @@ use lazy_static::lazy_static;
 use prometheus::{
     HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
 };
+use std::sync::Once;
 use std::time::Instant;
+
+static METRICS_INIT: Once = Once::new();
 
 lazy_static! {
     /// 全局 Prometheus Registry
@@ -158,39 +161,54 @@ lazy_static! {
 }
 
 /// 注册所有指标到全局 Registry
+///
+/// This function is idempotent - calling it multiple times is safe.
+/// Only the first call will actually register the metrics.
 pub fn register_metrics() -> Result<(), prometheus::Error> {
-    // 业务指标
-    REGISTRY.register(Box::new(ACTORS_TOTAL.clone()))?;
-    REGISTRY.register(Box::new(SERVICES_TOTAL.clone()))?;
-    REGISTRY.register(Box::new(WEBSOCKET_CONNECTIONS.clone()))?;
-    REGISTRY.register(Box::new(TOKENS_ISSUED.clone()))?;
-    REGISTRY.register(Box::new(TOKENS_VALIDATED.clone()))?;
+    let mut result = Ok(());
 
-    // 性能指标
-    REGISTRY.register(Box::new(REQUEST_DURATION.clone()))?;
-    REGISTRY.register(Box::new(REQUESTS_TOTAL.clone()))?;
-    REGISTRY.register(Box::new(ERRORS_TOTAL.clone()))?;
+    METRICS_INIT.call_once(|| {
+        let register_result = (|| {
+            // 业务指标
+            REGISTRY.register(Box::new(ACTORS_TOTAL.clone()))?;
+            REGISTRY.register(Box::new(SERVICES_TOTAL.clone()))?;
+            REGISTRY.register(Box::new(WEBSOCKET_CONNECTIONS.clone()))?;
+            REGISTRY.register(Box::new(TOKENS_ISSUED.clone()))?;
+            REGISTRY.register(Box::new(TOKENS_VALIDATED.clone()))?;
 
-    // 系统指标
-    REGISTRY.register(Box::new(CACHE_HITS.clone()))?;
-    REGISTRY.register(Box::new(CACHE_MISSES.clone()))?;
-    REGISTRY.register(Box::new(DB_CONNECTIONS.clone()))?;
+            // 性能指标
+            REGISTRY.register(Box::new(REQUEST_DURATION.clone()))?;
+            REGISTRY.register(Box::new(REQUESTS_TOTAL.clone()))?;
+            REGISTRY.register(Box::new(ERRORS_TOTAL.clone()))?;
 
-    // 安全指标
-    REGISTRY.register(Box::new(RATE_LIMIT_EXCEEDED.clone()))?;
-    REGISTRY.register(Box::new(AUTH_FAILURES.clone()))?;
-    REGISTRY.register(Box::new(INVALID_REQUESTS.clone()))?;
+            // 系统指标
+            REGISTRY.register(Box::new(CACHE_HITS.clone()))?;
+            REGISTRY.register(Box::new(CACHE_MISSES.clone()))?;
+            REGISTRY.register(Box::new(DB_CONNECTIONS.clone()))?;
 
-    // KS 特定指标
-    REGISTRY.register(Box::new(KEYS_GENERATED.clone()))?;
-    REGISTRY.register(Box::new(KEY_ROTATIONS.clone()))?;
+            // 安全指标
+            REGISTRY.register(Box::new(RATE_LIMIT_EXCEEDED.clone()))?;
+            REGISTRY.register(Box::new(AUTH_FAILURES.clone()))?;
+            REGISTRY.register(Box::new(INVALID_REQUESTS.clone()))?;
 
-    // TURN 特定指标
-    REGISTRY.register(Box::new(TURN_ALLOCATIONS.clone()))?;
-    REGISTRY.register(Box::new(TURN_ACTIVE_SESSIONS.clone()))?;
-    REGISTRY.register(Box::new(TURN_BYTES_RELAYED.clone()))?;
+            // KS 特定指标
+            REGISTRY.register(Box::new(KEYS_GENERATED.clone()))?;
+            REGISTRY.register(Box::new(KEY_ROTATIONS.clone()))?;
 
-    Ok(())
+            // TURN 特定指标
+            REGISTRY.register(Box::new(TURN_ALLOCATIONS.clone()))?;
+            REGISTRY.register(Box::new(TURN_ACTIVE_SESSIONS.clone()))?;
+            REGISTRY.register(Box::new(TURN_BYTES_RELAYED.clone()))?;
+
+            Ok::<(), prometheus::Error>(())
+        })();
+
+        if let Err(e) = register_result {
+            result = Err(e);
+        }
+    });
+
+    result
 }
 
 /// HTTP 请求计时器

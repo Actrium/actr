@@ -1,0 +1,124 @@
+syntax = "proto2";
+
+package supervisor.v1;
+
+import "common.proto";
+
+// ============================================================================
+// SupervisorService - Implemented by Supervisor, called by Node
+// ============================================================================
+
+service SupervisorService {
+  // Node registration, called when establishing connection
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Node status reporting
+  rpc Report(ReportRequest) returns (ReportResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ============================================================================
+// ServiceAdvertisement - Static service metadata reported during registration
+// ============================================================================
+
+enum ServiceAdvertisementStatus {
+  SERVICE_ADVERTISEMENT_STATUS_UNKNOWN = 0;
+  SERVICE_ADVERTISEMENT_STATUS_RUNNING = 1;
+  SERVICE_ADVERTISEMENT_STATUS_ERROR = 2;
+  SERVICE_ADVERTISEMENT_STATUS_DISABLED = 3;
+}
+
+message ServiceAdvertisement {
+  required string name = 1;                         // Service identifier
+  required ResourceType type = 2;                   // Service type for routing
+  required string domain_name = 3;                  // Domain (or host) used for access
+  required string port_info = 4;                    // Port or port range description
+  required ServiceAdvertisementStatus status = 5;   // Current advertised status
+  optional string description = 6;                  // Optional description
+  optional string url = 7;                          // External URL if reachable
+  repeated string tags = 8;                         // Optional tags for filtering
+}
+
+// ============================================================================
+// RegisterNode - Node registration
+// ============================================================================
+
+message RegisterNodeRequest {
+  required string node_id = 1;              // Unique node identifier
+  required string name = 2;                 // Node name (human readable)
+  required string location_tag = 3;         // Geographic location tag
+  required string version = 4;              // Node version
+  required string agent_addr = 5;           // SupervisedService listen address (host:port)
+  required NonceCredential credential = 6;  // Authentication credential
+  // Field 7 reserved (was public_key, no longer used)
+  optional string location = 8;             // Optional location detail (free-form)
+  repeated string service_tags = 9;         // Optional service-level tags
+  optional uint32 power_reserve_level_init = 10; // Initial power reserve level (0-5) before first report
+  repeated ServiceAdvertisement services = 11;  // Static service advertisement list
+}
+
+message RegisterNodeResponse {
+  required bool success = 1;
+  optional string error_message = 2;        // Error message on failure
+  required int64 server_timestamp = 3;      // Server timestamp (clock sync)
+  required int32 heartbeat_interval_secs = 4;  // Recommended heartbeat interval
+  optional uint64 resource_version = 5;     // Resource metadata version after upsert
+  optional string registered_at_iso = 6;    // ISO 8601 timestamp of registration
+}
+
+// ============================================================================
+// Report - Node status reporting (Unary)
+// ============================================================================
+
+message ReportRequest {
+  required string node_id = 1;              // Node identifier
+  required int64 timestamp = 2;             // Report timestamp
+  required string location_tag = 3;         // Geographic location tag (load balancing)
+  required string version = 4;              // Version (compatibility)
+  required string name = 5;                 // Node name (readability and management)
+  required uint32 power_reserve_level = 6;  // Load level 0-5 (scheduling basis)
+  optional SystemMetrics metrics = 7;       // System metrics (may not be available in some environments)
+  repeated ServiceStatus services = 8;      // Service status list
+  required NonceCredential credential = 9;  // Authentication credential
+  required uint64 realm_sync_version = 10;  // Max synced realm version (for compensation push)
+}
+
+message ReportResponse {
+  required bool received = 1;               // Receipt status
+  required int64 server_timestamp = 2;      // Server timestamp (clock sync)
+  required int32 next_report_interval_secs = 3; // Dynamic report interval adjustment
+  optional Directive directive = 4;         // Optional command piggyback
+}
+
+// ============================================================================
+// Directive - Supervisor commands to Node
+// ============================================================================
+
+enum DirectiveType {
+  DIRECTIVE_TYPE_UNSPECIFIED = 0;
+  ADJUST_INTERVAL = 1;                      // Change report frequency
+  REQUEST_FULL_REPORT = 2;                  // Request detailed metrics
+  GRACEFUL_SHUTDOWN = 3;                    // Shutdown signal
+}
+
+message Directive {
+  required DirectiveType type = 1;          // Directive type
+  optional string payload = 2;              // Optional payload data
+}
+
+// ============================================================================
+// HealthCheck - Health check
+// ============================================================================
+
+message HealthCheckRequest {
+  required string node_id = 1;              // Node identifier
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message HealthCheckResponse {
+  required bool healthy = 1;                // Health status
+  required int64 server_timestamp = 2;      // Server timestamp (clock sync)
+  required int64 latency_ms = 3;            // Network latency
+}

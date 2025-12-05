@@ -4,6 +4,7 @@
 
 use crate::system::{NetworkUtils, clear_input_buffer, validate_port};
 use actrix_common::config::bind::{HttpBindConfig, HttpsBindConfig};
+use actrix_common::config::supervisor::{SupervisorClientConfig, SupervisordConfig};
 use actrix_common::config::{self, ActrixConfig, BindConfig, SupervisorConfig, TurnConfig};
 use anyhow::{Context, Result};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
@@ -303,9 +304,31 @@ impl UnifiedConfigWizard {
             .with_prompt("节点 ID")
             .interact_text()?;
 
-        let server_addr: String = Input::with_theme(&self.theme)
+        let endpoint: String = Input::with_theme(&self.theme)
             .with_prompt("Supervisor gRPC 服务器地址")
             .default("http://localhost:50051".to_string())
+            .interact_text()?;
+
+        let shared_secret: String = Input::with_theme(&self.theme)
+            .with_prompt("Shared Secret (64+ hex 字符)")
+            .default("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string())
+            .interact_text()?;
+
+        let node_name: String = Input::with_theme(&self.theme)
+            .with_prompt("节点展示名称（可留空使用 node_id）")
+            .default(node_id.clone())
+            .interact_text()?;
+
+        let bind_ip: String = Input::with_theme(&self.theme)
+            .with_prompt("Supervisord gRPC 绑定 IP")
+            .default("0.0.0.0".to_string())
+            .interact_text()?;
+
+        let port = self.prompt_port("Supervisord gRPC 端口", 50055)?;
+
+        let advertised_ip: String = Input::with_theme(&self.theme)
+            .with_prompt("Supervisord 对外 IP/域名 (Supervisor 回连使用)")
+            .default("127.0.0.1".to_string())
             .interact_text()?;
 
         let enable_tls: bool = Confirm::with_theme(&self.theme)
@@ -324,13 +347,26 @@ impl UnifiedConfigWizard {
         };
 
         config.supervisor = Some(SupervisorConfig {
-            node_id,
-            server_addr,
             connect_timeout_secs: 30,
             status_report_interval_secs: 60,
             health_check_interval_secs: 30,
             enable_tls,
             tls_domain,
+            client_cert: None,
+            client_key: None,
+            ca_cert: None,
+            max_clock_skew_secs: 300,
+            supervisord: SupervisordConfig {
+                node_name,
+                ip: bind_ip,
+                port,
+                advertised_ip,
+            },
+            client: SupervisorClientConfig {
+                node_id,
+                endpoint,
+                shared_secret,
+            },
         });
 
         println!();
@@ -478,8 +514,6 @@ impl UnifiedConfigWizard {
         supervisor: &SupervisorConfig,
     ) -> Result<()> {
         let mut supervisor_table = Table::new();
-        supervisor_table["node_id"] = value(&supervisor.node_id);
-        supervisor_table["server_addr"] = value(&supervisor.server_addr);
         supervisor_table["connect_timeout_secs"] = value(supervisor.connect_timeout_secs as i64);
         supervisor_table["status_report_interval_secs"] =
             value(supervisor.status_report_interval_secs as i64);
@@ -488,6 +522,32 @@ impl UnifiedConfigWizard {
         supervisor_table["enable_tls"] = value(supervisor.enable_tls);
         if let Some(ref domain) = supervisor.tls_domain {
             supervisor_table["tls_domain"] = value(domain);
+        }
+        if let Some(ref cert) = supervisor.client_cert {
+            supervisor_table["client_cert"] = value(cert);
+        }
+        if let Some(ref key) = supervisor.client_key {
+            supervisor_table["client_key"] = value(key);
+        }
+        if let Some(ref ca) = supervisor.ca_cert {
+            supervisor_table["ca_cert"] = value(ca);
+        }
+        let supervisord = &supervisor.supervisord;
+        let mut supervisord_table = Table::new();
+        supervisord_table["node_name"] = value(&supervisord.node_name);
+        supervisord_table["ip"] = value(&supervisord.ip);
+        supervisord_table["port"] = value(supervisord.port as i64);
+        supervisord_table["advertised_ip"] = value(&supervisord.advertised_ip);
+        supervisor_table["supervisord"] = Item::Table(supervisord_table);
+
+        let client = &supervisor.client;
+        let mut client_table = Table::new();
+        client_table["node_id"] = value(&client.node_id);
+        client_table["endpoint"] = value(&client.endpoint);
+        client_table["shared_secret"] = value(&client.shared_secret);
+        supervisor_table["client"] = Item::Table(client_table);
+        if supervisor.max_clock_skew_secs != 300 {
+            supervisor_table["max_clock_skew_secs"] = value(supervisor.max_clock_skew_secs as i64);
         }
         doc["supervisor"] = Item::Table(supervisor_table);
 

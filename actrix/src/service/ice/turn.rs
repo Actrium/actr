@@ -1,8 +1,9 @@
 //! TURN服务实现
 
-use crate::service::{IceService, ServiceType, info::ServiceInfo};
+use crate::service::IceService;
 use actrix_common::config::ActrixConfig;
-use actrix_common::status::services::ServiceStatus;
+use actrix_common::status::services::ServiceState;
+use actrix_common::{ServiceInfo, ServiceType};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -119,7 +120,7 @@ impl IceService for TurnService {
         info!("Stopping TURN service");
 
         self.socket = None;
-        self.info.status = ServiceStatus::Unknown;
+        self.info.status = ServiceState::Unknown;
 
         info!("TURN service stopped");
         Ok(())

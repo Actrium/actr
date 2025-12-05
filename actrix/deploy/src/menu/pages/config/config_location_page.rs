@@ -111,7 +111,7 @@ impl Page for ConfigLocationPage {
 
         // Choose configuration location
         match self.choose_config_location() {
-            Ok(config_path) => {
+            Ok(_config_path) => {
                 // Store the chosen path in context for later use
                 // For now, continue to service selection
                 // TODO: Pass config_path through the wizard chain

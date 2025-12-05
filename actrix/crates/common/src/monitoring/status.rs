@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ServiceStatus {
+pub enum ServiceState {
     Unknown,
     Running(String),
     Error(String),

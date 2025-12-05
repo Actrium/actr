@@ -31,8 +31,11 @@ pub fn clear_input_buffer() {
             // Read and discard any pending bytes
             let mut buffer = [0u8; 1024];
             let mut stdin = io::stdin();
-            while let Ok(_) = stdin.read(&mut buffer) {
-                // Keep reading until nothing left
+            while let Ok(n) = stdin.read(&mut buffer) {
+                // Exit when no more data (non-blocking returns 0 or Err)
+                if n == 0 {
+                    break;
+                }
             }
 
             // Restore original flags

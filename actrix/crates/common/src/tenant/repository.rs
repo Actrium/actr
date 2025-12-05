@@ -177,6 +177,22 @@ impl Tenant {
         Ok(result)
     }
 
+    /// 根据租户ID获取租户
+    pub async fn get_by_tenant_id(tenant_id: &str) -> Result<Option<Self>, TenantError> {
+        let db = get_database();
+        let pool = db.get_pool();
+
+        let result = sqlx::query_as::<_, Tenant>(
+            "SELECT rowid, tenant_id, key_id, secret_key, name, public_key, expires_at, created_at, updated_at
+             FROM tenant WHERE tenant_id = ?",
+        )
+        .bind(tenant_id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(result)
+    }
+
     /// 获取所有租户列表
     pub async fn list() -> Result<Vec<Self>, TenantError> {
         Self::get_all().await
