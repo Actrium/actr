@@ -89,6 +89,10 @@ pub enum NetworkError {
     #[error("Connection not found: {0}")]
     ConnectionNotFound(String),
 
+    /// Connection closed error (e.g., cancelled during creation)
+    #[error("Connection closed: {0}")]
+    ConnectionClosed(String),
+
     /// Feature not implemented error
     #[error("Not implemented: {0}")]
     NotImplemented(String),
@@ -191,6 +195,7 @@ impl NetworkError {
             NetworkError::StunTurnError(_) => "stun_turn",
             NetworkError::WebSocketError(_) => "websocket",
             NetworkError::ConnectionNotFound(_) => "connection_not_found",
+            NetworkError::ConnectionClosed(_) => "connection_closed",
             NetworkError::NotImplemented(_) => "not_implemented",
             NetworkError::ChannelClosed(_) => "channel_closed",
             NetworkError::SendError(_) => "send_error",
@@ -234,6 +239,7 @@ impl NetworkError {
             NetworkError::WebSocketError(_) | NetworkError::StunTurnError(_) => 3,
 
             NetworkError::ConnectionNotFound(_)
+            | NetworkError::ConnectionClosed(_)
             | NetworkError::ChannelClosed(_)
             | NetworkError::SendError(_)
             | NetworkError::NoRoute(_)

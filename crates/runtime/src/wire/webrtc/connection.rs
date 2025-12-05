@@ -1,21 +1,17 @@
 //! WebRTC P2P Connection implementation
 
 use crate::transport::DataLane;
+use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{NetworkError, NetworkResult};
-use actr_protocol::PayloadType;
+use actr_protocol::{ActrId, PayloadType};
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use tokio::sync::{RwLock, mpsc};
+use std::sync::atomic::{AtomicU16, Ordering};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
-
-type ChannelCloseHandler =
-    Arc<dyn Fn(PayloadType) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Type alias for media track storage (track_id → (Track, Sender))
 type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>)>>>;
@@ -23,6 +19,9 @@ type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTC
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
 pub struct WebRtcConnection {
+    /// Peer ID for event identification
+    peer_id: ActrId,
+
     /// underlying RTCPeerConnection
     peer_connection: Arc<RTCPeerConnection>,
 
@@ -45,11 +44,8 @@ pub struct WebRtcConnection {
     /// MediaTrack not Cachein array in ，using HashMap
     lane_cache: Arc<RwLock<[Option<DataLane>; 4]>>,
 
-    /// Handlers invoked when any DataChannel closes
-    channel_close_handlers: Arc<RwLock<Vec<ChannelCloseHandler>>>,
-
-    /// Ensure close handler only fires once per connection lifetime
-    channel_close_notified: Arc<AtomicBool>,
+    /// Event broadcaster for connection state changes
+    event_tx: broadcast::Sender<ConnectionEvent>,
 
     /// connection status
     connected: Arc<RwLock<bool>>,
@@ -58,6 +54,7 @@ pub struct WebRtcConnection {
 impl std::fmt::Debug for WebRtcConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebRtcConnection")
+            .field("peer_id", &self.peer_id)
             .field("peer_connection", &"<RTCPeerConnection>")
             .field("data_channels", &"<[Option<Arc<RTCDataChannel>>; 4]>")
             .field("media_tracks", &"<HashMap<String, Arc<Track>>>")
@@ -67,29 +64,39 @@ impl std::fmt::Debug for WebRtcConnection {
 }
 
 impl WebRtcConnection {
-    /// from RTCPeerConnection CreateConnect
+    /// Create WebRtcConnection from RTCPeerConnection
     ///
     /// # Arguments
-    /// - `peer_connection`: Arc package pack 's RTCPeerConnection
-    pub fn new(peer_connection: Arc<RTCPeerConnection>) -> Self {
+    /// - `peer_id`: Peer identity for event identification
+    /// - `peer_connection`: Arc wrapped RTCPeerConnection
+    /// - `event_tx`: Broadcast sender for connection events
+    pub fn new(
+        peer_id: ActrId,
+        peer_connection: Arc<RTCPeerConnection>,
+        event_tx: broadcast::Sender<ConnectionEvent>,
+    ) -> Self {
         Self {
+            peer_id,
             peer_connection,
             data_channels: Arc::new(RwLock::new([None, None, None, None])),
             media_tracks: Arc::new(RwLock::new(HashMap::new())),
             track_sequence_numbers: Arc::new(RwLock::new(HashMap::new())),
             track_ssrcs: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new([None, None, None, None])),
-            channel_close_handlers: Arc::new(RwLock::new(Vec::new())),
-            channel_close_notified: Arc::new(AtomicBool::new(false)),
+            event_tx,
             connected: Arc::new(RwLock::new(true)),
         }
+    }
+
+    /// Get peer ID
+    pub fn peer_id(&self) -> &ActrId {
+        &self.peer_id
     }
 
     /// Install a state-change handler on the underlying RTCPeerConnection.
     ///
     /// This keeps `connected` in sync with the WebRTC connection state and
-    /// proactively closes the PeerConnection and clears internal caches when
-    /// entering a terminal state (Disconnected/Failed/Closed).
+    /// broadcasts state change events for upper layers to handle.
     pub(crate) async fn handle_state_change(&self, state: RTCPeerConnectionState) {
         // Treat New/Connecting/Connected as "connected"; others as disconnected.
         let is_connected = matches!(
@@ -107,17 +114,32 @@ impl WebRtcConnection {
             prev
         };
 
+        // Convert WebRTC state to our ConnectionState
+        let connection_state = match state {
+            RTCPeerConnectionState::New => ConnectionState::New,
+            RTCPeerConnectionState::Connecting => ConnectionState::Connecting,
+            RTCPeerConnectionState::Connected => ConnectionState::Connected,
+            RTCPeerConnectionState::Disconnected => ConnectionState::Disconnected,
+            RTCPeerConnectionState::Failed => ConnectionState::Failed,
+            RTCPeerConnectionState::Closed => ConnectionState::Closed,
+            _ => ConnectionState::Closed, // Unspecified maps to Closed
+        };
+
         tracing::info!(
             "🔄 WebRtcConnection peer state changed: {:?}, connected={}",
             state,
             is_connected
         );
 
-        // For terminal states, proactively close the connection and let
+        // Broadcast state change event for upper layers
+        let _ = self.event_tx.send(ConnectionEvent::StateChanged {
+            peer_id: self.peer_id.clone(),
+            state: connection_state.clone(),
+        });
+
+        // For Closed state, proactively close the connection and let
         // `close()` perform all resource cleanup. Only trigger when we
         // transition from connected -> disconnected to avoid loops.
-        // On terminal transition, let upper layer decide whether to
-        // trigger ICE restart; here we just close.
         if was_connected && matches!(state, RTCPeerConnectionState::Closed) {
             tracing::info!(
                 "🔻 WebRtcConnection entering terminal state {:?}, calling close()",
@@ -154,42 +176,23 @@ impl WebRtcConnection {
         Ok(())
     }
 
-    /// Replace existing close handlers with a new one.
-    pub async fn set_data_channel_close_handler<F, Fut>(&self, handler: F)
-    where
-        F: Fn(PayloadType) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let mut handlers = self.channel_close_handlers.write().await;
-        handlers.clear();
-        handlers.push(Arc::new(move |payload_type| {
-            Box::pin(handler(payload_type))
-        }));
-        self.channel_close_notified.store(false, Ordering::SeqCst);
+    /// Broadcast DataChannel closed event
+    ///
+    /// Unlike the old AtomicBool-based notification, this broadcasts to all
+    /// subscribers every time a DataChannel closes.
+    fn notify_data_channel_closed(&self, payload_type: PayloadType) {
+        //
+        // The cleanup will be handled by the caller (close() or cleanup_cancelled_connection).
+        // We only broadcast the event here to notify upper layers.
+        let _ = self.event_tx.send(ConnectionEvent::DataChannelClosed {
+            peer_id: self.peer_id.clone(),
+            payload_type,
+        });
     }
 
-    /// Add an additional close handler (handlers fire once collectively).
-    pub async fn add_data_channel_close_handler<F, Fut>(&self, handler: F)
-    where
-        F: Fn(PayloadType) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-    {
-        let mut handlers = self.channel_close_handlers.write().await;
-        handlers.push(Arc::new(move |payload_type| {
-            Box::pin(handler(payload_type))
-        }));
-        self.channel_close_notified.store(false, Ordering::SeqCst);
-    }
-
-    async fn notify_data_channel_closed(&self, payload_type: PayloadType) {
-        if self.channel_close_notified.swap(true, Ordering::SeqCst) {
-            return;
-        }
-
-        let handlers = { self.channel_close_handlers.read().await.clone() };
-        for handler in handlers {
-            handler(payload_type).await;
-        }
+    /// Subscribe to connection events
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ConnectionEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Checkwhether already Connect
@@ -198,7 +201,7 @@ impl WebRtcConnection {
         *self.connected.blocking_read()
     }
 
-    /// CloseConnect
+    /// Close connection and broadcast ConnectionClosed event
     pub async fn close(&self) -> NetworkResult<()> {
         *self.connected.write().await = false;
         self.peer_connection.close().await?;
@@ -223,7 +226,12 @@ impl WebRtcConnection {
         let mut cache = self.lane_cache.write().await;
         *cache = [None, None, None, None];
 
-        tracing::info!("🔌 WebRtcConnection already Close");
+        // Broadcast ConnectionClosed event
+        let _ = self.event_tx.send(ConnectionEvent::ConnectionClosed {
+            peer_id: self.peer_id.clone(),
+        });
+
+        tracing::info!("🔌 WebRtcConnection closed for peer {:?}", self.peer_id);
         Ok(())
     }
 
@@ -370,6 +378,11 @@ impl WebRtcConnection {
             .create_data_channel(&label, Some(dc_config))
             .await?;
 
+        data_channel.on_open(Box::new(move || {
+            tracing::info!("🔄 WebRTC DataChannel opened: {:?}", payload_type);
+            Box::pin(async move {})
+        }));
+
         let channel_id = data_channel.id();
         let payload_type_for_error = payload_type;
         let label_for_error = label.clone();
@@ -405,7 +418,8 @@ impl WebRtcConnection {
                 );
                 // Invalidate cached lane when DataChannel closes
                 this.invalidate_lane(payload_type).await;
-                this.notify_data_channel_closed(payload_type).await;
+                // Broadcast DataChannelClosed event (sync, no await needed)
+                this.notify_data_channel_closed(payload_type);
             })
         }));
 
@@ -613,7 +627,8 @@ impl WebRtcConnection {
                 );
                 // Invalidate cached lane when DataChannel closes
                 this.invalidate_lane(payload_type).await;
-                this.notify_data_channel_closed(payload_type).await;
+                // Broadcast DataChannelClosed event (sync, no await needed)
+                this.notify_data_channel_closed(payload_type);
             })
         }));
 

@@ -200,6 +200,7 @@ impl From<crate::transport::error::NetworkError> for RuntimeError {
             | NetworkError::ServiceDiscoveryError(_)
             | NetworkError::NotImplemented(_)
             | NetworkError::ChannelClosed(_)
+            | NetworkError::ConnectionClosed(_)
             | NetworkError::SendError(_)
             | NetworkError::IoError(_)
             | NetworkError::UrlParseError(_)

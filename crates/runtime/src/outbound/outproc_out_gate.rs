@@ -4,14 +4,16 @@
 //! - Wrap OutprocTransportManager (Protobuf serialization)
 //! - Used for cross-process communication (WebRTC + WebSocket)
 //! - Maintain pending_requests (Request/Response matching)
+//! - Block new requests to peers being cleaned up (closing_peers)
 
+use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{Dest, OutprocTransportManager};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
-use std::collections::HashMap;
+use actr_protocol::{ActorResult, ActrId, ActrIdExt, PayloadType, ProtocolError, RpcEnvelope};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{RwLock, broadcast, oneshot};
 
 /// OutprocOutGate - Outproc transport adapter (outbound)
 ///
@@ -20,17 +22,22 @@ use tokio::sync::{RwLock, oneshot};
 /// - Defaults to PayloadType::RpcReliable for RPC messages
 /// - Maintain pending_requests for Request/Response matching
 /// - Support MediaTrack sending via WebRTC
+/// - Block new requests to peers being cleaned up (closing_peers)
 pub struct OutprocOutGate {
     /// OutprocTransportManager instance
     transport_manager: Arc<OutprocTransportManager>,
 
-    /// Pending requests: request_id → oneshot::Sender<Bytes>
-    /// Pending requests (can receive success or error)
+    /// Pending requests: request_id → (target_actor_id, oneshot::Sender<Bytes>)
+    /// Stores both the target ActorId and response sender for efficient cleanup by peer
     pending_requests:
-        Arc<RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>>,
+        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>,
 
     /// WebRTC coordinator (optional, for MediaTrack support)
     webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
+
+    #[allow(unused)]
+    /// todo: Peers currently being cleaned up (block new requests) ,closed requests will be cleaned up in event listener
+    closing_peers: Arc<RwLock<HashSet<ActrId>>>,
 }
 
 impl OutprocOutGate {
@@ -43,11 +50,137 @@ impl OutprocOutGate {
         transport_manager: Arc<OutprocTransportManager>,
         webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
     ) -> Self {
+        let closing_peers = Arc::new(RwLock::new(HashSet::new()));
+        let pending_requests = Arc::new(RwLock::new(HashMap::new()));
+
+        // Start event listener if coordinator is available
+        // This is the ONLY event subscriber - it triggers top-down cleanup
+        if let Some(ref coordinator) = webrtc_coordinator {
+            Self::spawn_event_listener(
+                coordinator.subscribe_events(),
+                Arc::clone(&pending_requests),
+                Arc::clone(&closing_peers),
+                Arc::clone(&transport_manager),
+            );
+        }
+
         Self {
             transport_manager,
-            pending_requests: Arc::new(RwLock::new(HashMap::new())),
+            pending_requests,
             webrtc_coordinator,
+            closing_peers,
         }
+    }
+
+    /// Spawn event listener task to handle connection events
+    ///
+    /// This is the **ONLY** event subscriber in the cleanup chain.
+    /// It triggers top-down cleanup by calling transport_manager.close_transport().
+    fn spawn_event_listener(
+        mut event_rx: broadcast::Receiver<ConnectionEvent>,
+        pending_requests: Arc<
+            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
+        >,
+        closing_peers: Arc<RwLock<HashSet<ActrId>>>,
+        transport_manager: Arc<OutprocTransportManager>,
+    ) {
+        tokio::spawn(async move {
+            while let Ok(event) = event_rx.recv().await {
+                tracing::debug!("🔄 OutprocOutGate received connection event: {:?}", event);
+                match &event {
+                    // Block new requests when connection enters Disconnected/Failed state
+                    ConnectionEvent::StateChanged {
+                        peer_id,
+                        state: ConnectionState::Disconnected | ConnectionState::Failed,
+                    } => {
+                        closing_peers.write().await.insert(peer_id.clone());
+                        tracing::debug!(
+                            "🚫 Blocking new requests to peer {} (state: {:?})",
+                            peer_id.to_string_repr(),
+                            event
+                        );
+                    }
+
+                    // Clean pending requests and trigger downstream cleanup when connection is fully closed
+                    ConnectionEvent::StateChanged {
+                        peer_id,
+                        state: ConnectionState::Closed,
+                    }
+                    | ConnectionEvent::ConnectionClosed { peer_id } => {
+                        // Mark peer as closing
+                        closing_peers.write().await.insert(peer_id.clone());
+
+                        // 1. Trigger downstream cleanup (OutprocTransportManager → DestTransport → WirePool)
+                        let dest = Dest::actor(peer_id.clone());
+                        match transport_manager.close_transport(&dest).await {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "✅ Successfully closed transport chain for peer {}",
+                                    peer_id.to_string_repr()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "⚠️ Failed to close transport for peer {}: {}",
+                                    peer_id.to_string_repr(),
+                                    e
+                                );
+                            }
+                        }
+
+                        // 2. Clean pending requests for this peer
+                        let mut pending = pending_requests.write().await;
+
+                        // Collect request_ids that belong to this peer
+                        let keys_to_remove: Vec<_> = pending
+                            .iter()
+                            .filter_map(|(req_id, (target, _))| {
+                                if target == peer_id {
+                                    Some(req_id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        let cleaned_count = keys_to_remove.len();
+
+                        tracing::info!(
+                            "🧹 Cleaned {} pending requests for peer {}",
+                            cleaned_count,
+                            peer_id.to_string_repr()
+                        );
+
+                        // Remove and send error to all pending requests for this peer
+                        for key in keys_to_remove {
+                            if let Some((_, tx)) = pending.remove(&key) {
+                                let _ = tx.send(Err(ProtocolError::TransportError(
+                                    "Connection closed".to_string(),
+                                )));
+                            }
+                        }
+                        drop(pending); // Release lock before calling downstream
+
+                        // Unblock after cleanup completes
+                        closing_peers.write().await.remove(peer_id);
+                    }
+
+                    // Unblock peer when ICE restart succeeds
+                    ConnectionEvent::IceRestartCompleted {
+                        peer_id,
+                        success: true,
+                    } => {
+                        closing_peers.write().await.remove(peer_id);
+                        tracing::debug!(
+                            "✅ Unblocked peer {} after successful ICE restart",
+                            peer_id.to_string_repr()
+                        );
+                    }
+
+                    _ => {} // Ignore other events
+                }
+            }
+        });
     }
 
     /// Handle response message (called by MessageDispatcher)
@@ -66,10 +199,14 @@ impl OutprocOutGate {
     ) -> ActorResult<bool> {
         let mut pending = self.pending_requests.write().await;
 
-        if let Some(tx) = pending.remove(request_id) {
+        if let Some((target, tx)) = pending.remove(request_id) {
             // Wake up waiting request with result (success or error)
             let _ = tx.send(result);
-            tracing::debug!("✅ Completed request: {}", request_id);
+            tracing::debug!(
+                "✅ Completed request: {} (target: {})",
+                request_id,
+                target.to_string_repr()
+            );
             Ok(true)
         } else {
             tracing::warn!("⚠️  No pending request for: {}", request_id);
@@ -85,7 +222,8 @@ impl OutprocOutGate {
     /// Get pending_requests reference (for WebRtcGate to share)
     pub fn get_pending_requests(
         &self,
-    ) -> Arc<RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>> {
+    ) -> Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>
+    {
         self.pending_requests.clone()
     }
 
@@ -109,13 +247,21 @@ impl OutprocOutGate {
             envelope.request_id
         );
 
+        // // 0. Check if target is being cleaned up (block new requests)
+        // if self.closing_peers.read().await.contains(target) {
+        //     return Err(ProtocolError::TransportError(format!(
+        //         "Connection to {} is closing",
+        //         target.to_string_repr()
+        //     )));
+        // }
+
         // 1. Create oneshot channel for receiving response
         let (response_tx, response_rx) = oneshot::channel();
 
-        // 2. Register pending request
+        // 2. Register pending request with target ActorId
         {
             let mut pending = self.pending_requests.write().await;
-            pending.insert(envelope.request_id.clone(), response_tx);
+            pending.insert(envelope.request_id.clone(), (target.clone(), response_tx));
         }
 
         // 3. Serialize RpcEnvelope
@@ -175,6 +321,14 @@ impl OutprocOutGate {
     /// Send one-way message (no response expected)
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         tracing::debug!("📤 OutprocGate::send_message to {:?}", target);
+
+        // // Check if target is being cleaned up
+        // if self.closing_peers.read().await.contains(target) {
+        //     return Err(ProtocolError::TransportError(format!(
+        //         "Connection to {} is closing",
+        //         target.to_string_repr()
+        //     )));
+        // }
 
         // 1. Serialize RpcEnvelope
         let data = Self::serialize_envelope(&envelope);
@@ -251,6 +405,14 @@ impl OutprocOutGate {
             payload_type,
             data.len()
         );
+
+        // // Check if target is being cleaned up
+        // if self.closing_peers.read().await.contains(target) {
+        //     return Err(ProtocolError::TransportError(format!(
+        //         "Connection to {} is closing",
+        //         target.to_string_repr()
+        //     )));
+        // }
 
         // Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);

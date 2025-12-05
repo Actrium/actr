@@ -8,7 +8,7 @@ use super::error::NetworkResult;
 use super::wire_handle::{WireHandle, WireStatus};
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::sync::{RwLock, watch};
 
@@ -101,6 +101,9 @@ pub struct WirePool {
 
     /// Retry configuration
     retry_config: RetryConfig,
+
+    /// Closed flag (used to terminate background tasks)
+    closed: Arc<AtomicBool>,
 }
 
 impl WirePool {
@@ -114,6 +117,7 @@ impl WirePool {
             ready_rx: rx,
             pending: Arc::new(AtomicU8::new(0)),
             retry_config,
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -129,31 +133,9 @@ impl WirePool {
         let ready_tx = self.ready_tx.clone();
         let pending = Arc::clone(&self.pending);
         let retry_config = self.retry_config;
+        let closed = Arc::clone(&self.closed);
 
         let conn_type = ConnType::from(&connection);
-
-        // Listen for DataChannel close events and mark WebRTC connection as failed in the pool.
-        if let WireHandle::WebRTC(rtc) = &connection {
-            let connections_for_close = Arc::clone(&self.connections);
-            let ready_tx_for_close = self.ready_tx.clone();
-            let conn_type_for_close = conn_type;
-            let rtc_clone = rtc.clone();
-            tokio::spawn(async move {
-                rtc_clone
-                    .add_data_channel_close_handler(move |_payload_type| {
-                        let connections = Arc::clone(&connections_for_close);
-                        let ready_tx = ready_tx_for_close.clone();
-                        async move {
-                            {
-                                let mut conns = connections.write().await;
-                                conns[conn_type_for_close.as_index()] = Some(WireStatus::Failed);
-                            }
-                            WirePool::broadcast_ready_connections(&connections, &ready_tx).await;
-                        }
-                    })
-                    .await;
-            });
-        }
 
         tokio::spawn(async move {
             // Initialize status
@@ -167,6 +149,15 @@ impl WirePool {
 
             // Retry loop using ExponentialBackoff iterator
             for (attempt, delay) in backoff.enumerate() {
+                // Check if pool has been closed
+                if closed.load(Ordering::Relaxed) {
+                    tracing::debug!(
+                        "🛑 [{:?}] Connection task terminated (pool closed)",
+                        conn_type
+                    );
+                    return;
+                }
+
                 // Wait for delay (first attempt has 0 delay built into iterator)
                 if attempt > 0 {
                     tracing::debug!(
@@ -176,6 +167,15 @@ impl WirePool {
                         attempt + 1
                     );
                     tokio::time::sleep(delay).await;
+
+                    // Check again after sleep
+                    if closed.load(Ordering::Relaxed) {
+                        tracing::debug!(
+                            "🛑 [{:?}] Connection task terminated (pool closed)",
+                            conn_type
+                        );
+                        return;
+                    }
                 }
 
                 pending.fetch_add(1, Ordering::Relaxed);
@@ -337,5 +337,39 @@ impl WirePool {
             })?;
 
         Ok(())
+    }
+
+    /// Mark a connection as closed/failed
+    ///
+    /// Called by upper layers (DestTransport) when closing connections.
+    /// This replaces the per-connection event listener pattern.
+    pub async fn mark_connection_closed(&self, conn_type: ConnType) {
+        {
+            let mut conns = self.connections.write().await;
+            conns[conn_type.as_index()] = Some(WireStatus::Failed);
+        }
+
+        // Update ready set
+        Self::broadcast_ready_connections(&self.connections, &self.ready_tx).await;
+
+        tracing::debug!("🔌 Marked {:?} connection as closed", conn_type);
+    }
+
+    /// Close all connections in the pool
+    ///
+    /// Called by DestTransport.close() to clean up all connections.
+    /// This also terminates all background connection tasks.
+    pub async fn close_all(&self) {
+        // 1. Set closed flag to terminate background tasks
+        self.closed.store(true, Ordering::Relaxed);
+
+        // 2. Clear all connection status
+        let mut conns = self.connections.write().await;
+        *conns = [None, None];
+
+        // 3. Broadcast empty ready set
+        let _ = self.ready_tx.send(HashSet::new());
+
+        tracing::debug!("🔌 Closed all connections in pool (background tasks will terminate)");
     }
 }

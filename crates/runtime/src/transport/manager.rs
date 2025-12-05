@@ -16,9 +16,11 @@ use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
 use either::Either;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 
 /// Wire builder trait: asynchronously creates Wire components based on Dest
 ///
@@ -33,6 +35,35 @@ pub trait WireBuilder: Send + Sync {
     /// # Returns
     /// - Wire handle list (may contain multiple types: WebSocket, WebRTC, etc.)
     async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>>;
+
+    /// Create Wire handle list with cancellation support
+    ///
+    /// # Arguments
+    /// - `dest`: Target destination
+    /// - `cancel_token`: Optional cancellation token to terminate the operation
+    ///
+    /// # Returns
+    /// - Wire handle list (may contain multiple types: WebSocket, WebRTC, etc.)
+    /// - Returns error if cancelled
+    ///
+    /// Default implementation ignores the cancel token and calls `create_connections`.
+    async fn create_connections_with_cancel(
+        &self,
+        dest: &Dest,
+        cancel_token: Option<CancellationToken>,
+    ) -> NetworkResult<Vec<WireHandle>> {
+        // Check if already cancelled
+        if let Some(ref token) = cancel_token {
+            if token.is_cancelled() {
+                return Err(NetworkError::ConnectionClosed(
+                    "Connection creation cancelled".to_string(),
+                ));
+            }
+        }
+
+        // Default: just call create_connections
+        self.create_connections(dest).await
+    }
 }
 
 /// Destination transport state
@@ -70,6 +101,14 @@ pub struct OutprocTransportManager {
 
     /// Wire builder (used to create Wire handles for new DestTransport)
     conn_factory: Arc<dyn WireBuilder>,
+
+    /// Cancellation tokens for in-progress connection creation
+    /// Dest → CancellationToken (for cancelling ongoing connection attempts)
+    pending_tokens: Arc<Mutex<HashMap<Dest, CancellationToken>>>,
+
+    #[allow(unused)]
+    /// todo: Set of peers currently being closed (to reject new connection attempts) ,closed requests will be cleaned up in event listener
+    closing_peers: Arc<RwLock<HashSet<Dest>>>,
 }
 
 impl OutprocTransportManager {
@@ -83,7 +122,14 @@ impl OutprocTransportManager {
             local_id,
             transports: Arc::new(RwLock::new(HashMap::new())),
             conn_factory,
+            pending_tokens: Arc::new(Mutex::new(HashMap::new())),
+            closing_peers: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Check if a destination is currently being closed
+    pub async fn is_closing(&self, dest: &Dest) -> bool {
+        self.closing_peers.read().await.contains(dest)
     }
 
     /// Get or create DestTransport for specified Dest
@@ -100,6 +146,14 @@ impl OutprocTransportManager {
     /// 2. If Connecting → wait for notify, then retry
     /// 3. If None → insert Connecting(notify), create connection outside lock
     pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
+        // 0. Check if dest is being closed - fast fail
+        // if self.closing_peers.read().await.contains(dest) {
+        //     return Err(NetworkError::ConnectionClosed(format!(
+        //         "Destination {:?} is being closed.",
+        //         dest
+        //     )));
+        // }
+
         loop {
             // 1. Fast path: check current state
             let state_opt = {
@@ -117,6 +171,13 @@ impl OutprocTransportManager {
                 Some(Either::Left(notify)) => {
                     tracing::debug!("⏳ Waiting for ongoing connection: {:?}", dest);
                     notify.notified().await;
+                    // Check if cancelled during wait
+                    // if self.closing_peers.read().await.contains(dest) {
+                    //     return Err(NetworkError::ConnectionClosed(format!(
+                    //         "Destination {:?} was closed while waiting",
+                    //         dest
+                    //     )));
+                    // }
                     // Retry after notification
                     continue;
                 }
@@ -140,6 +201,13 @@ impl OutprocTransportManager {
                         Arc::clone(notify)
                     }
                     None => {
+                        // Check closing again before creating
+                        // if self.closing_peers.read().await.contains(dest) {
+                        //     return Err(NetworkError::ConnectionClosed(format!(
+                        //         "Destination {:?} is being closed",
+                        //         dest
+                        //     )));
+                        // }
                         // We are the creator, insert Connecting state
                         let notify = Arc::new(Notify::new());
                         transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));
@@ -165,8 +233,18 @@ impl OutprocTransportManager {
             // 3. We are the creator - create connections OUTSIDE lock
             tracing::info!("🚀 Creating new connection for: {:?}", dest);
 
+            // Create cancellation token for this connection attempt
+            let cancel_token = CancellationToken::new();
+            {
+                let mut tokens = self.pending_tokens.lock().await;
+                tokens.insert(dest.clone(), cancel_token.clone());
+            }
+
             let result = async {
-                let connections = self.conn_factory.create_connections(dest).await?;
+                let connections = self
+                    .conn_factory
+                    .create_connections_with_cancel(dest, Some(cancel_token.clone()))
+                    .await?;
 
                 if connections.is_empty() {
                     return Err(NetworkError::ConfigurationError(format!(
@@ -184,7 +262,13 @@ impl OutprocTransportManager {
             }
             .await;
 
-            // 4. Update state and notify waiters
+            // 4. Clean up pending token (connection attempt finished)
+            {
+                let mut tokens = self.pending_tokens.lock().await;
+                tokens.remove(dest);
+            }
+
+            // 5. Update state and notify waiters
             let mut transports = self.transports.write().await;
 
             match result {
@@ -241,22 +325,45 @@ impl OutprocTransportManager {
 
     /// Close DestTransport for specified Dest
     ///
+    /// Called by OutprocOutGate when connection events indicate cleanup is needed.
+    /// This triggers the cleanup chain: OutprocTransportManager → DestTransport → WirePool
+    ///
     /// # Arguments
     /// - `dest`: Target destination
     pub async fn close_transport(&self, dest: &Dest) -> NetworkResult<()> {
+        // 1. Mark as closing
+        self.closing_peers.write().await.insert(dest.clone());
+
+        // 2. Cancel in-progress connection creation
+        {
+            let mut tokens = self.pending_tokens.lock().await;
+            if let Some(token) = tokens.remove(dest) {
+                tracing::info!("🚫 Cancelling in-progress connection for {:?}", dest);
+                token.cancel();
+            }
+        }
+
+        // 3. Remove and close the transport
         let mut transports = self.transports.write().await;
 
         if let Some(state) = transports.remove(dest) {
+            drop(transports); // Release lock before calling close()
+
             match state {
                 Either::Right(transport) => {
                     tracing::info!("🔌 Closing DestTransport: {:?}", dest);
                     transport.close().await?;
                 }
-                Either::Left(_notify) => {
+                Either::Left(notify) => {
                     tracing::debug!("⏸️ Removed Connecting state for: {:?}", dest);
+                    // Notify waiters that connection was cancelled
+                    notify.notify_waiters();
                 }
             }
         }
+
+        // 4. Remove from closing set after cleanup completes
+        self.closing_peers.write().await.remove(dest);
 
         Ok(())
     }

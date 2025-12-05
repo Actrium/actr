@@ -160,8 +160,10 @@ impl DestTransport {
     ) -> NetworkResult<()> {
         tracing::info!("🔄 Retrying failed connections for: {:?}", dest);
 
-        // Get fresh connections from builder
-        let connections = wire_builder.create_connections(dest).await?;
+        // Get fresh connections from builder (no cancel token for retry)
+        let connections = wire_builder
+            .create_connections_with_cancel(dest, None)
+            .await?;
 
         if connections.is_empty() {
             return Err(NetworkError::ConfigurationError(
@@ -181,7 +183,7 @@ impl DestTransport {
     pub async fn close(&self) -> NetworkResult<()> {
         tracing::info!("🔌 Closing DestTransport");
 
-        // Get all connections and close them one by one
+        // 1. Get all connections and close them one by one
         for conn_type in [ConnType::WebSocket, ConnType::WebRTC] {
             if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
                 if let Err(e) = conn.close().await {
@@ -189,8 +191,15 @@ impl DestTransport {
                 } else {
                     tracing::debug!("✅ Closed {:?} connection", conn_type);
                 }
+
+                // 2. Mark connection as closed in the pool
+                // This updates the ready_tx and notifies waiters
+                self.conn_mgr.mark_connection_closed(conn_type).await;
             }
         }
+
+        // 3. Clean up the entire pool
+        self.conn_mgr.close_all().await;
 
         Ok(())
     }

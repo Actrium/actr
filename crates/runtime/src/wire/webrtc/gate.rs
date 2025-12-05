@@ -13,7 +13,7 @@ use crate::inbound::DataStreamRegistry;
 use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -36,12 +36,12 @@ pub struct WebRtcGate {
     /// WebRTC signaling coordinator
     coordinator: Arc<WebRtcCoordinator>,
 
-    /// Pending requests (request_id → response channel)
+    /// Pending requests (request_id → (target_actor_id, response channel))
     /// Used to determine if received message is Response (key exists) or Request (key doesn't exist)
     /// **Shared with OutprocOutGate** to ensure correct Response routing
     /// Can send success (Ok(Bytes)) or error (Err(ProtocolError))
     pending_requests:
-        Arc<RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>>,
+        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>,
 
     /// DataStream registry for fast-path message routing
     data_stream_registry: Arc<DataStreamRegistry>,
@@ -57,7 +57,7 @@ impl WebRtcGate {
     pub fn new(
         coordinator: Arc<WebRtcCoordinator>,
         pending_requests: Arc<
-            RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>,
+            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
         >,
         data_stream_registry: Arc<DataStreamRegistry>,
     ) -> Self {
@@ -93,7 +93,7 @@ impl WebRtcGate {
         data: Bytes,
         payload_type: PayloadType,
         pending_requests: Arc<
-            RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>,
+            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
         >,
         mailbox: Arc<dyn Mailbox>,
     ) {
@@ -109,10 +109,14 @@ impl WebRtcGate {
 
         // Determine if Response or Request
         let mut pending = pending_requests.write().await;
-        if let Some(response_tx) = pending.remove(&request_id) {
+        if let Some((target, response_tx)) = pending.remove(&request_id) {
             // Response - Wake up waiting caller (bypassing disk, fast path)
             drop(pending); // Release lock
-            tracing::debug!("📬 Received RPC Response: request_id={}", request_id);
+            tracing::debug!(
+                "📬 Received RPC Response: request_id={}, target={}",
+                request_id,
+                target.to_string_repr()
+            );
 
             // Convert envelope to result
             let result = match (envelope.payload, envelope.error) {

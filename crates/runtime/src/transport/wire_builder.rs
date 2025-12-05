@@ -3,15 +3,17 @@
 //! Provides default Wire component builder implementation, supporting:
 //! - WebRTC P2P connections (through WebRtcCoordinator)
 //! - WebSocket C/S connections
+//! - CancellationToken for terminating in-progress connection creation
 
 use super::Dest; // Re-exported from actr-framework
-use super::error::NetworkResult;
+use super::error::{NetworkError, NetworkResult};
 use super::manager::WireBuilder;
 use super::wire_handle::WireHandle;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
 use async_trait::async_trait;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Default Wire builder configuration
 pub struct DefaultWireBuilderConfig {
@@ -89,10 +91,36 @@ impl DefaultWireBuilder {
 #[async_trait]
 impl WireBuilder for DefaultWireBuilder {
     async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>> {
+        // Delegate to method with no cancel token
+        self.create_connections_with_cancel(dest, None).await
+    }
+
+    async fn create_connections_with_cancel(
+        &self,
+        dest: &Dest,
+        cancel_token: Option<CancellationToken>,
+    ) -> NetworkResult<Vec<WireHandle>> {
         let mut connections = Vec::new();
 
-        // 1. attempt try Create WebSocket Connect
+        // Helper to check cancellation
+        let check_cancelled = |token: &Option<CancellationToken>| -> NetworkResult<()> {
+            if let Some(t) = token {
+                if t.is_cancelled() {
+                    return Err(NetworkError::ConnectionClosed(
+                        "Connection creation cancelled".to_string(),
+                    ));
+                }
+            }
+            Ok(())
+        };
+
+        // 1. Check if already cancelled
+        check_cancelled(&cancel_token)?;
+
+        // 2. attempt try Create WebSocket Connect
         if self.config.enable_websocket {
+            check_cancelled(&cancel_token)?;
+
             if let Some(url) = self.build_websocket_url(dest) {
                 tracing::debug!("🏭 [Factory] Create WebSocket Connect: {}", url);
                 let ws_conn = WebSocketConnection::new(url);
@@ -105,14 +133,35 @@ impl WireBuilder for DefaultWireBuilder {
             }
         }
 
-        // 2. attempt try Create WebRTC Connect
+        // 3. Check cancellation before WebRTC
+        check_cancelled(&cancel_token)?;
+
+        // 4. attempt try Create WebRTC Connect
         if self.config.enable_webrtc {
             if let Some(coordinator) = &self.webrtc_coordinator {
                 // WebRTC merely Support Actor Type
                 if dest.is_actor() {
                     tracing::debug!("🏭 [Factory] Create WebRTC Connectto: {:?}", dest);
-                    match coordinator.create_connection(dest).await {
+
+                    // Check cancellation before long-running operation
+                    check_cancelled(&cancel_token)?;
+
+                    match coordinator
+                        .create_connection(dest, cancel_token.clone())
+                        .await
+                    {
                         Ok(webrtc_conn) => {
+                            // Check cancellation after creation
+                            if let Err(e) = check_cancelled(&cancel_token) {
+                                // Clean up newly created connection
+                                if let Err(close_err) = webrtc_conn.close().await {
+                                    tracing::warn!(
+                                        "⚠️ [Factory] Failed to close cancelled connection: {}",
+                                        close_err
+                                    );
+                                }
+                                return Err(e);
+                            }
                             connections.push(WireHandle::WebRTC(webrtc_conn));
                         }
                         Err(e) => {

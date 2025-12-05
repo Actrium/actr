@@ -9,6 +9,7 @@
 //! - WireBuilder: Wire layer component builder
 
 mod backoff;
+pub mod connection_event;
 mod dest_transport;
 pub mod error;
 mod inproc_manager;
@@ -45,3 +46,6 @@ pub use error::{NetworkError, NetworkResult};
 
 // Retry and backoff strategies
 pub use backoff::ExponentialBackoff;
+
+// Connection events
+pub use connection_event::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
