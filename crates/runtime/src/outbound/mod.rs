@@ -66,6 +66,10 @@ impl OutGate {
     /// 使用 enum dispatch 静态分发到对应的实现：
     /// - `InprocOut`: 零序列化，直接传递 RpcEnvelope
     /// - `OutprocOut`: Protobuf 序列化，通过 Transport 层发送
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "OutGate.send_request")
+    )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         match self {
             OutGate::InprocOut(gate) => gate.send_request(target, envelope).await,
@@ -83,6 +87,10 @@ impl OutGate {
     /// # 语义
     ///
     /// Fire-and-forget：发送后立即返回，不等待响应
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "OutGate.send_message")
+    )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
             OutGate::InprocOut(gate) => gate.send_message(target, envelope).await,

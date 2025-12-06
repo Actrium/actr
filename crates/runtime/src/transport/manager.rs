@@ -145,6 +145,7 @@ impl OutprocTransportManager {
     /// 1. If Connected → return transport
     /// 2. If Connecting → wait for notify, then retry
     /// 3. If None → insert Connecting(notify), create connection outside lock
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
         // 0. Check if dest is being closed - fast fail
         // if self.closing_peers.read().await.contains(dest) {
@@ -303,6 +304,10 @@ impl OutprocTransportManager {
     /// ```rust,ignore
     /// mgr.send(&dest, PayloadType::RpcSignal, b"hello").await?;
     /// ```
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "OutprocTransportManager.send")
+    )]
     pub async fn send(
         &self,
         dest: &Dest,

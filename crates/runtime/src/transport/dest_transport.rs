@@ -49,6 +49,10 @@ impl DestTransport {
     /// - If connection available, send immediately
     /// - If not, wait for connection status change (via watch channel)
     /// - WirePool already handles priority, only need to try DataLane Types in order
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "DestTransport.send")
+    )]
     pub async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
         tracing::debug!(
             "📤 Sending message: type={:?}, size={}",

@@ -5,6 +5,8 @@
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use crate::transport::error::{NetworkError, NetworkResult};
+#[cfg(feature = "opentelemetry")]
+use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrIdExt, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
@@ -26,6 +28,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
+#[cfg(feature = "opentelemetry")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use url::Url;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -401,6 +405,10 @@ impl WebSocketSignalingClient {
     }
 
     /// Send envelope and wait for response with timeout and error handling.
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, fields(envelope_id = %envelope.envelope_id))
+    )]
     async fn send_envelope_and_wait_response(
         &self,
         envelope: SignalingEnvelope,
@@ -465,11 +473,19 @@ impl WebSocketSignalingClient {
                         last_pong.store(current_unix_secs(), Ordering::Release);
                         match SignalingEnvelope::decode(&data[..]) {
                             Ok(envelope) => {
+                                #[cfg(feature = "opentelemetry")]
+                                let span = {
+                                    let span = tracing::info_span!("signaling.receive_envelope", envelope_id = %envelope.envelope_id);
+                                    span.set_parent(extract_trace_context(&envelope));
+                                    span
+                                };
+
                                 stats.messages_received.fetch_add(1, Ordering::Relaxed);
                                 tracing::debug!("Received message: {:?}", envelope);
                                 if let Some(reply_for) = envelope.reply_for.clone() {
-                                    let mut pending_guard = pending.lock().await;
-                                    if let Some(sender) = pending_guard.remove(&reply_for) {
+                                    if let Some(sender) = pending.lock().await.remove(&reply_for) {
+                                        #[cfg(feature = "opentelemetry")]
+                                        let _ = span.enter();
                                         if let Err(e) = sender.send(envelope) {
                                             stats.errors.fetch_add(1, Ordering::Relaxed);
                                             tracing::warn!(
@@ -628,6 +644,7 @@ impl SignalingClient for WebSocketSignalingClient {
         Ok(())
     }
 
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     async fn send_register_request(
         &self,
         request: RegisterRequest,
@@ -654,6 +671,10 @@ impl SignalingClient for WebSocketSignalingClient {
         ))
     }
 
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, fields(actor_id = %actor_id.to_string_repr()))
+    )]
     async fn send_unregister_request(
         &self,
         actor_id: ActrId,
@@ -688,7 +709,10 @@ impl SignalingClient for WebSocketSignalingClient {
         })
     }
 
-    #[instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))]
+    #[cfg_attr(
+        feature = "opentelemetry",
+        instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+    )]
     async fn send_heartbeat(
         &self,
         actor_id: ActrId,
@@ -714,6 +738,7 @@ impl SignalingClient for WebSocketSignalingClient {
         self.send_envelope(envelope).await
     }
 
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     async fn send_route_candidates_request(
         &self,
         actor_id: ActrId,
@@ -750,15 +775,17 @@ impl SignalingClient for WebSocketSignalingClient {
         ))
     }
 
-    #[allow(unused_mut)]
-    #[tracing::instrument(
-        level = "debug",
-        skip_all,
-        fields(envelope_id = %envelope.envelope_id)
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(level = "debug", skip_all, fields(envelope_id = %envelope.envelope_id))
     )]
-    async fn send_envelope(&self, mut envelope: SignalingEnvelope) -> NetworkResult<()> {
+    async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()> {
         #[cfg(feature = "opentelemetry")]
-        trace::inject_span_context(&tracing::Span::current(), &mut envelope);
+        let envelope = {
+            let mut envelope = envelope;
+            trace::inject_span_context(&tracing::Span::current(), &mut envelope);
+            envelope
+        };
 
         let mut sink_guard = self.ws_sink.lock().await;
 

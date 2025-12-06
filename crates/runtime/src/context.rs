@@ -5,6 +5,8 @@
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
 use crate::outbound::OutGate;
 use crate::wire::webrtc::SignalingClient;
+#[cfg(feature = "opentelemetry")]
+use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, ProtocolError, RouteCandidatesRequest,
@@ -129,7 +131,10 @@ impl Context for RuntimeContext {
     }
 
     // ========== 通信能力方法 ==========
-
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call")
+    )]
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
         use actr_protocol::prost::Message as ProstMessage;
 
@@ -153,10 +158,7 @@ impl Context for RuntimeContext {
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
-            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-        }
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
         // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
         let gate = self.select_gate(target)?;
@@ -177,6 +179,10 @@ impl Context for RuntimeContext {
         })
     }
 
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.tell")
+    )]
     async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
         // 1. 编码消息
         let payload: Bytes = message.encode_to_vec().into();
@@ -198,10 +204,7 @@ impl Context for RuntimeContext {
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
-            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-        }
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
         // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
         let gate = self.select_gate(target)?;

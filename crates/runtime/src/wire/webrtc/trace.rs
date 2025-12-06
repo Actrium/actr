@@ -12,13 +12,6 @@ use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[cfg(feature = "opentelemetry")]
-/// Set the given span's parent from the envelope context (or current Context if invalid).
-pub(crate) fn set_parent_from_envelope(span: &Span, envelope: &SignalingEnvelope) {
-    let context = extract_trace_context(envelope);
-    span.set_parent(context);
-}
-
-#[cfg(feature = "opentelemetry")]
 pub(crate) fn inject_span_context(span: &Span, envelope: &mut SignalingEnvelope) {
     let mut injector = EnvelopeInjector(envelope);
     let context = span.context();

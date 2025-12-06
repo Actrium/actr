@@ -38,18 +38,16 @@
 //! actr.wait_for_shutdown().await;
 //! ```
 
+use crate::lifecycle::ActrNode;
+use crate::outbound::InprocOutGate;
+use actr_framework::{Bytes, Workload};
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-
-use actr_framework::{Bytes, Workload};
-use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
-
-use crate::lifecycle::ActrNode;
-use crate::outbound::InprocOutGate;
 
 /// ActrRef - Lightweight reference to a running Actor
 ///
@@ -167,6 +165,7 @@ impl<W: Workload> ActrRef<W> {
     }
 
     /// Discover remote actors of the specified type via signaling server.
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn discover_route_candidates(
         &self,
         target_type: &actr_protocol::ActrType,
@@ -195,6 +194,10 @@ impl<W: Workload> ActrRef<W> {
     ///     message: "Hello".to_string(),
     /// }).await?;
     /// ```
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "ActrRef.call")
+    )]
     pub async fn call<R>(&self, request: R) -> ActorResult<R::Response>
     where
         R: actr_protocol::RpcRequest,
@@ -259,6 +262,7 @@ impl<W: Workload> ActrRef<W> {
     /// - **Latency**: ~10μs (in-process, zero serialization)
     /// - **No blocking**: Returns immediately after sending
     /// - **No response**: Caller won't know if message was processed
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn tell<R>(&self, message: R) -> ActorResult<()>
     where
         R: actr_protocol::RpcRequest + ProstMessage,

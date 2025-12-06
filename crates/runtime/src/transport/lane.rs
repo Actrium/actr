@@ -185,6 +185,10 @@ impl DataLane {
     /// let envelope = RpcEnvelope { /* ... */ };
     /// data_lane.send_envelope(envelope).await?;
     /// ```
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "DataLane.send_envelope")
+    )]
     pub async fn send_envelope(&self, envelope: actr_protocol::RpcEnvelope) -> NetworkResult<()> {
         match self {
             DataLane::Mpsc { tx, .. } => {

@@ -2,18 +2,20 @@
 //!
 //! Uses WebRtcCoordinator to send/receive messages, implementing cross-process RPC communication
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{RwLock, oneshot};
-use tracing::instrument;
-
 use super::coordinator::WebRtcCoordinator;
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::inbound::DataStreamRegistry;
+#[cfg(feature = "opentelemetry")]
+use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{RwLock, oneshot};
+#[cfg(feature = "opentelemetry")]
+use tracing::Instrument as _;
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -196,7 +198,13 @@ impl WebRtcGate {
                                 // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
-                                        let fut = Self::handle_envelope(
+                                        #[cfg(feature = "opentelemetry")]
+                                        let span = {
+                                            let span = tracing::info_span!("webrtc.receive_rpc");
+                                            set_parent_from_rpc_envelope(&span, &envelope);
+                                            span
+                                        };
+                                        let handle_envelope_fut = Self::handle_envelope(
                                             envelope,
                                             from_bytes,
                                             data,
@@ -205,17 +213,10 @@ impl WebRtcGate {
                                             mailbox.clone(),
                                         );
                                         #[cfg(feature = "opentelemetry")]
-                                        {
-                                            use tracing::Instrument;
-                                            let span = tracing::info_span!("webrtc.receive_rpc");
-                                            // Note: envelope is already moved, so we can't set parent here
-                                            // The parent is set inside handle_envelope instead
-                                            fut.instrument(span).await;
-                                        }
-                                        #[cfg(not(feature = "opentelemetry"))]
-                                        {
-                                            fut.await;
-                                        }
+                                        let handle_envelope_fut =
+                                            handle_envelope_fut.instrument(span);
+
+                                        handle_envelope_fut.await;
                                     }
                                     Err(e) => {
                                         tracing::error!(
@@ -290,20 +291,12 @@ impl WebRtcGate {
     /// # Design Principle
     /// - Response reuses Request's request_id (caller is responsible)
     /// - Receiver matches to pending_requests by request_id and wakes up waiting caller
-    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-    #[instrument(skip_all)]
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn send_response(
         &self,
         target: &ActrId,
-        mut response_envelope: RpcEnvelope,
+        response_envelope: RpcEnvelope,
     ) -> RuntimeResult<()> {
-        // Inject tracing context before serialization
-        #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
-            inject_span_context_to_rpc(&tracing::Span::current(), &mut response_envelope);
-        }
-
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope

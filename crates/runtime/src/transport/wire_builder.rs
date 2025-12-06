@@ -90,11 +90,13 @@ impl DefaultWireBuilder {
 
 #[async_trait]
 impl WireBuilder for DefaultWireBuilder {
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>> {
         // Delegate to method with no cancel token
         self.create_connections_with_cancel(dest, None).await
     }
 
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     async fn create_connections_with_cancel(
         &self,
         dest: &Dest,

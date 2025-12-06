@@ -298,6 +298,10 @@ impl InprocTransportManager {
     // ========== High-level APIs ==========
 
     /// Send request (with response waiting)
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "InprocTransportManager.send_request")
+    )]
     pub async fn send_request(
         &self,
         payload_type: PayloadType,
@@ -327,6 +331,10 @@ impl InprocTransportManager {
     }
 
     /// Send one-way message
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "InprocTransportManager.send_message")
+    )]
     pub async fn send_message(
         &self,
         payload_type: PayloadType,
