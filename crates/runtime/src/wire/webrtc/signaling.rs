@@ -7,9 +7,11 @@ use super::trace;
 use crate::transport::error::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
+#[cfg(feature = "opentelemetry")]
+use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
+    AIdCredential, ActrId, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
     RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse, ServiceAvailabilityState,
     SignalingEnvelope, UnregisterRequest, UnregisterResponse, actr_to_signaling, peer_to_signaling,
     signaling_envelope, signaling_to_actr,
@@ -25,8 +27,10 @@ use std::sync::{
 };
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "opentelemetry")]
 use tracing::instrument;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -37,7 +41,7 @@ use url::Url;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Default timeout in seconds for waiting for signaling response
-const RESPONSE_TIMEOUT_SECS: u64 = 5;
+const RESPONSE_TIMEOUT_SECS: u64 = 15;
 // WebSocket-level keepalive to detect silent half-open connections
 const PING_INTERVAL_SECS: u64 = 5;
 const PONG_TIMEOUT_SECS: u64 = 10;
@@ -228,7 +232,7 @@ pub struct WebSocketSignalingClient {
     inbound_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<SignalingEnvelope>>>,
     inbound_tx: tokio::sync::Mutex<mpsc::UnboundedSender<SignalingEnvelope>>,
     /// Background receive task handle to allow graceful shutdown
-    receiver_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    receiver_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Background ping task to detect half-open connections
     ping_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Connection state broadcast channel
@@ -252,7 +256,7 @@ impl WebSocketSignalingClient {
             pending_replies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             inbound_rx: Arc::new(tokio::sync::Mutex::new(inbound_rx)),
             inbound_tx: tokio::sync::Mutex::new(inbound_tx),
-            receiver_task: tokio::sync::Mutex::new(None),
+            receiver_task: Arc::new(tokio::sync::Mutex::new(None)),
             ping_task: tokio::sync::Mutex::new(None),
             state_tx,
             last_pong: Arc::new(AtomicU64::new(0)),
@@ -329,19 +333,24 @@ impl WebSocketSignalingClient {
         let url = self.build_url_with_identity().await;
         let timeout_secs = self.config.connection_timeout;
         tracing::debug!("Establishing connection to URL: {}", url.as_str());
+        // 断网后，写入到缓冲区的数据，网络恢复后会继续发送
+        let config = WebSocketConfig::default().write_buffer_size(0);
         // Connect with an optional timeout. A timeout of 0 means "no timeout".
         let connect_result = if timeout_secs == 0 {
-            connect_async(url.as_str()).await
+            connect_async_with_config(url.as_str(), Some(config), false).await
         } else {
             let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-            tokio::time::timeout(timeout_duration, connect_async(url.as_str()))
-                .await
-                .map_err(|_| {
-                    NetworkError::ConnectionError(format!(
-                        "Signaling connect timeout after {}s",
-                        timeout_secs
-                    ))
-                })?
+            tokio::time::timeout(
+                timeout_duration,
+                connect_async_with_config(url.as_str(), Some(config), false),
+            )
+            .await
+            .map_err(|_| {
+                NetworkError::ConnectionError(format!(
+                    "Signaling connect timeout after {}s",
+                    timeout_secs
+                ))
+            })?
         }?;
 
         let (ws_stream, _) = connect_result;
@@ -555,6 +564,7 @@ impl WebSocketSignalingClient {
         let connected = self.connected.clone();
         let state_tx = self.state_tx.clone();
         let last_pong = self.last_pong.clone();
+        let receiver_task_clone = Arc::clone(&self.receiver_task);
 
         let handle = tokio::spawn(async move {
             loop {
@@ -596,6 +606,9 @@ impl WebSocketSignalingClient {
                     );
                     connected.store(false, Ordering::Release);
                     let _ = state_tx.send(ConnectionState::Disconnected);
+                    if let Some(handle) = receiver_task_clone.lock().await.take() {
+                        handle.abort();
+                    }
                     break;
                 }
             }
@@ -711,7 +724,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
     )]
     async fn send_heartbeat(
         &self,

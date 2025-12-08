@@ -3,7 +3,9 @@
 use crate::transport::DataLane;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{NetworkError, NetworkResult};
+use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -236,48 +238,17 @@ impl WebRtcConnection {
     }
 
     /// based on PayloadType configuration DataChannel
-    fn get_data_channel_config(
-        payload_type: PayloadType,
-    ) -> webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+    fn get_data_channel_config() -> webrtc::data_channel::data_channel_init::RTCDataChannelInit {
         use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 
         // Use negotiated DataChannel with fixed IDs based on PayloadType
         // This allows both sides to create the same channel without on_data_channel callback
-        let channel_id = payload_type as u16;
-
-        // TODO: remove negotiated flag to use auto-negotiation
-        match payload_type {
-            PayloadType::RpcSignal | PayloadType::RpcReliable => {
-                // reliable ordered transmission
-                RTCDataChannelInit {
-                    ordered: Some(true),
-                    max_retransmits: None,
-                    max_packet_life_time: None,
-                    protocol: Some("".to_string()),
-                    negotiated: Some(channel_id),
-                }
-            }
-            PayloadType::StreamLatencyFirst => {
-                // partial reliable transmission (low latency priority)
-                // NOTE: WebRTC spec forbids setting both max_retransmits and max_packet_life_time.
-                RTCDataChannelInit {
-                    ordered: Some(false),
-                    max_retransmits: Some(3),
-                    max_packet_life_time: None,
-                    protocol: Some("".to_string()),
-                    negotiated: Some(channel_id),
-                }
-            }
-            _ => {
-                // default reliable transmission
-                RTCDataChannelInit {
-                    ordered: Some(true),
-                    max_retransmits: None,
-                    max_packet_life_time: None,
-                    protocol: Some("".to_string()),
-                    negotiated: Some(channel_id),
-                }
-            }
+        RTCDataChannelInit {
+            ordered: Some(true),
+            max_retransmits: None,
+            max_packet_life_time: None,
+            protocol: Some("".to_string()),
+            negotiated: None,
         }
     }
 }
@@ -370,9 +341,9 @@ impl WebRtcConnection {
         // Create new DataChannel
         let mut channels = self.data_channels.write().await;
 
-        let label = format!("{payload_type:?}");
-        let dc_config = Self::get_data_channel_config(payload_type);
+        let label = payload_type.as_str_name();
 
+        let dc_config = Self::get_data_channel_config();
         let data_channel = self
             .peer_connection
             .create_data_channel(&label, Some(dc_config))
@@ -385,10 +356,10 @@ impl WebRtcConnection {
 
         let channel_id = data_channel.id();
         let payload_type_for_error = payload_type;
-        let label_for_error = label.clone();
+        let label_for_error = label;
         data_channel.on_error(Box::new(move |error| {
             let payload_type = payload_type_for_error;
-            let label = label_for_error.clone();
+            let label = label_for_error;
             let channel_id = channel_id;
             tracing::warn!(
                 "⚠️ WebRTC DataChannel error [{}] (payload_type={:?}, channel_id={}): {:?}",
@@ -402,12 +373,12 @@ impl WebRtcConnection {
 
         let this_for_close = self.clone();
         let payload_type_for_close = payload_type;
-        let label_for_close = label.clone();
+        let label_for_close = label;
         let channel_id_for_close = channel_id;
         data_channel.on_close(Box::new(move || {
             let this = this_for_close.clone();
             let payload_type = payload_type_for_close;
-            let label = label_for_close.clone();
+            let label = label_for_close;
             let channel_id = channel_id_for_close;
             Box::pin(async move {
                 tracing::warn!(
@@ -578,6 +549,7 @@ impl WebRtcConnection {
         &self,
         data_channel: Arc<RTCDataChannel>,
         payload_type: PayloadType,
+        message_tx: mpsc::UnboundedSender<(Vec<u8>, Bytes, PayloadType)>,
     ) -> NetworkResult<DataLane> {
         // Check if it's MediaTrack type
         if payload_type == PayloadType::MediaRtp {
@@ -587,22 +559,23 @@ impl WebRtcConnection {
         }
 
         let idx = payload_type as usize;
-        let channel_id = data_channel.id();
+        tracing::debug!(
+            "🔄 WebRTC DataChannel registered received: {:?}, idx={}",
+            payload_type,
+            idx
+        );
         let label = format!("{payload_type:?}");
 
         // Set error handler
         let payload_type_for_error = payload_type;
         let label_for_error = label.clone();
-        let channel_id_for_error = channel_id;
         data_channel.on_error(Box::new(move |error| {
             let payload_type = payload_type_for_error;
             let label = label_for_error.clone();
-            let channel_id = channel_id_for_error;
             tracing::warn!(
-                "⚠️ WebRTC DataChannel error [{}] (payload_type={:?}, channel_id={}): {:?}",
+                "⚠️ WebRTC DataChannel error [{}] (payload_type={:?} ): {:?}",
                 label,
                 payload_type,
-                channel_id,
                 error
             );
             Box::pin(async move {})
@@ -612,18 +585,17 @@ impl WebRtcConnection {
         let this_for_close = self.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label.clone();
-        let channel_id_for_close = channel_id;
+
         data_channel.on_close(Box::new(move || {
             let this = this_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close.clone();
-            let channel_id = channel_id_for_close;
+
             Box::pin(async move {
                 tracing::warn!(
-                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?}, channel_id={})",
+                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?})",
                     label,
                     payload_type,
-                    channel_id
                 );
                 // Invalidate cached lane when DataChannel closes
                 this.invalidate_lane(payload_type).await;
@@ -666,24 +638,42 @@ impl WebRtcConnection {
             "✨ WebRtcConnection registered received DataChannel: {:?}",
             payload_type
         );
+        let peer_id_clone = self.peer_id.clone();
+        let lane_clone = lane.clone();
+        tokio::spawn(async move {
+            // Continuously receive messages
+            loop {
+                match lane_clone.recv().await {
+                    Ok(data) => {
+                        tracing::debug!(
+                            "📨 Received message from {:?} (PayloadType: {:?}): {} bytes",
+                            peer_id_clone,
+                            payload_type,
+                            data.len()
+                        );
+
+                        // Serialize peer_id as bytes
+                        let peer_id_bytes = peer_id_clone.encode_to_vec();
+
+                        // Send to aggregation channel (include PayloadType)
+                        if let Err(e) = message_tx.send((peer_id_bytes, data, payload_type)) {
+                            tracing::error!("❌ Message aggregation failed: {:?}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "❌ Peer {:?} message receive failed (PayloadType: {:?}): {}",
+                            peer_id_clone,
+                            payload_type,
+                            e
+                        );
+                        break;
+                    }
+                }
+            }
+        });
 
         Ok(lane)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Note：WebRTC gather integrate measure try needCompletesignaling stream process ， this in only do solely element measure try
-
-    #[test]
-    fn test_data_channel_config() {
-        let config = WebRtcConnection::get_data_channel_config(PayloadType::RpcReliable);
-        assert_eq!(config.ordered, Some(true));
-
-        let config = WebRtcConnection::get_data_channel_config(PayloadType::StreamLatencyFirst);
-        assert_eq!(config.ordered, Some(false));
-        assert_eq!(config.max_retransmits, Some(3));
     }
 }

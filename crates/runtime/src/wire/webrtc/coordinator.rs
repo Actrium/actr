@@ -25,6 +25,7 @@ use super::negotiator::WebRtcNegotiator;
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use super::{SignalingClient, WebRtcConfig};
+use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::inbound::MediaFrameRegistry;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
@@ -71,9 +72,6 @@ struct PeerNegotiationState {
     /// In-flight ICE restart task handle
     restart_handle: Option<JoinHandle<()>>,
 }
-
-/// Initial connection timeout
-const INITIAL_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Simple exponential backoff iterator for retries
 #[derive(Debug)]
@@ -663,7 +661,7 @@ impl WebRtcCoordinator {
 
         // Role negotiation: determine if we should be offerer or answerer
         let role_result =
-            tokio::time::timeout(Duration::from_secs(5), self.negotiate_role(target)).await;
+            tokio::time::timeout(Duration::from_secs(15), self.negotiate_role(target)).await;
 
         let is_offerer = match role_result {
             Ok(Ok(v)) => v,
@@ -674,7 +672,7 @@ impl WebRtcCoordinator {
             Err(_) => {
                 self.peer_negotiation.lock().await.remove(target);
                 return Err(RuntimeError::DeadlineExceeded {
-                    message: "Role negotiation timeout1".to_string(),
+                    message: "Role negotiation timeout".to_string(),
                     timeout_ms: 5000,
                 });
             }
@@ -881,6 +879,10 @@ impl WebRtcCoordinator {
 
         // 3. Clear negotiation state and cancel in-flight restarts (single lock)
         if let Some(neg_state) = self.peer_negotiation.lock().await.remove(target) {
+            tracing::debug!(
+                "🧹 Clearing negotiation state for serial={}",
+                target.serial_number
+            );
             if let Some(handle) = neg_state.restart_handle {
                 handle.abort();
             }
@@ -912,6 +914,30 @@ impl WebRtcCoordinator {
             Arc::clone(&peer_connection_arc),
             target.clone(),
         );
+
+        // 2.5. CRITICAL: Insert peer state early as placeholder to prevent race conditions
+        // Create ready channel now, will be populated in step 8
+        let (ready_tx, ready_rx) = oneshot::channel();
+        {
+            let mut peers = self.peers.write().await;
+            peers.insert(
+                target.clone(),
+                PeerState {
+                    peer_connection: peer_connection_arc.clone(),
+                    webrtc_conn: webrtc_conn.clone(),
+                    ready_tx: Some(ready_tx),
+                    is_offerer: true,
+                    ice_restart_inflight: false,
+                    ice_restart_attempts: 0,
+                    last_state_change: std::time::Instant::now(),
+                    current_state: RTCPeerConnectionState::New,
+                },
+            );
+            tracing::debug!(
+                "🔒 Inserted placeholder peer state for {} (offerer)",
+                target.to_string_repr()
+            );
+        } // Release lock immediately
 
         // 3. Pre-create negotiated DataChannel for Reliable to trigger ICE gathering
         let _reliable_lane = webrtc_conn
@@ -1040,34 +1066,7 @@ impl WebRtcCoordinator {
         // 6. Create Offer
         let offer_sdp = self.negotiator.create_offer(&peer_connection_arc).await?;
 
-        // 7. Create ready notification channel
-        let (ready_tx, ready_rx) = oneshot::channel();
-
-        // 8. Store peer state BEFORE sending Offer (prevent race condition)
-        {
-            let mut peers = self.peers.write().await;
-            tracing::info!(
-                "🔧 [STORE] Inserting peer: id={}, current peers={}",
-                target.to_string_repr(),
-                peers.len()
-            );
-            peers.insert(
-                target.clone(),
-                PeerState {
-                    peer_connection: peer_connection_arc.clone(),
-                    webrtc_conn: webrtc_conn.clone(),
-                    ready_tx: Some(ready_tx),
-                    is_offerer: true,
-                    ice_restart_inflight: false,
-                    ice_restart_attempts: 0,
-                    last_state_change: std::time::Instant::now(),
-                    current_state: RTCPeerConnectionState::New,
-                },
-            );
-            tracing::info!("✅ [STORE] Peer inserted, new total={}", peers.len());
-        }
-
-        // 9. Send Offer via signaling server (AFTER storing peer state)
+        // 8. Send Offer via signaling server
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Offer as i32,
             sdp: offer_sdp,
@@ -1123,6 +1122,31 @@ impl WebRtcCoordinator {
             self.event_broadcaster.sender(),
         );
 
+        // CRITICAL: Insert peer state immediately as a placeholder to prevent race conditions.
+        // This prevents ensure_connection from creating a duplicate connection while we're
+        // still setting up callbacks and negotiating the connection.
+        // The state will be updated later after Answer is sent (step 6).
+        {
+            let mut peers = self.peers.write().await;
+            peers.insert(
+                from.clone(),
+                PeerState {
+                    peer_connection: peer_connection_arc.clone(),
+                    webrtc_conn: webrtc_conn.clone(),
+                    ready_tx: None,
+                    is_offerer: false,
+                    ice_restart_inflight: false,
+                    ice_restart_attempts: 0,
+                    last_state_change: std::time::Instant::now(),
+                    current_state: RTCPeerConnectionState::New,
+                },
+            );
+            tracing::debug!(
+                "🔒 Inserted placeholder peer state for {} (answerer)",
+                from.to_string_repr()
+            );
+        } // Release lock immediately
+
         // 3. Register state change handler (combines cleanup + ready notification)
         // NOTE: on_peer_connection_state_change can only have ONE callback, so we combine:
         //   - WebRtcConnection.handle_state_change() for cleanup on terminal states
@@ -1148,42 +1172,46 @@ impl WebRtcCoordinator {
                         }
                         drop(peers); // Release lock
                     }
-
-                    // Then: notify ready when connected (answerer side)
-                    if state == RTCPeerConnectionState::Connected {
-                        if let Some(coord) = coord_weak.upgrade() {
-                            let ready_tx = {
-                                let mut neg = coord.peer_negotiation.lock().await;
-                                neg.get_mut(&peer_id).and_then(|s| s.ready_tx.take())
-                            };
-                            if let Some(tx) = ready_tx {
-                                tracing::info!(
-                                    "✅ [Answerer] Connection ready, sending notification for {}",
-                                    peer_id.serial_number
-                                );
-                                let _ = tx.send(());
-                            }
-                        }
-                    }
                 })
             },
         ));
 
         // 4. Register on_data_channel handler to reuse negotiated channels created by the offerer
         let conn_for_data_channel = webrtc_conn.clone();
+
+        let from_id_for_data_channel = from.clone();
+        let coord_weak_for_state = Arc::downgrade(self);
+        let message_tx = self.message_tx.clone();
         peer_connection_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let conn = conn_for_data_channel.clone();
+            let coord_weak = coord_weak_for_state.clone();
+            let peer_id = from_id_for_data_channel.clone();
+            let message_tx = message_tx.clone();
             Box::pin(async move {
                 let channel_id = dc.id();
                 let label = dc.label();
                 let dc_for_registration = Arc::clone(&dc);
 
-                let payload_type = PayloadType::try_from(i32::from(channel_id)).ok();
+                let payload_type = PayloadType::from_str_name(&label);
+
+                if let Some(coord) = coord_weak.upgrade() {
+                    let ready_tx = {
+                        let mut neg = coord.peer_negotiation.lock().await;
+                        neg.get_mut(&peer_id).and_then(|s| s.ready_tx.take())
+                    };
+                    if let Some(tx) = ready_tx {
+                        tracing::info!(
+                            "✅ [Answerer] Connection ready, sending notification for {}",
+                            peer_id.serial_number
+                        );
+                        let _ = tx.send(());
+                    }
+                }
 
                 match payload_type {
                     Some(pt) => {
                         if let Err(e) = conn
-                            .register_received_data_channel(dc_for_registration, pt)
+                            .register_received_data_channel(dc_for_registration, pt, message_tx)
                             .await
                         {
                             tracing::warn!(
@@ -1330,6 +1358,10 @@ impl WebRtcCoordinator {
                             if let Err(e) = send_actr_relay_fut.await {
                                 tracing::error!("❌ Failed to send ICE Candidate: {}", e);
                             }
+                            tracing::debug!(
+                                "🔄 Handle offer Sent ICE Candidate to serial={}",
+                                target_id.serial_number
+                            );
                         }
                     }
                 })
@@ -1342,25 +1374,7 @@ impl WebRtcCoordinator {
             .create_answer(&peer_connection_arc, offer_sdp)
             .await?;
 
-        // 6. Store peer state BEFORE sending Answer (prevent race condition)
-        {
-            let mut peers = self.peers.write().await;
-            peers.insert(
-                from.clone(),
-                PeerState {
-                    peer_connection: peer_connection_arc.clone(),
-                    webrtc_conn: webrtc_conn.clone(),
-                    ready_tx: None,
-                    is_offerer: false,
-                    ice_restart_inflight: false,
-                    ice_restart_attempts: 0,
-                    last_state_change: std::time::Instant::now(),
-                    current_state: RTCPeerConnectionState::New,
-                },
-            );
-        }
-
-        // 7. Send Answer via signaling server (AFTER storing peer state)
+        // 7. Send Answer via signaling server
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Answer as i32,
             sdp: answer_sdp,
@@ -1373,10 +1387,6 @@ impl WebRtcCoordinator {
         // 8. Flush any buffered ICE candidates (remote description is now set)
         self.flush_pending_candidates(from, &peer_connection_arc)
             .await?;
-
-        // 9. Start receive loop
-        self.start_peer_receive_loop(from.clone(), webrtc_conn)
-            .await;
 
         // Note: ready notification is sent in on_data_channel callback
         // when DataChannel is actually registered (see above)
@@ -1695,9 +1705,53 @@ impl WebRtcCoordinator {
         tracing::debug!("📤 Sending message to {:?}: {} bytes", target, data.len());
 
         // Check if connection exists
-        let has_connection = {
-            let peers = self.peers.read().await;
-            peers.contains_key(target)
+        // Check if connection exists or is being established
+        // If in connecting state, wait for it to complete
+        let has_connection = loop {
+            let state = {
+                let peers = self.peers.read().await;
+                peers
+                    .get(target)
+                    .map(|s| (s.current_state, s.last_state_change))
+            };
+
+            match state {
+                Some((
+                    RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting,
+                    started,
+                )) => {
+                    // Connection is being established, check if it's still fresh
+                    if started.elapsed() < INITIAL_CONNECTION_TIMEOUT {
+                        // Wait a bit and check again
+                        tracing::debug!(
+                            "⏳ Connection to {} is being established, waiting...",
+                            target.to_string_repr()
+                        );
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    } else {
+                        // Connecting timeout, treat as not connected
+                        tracing::warn!(
+                            "⏰ Connection to {} timed out while connecting",
+                            target.to_string_repr()
+                        );
+                        break false;
+                    }
+                }
+                Some((RTCPeerConnectionState::Connected, _)) => {
+                    // Connection exists and is ready
+                    break true;
+                }
+                Some(_) => {
+                    // Connection exists but in other state (Disconnected/Failed/Closed)
+                    // Let initiate_connection handle it
+                    break false;
+                }
+                None => {
+                    // No connection exists
+                    break false;
+                }
+            }
         };
 
         #[cfg(feature = "opentelemetry")]
@@ -2804,6 +2858,11 @@ impl WebRtcCoordinator {
             to: target.clone(),
             tenant_id: self.local_id.realm.realm_id.to_string(),
         });
+
+        tracing::debug!(
+            "🔄 Sending role negotiation to serial={}",
+            target.serial_number
+        );
         self.send_actr_relay(target, payload).await?;
 
         rx.await.map_err(|_| {

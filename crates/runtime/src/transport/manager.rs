@@ -227,8 +227,16 @@ impl OutprocTransportManager {
             if !is_creator {
                 // Wait for the actual creator
                 tracing::debug!("⏳ Another thread is creating connection: {:?}", dest);
-                notify.notified().await;
-                continue;
+                // notify 加超时 10秒
+                match tokio::time::timeout(Duration::from_secs(10), notify.notified()).await {
+                    Ok(_) => continue,
+                    Err(e) => {
+                        return Err(NetworkError::TimeoutError(format!(
+                            "Timeout waiting for notification: {:?} {}",
+                            dest, e
+                        )));
+                    }
+                }
             }
 
             // 3. We are the creator - create connections OUTSIDE lock

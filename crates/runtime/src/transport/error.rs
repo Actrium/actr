@@ -133,6 +133,10 @@ pub enum NetworkError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
+    /// Timeout error
+    #[error("Timeout error: {0}")]
+    Timeout(String),
+
     /// Other error
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
@@ -207,6 +211,7 @@ impl NetworkError {
             NetworkError::UrlParseError(_) => "url_parse",
             NetworkError::JsonError(_) => "json",
             NetworkError::BroadcastError(_) => "broadcast",
+            NetworkError::Timeout(_) => "timeout",
             NetworkError::Other(_) => "other",
         }
     }
@@ -251,7 +256,8 @@ impl NetworkError {
 
             NetworkError::IoError(_)
             | NetworkError::UrlParseError(_)
-            | NetworkError::JsonError(_) => 2,
+            | NetworkError::JsonError(_)
+            | NetworkError::Timeout(_) => 2,
 
             NetworkError::Other(_) => 1,
         }

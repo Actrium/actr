@@ -328,3 +328,5 @@ pub mod prelude {
     // Logging
     pub use tracing::{debug, error, info, trace, warn};
 }
+
+pub const INITIAL_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

@@ -205,6 +205,7 @@ impl From<crate::transport::error::NetworkError> for RuntimeError {
             | NetworkError::IoError(_)
             | NetworkError::UrlParseError(_)
             | NetworkError::JsonError(_)
+            | NetworkError::Timeout(_)
             | NetworkError::Other(_) => RuntimeError::Other(anyhow::anyhow!("{err}")),
         }
     }
