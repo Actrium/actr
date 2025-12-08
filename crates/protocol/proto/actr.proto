@@ -308,7 +308,7 @@ message ActrUpEvent {
 message RoleNegotiation {
   required ActrId from = 1;
   required ActrId to = 2;
-  required string tenant_id = 3;
+  required uint32 realm_id = 3;
 }
 
 // Signaling server assigns the offerer role to one side

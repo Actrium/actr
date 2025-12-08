@@ -73,7 +73,7 @@ impl TurnCredentialBuilder {
         // 1. 创建 Token 结构
         let token = TurnToken {
             exp: self.expiry,
-            tenant_id: self.realm_id,
+            realm_id: self.realm_id,
             id: Some(self.actor_id),
             act_type: self.actor_type,
             psk: self.psk.clone(),
@@ -92,7 +92,7 @@ impl TurnCredentialBuilder {
 
         // 4. 创建 Claims（使用未加密的 token）
         let claims = TurnClaims {
-            tenant_id: self.realm_id,
+            realm_id: self.realm_id,
             key_id: self.key_id,
             token: token_bytes,
         };
@@ -143,7 +143,7 @@ mod tests {
 
         let token = TurnToken {
             exp: Some(1700000000),
-            tenant_id: 0,
+            realm_id: 0,
             id: Some(actor_id),
             act_type: "acme/echo-service".to_string(),
             psk: "abc123".to_string(),
@@ -152,19 +152,19 @@ mod tests {
 
         let json = serde_json::to_string(&token).unwrap();
         assert!(json.contains("\"psk\":\"abc123\""));
-        assert!(json.contains("\"tenant_id\":0"));
+        assert!(json.contains("\"realm_id\":0"));
     }
 
     #[test]
     fn test_turn_claims_serialization() {
         let claims = TurnClaims {
-            tenant_id: 0,
+            realm_id: 0,
             key_id: 1,
             token: vec![1, 2, 3, 4],
         };
 
         let json = serde_json::to_string(&claims).unwrap();
-        assert!(json.contains("\"tenant_id\":0"));
+        assert!(json.contains("\"realm_id\":0"));
         assert!(json.contains("\"key_id\":1"));
 
         // token 应该是 base64 编码

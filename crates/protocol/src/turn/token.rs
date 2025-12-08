@@ -12,8 +12,8 @@ pub struct Token {
     /// Optional expiration timestamp (seconds since Unix epoch).
     pub exp: Option<u64>,
 
-    /// Tenant identifier.
-    pub tenant_id: u32,
+    /// Realm identifier.
+    pub realm_id: u32,
 
     /// Optional actor identifier tied to this credential.
     pub id: Option<ActrId>,
@@ -30,10 +30,10 @@ pub struct Token {
 
 impl Token {
     /// Create a new TURN token with the required fields.
-    pub fn new(tenant_id: u32, act_type: String, psk: String, exp: Option<u64>) -> Self {
+    pub fn new(realm_id: u32, act_type: String, psk: String, exp: Option<u64>) -> Self {
         Self {
             exp,
-            tenant_id,
+            realm_id,
             id: None,
             act_type,
             psk,
@@ -71,7 +71,7 @@ mod tests {
             Some(1730614800),
         );
 
-        assert_eq!(token.tenant_id, 42);
+        assert_eq!(token.realm_id, 42);
         assert_eq!(token.act_type, "user");
         assert_eq!(token.psk, "abc123");
         assert_eq!(token.exp, Some(1730614800));

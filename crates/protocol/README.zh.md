@@ -52,14 +52,14 @@ graph TD
 
 #### a) Actor ID 扩展 (`actor_ext.rs`)
 
-为 `ActrId` 提供了字符串表示的互相转换能力，格式定义为：`<manufacturer>:<name>@<serial_number>:<tenant_id>`。
+为 `ActrId` 提供了字符串表示的互相转换能力，格式定义为：`<manufacturer>:<name>@<serial_number>:<realm_id>`。
 
 ```rust
-use actr_protocol::{ActrId, ActrType, VTN, ActorIdExt};
+use actr_protocol::{ActrId, ActrType, Realm, ActrIdExt};
 
 // 示例
 let id = ActrId {
-    vtn: VTN { tenant_id: 101 },
+    realm: Realm { realm_id: 101 },
     serial_number: 0x1a2b3c,
     r#type: ActrType {
         manufacturer: "acme".to_string(),

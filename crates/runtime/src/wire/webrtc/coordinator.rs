@@ -2856,7 +2856,7 @@ impl WebRtcCoordinator {
         let payload = actr_relay::Payload::RoleNegotiation(RoleNegotiation {
             from: self.local_id.clone(),
             to: target.clone(),
-            tenant_id: self.local_id.realm.realm_id.to_string(),
+            realm_id: self.local_id.realm.realm_id,
         });
 
         tracing::debug!(

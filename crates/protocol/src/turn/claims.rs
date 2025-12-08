@@ -11,8 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// TURN authentication claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    /// Tenant identifier.
-    pub tenant_id: u32,
+    /// Realm identifier.
+    pub realm_id: u32,
 
     /// Key identifier used by the TURN auth cache.
     pub key_id: u32,
@@ -44,9 +44,9 @@ where
 
 impl Claims {
     /// Create a new claims payload.
-    pub fn new(tenant_id: u32, key_id: u32, token: Vec<u8>) -> Self {
+    pub fn new(realm_id: u32, key_id: u32, token: Vec<u8>) -> Self {
         Self {
-            tenant_id,
+            realm_id,
             key_id,
             token,
         }
@@ -77,7 +77,7 @@ mod tests {
         let token_bytes = b"test_token".to_vec();
         let claims = Claims::new(123, 456, token_bytes.clone());
 
-        assert_eq!(claims.tenant_id, 123);
+        assert_eq!(claims.realm_id, 123);
         assert_eq!(claims.key_id, 456);
         assert_eq!(claims.token, token_bytes);
     }
@@ -90,7 +90,7 @@ mod tests {
         let json = serde_json::to_string(&claims).unwrap();
         let decoded: Claims = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(decoded.tenant_id, claims.tenant_id);
+        assert_eq!(decoded.realm_id, claims.realm_id);
         assert_eq!(decoded.key_id, claims.key_id);
         assert_eq!(decoded.token, claims.token);
     }
