@@ -1692,7 +1692,8 @@ impl WebRtcCoordinator {
 
     /// Send message to specified peer
     ///
-    /// If connection doesn't exist, automatically initiates WebRTC connection and waits for it to be ready
+    /// If connection doesn't exist, automatically initiates WebRTC connection and waits for it to be ready.
+    /// Supports retry with exponential backoff on transient errors.
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(skip_all, fields(target_id = ?target.to_string_repr()))
@@ -1702,11 +1703,107 @@ impl WebRtcCoordinator {
         target: &ActrId,
         data: &[u8],
     ) -> RuntimeResult<()> {
+        const MAX_RETRIES: u32 = 3;
+        const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
+
         tracing::debug!("📤 Sending message to {:?}: {} bytes", target, data.len());
 
-        // Check if connection exists
+        // Wrap entire operation with overall timeout
+        let result = tokio::time::timeout(
+            OVERALL_TIMEOUT,
+            self.send_message_with_retry(target, data, MAX_RETRIES),
+        )
+        .await;
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(_) => {
+                tracing::error!(
+                    "⏰ Overall timeout ({}s) exceeded for send_message to {}",
+                    OVERALL_TIMEOUT.as_secs(),
+                    target.to_string_repr()
+                );
+                self.cleanup_cancelled_connection(target).await;
+                Err(RuntimeError::DeadlineExceeded {
+                    message: format!(
+                        "send_message overall timeout ({}s)",
+                        OVERALL_TIMEOUT.as_secs()
+                    ),
+                    timeout_ms: OVERALL_TIMEOUT.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    /// Inner implementation of send_message with retry logic
+    async fn send_message_with_retry(
+        self: &Arc<Self>,
+        target: &ActrId,
+        data: &[u8],
+        max_retries: u32,
+    ) -> RuntimeResult<()> {
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(1), // initial delay
+            Duration::from_secs(10),  // max delay
+            None,                     // no limit (we control manually)
+        );
+
+        let mut last_error = None;
+
+        for attempt in 0..=max_retries {
+            // Wait before retry (skip first attempt)
+            if attempt > 0 {
+                let delay = backoff.next().unwrap_or(Duration::from_secs(5));
+                tracing::info!(
+                    "🔄 Retrying send_message to {} (attempt {}/{}, delay {:?})",
+                    target.to_string_repr(),
+                    attempt + 1,
+                    max_retries + 1,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            match self.try_send_message_once(target, data).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    // Only retry on transient errors
+                    let should_retry = matches!(
+                        &e,
+                        RuntimeError::DeadlineExceeded { .. } | RuntimeError::Other(_)
+                    );
+
+                    if !should_retry {
+                        return Err(e);
+                    }
+
+                    tracing::warn!(
+                        "⚠️ send_message attempt {}/{} failed: {}",
+                        attempt + 1,
+                        max_retries + 1,
+                        e
+                    );
+                    last_error = Some(e);
+
+                    // Cleanup connection before retry (might be stale)
+                    self.cleanup_cancelled_connection(target).await;
+                }
+            }
+        }
+
+        // All retries exhausted
+        Err(last_error.unwrap_or_else(|| {
+            RuntimeError::Other(anyhow::anyhow!("send_message failed after all retries"))
+        }))
+    }
+
+    /// Single attempt to send a message
+    async fn try_send_message_once(
+        self: &Arc<Self>,
+        target: &ActrId,
+        data: &[u8],
+    ) -> RuntimeResult<()> {
         // Check if connection exists or is being established
-        // If in connecting state, wait for it to complete
         let has_connection = loop {
             let state = {
                 let peers = self.peers.read().await;
@@ -1768,11 +1865,11 @@ impl WebRtcCoordinator {
                 target.serial_number
             );
 
-            // Initiate connection with role negotiation
             let ready_rx = self.initiate_connection(target).await?;
             tracing::debug!(?ready_rx, "ready_rx");
-            // Wait for connection to be ready (30s timeout)
-            match tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx).await {
+
+            // Wait for connection to be ready (10s timeout for single attempt)
+            match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
                 Ok(Ok(())) => {
                     tracing::info!("✅ WebRTC connection ready: {}", target.to_string_repr());
                 }
@@ -1784,7 +1881,7 @@ impl WebRtcCoordinator {
                 Err(_) => {
                     return Err(RuntimeError::DeadlineExceeded {
                         message: "Connection establishment timeout".to_string(),
-                        timeout_ms: 30000,
+                        timeout_ms: 10000,
                     });
                 }
             }
@@ -1828,6 +1925,8 @@ impl WebRtcCoordinator {
     ///
     /// For ConnectionFactory, creates a WebRTC connection to the specified Dest.
     /// If connection already exists, returns it directly; otherwise initiates new connection and waits for it to be ready.
+    /// Supports retry with exponential backoff on timeout or channel errors.
+    /// The entire method has a 30-second overall timeout.
     ///
     /// # Arguments
     /// - `dest`: destination (must be Actor type)
@@ -1845,7 +1944,51 @@ impl WebRtcCoordinator {
         dest: &crate::transport::Dest,
         cancel_token: Option<CancellationToken>,
     ) -> RuntimeResult<WebRtcConnection> {
-        // Checkpoint 1: Check cancellation at entry
+        // Overall timeout for the entire create_connection operation
+        const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+        // Extract target_id first (before timeout wrapper) for cleanup
+        let target_id = dest.as_actor_id().ok_or_else(|| {
+            RuntimeError::ConfigurationError(
+                "WebRTC only supports Actor targets, not Shell".to_string(),
+            )
+        })?;
+
+        // Wrap the entire operation with overall timeout
+        let result = tokio::time::timeout(
+            OVERALL_TIMEOUT,
+            self.create_connection_inner(dest, cancel_token.clone()),
+        )
+        .await;
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(_) => {
+                // Overall timeout exceeded
+                tracing::error!(
+                    "⏰ [Factory] Overall timeout ({}s) exceeded for connection to {}",
+                    OVERALL_TIMEOUT.as_secs(),
+                    target_id.to_string_repr()
+                );
+                self.cleanup_cancelled_connection(target_id).await;
+                Err(RuntimeError::DeadlineExceeded {
+                    message: format!(
+                        "WebRTC connection creation overall timeout ({}s)",
+                        OVERALL_TIMEOUT.as_secs()
+                    ),
+                    timeout_ms: OVERALL_TIMEOUT.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    /// Inner implementation of create_connection without overall timeout
+    async fn create_connection_inner(
+        self: &Arc<Self>,
+        dest: &crate::transport::Dest,
+        cancel_token: Option<CancellationToken>,
+    ) -> RuntimeResult<WebRtcConnection> {
+        // Check cancellation at entry
         if let Some(ref token) = cancel_token {
             if token.is_cancelled() {
                 return Err(RuntimeError::Other(anyhow::anyhow!(
@@ -1878,20 +2021,109 @@ impl WebRtcCoordinator {
             }
         }
 
-        // Checkpoint 2: Check cancellation before initiating
-        if let Some(ref token) = cancel_token {
-            if token.is_cancelled() {
-                return Err(RuntimeError::Other(anyhow::anyhow!(
-                    "Connection creation cancelled before initiation"
-                )));
+        // 3. Retry loop with exponential backoff (max 3 retries)
+        const MAX_RETRIES: u32 = 3;
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_secs(1),  // initial delay
+            Duration::from_secs(10), // max delay
+            None,                    // no limit (we control manually)
+        );
+
+        let mut last_error = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            // Check cancellation before each attempt
+            if let Some(ref token) = cancel_token {
+                if token.is_cancelled() {
+                    return Err(RuntimeError::Other(anyhow::anyhow!(
+                        "Connection creation cancelled"
+                    )));
+                }
+            }
+
+            // Wait before retry (skip first attempt)
+            if attempt > 0 {
+                let delay = backoff.next().unwrap_or(Duration::from_secs(10));
+                tracing::info!(
+                    "🔄 [Factory] Retrying connection to {} (attempt {}/{}, delay {:?})",
+                    target_id.to_string_repr(),
+                    attempt + 1,
+                    MAX_RETRIES + 1,
+                    delay
+                );
+
+                // Interruptible sleep with cancellation
+                if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => {
+                            self.cleanup_cancelled_connection(target_id).await;
+                            return Err(RuntimeError::Other(anyhow::anyhow!(
+                                "Connection creation cancelled during retry wait"
+                            )));
+                        }
+                        _ = tokio::time::sleep(delay) => {}
+                    }
+                } else {
+                    tokio::time::sleep(delay).await;
+                }
+            } else {
+                tracing::info!(
+                    "🔨 [Factory] Initiating new WebRTC connection: {:?}",
+                    target_id.to_string_repr()
+                );
+            }
+
+            // Attempt connection
+            match self
+                .try_create_connection_once(target_id, cancel_token.as_ref())
+                .await
+            {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    // Check if this is a cancellation error - don't retry
+                    if let Some(ref token) = cancel_token {
+                        if token.is_cancelled() {
+                            return Err(e);
+                        }
+                    }
+
+                    // Only retry on timeout or transient errors
+                    let should_retry = matches!(
+                        &e,
+                        RuntimeError::DeadlineExceeded { .. } | RuntimeError::Other(_)
+                    );
+
+                    if !should_retry {
+                        return Err(e);
+                    }
+
+                    tracing::warn!(
+                        "⚠️ [Factory] Connection attempt {}/{} failed: {}",
+                        attempt + 1,
+                        MAX_RETRIES + 1,
+                        e
+                    );
+                    last_error = Some(e);
+
+                    // Cleanup failed connection before retry
+                    self.cleanup_cancelled_connection(target_id).await;
+                }
             }
         }
 
-        // 3. Initiate new connection
-        tracing::info!(
-            "🔨 [Factory] Initiating new WebRTC connection: {:?}",
-            target_id.to_string_repr()
-        );
+        // All retries exhausted
+        Err(last_error.unwrap_or_else(|| {
+            RuntimeError::Other(anyhow::anyhow!("Connection failed after all retries"))
+        }))
+    }
+
+    /// Single attempt to create a WebRTC connection
+    async fn try_create_connection_once(
+        self: &Arc<Self>,
+        target_id: &ActrId,
+        cancel_token: Option<&CancellationToken>,
+    ) -> RuntimeResult<WebRtcConnection> {
         #[cfg(feature = "opentelemetry")]
         self.root_context_map
             .write()
@@ -1900,14 +2132,9 @@ impl WebRtcCoordinator {
 
         let ready_rx = self.initiate_connection(target_id).await?;
 
-        // Checkpoint 3: Check cancellation after initiation
-        if let Some(ref token) = cancel_token {
+        // Check cancellation after initiation
+        if let Some(token) = cancel_token {
             if token.is_cancelled() {
-                // Clean up the initiated connection
-                tracing::warn!(
-                    "🚫 Connection cancelled after initiation, cleaning up: {:?}",
-                    target_id.to_string_repr()
-                );
                 self.cleanup_cancelled_connection(target_id).await;
                 return Err(RuntimeError::Other(anyhow::anyhow!(
                     "Connection creation cancelled after initiation"
@@ -1915,51 +2142,36 @@ impl WebRtcCoordinator {
             }
         }
 
-        // 4. Wait for connection to be ready (30s timeout) with cancellation support
-        let timeout_duration = std::time::Duration::from_secs(30);
+        // Wait for connection to be ready (10s timeout) with cancellation support
+        let timeout_duration = std::time::Duration::from_secs(10);
 
-        let wait_result = if let Some(ref token) = cancel_token {
-            // Use select! to support cancellation during wait
+        let wait_result = if let Some(token) = cancel_token {
             tokio::select! {
                 biased;
-
-                // Cancellation takes priority
                 _ = token.cancelled() => {
-                    tracing::warn!(
-                        "🚫 Connection cancelled while waiting for ready: {:?}",
-                        target_id.to_string_repr()
-                    );
-                    // Clean up
                     self.cleanup_cancelled_connection(target_id).await;
                     return Err(RuntimeError::Other(anyhow::anyhow!(
                         "Connection creation cancelled while waiting"
                     )));
                 }
-
-                // Timeout
                 _ = tokio::time::sleep(timeout_duration) => {
                     Err(RuntimeError::DeadlineExceeded {
                         message: "WebRTC connection establishment timeout".to_string(),
-                        timeout_ms: 30000,
+                        timeout_ms: 10000,
                     })
                 }
-
-                // Connection ready
                 result = ready_rx => {
-                    result.map_err(|_| {
-                        RuntimeError::Other(anyhow::anyhow!(
-                            "Connection establishment failed (channel closed)"
-                        ))
-                    })
+                    result.map_err(|_| RuntimeError::Other(anyhow::anyhow!(
+                        "Connection establishment failed (channel closed)"
+                    )))
                 }
             }
         } else {
-            // No cancellation token, use simple timeout
             tokio::time::timeout(timeout_duration, ready_rx)
                 .await
                 .map_err(|_| RuntimeError::DeadlineExceeded {
                     message: "WebRTC connection establishment timeout".to_string(),
-                    timeout_ms: 30000,
+                    timeout_ms: 10000,
                 })?
                 .map_err(|_| {
                     RuntimeError::Other(anyhow::anyhow!(
@@ -1968,7 +2180,6 @@ impl WebRtcCoordinator {
                 })
         };
 
-        // Handle wait result
         wait_result?;
 
         tracing::info!(
@@ -1976,13 +2187,9 @@ impl WebRtcCoordinator {
             target_id.to_string_repr()
         );
 
-        // Final checkpoint: Check cancellation before returning
-        if let Some(ref token) = cancel_token {
+        // Final cancellation check
+        if let Some(token) = cancel_token {
             if token.is_cancelled() {
-                tracing::warn!(
-                    "🚫 Connection cancelled after ready, cleaning up: {:?}",
-                    target_id.to_string_repr()
-                );
                 self.cleanup_cancelled_connection(target_id).await;
                 return Err(RuntimeError::Other(anyhow::anyhow!(
                     "Connection creation cancelled after ready"
@@ -1990,20 +2197,16 @@ impl WebRtcCoordinator {
             }
         }
 
-        // 5. Get and return WebRtcConnection
-        let webrtc_conn = {
-            let peers = self.peers.read().await;
-            peers
-                .get(target_id)
-                .map(|state| state.webrtc_conn.clone())
-                .ok_or_else(|| {
-                    RuntimeError::Other(anyhow::anyhow!(
-                        "Peer not found after connection establishment"
-                    ))
-                })?
-        };
-
-        Ok(webrtc_conn)
+        // Get and return WebRtcConnection
+        let peers = self.peers.read().await;
+        peers
+            .get(target_id)
+            .map(|state| state.webrtc_conn.clone())
+            .ok_or_else(|| {
+                RuntimeError::Other(anyhow::anyhow!(
+                    "Peer not found after connection establishment"
+                ))
+            })
     }
 
     /// Send media sample to target Actor via WebRTC Track
