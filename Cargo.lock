@@ -87,6 +87,7 @@ name = "actr-protocol"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "base122-rs",
  "base64",
  "bytes",
  "chrono",
@@ -374,6 +375,12 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
+name = "base122-rs"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c8ae722b83726dd93247786be3237fc4c30a8c13d8e6c161b61b00a0d32374f"
 
 [[package]]
 name = "base16ct"

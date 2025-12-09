@@ -11,7 +11,6 @@ pub mod gate;
 pub mod negotiator;
 pub mod signaling;
 pub(crate) mod trace;
-pub mod turn_credential;
 
 // Re-export core center Type
 pub use connection::WebRtcConnection;
@@ -22,4 +21,3 @@ pub use signaling::{
     AuthConfig, AuthType, ConnectionState, ReconnectConfig, SignalingClient, SignalingConfig,
     SignalingStats, WebSocketSignalingClient, spawn_signaling_reconnector,
 };
-pub use turn_credential::{TurnClaims, TurnCredentialBuilder, TurnCredentialError, TurnToken};

@@ -7,6 +7,7 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::{Bytes, Workload};
 use actr_mailbox::{DeadLetterQueue, Mailbox};
 use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::turn::Claims;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrId, ActrType, PayloadType, RegisterRequest,
     RouteCandidatesRequest, RpcEnvelope, register_response, route_candidates_request,
@@ -17,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 // Use types from sub-crates
-use crate::wire::webrtc::{SignalingClient, WebRtcConfig};
+use crate::wire::webrtc::{IceServer, SignalingClient, WebRtcConfig};
 // Use extension traits from actr-protocol
 use actr_protocol::{ActrIdExt, ActrTypeExt};
 
@@ -667,8 +668,7 @@ impl<W: Workload> ActrNode<W> {
                     .clone();
 
                 // Build WebRtcConfig from Actr.toml configuration
-                let webrtc_config =
-                    self.build_webrtc_config(&self.config.webrtc, &actor_id, &credential);
+                let webrtc_config = self.build_webrtc_config(&self.config.webrtc, &credential);
 
                 // Create WebRtcCoordinator
                 let coordinator =
@@ -1519,16 +1519,14 @@ impl<W: Workload> ActrNode<W> {
     ///
     /// Creates ICE servers configuration based on:
     /// - ICE server URLs from Actr.toml (stun_urls, turn_urls)
-    /// - PSK and public_key received from registration
+    /// - PSK received from registration (for TURN authentication)
+    /// - Credential information (realm_id, key_id, encrypted_token)
     /// - ice_transport_policy from Actr.toml (force_relay)
     fn build_webrtc_config(
         &self,
         config_webrtc: &actr_config::WebRtcConfig,
-        actor_id: &ActrId,
         credential: &AIdCredential,
     ) -> WebRtcConfig {
-        use crate::wire::webrtc::{IceServer, TurnCredentialBuilder};
-
         // Build ICE servers list from Actr.toml configuration
         let mut ice_servers = Vec::new();
 
@@ -1542,40 +1540,17 @@ impl<W: Workload> ActrNode<W> {
             if is_turn_server {
                 // TURN server: need to generate credentials dynamically
                 if let Some(psk) = &self.psk {
-                    // Build TURN credentials using PSK
-                    let builder = TurnCredentialBuilder::new(
-                        self.config.realm.realm_id,
-                        credential.token_key_id,
-                        actor_id.clone(),
-                        psk,
-                    )
-                    .expires_in(3600); // 1 hour expiry
+                    let claims = Claims {
+                        realm_id: self.config.realm.realm_id,
+                        key_id: credential.token_key_id,
+                        token: credential.encrypted_token.clone(),
+                    };
 
-                    // Use realm name from config for TURN credential generation
-                    let turn_realm = format!("realm_{}", self.config.realm.realm_id);
-
-                    match builder.build(&turn_realm) {
-                        Ok((username, password)) => {
-                            tracing::info!(
-                                "🔐 TURN credentials generated for realm: {}",
-                                turn_realm
-                            );
-                            tracing::debug!(
-                                "🔐 TURN username length: {}, credential length: {}",
-                                username.len(),
-                                password.len()
-                            );
-
-                            ice_servers.push(IceServer {
-                                urls: server.urls.clone(),
-                                username: Some(username),
-                                credential: Some(password),
-                            });
-                        }
-                        Err(e) => {
-                            tracing::error!("❌ Failed to build TURN credentials: {:?}", e);
-                        }
-                    }
+                    ice_servers.push(IceServer {
+                        urls: server.urls.clone(),
+                        username: Some(claims.encode()),
+                        credential: Some(hex::encode(psk)),
+                    });
                 } else {
                     tracing::warn!(
                         "⚠️ TURN server configured but PSK not available from registration"

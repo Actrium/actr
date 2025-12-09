@@ -26,6 +26,9 @@ anyhow = { workspace = true }
 # Bytes handling (zero-copy for protobuf bytes fields)
 bytes = "1.10"
 
+# Base122 encoding for TURN username
+base122 = { package = "base122-rs", version = "0.1.4" }
+
 # Time and UUID for signaling protocol
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
