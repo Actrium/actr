@@ -67,7 +67,7 @@ message CreateRealmRequest {
   required bytes public_key = 3;            // Public key (authentication)
   optional bytes secret_key = 4;            // Secret key (optional, some scenarios only need public key)
   required bool enabled = 5;                // Enabled status
-  required string key_id = 6;               // Key ID (for key rotation)
+  required uint32 key_id = 6;               // Key ID (for key rotation)
   repeated ResourceType use_servers = 7;    // Allowed server types
   required NonceCredential credential = 8;  // Authentication credential
   required uint64 version = 9;              // Realm version (assigned by Boss)

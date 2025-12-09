@@ -5,8 +5,8 @@ resolver = "2"
 
 [patch.crates-io]
 # Use remote protocol/framework definitions that include tracing headers
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "1117cea35c71db6ea4789701c2360e20b5b8554f" }
-actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "1117cea35c71db6ea4789701c2360e20b5b8554f" }
+actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "18e30bb6edbe75a8df247bf34c32948ed075fe93" }
+actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "18e30bb6edbe75a8df247bf34c32948ed075fe93" }
 
 [workspace.package]
 version = "0.1.1"

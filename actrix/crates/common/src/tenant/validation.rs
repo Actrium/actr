@@ -9,7 +9,7 @@ use super::model::Realm;
 /// Realm 验证相关实现
 impl Realm {
     /// 检查 Realm 是否存在
-    pub async fn exists(realm_id: u32, key_id: &str) -> bool {
+    pub async fn exists(realm_id: u32, key_id: u32) -> bool {
         Self::get_by_realm_key_id_service(realm_id, key_id)
             .await
             .unwrap_or(None)
@@ -40,7 +40,7 @@ mod tests {
         let past_time = Utc::now().timestamp() - 3600; // 1 hour ago
         let mut tenant = Realm::new(
             99999,
-            "expired_key_id".to_string(),
+            1,
             b"expired_public".to_vec(),
             b"expired_secret".to_vec(),
             "Expired App".to_string(),
@@ -59,7 +59,7 @@ mod tests {
     fn test_verify_secret_key() {
         let tenant = Realm::new(
             12345,
-            "test".to_string(),
+            1,
             b"correct_public".to_vec(),
             b"correct_secret".to_vec(),
             "test_name".to_string(),

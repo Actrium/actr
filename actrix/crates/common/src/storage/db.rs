@@ -51,7 +51,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS realm (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
                 realm_id INTEGER NOT NULL,
-                key_id TEXT NOT NULL,
+                key_id INTEGER NOT NULL,
                 secret_key BLOB NOT NULL,
                 name TEXT NOT NULL,
                 public_key BLOB NOT NULL,

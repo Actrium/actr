@@ -421,7 +421,7 @@ impl Database {
 CREATE TABLE realm (
     rowid INTEGER PRIMARY KEY,
     realm_id INTEGER NOT NULL UNIQUE,
-    key_id TEXT NOT NULL,
+    key_id INTEGER NOT NULL,
     secret_key BLOB NOT NULL,
     name TEXT NOT NULL,
     public_key BLOB NOT NULL,

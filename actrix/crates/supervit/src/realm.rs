@@ -36,7 +36,7 @@ pub fn realm_to_proto(realm: &Realm, metadata: &RealmMetadata) -> RealmInfo {
         created_at,
         updated_at: Some(updated_at),
         public_key: realm.public_key.clone(),
-        key_id: realm.key_id.clone(),
+        key_id: realm.key_id,
         use_servers,
         version: metadata.version,
     }

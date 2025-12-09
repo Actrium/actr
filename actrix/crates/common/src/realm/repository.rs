@@ -10,7 +10,7 @@ use crate::storage::db::get_database;
 
 /// Realm 数据库操作实现
 impl Realm {
-    pub async fn get_keys(key_id: String, app_id: u32) -> Result<(Vec<u8>, Vec<u8>), RealmError> {
+    pub async fn get_keys(key_id: u32, app_id: u32) -> Result<(Vec<u8>, Vec<u8>), RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
@@ -18,7 +18,7 @@ impl Realm {
             "SELECT public_key, secret_key FROM realm WHERE realm_id = ? AND key_id = ?",
         )
         .bind(app_id)
-        .bind(&key_id)
+        .bind(key_id)
         .fetch_optional(pool)
         .await?;
 
@@ -54,7 +54,7 @@ impl Realm {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(self.realm_id)
-            .bind(&self.key_id)
+            .bind(self.key_id)
             .bind(&self.secret_key)
             .bind(&self.name)
             .bind(&self.public_key)
@@ -76,7 +76,7 @@ impl Realm {
                  WHERE rowid = ?"
             )
             .bind(self.realm_id)
-            .bind(&self.key_id)
+            .bind(self.key_id)
             .bind(&self.secret_key)
             .bind(&self.name)
             .bind(&self.public_key)
@@ -94,7 +94,7 @@ impl Realm {
 
     pub async fn get_by_realm_key_id_service(
         realm_id: u32,
-        key_id: &str,
+        key_id: u32,
     ) -> Result<Option<Realm>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
@@ -203,7 +203,7 @@ mod tests {
         let realm_id = rand::random::<u32>();
         let mut realm = Realm::new(
             realm_id,
-            "auth_key".to_string(),
+            1,
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
@@ -239,7 +239,7 @@ mod tests {
 
         let mut realm1 = Realm::new(
             realm_id,
-            "key_id1".to_string(),
+            1,
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
@@ -250,7 +250,7 @@ mod tests {
         // Try to create another Realm with the same realm_id
         let mut realm2 = Realm::new(
             realm_id,
-            "auth2".to_string(),
+            2,
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),

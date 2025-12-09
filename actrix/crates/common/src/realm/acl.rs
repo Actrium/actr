@@ -310,7 +310,7 @@ mod tests {
         let realm_id = rand::random::<u32>();
         let mut realm = Realm::new(
             realm_id,
-            "auth_key_for_acl".to_string(),
+            1,
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),

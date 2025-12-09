@@ -266,7 +266,7 @@ action_get_realm() {
     local request
     request=$(cat << EOF
 {
-  "realm_id": "${REALM_ID}",
+  "realm_id": $(echo "${REALM_ID}" | grep -E '^[0-9]+$' >/dev/null && echo "${REALM_ID}" || echo "1"),
   "credential": ${cred}
 }
 EOF
@@ -300,11 +300,11 @@ action_create_realm() {
     local request
     request=$(cat << EOF
 {
-  "realm_id": "${REALM_ID}",
+  "realm_id": $(echo "${REALM_ID}" | grep -E '^[0-9]+$' >/dev/null && echo "${REALM_ID}" || echo "1"),
   "name": "Test Realm ${REALM_ID}",
   "public_key": "${test_public_key}",
   "enabled": true,
-  "key_id": "key-$(date +%s)",
+  "key_id": $(date +%s),
   "version": 1,
   "credential": ${cred}
 }

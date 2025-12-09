@@ -16,10 +16,10 @@ impl Realm {
 
     /// 替换原 RealmForAuthority::get_keys()
     pub async fn get_authority_keys(
-        key_id: String,
+        key_id: u32,
         realm_id: u32,
     ) -> Result<(Vec<u8>, Vec<u8>), RealmError> {
-        let realm = Self::get_by_realm_key_id_service(realm_id, &key_id).await?;
+        let realm = Self::get_by_realm_key_id_service(realm_id, key_id).await?;
 
         if let Some(t) = realm {
             let public_key = t.public_key;
@@ -33,7 +33,7 @@ impl Realm {
     /// 替换原 RealmForSignaling::get_by_realm_id_and_key_id()
     pub async fn get_signaling_by_realm_id_and_key_id(
         realm_id: u32,
-        key_id: &str,
+        key_id: u32,
     ) -> Result<SecretKey, RealmError> {
         let realm = Self::get_by_realm_key_id_service(realm_id, key_id)
             .await?
@@ -43,8 +43,8 @@ impl Realm {
     }
 
     /// 替换原 RealmForTurn::get_private_key()
-    pub async fn get_private_key(realm_id: u32, key_id: String) -> Result<SecretKey, RealmError> {
-        let realm_opt = Self::get_by_realm_key_id_service(realm_id, &key_id).await?;
+    pub async fn get_private_key(realm_id: u32, key_id: u32) -> Result<SecretKey, RealmError> {
+        let realm_opt = Self::get_by_realm_key_id_service(realm_id, key_id).await?;
 
         if let Some(t) = realm_opt {
             if t.is_expired() {

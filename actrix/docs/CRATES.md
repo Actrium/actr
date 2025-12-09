@@ -470,7 +470,7 @@ pub struct Realm {
     pub rowid: Option<u32>,
     pub realm_id: u32,         // Realm 唯一 ID
     pub name: String,          // Realm 名称
-    pub key_id: String,        // 密钥 ID
+    pub key_id: u32,           // 密钥 ID
     pub secret_key: Vec<u8>,   // 私钥
     pub public_key: Vec<u8>,   // 公钥
     pub expires_at: Option<i64>, // 过期时间

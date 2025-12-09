@@ -14,7 +14,7 @@ pub struct Realm {
 
     // 基础字段 - 所有服务都需要
     pub realm_id: u32,
-    pub key_id: String,
+    pub key_id: u32,
     pub secret_key: Vec<u8>,
 
     // 可选字段 - 部分服务需要
@@ -30,7 +30,7 @@ pub struct Realm {
 impl Realm {
     pub fn new(
         realm_id: u32,
-        key_id: String,
+        key_id: u32,
         public_key: Vec<u8>,
         secret_key: Vec<u8>,
         name: String,
@@ -83,14 +83,14 @@ mod tests {
     fn test_realm_creation() {
         let tenant = Realm::new(
             12345,
-            "test_key_id".to_string(),
+            1,
             b"test_public".to_vec(),
             b"test_secret".to_vec(),
             "test_name".to_string(),
         );
 
         assert_eq!(tenant.realm_id, 12345u32);
-        assert_eq!(tenant.key_id, "test_key_id");
+        assert_eq!(tenant.key_id, 1);
         assert_eq!(tenant.secret_key, b"test_secret".to_vec());
         assert_eq!(tenant.public_key, b"test_public".to_vec());
         assert_eq!(tenant.name, "test_name");
@@ -102,7 +102,7 @@ mod tests {
     fn test_authority_realm_creation() {
         let tenant = Realm::new(
             54321,
-            "auth_key_id".to_string(),
+            2,
             b"auth_public".to_vec(),
             b"auth_secret".to_vec(),
             "Auth App".to_string(),

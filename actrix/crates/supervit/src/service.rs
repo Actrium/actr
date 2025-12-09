@@ -245,7 +245,7 @@ impl SupervisedService for Supervisord {
 
         let mut realm = Realm::new(
             req.realm_id,
-            req.key_id.clone(),
+            req.key_id,
             req.public_key.clone(),
             secret_key,
             req.name.clone(),
