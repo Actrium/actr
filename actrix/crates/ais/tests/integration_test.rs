@@ -193,15 +193,15 @@ async fn test_token_validation_with_wrong_tenant_fails() {
 
     let credential = &register_ok.credential;
 
-    // 尝试使用错误的 tenant_id 验证（期望失败）
+    // 尝试使用错误的 realm_id 验证（期望失败）
     let result = AIdCredentialValidator::check(credential, 9999).await;
 
     assert!(
         result.is_err(),
-        "Validation should fail with mismatched tenant_id"
+        "Validation should fail with mismatched realm_id"
     );
 
-    println!("✅ Wrong tenant validation test passed!");
+    println!("✅ Wrong realm validation test passed!");
 }
 
 #[tokio::test]

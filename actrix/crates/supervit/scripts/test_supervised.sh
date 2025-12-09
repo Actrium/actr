@@ -13,16 +13,16 @@
 #   list          - List available gRPC services
 #   describe      - Describe SupervisedService
 #   node_info     - Get node information
-#   list_tenants  - List all tenants/realms
-#   get_tenant    - Get tenant by ID (requires --tenant-id)
-#   create_tenant - Create a new tenant (requires --tenant-id)
+#   list_realms   - List all realms
+#   get_realm     - Get realm by ID (requires --realm-id)
+#   create_realm  - Create a new realm (requires --realm-id)
 #   shutdown      - Shutdown the node
 #
 # Examples:
 #   ./scripts/test_supervised.sh list
 #   ./scripts/test_supervised.sh node_info
-#   ./scripts/test_supervised.sh get_tenant --tenant-id test-realm-01
-#   ./scripts/test_supervised.sh create_tenant --tenant-id new-realm
+#   ./scripts/test_supervised.sh get_realm --realm-id test-realm-01
+#   ./scripts/test_supervised.sh create_realm --realm-id new-realm
 
 set -e
 
@@ -112,12 +112,12 @@ generate_credential() {
 # Parse command line arguments
 parse_args() {
     ACTION=""
-    TENANT_ID=""
+    REALM_ID=""
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --tenant-id)
-                TENANT_ID="$2"
+            --realm-id)
+                REALM_ID="$2"
                 shift 2
                 ;;
             --server)
@@ -148,13 +148,13 @@ Actions:
   list          List available gRPC services (no auth required)
   describe      Describe SupervisedService methods (no auth required)
   node_info     Get node information
-  list_tenants  List all tenants
-  get_tenant    Get tenant by ID (requires --tenant-id)
-  create_tenant Create a new tenant (requires --tenant-id)
+  list_realms   List all realms
+  get_realm     Get realm by ID (requires --realm-id)
+  create_realm  Create a new realm (requires --realm-id)
   shutdown      Shutdown the node gracefully
 
 Options:
-  --tenant-id   Tenant ID for tenant operations
+  --realm-id    Realm ID for realm operations
   --server      gRPC server address (default: localhost:50055)
   --help, -h    Show this help message
 
@@ -172,14 +172,14 @@ Examples:
   # Get node info
   ./scripts/test_supervised.sh node_info
 
-  # List all tenants
-  ./scripts/test_supervised.sh list_tenants
+  # List all realms
+  ./scripts/test_supervised.sh list_realms
 
-  # Get specific tenant
-  ./scripts/test_supervised.sh get_tenant --tenant-id my-realm
+  # Get specific realm
+  ./scripts/test_supervised.sh get_realm --realm-id my-realm
 
-  # Create tenant
-  ./scripts/test_supervised.sh create_tenant --tenant-id new-realm
+  # Create realm
+  ./scripts/test_supervised.sh create_realm --realm-id new-realm
 
 Prerequisites:
   1. Start the server: cargo run -p supervit --example supervisord_server
@@ -223,17 +223,17 @@ EOF
         "${SERVER_ADDR}" supervisor.v1.SupervisedService/GetNodeInfo
 }
 
-# Action: List tenants
-action_list_tenants() {
-    info "Listing tenants..."
-    
+# Action: List realms
+action_list_realms() {
+    info "Listing realms..."
+
     local cred
     cred=$(generate_credential "list_realms")
     if [[ -z "$cred" ]]; then
         error "Failed to generate credential"
         exit 1
     fi
-    
+
     local request
     request=$(cat << EOF
 {
@@ -241,67 +241,67 @@ action_list_tenants() {
 }
 EOF
 )
-    
+
     grpcurl -plaintext -import-path "${PROTO_PATH}" ${PROTO_FILES} \
         -d "${request}" \
-        "${SERVER_ADDR}" supervisor.v1.SupervisedService/ListTenants
+        "${SERVER_ADDR}" supervisor.v1.SupervisedService/ListRealms
 }
 
-# Action: Get tenant
-action_get_tenant() {
-    if [[ -z "$TENANT_ID" ]]; then
-        error "Tenant ID required. Use --tenant-id <id>"
+# Action: Get realm
+action_get_realm() {
+    if [[ -z "$REALM_ID" ]]; then
+        error "Realm ID required. Use --realm-id <id>"
         exit 1
     fi
-    
-    info "Getting tenant: ${TENANT_ID}"
-    
+
+    info "Getting realm: ${REALM_ID}"
+
     local cred
-    cred=$(generate_credential "get_realm" "${TENANT_ID}")
+    cred=$(generate_credential "get_realm" "${REALM_ID}")
     if [[ -z "$cred" ]]; then
         error "Failed to generate credential"
         exit 1
     fi
-    
+
     local request
     request=$(cat << EOF
 {
-  "tenant_id": "${TENANT_ID}",
+  "realm_id": "${REALM_ID}",
   "credential": ${cred}
 }
 EOF
 )
-    
+
     grpcurl -plaintext -import-path "${PROTO_PATH}" ${PROTO_FILES} \
         -d "${request}" \
-        "${SERVER_ADDR}" supervisor.v1.SupervisedService/GetTenant
+        "${SERVER_ADDR}" supervisor.v1.SupervisedService/GetRealm
 }
 
-# Action: Create tenant
-action_create_tenant() {
-    if [[ -z "$TENANT_ID" ]]; then
-        error "Tenant ID required. Use --tenant-id <id>"
+# Action: Create realm
+action_create_realm() {
+    if [[ -z "$REALM_ID" ]]; then
+        error "Realm ID required. Use --realm-id <id>"
         exit 1
     fi
-    
-    info "Creating tenant: ${TENANT_ID}"
-    
+
+    info "Creating realm: ${REALM_ID}"
+
     local cred
-    cred=$(generate_credential "create_realm" "${TENANT_ID}")
+    cred=$(generate_credential "create_realm" "${REALM_ID}")
     if [[ -z "$cred" ]]; then
         error "Failed to generate credential"
         exit 1
     fi
-    
+
     # Generate a test public key (33 bytes, base64 encoded)
     # This is a compressed secp256k1 public key format (0x02 or 0x03 prefix + 32 bytes)
     local test_public_key="AhY2dJI5sP3r8wqO0K5rT1nL2mX4yU6vB8cA9dEfGhIj"
-    
+
     local request
     request=$(cat << EOF
 {
-  "tenant_id": "${TENANT_ID}",
-  "name": "Test Realm ${TENANT_ID}",
+  "realm_id": "${REALM_ID}",
+  "name": "Test Realm ${REALM_ID}",
   "public_key": "${test_public_key}",
   "enabled": true,
   "key_id": "key-$(date +%s)",
@@ -310,10 +310,10 @@ action_create_tenant() {
 }
 EOF
 )
-    
+
     grpcurl -plaintext -import-path "${PROTO_PATH}" ${PROTO_FILES} \
         -d "${request}" \
-        "${SERVER_ADDR}" supervisor.v1.SupervisedService/CreateTenant
+        "${SERVER_ADDR}" supervisor.v1.SupervisedService/CreateRealm
 }
 
 # Action: Shutdown
@@ -366,14 +366,14 @@ main() {
         node_info|node-info|nodeinfo)
             action_node_info
             ;;
-        list_tenants|list-tenants|listtenants|list_realms)
-            action_list_tenants
+        list_realms|list-realms|listrealms|list_tenants|list-tenants|listtenants)
+            action_list_realms
             ;;
-        get_tenant|get-tenant|gettenant|get_realm)
-            action_get_tenant
+        get_realm|get-realm|getrealm|get_tenant|get-tenant|gettenant)
+            action_get_realm
             ;;
-        create_tenant|create-tenant|createtenant|create_realm)
-            action_create_tenant
+        create_realm|create-realm|createrealms|create_tenant|create-tenant|createtenant)
+            action_create_realm
             ;;
         shutdown)
             action_shutdown

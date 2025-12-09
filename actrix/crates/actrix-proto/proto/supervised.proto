@@ -13,12 +13,12 @@ service SupervisedService {
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 
-  // ------------ Tenant management ------------
-  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
-  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse);
-  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
-  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse);
-  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+  // ------------ Realm management ------------
+  rpc CreateRealm(CreateRealmRequest) returns (CreateRealmResponse);
+  rpc GetRealm(GetRealmRequest) returns (GetRealmResponse);
+  rpc UpdateRealm(UpdateRealmRequest) returns (UpdateRealmResponse);
+  rpc DeleteRealm(DeleteRealmRequest) returns (DeleteRealmResponse);
+  rpc ListRealms(ListRealmsRequest) returns (ListRealmsResponse);
 
   // ------------ Node control ------------
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
@@ -56,14 +56,14 @@ message GetConfigResponse {
 }
 
 // ============================================================================
-// Tenant management
+// Realm management
 // ============================================================================
 
-// ------------ CreateTenant ------------
+// ------------ CreateRealm ------------
 
-message CreateTenantRequest {
-  required string tenant_id = 1;            // Tenant identifier
-  required string name = 2;                 // Tenant name
+message CreateRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
+  required string name = 2;                 // Realm name
   required bytes public_key = 3;            // Public key (authentication)
   optional bytes secret_key = 4;            // Secret key (optional, some scenarios only need public key)
   required bool enabled = 5;                // Enabled status
@@ -73,64 +73,64 @@ message CreateTenantRequest {
   required uint64 version = 9;              // Realm version (assigned by Boss)
 }
 
-message CreateTenantResponse {
+message CreateRealmResponse {
   required bool success = 1;                // Operation result
   optional string error_message = 2;        // Error message on failure
-  optional TenantInfo tenant = 3;           // Created tenant info
+  optional RealmInfo realm = 3;             // Created realm info
 }
 
-// ------------ GetTenant ------------
+// ------------ GetRealm ------------
 
-message GetTenantRequest {
-  required string tenant_id = 1;            // Tenant identifier
+message GetRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
   required NonceCredential credential = 2;  // Authentication credential
 }
 
-message GetTenantResponse {
+message GetRealmResponse {
   required bool success = 1;                // Operation result
   optional string error_message = 2;        // Error message on failure
-  optional TenantInfo tenant = 3;           // Tenant info
+  optional RealmInfo realm = 3;             // Realm info
 }
 
-// ------------ UpdateTenant ------------
+// ------------ UpdateRealm ------------
 
-message UpdateTenantRequest {
-  required string tenant_id = 1;            // Tenant identifier
+message UpdateRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
   optional string name = 2;                 // New name (optional update)
   optional bool enabled = 3;                // New enabled status (optional update)
   required NonceCredential credential = 4;  // Authentication credential
 }
 
-message UpdateTenantResponse {
+message UpdateRealmResponse {
   required bool success = 1;                // Operation result
   optional string error_message = 2;        // Error message on failure
-  optional TenantInfo tenant = 3;           // Updated tenant info
+  optional RealmInfo realm = 3;             // Updated realm info
 }
 
-// ------------ DeleteTenant ------------
+// ------------ DeleteRealm ------------
 
-message DeleteTenantRequest {
-  required string tenant_id = 1;            // Tenant identifier
+message DeleteRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
   required NonceCredential credential = 2;  // Authentication credential
 }
 
-message DeleteTenantResponse {
+message DeleteRealmResponse {
   required bool success = 1;                // Operation result
   optional string error_message = 2;        // Error message on failure
 }
 
-// ------------ ListTenants ------------
+// ------------ ListRealms ------------
 
-message ListTenantsRequest {
+message ListRealmsRequest {
   optional uint32 page_size = 1;            // Page size
   optional string page_token = 2;           // Page token for pagination
   required NonceCredential credential = 3;  // Authentication credential
 }
 
-message ListTenantsResponse {
+message ListRealmsResponse {
   required bool success = 1;                // Operation result
   optional string error_message = 2;        // Error message on failure
-  repeated TenantInfo tenants = 3;          // Tenant list
+  repeated RealmInfo realms = 3;            // Realm list
   optional string next_page_token = 4;      // Next page token
   required uint32 total_count = 5;          // Total count (for pagination)
 }

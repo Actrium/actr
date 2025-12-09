@@ -2,7 +2,7 @@
 //!
 //! 定义了 AId Token 相关操作的各种错误类型
 
-use crate::tenant::error::TenantError;
+use crate::realm::error::RealmError;
 use thiserror::Error;
 
 /// AId Token 相关错误类型
@@ -41,6 +41,6 @@ pub enum AidError {
     #[error("Hex decode error: {0}")]
     HexDecodeError(String),
 
-    #[error("Tenant error: {0}")]
-    TenantError(#[from] TenantError),
+    #[error("Realm error: {0}")]
+    RealmError(#[from] RealmError),
 }

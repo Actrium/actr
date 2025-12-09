@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// 此结构体从 AIdCredential 中解密得到，包含用户的身份信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityClaims {
-    /// Realm ID (安全域/租户 ID)
+    /// Realm ID (安全域标识符)
     pub realm_id: u32,
 
     /// Actor ID 字符串表示

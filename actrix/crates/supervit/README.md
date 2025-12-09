@@ -7,7 +7,7 @@ A high-performance gRPC client and supervisord server for connecting actrix node
 - **gRPC Communication**: Uses HTTP/2 and Protocol Buffers for efficient communication
 - **Status Reporting**: Automatic periodic system metrics and service status reporting
 - **Configuration Management**: Receive and apply configuration updates from supervisor
-- **Realm Operations**: Remote realm (tenant) CRUD operations, stored via common `Tenant` model
+- **Realm Operations**: Remote realm CRUD operations, stored via common `Realm` model
 - **Health Checks**: Built-in health check and heartbeat mechanism
 - **Supervisord Service**: Built-in `SupervisedService` implementation for realm delivery and node control
 
@@ -147,14 +147,14 @@ The communication protocol is defined in `proto/supervisor.proto` (SupervisorSer
 ### Services
 
 - **SupervisorService**: `RegisterNode`, `Report`, `HealthCheck`
-- **SupervisedService**: `UpdateConfig`, `GetConfig`, tenant CRUD (`CreateTenant`, `GetTenant`, `UpdateTenant`, `DeleteTenant`, `ListTenants`), `GetNodeInfo`, `Shutdown`
+- **SupervisedService**: `UpdateConfig`, `GetConfig`, realm CRUD (`CreateRealm`, `GetRealm`, `UpdateRealm`, `DeleteRealm`, `ListRealms`), `GetNodeInfo`, `Shutdown`
 
 ### Message Types
 
 - `RegisterNodeRequest/Response`: Node registration handshake
 - `ReportRequest` / `ReportResponse`: System metrics and service status reporting
 - `UpdateConfigRequest/Response`, `GetConfigRequest/Response`: Configuration management
-- `CreateTenantRequest/Response`, `GetTenantRequest/Response`, `UpdateTenantRequest/Response`, `DeleteTenantRequest/Response`, `ListTenantsRequest/Response`: Tenant CRUD
+- `CreateRealmRequest/Response`, `GetRealmRequest/Response`, `UpdateRealmRequest/Response`, `DeleteRealmRequest/Response`, `ListRealmsRequest/Response`: Realm CRUD
 - `GetNodeInfoRequest/Response`, `ShutdownRequest/Response`: Node control
 - `HealthCheckRequest/Response`: Health checks
 

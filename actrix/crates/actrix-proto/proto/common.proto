@@ -88,12 +88,12 @@ message ServiceStatus {
 }
 
 // ============================================================================
-// Tenant information (shared)
+// Realm information (shared)
 // ============================================================================
 
-message TenantInfo {
-  required string tenant_id = 1;            // Tenant identifier
-  required string name = 2;                 // Tenant name
+message RealmInfo {
+  required uint32 realm_id = 1;            // Realm identifier
+  required string name = 2;                 // Realm name
   required bool enabled = 3;                // Enabled status
   required int64 created_at = 4;            // Creation timestamp
   optional int64 updated_at = 5;            // Update timestamp (empty if never updated)

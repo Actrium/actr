@@ -13,8 +13,8 @@
 - 验证 Claims 字段的正确性
 - 验证过期时间的合理性
 
-### 2. `test_token_validation_with_wrong_tenant_fails`
-验证安全性：使用错误的 tenant_id 验证 Token 应该失败
+### 2. `test_token_validation_with_wrong_realm_fails`
+验证安全性：使用错误的 realm_id 验证 Token 应该失败
 
 ### 3. `test_multiple_key_rotations`
 验证密钥轮换：
@@ -65,7 +65,7 @@ cargo test -p ais --test integration_test -- --ignored
 ```
 running 4 tests
 test test_end_to_end_token_issuance_and_validation ... ok
-test test_token_validation_with_wrong_tenant_fails ... ok
+test test_token_validation_with_wrong_realm_fails ... ok
 test test_multiple_key_rotations ... ok
 test test_issuer_health_checks ... ok
 

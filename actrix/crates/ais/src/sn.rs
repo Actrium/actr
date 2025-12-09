@@ -191,11 +191,11 @@ impl TryFrom<u64> for SerialNumber {
 }
 
 pub trait AIdSerialNumberIssuer {
-    fn sn(tenant: u32) -> SerialNumber;
+    fn sn(realm_id: u32) -> SerialNumber;
 }
 
 impl AIdSerialNumberIssuer for SerialNumber {
-    fn sn(_tenant: u32) -> SerialNumber {
+    fn sn(_realm_id: u32) -> SerialNumber {
         let worker_id = init_worker_id();
 
         // Get current timestamp in milliseconds

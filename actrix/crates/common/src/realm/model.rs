@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_realm_creation() {
-        let tenant = Realm::new(
+        let realm = Realm::new(
             12345,
             "test_key_id".to_string(),
             b"test_public".to_vec(),
@@ -89,18 +89,18 @@ mod tests {
             "test_name".to_string(),
         );
 
-        assert_eq!(tenant.realm_id, 12345u32);
-        assert_eq!(tenant.key_id, "test_key_id");
-        assert_eq!(tenant.secret_key, b"test_secret".to_vec());
-        assert_eq!(tenant.public_key, b"test_public".to_vec());
-        assert_eq!(tenant.name, "test_name");
-        assert!(tenant.created_at.is_some());
-        assert!(tenant.updated_at.is_some());
+        assert_eq!(realm.realm_id, 12345u32);
+        assert_eq!(realm.key_id, "test_key_id");
+        assert_eq!(realm.secret_key, b"test_secret".to_vec());
+        assert_eq!(realm.public_key, b"test_public".to_vec());
+        assert_eq!(realm.name, "test_name");
+        assert!(realm.created_at.is_some());
+        assert!(realm.updated_at.is_some());
     }
 
     #[test]
     fn test_authority_realm_creation() {
-        let tenant = Realm::new(
+        let realm = Realm::new(
             54321,
             "auth_key_id".to_string(),
             b"auth_public".to_vec(),
@@ -108,7 +108,7 @@ mod tests {
             "Auth App".to_string(),
         );
 
-        assert_eq!(tenant.name, "Auth App");
-        assert_eq!(tenant.public_key, b"auth_public".to_vec());
+        assert_eq!(realm.name, "Auth App");
+        assert_eq!(realm.public_key, b"auth_public".to_vec());
     }
 }

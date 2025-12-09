@@ -35,7 +35,7 @@ SupervisorConfig {
 2. **无防重放保护**
    - 没有 nonce 或 timestamp 验证
    - 攻击者可以重放合法请求
-   - 风险：重复执行操作（如重复创建租户）
+   - 风险：重复执行操作（如重复创建 Realm）
 
 3. **缺少消息完整性校验**
    - 依赖 TLS 的 MAC
@@ -65,14 +65,14 @@ SupervisorConfig {
 
 ### 2.1 攻击场景
 
-| 威胁 | 攻击者能力 | 影响 | 当前防护 | 建议防护 |
-|------|----------|------|---------|---------|
-| **中间人攻击** | 网络嗅探、流量篡改 | 数据泄露、篡改 | ✅ TLS | ✅ TLS (已足够) |
-| **节点冒充** | 获取 endpoint | 完全控制 | ❌ 无 | ⚠️ 需要 mTLS 或 Token |
-| **重放攻击** | 截获合法请求 | 重复执行操作 | ❌ 无 | ⚠️ 需要 Nonce/Timestamp |
-| **权限提升** | 获取低权限凭证 | 访问高权限功能 | ❌ 无 | ⚠️ 需要 RBAC |
-| **内网攻击** | 内网访问 | 绕过 TLS | ❌ 无 | ⚠️ 需要应用层认证 |
-| **DDoS** | 大量连接 | 服务不可用 | ❌ 无 | ✅ gRPC 限流 |
+| 威胁           | 攻击者能力         | 影响           | 当前防护 | 建议防护               |
+| -------------- | ------------------ | -------------- | -------- | ---------------------- |
+| **中间人攻击** | 网络嗅探、流量篡改 | 数据泄露、篡改 | ✅ TLS    | ✅ TLS (已足够)         |
+| **节点冒充**   | 获取 endpoint      | 完全控制       | ❌ 无     | ⚠️ 需要 mTLS 或 Token   |
+| **重放攻击**   | 截获合法请求       | 重复执行操作   | ❌ 无     | ⚠️ 需要 Nonce/Timestamp |
+| **权限提升**   | 获取低权限凭证     | 访问高权限功能 | ❌ 无     | ⚠️ 需要 RBAC            |
+| **内网攻击**   | 内网访问           | 绕过 TLS       | ❌ 无     | ⚠️ 需要应用层认证       |
+| **DDoS**       | 大量连接           | 服务不可用     | ❌ 无     | ✅ gRPC 限流            |
 
 ### 2.2 信任边界
 
@@ -111,12 +111,12 @@ SupervisorConfig {
 
 ### 3.1 方案选型对比
 
-| 方案 | 安全性 | 复杂度 | 性能 | 适用场景 |
-|------|-------|--------|------|---------|
-| **mTLS (双向 TLS)** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | 企业内部、证书管理成熟 |
-| **JWT Token** | ⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐ | 互联网服务、动态节点 |
-| **HMAC 签名** | ⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐⭐⭐ | 固定节点、对称密钥 |
-| **API Key** | ⭐⭐⭐ | ⭐ | ⭐⭐⭐⭐⭐ | 简单场景、信任环境 |
+| 方案                | 安全性 | 复杂度 | 性能  | 适用场景               |
+| ------------------- | ------ | ------ | ----- | ---------------------- |
+| **mTLS (双向 TLS)** | ⭐⭐⭐⭐⭐  | ⭐⭐⭐⭐   | ⭐⭐⭐⭐⭐ | 企业内部、证书管理成熟 |
+| **JWT Token**       | ⭐⭐⭐⭐   | ⭐⭐⭐    | ⭐⭐⭐⭐  | 互联网服务、动态节点   |
+| **HMAC 签名**       | ⭐⭐⭐⭐   | ⭐⭐     | ⭐⭐⭐⭐⭐ | 固定节点、对称密钥     |
+| **API Key**         | ⭐⭐⭐    | ⭐      | ⭐⭐⭐⭐⭐ | 简单场景、信任环境     |
 
 ### 3.2 推荐方案：**分层混合安全架构**
 
@@ -274,11 +274,11 @@ pub enum Permission {
     // 状态上报
     ReportStatus,
 
-    // 租户管理
-    TenantCreate,
-    TenantRead,
-    TenantUpdate,
-    TenantDelete,
+    // Realm 管理
+    RealmCreate,
+    RealmRead,
+    RealmUpdate,
+    RealmDelete,
 
     // 配置管理
     ConfigRead,
@@ -308,7 +308,7 @@ impl NodePermissions {
 [[supervisor.nodes]]
 node_id = "actrix-node-01"
 shared_secret = "hex_encoded_secret"
-permissions = ["ReportStatus", "HealthCheck", "TenantRead"]
+permissions = ["ReportStatus", "HealthCheck", "RealmRead"]
 
 # 管理节点
 [[supervisor.nodes]]
@@ -525,7 +525,7 @@ nonce_ttl_secs = 600
 [[nodes]]
 node_id = "actrix-01"
 shared_secret = "a1b2c3d4e5f6...64位hex字符串"
-permissions = ["ReportStatus", "HealthCheck", "TenantRead"]
+permissions = ["ReportStatus", "HealthCheck", "RealmRead"]
 
 [[nodes]]
 node_id = "actrix-admin"
@@ -576,12 +576,12 @@ openssl rand -hex 32 > new_secret.txt
 
 ## 七、性能影响评估
 
-| 安全措施 | 延迟增加 | CPU 开销 | 内存开销 |
-|---------|---------|---------|---------|
-| **mTLS** | ~1-2ms | ~3% | 最小 |
-| **HMAC 签名** | ~0.1ms | ~1% | 最小 |
-| **防重放缓存** | ~0.05ms | ~0.5% | ~10MB (1万nonce) |
-| **总计** | ~1-3ms | ~4-5% | ~10MB |
+| 安全措施       | 延迟增加 | CPU 开销 | 内存开销         |
+| -------------- | -------- | -------- | ---------------- |
+| **mTLS**       | ~1-2ms   | ~3%      | 最小             |
+| **HMAC 签名**  | ~0.1ms   | ~1%      | 最小             |
+| **防重放缓存** | ~0.05ms  | ~0.5%    | ~10MB (1万nonce) |
+| **总计**       | ~1-3ms   | ~4-5%    | ~10MB            |
 
 **结论：**安全开销在可接受范围内，对高吞吐量场景影响很小。
 
@@ -589,15 +589,15 @@ openssl rand -hex 32 > new_secret.txt
 
 ## 八、与 Auxes 的对比
 
-| 特性 | Auxes (ECIES + HMAC) | Actrix (mTLS + HMAC) |
-|------|---------------------|---------------------|
-| **加密方式** | ECIES (应用层) | TLS 1.3 (传输层) |
-| **签名方式** | HMAC-SHA256 | HMAC-SHA256 (相同) |
-| **防重放** | Timestamp (5分钟) | Timestamp + Nonce |
-| **身份认证** | shared_secret | mTLS + shared_secret |
-| **密钥管理** | 手动轮换 | 自动协商 (TLS) |
-| **性能** | 较慢 (非对称加密) | 更快 (对称加密) |
-| **复杂度** | 高 (手动实现) | 中 (依赖 TLS) |
+| 特性         | Auxes (ECIES + HMAC) | Actrix (mTLS + HMAC) |
+| ------------ | -------------------- | -------------------- |
+| **加密方式** | ECIES (应用层)       | TLS 1.3 (传输层)     |
+| **签名方式** | HMAC-SHA256          | HMAC-SHA256 (相同)   |
+| **防重放**   | Timestamp (5分钟)    | Timestamp + Nonce    |
+| **身份认证** | shared_secret        | mTLS + shared_secret |
+| **密钥管理** | 手动轮换             | 自动协商 (TLS)       |
+| **性能**     | 较慢 (非对称加密)    | 更快 (对称加密)      |
+| **复杂度**   | 高 (手动实现)        | 中 (依赖 TLS)        |
 
 **优势：**
 - ✅ Actrix 方案性能更好

@@ -1,13 +1,13 @@
 //! Base 基础设施库
 //!
-//! 为 Actor-RTC 辅助服务提供基础设施组件，包括身份管理、加密、监控、存储、租户管理等核心功能
+//! 为 Actor-RTC 辅助服务提供基础设施组件，包括身份管理、加密、监控、存储、Realm 管理等核心功能
 
 pub mod aid;
 pub mod error;
 pub mod metrics;
 pub mod monitoring;
+pub mod realm;
 pub mod storage;
-pub mod tenant;
 pub mod types;
 
 pub mod config;
@@ -20,9 +20,9 @@ pub use error::{
     ValidationError,
 };
 pub use monitoring::{ServiceCollector, ServiceInfo, ServiceState, ServiceType};
+pub use realm::{ActorAcl, Realm, RealmError};
 pub use storage::SqliteNonceStorage;
-pub use tenant::{ActorAcl, Tenant, TenantError};
-pub use types::{ActrId, PeerId, TenantId};
+pub use types::{ActrId, PeerId, RealmId};
 pub use util::TlsConfigurer;
 
 // Simplified credential module for backward compatibility

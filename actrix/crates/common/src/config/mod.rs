@@ -113,7 +113,7 @@ pub struct ActrixConfig {
     ///
     /// 指定用于存储所有 SQLite 数据库文件的目录路径。
     /// 主数据库文件将存储为 `{sqlite_path}/actrix.db`。
-    /// 包括租户信息、访问控制列表、nonce 缓存等。
+    /// 包括 Realm 信息、访问控制列表、nonce 缓存等。
     #[serde(
         serialize_with = "serialize_pathbuf",
         deserialize_with = "deserialize_pathbuf"
@@ -127,7 +127,7 @@ pub struct ActrixConfig {
     ///
     /// 注意：
     /// - 此密钥仅限 Actrix 内部服务使用
-    /// - 不应用于租户业务或外部 API 访问
+    /// - 不应用于 Realm 业务或外部 API 访问
     /// - 在生产环境中应使用强随机密钥
     /// - 字段名保留 actrix_shared_key 以保持向后兼容
     pub actrix_shared_key: String,

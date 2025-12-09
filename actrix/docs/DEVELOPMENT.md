@@ -201,7 +201,7 @@ impl ServiceManager {
 ### 6. 更新配置
 
 ```rust
-// crates/base/src/config/mod.rs
+// crates/common/src/config/mod.rs
 pub const ENABLE_MYSERVICE: u8 = 0b100000;  // 新位
 
 impl ActrixConfig {

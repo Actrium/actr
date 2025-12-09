@@ -102,8 +102,8 @@ impl AuthHandler for Authenticator {
             Ok(token) => token,
             Err(e) => {
                 error!(
-                    "无法解密 token: tenant_id={}, key_id={}, error={}",
-                    claims.tenant_id, claims.key_id, e
+                    "无法解密 token: realm_id={}, key_id={}, error={}",
+                    claims.realm_id, claims.key_id, e
                 );
                 return Err(Error::Other(format!("Failed to decrypt token: {e}")));
             }
@@ -113,8 +113,8 @@ impl AuthHandler for Authenticator {
         let psk = token.psk;
 
         debug!(
-            "成功解密 token: tenant_id={}, act_type={}, psk_len={}",
-            token.tenant_id,
+            "成功解密 token: realm_id={}, act_type={}, psk_len={}",
+            token.realm_id,
             token.act_type,
             psk.len()
         );

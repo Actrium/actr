@@ -342,5 +342,5 @@ default_policy = "deny"
 
 # Note: ACL rules are stored in SQLite database (actoracl table)
 # Example rules (inserted via SQL or application API):
-# INSERT INTO actoracl (tenant_id, from_type, to_type, access) VALUES ('tenant1', 'user', 'service', 1);
-# INSERT INTO actoracl (tenant_id, from_type, to_type, access) VALUES ('tenant1', 'anonymous', 'admin', 0);
+# INSERT INTO actoracl (realm_id, from_type, to_type, access) VALUES (1, 'user', 'service', 1);
+# INSERT INTO actoracl (realm_id, from_type, to_type, access) VALUES (1, 'anonymous', 'admin', 0);

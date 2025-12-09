@@ -17,7 +17,7 @@ actrix_proto
 ├── supervisor::v1    # Supervisor service definitions
 │   ├── SupervisorService (Node → Supervisor)
 │   ├── SupervisedService (Supervisor → Node)
-│   └── Common types (NonceCredential, TenantInfo, etc.)
+│   └── Common types (NonceCredential, RealmInfo, etc.)
 └── ks::v1            # Key Server service definitions
     └── KeyServer service
 ```
@@ -26,7 +26,7 @@ actrix_proto
 
 | File | Package | Description |
 |------|---------|-------------|
-| `common.proto` | `supervisor.v1` | Shared types: NonceCredential, TenantInfo, SystemMetrics, etc. |
+| `common.proto` | `supervisor.v1` | Shared types: NonceCredential, RealmInfo, SystemMetrics, etc. |
 | `supervisor.proto` | `supervisor.v1` | SupervisorService - Node registration and reporting |
 | `supervised.proto` | `supervisor.v1` | SupervisedService - Realm/config management from Supervisor |
 | `keyserver.proto` | `ks.v1` | KeyServer - Key generation and retrieval |
@@ -45,7 +45,7 @@ use actrix_proto::ks::v1::{GenerateKeyRequest, KeyServerClient};
 ```rust
 // Common types re-exported at crate root
 use actrix_proto::{
-    NonceCredential, TenantInfo, ResourceType,
+    NonceCredential, RealmInfo, ResourceType,
     SupervisorServiceClient, SupervisedServiceServer,
 };
 ```

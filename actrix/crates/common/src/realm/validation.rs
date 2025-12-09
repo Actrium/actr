@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn test_expiration_check() {
         let past_time = Utc::now().timestamp() - 3600; // 1 hour ago
-        let mut tenant = Realm::new(
+        let mut realm = Realm::new(
             99999,
             "expired_key_id".to_string(),
             b"expired_public".to_vec(),
@@ -47,17 +47,17 @@ mod tests {
         );
 
         // Set expired time to test expiration
-        tenant.expires_at = Some(past_time);
-        assert!(tenant.is_expired());
+        realm.expires_at = Some(past_time);
+        assert!(realm.is_expired());
 
         // Test non-expiring realm
-        tenant.expires_at = None;
-        assert!(!tenant.is_expired());
+        realm.expires_at = None;
+        assert!(!realm.is_expired());
     }
 
     #[test]
     fn test_verify_secret_key() {
-        let tenant = Realm::new(
+        let realm = Realm::new(
             12345,
             "test".to_string(),
             b"correct_public".to_vec(),
@@ -65,7 +65,7 @@ mod tests {
             "test_name".to_string(),
         );
 
-        assert!(tenant.verify_secret_key(&b"correct_secret".to_vec()));
-        assert!(!tenant.verify_secret_key(&b"wrong_secret".to_vec()));
+        assert!(realm.verify_secret_key(&b"correct_secret".to_vec()));
+        assert!(!realm.verify_secret_key(&b"wrong_secret".to_vec()));
     }
 }

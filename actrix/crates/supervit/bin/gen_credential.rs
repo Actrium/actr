@@ -19,7 +19,7 @@
 //! ```bash
 //! cargo run --bin gen_credential -- \
 //!   --action create_realm \
-//!   --subject test-tenant-01 \
+//!   --subject test-realm-01 \
 //!   --node-id test-node-01 \
 //!   --shared-secret 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 //! ```
@@ -85,7 +85,7 @@ struct Args {
     #[arg(short, long, value_parser = parse_action, default_value = "node_info")]
     action: String,
 
-    /// Subject (tenant_id for realm operations, type:key for config operations)
+    /// Subject (realm_id for realm operations, type:key for config operations)
     #[arg(short, long)]
     subject: Option<String>,
 
@@ -108,7 +108,7 @@ fn main() {
     // Validate subject requirement
     if action_requires_subject(&args.action) && args.subject.is_none() {
         eprintln!("Error: --subject is required for action '{}'", args.action);
-        eprintln!("  For realm operations: --subject <tenant-id>");
+        eprintln!("  For realm operations: --subject <realm-id>");
         eprintln!("  For config operations: --subject <type:key>");
         std::process::exit(1);
     }

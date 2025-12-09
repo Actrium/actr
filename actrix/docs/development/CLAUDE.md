@@ -71,7 +71,7 @@ The system uses a **modular service architecture** with fine-grained control:
 
 1. **ServiceManager** (`src/service/manager.rs`): Orchestrates all services with unified shutdown handling
 
-2. **Configuration System** (`crates/base/src/config/`): Single source of truth using TOML
+2. **Configuration System** (`crates/common/src/config/`): Single source of truth using TOML
    - Uses bitmask for service enable/disable (位掩码控制)
    - Supports environment-specific settings (dev/prod/test)
 
@@ -122,7 +122,7 @@ async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError>
 
 **🔑 Shared PSK Authentication:**
 ```rust
-// crates/base/src/config/mod.rs:137
+// crates/common/src/config/mod.rs:137
 actrix_shared_key: "default-auxes-shared-key-change-in-production"
 ```
 - **Risk**: All services share same PSK, default value is publicly known

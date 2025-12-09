@@ -16,8 +16,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+use crate::realm::RealmError;
 use crate::storage::db::get_database;
-use crate::tenant::RealmError;
 
 /// 用于存储 Realm 级别的键值对配置信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default, FromRow)]
@@ -173,7 +173,7 @@ impl RealmConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{tenant::Realm, util::test_utils::utils::setup_test_db};
+    use crate::{realm::Realm, util::test_utils::utils::setup_test_db};
     use serial_test::serial;
 
     #[tokio::test]
@@ -181,16 +181,16 @@ mod tests {
     async fn test_realm_config_crud() -> anyhow::Result<()> {
         setup_test_db().await?;
 
-        // Create a tenant first with unique name
+        // Create a realm first with unique name
         let realm_id = rand::random::<u32>();
-        let mut tenant = Realm::new(
+        let mut realm = Realm::new(
             realm_id,
             "auth_key_for_config".to_string(),
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
         );
-        let realm_row_id = tenant.save().await?;
+        let realm_row_id = realm.save().await?;
 
         // Test create RealmConfig
         let mut config = RealmConfig::new(

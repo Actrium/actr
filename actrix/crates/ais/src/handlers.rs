@@ -210,7 +210,7 @@ fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
         AidError::Base64DecodeError(_) => 400,
         AidError::HexDecodeError(_) => 400,
         AidError::Expired => 401,
-        AidError::TenantError(_) => 403, // Forbidden
+        AidError::RealmError(_) => 403, // Forbidden
 
         // 服务端错误 (5xx)
         AidError::GenerationFailed(msg) => {

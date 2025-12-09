@@ -201,31 +201,30 @@ mod tests {
 
         // 创建一个 Realm 来触发表创建，使用唯一名称
         let realm_id = rand::random::<u32>();
-        let mut tenant = Realm::new(
+        let mut realm = Realm::new(
             realm_id,
             "auth_key".to_string(),
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
         );
-        let _rowid = tenant.save().await?;
+        let _rowid = realm.save().await?;
 
         // 查询表结构
         let db = get_database();
         let pool = db.get_pool();
 
         let schema_info: Option<(String,)> =
-            sqlx::query_as("SELECT sql FROM sqlite_master WHERE type='table' AND name='tenant'")
+            sqlx::query_as("SELECT sql FROM sqlite_master WHERE type='table' AND name='realm'")
                 .fetch_optional(pool)
                 .await?;
         println!("Schema query result: {schema_info:?}");
 
         // 查询索引信息
-        let index_info: Vec<(String,)> = sqlx::query_as(
-            "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='tenant'",
-        )
-        .fetch_all(pool)
-        .await?;
+        let index_info: Vec<(String,)> =
+            sqlx::query_as("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='realm'")
+                .fetch_all(pool)
+                .await?;
         println!("Index query result: {index_info:?}");
 
         Ok(())
@@ -238,27 +237,27 @@ mod tests {
 
         let realm_id = rand::random::<u32>();
 
-        let mut tenant1 = Realm::new(
+        let mut realm1 = Realm::new(
             realm_id,
             "key_id1".to_string(),
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
         );
-        let tenant1_id = tenant1.save().await?; // Save first tenant
-        println!("Created first tenant with ID: {tenant1_id}");
+        let realm1_id = realm1.save().await?;
+        println!("Created first realm with ID: {realm1_id}");
 
         // Try to create another Realm with the same realm_id
-        let mut tenant2 = Realm::new(
+        let mut realm2 = Realm::new(
             realm_id,
             "auth2".to_string(),
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
         );
-        let result = tenant2.save().await;
+        let result = realm2.save().await;
 
-        println!("Second tenant save result: {result:?}");
+        println!("Second realm save result: {result:?}");
 
         // Should fail due to duplicate name
         assert!(result.is_err());
@@ -266,7 +265,7 @@ mod tests {
             println!("Got database error: {msg}");
             assert!(msg.contains("UNIQUE constraint failed") || msg.contains("already exists"));
         } else {
-            panic!("Expected DatabaseError for duplicate tenant name, got: {result:?}");
+            panic!("Expected DatabaseError for duplicate realm name, got: {result:?}");
         }
 
         Ok(())

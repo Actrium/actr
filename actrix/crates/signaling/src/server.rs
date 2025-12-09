@@ -556,9 +556,9 @@ async fn handle_register_request(
 
     // 持久化 ACL 规则到数据库
     if let Some(ref acl) = request.acl {
-        use actrix_common::tenant::acl::ActorAcl;
+        use actrix_common::realm::acl::ActorAcl;
 
-        let tenant_id = register_ok.actr_id.realm.realm_id.to_string();
+        let realm_id = register_ok.actr_id.realm.realm_id;
         // 使用完整的 manufacturer:type 格式
         let my_type = format!(
             "{}:{}",
@@ -584,12 +584,8 @@ async fn handle_register_request(
                 };
 
                 // 保存规则：from_type (principal) -> to_type (me)
-                let mut actor_acl = ActorAcl::new(
-                    tenant_id.clone(),
-                    from_type.clone(),
-                    my_type.clone(),
-                    permission,
-                );
+                let mut actor_acl =
+                    ActorAcl::new(realm_id, from_type.clone(), my_type.clone(), permission);
 
                 match actor_acl.save().await {
                     Ok(acl_id) => {
@@ -948,9 +944,9 @@ async fn handle_actr_relay(
     tracing::debug!(?relay, "handle_actr_relay");
 
     // ACL check: can source relay to target?
-    use actrix_common::tenant::acl::ActorAcl;
-    let source_realm = source.realm.realm_id.to_string();
-    let target_realm = target.realm.realm_id.to_string();
+    use actrix_common::realm::acl::ActorAcl;
+    let source_realm = source.realm.realm_id;
+    let target_realm = target.realm.realm_id;
 
     // Cross-realm relay is denied by default for security
     if source_realm != target_realm {
@@ -975,7 +971,7 @@ async fn handle_actr_relay(
     let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
     let target_type = format!("{}:{}", target.r#type.manufacturer, target.r#type.name);
 
-    let can_relay = ActorAcl::can_discover(&source_realm, &source_type, &target_type)
+    let can_relay = ActorAcl::can_discover(source_realm, &source_type, &target_type)
         .await
         .unwrap_or(false);
 
@@ -1376,8 +1372,8 @@ async fn handle_discovery_request(
     let total_count = services.len(); // Save count before moving
 
     // Apply ACL filtering (if ACL is enabled)
-    use actrix_common::tenant::acl::ActorAcl;
-    let source_realm = source.realm.realm_id.to_string();
+    use actrix_common::realm::acl::ActorAcl;
+    let source_realm = source.realm.realm_id;
     // 使用完整的 manufacturer:type 格式
     let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
 
@@ -1385,7 +1381,7 @@ async fn handle_discovery_request(
 
     // ACL always enabled: filter services based on ACL rules
     for service in services {
-        let target_realm = service.actor_id.realm.realm_id.to_string();
+        let target_realm = service.actor_id.realm.realm_id;
         // 使用完整的 manufacturer:type 格式
         let target_type = format!(
             "{}:{}",
@@ -1394,7 +1390,7 @@ async fn handle_discovery_request(
 
         // Only check ACL if in same realm
         if source_realm == target_realm {
-            match ActorAcl::can_discover(&source_realm, &source_type, &target_type).await {
+            match ActorAcl::can_discover(source_realm, &source_type, &target_type).await {
                 Ok(true) => acl_filtered_services.push(service),
                 Ok(false) => {
                     debug!(
@@ -1516,19 +1512,19 @@ async fn handle_route_candidates_request(
     }
 
     // Apply ACL filtering
-    use actrix_common::tenant::acl::ActorAcl;
-    let source_realm = source.realm.realm_id.to_string();
+    use actrix_common::realm::acl::ActorAcl;
+    let source_realm = source.realm.realm_id;
     // 使用完整的 manufacturer:type 格式
     let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
     let target_type = format!("{}:{}", req.target_type.manufacturer, req.target_type.name);
 
     let mut acl_filtered_candidates = Vec::new();
     for candidate in candidates {
-        let target_realm = candidate.actor_id.realm.realm_id.to_string();
+        let target_realm = candidate.actor_id.realm.realm_id;
 
         // Only check ACL if in same realm
         if source_realm == target_realm {
-            match ActorAcl::can_discover(&source_realm, &source_type, &target_type).await {
+            match ActorAcl::can_discover(source_realm, &source_type, &target_type).await {
                 Ok(true) => acl_filtered_candidates.push(candidate),
                 Ok(false) => {
                     debug!(

@@ -22,7 +22,7 @@
 //!
 //! ```ignore
 //! use actrix_proto::{
-//!     NonceCredential, TenantInfo, ResourceType,
+//!     NonceCredential, RealmInfo, ResourceType,
 //!     SupervisorServiceClient, SupervisedServiceServer,
 //! };
 //! ```
@@ -66,12 +66,12 @@ pub use supervisor::v1::{
     DirectiveType,
     // Authentication
     NonceCredential,
+    RealmInfo,
     ResourceType,
     ServiceAdvertisement,
     ServiceAdvertisementStatus,
     ServiceStatus,
     SystemMetrics,
-    TenantInfo,
 };
 
 // ============================================================================
@@ -98,27 +98,27 @@ pub use supervisor::v1::{
 // ============================================================================
 
 pub use supervisor::v1::{
-    // Tenant/Realm management
-    CreateTenantRequest,
-    CreateTenantResponse,
-    DeleteTenantRequest,
-    DeleteTenantResponse,
+    // Realm management
+    CreateRealmRequest,
+    CreateRealmResponse,
+    DeleteRealmRequest,
+    DeleteRealmResponse,
     // Configuration management
     GetConfigRequest,
     GetConfigResponse,
     // Node control
     GetNodeInfoRequest,
     GetNodeInfoResponse,
-    GetTenantRequest,
-    GetTenantResponse,
-    ListTenantsRequest,
-    ListTenantsResponse,
+    GetRealmRequest,
+    GetRealmResponse,
+    ListRealmsRequest,
+    ListRealmsResponse,
     ShutdownRequest,
     ShutdownResponse,
     UpdateConfigRequest,
     UpdateConfigResponse,
-    UpdateTenantRequest,
-    UpdateTenantResponse,
+    UpdateRealmRequest,
+    UpdateRealmResponse,
     // Client and server
     supervised_service_client::SupervisedServiceClient,
     supervised_service_server::{SupervisedService, SupervisedServiceServer},

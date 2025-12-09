@@ -18,6 +18,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessag
 use uuid::Uuid;
 
 /// 测试辅助：创建最小配置
+#[allow(dead_code)]
 fn create_test_config() -> ActrixConfig {
     toml::from_str(
         r#"

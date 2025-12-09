@@ -46,11 +46,11 @@ impl Database {
 
     /// 初始化数据库表结构
     async fn initialize_schema(&self) -> Result<()> {
-        // 创建租户表
+        // 创建 Realm 表
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS tenant (
+            "CREATE TABLE IF NOT EXISTS realm (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL,
+                realm_id INTEGER NOT NULL,
                 key_id TEXT NOT NULL,
                 secret_key BLOB NOT NULL,
                 name TEXT NOT NULL,
@@ -58,17 +58,17 @@ impl Database {
                 expires_at INTEGER,
                 created_at INTEGER,
                 updated_at INTEGER,
-                UNIQUE(tenant_id)
+                UNIQUE(realm_id)
             )",
         )
         .execute(&self.pool)
         .await?;
 
-        // 创建租户配置表
+        // 创建 Realm 配置表
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS tenantconfig (
+            "CREATE TABLE IF NOT EXISTS realmconfig (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id INTEGER NOT NULL,
+                realm_id INTEGER NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL
             )",
@@ -80,7 +80,7 @@ impl Database {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS actoracl (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL,
+                realm_id INTEGER NOT NULL,
                 from_type TEXT NOT NULL,
                 to_type TEXT NOT NULL,
                 access INTEGER NOT NULL
@@ -91,22 +91,22 @@ impl Database {
 
         // 创建索引
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_tenant_tenant_id_key_id
-             ON tenant(tenant_id, key_id)",
+            "CREATE INDEX IF NOT EXISTS idx_realm_realm_id_key_id
+             ON realm(realm_id, key_id)",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_tenantconfig_tenant_id
-             ON tenantconfig(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_realmconfig_realm_id
+             ON realmconfig(realm_id)",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_actoracl_tenant_id
-             ON actoracl(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_actoracl_realm_id
+             ON actoracl(realm_id)",
         )
         .execute(&self.pool)
         .await?;

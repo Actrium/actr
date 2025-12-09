@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use serde::{Deserialize, Serialize};
 
-use super::super::TenantError;
+use super::super::RealmError;
 use crate::storage::db::get_database;
 
 const ANONYMOUS_ACTOR_TYPE: &str = "ANONCLNT";
@@ -18,7 +18,7 @@ const CHAT_ACTOR_TYPE: &str = "CHAT";
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ActorAcl {
     pub rowid: Option<i64>,
-    pub tenant_id: String,
+    pub realm_id: u32,
     pub from_type: String,
     pub to_type: String,
     pub access: bool,
@@ -29,7 +29,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActorAcl {
         use sqlx::Row;
         Ok(Self {
             rowid: row.try_get("rowid")?,
-            tenant_id: row.try_get("tenant_id")?,
+            realm_id: row.try_get::<i64, _>("realm_id")?.try_into().unwrap(),
             from_type: row.try_get("from_type")?,
             to_type: row.try_get("to_type")?,
             access: row.try_get::<i64, _>("access")? != 0,
@@ -39,10 +39,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActorAcl {
 
 impl ActorAcl {
     /// 创建新的访问控制规则
-    pub fn new(tenant_id: String, from_type: String, to_type: String, access: bool) -> Self {
+    pub fn new(realm_id: u32, from_type: String, to_type: String, access: bool) -> Self {
         Self {
             rowid: None,
-            tenant_id,
+            realm_id,
             from_type: from_type.to_string(),
             to_type: to_type.to_string(),
             access,
@@ -56,16 +56,16 @@ impl ActorAcl {
     /// # Returns
     ///
     /// Returns the rowid of the saved ACL rule
-    pub async fn save(&mut self) -> Result<i64, TenantError> {
+    pub async fn save(&mut self) -> Result<i64, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
         if self.rowid.is_none() {
             // 插入新记录
             let result = sqlx::query(
-                "INSERT INTO actoracl (tenant_id, from_type, to_type, access) VALUES (?, ?, ?, ?)",
+                "INSERT INTO actoracl (realm_id, from_type, to_type, access) VALUES (?, ?, ?, ?)",
             )
-            .bind(&self.tenant_id)
+            .bind(self.realm_id)
             .bind(&self.from_type)
             .bind(&self.to_type)
             .bind(if self.access { 1 } else { 0 })
@@ -78,9 +78,9 @@ impl ActorAcl {
         } else {
             // 更新现有记录
             sqlx::query(
-                "UPDATE actoracl SET tenant_id = ?, from_type = ?, to_type = ?, access = ? WHERE rowid = ?"
+                "UPDATE actoracl SET realm_id = ?, from_type = ?, to_type = ?, access = ? WHERE rowid = ?"
             )
-            .bind(&self.tenant_id)
+            .bind(self.realm_id)
             .bind(&self.from_type)
             .bind(&self.to_type)
             .bind(if self.access { 1 } else { 0 })
@@ -101,7 +101,7 @@ impl ActorAcl {
     /// # Returns
     ///
     /// Returns number of deleted rows (0 or 1)
-    pub async fn delete_by_id(id: i64) -> Result<u64, TenantError> {
+    pub async fn delete_by_id(id: i64) -> Result<u64, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
@@ -114,7 +114,7 @@ impl ActorAcl {
         if changes > 0 {
             Ok(changes)
         } else {
-            Err(TenantError::NotFound)
+            Err(RealmError::NotFound)
         }
     }
 
@@ -127,12 +127,12 @@ impl ActorAcl {
     /// # Returns
     ///
     /// Returns the ACL rule if found, None otherwise
-    pub async fn get(id: i64) -> Result<Option<Self>, TenantError> {
+    pub async fn get(id: i64) -> Result<Option<Self>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, tenant_id, from_type, to_type, access FROM actoracl WHERE rowid = ?",
+            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl WHERE rowid = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -141,15 +141,15 @@ impl ActorAcl {
         Ok(result)
     }
 
-    /// 获取指定租户的所有访问控制规则
-    pub async fn get_by_tenant(tenant_id: String) -> Result<Vec<Self>, TenantError> {
+    /// 获取指定 Realm 的所有访问控制规则
+    pub async fn get_by_realm(realm_id: u32) -> Result<Vec<Self>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
         let acls = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, tenant_id, from_type, to_type, access FROM actoracl WHERE tenant_id = ?",
+            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl WHERE realm_id = ?",
         )
-        .bind(tenant_id)
+        .bind(realm_id)
         .fetch_all(pool)
         .await?;
 
@@ -158,18 +158,18 @@ impl ActorAcl {
 
     /// 根据类型获取访问控制规则
     pub async fn get_by_types(
-        tenant_id: &str,
+        realm_id: u32,
         from_type: &str,
         to_type: &str,
-    ) -> Result<Option<Self>, TenantError> {
+    ) -> Result<Option<Self>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, tenant_id, from_type, to_type, access FROM actoracl
-             WHERE tenant_id = ? AND from_type = ? AND to_type = ?",
+            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl
+             WHERE realm_id = ? AND from_type = ? AND to_type = ?",
         )
-        .bind(tenant_id)
+        .bind(realm_id)
         .bind(from_type)
         .bind(to_type)
         .fetch_optional(pool)
@@ -188,7 +188,7 @@ impl ActorAcl {
     ///
     /// # Arguments
     ///
-    /// - `tenant_id`: Tenant ID
+    /// - `realm_id`: Realm ID
     /// - `from_type`: Source actor type
     /// - `to_type`: Target actor type
     ///
@@ -197,14 +197,14 @@ impl ActorAcl {
     /// Returns true if discovery is allowed, false otherwise.
     /// Default policy: deny if no rule exists (secure by default)
     pub async fn can_discover(
-        tenant_id: &str,
+        realm_id: u32,
         from_type: &str,
         to_type: &str,
-    ) -> Result<bool, TenantError> {
-        match Self::get_by_types(tenant_id, from_type, to_type).await? {
+    ) -> Result<bool, RealmError> {
+        match Self::get_by_types(realm_id, from_type, to_type).await? {
             Some(acl) => {
                 tracing::debug!(
-                    tenant_id = %tenant_id,
+                    realm_id = %realm_id,
                     from_type = %from_type,
                     to_type = %to_type,
                     access = acl.access(),
@@ -215,7 +215,7 @@ impl ActorAcl {
             None => {
                 // Default policy: deny if no rule exists
                 tracing::debug!(
-                    tenant_id = %tenant_id,
+                    realm_id = %realm_id,
                     from_type = %from_type,
                     to_type = %to_type,
                     "No ACL rule found, denying discovery (default policy)"
@@ -230,63 +230,63 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
     vec![
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: false,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
         },
         ActorAcl {
             rowid: None,
-            tenant_id: "2".to_string(),
+            realm_id: 2,
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
@@ -297,30 +297,29 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tenant::Tenant;
+    use crate::realm::Realm;
     use crate::util::test_utils::utils::setup_test_db;
     use serial_test::serial;
-    use uuid::Uuid;
 
     #[tokio::test]
     #[serial]
     async fn test_actor_acl_crud() -> anyhow::Result<()> {
         setup_test_db().await?;
 
-        // Create a tenant first with unique name
-        let tenant_id = format!("test_tenant_for_acl_{}", Uuid::new_v4());
-        let mut tenant = Tenant::new(
-            tenant_id,
+        // Create a realm first with unique name
+        let realm_id = rand::random::<u32>();
+        let mut realm = Realm::new(
+            realm_id,
             "auth_key_for_acl".to_string(),
             b"public_key".to_vec(),
             b"secret_key".to_vec(),
             "test_name".to_string(),
         );
-        let tenant_row_id = tenant.save().await?;
+        let realm_row_id = realm.save().await?;
 
         // Test create
         let mut acl = ActorAcl::new(
-            tenant_row_id.to_string(),
+            realm_row_id, // realm_id
             "identified_client_user".to_string(),
             "identified_client_room".to_string(),
             true,
@@ -333,7 +332,7 @@ mod tests {
         let fetched_opt = ActorAcl::get(acl_id).await?;
         assert!(fetched_opt.is_some());
         let fetched = fetched_opt.unwrap();
-        assert_eq!(fetched.tenant_id, tenant_row_id.to_string());
+        assert_eq!(fetched.realm_id, realm_row_id);
         assert_eq!(fetched.from_type, "identified_client_user");
         assert_eq!(fetched.to_type, "identified_client_room");
         assert!(fetched.access);
@@ -348,14 +347,14 @@ mod tests {
         let reloaded = reloaded_opt.unwrap();
         assert!(!reloaded.access);
 
-        // Test get_by_tenant
-        let acls_for_tenant = ActorAcl::get_by_tenant(tenant_row_id.to_string()).await?;
-        assert_eq!(acls_for_tenant.len(), 1);
-        assert_eq!(acls_for_tenant[0].rowid, Some(acl_id));
+        // Test get_by_realm
+        let acls_for_realm = ActorAcl::get_by_realm(realm_row_id).await?;
+        assert_eq!(acls_for_realm.len(), 1);
+        assert_eq!(acls_for_realm[0].rowid, Some(acl_id));
 
         // Test get_by_types
         let acl_by_types_opt = ActorAcl::get_by_types(
-            &tenant_row_id.to_string(),
+            realm_row_id,
             "identified_client_user",
             "identified_client_room",
         )

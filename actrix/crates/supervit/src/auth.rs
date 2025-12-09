@@ -1,9 +1,9 @@
 use actrix_proto::{
-    CreateTenantRequest, CreateTenantResponse, DeleteTenantRequest, DeleteTenantResponse,
-    GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetTenantRequest,
-    GetTenantResponse, ListTenantsRequest, ListTenantsResponse, NonceCredential, ShutdownRequest,
+    CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest, DeleteRealmResponse,
+    GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest,
+    GetRealmResponse, ListRealmsRequest, ListRealmsResponse, NonceCredential, ShutdownRequest,
     ShutdownResponse, SupervisedService, UpdateConfigRequest, UpdateConfigResponse,
-    UpdateTenantRequest, UpdateTenantResponse,
+    UpdateRealmRequest, UpdateRealmResponse,
 };
 use nonce_auth::{CredentialVerifier, NonceError, storage::NonceStorage};
 use std::sync::Arc;
@@ -103,44 +103,44 @@ where
         self.inner.get_config(request).await
     }
 
-    async fn create_tenant(
+    async fn create_realm(
         &self,
-        request: Request<CreateTenantRequest>,
-    ) -> Result<Response<CreateTenantResponse>, Status> {
+        request: Request<CreateRealmRequest>,
+    ) -> Result<Response<CreateRealmResponse>, Status> {
         self.verify_body(request.get_ref()).await?;
-        self.inner.create_tenant(request).await
+        self.inner.create_realm(request).await
     }
 
-    async fn get_tenant(
+    async fn get_realm(
         &self,
-        request: Request<GetTenantRequest>,
-    ) -> Result<Response<GetTenantResponse>, Status> {
+        request: Request<GetRealmRequest>,
+    ) -> Result<Response<GetRealmResponse>, Status> {
         self.verify_body(request.get_ref()).await?;
-        self.inner.get_tenant(request).await
+        self.inner.get_realm(request).await
     }
 
-    async fn update_tenant(
+    async fn update_realm(
         &self,
-        request: Request<UpdateTenantRequest>,
-    ) -> Result<Response<UpdateTenantResponse>, Status> {
+        request: Request<UpdateRealmRequest>,
+    ) -> Result<Response<UpdateRealmResponse>, Status> {
         self.verify_body(request.get_ref()).await?;
-        self.inner.update_tenant(request).await
+        self.inner.update_realm(request).await
     }
 
-    async fn delete_tenant(
+    async fn delete_realm(
         &self,
-        request: Request<DeleteTenantRequest>,
-    ) -> Result<Response<DeleteTenantResponse>, Status> {
+        request: Request<DeleteRealmRequest>,
+    ) -> Result<Response<DeleteRealmResponse>, Status> {
         self.verify_body(request.get_ref()).await?;
-        self.inner.delete_tenant(request).await
+        self.inner.delete_realm(request).await
     }
 
-    async fn list_tenants(
+    async fn list_realms(
         &self,
-        request: Request<ListTenantsRequest>,
-    ) -> Result<Response<ListTenantsResponse>, Status> {
+        request: Request<ListRealmsRequest>,
+    ) -> Result<Response<ListRealmsResponse>, Status> {
         self.verify_body(request.get_ref()).await?;
-        self.inner.list_tenants(request).await
+        self.inner.list_realms(request).await
     }
 
     async fn get_node_info(
@@ -188,47 +188,47 @@ impl CredentialPayload for GetConfigRequest {
     }
 }
 
-impl CredentialPayload for CreateTenantRequest {
+impl CredentialPayload for CreateRealmRequest {
     fn credential(&self) -> &NonceCredential {
         &self.credential
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("create_realm:{node_id}:{}", self.tenant_id)
+        format!("create_realm:{node_id}:{}", self.realm_id)
     }
 }
 
-impl CredentialPayload for GetTenantRequest {
+impl CredentialPayload for GetRealmRequest {
     fn credential(&self) -> &NonceCredential {
         &self.credential
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("get_realm:{node_id}:{}", self.tenant_id)
+        format!("get_realm:{node_id}:{}", self.realm_id)
     }
 }
 
-impl CredentialPayload for UpdateTenantRequest {
+impl CredentialPayload for UpdateRealmRequest {
     fn credential(&self) -> &NonceCredential {
         &self.credential
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("update_realm:{node_id}:{}", self.tenant_id)
+        format!("update_realm:{node_id}:{}", self.realm_id)
     }
 }
 
-impl CredentialPayload for DeleteTenantRequest {
+impl CredentialPayload for DeleteRealmRequest {
     fn credential(&self) -> &NonceCredential {
         &self.credential
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("delete_realm:{node_id}:{}", self.tenant_id)
+        format!("delete_realm:{node_id}:{}", self.realm_id)
     }
 }
 
-impl CredentialPayload for ListTenantsRequest {
+impl CredentialPayload for ListRealmsRequest {
     fn credential(&self) -> &NonceCredential {
         &self.credential
     }

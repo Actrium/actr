@@ -14,8 +14,8 @@
 //!    ```bash
 //!    ./crates/supervit/scripts/test_supervised.sh list
 //!    ./crates/supervit/scripts/test_supervised.sh node_info
-//!    ./crates/supervit/scripts/test_supervised.sh list_tenants
-//!    ./crates/supervit/scripts/test_supervised.sh create_tenant --tenant-id my-realm
+//!    ./crates/supervit/scripts/test_supervised.sh list_realms
+//!    ./crates/supervit/scripts/test_supervised.sh create_realm --realm-id my-realm
 //!    ```
 //!
 //! 3. Or test manually with grpcurl (list services):
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Using temp directory: {:?}", temp_dir);
 
-    // Initialize main database (required for tenant operations)
+    // Initialize main database (required for realm operations)
     set_db_path(&temp_dir).await?;
     info!("Main database initialized");
 
@@ -84,8 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Test with shell script (recommended, run from project root):");
     info!("  ./crates/supervit/scripts/test_supervised.sh list");
     info!("  ./crates/supervit/scripts/test_supervised.sh node_info");
-    info!("  ./crates/supervit/scripts/test_supervised.sh list_tenants");
-    info!("  ./crates/supervit/scripts/test_supervised.sh create_tenant --tenant-id test-realm-01");
+    info!("  ./crates/supervit/scripts/test_supervised.sh list_realms");
+    info!("  ./crates/supervit/scripts/test_supervised.sh create_realm --realm-id test-realm-01");
     info!("");
     info!("Or test with grpcurl manually:");
     info!(

@@ -966,7 +966,7 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
 
 ### 5.1 位掩码控制
 
-**文件**: `crates/base/src/config/mod.rs:24-34`
+**文件**: `crates/common/src/config/mod.rs:24-34`
 
 ```rust
 pub struct ActrixConfig {
@@ -1108,7 +1108,7 @@ endpoint = "http://localhost:4317"
 
 ### 6.1 ServiceStatus 枚举
 
-**文件**: `crates/base/src/monitoring/mod.rs:10-25`
+**文件**: `crates/common/src/monitoring/mod.rs:10-25`
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -34,15 +34,15 @@ Actrix 是 **Actor-RTC 生态系统**的 WebRTC 辅助服务集合，提供关�
 
 ### 关键特性
 
-| 特性              | 实现              | 文件位置                               |
-| ----------------- | ----------------- | -------------------------------------- |
-| **模块化服务**    | Workspace crates  | `Cargo.toml:2`                         |
-| **位掩码控制**    | `enable` 字段     | `crates/base/src/config/mod.rs:34`     |
-| **统一配置**      | TOML 单文件       | `crates/base/src/config/mod.rs:18`     |
-| **OpenTelemetry** | 可选 feature      | `Cargo.toml:74-82`                     |
-| **SQLite 存储**   | rusqlite v0.35.0  | `crates/base/src/storage/db.rs`        |
-| **防重放攻击**    | nonce-auth v0.6.1 | `crates/base/src/storage/nonce/`       |
-| **TLS/HTTPS**     | rustls v0.23.28   | `crates/base/src/config/bind/https.rs` |
+| 特性              | 实现              | 文件位置                                 |
+| ----------------- | ----------------- | ---------------------------------------- |
+| **模块化服务**    | Workspace crates  | `Cargo.toml:2`                           |
+| **位掩码控制**    | `enable` 字段     | `crates/common/src/config/mod.rs:34`     |
+| **统一配置**      | TOML 单文件       | `crates/common/src/config/mod.rs:18`     |
+| **OpenTelemetry** | 可选 feature      | `Cargo.toml:74-82`                       |
+| **SQLite 存储**   | rusqlite v0.35.0  | `crates/common/src/storage/db.rs`        |
+| **防重放攻击**    | nonce-auth v0.6.1 | `crates/common/src/storage/nonce/`       |
+| **TLS/HTTPS**     | rustls v0.23.28   | `crates/common/src/config/bind/https.rs` |
 
 ---
 
@@ -53,7 +53,7 @@ Actrix 是 **Actor-RTC 生态系统**的 WebRTC 辅助服务集合，提供关�
 每个 crate 专注单一服务或功能域：
 
 ```
-crates/base/        → 基础设施（配置、存储、认证）
+crates/common/        → 基础设施（配置、存储、认证）
 crates/ks/          → 密钥管理
 crates/stun/        → STUN 协议实现
 crates/turn/        → TURN 中继服务
@@ -71,7 +71,7 @@ crates/signaling/   → WebRTC 信令
 │  服务层 (crates/*/src/)                 │
 │  - KS, STUN, TURN, Signaling           │
 ├─────────────────────────────────────────┤
-│  基础设施层 (crates/base/src/)         │
+│  基础设施层 (crates/common/src/)         │
 │  - Config, Storage, Auth, Error         │
 ├─────────────────────────────────────────┤
 │  协议层 (actr-protocol, webrtc crates) │
@@ -82,7 +82,7 @@ crates/signaling/   → WebRTC 信令
 **代码路径映射**:
 - 应用层: `src/main.rs:66-80`, `src/service/manager.rs:23-31`
 - 服务层: `crates/{ks,stun,turn,signaling}/src/`
-- 基础设施: `crates/base/src/lib.rs:1-38`
+- 基础设施: `crates/common/src/lib.rs:1-38`
 
 ### 3. Trait 驱动设计
 
@@ -128,7 +128,7 @@ async fn start_all(&mut self) -> Result<()>
 从底层到顶层的清晰错误转换：
 
 ```
-BaseError          (crates/base/src/error/base_error.rs)
+BaseError          (crates/common/src/error/base_error.rs)
   ↓
 KsError/TurnError  (crates/*/src/error.rs)
   ↓
@@ -172,7 +172,7 @@ anyhow::Error      (应用层)
 │                          ↓                                         │
 │    ┌───────────────────────────────────────────┐                  │
 │    │      SQLite Database (database.db)        │                  │
-│    │  - keys  - nonce  - tenant  - acl         │                  │
+│    │  - keys  - nonce  - realm  - realmconfig - acl         │                  │
 │    └───────────────────────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -240,7 +240,7 @@ actrix/
 │   │   │   ├── error/            # 分层错误系统
 │   │   │   ├── storage/          # SQLite 持久化
 │   │   │   ├── aid/              # Actor Identity 管理
-│   │   │   ├── tenant/           # 多租户管理
+│   │   │   ├── realm/            # Realm 管理
 │   │   │   ├── monitoring/       # 服务状态
 │   │   │   ├── types/            # 类型定义
 │   │   │   └── util/             # 工具函数
@@ -378,7 +378,7 @@ pub struct ActrixConfig {
 **位掩码控制**:
 
 ```rust
-// 文件: crates/base/src/config/mod.rs:175-213
+// 文件: crates/common/src/config/mod.rs:175-213
 const ENABLE_SIGNALING: u8 = 0b00001;  // 1
 const ENABLE_STUN: u8      = 0b00010;  // 2
 const ENABLE_TURN: u8      = 0b00100;  // 4
@@ -401,7 +401,7 @@ enable = 31  # 二进制: 11111, 启用所有服务 (1+2+4+8+16)
 
 ### 4. Database (SQLite 存储)
 
-**文件**: `crates/base/src/storage/db.rs`
+**文件**: `crates/common/src/storage/db.rs`
 
 ```rust
 pub struct Database {
@@ -417,10 +417,10 @@ impl Database {
 **数据库表**:
 
 ```sql
--- 租户表
-CREATE TABLE tenant (
+-- Realm 表
+CREATE TABLE realm (
     rowid INTEGER PRIMARY KEY,
-    tenant_id TEXT NOT NULL UNIQUE,
+    realm_id INTEGER NOT NULL UNIQUE,
     key_id TEXT NOT NULL,
     secret_key BLOB NOT NULL,
     name TEXT NOT NULL,
@@ -430,10 +430,18 @@ CREATE TABLE tenant (
     updated_at INTEGER
 );
 
+-- Realm 配置表
+CREATE TABLE realmconfig (
+    rowid INTEGER PRIMARY KEY,
+    realm_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL
+);
+
 -- 访问控制表
 CREATE TABLE actoracl (
     rowid INTEGER PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
+    realm_id INTEGER NOT NULL,
     from_type TEXT NOT NULL,
     to_type TEXT NOT NULL,
     access INTEGER NOT NULL
@@ -625,7 +633,7 @@ send_to(response, client_addr)
 
 ### 1. PSK 认证
 
-**文件**: `crates/base/src/config/mod.rs:110`
+**文件**: `crates/common/src/config/mod.rs:110`
 
 ```rust
 pub struct ActrixConfig {
@@ -639,7 +647,7 @@ pub struct ActrixConfig {
 
 ### 2. Nonce 防重放攻击
 
-**文件**: `crates/base/src/storage/nonce/sqlite_nonce_storage.rs`
+**文件**: `crates/common/src/storage/nonce/sqlite_nonce_storage.rs`
 
 ```rust
 pub struct SqliteNonceStorage {
@@ -660,7 +668,7 @@ impl NonceStorage for SqliteNonceStorage {
 
 ### 3. TLS/HTTPS
 
-**文件**: `crates/base/src/config/bind/https.rs`
+**文件**: `crates/common/src/config/bind/https.rs`
 
 ```rust
 pub struct HttpsBindConfig {
@@ -728,7 +736,7 @@ fn init_observability(config: &ObservabilityConfig) -> Result<ObservabilityGuard
 
 ### 2. OpenTelemetry 追踪
 
-**配置**: `crates/base/src/config/tracing.rs`
+**配置**: `crates/common/src/config/tracing.rs`
 
 ```rust
 pub struct TracingConfig {
@@ -843,18 +851,18 @@ endpoint = "http://localhost:4317"
 
 ### 关键代码位置索引
 
-| 功能模块        | 文件路径                        | 行数参考 |
-| --------------- | ------------------------------- | -------- |
-| **应用入口**    | `src/main.rs`                   | 66-80    |
-| **服务管理**    | `src/service/manager.rs`        | 23-542   |
-| **服务容器**    | `src/service/container.rs`      | 17-127   |
-| **配置系统**    | `crates/base/src/config/mod.rs` | 18-350   |
-| **错误处理**    | `crates/base/src/error/mod.rs`  | 1-80     |
-| **数据库**      | `crates/base/src/storage/db.rs` | 全文     |
-| **KS 服务**     | `crates/ks/src/handlers.rs`     | 84-232   |
-| **STUN 实现**   | `crates/stun/src/lib.rs`        | 29-176   |
-| **TURN 实现**   | `crates/turn/src/lib.rs`        | 全文     |
-| **Trace Layer** | `src/service/trace.rs`          | 1-65     |
+| 功能模块        | 文件路径                          | 行数参考 |
+| --------------- | --------------------------------- | -------- |
+| **应用入口**    | `src/main.rs`                     | 66-80    |
+| **服务管理**    | `src/service/manager.rs`          | 23-542   |
+| **服务容器**    | `src/service/container.rs`        | 17-127   |
+| **配置系统**    | `crates/common/src/config/mod.rs` | 18-350   |
+| **错误处理**    | `crates/common/src/error/mod.rs`  | 1-80     |
+| **数据库**      | `crates/common/src/storage/db.rs` | 全文     |
+| **KS 服务**     | `crates/ks/src/handlers.rs`       | 84-232   |
+| **STUN 实现**   | `crates/stun/src/lib.rs`          | 29-176   |
+| **TURN 实现**   | `crates/turn/src/lib.rs`          | 全文     |
+| **Trace Layer** | `src/service/trace.rs`            | 1-65     |
 
 ### 依赖版本
 

@@ -85,27 +85,27 @@ impl AIdCredentialValidator {
     ///
     /// # Arguments
     /// * `credential` - 来自 actor-rtc-proto 的 AIdCredential
-    /// * `tenant_id` - 期望的租户 ID
+    /// * `realm_id` - 期望的 Realm ID
     ///
     /// # Returns
     /// * `Ok(Claims)` - 验证成功，返回解密后的身份声明
     /// * `Err(AidError)` - 验证失败，包含具体错误信息
     pub async fn check(
         credential: &AIdCredential,
-        tenant_id: u32,
+        realm_id: u32,
     ) -> Result<IdentityClaims, AidError> {
         let validator = Self::get_instance().await?;
         let secret_key = validator
             .get_secret_key_by_id(credential.token_key_id)
             .await?;
-        Self::check_with_key(credential, tenant_id, &secret_key)
+        Self::check_with_key(credential, realm_id, &secret_key)
     }
 
     /// 使用提供的密钥检查 credential (解密 + 验证有效性)
     ///
     /// # Arguments  
     /// * `credential` - 来自 actor-rtc-proto 的 AIdCredential
-    /// * `tenant_id` - 期望的租户 ID
+    /// * `realm_id` - 期望的 Realm ID
     /// * `secret_key` - 用于解密的密钥
     ///
     /// # Returns
@@ -113,7 +113,7 @@ impl AIdCredentialValidator {
     /// * `Err(AidError)` - 验证失败，包含具体错误信息
     pub fn check_with_key(
         credential: &AIdCredential,
-        tenant_id: u32,
+        realm_id: u32,
         secret_key: &SecretKey,
     ) -> Result<IdentityClaims, AidError> {
         // 将 SecretKey 转换为字节
@@ -133,7 +133,7 @@ impl AIdCredentialValidator {
         }
 
         // 验证 realm_id 是否匹配
-        if claims.realm_id != tenant_id {
+        if claims.realm_id != realm_id {
             return Err(AidError::DecryptionFailed("Realm ID mismatch".to_string()));
         }
 

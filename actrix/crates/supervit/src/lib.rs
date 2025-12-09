@@ -12,7 +12,7 @@
 //!
 //! - **SupervisedService Server**: For supervisor to call nodes
 //!   - Configuration management
-//!   - Realm (tenant) CRUD operations
+//!   - Realm CRUD operations
 //!   - Node control (info, shutdown)
 //!
 //! # Architecture
@@ -62,20 +62,20 @@ pub use actrix_proto::{
     // Common types
     ConfigType,
     // SupervisedService (Supervisor calls Node)
-    CreateTenantRequest,
-    CreateTenantResponse,
-    DeleteTenantRequest,
-    DeleteTenantResponse,
+    CreateRealmRequest,
+    CreateRealmResponse,
+    DeleteRealmRequest,
+    DeleteRealmResponse,
     Directive,
     DirectiveType,
     GetConfigRequest,
     GetConfigResponse,
     GetNodeInfoRequest,
     GetNodeInfoResponse,
-    GetTenantRequest,
-    GetTenantResponse,
-    ListTenantsRequest,
-    ListTenantsResponse,
+    GetRealmRequest,
+    GetRealmResponse,
+    ListRealmsRequest,
+    ListRealmsResponse,
     NonceCredential,
     RegisterNodeRequest,
     RegisterNodeResponse,
@@ -97,12 +97,8 @@ pub use actrix_proto::{
     SupervisorServiceClient,
     SupervisorServiceServer,
     SystemMetrics,
-    TenantInfo,
     UpdateConfigRequest,
     UpdateConfigResponse,
-    UpdateTenantRequest,
-    UpdateTenantResponse,
+    UpdateRealmRequest,
+    UpdateRealmResponse,
 };
-
-/// Realm info type alias to reduce tenant wording in the code.
-pub type RealmInfo = TenantInfo;

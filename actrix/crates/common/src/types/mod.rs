@@ -4,5 +4,5 @@ mod peer;
 pub use actr_protocol::ActrId;
 pub use peer::PeerId;
 
-/// Tenant ID type - simple u32 wrapper
-pub type TenantId = u32;
+/// Realm ID type - simple u32 wrapper
+pub type RealmId = u32;
