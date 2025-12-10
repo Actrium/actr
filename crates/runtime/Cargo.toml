@@ -9,6 +9,9 @@ repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "runtime", "scheduler", "system", "orchestration"]
 categories = ["concurrency", "asynchronous", "development-tools"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # === Foundation Layer (基础层) ===
 actr-protocol.workspace = true

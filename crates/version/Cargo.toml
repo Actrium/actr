@@ -15,6 +15,9 @@ keywords = [
 repository = "https://github.com/actor-rtc/actr-version"
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Core dependencies for service compatibility analysis
 actr-protocol.workspace = true

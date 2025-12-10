@@ -44,6 +44,7 @@ pub struct Config {
 
     /// WebRTC 配置
     pub webrtc: WebRtcConfig,
+
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 }

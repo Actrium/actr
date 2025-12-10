@@ -7,6 +7,9 @@ license.workspace = true
 description = "Actor-RTC framework core (stub for code generation testing)"
 repository = "https://github.com/actor-rtc/actr"
 
+[lints]
+workspace = true
+
 [dependencies]
 actr-protocol.workspace = true
 async-trait = "0.1"

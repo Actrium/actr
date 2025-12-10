@@ -4,7 +4,5 @@
 //! travel inside TURN authentication usernames.
 
 mod claims;
-mod token;
 
 pub use claims::Claims;
-pub use token::Token;

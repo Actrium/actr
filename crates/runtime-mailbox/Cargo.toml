@@ -9,6 +9,9 @@ repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "mailbox", "storage", "persistence", "sqlite"]
 categories = ["database", "data-structures", "asynchronous"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # Foundation Layer
 actr-protocol.workspace = true

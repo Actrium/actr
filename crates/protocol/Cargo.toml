@@ -9,6 +9,9 @@ repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "protobuf", "types", "protocol", "uri"]
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Protocol buffer support (using prost with proto2)
 prost = "0.14.1"

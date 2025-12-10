@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["actor", "codegen", "protobuf", "protoc", "plugin"]
 categories = ["development-tools", "development-tools::build-utils"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # Framework dependencies
 actr-framework.workspace = true
