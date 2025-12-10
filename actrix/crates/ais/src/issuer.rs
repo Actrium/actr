@@ -438,8 +438,11 @@ impl AIdIssuer {
         // 生成过期时间
         let expr_time = self.calculate_expiry_time();
 
-        // 创建 Claims
-        let claims = IdentityClaims::from_actr_id(&actr_id, expr_time);
+        // 生成 PSK (pre-shared key)
+        let psk = self.generate_psk()?;
+
+        // 创建 Claims（包含 PSK）
+        let claims = IdentityClaims::from_actr_id(&actr_id, expr_time, psk.clone());
 
         // 从缓存获取密钥
         let (key_id, public_key) = {
@@ -452,9 +455,6 @@ impl AIdIssuer {
 
         // 生成加密的 credential
         let encrypted_token = self.encrypt_claims(&claims, &public_key)?;
-
-        // 生成 PSK (pre-shared key)
-        let psk = self.generate_psk()?;
 
         // 创建 AIdCredential
         let credential = AIdCredential {

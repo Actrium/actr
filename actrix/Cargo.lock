@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "actr-framework"
 version = "0.1.4"
-source = "git+https://github.com/actor-rtc/actr.git?rev=18e30bb6edbe75a8df247bf34c32948ed075fe93#18e30bb6edbe75a8df247bf34c32948ed075fe93"
+source = "git+https://github.com/actor-rtc/actr.git?rev=646893b111fd7313eebd41e23de76c51db7474f9#646893b111fd7313eebd41e23de76c51db7474f9"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -20,9 +20,10 @@ dependencies = [
 [[package]]
 name = "actr-protocol"
 version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr.git?rev=18e30bb6edbe75a8df247bf34c32948ed075fe93#18e30bb6edbe75a8df247bf34c32948ed075fe93"
+source = "git+https://github.com/actor-rtc/actr.git?rev=646893b111fd7313eebd41e23de76c51db7474f9#646893b111fd7313eebd41e23de76c51db7474f9"
 dependencies = [
  "anyhow",
+ "base122-rs",
  "base64",
  "bytes",
  "chrono",
@@ -515,6 +516,12 @@ dependencies = [
  "tokio-rustls",
  "tower-service",
 ]
+
+[[package]]
+name = "base122-rs"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c8ae722b83726dd93247786be3237fc4c30a8c13d8e6c161b61b00a0d32374f"
 
 [[package]]
 name = "base16ct"

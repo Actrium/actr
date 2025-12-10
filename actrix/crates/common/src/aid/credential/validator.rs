@@ -71,7 +71,7 @@ impl AIdCredentialValidator {
     }
 
     /// 获取全局验证器实例
-    async fn get_instance() -> Result<Arc<AIdCredentialValidator>, AidError> {
+    fn get_instance() -> Result<Arc<AIdCredentialValidator>, AidError> {
         VALIDATOR_INSTANCE.get().cloned().ok_or_else(|| {
             AidError::DecryptionFailed(
                 "Validator not initialized. Call AIdCredentialValidator::init() first".to_string(),
@@ -94,10 +94,35 @@ impl AIdCredentialValidator {
         credential: &AIdCredential,
         realm_id: u32,
     ) -> Result<IdentityClaims, AidError> {
-        let validator = Self::get_instance().await?;
+        let validator = Self::get_instance()?;
         let secret_key = validator
             .get_secret_key_by_id(credential.token_key_id)
             .await?;
+        Self::check_with_key(credential, realm_id, &secret_key)
+    }
+
+    /// Synchronously checks a credential (decryption + validity verification)
+    ///
+    /// This synchronous method is intended for use in sync contexts (such as TURN authentication).
+    pub fn check_sync(
+        credential: &AIdCredential,
+        realm_id: u32,
+    ) -> Result<IdentityClaims, AidError> {
+        let validator = Self::get_instance()?;
+
+        // Use block_in_place to execute async operations without blocking the entire runtime
+        let secret_key = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+                AidError::DecryptionFailed("Not in tokio runtime context".to_string())
+            })?;
+
+            handle.block_on(async {
+                validator
+                    .get_secret_key_by_id(credential.token_key_id)
+                    .await
+            })
+        })?;
+
         Self::check_with_key(credential, realm_id, &secret_key)
     }
 
