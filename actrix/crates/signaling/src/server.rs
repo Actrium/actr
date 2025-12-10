@@ -377,6 +377,22 @@ async fn handle_peer_to_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match peer_to_server.payload {
         Some(peer_to_signaling::Payload::RegisterRequest(register_request)) => {
+            // 验证 RegisterRequest 中的 realm 是否存在、未过期、状态正常
+            let realm_id = register_request.realm.realm_id;
+            if let Err(e) = RealmEntity::validate_realm(realm_id).await {
+                warn!("⚠️  RegisterRequest realm 验证失败: {}", e);
+                // 使用 register-specific 错误响应
+                send_register_error(
+                    client_id,
+                    403,
+                    &format!("Realm validation failed: {}", e),
+                    server,
+                    request_envelope_id,
+                )
+                .await?;
+                return Ok(());
+            }
+
             handle_register_request(register_request, client_id, server, request_envelope_id)
                 .await?;
         }
@@ -952,6 +968,21 @@ async fn handle_actr_relay(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = relay.source.clone();
     let target = &relay.target;
+    // 验证源 Actor 的 realm（存在、未过期且状态正常）
+    let realm_id = source.realm.realm_id;
+    if let Err(e) = RealmEntity::validate_realm(realm_id).await {
+        warn!("⚠️  Actor {} realm 验证失败: {}", source.serial_number, e);
+        send_error_response(
+            client_id,
+            &source,
+            403,
+            &format!("Realm validation failed: {e}"),
+            server,
+            Some(request_envelope_id),
+        )
+        .await?;
+        return Ok(());
+    }
 
     info!(
         "🔀 中继信令: {} -> {}",
