@@ -107,10 +107,15 @@ impl OutprocOutGate {
                         state: ConnectionState::Closed,
                     }
                     | ConnectionEvent::ConnectionClosed { peer_id } => {
-                        // Mark peer as closing
-                        closing_peers.write().await.insert(peer_id.clone());
+                        // Mark peer as closing (release lock immediately to avoid deadlock)
+                        {
+                            closing_peers.write().await.insert(peer_id.clone());
+                        } // Lock released here
 
                         // 1. Trigger downstream cleanup (OutprocTransportManager → DestTransport → WirePool)
+                        // Note: We don't hold closing_peers lock here to avoid deadlock when
+                        // close_transport needs to acquire its own locks or when multiple
+                        // connections are closing simultaneously during shutdown.
                         let dest = Dest::actor(peer_id.clone());
                         match transport_manager.close_transport(&dest).await {
                             Ok(_) => {

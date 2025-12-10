@@ -51,8 +51,8 @@ use webrtc::track::track_local::TrackLocalWriter;
 
 const ICE_RESTART_MAX_RETRIES: u32 = 5;
 const ICE_RESTART_TIMEOUT: Duration = Duration::from_secs(5);
-const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 1000;
-const ICE_RESTART_MAX_BACKOFF_MS: u64 = 30000;
+const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 5000;
+const ICE_RESTART_MAX_BACKOFF_MS: u64 = 60000;
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Health check constants
@@ -2920,8 +2920,14 @@ impl WebRtcCoordinator {
                     has_connection
                 );
 
-                // Clean up old connection before initiating new one as offerer
-                self.cleanup_cancelled_connection(&peer).await;
+                // Spawn cleanup in background to avoid blocking signaling loop
+                // cleanup_cancelled_connection may call close() which sends events,
+                // and those events may trigger transport cleanup that could block
+                let this = Arc::clone(self);
+                let peer_clone = peer.clone();
+                tokio::spawn(async move {
+                    this.cleanup_cancelled_connection(&peer_clone).await;
+                });
             }
         }
         // ========== End role change check ==========
