@@ -5,6 +5,7 @@
 use actr_protocol::AIdCredential;
 use actr_protocol::turn::Claims;
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
+use actrix_common::realm::Realm as RealmEntity;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use std::hash::Hasher;
@@ -119,6 +120,19 @@ impl AuthHandler for Authenticator {
                 );
                 Error::Other(format!("Failed to check credential: {e}"))
             })?;
+
+        // 4️⃣ 验证 Realm 是否存在、未过期、状态正常
+        if let Err(e) = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::try_current()
+                .map_err(|_| "Not in tokio runtime context")?;
+            handle.block_on(async { RealmEntity::validate_realm(identity_claims.realm_id).await })
+        }) {
+            warn!(
+                "⚠️  TURN 认证 realm 验证失败: realm_id={}, actor_id={}, error={}",
+                identity_claims.realm_id, identity_claims.actor_id, e
+            );
+            return Err(Error::Other(format!("Realm validation failed: {e}")));
+        }
 
         let psk = identity_claims.psk;
 
