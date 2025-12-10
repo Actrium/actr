@@ -28,13 +28,14 @@ use super::{SignalingClient, WebRtcConfig};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::error::{RuntimeError, RuntimeResult};
 use crate::inbound::MediaFrameRegistry;
+use crate::lifecycle::CredentialState;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
 use actr_framework::Bytes;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrRelay, PayloadType, RoleAssignment, RoleNegotiation,
-    SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
+    ActrId, ActrRelay, PayloadType, RoleAssignment, RoleNegotiation, SignalingEnvelope, actr_relay,
+    session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
@@ -147,7 +148,7 @@ pub struct WebRtcCoordinator {
     local_id: ActrId,
 
     /// Local credentials
-    credential: AIdCredential,
+    credential_state: CredentialState,
 
     /// SignalingClient (for sending ICE/SDP)
     signaling_client: Arc<dyn SignalingClient>,
@@ -187,18 +188,22 @@ impl WebRtcCoordinator {
     /// Create new coordinator
     pub fn new(
         local_id: ActrId,
-        credential: AIdCredential,
+        credential_state: CredentialState,
         signaling_client: Arc<dyn SignalingClient>,
         webrtc_config: WebRtcConfig,
+        realm_id: u32,
+        psk: Bytes,
         media_frame_registry: Arc<MediaFrameRegistry>,
     ) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
+        let negotiator =
+            WebRtcNegotiator::new(webrtc_config, realm_id, psk, credential_state.clone());
 
         Self {
             local_id,
-            credential,
+            credential_state,
             signaling_client,
-            negotiator: WebRtcNegotiator::new(webrtc_config),
+            negotiator,
             peers: Arc::new(RwLock::new(HashMap::new())),
             pending_candidates: Arc::new(RwLock::new(HashMap::new())),
             message_rx: Arc::new(Mutex::new(message_rx)),
@@ -610,9 +615,10 @@ impl WebRtcCoordinator {
         target: &ActrId,
         payload: actr_relay::Payload,
     ) -> RuntimeResult<()> {
+        let credential = self.credential_state.credential().await;
         let relay = ActrRelay {
             source: self.local_id.clone(),
-            credential: self.credential.clone(),
+            credential,
             target: target.clone(),
             payload: Some(payload),
         };
@@ -2467,7 +2473,7 @@ impl WebRtcCoordinator {
         let negotiator = self.negotiator.clone();
         let peer_negotiation_cleanup = Arc::clone(&self.peer_negotiation);
         let local_id = self.local_id.clone();
-        let credential = self.credential.clone();
+        let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
 
@@ -2478,7 +2484,7 @@ impl WebRtcCoordinator {
                 peer_connection,
                 &negotiator,
                 &local_id,
-                &credential,
+                credential_state,
                 &signaling_client,
             )
             .await;
@@ -2552,7 +2558,7 @@ impl WebRtcCoordinator {
         peer_connection: Arc<RTCPeerConnection>,
         negotiator: &WebRtcNegotiator,
         local_id: &ActrId,
-        credential: &AIdCredential,
+        credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
     ) -> RuntimeResult<bool> {
         let backoff = ExponentialBackoff::new(
@@ -2601,7 +2607,7 @@ impl WebRtcCoordinator {
             // Send ICE restart offer
             let relay = ActrRelay {
                 source: local_id.clone(),
-                credential: credential.clone(),
+                credential: credential_state.credential().await,
                 target: target.clone(),
                 payload: Some(actr_relay::Payload::SessionDescription(
                     actr_protocol::SessionDescription {

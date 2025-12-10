@@ -2,7 +2,10 @@
 //!
 //! Responsible for WebRTC Connect's Offer/Answer protocol quotient
 
+use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkResult;
+use actr_protocol::turn::Claims;
+use bytes::Bytes;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -10,10 +13,16 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 
 /// WebRTC negotiator
-#[derive(Clone, Debug, Default)]
+#[derive(Clone)]
 pub struct WebRtcNegotiator {
-    /// WebRTC configuration
+    /// Base WebRTC configuration (URLs + policy)
     config: WebRtcConfig,
+    /// Realm id for TURN credential claims
+    realm_id: u32,
+    /// Pre-shared key for TURN authentication
+    psk: Bytes,
+    /// Latest credential state (token refreshes update this)
+    credential_state: CredentialState,
 }
 
 impl WebRtcNegotiator {
@@ -21,14 +30,17 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `config`: WebRTC configuration
-    pub fn new(config: WebRtcConfig) -> Self {
-        Self { config }
-    }
-
-    /// usingdefaultconfigurationCreatenegotiator
-    pub fn with_defaults() -> Self {
+    pub fn new(
+        config: WebRtcConfig,
+        realm_id: u32,
+        psk: Bytes,
+        credential_state: CredentialState,
+    ) -> Self {
         Self {
-            config: WebRtcConfig::default(),
+            config,
+            realm_id,
+            psk,
+            credential_state,
         }
     }
 
@@ -49,6 +61,8 @@ impl WebRtcNegotiator {
         use webrtc::rtp_transceiver::rtp_codec::{
             RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
         };
+
+        let credential = self.credential_state.credential().await;
 
         // Create MediaEngine and register codecs
         let mut media_engine = MediaEngine::default();
@@ -108,10 +122,31 @@ impl WebRtcNegotiator {
             .config
             .ice_servers
             .iter()
-            .map(|server| RTCIceServer {
-                urls: server.urls.clone(),
-                username: server.username.clone().unwrap_or_default(),
-                credential: server.credential.clone().unwrap_or_default(),
+            .map(|server| {
+                let is_turn = server
+                    .urls
+                    .iter()
+                    .any(|url| url.starts_with("turn:") || url.starts_with("turns:"));
+
+                if is_turn {
+                    let claims = Claims {
+                        realm_id: self.realm_id.clone(),
+                        key_id: credential.token_key_id,
+                        token: credential.encrypted_token.clone(),
+                    };
+
+                    RTCIceServer {
+                        urls: server.urls.clone(),
+                        username: claims.encode(),
+                        credential: hex::encode(&self.psk),
+                    }
+                } else {
+                    RTCIceServer {
+                        urls: server.urls.clone(),
+                        username: server.username.clone().unwrap_or_default(),
+                        credential: server.credential.clone().unwrap_or_default(),
+                    }
+                }
             })
             .collect();
 

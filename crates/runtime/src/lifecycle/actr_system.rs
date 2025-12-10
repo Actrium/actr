@@ -166,7 +166,7 @@ impl ActrSystem {
             context_factory: Some(self.context_factory), // Initialized with inproc_gate ready
             signaling_client: self.signaling_client,
             actor_id: None,              // Obtained after startup
-            credential: None,            // Obtained after startup
+            credential_state: None,      // Obtained after startup
             psk: None,                   // Obtained after startup (for TURN auth)
             webrtc_coordinator: None,    // Created after startup
             webrtc_gate: None,           // Created after startup

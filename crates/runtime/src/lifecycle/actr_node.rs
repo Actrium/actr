@@ -7,20 +7,40 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::{Bytes, Workload};
 use actr_mailbox::{DeadLetterQueue, Mailbox};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::turn::Claims;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrId, ActrType, PayloadType, RegisterRequest,
     RouteCandidatesRequest, RpcEnvelope, register_response, route_candidates_request,
 };
 use futures_util::FutureExt;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 // Use types from sub-crates
-use crate::wire::webrtc::{IceServer, SignalingClient, WebRtcConfig};
+use crate::wire::webrtc::SignalingClient;
 // Use extension traits from actr-protocol
 use actr_protocol::{ActrIdExt, ActrTypeExt};
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Constants
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Typical mailbox capacity for backlog ratio calculation
+/// A typical_capacity of 1000 means 100 messages = 10% backlog
+const TYPICAL_CAPACITY: f32 = 1000.0;
+
+/// Credential refresh buffer time (refresh before expiration)
+/// Refresh credential 5 minutes before it expires
+const REFRESH_BUFFER_SECS: i64 = 5 * 60;
+
+/// Credential refresh fallback interval when no expiration time is provided
+/// Refresh credential every hour as fallback
+const CREDENTIAL_REFRESH_FALLBACK_INTERVAL_SECS: u64 = 3600;
+
+/// Credential refresh retry delay after error
+/// Retry credential refresh after 1 minute on error
+const CREDENTIAL_REFRESH_RETRY_DELAY_SECS: u64 = 60;
 
 /// ActrNode - ActrSystem + Workload (1:1 composition)
 ///
@@ -54,10 +74,10 @@ pub struct ActrNode<W: Workload> {
     pub(crate) actor_id: Option<ActrId>,
 
     /// Actor Credential (obtained after startup, used for subsequent authentication messages)
-    pub(crate) credential: Option<AIdCredential>,
+    pub(crate) credential_state: Option<CredentialState>,
 
     /// Pre-shared key for TURN authentication (obtained from registration)
-    pub(crate) psk: Option<Vec<u8>>,
+    pub(crate) psk: Option<Bytes>,
 
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::coordinator::WebRtcCoordinator>>,
@@ -77,6 +97,43 @@ pub struct ActrNode<W: Workload> {
 
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
+}
+
+/// Credential state for shared access between tasks
+#[derive(Clone)]
+pub struct CredentialState {
+    inner: Arc<RwLock<CredentialStateInner>>,
+}
+
+#[derive(Clone)]
+struct CredentialStateInner {
+    credential: AIdCredential,
+    expires_at: Option<prost_types::Timestamp>,
+}
+
+impl CredentialState {
+    fn new(credential: AIdCredential, expires_at: Option<prost_types::Timestamp>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(CredentialStateInner {
+                credential,
+                expires_at,
+            })),
+        }
+    }
+
+    pub async fn credential(&self) -> AIdCredential {
+        self.inner.read().await.credential.clone()
+    }
+
+    pub async fn expires_at(&self) -> Option<prost_types::Timestamp> {
+        self.inner.read().await.expires_at
+    }
+
+    async fn update(&self, credential: AIdCredential, expires_at: Option<prost_types::Timestamp>) {
+        let mut guard = self.inner.write().await;
+        guard.credential = credential;
+        guard.expires_at = expires_at;
+    }
 }
 
 /// Map ProtocolError to error code for ErrorResponse
@@ -218,19 +275,18 @@ fn check_acl_permission(
 /// - If both are None, principal matches all (should not happen in practice)
 fn matches_principal(caller: &ActrId, principal: &actr_protocol::acl_rule::Principal) -> bool {
     // Check realm match (if specified)
-    if let Some(ref principal_realm) = principal.realm {
-        if caller.realm.realm_id != principal_realm.realm_id {
-            return false;
-        }
+    if let Some(ref principal_realm) = principal.realm
+        && caller.realm.realm_id != principal_realm.realm_id
+    {
+        return false;
     }
 
     // Check type match (if specified)
-    if let Some(ref principal_type) = principal.actr_type {
-        if caller.r#type.manufacturer != principal_type.manufacturer
-            || caller.r#type.name != principal_type.name
-        {
-            return false;
-        }
+    if let Some(ref principal_type) = principal.actr_type
+        && (caller.r#type.manufacturer != principal_type.manufacturer
+            || caller.r#type.name != principal_type.name)
+    {
+        return false;
     }
 
     // If we reach here, all specified fields matched
@@ -256,9 +312,9 @@ impl<W: Workload> ActrNode<W> {
         self.actor_id.as_ref()
     }
 
-    /// Get credential (if registration has completed)
-    pub fn credential(&self) -> Option<&AIdCredential> {
-        self.credential.as_ref()
+    /// Get credential state (if registration has completed)
+    pub fn credential_state(&self) -> Option<CredentialState> {
+        self.credential_state.clone()
     }
 
     /// Get signaling client (for manual control such as UnregisterRequest)
@@ -294,12 +350,6 @@ impl<W: Workload> ActrNode<W> {
             )
         })?;
 
-        let credential = self.credential.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
-                "Node is not started. Call start() first.".to_string(),
-            )
-        })?;
-
         // Check if the signaling client is connected
         if !self.signaling_client.is_connected() {
             return Err(actr_protocol::ProtocolError::TransportError(
@@ -322,8 +372,17 @@ impl<W: Workload> ActrNode<W> {
             client_location: None,
         };
 
+        let credential_state = self.credential_state.clone().ok_or_else(|| {
+            actr_protocol::ProtocolError::InvalidStateTransition(
+                "Node is not started. Call start() first.".to_string(),
+            )
+        })?;
         let route_response = client
-            .send_route_candidates_request(actor_id.clone(), credential.clone(), route_request)
+            .send_route_candidates_request(
+                actor_id.clone(),
+                credential_state.credential().await,
+                route_request,
+            )
             .await
             .map_err(|e| {
                 actr_protocol::ProtocolError::TransportError(format!(
@@ -451,12 +510,11 @@ impl<W: Workload> ActrNode<W> {
         }
 
         // 1. Create Context with caller_id from transport layer
-        let credential = self.credential.as_ref().ok_or_else(|| {
+        let credential_state = self.credential_state.clone().ok_or_else(|| {
             actr_protocol::ProtocolError::InvalidStateTransition(
                 "Credential not set - node must be started before handling messages".to_string(),
             )
         })?;
-
         let ctx = self
             .context_factory
             .as_ref()
@@ -465,7 +523,7 @@ impl<W: Workload> ActrNode<W> {
                 actor_id,
                 caller_id, // caller_id from transport layer (MessageRecord.from)
                 &envelope.request_id,
-                credential,
+                &credential_state.credential().await,
             );
 
         // 2. Static MessageRouter dispatch (zero-cost abstraction)
@@ -624,14 +682,17 @@ impl<W: Workload> ActrNode<W> {
 
                 // Store ActrId and Credential
                 self.actor_id = Some(actor_id.clone());
-                self.credential = Some(credential.clone());
+                let credential_state =
+                    CredentialState::new(credential, register_ok.credential_expires_at);
+                self.credential_state = Some(credential_state.clone());
 
                 // Pass identity to signaling client so reconnect URLs carry auth info.
+                self.signaling_client.set_actor_id(actor_id.clone()).await;
                 self.signaling_client
-                    .set_reconnect_identity(actor_id.clone(), credential.clone())
+                    .set_credential_state(credential_state.clone())
                     .await;
                 // Store PSK and public_key for TURN authentication
-                self.psk = register_ok.psk.as_ref().map(|b| b.to_vec());
+                self.psk = register_ok.psk.clone();
 
                 // Persist identity into ContextFactory for later Context creation
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -667,16 +728,15 @@ impl<W: Workload> ActrNode<W> {
                     .media_frame_registry
                     .clone();
 
-                // Build WebRtcConfig from Actr.toml configuration
-                let webrtc_config = self.build_webrtc_config(&self.config.webrtc, &credential);
-
                 // Create WebRtcCoordinator
                 let coordinator =
                     Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
                         actor_id.clone(),
-                        credential.clone(),
+                        credential_state.clone(),
                         self.signaling_client.clone(),
-                        webrtc_config,
+                        self.config.webrtc.clone(),
+                        self.config.realm.realm_id.clone(),
+                        self.psk.clone().expect("PSK must be set"),
                         media_frame_registry,
                     ));
 
@@ -755,13 +815,18 @@ impl<W: Workload> ActrNode<W> {
                 tracing::info!("✅ WebRTC infrastructure initialized");
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.7.5. Create shared state for credential management
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // Shared credential state initialized above; reused across tasks
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 {
                     let shutdown = self.shutdown_token.clone();
                     let client = self.signaling_client.clone();
                     let actor_id_for_heartbeat = actor_id.clone();
-                    let credential_for_heartbeat = credential.clone();
+                    let credential_state_for_heartbeat = credential_state.clone();
                     let mailbox_for_heartbeat = self.mailbox.clone();
 
                     // Use interval from registration response, default to 30s
@@ -784,6 +849,9 @@ impl<W: Workload> ActrNode<W> {
                                     break;
                                 }
                                 _ = interval.tick() => {
+                                    // Get current credential from shared state
+                                    let current_credential = credential_state_for_heartbeat.credential().await;
+
                                     // Get real power reserve from pwrzv (0.0 to 1.0)
                                     let power_reserve = pwrzv::get_power_reserve_level_direct()
                                         .await
@@ -791,13 +859,10 @@ impl<W: Workload> ActrNode<W> {
 
                                     // Get mailbox backlog from mailbox stats
                                     // Calculate backlog ratio: (queued + inflight) / typical_capacity
-                                    // A typical_capacity of 1000 means 100 messages = 10% backlog
-                                    const TYPICAL_CAPACITY: f32 = 1000.0;
                                     let mailbox_backlog = match mailbox_for_heartbeat.status().await {
                                         Ok(stats) => {
                                             let total_messages = (stats.queued_messages + stats.inflight_messages) as f32;
-                                            let backlog_ratio = (total_messages / TYPICAL_CAPACITY).min(1.0);
-                                            backlog_ratio
+                                            (total_messages / TYPICAL_CAPACITY).min(1.0)
                                         }
                                         Err(e) => {
                                             tracing::warn!("⚠️ Failed to get mailbox stats: {}", e);
@@ -818,7 +883,7 @@ impl<W: Workload> ActrNode<W> {
 
                                     if let Err(e) = client.send_heartbeat(
                                         actor_id_for_heartbeat.clone(),
-                                        credential_for_heartbeat.clone(),
+                                        current_credential,
                                         availability,
                                         power_reserve,
                                         mailbox_backlog,
@@ -850,6 +915,28 @@ impl<W: Workload> ActrNode<W> {
                 );
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.8.5. Spawn credential refresh task
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                {
+                    let shutdown = self.shutdown_token.clone();
+                    let client = self.signaling_client.clone();
+                    let actor_id_for_refresh = actor_id.clone();
+                    let credential_state_for_refresh = credential_state.clone();
+
+                    let refresh_handle = tokio::spawn(async move {
+                        credential_refresh_task(
+                            shutdown,
+                            client,
+                            actor_id_for_refresh,
+                            credential_state_for_refresh,
+                        )
+                        .await;
+                    });
+                    task_handles.push(refresh_handle);
+                }
+                tracing::info!("✅ Credential refresh task started");
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 //
@@ -863,7 +950,7 @@ impl<W: Workload> ActrNode<W> {
                     let shutdown = self.shutdown_token.clone();
                     let client = self.signaling_client.clone();
                     let actor_id_for_unreg = actor_id.clone();
-                    let credential_for_unreg = credential.clone();
+                    let credential_state_for_unreg = credential_state.clone();
                     let webrtc_coordinator = self.webrtc_coordinator.clone();
 
                     let unregister_handle = tokio::spawn(async move {
@@ -897,7 +984,7 @@ impl<W: Workload> ActrNode<W> {
                             std::time::Duration::from_secs(5),
                             client.send_unregister_request(
                                 actor_id_for_unreg.clone(),
-                                credential_for_unreg.clone(),
+                                credential_state_for_unreg.credential().await,
                                 Some("Graceful shutdown".to_string()),
                             ),
                         )
@@ -980,16 +1067,11 @@ impl<W: Workload> ActrNode<W> {
                 )
             })?
             .clone();
-        let credential = self
-            .credential
-            .as_ref()
-            .ok_or_else(|| {
-                actr_protocol::ProtocolError::InvalidStateTransition(
-                    "Credential not set - node must be started before handling messages"
-                        .to_string(),
-                )
-            })?
-            .clone();
+        let credential_state = self.credential_state.clone().ok_or_else(|| {
+            actr_protocol::ProtocolError::InvalidStateTransition(
+                "Credential not set - node must be started before handling messages".to_string(),
+            )
+        })?;
 
         let actor_id_for_shell = actor_id.clone();
         let shutdown_token = self.shutdown_token.clone();
@@ -1039,7 +1121,7 @@ impl<W: Workload> ActrNode<W> {
                 &actor_id,
                 None,        // caller_id
                 "bootstrap", // request_id
-                &credential,
+                &credential_state.credential().await,
             );
         node_ref.workload.on_start(&ctx).await?;
         tracing::info!("✅ Lifecycle hook on_start completed");
@@ -1514,69 +1596,246 @@ impl<W: Workload> ActrNode<W> {
 
         Ok(actr_ref)
     }
+}
 
-    /// Build WebRtcConfig from Actr.toml configuration
-    ///
-    /// Creates ICE servers configuration based on:
-    /// - ICE server URLs from Actr.toml (stun_urls, turn_urls)
-    /// - PSK received from registration (for TURN authentication)
-    /// - Credential information (realm_id, key_id, encrypted_token)
-    /// - ice_transport_policy from Actr.toml (force_relay)
-    fn build_webrtc_config(
-        &self,
-        config_webrtc: &actr_config::WebRtcConfig,
-        credential: &AIdCredential,
-    ) -> WebRtcConfig {
-        // Build ICE servers list from Actr.toml configuration
-        let mut ice_servers = Vec::new();
+/// Spawns a background task to periodically refresh the Actor's credential,
+/// ensuring it is updated before expiration. The refresh interval is determined
+/// by the credential's expiration timestamp, with the refresh scheduled
+/// 5 minutes (300 seconds) before expiry.
+async fn credential_refresh_task(
+    shutdown: CancellationToken,
+    client: Arc<dyn SignalingClient>,
+    actor_id: ActrId,
+    credential_state: CredentialState,
+) {
+    loop {
+        // Calculate next refresh time
+        let next_refresh = {
+            let expires_at = credential_state.expires_at().await;
+            if let Some(expires_at) = expires_at {
+                let refresh_secs = expires_at.seconds - REFRESH_BUFFER_SECS;
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
 
-        for server in &config_webrtc.ice_servers {
-            // Check if this is a TURN server (URLs start with "turn:" or "turns:")
-            let is_turn_server = server
-                .urls
-                .iter()
-                .any(|url| url.starts_with("turn:") || url.starts_with("turns:"));
-
-            if is_turn_server {
-                // TURN server: need to generate credentials dynamically
-                if let Some(psk) = &self.psk {
-                    let claims = Claims {
-                        realm_id: self.config.realm.realm_id,
-                        key_id: credential.token_key_id,
-                        token: credential.encrypted_token.clone(),
-                    };
-
-                    ice_servers.push(IceServer {
-                        urls: server.urls.clone(),
-                        username: Some(claims.encode()),
-                        credential: Some(hex::encode(psk)),
-                    });
+                if refresh_secs > now_secs {
+                    // Schedule refresh before expiration
+                    std::time::Duration::from_secs((refresh_secs - now_secs) as u64)
                 } else {
-                    tracing::warn!(
-                        "⚠️ TURN server configured but PSK not available from registration"
-                    );
+                    // Already past refresh time, refresh immediately
+                    std::time::Duration::from_secs(0)
                 }
             } else {
-                // STUN server: no credentials needed
-                ice_servers.push(IceServer {
-                    urls: server.urls.clone(),
-                    username: None,
-                    credential: None,
-                });
+                // No expiration time, refresh every hour as fallback
+                std::time::Duration::from_secs(CREDENTIAL_REFRESH_FALLBACK_INTERVAL_SECS)
             }
-        }
-
-        // Use ice_transport_policy from Actr.toml configuration
-        let ice_transport_policy = match config_webrtc.ice_transport_policy {
-            actr_config::IceTransportPolicy::Relay => {
-                crate::wire::webrtc::IceTransportPolicy::Relay
-            }
-            actr_config::IceTransportPolicy::All => crate::wire::webrtc::IceTransportPolicy::All,
         };
 
-        WebRtcConfig {
-            ice_servers,
-            ice_transport_policy,
+        // Wait until refresh time or shutdown
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                tracing::info!("🛑 Credential refresh task terminated by shutdown");
+                break;
+            }
+            _ = tokio::time::sleep(next_refresh) => {
+                // Time to refresh
+            }
         }
+
+        // Check if shutdown was requested
+        if shutdown.is_cancelled() {
+            tracing::info!("🛑 Credential refresh task terminated by shutdown");
+            break;
+        }
+
+        tracing::info!(
+            "🔑 Refreshing credential for Actor {}",
+            actor_id.to_string_repr()
+        );
+
+        match client
+            .send_credential_update_request(actor_id.clone(), credential_state.credential().await)
+            .await
+        {
+            Ok(register_response) => {
+                match register_response.result {
+                    Some(register_response::Result::Success(register_ok)) => {
+                        let new_credential = register_ok.credential;
+                        let new_expires_at = register_ok.credential_expires_at;
+
+                        // Update shared state
+                        credential_state
+                            .update(new_credential.clone(), new_expires_at)
+                            .await;
+
+                        tracing::info!(
+                            "✅ Credential refreshed successfully for Actor {} (new key_id: {})",
+                            actor_id.serial_number,
+                            new_credential.token_key_id
+                        );
+
+                        if let Some(expires_at) = &new_expires_at {
+                            tracing::debug!(
+                                "⏰ New credential expires at: {}s",
+                                expires_at.seconds
+                            );
+                        }
+                    }
+                    Some(register_response::Result::Error(err)) => {
+                        tracing::error!(
+                            "❌ Credential refresh failed: code={}, message={}",
+                            err.code,
+                            err.message
+                        );
+                        // Retry after 1 minute on error
+                        tokio::time::sleep(std::time::Duration::from_secs(
+                            CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
+                        ))
+                        .await;
+                    }
+                    None => {
+                        tracing::error!("❌ Credential refresh response missing result");
+                        // Retry after 1 minute on error
+                        tokio::time::sleep(std::time::Duration::from_secs(
+                            CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
+                        ))
+                        .await;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("⚠️ Failed to send credential update request: {}", e);
+                // Retry after 1 minute on error
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
+                ))
+                .await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actr_protocol::AIdCredential;
+    use prost_types::Timestamp;
+
+    fn create_test_credential(token_key_id: u32) -> AIdCredential {
+        AIdCredential {
+            encrypted_token: vec![1, 2, 3, 4].into(),
+            token_key_id,
+        }
+    }
+
+    fn create_test_timestamp(seconds: i64) -> Timestamp {
+        Timestamp { seconds, nanos: 0 }
+    }
+
+    #[tokio::test]
+    async fn test_credential_state_initialization() {
+        let credential = create_test_credential(1);
+        let expires_at = Some(create_test_timestamp(1000));
+
+        let state = CredentialState::new(credential.clone(), expires_at);
+
+        let retrieved_credential = state.credential().await;
+        assert_eq!(retrieved_credential.token_key_id, 1);
+        assert_eq!(retrieved_credential.encrypted_token.as_ref(), &[1, 2, 3, 4]);
+
+        let retrieved_expires_at = state.expires_at().await;
+        assert_eq!(retrieved_expires_at, expires_at);
+    }
+
+    #[tokio::test]
+    async fn test_credential_state_without_expiration() {
+        let credential = create_test_credential(2);
+        let state = CredentialState::new(credential.clone(), None);
+
+        let retrieved_credential = state.credential().await;
+        assert_eq!(retrieved_credential.token_key_id, 2);
+
+        let retrieved_expires_at = state.expires_at().await;
+        assert!(retrieved_expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_credential_state_update() {
+        let credential1 = create_test_credential(1);
+        let expires_at1 = Some(create_test_timestamp(1000));
+        let state = CredentialState::new(credential1, expires_at1);
+
+        // Verify initial state
+        let initial_credential = state.credential().await;
+        assert_eq!(initial_credential.token_key_id, 1);
+
+        // Update credential
+        let credential2 = create_test_credential(2);
+        let expires_at2 = Some(create_test_timestamp(2000));
+        state.update(credential2.clone(), expires_at2).await;
+
+        // Verify updated state
+        let updated_credential = state.credential().await;
+        assert_eq!(updated_credential.token_key_id, 2);
+        assert_eq!(
+            updated_credential.encrypted_token,
+            credential2.encrypted_token
+        );
+
+        let updated_expires_at = state.expires_at().await;
+        assert_eq!(updated_expires_at, Some(create_test_timestamp(2000)));
+    }
+
+    #[tokio::test]
+    async fn test_credential_state_concurrent_access() {
+        let credential = create_test_credential(1);
+        let expires_at = Some(create_test_timestamp(1000));
+        let state = CredentialState::new(credential, expires_at);
+
+        // Spawn multiple tasks that concurrently access the credential state
+        let mut handles = vec![];
+        for i in 0..10 {
+            let state_clone = state.clone();
+            let handle = tokio::spawn(async move {
+                let cred = state_clone.credential().await;
+                assert_eq!(cred.token_key_id, 1);
+                i
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert!(result < 10);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credential_state_update_concurrent() {
+        let credential1 = create_test_credential(1);
+        let state = CredentialState::new(credential1, None);
+
+        // Spawn multiple update tasks
+        let mut handles = vec![];
+        for i in 2..12 {
+            let state_clone = state.clone();
+            let credential = create_test_credential(i);
+            let handle = tokio::spawn(async move {
+                state_clone.update(credential, None).await;
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all updates to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify final state (should be the last update)
+        let final_credential = state.credential().await;
+        // The exact value depends on which update finished last, but it should be valid
+        assert!(final_credential.token_key_id >= 2 && final_credential.token_key_id <= 11);
     }
 }

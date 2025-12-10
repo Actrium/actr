@@ -7,5 +7,5 @@
 mod actr_node;
 mod actr_system;
 
-pub use actr_node::ActrNode;
+pub use actr_node::{ActrNode, CredentialState};
 pub use actr_system::ActrSystem;

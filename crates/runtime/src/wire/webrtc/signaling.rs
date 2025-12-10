@@ -4,6 +4,7 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::trace;
+use crate::lifecycle::CredentialState;
 use crate::transport::error::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
@@ -11,10 +12,10 @@ use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, PeerToSignaling, Ping, RegisterRequest,
-    RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse, ServiceAvailabilityState,
-    SignalingEnvelope, UnregisterRequest, UnregisterResponse, actr_to_signaling, peer_to_signaling,
-    signaling_envelope, signaling_to_actr,
+    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, PeerToSignaling, Ping,
+    RegisterRequest, RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse,
+    ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest, UnregisterResponse,
+    actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -173,6 +174,16 @@ pub trait SignalingClient: Send + Sync {
         request: RouteCandidatesRequest,
     ) -> NetworkResult<RouteCandidatesResponse>;
 
+    /// Send CredentialUpdateRequest to refresh the Actor's credential
+    ///
+    /// This is used to refresh the credential before it expires. The server responds
+    /// with a RegisterResponse containing the new credential and expiration time.
+    async fn send_credential_update_request(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+    ) -> NetworkResult<RegisterResponse>;
+
     /// Sendsignalingsignal seal （ pass usage Method）
     async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()>;
 
@@ -187,8 +198,9 @@ pub trait SignalingClient: Send + Sync {
     /// Subscribe to connection state changes (Connected/Disconnected).
     fn subscribe_state(&self) -> watch::Receiver<ConnectionState>;
 
-    /// Set identity used for reconnect URL parameters (actor_id + credential).
-    async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential);
+    /// Set actor ID and credential state for reconnect URL parameters.
+    async fn set_actor_id(&self, actor_id: ActrId);
+    async fn set_credential_state(&self, credential_state: CredentialState);
 }
 
 /// High-level signaling connection state.
@@ -201,8 +213,8 @@ pub enum ConnectionState {
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
-    /// Reconnect identity (actor_id + credential) to attach as URL params on reconnects
-    reconnect_identity: tokio::sync::Mutex<Option<(ActrId, AIdCredential)>>,
+    actor_id: tokio::sync::Mutex<Option<ActrId>>,
+    credential_state: tokio::sync::Mutex<Option<CredentialState>>,
     /// WebSocket write end （using Mutex Implementation interior mutability ）
     ws_sink: Arc<
         tokio::sync::Mutex<
@@ -246,6 +258,8 @@ impl WebSocketSignalingClient {
         let (state_tx, _state_rx) = watch::channel(ConnectionState::Disconnected);
         Self {
             config,
+            actor_id: tokio::sync::Mutex::new(None),
+            credential_state: tokio::sync::Mutex::new(None),
             ws_sink: Arc::new(tokio::sync::Mutex::new(None)),
             ws_stream: tokio::sync::Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
@@ -258,7 +272,6 @@ impl WebSocketSignalingClient {
             ping_task: tokio::sync::Mutex::new(None),
             state_tx,
             last_pong: Arc::new(AtomicU64::new(0)),
-            reconnect_identity: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -310,7 +323,10 @@ impl WebSocketSignalingClient {
     /// Build signaling URL, attaching actor identity/token if available for reconnects.
     async fn build_url_with_identity(&self) -> Url {
         let mut url = self.config.server_url.clone();
-        if let Some((actor_id, credential)) = self.reconnect_identity.lock().await.clone() {
+        let actor_id_opt = self.actor_id.lock().await.clone();
+        let credential_state_opt = self.credential_state.lock().await.clone();
+        if let (Some(actor_id), Some(credential_state)) = (actor_id_opt, credential_state_opt) {
+            let credential = credential_state.credential().await;
             let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
             let token_b64 =
                 base64::engine::general_purpose::STANDARD.encode(&credential.encrypted_token);
@@ -788,6 +804,49 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+    )]
+    async fn send_credential_update_request(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+    ) -> NetworkResult<RegisterResponse> {
+        let request = CredentialUpdateRequest {
+            actr_id: actor_id.clone(),
+        };
+
+        let flow = signaling_envelope::Flow::ActrToServer(ActrToSignaling {
+            source: actor_id,
+            credential,
+            payload: Some(actr_to_signaling::Payload::CredentialUpdateRequest(request)),
+        });
+
+        let envelope = self.create_envelope(flow).await;
+        let response_envelope = self.send_envelope_and_wait_response(envelope).await?;
+
+        if let Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) = response_envelope.flow
+        {
+            match server_to_actr.payload {
+                Some(signaling_to_actr::Payload::RegisterResponse(response)) => {
+                    return Ok(response);
+                }
+                Some(signaling_to_actr::Payload::Error(err)) => {
+                    return Err(NetworkError::ConnectionError(format!(
+                        "Credential update failed: {} ({})",
+                        err.message, err.code
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        Err(NetworkError::ConnectionError(
+            "Invalid credential update response".to_string(),
+        ))
+    }
+
+    #[cfg_attr(
+        feature = "opentelemetry",
         tracing::instrument(level = "debug", skip_all, fields(envelope_id = %envelope.envelope_id))
     )]
     async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()> {
@@ -840,9 +899,12 @@ impl SignalingClient for WebSocketSignalingClient {
         self.state_tx.subscribe()
     }
 
-    async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential) {
-        let mut guard = self.reconnect_identity.lock().await;
-        *guard = Some((actor_id, credential));
+    async fn set_actor_id(&self, actor_id: ActrId) {
+        *self.actor_id.lock().await = Some(actor_id);
+    }
+
+    async fn set_credential_state(&self, credential_state: CredentialState) {
+        *self.credential_state.lock().await = Some(credential_state);
     }
 }
 
@@ -986,7 +1048,8 @@ mod tests {
     struct FakeSignalingClient {
         state_tx: watch::Sender<ConnectionState>,
         connect_calls: Arc<AtomicUsize>,
-        reconnect_identity: tokio::sync::Mutex<Option<(ActrId, AIdCredential)>>,
+        actor_id: tokio::sync::Mutex<Option<ActrId>>,
+        credential_state: tokio::sync::Mutex<Option<CredentialState>>,
     }
 
     #[async_trait]
@@ -1036,6 +1099,14 @@ mod tests {
             unimplemented!("not needed in tests");
         }
 
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not needed in tests");
+        }
+
         async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
             unimplemented!("not needed in tests");
         }
@@ -1057,9 +1128,12 @@ mod tests {
             self.state_tx.subscribe()
         }
 
-        async fn set_reconnect_identity(&self, actor_id: ActrId, credential: AIdCredential) {
-            let mut guard = self.reconnect_identity.lock().await;
-            *guard = Some((actor_id, credential));
+        async fn set_actor_id(&self, actor_id: ActrId) {
+            *self.actor_id.lock().await = Some(actor_id);
+        }
+
+        async fn set_credential_state(&self, credential_state: CredentialState) {
+            *self.credential_state.lock().await = Some(credential_state);
         }
     }
 
@@ -1068,7 +1142,8 @@ mod tests {
         let client = Arc::new(FakeSignalingClient {
             state_tx: state_tx.clone(),
             connect_calls: Arc::new(AtomicUsize::new(0)),
-            reconnect_identity: tokio::sync::Mutex::new(None),
+            actor_id: tokio::sync::Mutex::new(None),
+            credential_state: tokio::sync::Mutex::new(None),
         });
         (client, state_tx)
     }
