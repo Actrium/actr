@@ -21,7 +21,7 @@ pub enum RealmStatus {
 ///
 #[derive(Debug, Clone, Serialize, Deserialize, Default, FromRow)]
 pub struct Realm {
-    pub rowid: Option<u32>,
+    pub rowid: Option<i64>,
 
     // 基础字段
     pub realm_id: u32,

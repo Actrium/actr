@@ -12,7 +12,7 @@ use crate::storage::db::get_database;
 impl Realm {
     /// 保存 Realm 到数据库
     /// 如果是新 Realm 则插入，如果已存在提示已存在
-    pub async fn save(&mut self) -> Result<u32, RealmError> {
+    pub async fn save(&mut self) -> Result<i64, RealmError> {
         let now = Utc::now().timestamp();
         let db = get_database();
         let pool = db.get_pool();
@@ -47,7 +47,7 @@ impl Realm {
             .execute(pool)
             .await?;
 
-            let new_rowid = result.last_insert_rowid().try_into().unwrap();
+            let new_rowid = result.last_insert_rowid();
             self.rowid = Some(new_rowid);
             Ok(new_rowid)
         } else {

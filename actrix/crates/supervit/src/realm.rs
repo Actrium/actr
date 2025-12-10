@@ -43,7 +43,7 @@ pub fn realm_to_proto(realm: &Realm, metadata: &RealmMetadata) -> RealmInfo {
 }
 
 /// Load realm metadata from RealmConfig table
-pub async fn load_realm_metadata(realm_rowid: u32) -> Result<RealmMetadata, SupervitError> {
+pub async fn load_realm_metadata(realm_rowid: i64) -> Result<RealmMetadata, SupervitError> {
     let enabled = load_enabled_flag(realm_rowid).await?;
     let use_servers = load_use_servers(realm_rowid).await?;
     let version = load_version(realm_rowid).await?;
@@ -57,7 +57,7 @@ pub async fn load_realm_metadata(realm_rowid: u32) -> Result<RealmMetadata, Supe
 
 /// Persist realm metadata into RealmConfig table
 pub async fn persist_realm_metadata(
-    realm_rowid: u32,
+    realm_rowid: i64,
     metadata: &RealmMetadata,
 ) -> Result<(), SupervitError> {
     upsert_config_value(realm_rowid, REALM_ENABLED_KEY, metadata.enabled.to_string()).await?;
@@ -70,7 +70,7 @@ pub async fn persist_realm_metadata(
     Ok(())
 }
 
-async fn load_enabled_flag(realm_rowid: u32) -> Result<bool, SupervitError> {
+async fn load_enabled_flag(realm_rowid: i64) -> Result<bool, SupervitError> {
     let config = RealmConfig::get_by_realm_and_key(realm_rowid, REALM_ENABLED_KEY)
         .await
         .map_err(|e| SupervitError::Internal(format!("Failed to load realm enabled flag: {e}")))?;
@@ -82,7 +82,7 @@ async fn load_enabled_flag(realm_rowid: u32) -> Result<bool, SupervitError> {
     }
 }
 
-async fn load_version(realm_rowid: u32) -> Result<u64, SupervitError> {
+async fn load_version(realm_rowid: i64) -> Result<u64, SupervitError> {
     let config = RealmConfig::get_by_realm_and_key(realm_rowid, REALM_VERSION_KEY)
         .await
         .map_err(|e| SupervitError::Internal(format!("Failed to load realm version: {e}")))?;
@@ -94,7 +94,7 @@ async fn load_version(realm_rowid: u32) -> Result<u64, SupervitError> {
     }
 }
 
-async fn load_use_servers(realm_rowid: u32) -> Result<Vec<ResourceType>, SupervitError> {
+async fn load_use_servers(realm_rowid: i64) -> Result<Vec<ResourceType>, SupervitError> {
     let config = RealmConfig::get_by_realm_and_key(realm_rowid, REALM_USE_SERVERS_KEY)
         .await
         .map_err(|e| SupervitError::Internal(format!("Failed to load realm services: {e}")))?;
@@ -107,7 +107,7 @@ async fn load_use_servers(realm_rowid: u32) -> Result<Vec<ResourceType>, Supervi
 }
 
 async fn upsert_config_value(
-    realm_rowid: u32,
+    realm_rowid: i64,
     key: &str,
     value: String,
 ) -> Result<(), SupervitError> {

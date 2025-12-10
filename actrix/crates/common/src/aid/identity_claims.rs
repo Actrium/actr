@@ -19,25 +19,31 @@ pub struct IdentityClaims {
 
     /// Token 过期时间 (Unix timestamp, seconds)
     pub expr_time: u64,
+
+    /// Pre-shared key (PSK) for TURN authentication
+    /// 256-bit (32 bytes) pre-shared key used for TURN server authentication
+    pub psk: Vec<u8>,
 }
 
 impl IdentityClaims {
     /// 创建新的 IdentityClaims
-    pub fn new(realm_id: u32, actor_id: String, expr_time: u64) -> Self {
+    pub fn new(realm_id: u32, actor_id: String, expr_time: u64, psk: Vec<u8>) -> Self {
         Self {
             realm_id,
             actor_id,
             expr_time,
+            psk,
         }
     }
 
     /// 从 actr_protocol::ActrId 创建 IdentityClaims
-    pub fn from_actr_id(actr_id: &actr_protocol::ActrId, expr_time: u64) -> Self {
+    pub fn from_actr_id(actr_id: &actr_protocol::ActrId, expr_time: u64, psk: Vec<u8>) -> Self {
         use actr_protocol::ActrIdExt;
         Self {
             realm_id: actr_id.realm.realm_id,
             actor_id: actr_id.to_string_repr(),
             expr_time,
+            psk,
         }
     }
 
@@ -59,11 +65,18 @@ mod tests {
 
     #[test]
     fn test_identity_claims_creation() {
-        let claims = IdentityClaims::new(12345, "apple:user@1a2b3c:12345".to_string(), 1730614800);
+        let psk = vec![0u8; 32];
+        let claims = IdentityClaims::new(
+            12345,
+            "apple:user@1a2b3c:12345".to_string(),
+            1730614800,
+            psk.clone(),
+        );
 
         assert_eq!(claims.realm_id, 12345);
         assert_eq!(claims.actor_id, "apple:user@1a2b3c:12345");
         assert_eq!(claims.expr_time, 1730614800);
+        assert_eq!(claims.psk, psk);
     }
 
     #[test]
@@ -73,12 +86,15 @@ mod tests {
             .unwrap()
             .as_secs();
 
+        let psk = vec![0u8; 32];
+
         // 未过期
-        let valid_claims = IdentityClaims::new(1, "test@123:1".to_string(), now + 3600);
+        let valid_claims =
+            IdentityClaims::new(1, "test@123:1".to_string(), now + 3600, psk.clone());
         assert!(!valid_claims.is_expired());
 
         // 已过期
-        let expired_claims = IdentityClaims::new(1, "test@123:1".to_string(), now - 1);
+        let expired_claims = IdentityClaims::new(1, "test@123:1".to_string(), now - 1, psk);
         assert!(expired_claims.is_expired());
     }
 }

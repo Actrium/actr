@@ -2,7 +2,9 @@
 //!
 //! 实现 TURN 服务器的认证和授权功能，带 LRU 缓存优化
 
-use actr_protocol::turn::{Claims, Token};
+use actr_protocol::AIdCredential;
+use actr_protocol::turn::Claims;
+use actrix_common::aid::credential::validator::AIdCredentialValidator;
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use std::hash::Hasher;
@@ -75,8 +77,10 @@ impl AuthHandler for Authenticator {
         src_addr: SocketAddr,
     ) -> Result<Vec<u8>, Error> {
         debug!(
-            "处理 TURN 认证请求: username={}, realm={}, src={}",
-            username, server_realm, src_addr
+            "Processing TURN authentication request: username={:?}, realm={}, src={}",
+            username.as_bytes(),
+            server_realm,
+            src_addr
         );
 
         // 1️⃣ 首先尝试缓存命中（仅基于 username + realm，无需解析 Claims）
@@ -91,37 +95,37 @@ impl AuthHandler for Authenticator {
             return Ok(cached);
         }
 
-        // 2️⃣ 缓存未命中，解析 Claims 获取 PSK
-        let claims: Claims = serde_json::from_str(username).map_err(|e| {
-            warn!("无法解析 Claims: username={}, error={}", username, e);
+        // 2️⃣ 缓存未命中，解析 Claims 获取 key_id
+        let claims = Claims::decode(username).map_err(|e| {
+            warn!(
+                "Failed to parse claims: username={:?}, error={}",
+                username.as_bytes(),
+                e
+            );
             Error::Other(format!("Failed to parse claims: {e}"))
         })?;
 
-        // 3️⃣ 从 Claims 解密获取 Token
-        let token: Token = match claims.get_token() {
-            Ok(token) => token,
-            Err(e) => {
-                error!(
-                    "无法解密 token: realm_id={}, key_id={}, error={}",
-                    claims.realm_id, claims.key_id, e
-                );
-                return Err(Error::Other(format!("Failed to decrypt token: {e}")));
-            }
+        // 3️⃣ Use AIdCredentialValidator to decrypt and verify the claims
+        let credential = AIdCredential {
+            encrypted_token: claims.token.clone(),
+            token_key_id: claims.key_id,
         };
 
-        // 4️⃣ 从 Token 获取真实的 PSK
-        let psk = token.psk;
+        let identity_claims = AIdCredentialValidator::check_sync(&credential, claims.realm_id)
+            .map_err(|e| {
+                error!(
+                    "Failed to decrypt or verify claims: realm_id={}, key_id={}, error={}",
+                    claims.realm_id, claims.key_id, e
+                );
+                Error::Other(format!("Failed to check credential: {e}"))
+            })?;
 
-        debug!(
-            "成功解密 token: realm_id={}, act_type={}, psk_len={}",
-            token.realm_id,
-            token.act_type,
-            psk.len()
-        );
+        let psk = identity_claims.psk;
 
         // 5️⃣ 计算认证密钥: MD5(username:realm:psk)
-        let integrity_text = format!("{username}:{server_realm}:{psk}");
-        debug!("TURN 认证完整性文本长度: {}", integrity_text.len());
+        // transform psk to hex string for MD5 calculation
+        let psk_hex = hex::encode(&psk);
+        let integrity_text = format!("{username}:{server_realm}:{psk_hex}");
 
         let digest = md5::compute(integrity_text.as_bytes());
         let result = digest.to_vec();
@@ -133,8 +137,9 @@ impl AuthHandler for Authenticator {
             .put(cache_key, result.clone());
 
         debug!(
-            "TURN 认证成功: username={}, cache_size={}/{}",
-            username,
+            "TURN authentication successful: realm_id={}, actor_id={}, cache_size={}/{}",
+            identity_claims.realm_id,
+            identity_claims.actor_id,
             Self::cache_stats().0,
             Self::cache_stats().1
         );

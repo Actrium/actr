@@ -6,11 +6,9 @@
 //! - `model.rs` - 核心 Realm 数据结构
 //! - `repository.rs` - 数据库操作
 //! - `validation.rs` - 业务规则验证
-//! - `compatibility.rs` - 向后兼容性支持
 
 // 子模块
 pub mod acl;
-pub mod compatibility;
 pub mod config;
 pub mod error;
 pub mod model;

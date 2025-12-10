@@ -313,7 +313,7 @@ mod tests {
 
         // Test create
         let mut acl = ActorAcl::new(
-            realm_row_id, // realm_id
+            realm_id, // realm_id
             "identified_client_user".to_string(),
             "identified_client_room".to_string(),
             true,
@@ -326,7 +326,7 @@ mod tests {
         let fetched_opt = ActorAcl::get(acl_id).await?;
         assert!(fetched_opt.is_some());
         let fetched = fetched_opt.unwrap();
-        assert_eq!(fetched.realm_id, realm_row_id);
+        assert_eq!(fetched.realm_id, realm_id);
         assert_eq!(fetched.from_type, "identified_client_user");
         assert_eq!(fetched.to_type, "identified_client_room");
         assert!(fetched.access);
@@ -342,17 +342,14 @@ mod tests {
         assert!(!reloaded.access);
 
         // Test get_by_realm
-        let acls_for_realm = ActorAcl::get_by_realm(realm_row_id).await?;
+        let acls_for_realm = ActorAcl::get_by_realm(realm_id).await?;
         assert_eq!(acls_for_realm.len(), 1);
         assert_eq!(acls_for_realm[0].rowid, Some(acl_id));
 
         // Test get_by_types
-        let acl_by_types_opt = ActorAcl::get_by_types(
-            realm_row_id,
-            "identified_client_user",
-            "identified_client_room",
-        )
-        .await?;
+        let acl_by_types_opt =
+            ActorAcl::get_by_types(realm_id, "identified_client_user", "identified_client_room")
+                .await?;
         assert!(acl_by_types_opt.is_some());
         let acl_by_types = acl_by_types_opt.unwrap();
         assert!(!acl_by_types.access);

@@ -23,16 +23,16 @@ use crate::storage::db::get_database;
 #[derive(Debug, Clone, Serialize, Deserialize, Default, FromRow)]
 pub struct RealmConfig {
     pub(crate) rowid: Option<u32>,
-    pub(crate) realm_id: u32, // 存储 realm.rowid
+    pub(crate) realm_rowid: i64,
     pub(crate) key: String,
     pub(crate) value: String,
 }
 
 impl RealmConfig {
-    pub fn new(realm_id: u32, key: String, value: String) -> Self {
+    pub fn new(realm_rowid: i64, key: String, value: String) -> Self {
         Self {
             rowid: None,
-            realm_id,
+            realm_rowid,
             key,
             value,
         }
@@ -45,8 +45,8 @@ impl RealmConfig {
         if self.rowid.is_none() {
             // 插入新记录
             let result =
-                sqlx::query("INSERT INTO realmconfig (realm_id, key, value) VALUES (?, ?, ?)")
-                    .bind(self.realm_id as i64)
+                sqlx::query("INSERT INTO realmconfig (realm_rowid, key, value) VALUES (?, ?, ?)")
+                    .bind(self.realm_rowid)
                     .bind(&self.key)
                     .bind(&self.value)
                     .execute(pool)
@@ -57,13 +57,15 @@ impl RealmConfig {
             Ok(new_rowid)
         } else {
             // 更新现有记录
-            sqlx::query("UPDATE realmconfig SET realm_id = ?, key = ?, value = ? WHERE rowid = ?")
-                .bind(self.realm_id as i64)
-                .bind(&self.key)
-                .bind(&self.value)
-                .bind(self.rowid)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE realmconfig SET realm_rowid = ?, key = ?, value = ? WHERE rowid = ?",
+            )
+            .bind(self.realm_rowid)
+            .bind(&self.key)
+            .bind(&self.value)
+            .bind(self.rowid)
+            .execute(pool)
+            .await?;
 
             Ok(self.rowid.unwrap())
         }
@@ -93,7 +95,7 @@ impl RealmConfig {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, RealmConfig>(
-            "SELECT rowid, realm_id, key, value FROM realmconfig WHERE rowid = ?",
+            "SELECT rowid, realm_rowid, key, value FROM realmconfig WHERE rowid = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -102,16 +104,16 @@ impl RealmConfig {
         Ok(result)
     }
 
-    pub async fn get_by_realm(realm_id: u32) -> Result<Vec<Self>, RealmError> {
+    pub async fn get_by_realm(realm_rowid: i64) -> Result<Vec<Self>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
-        let realm_id_i64 = realm_id as i64;
-        let rows =
-            sqlx::query("SELECT rowid, realm_id, key, value FROM realmconfig WHERE realm_id = ?")
-                .bind(realm_id_i64)
-                .fetch_all(pool)
-                .await?;
+        let rows = sqlx::query(
+            "SELECT rowid, realm_rowid, key, value FROM realmconfig WHERE realm_rowid = ?",
+        )
+        .bind(realm_rowid)
+        .fetch_all(pool)
+        .await?;
 
         let mut configs = Vec::new();
         for row in rows {
@@ -120,19 +122,17 @@ impl RealmConfig {
         Ok(configs)
     }
 
-    /// 注意：这里的 realm_id 是 realm.rowid
     pub async fn get_by_realm_and_key(
-        realm_id: u32,
+        realm_rowid: i64,
         key: &str,
     ) -> Result<Option<Self>, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
-        let realm_id_i64 = realm_id as i64;
         let result = sqlx::query(
-            "SELECT rowid, realm_id, key, value FROM realmconfig WHERE realm_id = ? AND key = ?",
+            "SELECT rowid, realm_rowid, key, value FROM realmconfig WHERE realm_rowid = ? AND key = ?",
         )
-        .bind(realm_id_i64)
+        .bind(realm_rowid)
         .bind(key)
         .fetch_optional(pool)
         .await?;
@@ -156,13 +156,12 @@ impl RealmConfig {
         self.value = value;
     }
 
-    pub async fn delete_by_realm(realm_id: u32) -> Result<u64, RealmError> {
+    pub async fn delete_by_realm(realm_rowid: i64) -> Result<u64, RealmError> {
         let db = get_database();
         let pool = db.get_pool();
 
-        let realm_id_i64 = realm_id as i64;
-        let result = sqlx::query("DELETE FROM realmconfig WHERE realm_id = ?")
-            .bind(realm_id_i64)
+        let result = sqlx::query("DELETE FROM realmconfig WHERE realm_rowid = ?")
+            .bind(realm_rowid)
             .execute(pool)
             .await?;
 
@@ -184,11 +183,11 @@ mod tests {
         // Create a realm first with unique name
         let realm_id = rand::random::<u32>();
         let mut realm = Realm::new(realm_id, "test_name".to_string());
-        let realm_row_id = realm.save().await?;
+        let realm_rowid = realm.save().await?;
 
         // Test create RealmConfig
         let mut config = RealmConfig::new(
-            realm_row_id,
+            realm_rowid,
             "test_key".to_string(),
             "test_value".to_string(),
         );
@@ -200,7 +199,7 @@ mod tests {
         let fetched_opt = RealmConfig::get(config_id).await?;
         assert!(fetched_opt.is_some());
         let fetched = fetched_opt.unwrap();
-        assert_eq!(fetched.realm_id, realm_row_id);
+        assert_eq!(fetched.realm_rowid, realm_rowid);
         assert_eq!(fetched.key, "test_key");
         assert_eq!(fetched.value, "test_value");
 
@@ -215,12 +214,12 @@ mod tests {
         assert_eq!(reloaded.value, "updated_value");
 
         // Test get_by_realm
-        let configs_for_realm = RealmConfig::get_by_realm(realm_row_id).await?;
+        let configs_for_realm = RealmConfig::get_by_realm(realm_rowid).await?;
         assert_eq!(configs_for_realm.len(), 1);
         assert_eq!(configs_for_realm[0].rowid, Some(config_id));
 
         // Test get_by_realm_and_key
-        let config_by_key_opt = RealmConfig::get_by_realm_and_key(realm_row_id, "test_key").await?;
+        let config_by_key_opt = RealmConfig::get_by_realm_and_key(realm_rowid, "test_key").await?;
         assert!(config_by_key_opt.is_some());
         let config_by_key = config_by_key_opt.unwrap();
         assert_eq!(config_by_key.value, "updated_value");
