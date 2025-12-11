@@ -238,17 +238,32 @@ impl WebRtcConnection {
     }
 
     /// based on PayloadType configuration DataChannel
-    fn get_data_channel_config() -> webrtc::data_channel::data_channel_init::RTCDataChannelInit {
+    fn get_data_channel_config(
+        payload_type: &PayloadType,
+    ) -> webrtc::data_channel::data_channel_init::RTCDataChannelInit {
         use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 
-        // Use negotiated DataChannel with fixed IDs based on PayloadType
-        // This allows both sides to create the same channel without on_data_channel callback
-        RTCDataChannelInit {
-            ordered: Some(true),
-            max_retransmits: None,
-            max_packet_life_time: None,
-            protocol: Some("".to_string()),
-            negotiated: None,
+        match payload_type {
+            PayloadType::StreamLatencyFirst => {
+                // partial reliable transmission (low latency priority)
+                RTCDataChannelInit {
+                    ordered: Some(false),
+                    max_retransmits: Some(3),
+                    max_packet_life_time: Some(100),
+                    protocol: Some("".to_string()),
+                    negotiated: None,
+                }
+            }
+            _ => {
+                // default reliable transmission
+                RTCDataChannelInit {
+                    ordered: Some(true),
+                    max_retransmits: None,
+                    max_packet_life_time: None,
+                    protocol: Some("".to_string()),
+                    negotiated: None,
+                }
+            }
         }
     }
 }
@@ -343,7 +358,7 @@ impl WebRtcConnection {
 
         let label = payload_type.as_str_name();
 
-        let dc_config = Self::get_data_channel_config();
+        let dc_config = Self::get_data_channel_config(&payload_type);
         let data_channel = self
             .peer_connection
             .create_data_channel(&label, Some(dc_config))

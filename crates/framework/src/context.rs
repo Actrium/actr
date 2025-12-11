@@ -33,7 +33,7 @@ use futures_util::future::BoxFuture;
 /// }
 /// ```
 #[async_trait]
-pub trait Context: Send + Sync {
+pub trait Context: Send + Sync + Clone + 'static {
     // ========== Data Access Methods ==========
 
     /// Get the current Actor's ID
