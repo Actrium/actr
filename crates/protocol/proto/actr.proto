@@ -200,6 +200,7 @@ message Ping {
 message Pong {
   required uint64 seq = 1;
   optional uint32 suggest_interval_secs = 2; // advisory
+  optional CredentialWarning credential_warning = 3; // 凭证警告（如密钥在容忍期）
 }
 
 // =========================================================================
@@ -314,4 +315,17 @@ message RoleNegotiation {
 // Signaling server assigns the offerer role to one side
 message RoleAssignment {
   required bool is_offerer = 1;
+}
+
+// =========================================================================
+// Credential Warning
+// =========================================================================
+
+// 凭证警告信息（用于通知客户端凭证状态异常）
+message CredentialWarning {
+  enum WarningType {
+    KEY_IN_TOLERANCE_PERIOD = 0;  // 密钥在容忍期内（已过期但仍可用）
+  }
+  required WarningType type = 1;
+  required string message = 2;
 }
