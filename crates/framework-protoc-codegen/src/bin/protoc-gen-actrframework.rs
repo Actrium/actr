@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use heck::ToSnakeCase;
 use prost::Message;
@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator};
+use actr_protocol::{PackageName, ServiceName};
 
 /// Proto 源类型枚举 - 简化设计，支持编译时路由
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +165,13 @@ fn generate_service_code(
 ) -> Result<File> {
     let service_name = service.name();
     let package_name = file.package();
+
+    // Validate proto package name early to surface clear errors
+    PackageName::new(package_name.to_string())
+        .map_err(|e| anyhow!("Invalid proto package name '{}': {}", package_name, e))?;
+    // Validate proto service name early
+    ServiceName::new(service_name.to_string())
+        .map_err(|e| anyhow!("Invalid proto service name '{}': {}", service_name, e))?;
 
     // Determine proto source based on proto file characteristics
     let proto_source = ProtoSource::from_proto_file(file);

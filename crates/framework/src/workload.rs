@@ -44,7 +44,7 @@ use crate::{Context, MessageDispatcher};
 ///     fn actor_type(&self) -> ActrType {
 ///         ActrType {
 ///             manufacturer: "acme".to_string(),
-///             name: "echo.EchoService".to_string(),
+///             name: "EchoService".to_string(),
 ///         }
 ///     }
 /// }
