@@ -68,6 +68,8 @@ pub struct KSState {
     pub storage: KeyStorage,
     pub nonce_storage: Arc<dyn NonceStorage + Send + Sync>,
     pub psk: String,
+    /// 宽限期（秒）
+    pub grace_period_seconds: u64,
     /// 请求计数器（用于惰性清理触发）
     request_counter: Arc<AtomicU32>,
 }
@@ -77,11 +79,13 @@ impl KSState {
         storage: KeyStorage,
         nonce_storage: N,
         psk: String,
+        grace_period_seconds: u64,
     ) -> Self {
         Self {
             storage,
             nonce_storage: Arc::new(nonce_storage),
             psk,
+            grace_period_seconds,
             request_counter: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -193,6 +197,7 @@ pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
         key_storage,
         nonce_storage,
         actrix_shared_key.to_string(),
+        service_config.grace_period_seconds,
     ))
 }
 
@@ -346,8 +351,13 @@ async fn get_secret_key_handler(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                if key_record.expires_at < now {
-                    warn!("Key {} has expired", key_id);
+
+                // 检查是否超过了过期时间 + 宽限期
+                if key_record.expires_at + app_state.grace_period_seconds < now {
+                    warn!(
+                        "Key {} has expired (grace period ended). Expires at: {}, Grace period: {}s, Now: {}",
+                        key_id, key_record.expires_at, app_state.grace_period_seconds, now
+                    );
                     let duration = start_time.elapsed().as_secs_f64();
                     KS_REQUEST_DURATION
                         .with_label_values(&["ks", "GET", "/secret", "404"])
@@ -444,6 +454,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
+            grace_period_seconds: 3600,
         };
 
         let psk = "test-psk".to_string();
@@ -481,6 +492,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
+            grace_period_seconds: 3600,
         };
 
         let nonce_storage = MemoryStorage::new();
@@ -512,6 +524,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
+            grace_period_seconds: 3600,
         };
 
         let nonce_storage = MemoryStorage::new();
@@ -538,6 +551,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
+            grace_period_seconds: 3600,
         };
 
         let nonce_storage = MemoryStorage::new();

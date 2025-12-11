@@ -10,11 +10,18 @@ use serde::{Deserialize, Serialize};
 ///
 /// Service enable/disable is controlled by the bitmask in ActrixConfig.enable.
 /// The ENABLE_KS bit (bit 4) must be set to enable this service.
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KsServiceConfig {
     /// 存储配置
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// 宽限期 (秒)
+    ///
+    /// 密钥过期后的一段时间内，仍然允许获取私钥，用于平滑过渡
+    /// 默认: 3600 (1小时)
+    #[serde(default = "default_grace_period")]
+    pub grace_period_seconds: u64,
 
     /// KEK (Key Encryption Key) - 直接配置
     ///
@@ -39,6 +46,22 @@ pub struct KsServiceConfig {
     /// 文件权限应设置为 600 (仅所有者可读写)
     #[serde(default)]
     pub kek_file: Option<String>,
+}
+
+fn default_grace_period() -> u64 {
+    3600
+}
+
+impl Default for KsServiceConfig {
+    fn default() -> Self {
+        Self {
+            storage: Default::default(),
+            grace_period_seconds: default_grace_period(),
+            kek: None,
+            kek_env: None,
+            kek_file: None,
+        }
+    }
 }
 
 impl KsServiceConfig {
@@ -87,6 +110,7 @@ mod tests {
             kek: None,
             kek_env: None,
             kek_file: None,
+            grace_period_seconds: 3600,
         };
 
         let toml = toml::to_string(&config).unwrap();
