@@ -12,7 +12,7 @@ use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, PeerToSignaling, Ping,
+    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, PeerToSignaling, Ping, Pong,
     RegisterRequest, RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse,
     ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest, UnregisterResponse,
     actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
@@ -157,6 +157,7 @@ pub trait SignalingClient: Send + Sync {
     ) -> NetworkResult<UnregisterResponse>;
 
     /// Send center skip（Registerafter stream process, using ActrToSignaling）
+    /// Returns Pong response if received, error if timeout or no response
     async fn send_heartbeat(
         &self,
         actor_id: ActrId,
@@ -164,7 +165,7 @@ pub trait SignalingClient: Send + Sync {
         availability: ServiceAvailabilityState,
         power_reserve: f32,
         mailbox_backlog: f32,
-    ) -> NetworkResult<()>;
+    ) -> NetworkResult<Pong>;
 
     /// Send RouteCandidatesRequest (requires authenticated Actor session)
     async fn send_route_candidates_request(
@@ -747,7 +748,7 @@ impl SignalingClient for WebSocketSignalingClient {
         availability: ServiceAvailabilityState,
         power_reserve: f32,
         mailbox_backlog: f32,
-    ) -> NetworkResult<()> {
+    ) -> NetworkResult<Pong> {
         let ping = Ping {
             availability: availability as i32,
             power_reserve,
@@ -762,7 +763,39 @@ impl SignalingClient for WebSocketSignalingClient {
         });
 
         let envelope = self.create_envelope(flow).await;
-        self.send_envelope(envelope).await
+        let reply_for = envelope.envelope_id.clone();
+
+        // Register waiter before sending
+        let (tx, rx) = oneshot::channel();
+        self.pending_replies
+            .lock()
+            .await
+            .insert(reply_for.clone(), tx);
+
+        if let Err(e) = self.send_envelope(envelope).await {
+            // Cleanup waiter on immediate send failure to avoid leaks.
+            self.pending_replies.lock().await.remove(&reply_for);
+            return Err(e);
+        }
+
+        // Wait for response
+        let response_envelope = rx.await.map_err(|_| {
+            NetworkError::ConnectionError(
+                "Receiver dropped while waiting for heartbeat response".to_string(),
+            )
+        })?;
+
+        // Extract Pong from response
+        if let Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) = response_envelope.flow
+        {
+            if let Some(signaling_to_actr::Payload::Pong(pong)) = server_to_actr.payload {
+                return Ok(pong);
+            }
+        }
+
+        Err(NetworkError::ConnectionError(
+            "Received response but not a Pong message".to_string(),
+        ))
     }
 
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
@@ -1086,7 +1119,7 @@ mod tests {
             _availability: ServiceAvailabilityState,
             _power_reserve: f32,
             _mailbox_backlog: f32,
-        ) -> NetworkResult<()> {
+        ) -> NetworkResult<Pong> {
             unimplemented!("not needed in tests");
         }
 

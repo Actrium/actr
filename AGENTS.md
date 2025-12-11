@@ -34,3 +34,4 @@
 - Regenerating code may fail if `src/generated` files are read-only; run `chmod -R u+w src/generated` beforehand.
 - Signaling-related examples expect the signaling server at `ws://localhost:8081/signaling/ws`; document deviations if you change endpoints.
 - **Tracing subscriber initialization**: Errors from `tracing_subscriber::registry().try_init()` are intentionally ignored (using `let _ = ...`). This is by design because `try_init()` only reports errors when the subscriber has already been initialized elsewhere (e.g., in tests or multiple initialization attempts). Silently discarding these errors is the correct behavior and prevents false alarms.
+- Credential refresh is intentionally on-demand (e.g., triggered by signaling warnings) with no background scheduling; do not reintroduce periodic refresh loops or automatic retries unless explicitly requested.

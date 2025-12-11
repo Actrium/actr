@@ -13,6 +13,7 @@ use actr_protocol::{
 };
 use futures_util::FutureExt;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
@@ -21,26 +22,12 @@ use tracing::Instrument as _;
 use crate::wire::webrtc::SignalingClient;
 // Use extension traits from actr-protocol
 use actr_protocol::{ActrIdExt, ActrTypeExt};
+// Use heartbeat functions
+use crate::lifecycle::heartbeat::heartbeat_task;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Typical mailbox capacity for backlog ratio calculation
-/// A typical_capacity of 1000 means 100 messages = 10% backlog
-const TYPICAL_CAPACITY: f32 = 1000.0;
-
-/// Credential refresh buffer time (refresh before expiration)
-/// Refresh credential 5 minutes before it expires
-const REFRESH_BUFFER_SECS: i64 = 5 * 60;
-
-/// Credential refresh fallback interval when no expiration time is provided
-/// Refresh credential every hour as fallback
-const CREDENTIAL_REFRESH_FALLBACK_INTERVAL_SECS: u64 = 3600;
-
-/// Credential refresh retry delay after error
-/// Retry credential refresh after 1 minute on error
-const CREDENTIAL_REFRESH_RETRY_DELAY_SECS: u64 = 60;
 
 /// ActrNode - ActrSystem + Workload (1:1 composition)
 ///
@@ -129,7 +116,11 @@ impl CredentialState {
         self.inner.read().await.expires_at
     }
 
-    async fn update(&self, credential: AIdCredential, expires_at: Option<prost_types::Timestamp>) {
+    pub(crate) async fn update(
+        &self,
+        credential: AIdCredential,
+        expires_at: Option<prost_types::Timestamp>,
+    ) {
         let mut guard = self.inner.write().await;
         guard.credential = credential;
         guard.expires_at = expires_at;
@@ -832,80 +823,19 @@ impl<W: Workload> ActrNode<W> {
                     // Use interval from registration response, default to 30s
                     let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
                     let heartbeat_interval = if heartbeat_interval_secs > 0 {
-                        std::time::Duration::from_secs(heartbeat_interval_secs as u64)
+                        Duration::from_secs(heartbeat_interval_secs as u64)
                     } else {
-                        std::time::Duration::from_secs(30)
+                        Duration::from_secs(30)
                     };
 
-                    let heartbeat_handle = tokio::spawn(async move {
-                        let mut interval = tokio::time::interval(heartbeat_interval);
-                        // Skip the first tick (fires immediately)
-                        interval.tick().await;
-
-                        loop {
-                            tokio::select! {
-                                _ = shutdown.cancelled() => {
-                                    tracing::info!("💓 Heartbeat task received shutdown signal");
-                                    break;
-                                }
-                                _ = interval.tick() => {
-                                    // Get current credential from shared state
-                                    let current_credential = credential_state_for_heartbeat.credential().await;
-
-                                    // Get real power reserve from pwrzv (0.0 to 1.0)
-                                    let power_reserve = pwrzv::get_power_reserve_level_direct()
-                                        .await
-                                        .unwrap_or(1.0); // Default to full capacity on error
-
-                                    // Get mailbox backlog from mailbox stats
-                                    // Calculate backlog ratio: (queued + inflight) / typical_capacity
-                                    let mailbox_backlog = match mailbox_for_heartbeat.status().await {
-                                        Ok(stats) => {
-                                            let total_messages = (stats.queued_messages + stats.inflight_messages) as f32;
-                                            (total_messages / TYPICAL_CAPACITY).min(1.0)
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("⚠️ Failed to get mailbox stats: {}", e);
-                                            0.0
-                                        }
-                                    };
-
-                                    // Determine availability based on power reserve and mailbox backlog
-                                    let availability = if power_reserve > 0.8 && mailbox_backlog < 0.5 {
-                                        actr_protocol::ServiceAvailabilityState::Full
-                                    } else if power_reserve > 0.5 && mailbox_backlog < 0.8 {
-                                        actr_protocol::ServiceAvailabilityState::Degraded
-                                    } else if power_reserve > 0.2 && mailbox_backlog < 0.95 {
-                                        actr_protocol::ServiceAvailabilityState::Overloaded
-                                    } else {
-                                        actr_protocol::ServiceAvailabilityState::Unavailable
-                                    };
-
-                                    if let Err(e) = client.send_heartbeat(
-                                        actor_id_for_heartbeat.clone(),
-                                        current_credential,
-                                        availability,
-                                        power_reserve,
-                                        mailbox_backlog,
-                                    ).await {
-                                        tracing::warn!(
-                                            "⚠️ Failed to send heartbeat: {}",
-                                            e
-                                        );
-                                    } else {
-                                        tracing::debug!(
-                                            "💓 Heartbeat sent for Actor {} (power_reserve={:.2}, mailbox_backlog={:.2}, availability={:?})",
-                                            actor_id_for_heartbeat.serial_number,
-                                            power_reserve,
-                                            mailbox_backlog,
-                                            availability
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        tracing::info!("✅ Heartbeat task terminated gracefully");
-                    });
+                    let heartbeat_handle = tokio::spawn(heartbeat_task(
+                        shutdown,
+                        client,
+                        actor_id_for_heartbeat,
+                        credential_state_for_heartbeat,
+                        mailbox_for_heartbeat,
+                        heartbeat_interval,
+                    ));
 
                     task_handles.push(heartbeat_handle);
                 }
@@ -913,28 +843,6 @@ impl<W: Workload> ActrNode<W> {
                     "✅ Heartbeat task started (interval: {}s)",
                     register_ok.signaling_heartbeat_interval_secs
                 );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8.5. Spawn credential refresh task
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                {
-                    let shutdown = self.shutdown_token.clone();
-                    let client = self.signaling_client.clone();
-                    let actor_id_for_refresh = actor_id.clone();
-                    let credential_state_for_refresh = credential_state.clone();
-
-                    let refresh_handle = tokio::spawn(async move {
-                        credential_refresh_task(
-                            shutdown,
-                            client,
-                            actor_id_for_refresh,
-                            credential_state_for_refresh,
-                        )
-                        .await;
-                    });
-                    task_handles.push(refresh_handle);
-                }
-                tracing::info!("✅ Credential refresh task started");
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
@@ -1595,124 +1503,6 @@ impl<W: Workload> ActrNode<W> {
         tracing::info!("✅ ActrRef created (Shell → Workload communication handle)");
 
         Ok(actr_ref)
-    }
-}
-
-/// Spawns a background task to periodically refresh the Actor's credential,
-/// ensuring it is updated before expiration. The refresh interval is determined
-/// by the credential's expiration timestamp, with the refresh scheduled
-/// 5 minutes (300 seconds) before expiry.
-async fn credential_refresh_task(
-    shutdown: CancellationToken,
-    client: Arc<dyn SignalingClient>,
-    actor_id: ActrId,
-    credential_state: CredentialState,
-) {
-    loop {
-        // Calculate next refresh time
-        let next_refresh = {
-            let expires_at = credential_state.expires_at().await;
-            if let Some(expires_at) = expires_at {
-                let refresh_secs = expires_at.seconds - REFRESH_BUFFER_SECS;
-                let now_secs = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-
-                if refresh_secs > now_secs {
-                    // Schedule refresh before expiration
-                    std::time::Duration::from_secs((refresh_secs - now_secs) as u64)
-                } else {
-                    // Already past refresh time, refresh immediately
-                    std::time::Duration::from_secs(0)
-                }
-            } else {
-                // No expiration time, refresh every hour as fallback
-                std::time::Duration::from_secs(CREDENTIAL_REFRESH_FALLBACK_INTERVAL_SECS)
-            }
-        };
-
-        // Wait until refresh time or shutdown
-        tokio::select! {
-            _ = shutdown.cancelled() => {
-                tracing::info!("🛑 Credential refresh task terminated by shutdown");
-                break;
-            }
-            _ = tokio::time::sleep(next_refresh) => {
-                // Time to refresh
-            }
-        }
-
-        // Check if shutdown was requested
-        if shutdown.is_cancelled() {
-            tracing::info!("🛑 Credential refresh task terminated by shutdown");
-            break;
-        }
-
-        tracing::info!(
-            "🔑 Refreshing credential for Actor {}",
-            actor_id.to_string_repr()
-        );
-
-        match client
-            .send_credential_update_request(actor_id.clone(), credential_state.credential().await)
-            .await
-        {
-            Ok(register_response) => {
-                match register_response.result {
-                    Some(register_response::Result::Success(register_ok)) => {
-                        let new_credential = register_ok.credential;
-                        let new_expires_at = register_ok.credential_expires_at;
-
-                        // Update shared state
-                        credential_state
-                            .update(new_credential.clone(), new_expires_at)
-                            .await;
-
-                        tracing::info!(
-                            "✅ Credential refreshed successfully for Actor {} (new key_id: {})",
-                            actor_id.serial_number,
-                            new_credential.token_key_id
-                        );
-
-                        if let Some(expires_at) = &new_expires_at {
-                            tracing::debug!(
-                                "⏰ New credential expires at: {}s",
-                                expires_at.seconds
-                            );
-                        }
-                    }
-                    Some(register_response::Result::Error(err)) => {
-                        tracing::error!(
-                            "❌ Credential refresh failed: code={}, message={}",
-                            err.code,
-                            err.message
-                        );
-                        // Retry after 1 minute on error
-                        tokio::time::sleep(std::time::Duration::from_secs(
-                            CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
-                        ))
-                        .await;
-                    }
-                    None => {
-                        tracing::error!("❌ Credential refresh response missing result");
-                        // Retry after 1 minute on error
-                        tokio::time::sleep(std::time::Duration::from_secs(
-                            CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
-                        ))
-                        .await;
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("⚠️ Failed to send credential update request: {}", e);
-                // Retry after 1 minute on error
-                tokio::time::sleep(std::time::Duration::from_secs(
-                    CREDENTIAL_REFRESH_RETRY_DELAY_SECS,
-                ))
-                .await;
-            }
-        }
     }
 }
 
