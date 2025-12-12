@@ -2267,7 +2267,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // 生成密钥对
-    let (key_id, public_key, expires_at) = client.generate_key().await?;
+    let (key_id, public_key, expires_at, tolerance_seconds) = client.generate_key().await?;
     println!("Generated key_id: {}", key_id);
     println!("Public key: {:?}", public_key);
 

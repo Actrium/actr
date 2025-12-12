@@ -69,6 +69,7 @@ impl KsGrpcService {
             storage,
             nonce_storage,
             self.config.actrix_shared_key.clone(),
+            ks_service_config.tolerance_seconds,
         );
 
         info!("KS gRPC service created successfully");

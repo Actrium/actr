@@ -17,6 +17,7 @@ pub struct KsGrpcService {
     pub storage: KeyStorage,
     pub nonce_storage: Arc<dyn NonceStorage + Send + Sync>,
     pub psk: String,
+    pub tolerance_seconds: u64,
 }
 
 impl KsGrpcService {
@@ -25,11 +26,13 @@ impl KsGrpcService {
         storage: KeyStorage,
         nonce_storage: N,
         psk: String,
+        tolerance_seconds: u64,
     ) -> Self {
         Self {
             storage,
             nonce_storage: Arc::new(nonce_storage),
             psk,
+            tolerance_seconds,
         }
     }
 
@@ -104,6 +107,7 @@ impl KeyServer for KsGrpcService {
             key_id: key_pair.key_id,
             public_key: key_pair.public_key,
             expires_at: key_record.expires_at,
+            tolerance_seconds: self.tolerance_seconds,
         };
 
         Ok(Response::new(response))
@@ -134,8 +138,7 @@ impl KeyServer for KsGrpcService {
             .ok_or_else(|| Status::not_found(format!("Key not found: {key_id}")))?;
 
         // 检查密钥是否过期，并计算是否在容忍期
-        // TODO: 容忍期应该从配置中获取，这里暂时使用默认值 3600 秒
-        const DEFAULT_TOLERANCE_SECONDS: u64 = 3600;
+        let tolerance_seconds = self.tolerance_seconds;
 
         let in_tolerance_period = if key_record.expires_at > 0 {
             let now = std::time::SystemTime::now()
@@ -144,11 +147,11 @@ impl KeyServer for KsGrpcService {
                 .as_secs();
 
             // 检查是否在容忍期内：已过期但未超过容忍期
-            let is_in_tolerance = key_record.expires_at < now
-                && key_record.expires_at + DEFAULT_TOLERANCE_SECONDS >= now;
+            let is_in_tolerance =
+                key_record.expires_at < now && key_record.expires_at + tolerance_seconds >= now;
 
             // 检查是否超过了过期时间 + 容忍期
-            if key_record.expires_at + DEFAULT_TOLERANCE_SECONDS < now {
+            if key_record.expires_at + tolerance_seconds < now {
                 warn!("Key {} has expired beyond tolerance period", key_id);
                 return Err(Status::not_found(format!("Key {key_id} has expired")));
             }
@@ -218,7 +221,8 @@ pub fn create_grpc_service<N: NonceStorage + Send + Sync + 'static>(
     storage: KeyStorage,
     nonce_storage: N,
     psk: String,
+    tolerance_seconds: u64,
 ) -> KeyServerServer<KsGrpcService> {
-    let service = KsGrpcService::new(storage, nonce_storage, psk);
+    let service = KsGrpcService::new(storage, nonce_storage, psk, tolerance_seconds);
     KeyServerServer::new(service)
 }

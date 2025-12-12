@@ -30,6 +30,8 @@ pub struct GenerateKeyResponse {
     pub public_key: String,
     /// 过期时间（Unix 时间戳）
     pub expires_at: u64,
+    /// 容忍时间（秒）
+    pub tolerance_seconds: u64,
 }
 
 /// 获取私钥请求

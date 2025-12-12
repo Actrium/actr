@@ -133,7 +133,7 @@ impl GrpcClient {
     }
 
     /// 从 KS 服务生成新的密钥对
-    pub async fn generate_key(&mut self) -> Result<(u32, PublicKey, u64), KsError> {
+    pub async fn generate_key(&mut self) -> Result<(u32, PublicKey, u64, u64), KsError> {
         let request_data = "generate_key";
 
         // 创建 nonce credential
@@ -173,10 +173,15 @@ impl GrpcClient {
             })?;
 
             info!(
-                "Successfully generated key pair with key_id {} via gRPC, expires_at: {}",
-                resp.key_id, resp.expires_at
+                "Successfully generated key pair with key_id {} via gRPC, expires_at: {}, tolerance_seconds: {}",
+                resp.key_id, resp.expires_at, resp.tolerance_seconds
             );
-            Ok((resp.key_id, public_key, resp.expires_at))
+            Ok((
+                resp.key_id,
+                public_key,
+                resp.expires_at,
+                resp.tolerance_seconds,
+            ))
         } else {
             Err(KsError::Crypto(format!(
                 "Unsupported public key length: {}",

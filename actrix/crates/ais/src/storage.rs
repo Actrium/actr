@@ -63,15 +63,6 @@ use tracing::{debug, info, warn};
 /// 在密钥过期前此时间触发刷新，避免在过期瞬间出现可用性问题
 const KEY_REFRESH_ADVANCE_SECS: u64 = 600; // 10 分钟
 
-/// 密钥过期容忍时间（秒）
-///
-/// 密钥过期后的宽限期，在此期间旧密钥仍可使用。
-/// 主要用于应对：
-/// - 服务器时钟偏差
-/// - KS 服务短暂不可用
-/// - 密钥刷新失败后的回退
-const KEY_EXPIRY_TOLERANCE_SECS: u64 = 24 * 3600; // 24 小时
-
 /// 密钥记录
 #[derive(Debug, Clone)]
 pub struct KeyRecord {
@@ -83,6 +74,8 @@ pub struct KeyRecord {
     pub fetched_at: u64,
     /// 过期时间（Unix timestamp）
     pub expires_at: u64,
+    /// 容忍时间（秒）
+    pub tolerance_seconds: u64,
 }
 
 /// 密钥存储（使用 sqlx 连接池）
@@ -122,7 +115,8 @@ impl KeyStorage {
                 key_id INTEGER NOT NULL,
                 public_key TEXT NOT NULL,
                 fetched_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                expires_at INTEGER NOT NULL,
+                tolerance_seconds INTEGER NOT NULL
             )",
         )
         .execute(&pool)
@@ -135,19 +129,22 @@ impl KeyStorage {
 
     /// 获取当前密钥
     pub async fn get_current_key(&self) -> Result<Option<KeyRecord>> {
-        let result = sqlx::query_as::<_, (i64, String, i64, i64)>(
-            "SELECT key_id, public_key, fetched_at, expires_at FROM current_key WHERE id = 1",
+        let row = sqlx::query_as::<_, (i64, String, i64, i64, i64)>(
+            "SELECT key_id, public_key, fetched_at, expires_at, tolerance_seconds FROM current_key WHERE id = 1",
         )
         .fetch_optional(&self.pool)
         .await
         .context("Failed to query current key")?;
 
-        let record = result.map(|(key_id, public_key, fetched_at, expires_at)| KeyRecord {
-            key_id: key_id as u32,
-            public_key,
-            fetched_at: fetched_at as u64,
-            expires_at: expires_at as u64,
-        });
+        let record = row.map(
+            |(key_id, public_key, fetched_at, expires_at, tolerance_seconds)| KeyRecord {
+                key_id: key_id as u32,
+                public_key,
+                fetched_at: fetched_at as u64,
+                expires_at: expires_at as u64,
+                tolerance_seconds: tolerance_seconds as u64,
+            },
+        );
 
         if let Some(ref key) = record {
             debug!(
@@ -162,13 +159,14 @@ impl KeyStorage {
     /// 更新当前密钥
     pub async fn update_current_key(&self, record: &KeyRecord) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO current_key (id, key_id, public_key, fetched_at, expires_at)
-             VALUES (1, ?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO current_key (id, key_id, public_key, fetched_at, expires_at, tolerance_seconds)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)",
         )
         .bind(record.key_id as i64)
         .bind(&record.public_key)
         .bind(record.fetched_at as i64)
         .bind(record.expires_at as i64)
+        .bind(record.tolerance_seconds as i64)
         .execute(&self.pool)
         .await
         .context("Failed to update current key")?;
@@ -234,13 +232,13 @@ impl KeyStorage {
             .unwrap_or_default()
             .as_secs();
 
-        // 检查是否超出容忍时间
-        let expired_beyond = now > key.expires_at + KEY_EXPIRY_TOLERANCE_SECS;
+        // 检查是否超出容忍时间（使用从 KS 获取到的容忍时间）
+        let expired_beyond = now > key.expires_at + key.tolerance_seconds;
 
         if expired_beyond {
             warn!(
                 "Key expired beyond tolerance: now={}, expires_at={}, tolerance={}s",
-                now, key.expires_at, KEY_EXPIRY_TOLERANCE_SECS
+                now, key.expires_at, key.tolerance_seconds
             );
         }
 
@@ -282,6 +280,7 @@ mod tests {
             public_key: "test_public_key".to_string(),
             fetched_at: now,
             expires_at: now + 3600,
+            tolerance_seconds: 24 * 3600,
         };
 
         storage.update_current_key(&record).await.unwrap();
@@ -290,6 +289,7 @@ mod tests {
         let retrieved = storage.get_current_key().await.unwrap().unwrap();
         assert_eq!(retrieved.key_id, 123);
         assert_eq!(retrieved.public_key, "test_public_key");
+        assert_eq!(retrieved.tolerance_seconds, 24 * 3600);
         assert!(!storage.should_refresh().await.unwrap());
         assert!(!storage.is_expired_beyond_tolerance().await.unwrap());
     }
@@ -310,6 +310,7 @@ mod tests {
             public_key: "test_key".to_string(),
             fetched_at: now,
             expires_at: now + 300, // 5 分钟
+            tolerance_seconds: 24 * 3600,
         };
 
         storage.update_current_key(&record).await.unwrap();
@@ -334,6 +335,7 @@ mod tests {
             public_key: "expired_key".to_string(),
             fetched_at: now - 30 * 3600,
             expires_at: now - 25 * 3600,
+            tolerance_seconds: 24 * 3600,
         };
 
         storage.update_current_key(&record).await.unwrap();

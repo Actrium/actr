@@ -594,6 +594,14 @@ let signature = HMAC-SHA256(psk, nonce + timestamp + payload);
   "expires_at": 1730614800
 }
 ```
+```json
+{
+  "key_id": 123,
+  "public_key": "BHxN7Q8vK9m2...",
+  "expires_at": 1730614800,
+  "tolerance_seconds": 3600
+}
+```
 
 **响应结构**:
 ```rust
@@ -602,6 +610,7 @@ pub struct GenerateKeyResponse {
     pub key_id: u32,
     pub public_key: String,      // Base64 编码
     pub expires_at: u64,         // Unix 时间戳
+  pub tolerance_seconds: u64,  // 容忍期（秒）
 }
 ```
 

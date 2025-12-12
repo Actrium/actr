@@ -36,6 +36,8 @@ message GenerateKeyResponse {
 
   // 密钥过期时间（Unix 时间戳，秒）
   required uint64 expires_at = 3;
+  // 容忍期（秒）
+  required uint64 tolerance_seconds = 4;
 }
 
 // ============================================================================

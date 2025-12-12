@@ -23,7 +23,7 @@ impl KsClientWrapper {
     }
 
     /// 生成密钥对
-    pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64), ks::KsError> {
+    pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64, u64), ks::KsError> {
         let mut client = self.inner.write().await;
         client.generate_key().await
     }

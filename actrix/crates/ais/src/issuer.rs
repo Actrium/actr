@@ -124,6 +124,8 @@ struct KeyCache {
     public_key: PublicKey,
     #[allow(dead_code)]
     expires_at: u64,
+    #[allow(dead_code)]
+    tolerance_seconds: u64,
 }
 
 /// AId Token 签发器 - 专注于签发新的 Actor Identity Token
@@ -206,6 +208,7 @@ impl AIdIssuer {
             key_id: record.key_id,
             public_key,
             expires_at: record.expires_at,
+            tolerance_seconds: record.tolerance_seconds,
         };
 
         // 同步加载，阻塞等待
@@ -370,7 +373,7 @@ impl AIdIssuer {
         key_cache: &RwLock<Option<KeyCache>>,
         _config: &IssuerConfig,
     ) -> Result<(), AidError> {
-        let (key_id, public_key, expires_at) = ks_client
+        let (key_id, public_key, expires_at, tolerance_seconds) = ks_client
             .generate_key()
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS unavailable: {e}")))?;
@@ -385,6 +388,7 @@ impl AIdIssuer {
             key_id,
             public_key,
             expires_at,
+            tolerance_seconds,
         };
 
         *key_cache.write().await = Some(cache);
@@ -396,6 +400,7 @@ impl AIdIssuer {
             public_key: public_key_str,
             fetched_at: now,
             expires_at,
+            tolerance_seconds,
         };
 
         key_storage

@@ -277,6 +277,7 @@ async fn generate_key_handler(
         key_id: key_pair.key_id,
         public_key: key_pair.public_key,
         expires_at: key_record.expires_at,
+        tolerance_seconds: app_state.tolerance_seconds,
     };
 
     // 记录请求指标（成功）
@@ -633,6 +634,7 @@ mod tests {
 
         assert_eq!(response_json.key_id, 1);
         assert!(!response_json.public_key.is_empty());
+        assert_eq!(response_json.tolerance_seconds, 3600);
     }
 
     #[tokio::test]
