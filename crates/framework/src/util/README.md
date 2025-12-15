@@ -131,21 +131,14 @@ impl MyService {
 impl Workload for MyService {
     type Dispatcher = MyServiceDispatcher;
 
-    fn actor_type(&self) -> ActrType {
-        ActrType {
-            manufacturer: "my-company".to_string(),
-            name: "my-service".to_string(),
-        }
-    }
-
     async fn on_start<C: Context>(&mut self, ctx: &C) -> ActorResult<()> {
         // 获取坐标
         let location = self.get_my_location();
-
+        let actor_type = ctx.self_id().r#type;
         // 注册到信令服务（带坐标）
         let register_req = RegisterRequest {
             realm: Realm { realm_id: 1 },
-            actr_type: self.actor_type(),
+            actr_type,
             geo_location: location,
             // ... 其他字段
         };

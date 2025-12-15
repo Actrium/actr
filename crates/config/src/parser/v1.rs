@@ -7,7 +7,7 @@ use crate::config::{
 
 use crate::error::{ConfigError, Result};
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
-use actr_protocol::{Acl, ActrType, Realm};
+use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -99,9 +99,25 @@ impl ParserV1 {
     }
 
     fn parse_package(&self, raw: &RawPackageConfig) -> Result<PackageInfo> {
+        // Validate manufacturer name
+        Name::new(raw.actr_type.manufacturer.clone()).map_err(|e| {
+            ConfigError::InvalidActrType(format!(
+                "Invalid manufacturer name '{}': {}",
+                raw.actr_type.manufacturer, e
+            ))
+        })?;
+
+        // Validate actor type name
+        Name::new(raw.actr_type.name.clone()).map_err(|e| {
+            ConfigError::InvalidActrType(format!(
+                "Invalid actor type name '{}': {}",
+                raw.actr_type.name, e
+            ))
+        })?;
+
         let actr_type = ActrType {
-            manufacturer: raw.manufacturer.clone(),
-            name: raw.type_name.clone(),
+            manufacturer: raw.actr_type.manufacturer.clone(),
+            name: raw.actr_type.name.clone(),
         };
 
         Ok(PackageInfo {
@@ -173,11 +189,34 @@ impl ParserV1 {
         // 1. "service-name" -> manufacturer = "", name = "service-name"
         // 2. "manufacturer:service-name"
         if let Some((manufacturer, name)) = s.split_once(':') {
+            // Validate manufacturer name (allow empty string for backward compatibility)
+            if !manufacturer.is_empty() {
+                Name::new(manufacturer.to_string()).map_err(|e| {
+                    ConfigError::InvalidActrType(format!(
+                        "Invalid manufacturer name '{}' in '{}': {}",
+                        manufacturer, s, e
+                    ))
+                })?;
+            }
+
+            // Validate actor type name
+            Name::new(name.to_string()).map_err(|e| {
+                ConfigError::InvalidActrType(format!(
+                    "Invalid actor type name '{}' in '{}': {}",
+                    name, s, e
+                ))
+            })?;
+
             Ok(ActrType {
                 manufacturer: manufacturer.to_string(),
                 name: name.to_string(),
             })
         } else {
+            // Validate actor type name (when used without manufacturer)
+            Name::new(s.to_string()).map_err(|e| {
+                ConfigError::InvalidActrType(format!("Invalid actor type name '{}': {}", s, e))
+            })?;
+
             Ok(ActrType {
                 manufacturer: String::new(),
                 name: s.to_string(),
@@ -288,6 +327,16 @@ impl ParserV1 {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
+
+                            // Validate manufacturer name (allow empty string)
+                            if !manufacturer.is_empty() {
+                                Name::new(manufacturer.clone())
+                                    .map_err(|e| ConfigError::InvalidAcl(format!(
+                                        "ACL rule {} principal {} actr_type has invalid manufacturer '{}': {}",
+                                        idx, p_idx, manufacturer, e
+                                    )))?;
+                            }
+
                             let name = type_table
                                 .get("name")
                                 .and_then(|v| v.as_str())
@@ -298,6 +347,15 @@ impl ParserV1 {
                                     ))
                                 })?
                                 .to_string();
+
+                            // Validate actor type name
+                            Name::new(name.clone()).map_err(|e| {
+                                ConfigError::InvalidAcl(format!(
+                                    "ACL rule {} principal {} actr_type has invalid name '{}': {}",
+                                    idx, p_idx, name, e
+                                ))
+                            })?;
+
                             Some(ActrType { manufacturer, name })
                         } else {
                             return Err(ConfigError::InvalidAcl(format!(
@@ -505,8 +563,10 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "test-service"
+name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -550,8 +610,10 @@ edition = 1
 
 [package]
 name = "test"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "test"
+name = "test"
 
 [dependencies]
 shared = { actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
@@ -575,5 +637,73 @@ realm = 1001
         assert_eq!(dep.realm.realm_id, 9999);
         assert_eq!(dep.actr_type.name, "logging-service");
         assert!(dep.is_cross_realm(&config.realm));
+    }
+
+    #[test]
+    fn test_validate_actr_type_name() {
+        // Test invalid manufacturer name (starts with number)
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+
+[package.actr_type]
+manufacturer = "1acme"
+name = "test"
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("Actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse(raw);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidActrType(_)
+        ));
+    }
+
+    #[test]
+    fn test_validate_actr_type_name_invalid() {
+        // Test invalid actor type name (ends with hyphen)
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "test-"
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("Actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse(raw);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigError::InvalidActrType(_)
+        ));
     }
 }

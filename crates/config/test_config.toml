@@ -6,9 +6,11 @@ exports = [
 
 [package]
 name = "test-service"
-manufacturer = "acme"
-type = "test-service"
 description = "Test configuration"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "test-service"
 
 [dependencies]
 user-service = {}

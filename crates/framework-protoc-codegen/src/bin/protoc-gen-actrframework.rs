@@ -161,7 +161,7 @@ fn generate_service_code(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
     _message_types: &HashMap<String, DescriptorProto>,
-    params: &HashMap<String, String>,
+    _params: &HashMap<String, String>,
 ) -> Result<File> {
     let service_name = service.name();
     let package_name = file.package();
@@ -182,14 +182,7 @@ fn generate_service_code(
         ProtoSource::Remote => GeneratorRole::ClientSide,
     };
 
-    // Get manufacturer from parameters, default to "acme" for backward compatibility
-    let manufacturer = params
-        .get("manufacturer")
-        .cloned()
-        .unwrap_or_else(|| "acme".to_string());
-
-    let mut generator = ModernGenerator::new(package_name, service_name, role);
-    generator.set_manufacturer(manufacturer);
+    let generator = ModernGenerator::new(package_name, service_name, role);
     let final_code = generator.generate(&service.method)?;
 
     // 根据角色生成不同的文件后缀

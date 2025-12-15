@@ -80,7 +80,7 @@
 //! ┌─────────────────────────────────────────────────────────┐
 //! │ 4. Workload trait (this crate)                          │
 //! │    - Associates Dispatcher type                         │
-//! │    - Provides actor_type(), on_start(), on_stop()       │
+//! │    - Provides on_start(), on_stop() hooks               │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!

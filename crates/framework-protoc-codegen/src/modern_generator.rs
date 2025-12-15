@@ -26,7 +26,6 @@ pub struct ModernGenerator {
     package_name: String,
     service_name: String,
     role: GeneratorRole,
-    manufacturer: String,
 }
 
 impl ModernGenerator {
@@ -35,13 +34,7 @@ impl ModernGenerator {
             package_name: package_name.to_string(),
             service_name: service_name.to_string(),
             role,
-            manufacturer: "acme".to_string(), // Default for backward compatibility
         }
-    }
-
-    /// Set manufacturer (read from Actr.toml via --actrframework_opt)
-    pub fn set_manufacturer(&mut self, manufacturer: String) {
-        self.manufacturer = manufacturer;
     }
 
     /// 生成完整代码
@@ -106,7 +99,7 @@ use bytes::Bytes;
 use prost::Message as ProstMessage;
 
 use actr_framework::{{Context, MessageDispatcher, Workload}};
-use actr_protocol::{{ActorResult, ActrType, RpcRequest, RpcEnvelope, PayloadType}};
+use actr_protocol::{{ActorResult, RpcRequest, RpcEnvelope, PayloadType}};
 
 // 导入 protobuf 消息类型（由 prost 生成）
 use super::{proto_module}::*;
@@ -323,21 +316,6 @@ impl RpcRequest for {input_type} {{
         Ok(format!("{workload_struct}\n{router_struct}\n{router_impl}"))
     }
 
-    /// 验证并返回 actor type name
-    /// 如果不符合，返回错误而不是修改字符串
-    fn validate_actor_type_name(&self) -> Result<String> {
-        // 使用 Name::new 进行验证
-        actr_protocol::name::Name::new(self.service_name.clone())
-            .map_err(|e| anyhow::anyhow!(
-                "Invalid actor type name '{}': {}. Service name does not meet Name validation rules. \
-                Name must: start with an alphabetic character, end with an alphanumeric character, \
-                contain only alphanumeric characters, hyphens, and underscores, and be no longer than 32 characters.",
-                self.service_name, e
-            ))?;
-
-        Ok(self.service_name.clone())
-    }
-
     /// 生成 Workload 实现
     fn generate_workload_blanket_impl(&self, _methods: &[MethodDescriptorProto]) -> Result<String> {
         let router_name = format!("{}Dispatcher", self.service_name);
@@ -347,23 +325,12 @@ impl RpcRequest for {input_type} {{
         let handler_trait = format!("{}Handler", self.service_name);
         let handler_trait_ident = format_ident!("{}", handler_trait);
 
-        // 从 package_name 和 service_name 构造 ActrType
-        let actor_type_str = self.validate_actor_type_name()?;
-        let manufacturer = &self.manufacturer;
-
         Ok(quote! {
             /// Workload trait 实现
             ///
             /// 为包装类型实现 Workload，使其可被 ActorSystem 识别和调度
             impl<T: #handler_trait_ident> Workload for #workload_ident<T> {
                 type Dispatcher = #router_ident<T>;
-
-                fn actor_type(&self) -> ActrType {
-                    ActrType {
-                        manufacturer: #manufacturer.to_string(),
-                        name: #actor_type_str.to_string(),
-                    }
-                }
             }
         }
         .to_string())
@@ -618,9 +585,10 @@ mod tests {
 
         // 验证导入了 PayloadType
         assert!(imports.contains("PayloadType"));
-        assert!(imports.contains(
-            "use actr_protocol::{ActorResult, ActrType, RpcRequest, RpcEnvelope, PayloadType}"
-        ));
+        assert!(
+            imports
+                .contains("use actr_protocol::{ActorResult, RpcRequest, RpcEnvelope, PayloadType}")
+        );
     }
 
     #[test]
@@ -666,43 +634,5 @@ mod tests {
         assert!(code.contains("pub struct TestServiceDispatcher"));
         // 验证生成了 payload_type
         assert!(code.contains("fn payload_type() -> PayloadType"));
-    }
-
-    #[test]
-    fn test_validate_actor_type_name() {
-        // 测试有效的 service_name - 应该成功
-        let generator = ModernGenerator::new(
-            "com.example.service",
-            "EchoService",
-            GeneratorRole::ServerSide,
-        );
-        let result = generator.validate_actor_type_name();
-        // EchoService 符合 Name 规范（以字母开头，只包含字母数字）
-        assert!(result.is_ok(), "Valid service name should pass validation");
-        assert_eq!(result.unwrap(), "EchoService");
-
-        // 测试包含下划线的 service_name - 应该成功
-        let generator2 = ModernGenerator::new("test", "My_Service", GeneratorRole::ServerSide);
-        let result2 = generator2.validate_actor_type_name();
-        assert!(
-            result2.is_ok(),
-            "Service name with underscore should pass validation"
-        );
-
-        // 测试无效的 service_name（包含点号）- 应该失败
-        let generator3 = ModernGenerator::new("test", "My.Service", GeneratorRole::ServerSide);
-        let result3 = generator3.validate_actor_type_name();
-        assert!(
-            result3.is_err(),
-            "Service name with dot should fail validation"
-        );
-
-        // 测试无效的 service_name（以数字开头）- 应该失败
-        let generator4 = ModernGenerator::new("test", "1Service", GeneratorRole::ServerSide);
-        let result4 = generator4.validate_actor_type_name();
-        assert!(
-            result4.is_err(),
-            "Service name starting with digit should fail validation"
-        );
     }
 }

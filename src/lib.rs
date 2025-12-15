@@ -15,13 +15,6 @@
 //! impl Workload for MyActor {
 //!     type Dispatcher = MyActorDispatcher;
 //!
-//!     fn actor_type(&self) -> ActrType {
-//!         ActrType {
-//!             manufacturer: "acme".to_string(),
-//!             name: "my.service.MyService".to_string(),
-//!         }
-//!     }
-//!
 //!     async fn on_start<C: Context>(&self, ctx: &C) -> ActorResult<()> {
 //!         // Use logging as needed
 //!         Ok(())

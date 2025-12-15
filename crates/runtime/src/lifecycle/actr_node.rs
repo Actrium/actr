@@ -603,8 +603,8 @@ impl<W: Workload> ActrNode<W> {
         })?;
         tracing::info!("✅ Connected to signaling server");
 
-        // Get ActrType
-        let actr_type = self.workload.actor_type();
+        // Get ActrType from configuration
+        let actr_type = self.config.actr_type().clone();
         tracing::info!("📋 Actor type: {}", actr_type.to_string_repr());
 
         // Calculate ServiceSpec from config exports

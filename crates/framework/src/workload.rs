@@ -1,6 +1,6 @@
 //! Workload trait - Executable actor workload
 
-use actr_protocol::{ActorResult, ActrType};
+use actr_protocol::ActorResult;
 use async_trait::async_trait;
 
 use crate::{Context, MessageDispatcher};
@@ -9,7 +9,6 @@ use crate::{Context, MessageDispatcher};
 ///
 /// Represents a complete Actor instance, including:
 /// - Associated dispatcher type (Dispatcher)
-/// - Actor type identifier (actor_type)
 /// - Lifecycle hooks (on_start, on_stop)
 ///
 /// # Design Characteristics
@@ -40,24 +39,12 @@ use crate::{Context, MessageDispatcher};
 ///
 /// impl<T: EchoServiceHandler> Workload for EchoServiceWorkload<T> {
 ///     type Dispatcher = EchoServiceRouter<T>;
-///
-///     fn actor_type(&self) -> ActrType {
-///         ActrType {
-///             manufacturer: "acme".to_string(),
-///             name: "EchoService".to_string(),
-///         }
-///     }
 /// }
 /// ```
 #[async_trait]
 pub trait Workload: Send + Sync + 'static {
     /// Associated dispatcher type
     type Dispatcher: MessageDispatcher<Workload = Self>;
-
-    /// Get Actor type identifier
-    ///
-    /// Used for service discovery and routing.
-    fn actor_type(&self) -> ActrType;
 
     /// Lifecycle hook: Called when Actor starts
     ///

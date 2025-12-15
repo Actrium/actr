@@ -44,9 +44,7 @@ pub struct RawConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
     pub name: String,
-    pub manufacturer: String,
-    #[serde(rename = "type")]
-    pub type_name: String,
+    pub actr_type: RawActrType,
 
     #[serde(default)]
     pub description: Option<String>,
@@ -60,6 +58,13 @@ pub struct RawPackageConfig {
     /// Service tags (e.g., ["latest", "stable", "v1.0"])
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// Actor type configuration under [package.actr_type]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawActrType {
+    pub manufacturer: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,8 +202,9 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-manufacturer = "acme"
-type = "test-service"
+    [package.actr_type]
+    manufacturer = "acme"
+    name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -225,8 +231,10 @@ run = "cargo run"
         let toml_content = r#"
 [package]
 name = "test"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "test"
+name = "test"
 
 [dependencies]
 shared = { actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
