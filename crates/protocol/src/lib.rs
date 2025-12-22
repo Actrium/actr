@@ -44,3 +44,6 @@ pub use name::*;
 // This ensures a single source of truth for protobuf dependencies
 pub use prost;
 pub use prost_types;
+
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();

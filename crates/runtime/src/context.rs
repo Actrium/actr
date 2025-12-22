@@ -9,8 +9,8 @@ use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ProtocolError, RouteCandidatesRequest,
-    RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, ProtocolError,
+    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -112,6 +112,101 @@ impl RuntimeContext {
             Dest::Actor(id) => id,
         }
     }
+
+    /// Execute a non-generic RPC request call (useful for language bindings).
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+    )]
+    pub async fn call_raw(
+        &self,
+        target: &Dest,
+        route_key: String,
+        payload_type: PayloadType,
+        payload: Bytes,
+        timeout_ms: i64,
+    ) -> ActorResult<Bytes> {
+        #[cfg(feature = "opentelemetry")]
+        use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms,
+        };
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.send_request_with_type(target_id, payload_type, envelope)
+            .await
+    }
+
+    /// Execute a non-generic RPC message call (fire-and-forget, useful for language bindings).
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.tell_raw")
+    )]
+    pub async fn tell_raw(
+        &self,
+        target: &Dest,
+        route_key: String,
+        payload_type: PayloadType,
+        payload: Bytes,
+    ) -> ActorResult<()> {
+        #[cfg(feature = "opentelemetry")]
+        use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 0,
+        };
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.send_message_with_type(target_id, payload_type, envelope)
+            .await
+    }
+
+    /// Send DataStream with an explicit payload type (lane selection).
+    ///
+    /// This is intended for language bindings; the `Context` trait method
+    /// `send_data_stream()` currently defaults to StreamReliable.
+    pub async fn send_data_stream_with_type(
+        &self,
+        target: &Dest,
+        payload_type: actr_protocol::PayloadType,
+        chunk: DataStream,
+    ) -> ActorResult<()> {
+        use actr_protocol::prost::Message as ProstMessage;
+
+        let payload = chunk.encode_to_vec();
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+
+        let result = gate
+            .send_data_stream(target_id, payload_type, bytes::Bytes::from(payload).into())
+            .await;
+
+        result
+    }
 }
 
 #[async_trait]
@@ -165,7 +260,10 @@ impl Context for RuntimeContext {
         let target_id = self.extract_target_id(target);
 
         // 5. 通过 OutGate enum dispatch 发送（零虚函数调用！）
-        let response_bytes = gate.send_request(target_id, envelope).await?;
+        // Respect request's declared payload type (lane selection)
+        let response_bytes = gate
+            .send_request_with_type(target_id, R::payload_type(), envelope)
+            .await?;
 
         // 6. 解码响应（类型安全：R::Response）
         R::Response::decode(&*response_bytes).map_err(|e| {
@@ -210,8 +308,9 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 5. 通过 OutGate enum dispatch 发送
-        gate.send_message(target_id, envelope).await
+        // 5. 通过 OutGate enum dispatch 发送（respect payload type）
+        gate.send_message_with_type(target_id, R::payload_type(), envelope)
+            .await
     }
 
     // ========== Fast Path: DataStream Methods ==========
@@ -313,6 +412,45 @@ impl Context for RuntimeContext {
                 "Route candidates response missing result".to_string(),
             )),
         }
+    }
+
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+    )]
+    async fn call_raw(
+        &self,
+        target: &ActrId,
+        route_key: &str,
+        payload: Bytes,
+    ) -> ActorResult<Bytes> {
+        // 1. Construct RpcEnvelope with raw payload
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 30000, // Default 30 second timeout
+        };
+
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        // 2. Select outproc gate (raw calls are always remote)
+        let gate = self.outproc_gate.as_ref().ok_or_else(|| {
+            ProtocolError::Actr(ActrError::GateNotInitialized {
+                message: "OutprocOutGate not initialized yet (WebRTC setup in progress)"
+                    .to_string(),
+            })
+        })?;
+
+        // 3. Send request and return raw response bytes
+        gate.send_request(target, envelope).await
     }
 
     // ========== Fast Path: MediaTrack Methods ==========

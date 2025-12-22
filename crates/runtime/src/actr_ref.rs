@@ -42,7 +42,7 @@ use crate::lifecycle::ActrNode;
 use crate::outbound::InprocOutGate;
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, ProtocolError, RpcEnvelope};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -237,6 +237,98 @@ impl<W: Workload> ActrRef<W> {
                 message: format!("Failed to decode response: {e}"),
             })
         })
+    }
+
+    /// Call Actor method using route_key and request bytes (for language bindings)
+    ///
+    /// This is a non-generic version of `call()` that accepts route_key and raw bytes,
+    /// making it suitable for language bindings (e.g., Python) that don't have access
+    /// to Rust's generic `RpcRequest` trait.
+    ///
+    /// # Parameters
+    /// - `route_key`: Route key string (e.g., "package.Service.Method")
+    /// - `request_bytes`: Request protobuf bytes
+    /// - `timeout_ms`: Timeout in milliseconds
+    /// - `payload_type`: Payload transmission type
+    ///
+    /// # Returns
+    /// Response protobuf bytes
+    pub async fn call_raw(
+        &self,
+        route_key: String,
+        request_bytes: Bytes,
+        timeout_ms: i64,
+        payload_type: PayloadType,
+    ) -> ActorResult<Bytes> {
+        // Create envelope
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(request_bytes),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms,
+        };
+        // Inject tracing context
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
+
+        // Send request and wait for response
+        self.shared
+            .inproc_gate
+            .send_request_with_type(&self.shared.actor_id, payload_type, None, envelope)
+            .await
+    }
+
+    /// Send one-way message using route_key and message bytes (for language bindings)
+    ///
+    /// This is a non-generic version of `tell()` that accepts route_key and raw bytes,
+    /// making it suitable for language bindings (e.g., Python) that don't have access
+    /// to Rust's generic `RpcRequest` trait.
+    ///
+    /// # Parameters
+    /// - `route_key`: Route key string (e.g., "package.Service.Method")
+    /// - `message_bytes`: Message protobuf bytes
+    /// - `payload_type`: Payload transmission type
+    ///
+    /// # Returns
+    /// Unit (fire-and-forget, no response)
+    pub async fn tell_raw(
+        &self,
+        route_key: String,
+        message_bytes: Bytes,
+        payload_type: PayloadType,
+    ) -> ActorResult<()> {
+        // Create envelope
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(message_bytes),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 0, // No timeout for one-way messages
+        };
+        // Inject tracing context
+        #[cfg(feature = "opentelemetry")]
+        {
+            use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+            inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+        }
+
+        // Send message without waiting for response
+        self.shared
+            .inproc_gate
+            .send_message_with_type(&self.shared.actor_id, payload_type, None, envelope)
+            .await
     }
 
     /// Send one-way message to Actor (Shell → Workload, fire-and-forget)

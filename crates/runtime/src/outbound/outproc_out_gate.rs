@@ -244,25 +244,21 @@ impl OutprocOutGate {
 }
 
 impl OutprocOutGate {
-    /// Send request and wait for response (bidirectional communication)
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "OutprocOutGate.send_request")
-    )]
-    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+    /// Send request and wait for response (with specified PayloadType).
+    ///
+    /// This is primarily used by language bindings / non-generic RPC paths.
+    pub async fn send_request_with_type(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<Bytes> {
         tracing::debug!(
-            "📤 OutprocGate::send_request to {:?}, request_id={}",
+            "📤 OutprocGate::send_request_with_type to {:?}, payload_type={:?}, request_id={}",
             target,
+            payload_type,
             envelope.request_id
         );
-
-        // // 0. Check if target is being cleaned up (block new requests)
-        // if self.closing_peers.read().await.contains(target) {
-        //     return Err(ProtocolError::TransportError(format!(
-        //         "Connection to {} is closing",
-        //         target.to_string_repr()
-        //     )));
-        // }
 
         // 1. Create oneshot channel for receiving response
         let (response_tx, response_rx) = oneshot::channel();
@@ -279,10 +275,10 @@ impl OutprocOutGate {
         // 4. Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);
 
-        // 5. Send message (defaults to PayloadType::RpcReliable)
+        // 5. Send message using the specified payload_type
         match self
             .transport_manager
-            .send(&dest, PayloadType::RpcReliable, &data)
+            .send(&dest, payload_type, &data)
             .await
         {
             Ok(_) => {
@@ -307,12 +303,9 @@ impl OutprocOutGate {
                 tracing::debug!("✅ Received response for request: {}", envelope.request_id);
                 result
             }
-            Ok(Err(_)) => {
-                // oneshot channel closed (shouldn't happen)
-                Err(ProtocolError::TransportError(
-                    "Response channel closed".to_string(),
-                ))
-            }
+            Ok(Err(_)) => Err(ProtocolError::TransportError(
+                "Response channel closed".to_string(),
+            )),
             Err(_) => {
                 // Timeout
                 self.pending_requests
@@ -325,6 +318,16 @@ impl OutprocOutGate {
                 )))
             }
         }
+    }
+
+    /// Send request and wait for response (bidirectional communication)
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "OutprocOutGate.send_request")
+    )]
+    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
+        self.send_request_with_type(target, PayloadType::RpcReliable, envelope)
+            .await
     }
 
     /// Send one-way message (no response expected)
@@ -346,19 +349,29 @@ impl OutprocOutGate {
         //     )));
         // }
 
-        // 1. Serialize RpcEnvelope
+        self.send_message_with_type(target, PayloadType::RpcReliable, envelope)
+            .await
+    }
+
+    /// Send one-way message with specified PayloadType.
+    pub async fn send_message_with_type(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
+        tracing::debug!(
+            "📤 OutprocGate::send_message_with_type to {:?}, payload_type={:?}",
+            target.to_string_repr(),
+            payload_type
+        );
+
         let data = Self::serialize_envelope(&envelope);
-
-        // 2. Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);
-
-        // 3. Send message (defaults to PayloadType::RpcReliable)
         self.transport_manager
-            .send(&dest, PayloadType::RpcReliable, &data)
+            .send(&dest, payload_type, &data)
             .await
             .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
-
-        tracing::debug!("✅ Sent message to {:?}", target);
         Ok(())
     }
 
@@ -434,13 +447,13 @@ impl OutprocOutGate {
         let dest = Self::actr_id_to_dest(target);
 
         // Send via transport manager
-        self.transport_manager
+        let result = self
+            .transport_manager
             .send(&dest, payload_type, &data)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))?;
+            .map_err(|e| ProtocolError::TransportError(e.to_string()));
 
-        tracing::debug!("✅ Sent DataStream to {:?}", target);
-        Ok(())
+        result
     }
 }
 

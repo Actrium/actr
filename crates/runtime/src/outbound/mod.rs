@@ -15,7 +15,7 @@ pub use inproc_out_gate::InprocOutGate;
 pub use outproc_out_gate::OutprocOutGate;
 
 use actr_framework::{Bytes, MediaSample};
-use actr_protocol::{ActorResult, ActrId, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
 /// OutGate - 出站消息门枚举
@@ -77,6 +77,25 @@ impl OutGate {
         }
     }
 
+    /// 发送请求并等待响应（显式指定 PayloadType）
+    pub async fn send_request_with_type(
+        &self,
+        target_id: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<Bytes> {
+        match self {
+            OutGate::InprocOut(gate) => {
+                gate.send_request_with_type(target_id, payload_type, None, envelope)
+                    .await
+            }
+            OutGate::OutprocOut(gate) => {
+                gate.send_request_with_type(target_id, payload_type, envelope)
+                    .await
+            }
+        }
+    }
+
     /// 发送单向消息（不等待响应）
     ///
     /// # 参数
@@ -95,6 +114,25 @@ impl OutGate {
         match self {
             OutGate::InprocOut(gate) => gate.send_message(target, envelope).await,
             OutGate::OutprocOut(gate) => gate.send_message(target, envelope).await,
+        }
+    }
+
+    /// 发送单向消息（显式指定 PayloadType）
+    pub async fn send_message_with_type(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        envelope: RpcEnvelope,
+    ) -> ActorResult<()> {
+        match self {
+            OutGate::InprocOut(gate) => {
+                gate.send_message_with_type(target, payload_type, None, envelope)
+                    .await
+            }
+            OutGate::OutprocOut(gate) => {
+                gate.send_message_with_type(target, payload_type, envelope)
+                    .await
+            }
         }
     }
 

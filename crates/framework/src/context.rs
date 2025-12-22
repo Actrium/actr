@@ -156,6 +156,38 @@ pub trait Context: Send + Sync + Clone + 'static {
     /// selection strategy is decided by the Context implementation.
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId>;
 
+    /// Send a raw RPC request (untyped bytes) and wait for response
+    ///
+    /// This is a lower-level method for dynamic dispatch scenarios where the
+    /// request/response types are not known at compile time (e.g., FFI bindings).
+    ///
+    /// # Parameters
+    ///
+    /// - `target`: Target Actor ID
+    /// - `route_key`: Route key (e.g., "echo.EchoService/Echo")
+    /// - `payload`: Raw request payload bytes
+    ///
+    /// # Returns
+    ///
+    /// Returns raw response payload bytes
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // For FFI or dynamic dispatch scenarios
+    /// let response = ctx.call_raw(
+    ///     &target_id,
+    ///     "echo.EchoService/Echo",
+    ///     request_bytes.into(),
+    /// ).await?;
+    /// ```
+    async fn call_raw(
+        &self,
+        target: &ActrId,
+        route_key: &str,
+        payload: bytes::Bytes,
+    ) -> ActorResult<bytes::Bytes>;
+
     // ========== Fast Path: MediaTrack Methods (WebRTC Native) ==========
 
     /// Register a WebRTC native media track callback

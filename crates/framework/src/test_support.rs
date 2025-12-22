@@ -95,6 +95,15 @@ impl Context for DummyContext {
         ))
     }
 
+    async fn call_raw(
+        &self,
+        _target: &ActrId,
+        _route_key: &str,
+        _payload: bytes::Bytes,
+    ) -> ActorResult<bytes::Bytes> {
+        Err(Self::not_implemented("DummyContext::call_raw"))
+    }
+
     async fn register_media_track<F>(&self, _track_id: String, _callback: F) -> ActorResult<()>
     where
         F: Fn(MediaSample, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
