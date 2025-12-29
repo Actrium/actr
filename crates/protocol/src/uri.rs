@@ -1,6 +1,9 @@
 //! # Actor-RTC URI 解析库
 //!
 //! 提供 actr:// 协议的标准 URI 解析功能，不包含业务逻辑。
+//!
+//! URI 格式: actr://<realm>:<manufacturer>+<name>@<version>
+//! 例如: actr://101:acme+echo-service@v1
 
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -13,79 +16,65 @@ pub enum ActrUriError {
     #[error("Invalid URI scheme, expected 'actr' but got '{0}'")]
     InvalidScheme(String),
 
-    #[error("Missing actor type in URI")]
-    MissingActorType,
+    #[error("Missing actor authority in URI")]
+    MissingAuthority,
+
+    #[error("Invalid actor authority format, expected: <realm>:<manufacturer>+<name>@<version>")]
+    InvalidAuthorityFormat(String),
+
+    #[error("Missing version suffix '@v1' in URI")]
+    MissingVersion,
+
+    #[error("Invalid realm ID: {0}")]
+    InvalidRealmId(String),
 
     #[error("URI parse error: {0}")]
     ParseError(String),
 }
 
 /// Actor-RTC URI 结构
-/// 格式: actr://<actor-type>/<path>?<query-params>
+/// 格式: actr://<realm>:<manufacturer>+<name>@<version>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActrUri {
-    /// Actor 类型（如 "user-service"）
-    pub actor_type: String,
-
-    /// 路径（可选，如 "user.proto"、"api/v1" 等）
-    pub path: Option<String>,
-
-    /// 查询参数
-    pub query_params: std::collections::HashMap<String, String>,
+    /// Realm ID (u32)
+    pub realm: u32,
+    /// Manufacturer name
+    pub manufacturer: String,
+    /// Actor type name
+    pub name: String,
+    /// Version (e.g., "v1")
+    pub version: String,
 }
 
 impl ActrUri {
     /// 创建新的 Actor-RTC URI
-    pub fn new(actor_type: String) -> Self {
+    pub fn new(realm: u32, manufacturer: String, name: String, version: String) -> Self {
         Self {
-            actor_type,
-            path: None,
-            query_params: std::collections::HashMap::new(),
+            realm,
+            manufacturer,
+            name,
+            version,
         }
-    }
-
-    /// 设置路径
-    pub fn with_path(mut self, path: String) -> Self {
-        self.path = Some(path);
-        self
-    }
-
-    /// 添加查询参数
-    pub fn with_query_param(mut self, key: String, value: String) -> Self {
-        self.query_params.insert(key, value);
-        self
     }
 
     /// 获取 scheme 信息
     pub fn scheme(&self) -> &'static str {
         "actr"
     }
+
+    /// 获取 actor type 字符串表示 (manufacturer+name)
+    pub fn actor_type(&self) -> String {
+        format!("{}+{}", self.manufacturer, self.name)
+    }
 }
 
 impl Display for ActrUri {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut uri = format!("actr://{}", self.actor_type);
-
-        if let Some(ref path) = self.path {
-            if !path.starts_with('/') {
-                uri.push('/');
-            }
-            uri.push_str(path);
-        } else {
-            uri.push('/');
-        }
-
-        if !self.query_params.is_empty() {
-            uri.push('?');
-            let params: Vec<String> = self
-                .query_params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
-            uri.push_str(&params.join("&"));
-        }
-
-        write!(f, "{uri}")
+        write!(
+            f,
+            "actr://{}:{}+{}@{}",
+            self.realm, self.manufacturer, self.name, self.version
+        )
     }
 }
 
@@ -101,51 +90,36 @@ impl FromStr for ActrUri {
 
         let without_scheme = &s[7..];
 
-        let (base_part, query_part) = if let Some(idx) = without_scheme.find('?') {
-            (&without_scheme[..idx], Some(&without_scheme[idx + 1..]))
-        } else {
-            (without_scheme, None)
-        };
-
-        let (actor_type, path) = if let Some(idx) = base_part.find('/') {
-            let actor_type = &base_part[..idx];
-            let path_part = &base_part[idx + 1..];
-
-            if actor_type.is_empty() {
-                return Err(ActrUriError::MissingActorType);
-            }
-
-            let path = if path_part.is_empty() {
-                None
-            } else {
-                Some(path_part.to_string())
-            };
-
-            (actor_type.to_string(), path)
-        } else {
-            if base_part.is_empty() {
-                return Err(ActrUriError::MissingActorType);
-            }
-            (base_part.to_string(), None)
-        };
-
-        let mut query_params = std::collections::HashMap::new();
-        if let Some(query) = query_part {
-            for param in query.split('&') {
-                if let Some(idx) = param.find('=') {
-                    let key = param[..idx].to_string();
-                    let value = param[idx + 1..].to_string();
-                    query_params.insert(key, value);
-                } else if !param.is_empty() {
-                    query_params.insert(param.to_string(), String::new());
-                }
-            }
+        // Check for empty authority
+        if without_scheme.is_empty() {
+            return Err(ActrUriError::MissingAuthority);
         }
 
+        // Check for version suffix '@'
+        let (authority, version) = without_scheme
+            .rsplit_once('@')
+            .ok_or(ActrUriError::MissingVersion)?;
+
+        let version = version.to_string();
+
+        // Parse realm:manufacturer+name
+        let (realm_str, type_part) = authority
+            .split_once(':')
+            .ok_or_else(|| ActrUriError::InvalidAuthorityFormat(authority.to_string()))?;
+
+        let realm = realm_str
+            .parse::<u32>()
+            .map_err(|_| ActrUriError::InvalidRealmId(realm_str.to_string()))?;
+
+        let (manufacturer, name) = type_part
+            .split_once('+')
+            .ok_or_else(|| ActrUriError::InvalidAuthorityFormat(authority.to_string()))?;
+
         Ok(ActrUri {
-            actor_type,
-            path,
-            query_params,
+            realm,
+            manufacturer: manufacturer.to_string(),
+            name: name.to_string(),
+            version,
         })
     }
 }
@@ -153,9 +127,10 @@ impl FromStr for ActrUri {
 /// Actor-RTC URI 构建器
 #[derive(Debug, Default)]
 pub struct ActrUriBuilder {
-    actor_type: Option<String>,
-    path: Option<String>,
-    query_params: std::collections::HashMap<String, String>,
+    realm: Option<u32>,
+    manufacturer: Option<String>,
+    name: Option<String>,
+    version: Option<String>,
 }
 
 impl ActrUriBuilder {
@@ -164,32 +139,48 @@ impl ActrUriBuilder {
         Self::default()
     }
 
-    /// 设置 Actor 类型
-    pub fn actor_type<S: Into<String>>(mut self, actor_type: S) -> Self {
-        self.actor_type = Some(actor_type.into());
+    /// 设置 Realm ID
+    pub fn realm(mut self, realm: u32) -> Self {
+        self.realm = Some(realm);
         self
     }
 
-    /// 设置路径
-    pub fn path<S: Into<String>>(mut self, path: S) -> Self {
-        self.path = Some(path.into());
+    /// 设置 Manufacturer
+    pub fn manufacturer<S: Into<String>>(mut self, manufacturer: S) -> Self {
+        self.manufacturer = Some(manufacturer.into());
         self
     }
 
-    /// 添加查询参数
-    pub fn query<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
-        self.query_params.insert(key.into(), value.into());
+    /// 设置 Actor 类型名称
+    pub fn name<S: Into<String>>(mut self, name: S) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// 设置版本
+    pub fn version<S: Into<String>>(mut self, version: S) -> Self {
+        self.version = Some(version.into());
         self
     }
 
     /// 构建 URI
     pub fn build(self) -> Result<ActrUri, ActrUriError> {
-        let actor_type = self.actor_type.ok_or(ActrUriError::MissingActorType)?;
+        let realm = self.realm.ok_or(ActrUriError::MissingAuthority)?;
+        let manufacturer = self
+            .manufacturer
+            .ok_or(ActrUriError::InvalidAuthorityFormat(
+                "missing manufacturer".to_string(),
+            ))?;
+        let name = self.name.ok_or(ActrUriError::InvalidAuthorityFormat(
+            "missing name".to_string(),
+        ))?;
+        let version = self.version.unwrap_or_else(|| "v1".to_string());
 
         Ok(ActrUri {
-            actor_type,
-            path: self.path,
-            query_params: self.query_params,
+            realm,
+            manufacturer,
+            name,
+            version,
         })
     }
 }
@@ -200,87 +191,98 @@ mod tests {
 
     #[test]
     fn test_basic_uri_parsing() {
-        let uri = "actr://user-service/".parse::<ActrUri>().unwrap();
-        assert_eq!(uri.actor_type, "user-service");
-        assert_eq!(uri.path, None);
-        assert!(uri.query_params.is_empty());
-    }
-
-    #[test]
-    fn test_uri_with_path() {
-        let uri = "actr://user-service/api/v1".parse::<ActrUri>().unwrap();
-        assert_eq!(uri.actor_type, "user-service");
-        assert_eq!(uri.path, Some("api/v1".to_string()));
-    }
-
-    #[test]
-    fn test_uri_with_query_params() {
-        let uri = "actr://notification-service/?param1=value1&param2=value2"
+        let uri = "actr://101:acme+echo-service@v1"
             .parse::<ActrUri>()
             .unwrap();
-        assert_eq!(uri.actor_type, "notification-service");
-        assert_eq!(uri.path, None);
-        assert_eq!(uri.query_params.get("param1"), Some(&"value1".to_string()));
-        assert_eq!(uri.query_params.get("param2"), Some(&"value2".to_string()));
-    }
-
-    #[test]
-    fn test_uri_without_trailing_slash() {
-        let uri = "actr://payment-service".parse::<ActrUri>().unwrap();
-        assert_eq!(uri.actor_type, "payment-service");
-        assert_eq!(uri.path, None);
+        assert_eq!(uri.realm, 101);
+        assert_eq!(uri.manufacturer, "acme");
+        assert_eq!(uri.name, "echo-service");
+        assert_eq!(uri.version, "v1");
     }
 
     #[test]
     fn test_uri_builder() {
         let uri = ActrUriBuilder::new()
-            .actor_type("order-service")
-            .path("orders/create")
-            .query("timeout", "30s")
+            .realm(101)
+            .manufacturer("acme")
+            .name("order-service")
+            .version("v1")
             .build()
             .unwrap();
 
-        assert_eq!(uri.actor_type, "order-service");
-        assert_eq!(uri.path, Some("orders/create".to_string()));
-        assert_eq!(uri.query_params.get("timeout"), Some(&"30s".to_string()));
+        assert_eq!(uri.realm, 101);
+        assert_eq!(uri.manufacturer, "acme");
+        assert_eq!(uri.name, "order-service");
+        assert_eq!(uri.version, "v1");
     }
 
     #[test]
     fn test_uri_to_string() {
-        let uri = ActrUri::new("user-service".to_string())
-            .with_path("users/profile".to_string())
-            .with_query_param("format".to_string(), "json".to_string());
-
+        let uri = ActrUri::new(
+            101,
+            "acme".to_string(),
+            "user-service".to_string(),
+            "v1".to_string(),
+        );
         let uri_string = uri.to_string();
-        assert!(uri_string.starts_with("actr://user-service"));
-        assert!(uri_string.contains("users/profile"));
-        assert!(uri_string.contains("format=json"));
+        assert_eq!(uri_string, "actr://101:acme+user-service@v1");
     }
 
     #[test]
     fn test_invalid_scheme() {
-        let result = "http://user-service/".parse::<ActrUri>();
+        let result = "http://101:acme+service@v1".parse::<ActrUri>();
         assert!(matches!(result, Err(ActrUriError::InvalidScheme(_))));
     }
 
     #[test]
-    fn test_missing_actor_type() {
-        let result = "actr:///".parse::<ActrUri>();
-        assert!(matches!(result, Err(ActrUriError::MissingActorType)));
+    fn test_missing_authority() {
+        let result = "actr://".parse::<ActrUri>();
+        assert!(matches!(result, Err(ActrUriError::MissingAuthority)));
     }
 
     #[test]
-    fn test_empty_query_param() {
-        let uri = "actr://service/?flag".parse::<ActrUri>().unwrap();
-        assert_eq!(uri.query_params.get("flag"), Some(&"".to_string()));
+    fn test_missing_version() {
+        let result = "actr://101:acme+service".parse::<ActrUri>();
+        assert!(matches!(result, Err(ActrUriError::MissingVersion)));
     }
 
     #[test]
-    fn test_complex_path() {
-        let uri = "actr://api-gateway/v2/users/123/profile"
+    fn test_invalid_realm_id() {
+        let result = "actr://abc:acme+service@v1".parse::<ActrUri>();
+        assert!(matches!(result, Err(ActrUriError::InvalidRealmId(_))));
+    }
+
+    #[test]
+    fn test_invalid_authority_format() {
+        let result = "actr://101:acme:service@v1".parse::<ActrUri>();
+        assert!(matches!(
+            result,
+            Err(ActrUriError::InvalidAuthorityFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_actor_type_method() {
+        let uri = "actr://101:acme+user-service@v1"
             .parse::<ActrUri>()
             .unwrap();
-        assert_eq!(uri.actor_type, "api-gateway");
-        assert_eq!(uri.path, Some("v2/users/123/profile".to_string()));
+        assert_eq!(uri.actor_type(), "acme+user-service");
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        let uri = ActrUriBuilder::new()
+            .realm(9999)
+            .manufacturer("test")
+            .name("service")
+            .build()
+            .unwrap();
+
+        let uri_str = uri.to_string();
+        let parsed = uri_str.parse::<ActrUri>().unwrap();
+        assert_eq!(uri.realm, parsed.realm);
+        assert_eq!(uri.manufacturer, parsed.manufacturer);
+        assert_eq!(uri.name, parsed.name);
+        assert_eq!(uri.version, parsed.version);
     }
 }

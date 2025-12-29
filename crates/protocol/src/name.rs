@@ -38,7 +38,7 @@ pub struct MethodName(String);
 /// Names must:
 /// - Start with an alphabetic character
 /// - End with an alphanumeric character
-/// - Contain only alphanumeric characters, hyphens, and underscores
+/// - Contain only alphanumeric characters, hyphens, underscores, and dots
 /// - Be non-empty
 /// - Not exceed 32 characters in length
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -83,7 +83,7 @@ impl Name {
         let mut last = first;
         for c in chars {
             last = c;
-            if !c.is_alphanumeric() && c != '-' && c != '_' {
+            if !c.is_alphanumeric() && c != '-' && c != '_' && c != '.' {
                 return Err(NameError::InvalidChar(c));
             }
         }
@@ -424,6 +424,8 @@ mod tests {
         assert!(Name::new("valid-name_123".to_string()).is_ok());
         assert!(Name::new("A".to_string()).is_ok());
         assert!(Name::new("actor-1".to_string()).is_ok());
+        assert!(Name::new("actor.1".to_string()).is_ok());
+        assert!(Name::new("com.example.actor".to_string()).is_ok());
     }
 
     #[test]
@@ -434,8 +436,16 @@ mod tests {
             NameError::InvalidStartChar('-')
         );
         assert_eq!(
+            Name::new(".invalid".to_string()).unwrap_err(),
+            NameError::InvalidStartChar('.')
+        );
+        assert_eq!(
             Name::new("invalid-".to_string()).unwrap_err(),
             NameError::InvalidEndChar('-')
+        );
+        assert_eq!(
+            Name::new("invalid.".to_string()).unwrap_err(),
+            NameError::InvalidEndChar('.')
         );
         assert_eq!(
             Name::new("has invalid char!".to_string()).unwrap_err(),

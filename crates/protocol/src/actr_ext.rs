@@ -11,14 +11,14 @@ use thiserror::Error;
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ActrError {
     #[error(
-        "Invalid Actor ID format: '{0}'. Expected format: <manufacturer>:<name>@<serial_number>:<realm_id>"
+        "Invalid Actor ID format: '{0}'. Expected format: <serial_number>@<realm_id>:<manufacturer>+<name>"
     )]
     InvalidFormat(String),
 
     #[error("Invalid component in actor identity: {0}")]
     InvalidComponent(String),
 
-    #[error("Invalid actor type format: '{0}'. Expected format: <manufacturer>:<name>")]
+    #[error("Invalid actor type format: '{0}'. Expected format: <manufacturer>+<name>")]
     InvalidTypeFormat(String),
 
     /// 消息解码失败
@@ -44,7 +44,7 @@ pub enum ActrError {
 
 /// Helpers for `ActrType` string conversions
 pub trait ActrTypeExt: Sized {
-    /// Convert to stable string representation: "<manufacturer>:<name>".
+    /// Convert to stable string representation: "<manufacturer>+<name>".
     fn to_string_repr(&self) -> String;
 
     /// Parse from string representation. Performs validation on both parts.
@@ -53,12 +53,12 @@ pub trait ActrTypeExt: Sized {
 
 impl ActrTypeExt for ActrType {
     fn to_string_repr(&self) -> String {
-        format!("{}:{}", self.manufacturer, self.name)
+        format!("{}+{}", self.manufacturer, self.name)
     }
 
     fn from_string_repr(s: &str) -> Result<Self, ActrError> {
         let (manufacturer, name) = s
-            .split_once(':')
+            .split_once('+')
             .ok_or_else(|| ActrError::InvalidTypeFormat(s.to_string()))?;
 
         // Reuse generic name validation to keep rules consistent across the project
@@ -76,7 +76,7 @@ impl ActrTypeExt for ActrType {
 
 /// Helpers for `ActrId` string conversions
 pub trait ActrIdExt: Sized {
-    /// Convert to "<manufacturer>:<name>@<serial_number_hex>:<realm_id>"
+    /// Convert to "<serial_number_hex>@<realm_id>:<manufacturer>+<name>"
     fn to_string_repr(&self) -> String;
 
     /// Parse from string representation.
@@ -86,28 +86,28 @@ pub trait ActrIdExt: Sized {
 impl ActrIdExt for ActrId {
     fn to_string_repr(&self) -> String {
         format!(
-            "{}:{}@{:x}:{}",
-            self.r#type.manufacturer, self.r#type.name, self.serial_number, self.realm.realm_id
+            "{:x}@{}:{}+{}",
+            self.serial_number, self.realm.realm_id, self.r#type.manufacturer, self.r#type.name
         )
     }
 
     fn from_string_repr(s: &str) -> Result<Self, ActrError> {
-        let (type_part, id_part) = s
+        let (serial_part, rest) = s
             .split_once('@')
             .ok_or_else(|| ActrError::InvalidFormat("Missing '@' separator".to_string()))?;
 
-        let actr_type = ActrType::from_string_repr(type_part)?;
-
-        let (serial_str, realm_str) = id_part
-            .split_once(':')
-            .ok_or_else(|| ActrError::InvalidFormat("Missing ':' in ID part".to_string()))?;
-
-        let serial_number = u64::from_str_radix(serial_str, 16).map_err(|_e| {
-            ActrError::InvalidComponent(format!("Invalid serial number hex: {serial_str}"))
+        let serial_number = u64::from_str_radix(serial_part, 16).map_err(|_e| {
+            ActrError::InvalidComponent(format!("Invalid serial number hex: {serial_part}"))
         })?;
 
-        let realm_id = u32::from_str(realm_str)
-            .map_err(|_e| ActrError::InvalidComponent(format!("Invalid realm ID: {realm_str}")))?;
+        let (realm_part, type_part) = rest
+            .split_once(':')
+            .ok_or_else(|| ActrError::InvalidFormat("Missing ':' separator".to_string()))?;
+
+        let realm_id = u32::from_str(realm_part)
+            .map_err(|_e| ActrError::InvalidComponent(format!("Invalid realm ID: {realm_part}")))?;
+
+        let actr_type = ActrType::from_string_repr(type_part)?;
 
         Ok(ActrId {
             realm: Realm { realm_id },
@@ -133,7 +133,7 @@ mod tests {
         };
 
         let string_repr = original_id.to_string_repr();
-        assert_eq!(string_repr, "acme:echo-service@1a2b3c:101");
+        assert_eq!(string_repr, "1a2b3c@101:acme+echo-service");
 
         let parsed_id = ActrId::from_string_repr(&string_repr).unwrap();
         assert_eq!(original_id.realm.realm_id, parsed_id.realm.realm_id);
@@ -152,26 +152,22 @@ mod tests {
             Err(ActrError::InvalidFormat(_))
         ));
         assert!(matches!(
-            ActrId::from_string_repr("acme:echo@123"),
-            Err(ActrError::InvalidFormat(_))
-        ));
-        assert!(matches!(
-            ActrId::from_string_repr("acme@123:101"),
+            ActrId::from_string_repr("123@101:acme"),
             Err(ActrError::InvalidTypeFormat(_))
         ));
         assert!(matches!(
-            ActrId::from_string_repr("acme:echo@123:xyz"),
-            Err(ActrError::InvalidComponent(_))
+            ActrId::from_string_repr("123@acme+echo"),
+            Err(ActrError::InvalidFormat(_))
         ));
         assert!(matches!(
-            ActrId::from_string_repr("acme:echo@xyz:101"),
+            ActrId::from_string_repr("xyz@101:acme+echo"),
             Err(ActrError::InvalidComponent(_))
         ));
     }
 
     #[test]
     fn test_actr_type_roundtrip_and_validation() {
-        let s = "acme:echo";
+        let s = "acme+echo";
         let ty = ActrType::from_string_repr(s).unwrap();
         assert_eq!(ty.to_string_repr(), s);
 
@@ -183,13 +179,13 @@ mod tests {
 
         // invalid manufacturer via Name validation
         assert!(matches!(
-            ActrType::from_string_repr("1acme:echo"),
+            ActrType::from_string_repr("1acme+echo"),
             Err(ActrError::InvalidComponent(_))
         ));
 
         // invalid name via Name validation
         assert!(matches!(
-            ActrType::from_string_repr("acme:echo!"),
+            ActrType::from_string_repr("acme+echo!"),
             Err(ActrError::InvalidComponent(_))
         ));
     }

@@ -187,8 +187,8 @@ impl ParserV1 {
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
         // 支持两种格式：
         // 1. "service-name" -> manufacturer = "", name = "service-name"
-        // 2. "manufacturer:service-name"
-        if let Some((manufacturer, name)) = s.split_once(':') {
+        // 2. "manufacturer+service-name"
+        if let Some((manufacturer, name)) = s.split_once('+') {
             // Validate manufacturer name (allow empty string for backward compatibility)
             if !manufacturer.is_empty() {
                 Name::new(manufacturer.to_string()).map_err(|e| {
@@ -262,7 +262,7 @@ impl ParserV1 {
 
             // Parse principals - support both old 'principals' and new 'types' format
             let principals = if let Some(types_value) = rule_table.get("types") {
-                // New format: types = ["acme:allowed-client", "acme:admin"]
+                // New format: types = ["acme+allowed-client", "acme+admin"]
                 let types_array = types_value.as_array().ok_or_else(|| {
                     ConfigError::InvalidAcl(format!("ACL rule {} 'types' must be an array", idx))
                 })?;
@@ -276,7 +276,7 @@ impl ParserV1 {
                         ))
                     })?;
 
-                    // Parse "manufacturer:name" format
+                    // Parse "manufacturer+name" format
                     let actr_type = self.parse_actr_type(type_str)?;
 
                     principals_list.push(Principal {

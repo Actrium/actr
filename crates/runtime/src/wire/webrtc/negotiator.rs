@@ -130,7 +130,7 @@ impl WebRtcNegotiator {
 
                 if is_turn {
                     let claims = Claims {
-                        realm_id: self.realm_id.clone(),
+                        realm_id: self.realm_id,
                         key_id: credential.token_key_id,
                         token: credential.encrypted_token.clone(),
                     };

@@ -43,7 +43,7 @@ service UserService {
 
     let dep = LockedDependency::new(
         "user-service".to_string(),
-        "acme:user-service".to_string(),
+        "acme+user-service".to_string(),
         spec_meta,
     );
 

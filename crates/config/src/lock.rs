@@ -41,7 +41,7 @@ pub struct LockedDependency {
     /// Dependency name (matches Actr.toml key)
     pub name: String,
 
-    /// Actor type (e.g., "acme:user-service")
+    /// Actor type (e.g., "acme+user-service")
     pub actr_type: String,
 
     /// Service specification (flattened)
@@ -275,7 +275,7 @@ mod tests {
 
         let dep = LockedDependency::new(
             "test-service".to_string(),
-            "acme:test-service".to_string(),
+            "acme+test-service".to_string(),
             spec_meta,
         );
 
@@ -284,7 +284,7 @@ mod tests {
 
         let found = lock_file.get_dependency("test-service");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().actr_type, "acme:test-service");
+        assert_eq!(found.unwrap().actr_type, "acme+test-service");
 
         let removed = lock_file.remove_dependency("test-service");
         assert!(removed);
@@ -309,7 +309,7 @@ mod tests {
 
         let dep = LockedDependency::new(
             "user-service".to_string(),
-            "acme:user-service".to_string(),
+            "acme+user-service".to_string(),
             spec_meta,
         );
 

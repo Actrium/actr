@@ -52,7 +52,7 @@ graph TD
 
 #### a) Actor ID 扩展 (`actor_ext.rs`)
 
-为 `ActrId` 提供了字符串表示的互相转换能力，格式定义为：`<manufacturer>:<name>@<serial_number>:<realm_id>`。
+为 `ActrId` 提供了字符串表示的互相转换能力，格式定义为：`<serial_number>@<realm_id>:<manufacturer>+<name>`。
 
 ```rust
 use actr_protocol::{ActrId, ActrType, Realm, ActrIdExt};
@@ -68,7 +68,7 @@ let id = ActrId {
 };
 
 let id_str = id.to_string_repr();
-assert_eq!(id_str, "acme:echo-service@1a2b3c:101");
+assert_eq!(id_str, "1a2b3c@101:acme+echo-service");
 
 let parsed_id = ActrId::from_string_repr(&id_str).unwrap();
 assert_eq!(id.serial_number, parsed_id.serial_number);
@@ -76,17 +76,28 @@ assert_eq!(id.serial_number, parsed_id.serial_number);
 
 #### b) URI 解析 (`uri.rs`)
 
-提供对 `actr://` 协议 URI 的解析和构建功能，支持 `actr://<actor-type>/<path>?<query>` 格式。
+提供对 `actr://` 协议 URI 的解析和构建功能，支持 `actr://<realm>:<manufacturer>+<name>@<version>` 格式。
 
 ```rust
 use std::str::FromStr;
-use actr_protocol::uri::ActrUri;
+use actr_protocol::uri::{ActrUri, ActrUriBuilder};
 
-// 示例
-let uri = ActrUri::from_str("actr://user-service/api/v1?format=json").unwrap();
-assert_eq!(uri.actor_type, "user-service");
-assert_eq!(uri.path, Some("api/v1".to_string()));
-assert_eq!(uri.query_params.get("format"), Some(&"json".to_string()));
+// 从字符串解析
+let uri = "actr://101:acme+user-service@v1".parse::<ActrUri>().unwrap();
+assert_eq!(uri.realm, 101);
+assert_eq!(uri.manufacturer, "acme");
+assert_eq!(uri.name, "user-service");
+assert_eq!(uri.version, "v1");
+assert_eq!(uri.actor_type(), "acme+user-service");
+
+// 使用构建器创建
+let uri = ActrUriBuilder::new()
+    .realm(101)
+    .manufacturer("acme")
+    .name("user-service")
+    .build()
+    .unwrap();
+assert_eq!(uri.to_string(), "actr://101:acme+user-service@v1");
 ```
 
 #### c) 错误处理 (`error.rs`)

@@ -64,7 +64,7 @@ generated_at = "2025-01-15T10:30:00Z"
 
 [[dependency]]
 name = "user-service"
-actr_type = "acme:user-service"
+actr_type = "acme+user-service"
 description = "User management service"
 fingerprint = "service_semantic:a1b2c3d4e5f6"
 published_at = 1705315800
@@ -72,7 +72,7 @@ tags = ["latest", "stable"]
 cached_at = "2025-01-15T10:30:00Z"
 
   [[dependency.files]]
-  uri = "actr://acme:user-service/user.v1.proto"
+  uri = "actr://101:acme+user-service@v1/user.v1.proto"
   fingerprint = "semantic:xyz123"
   content = """
 syntax = "proto3";
@@ -92,7 +92,7 @@ service UserService {
 """
 
   [[dependency.files]]
-  uri = "actr://acme:user-service/common.v1.proto"
+  uri = "actr://101:acme+user-service@v1/common.v1.proto"
   fingerprint = "semantic:abc789"
   content = """
 syntax = "proto3";
@@ -226,7 +226,7 @@ TOML 序列化会增加约 20-30% 的大小（主要是 `"""` 标记和缩进）
 
 ```diff
   [[dependency.files]]
-  uri = "actr://acme:user-service/user.v1.proto"
+  uri = "actr://101:acme+user-service@v1/user.v1.proto"
   fingerprint = "semantic:xyz123"
   content = """
   syntax = "proto3";
@@ -251,14 +251,14 @@ TOML 序列化会增加约 20-30% 的大小（主要是 `"""` 标记和缩进）
 
 ## 与其他工具的对比
 
-| 特性 | cargo | npm | actr (新设计) |
-|------|-------|-----|--------------|
-| 包大小 | 几百 MB | 几十 MB | 几 KB |
-| 需要 cache | ✓ | ✓ | ✗ |
-| lock 文件大小 | ~100KB | ~500KB | ~300KB |
-| 包含内容 | ✗ | ✗ | ✓ |
-| 版本控制友好 | 一般 | 一般 | 优秀 |
-| 复杂度 | 高 | 高 | 低 |
+| 特性          | cargo   | npm     | actr (新设计) |
+| ------------- | ------- | ------- | ------------- |
+| 包大小        | 几百 MB | 几十 MB | 几 KB         |
+| 需要 cache    | ✓       | ✓       | ✗             |
+| lock 文件大小 | ~100KB  | ~500KB  | ~300KB        |
+| 包含内容      | ✗       | ✗       | ✓             |
+| 版本控制友好  | 一般    | 一般    | 优秀          |
+| 复杂度        | 高      | 高      | 低            |
 
 ## 使用示例
 
@@ -274,7 +274,7 @@ let spec_meta = ServiceSpecMeta {
     fingerprint: "service_semantic:abc123".to_string(),
     protobufs: vec![
         ProtoFileWithContent {
-            uri: "actr://acme:user-service/user.v1.proto".to_string(),
+            uri: "actr://101:acme+user-service@v1/user.v1.proto".to_string(),
             fingerprint: "semantic:xyz".to_string(),
             content: "syntax = \"proto3\";\n...".to_string(),
         }
@@ -285,7 +285,7 @@ let spec_meta = ServiceSpecMeta {
 
 let dep = LockedDependency::new(
     "user-service".to_string(),
-    "acme:user-service".to_string(),
+    "acme+user-service".to_string(),
     spec_meta,
 );
 
