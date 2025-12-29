@@ -28,6 +28,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install protoc
         uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
       # Publish order: from base to advanced by dependency
       # 1. actr-protocol (base, no internal dependencies)
