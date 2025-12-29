@@ -372,4 +372,9 @@ impl WirePool {
 
         tracing::debug!("🔌 Closed all connections in pool (background tasks will terminate)");
     }
+
+    /// Check if pool is closed
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
 }

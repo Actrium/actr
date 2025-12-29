@@ -2030,8 +2030,8 @@ impl WebRtcCoordinator {
         // 3. Retry loop with exponential backoff (max 3 retries)
         const MAX_RETRIES: u32 = 3;
         let mut backoff = ExponentialBackoff::new(
-            Duration::from_secs(1),  // initial delay
-            Duration::from_secs(10), // max delay
+            Duration::from_secs(5),  // initial delay
+            Duration::from_secs(15), // max delay
             None,                    // no limit (we control manually)
         );
 

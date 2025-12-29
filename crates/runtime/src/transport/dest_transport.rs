@@ -136,6 +136,12 @@ impl DestTransport {
             // 5. All attempts failed, wait for connection status change
             tracing::info!("⏳ Waiting for connection status...");
 
+            if self.conn_mgr.is_closed() {
+                return Err(NetworkError::ChannelClosed(
+                    "connection manager closed".into(),
+                ));
+            }
+
             // Event-driven wait!
             if conn_watcher.changed().await.is_err() {
                 return Err(NetworkError::ChannelClosed(
