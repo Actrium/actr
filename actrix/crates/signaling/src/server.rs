@@ -1358,13 +1358,14 @@ async fn handle_credential_update(
                     }
 
                     // 返回成功响应（使用 RegisterResponse，因为协议中没有 CredentialUpdateResponse）
+                    // 新的 PSK 已被加密到 token 中，客户端必须同步更新本地 PSK，否则 TURN 认证会失败
                     use actr_protocol::register_response::RegisterOk;
                     let response = actr_protocol::RegisterResponse {
                         result: Some(actr_protocol::register_response::Result::Success(
                             RegisterOk {
                                 actr_id: source.clone(),
                                 credential: new_credential.clone(),
-                                psk: None, // Credential 刷新不需要重新生成 PSK
+                                psk: register_ok.psk.clone(), // 发送新 PSK，确保客户端与 token 中的 PSK 保持同步
                                 credential_expires_at: expires_at,
                                 signaling_heartbeat_interval_secs: 30, // 保持心跳间隔
                             },
