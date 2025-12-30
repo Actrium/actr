@@ -211,10 +211,11 @@ async fn credential_refresh_task(
                 Some(actr_protocol::register_response::Result::Success(register_ok)) => {
                     let new_credential = register_ok.credential;
                     let new_expires_at = register_ok.credential_expires_at;
+                    let new_psk = register_ok.psk;
 
-                    // Update shared state
+                    // Update shared state including PSK
                     credential_state
-                        .update(new_credential.clone(), new_expires_at)
+                        .update(new_credential.clone(), new_expires_at, new_psk.clone())
                         .await;
 
                     tracing::info!(
@@ -222,6 +223,10 @@ async fn credential_refresh_task(
                         actor_id.serial_number,
                         new_credential.token_key_id
                     );
+
+                    if new_psk.is_some() {
+                        tracing::debug!("🔑 PSK updated for TURN authentication");
+                    }
 
                     if let Some(expires_at) = &new_expires_at {
                         tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);

@@ -96,14 +96,22 @@ pub struct CredentialState {
 struct CredentialStateInner {
     credential: AIdCredential,
     expires_at: Option<prost_types::Timestamp>,
+    /// This is updated together with credential when credential is refreshed
+    psk: Option<Bytes>,
 }
 
 impl CredentialState {
-    fn new(credential: AIdCredential, expires_at: Option<prost_types::Timestamp>) -> Self {
+    /// Create a new CredentialState with PSK
+    fn new(
+        credential: AIdCredential,
+        expires_at: Option<prost_types::Timestamp>,
+        psk: Option<Bytes>,
+    ) -> Self {
         Self {
             inner: Arc::new(RwLock::new(CredentialStateInner {
                 credential,
                 expires_at,
+                psk,
             })),
         }
     }
@@ -116,14 +124,25 @@ impl CredentialState {
         self.inner.read().await.expires_at
     }
 
+    /// Get the PSK for TURN authentication
+    pub async fn psk(&self) -> Option<Bytes> {
+        self.inner.read().await.psk.clone()
+    }
+
+    /// Update credential along with PSK
+    /// This should be called when credential is refreshed and a new PSK is provided
     pub(crate) async fn update(
         &self,
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
+        psk: Option<Bytes>,
     ) {
         let mut guard = self.inner.write().await;
         guard.credential = credential;
         guard.expires_at = expires_at;
+        if psk.is_some() {
+            guard.psk = psk;
+        }
     }
 }
 
@@ -673,8 +692,11 @@ impl<W: Workload> ActrNode<W> {
 
                 // Store ActrId and Credential
                 self.actor_id = Some(actor_id.clone());
-                let credential_state =
-                    CredentialState::new(credential, register_ok.credential_expires_at);
+                let credential_state = CredentialState::new(
+                    credential,
+                    register_ok.credential_expires_at,
+                    register_ok.psk.clone(),
+                );
                 self.credential_state = Some(credential_state.clone());
 
                 // Pass identity to signaling client so reconnect URLs carry auth info.
@@ -727,7 +749,6 @@ impl<W: Workload> ActrNode<W> {
                         self.signaling_client.clone(),
                         self.config.webrtc.clone(),
                         self.config.realm.realm_id.clone(),
-                        self.psk.clone().expect("PSK must be set"),
                         media_frame_registry,
                     ));
 
@@ -1528,7 +1549,7 @@ mod tests {
         let credential = create_test_credential(1);
         let expires_at = Some(create_test_timestamp(1000));
 
-        let state = CredentialState::new(credential.clone(), expires_at);
+        let state = CredentialState::new(credential.clone(), expires_at, None);
 
         let retrieved_credential = state.credential().await;
         assert_eq!(retrieved_credential.token_key_id, 1);
@@ -1541,7 +1562,7 @@ mod tests {
     #[tokio::test]
     async fn test_credential_state_without_expiration() {
         let credential = create_test_credential(2);
-        let state = CredentialState::new(credential.clone(), None);
+        let state = CredentialState::new(credential.clone(), None, None);
 
         let retrieved_credential = state.credential().await;
         assert_eq!(retrieved_credential.token_key_id, 2);
@@ -1554,7 +1575,7 @@ mod tests {
     async fn test_credential_state_update() {
         let credential1 = create_test_credential(1);
         let expires_at1 = Some(create_test_timestamp(1000));
-        let state = CredentialState::new(credential1, expires_at1);
+        let state = CredentialState::new(credential1, expires_at1, None);
 
         // Verify initial state
         let initial_credential = state.credential().await;
@@ -1563,7 +1584,7 @@ mod tests {
         // Update credential
         let credential2 = create_test_credential(2);
         let expires_at2 = Some(create_test_timestamp(2000));
-        state.update(credential2.clone(), expires_at2).await;
+        state.update(credential2.clone(), expires_at2, None).await;
 
         // Verify updated state
         let updated_credential = state.credential().await;
@@ -1581,7 +1602,7 @@ mod tests {
     async fn test_credential_state_concurrent_access() {
         let credential = create_test_credential(1);
         let expires_at = Some(create_test_timestamp(1000));
-        let state = CredentialState::new(credential, expires_at);
+        let state = CredentialState::new(credential, expires_at, None);
 
         // Spawn multiple tasks that concurrently access the credential state
         let mut handles = vec![];
@@ -1605,7 +1626,7 @@ mod tests {
     #[tokio::test]
     async fn test_credential_state_update_concurrent() {
         let credential1 = create_test_credential(1);
-        let state = CredentialState::new(credential1, None);
+        let state = CredentialState::new(credential1, None, None);
 
         // Spawn multiple update tasks
         let mut handles = vec![];
@@ -1613,7 +1634,7 @@ mod tests {
             let state_clone = state.clone();
             let credential = create_test_credential(i);
             let handle = tokio::spawn(async move {
-                state_clone.update(credential, None).await;
+                state_clone.update(credential, None, None).await;
             });
             handles.push(handle);
         }

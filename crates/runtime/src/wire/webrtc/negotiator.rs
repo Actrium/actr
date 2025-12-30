@@ -5,7 +5,6 @@
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkResult;
 use actr_protocol::turn::Claims;
-use bytes::Bytes;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -19,9 +18,7 @@ pub struct WebRtcNegotiator {
     config: WebRtcConfig,
     /// Realm id for TURN credential claims
     realm_id: u32,
-    /// Pre-shared key for TURN authentication
-    psk: Bytes,
-    /// Latest credential state (token refreshes update this)
+    /// Latest credential state (token and PSK refreshes update this)
     credential_state: CredentialState,
 }
 
@@ -30,16 +27,10 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `config`: WebRTC configuration
-    pub fn new(
-        config: WebRtcConfig,
-        realm_id: u32,
-        psk: Bytes,
-        credential_state: CredentialState,
-    ) -> Self {
+    pub fn new(config: WebRtcConfig, realm_id: u32, credential_state: CredentialState) -> Self {
         Self {
             config,
             realm_id,
-            psk,
             credential_state,
         }
     }
@@ -118,6 +109,11 @@ impl WebRtcNegotiator {
         )?;
 
         // convert exchange ICE service device configuration
+        let psk = self
+            .credential_state
+            .psk()
+            .await
+            .expect("PSK must be available for TURN authentication");
         let ice_servers: Vec<RTCIceServer> = self
             .config
             .ice_servers
@@ -138,7 +134,7 @@ impl WebRtcNegotiator {
                     RTCIceServer {
                         urls: server.urls.clone(),
                         username: claims.encode(),
-                        credential: hex::encode(&self.psk),
+                        credential: hex::encode(&psk),
                     }
                 } else {
                     RTCIceServer {
