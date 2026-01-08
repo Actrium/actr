@@ -194,7 +194,7 @@ pub use actr_protocol::{ActorResult, ActrId, ActrType, ProtocolError};
 
 // Runtime core structures
 pub use actr_ref::ActrRef;
-pub use lifecycle::{ActrNode, ActrSystem};
+pub use lifecycle::{ActrNode, ActrSystem, NetworkEventHandle};
 
 // Layer 3: Inbound dispatch layer
 pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};

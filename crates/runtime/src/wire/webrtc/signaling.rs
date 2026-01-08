@@ -30,7 +30,6 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
-use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use url::Url;
@@ -233,6 +232,8 @@ pub struct WebSocketSignalingClient {
     >,
     /// connection status
     connected: Arc<AtomicBool>,
+    /// Connection in progress flag (prevents concurrent connect attempts)
+    connecting: Arc<AtomicBool>,
     /// statistics info
     stats: Arc<AtomicSignalingStats>,
     /// Envelope count number device
@@ -250,6 +251,8 @@ pub struct WebSocketSignalingClient {
     state_tx: watch::Sender<ConnectionState>,
     /// Last time we saw inbound traffic (pong/any message), unix epoch seconds
     last_pong: Arc<AtomicU64>,
+    /// Flag to track if auto-reconnector has been started (used with config.reconnect_config.enabled)
+    reconnector_started: Arc<AtomicBool>,
 }
 
 impl WebSocketSignalingClient {
@@ -264,6 +267,7 @@ impl WebSocketSignalingClient {
             ws_sink: Arc::new(tokio::sync::Mutex::new(None)),
             ws_stream: tokio::sync::Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
+            connecting: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(AtomicSignalingStats::default()),
             envelope_counter: tokio::sync::Mutex::new(0),
             pending_replies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -273,20 +277,73 @@ impl WebSocketSignalingClient {
             ping_task: tokio::sync::Mutex::new(None),
             state_tx,
             last_pong: Arc::new(AtomicU64::new(0)),
+            reconnector_started: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Start the auto-reconnector if enabled in config and not already started.
+    ///
+    /// This should be called after wrapping in Arc, typically right after creation or
+    /// on first connect(). It's safe to call multiple times - reconnector starts only once.
+    pub fn start_auto_reconnector(self: &Arc<Self>) {
+        // Check if auto-reconnect is enabled and not already started
+        if self.config.reconnect_config.enabled
+            && self
+                .reconnector_started
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            tracing::info!("🔄 Starting auto-reconnector for signaling client");
+
+            let self_clone = self.clone();
+            let mut state_rx = self.subscribe_state();
+
+            tokio::spawn(async move {
+                loop {
+                    match state_rx.changed().await {
+                        Err(_) => {
+                            // State channel closed, client is being dropped
+                            tracing::info!("� Signaling client dropped, stopping reconnect helper");
+                            break;
+                        }
+                        Ok(_) => {
+                            if *state_rx.borrow() == ConnectionState::Disconnected {
+                                // Cleanup old WebSocket resources before reconnecting
+                                tracing::debug!(
+                                    "🧹 Cleaning up old WebSocket resources before reconnect"
+                                );
+                                if let Err(e) = self_clone.disconnect().await {
+                                    tracing::warn!("⚠️ Disconnect cleanup failed (non-fatal): {e}");
+                                }
+
+                                tracing::warn!(
+                                    "📡 Signaling state is DISCONNECTED, attempting reconnect"
+                                );
+                                if let Err(e) = self_clone.connect().await {
+                                    tracing::error!("❌ Signaling reconnect failed: {e}");
+                                } else {
+                                    tracing::info!("✅ Signaling reconnect succeeded");
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
     }
 
     /// simple for convenience construct create Function
-    pub async fn connect_to(url: &str) -> NetworkResult<Self> {
+    pub async fn connect_to(url: &str) -> NetworkResult<Arc<Self>> {
         let config = SignalingConfig {
             server_url: url.parse()?,
-            connection_timeout: 30,
+            connection_timeout: 5,
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
         };
 
-        let client = Self::new(config);
+        let client = Arc::new(Self::new(config));
+        client.start_auto_reconnector();
         client.connect().await?;
         Ok(client)
     }
@@ -488,7 +545,6 @@ impl WebSocketSignalingClient {
         let connected = self.connected.clone();
         let state_tx = self.state_tx.clone();
         let last_pong = self.last_pong.clone();
-        tracing::debug!("Start receiver");
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
@@ -565,6 +621,7 @@ impl WebSocketSignalingClient {
     }
 
     /// Spawn background ping task to detect half-open connections where writes do not fail but peer is gone.
+    /// fixme: merge to heartbeat task
     async fn start_ping_task(&self) {
         let mut existing = self.ping_task.lock().await;
         if let Some(handle) = existing.as_ref() {
@@ -631,15 +688,110 @@ impl WebSocketSignalingClient {
 
         *existing = Some(handle);
     }
+
+    /// Wait for ongoing connection attempt to complete (used when another task is connecting).
+    ///
+    /// This uses the watch channel to efficiently wait for state changes instead of polling.
+    async fn wait_for_connection_result(&self) -> NetworkResult<()> {
+        let mut state_rx = self.subscribe_state();
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout => {
+                    // Timeout: check final state
+                    if self.connected.load(Ordering::Acquire) {
+                        tracing::debug!("Connection succeeded just before timeout");
+                        return Ok(());
+                    }
+
+                    // Check if we can retry (connecting flag cleared)
+                    if !self.connecting.load(Ordering::Acquire) {
+                        tracing::warn!("Other connection attempt failed/timed out, will retry");
+                        // Recursively call connect() to retry
+                        return self.connect().await;
+                    }
+
+                    return Err(NetworkError::ConnectionError(
+                        "Timeout waiting for concurrent connection attempt".to_string(),
+                    ));
+                }
+
+                result = state_rx.changed() => {
+                    if result.is_err() {
+                        return Err(NetworkError::ConnectionError(
+                            "State channel closed while waiting for connection".to_string(),
+                        ));
+                    }
+
+                    let state = *state_rx.borrow();
+                    match state {
+                        ConnectionState::Connected => {
+                            tracing::debug!("Connection established by another task");
+                            return Ok(());
+                        }
+                        ConnectionState::Disconnected => {
+                            // Check if the connecting task gave up
+                            if !self.connecting.load(Ordering::Acquire) {
+                                tracing::warn!("Other connection attempt failed, will retry");
+                                // Recursively call connect() to retry with fresh attempt
+                                return self.connect().await;
+                            }
+                            // Otherwise, keep waiting (might be transient state)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
 impl SignalingClient for WebSocketSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
-        self.connect_with_retries().await?;
-        self.start_receiver().await;
-        self.start_ping_task().await;
-        Ok(())
+        // 🔐 Fast path: Check if already connected
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Already connected, skipping connect()");
+            return Ok(());
+        }
+
+        // 🔐 Try to acquire "connecting" lock using compare-and-swap
+        if self
+            .connecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // Another task is connecting, wait for state change using watch channel
+            tracing::debug!("Another connection attempt in progress, waiting for state change...");
+
+            return self.wait_for_connection_result().await;
+        }
+
+        // 🔐 We now hold the "connecting" lock, proceed with connection
+        tracing::debug!("Acquired connection lock, establishing connection...");
+
+        // Perform actual connection
+        let result = self.connect_with_retries().await;
+
+        // Clear "connecting" flag regardless of result
+        self.connecting.store(false, Ordering::Release);
+
+        // Handle connection result
+        match result {
+            Ok(()) => {
+                self.start_receiver().await;
+                self.start_ping_task().await;
+                Ok(())
+            }
+            Err(e) => {
+                // Explicitly notify waiting tasks that connection failed
+                // This allows them to retry immediately instead of waiting for timeout
+                let _ = self.state_tx.send(ConnectionState::Disconnected);
+                tracing::error!("Connection failed: {e}");
+                Err(e)
+            }
+        }
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
@@ -890,6 +1042,14 @@ impl SignalingClient for WebSocketSignalingClient {
             envelope
         };
 
+        // Check connection state first to avoid sending on stale/closed connections
+        // This prevents "Broken pipe" errors when ws_sink exists but connection is dead
+        if !self.is_connected() {
+            return Err(NetworkError::ConnectionError(
+                "Cannot send: WebSocket not connected".to_string(),
+            ));
+        }
+
         let mut sink_guard = self.ws_sink.lock().await;
 
         if let Some(sink) = sink_guard.as_mut() {
@@ -939,47 +1099,6 @@ impl SignalingClient for WebSocketSignalingClient {
     async fn set_credential_state(&self, credential_state: CredentialState) {
         *self.credential_state.lock().await = Some(credential_state);
     }
-}
-
-/// Spawn a helper task that listens to connection state changes and proactively reconnects
-/// when the signaling client transitions to Disconnected.
-pub fn spawn_signaling_reconnector(client: Arc<dyn SignalingClient>, shutdown: CancellationToken) {
-    let mut state_rx = client.subscribe_state();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::info!("🛑 Stopping signaling reconnect helper due to shutdown");
-                    break;
-                }
-                changed = state_rx.changed() => {
-                    if changed.is_err() {
-                        tracing::info!("Signaling state channel closed, stopping reconnect helper");
-                        break;
-                    }
-
-                    if *state_rx.borrow() == ConnectionState::Disconnected {
-                        // Double-check shutdown state to avoid reconnecting after shutdown
-                        if shutdown.is_cancelled() {
-                            tracing::info!(
-                                "Shutdown already requested when disconnect event observed; skipping reconnect"
-                            );
-                            break;
-                        }
-
-                        tracing::warn!("📡 Signaling state is DISCONNECTED, attempting reconnect");
-                        if let Err(e) = client.connect().await {
-                            tracing::error!("❌ Signaling reconnect failed: {e}");
-                        } else {
-                            tracing::info!("✅ Signaling reconnect succeeded");
-                        }
-
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// signaling statistics info
@@ -1179,74 +1298,6 @@ mod tests {
             credential_state: tokio::sync::Mutex::new(None),
         });
         (client, state_tx)
-    }
-
-    #[tokio::test]
-    async fn test_spawn_signaling_reconnector_does_not_trigger_on_connected() {
-        let (fake_client, state_tx) = make_fake_client();
-        let shutdown = CancellationToken::new();
-
-        // Upcast to trait object
-        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
-        spawn_signaling_reconnector(client_trait, shutdown.clone());
-
-        // Send a Connected state (should not trigger reconnect)
-        let _ = state_tx.send(ConnectionState::Connected);
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
-        assert_eq!(
-            calls, 0,
-            "connect() should not be called on Connected state"
-        );
-
-        shutdown.cancel();
-    }
-
-    #[tokio::test]
-    async fn test_spawn_signaling_reconnector_triggers_connect_on_disconnect() {
-        let (fake_client, state_tx) = make_fake_client();
-        let shutdown = CancellationToken::new();
-
-        // Upcast to trait object
-        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
-        spawn_signaling_reconnector(client_trait, shutdown.clone());
-
-        // Simulate a disconnect event
-        let _ = state_tx.send(ConnectionState::Disconnected);
-
-        // Give the helper some time to observe the event and call connect()
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
-        assert!(
-            calls >= 1,
-            "expected at least one reconnect attempt, got {}",
-            calls
-        );
-
-        shutdown.cancel();
-    }
-
-    #[tokio::test]
-    async fn test_spawn_signaling_reconnector_stops_on_shutdown_before_disconnect() {
-        let (fake_client, state_tx) = make_fake_client();
-        let shutdown = CancellationToken::new();
-
-        let client_trait: Arc<dyn SignalingClient> = fake_client.clone();
-        spawn_signaling_reconnector(client_trait, shutdown.clone());
-
-        // Immediately signal shutdown
-        shutdown.cancel();
-
-        // Then send a disconnect event after shutdown
-        let _ = state_tx.send(ConnectionState::Disconnected);
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let calls = fake_client.connect_calls.load(UsizeOrdering::SeqCst);
-        assert_eq!(calls, 0, "reconnect helper should not run after shutdown");
     }
 
     #[test]

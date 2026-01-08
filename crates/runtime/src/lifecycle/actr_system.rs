@@ -35,6 +35,15 @@ pub struct ActrSystem {
 
     /// Signaling client
     signaling_client: Arc<dyn SignalingClient>,
+
+    /// Network event channels (延迟创建，在 create_network_event_handle() 时创建)
+    /// attach() 时会 take 这些 channels 传递给 ActrNode
+    network_event_channels: std::sync::Mutex<
+        Option<(
+            tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
+            tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+        )>,
+    >,
 }
 
 impl ActrSystem {
@@ -90,8 +99,10 @@ impl ActrSystem {
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
         };
-        let signaling_client: Arc<dyn SignalingClient> =
-            Arc::new(WebSocketSignalingClient::new(signaling_config));
+
+        let client = Arc::new(WebSocketSignalingClient::new(signaling_config));
+        client.start_auto_reconnector(); // Start if reconnect_config.enabled = true
+        let signaling_client: Arc<dyn SignalingClient> = client;
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Initialize inproc infrastructure (Shell/Local communication - immediately available)
@@ -142,7 +153,40 @@ impl ActrSystem {
             dlq,
             context_factory,
             signaling_client,
+            network_event_channels: std::sync::Mutex::new(None),
         })
+    }
+
+    /// 创建网络事件处理基础设施（按需调用）
+    ///
+    /// 创建 NetworkEventHandle 和内部 channels。
+    /// channels 会存储在结构体中，供 attach() 使用。
+    ///
+    /// # 注意
+    /// - 只能调用一次
+    /// - 如果不调用此方法，网络事件功能将不可用
+    ///
+    /// # Panics
+    /// 如果已经调用过此方法，会 panic
+    pub fn create_network_event_handle(&self) -> crate::lifecycle::NetworkEventHandle {
+        // 创建双向 channels
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
+
+        // 存储 channels（供 attach() 使用）
+        let mut channels = self
+            .network_event_channels
+            .lock()
+            .expect("Failed to lock network_event_channels");
+
+        if channels.is_some() {
+            panic!("create_network_event_handle() can only be called once");
+        }
+
+        *channels = Some((event_rx, result_tx));
+
+        // 创建并返回 NetworkEventHandle
+        crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
     }
 
     /// Attach Workload, transform into ActrNode<W>
@@ -158,6 +202,15 @@ impl ActrSystem {
     pub fn attach<W: Workload>(self, workload: W) -> ActrNode<W> {
         tracing::info!("📦 Attaching workload");
 
+        // 从 network_event_channels 中 take channels（如果存在）
+        let (network_event_rx, network_event_result_tx) = self
+            .network_event_channels
+            .lock()
+            .expect("Failed to lock network_event_channels")
+            .take()
+            .map(|(rx, tx)| (Some(rx), Some(tx)))
+            .unwrap_or((None, None));
+
         ActrNode {
             config: self.config,
             workload: Arc::new(workload),
@@ -168,11 +221,13 @@ impl ActrSystem {
             actor_id: None,              // Obtained after startup
             credential_state: None,      // Obtained after startup
             psk: None,                   // Obtained after startup (for TURN auth)
-            webrtc_coordinator: None,    // Created after startup
+            webrtc_coordinator: None,    // Pass shared coordinator
             webrtc_gate: None,           // Created after startup
             inproc_mgr: None,            // Set after startup
             workload_to_shell_mgr: None, // Set after startup
             shutdown_token: tokio_util::sync::CancellationToken::new(),
+            network_event_rx,
+            network_event_result_tx,
         }
     }
 }

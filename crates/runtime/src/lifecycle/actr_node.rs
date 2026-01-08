@@ -84,6 +84,14 @@ pub struct ActrNode<W: Workload> {
 
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
+
+    /// Network event receiver (from NetworkEventHandle)
+    pub(crate) network_event_rx:
+        Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>>,
+
+    /// Network event result sender (to NetworkEventHandle)
+    pub(crate) network_event_result_tx:
+        Option<tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>>,
 }
 
 /// Credential state for shared access between tasks
@@ -102,7 +110,7 @@ struct CredentialStateInner {
 
 impl CredentialState {
     /// Create a new CredentialState with PSK
-    fn new(
+    pub(crate) fn new(
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
         psk: Option<Bytes>,
@@ -413,6 +421,63 @@ impl<W: Workload> ActrNode<W> {
             None => Err(actr_protocol::ProtocolError::TransportError(
                 "Invalid route candidates response: missing result".to_string(),
             )),
+        }
+    }
+
+    /// 网络事件处理循环（后台任务）
+    ///
+    /// # 职责
+    /// - 从 Channel 接收网络事件
+    /// - 委托给 NetworkEventProcessor 处理
+    /// - 记录处理时间并发送结果
+    async fn network_event_loop(
+        mut event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
+        result_tx: tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+        event_processor: Arc<dyn crate::lifecycle::network_event::NetworkEventProcessor>,
+        shutdown_token: CancellationToken,
+    ) {
+        use crate::lifecycle::network_event::{NetworkEvent, NetworkEventResult};
+
+        tracing::info!("🔄 Network event loop started");
+
+        loop {
+            tokio::select! {
+                // 接收网络事件
+                Some(event) = event_rx.recv() => {
+                    let start = std::time::Instant::now();
+
+                    let result = match &event {
+                        NetworkEvent::Available => {
+                            event_processor.process_network_available().await
+                        }
+                        NetworkEvent::Lost => {
+                            event_processor.process_network_lost().await
+                        }
+                        NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
+                            event_processor.process_network_type_changed(*is_wifi, *is_cellular).await
+                        }
+                    };
+
+                    let duration_ms = start.elapsed().as_millis() as u64;
+
+                    // 构造处理结果
+                    let event_result = match result {
+                        Ok(_) => NetworkEventResult::success(event.clone(), duration_ms),
+                        Err(e) => NetworkEventResult::failure(event.clone(), e, duration_ms),
+                    };
+
+                    // 发送结果（忽略发送失败，避免阻塞）
+                    if let Err(e) = result_tx.send(event_result).await {
+                        tracing::warn!("Failed to send event result: {}", e);
+                    }
+                }
+
+                // 监听关闭信号
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("🛑 Network event loop shutting down");
+                    break;
+                }
+            }
         }
     }
 
@@ -866,6 +931,32 @@ impl<W: Workload> ActrNode<W> {
                 );
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.8.5. Spawn network event processing loop
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                if let (Some(event_rx), Some(result_tx)) = (
+                    self.network_event_rx.take(),
+                    self.network_event_result_tx.take(),
+                ) {
+                    use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
+
+                    // 创建 DefaultNetworkEventProcessor
+                    let event_processor = Arc::new(DefaultNetworkEventProcessor::new(
+                        self.signaling_client.clone(),
+                        self.webrtc_coordinator.clone(),
+                    ));
+
+                    let shutdown = self.shutdown_token.clone();
+
+                    let network_event_handle = tokio::spawn(async move {
+                        Self::network_event_loop(event_rx, result_tx, event_processor, shutdown)
+                            .await;
+                    });
+
+                    task_handles.push(network_event_handle);
+                    tracing::info!("✅ Network event loop started");
+                }
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 //
@@ -944,12 +1035,6 @@ impl<W: Workload> ActrNode<W> {
 
                     task_handles.push(unregister_handle);
                 }
-
-                // Spawn signaling auto-reconnect helper that reacts immediately to disconnect events.
-                crate::wire::webrtc::spawn_signaling_reconnector(
-                    self.signaling_client.clone(),
-                    self.shutdown_token.clone(),
-                );
             }
             Some(register_response::Result::Error(error)) => {
                 tracing::error!(

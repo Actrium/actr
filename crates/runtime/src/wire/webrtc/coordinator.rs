@@ -38,7 +38,10 @@ use actr_protocol::{
     session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::HashMap;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +50,7 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
 use webrtc::track::track_local::TrackLocalWriter;
 
@@ -54,13 +58,15 @@ const ICE_RESTART_MAX_RETRIES: u32 = 5;
 const ICE_RESTART_TIMEOUT: Duration = Duration::from_secs(5);
 const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 5000;
 const ICE_RESTART_MAX_BACKOFF_MS: u64 = 60000;
+const ICE_RESTART_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
+const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_FAILED_DURATION: Duration = Duration::from_secs(60); // 1 minute
 
-/// Per-peer negotiation state (role, ready signals, restart tasks)
+/// Per-peer negotiation state (role, ready signals)
 /// Consolidates multiple related fields into a single lock to reduce contention.
 #[derive(Default)]
 struct PeerNegotiationState {
@@ -70,8 +76,6 @@ struct PeerNegotiationState {
     ready_tx: Option<oneshot::Sender<()>>,
     /// Ready receiver for proactive offerer path
     ready_rx: Option<oneshot::Receiver<()>>,
-    /// In-flight ICE restart task handle
-    restart_handle: Option<JoinHandle<()>>,
 }
 
 /// Simple exponential backoff iterator for retries
@@ -81,6 +85,10 @@ struct ExponentialBackoff {
     max_retries: Option<u32>,
     initial_delay: Duration,
     max_delay: Duration,
+    /// Optional total duration limit (across all retries)
+    max_total_duration: Option<Duration>,
+    /// Start time for tracking total duration
+    start_time: Option<Instant>,
 }
 
 impl ExponentialBackoff {
@@ -90,6 +98,34 @@ impl ExponentialBackoff {
             max_retries,
             initial_delay,
             max_delay,
+            max_total_duration: None,
+            start_time: None,
+        }
+    }
+
+    /// Create a new ExponentialBackoff with total duration limit
+    pub fn with_total_duration(
+        initial_delay: Duration,
+        max_delay: Duration,
+        max_retries: Option<u32>,
+        max_total_duration: Duration,
+    ) -> Self {
+        Self {
+            current_retries: 0,
+            max_retries,
+            initial_delay,
+            max_delay,
+            max_total_duration: Some(max_total_duration),
+            start_time: Some(Instant::now()),
+        }
+    }
+
+    /// Check if total duration has been exceeded
+    fn is_duration_exceeded(&self) -> bool {
+        if let (Some(max_duration), Some(start)) = (self.max_total_duration, self.start_time) {
+            start.elapsed() > max_duration
+        } else {
+            false
         }
     }
 }
@@ -98,8 +134,19 @@ impl Iterator for ExponentialBackoff {
     type Item = Duration;
 
     fn next(&mut self) -> Option<Duration> {
+        // Initialize start_time on first call if max_total_duration is set
+        if self.max_total_duration.is_some() && self.start_time.is_none() {
+            self.start_time = Some(Instant::now());
+        }
+
+        // Check total duration limit first
+        if self.is_duration_exceeded() {
+            return None;
+        }
+
         let delay = self.initial_delay;
 
+        // Check max retries
         if let Some(max_retries) = self.max_retries {
             self.current_retries += 1;
             if self.current_retries > max_retries {
@@ -134,6 +181,9 @@ struct PeerState {
 
     /// Restart attempts counter (resets on success)
     ice_restart_attempts: u32,
+
+    /// In-flight ICE restart task handle (for de-duplication and lifecycle management)
+    restart_task_handle: Option<JoinHandle<()>>,
 
     /// Last state change timestamp (for health check)
     last_state_change: std::time::Instant,
@@ -222,6 +272,58 @@ impl WebRtcCoordinator {
     /// Get the event sender for sharing with WebRtcConnection instances
     pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<ConnectionEvent> {
         self.event_broadcaster.sender()
+    }
+
+    /// Trigger ICE restart for all connections in Failed/Disconnected state
+    pub async fn retry_failed_connections(self: &Arc<Self>) {
+        let peers = self.peers.read().await;
+        // Collect peers that need restart to avoid holding lock during async operations
+        let mut targets = Vec::new();
+
+        for (peer_id, state) in peers.iter() {
+            match state.current_state {
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected => {
+                    if !state.ice_restart_inflight {
+                        targets.push(peer_id.clone());
+                    }
+                }
+                _ => {
+                    #[cfg(test)]
+                    tracing::debug!(
+                        "Actor {:?} is in state {:?}, test restart",
+                        peer_id,
+                        state.current_state
+                    );
+                    targets.push(peer_id.clone());
+                }
+            }
+        }
+        drop(peers); // Release lock
+
+        for peer_id in targets {
+            tracing::info!("♻️ Auto-retrying failed connection to actor {:?}", peer_id);
+            if let Err(e) = self.restart_ice(&peer_id).await {
+                tracing::error!("❌ Failed to restart ICE for {:?}: {}", peer_id, e);
+            }
+        }
+    }
+
+    /// Clear pending ICE restart attempts (called on network loss)
+    pub async fn clear_pending_restarts(&self) {
+        let mut peers = self.peers.write().await;
+        for (peer_id, state) in peers.iter_mut() {
+            if state.ice_restart_inflight {
+                tracing::info!("🛑 Aborting in-flight ICE restart for {:?}", peer_id);
+                // Cancel restart task if it exists
+                if let Some(handle) = state.restart_task_handle.take() {
+                    handle.abort();
+                }
+                state.ice_restart_inflight = false;
+                // Note: We don't reset attempts here, as we might want to resume counting if network comes back quickly?
+                // Actually, resetting makes sense as it's a fresh network start.
+                state.ice_restart_attempts = 0;
+            }
+        }
     }
 
     /// Start internal event listener for handling connection close events
@@ -881,14 +983,23 @@ impl WebRtcCoordinator {
         // 2. Clear pending candidates
         self.pending_candidates.write().await.remove(target);
 
-        // 3. Clear negotiation state and cancel in-flight restarts (single lock)
-        if let Some(neg_state) = self.peer_negotiation.lock().await.remove(target) {
+        // 3. Clear negotiation state (role negotiation only, no restart_handle)
+        if self.peer_negotiation.lock().await.remove(target).is_some() {
             tracing::debug!(
                 "🧹 Clearing negotiation state for serial={}",
                 target.serial_number
             );
-            if let Some(handle) = neg_state.restart_handle {
+        }
+
+        // 4. Cancel in-flight restart task if any (from peers lock)
+        // Note: We need to abort the task before removing the peer state
+        if let Some(peer_state) = self.peers.read().await.get(target) {
+            if let Some(ref handle) = peer_state.restart_task_handle {
                 handle.abort();
+                tracing::debug!(
+                    "🧹 Aborted restart task for serial={}",
+                    target.serial_number
+                );
             }
         }
 
@@ -933,6 +1044,7 @@ impl WebRtcCoordinator {
                     is_offerer: true,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
+                    restart_task_handle: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -1141,6 +1253,7 @@ impl WebRtcCoordinator {
                     is_offerer: false,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
+                    restart_task_handle: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -2417,32 +2530,38 @@ impl WebRtcCoordinator {
     }
 
     /// Initiate ICE restart on an existing connection (offerer side).
-    /// Uses peer_negotiation to de-duplicate concurrent restart requests.
+    /// Uses atomic state management within peers lock for complete de-duplication.
     /// If ICE restart fails after all retries, attempts to establish a new connection.
     pub async fn restart_ice(
         self: &Arc<Self>,
         target: &actr_protocol::ActrId,
     ) -> RuntimeResult<()> {
-        // 1. Check if restart is already in-flight (de-duplication)
-        {
-            let neg = self.peer_negotiation.lock().await;
-            if let Some(state) = neg.get(target) {
-                if let Some(ref handle) = state.restart_handle {
+        // All ICE restart state management is now unified within the peers lock
+        // This provides atomic de-duplication and eliminates race conditions
+        let (peer_connection, should_start_restart) = {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers.get_mut(target) {
+                // 1. Check if restart is already in-flight using restart_task_handle
+                if let Some(ref handle) = state.restart_task_handle {
                     if !handle.is_finished() {
                         tracing::debug!(
-                            "🚫 ICE restart already in-flight for serial={}, skipping",
+                            "🚫 ICE restart already in-flight for serial={}, skipping (task not finished)",
                             target.serial_number
                         );
                         return Ok(());
                     }
                 }
-            }
-        }
 
-        // 2. Check if we are the offerer and peer exists
-        let peer_connection = {
-            let peers = self.peers.read().await;
-            if let Some(state) = peers.get(target) {
+                // 2. Also check ice_restart_inflight flag as a backup
+                if state.ice_restart_inflight {
+                    tracing::debug!(
+                        "🚫 ICE restart already in-flight for serial={}, skipping (ice_restart_inflight=true)",
+                        target.serial_number
+                    );
+                    return Ok(());
+                }
+
+                // 3. Check if we are the offerer
                 if !state.is_offerer {
                     tracing::warn!(
                         "🚫 Skip ICE restart to serial={}: we are not the offerer",
@@ -2450,7 +2569,13 @@ impl WebRtcCoordinator {
                     );
                     return Ok(());
                 }
-                state.peer_connection.clone()
+
+                // 4. Set flag to prevent concurrent restarts
+                state.ice_restart_inflight = true;
+                // Note: ice_restart_attempts will be managed by do_ice_restart_inner
+                // Note: restart_task_handle will be set after spawning the task
+
+                (state.peer_connection.clone(), true)
             } else {
                 tracing::warn!(
                     "🚫 Skip ICE restart to serial={}: peer not found",
@@ -2460,16 +2585,19 @@ impl WebRtcCoordinator {
             }
         };
 
+        if !should_start_restart {
+            return Ok(());
+        }
+
         tracing::info!(
             "♻️ Initiating ICE restart to serial={}",
             target.serial_number
         );
 
-        // 3. Spawn restart task and track it
+        // Spawn restart task
         let target_clone = target.clone();
         let peers = Arc::clone(&self.peers);
         let negotiator = self.negotiator.clone();
-        let peer_negotiation_cleanup = Arc::clone(&self.peer_negotiation);
         let local_id = self.local_id.clone();
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
@@ -2528,22 +2656,23 @@ impl WebRtcCoordinator {
                 }
             }
 
-            // Cleanup restart_handle registration
+            // Cleanup restart_task_handle registration - now in peers lock
             {
-                let mut neg = peer_negotiation_cleanup.lock().await;
-                if let Some(state) = neg.get_mut(&target_clone) {
-                    state.restart_handle = None;
+                let mut peers_guard = peers.write().await;
+                if let Some(state) = peers_guard.get_mut(&target_clone) {
+                    state.restart_task_handle = None;
                 }
             }
         });
 
-        // Store the restart handle
-        self.peer_negotiation
-            .lock()
-            .await
-            .entry(target.clone())
-            .or_default()
-            .restart_handle = Some(handle);
+        // Store the restart handle immediately in the same peers lock
+        // This completes the atomic state transition
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers.get_mut(target) {
+                state.restart_task_handle = Some(handle);
+            }
+        }
 
         Ok(())
     }
@@ -2559,15 +2688,59 @@ impl WebRtcCoordinator {
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
     ) -> RuntimeResult<bool> {
-        let backoff = ExponentialBackoff::new(
+        // Use enhanced backoff with total duration limit
+        let backoff = ExponentialBackoff::with_total_duration(
             Duration::from_millis(ICE_RESTART_INITIAL_BACKOFF_MS),
             Duration::from_millis(ICE_RESTART_MAX_BACKOFF_MS),
             Some(ICE_RESTART_MAX_RETRIES),
+            ICE_RESTART_MAX_TOTAL_DURATION,
         );
 
         let mut restart_ok = false;
+        let mut gathering_started_at: Option<Instant> = None;
 
         for delay in backoff {
+            // ========== Guard 1: Check signaling state ==========
+            if !signaling_client.is_connected() {
+                tracing::debug!(
+                    "🔄 Signaling not ready for ICE restart to serial={}, will retry after {:?}",
+                    target.serial_number,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                continue; // Skip this iteration, don't create offer
+            }
+
+            // ========== Guard 2: Check ICE gathering state (with timeout detection) ==========
+            let gathering_state = peer_connection.ice_gathering_state();
+            if gathering_state == RTCIceGatheringState::Gathering {
+                let started = gathering_started_at.get_or_insert_with(Instant::now);
+                let gathering_duration = started.elapsed();
+
+                if gathering_duration > ICE_GATHERING_TIMEOUT {
+                    tracing::error!(
+                        "❌ ICE gathering stuck for {:?}, aborting ICE restart for serial={}",
+                        gathering_duration,
+                        target.serial_number
+                    );
+                    // Close peer connection to stop gathering
+                    let _ = peer_connection.close().await;
+                    return Ok(false);
+                }
+
+                tracing::debug!(
+                    "⏳ ICE gathering in progress ({:?} elapsed), will retry after {:?}",
+                    gathering_duration,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                continue; // Skip this iteration, wait for gathering to complete
+            } else {
+                // Not gathering, reset timer
+                gathering_started_at = None;
+            }
+
+            // ========== Both guards passed, safe to create offer ==========
             let (offer_sdp, attempt) = {
                 let mut peers_guard = peers.write().await;
                 let state = match peers_guard.get_mut(target) {
@@ -2591,8 +2764,9 @@ impl WebRtcCoordinator {
                     return Ok(false);
                 }
 
+                // ice_restart_inflight is already set to true in restart_ice()
+                // Just increment the attempt counter here
                 state.ice_restart_attempts += 1;
-                state.ice_restart_inflight = true;
                 let attempt = state.ice_restart_attempts;
 
                 let offer_sdp = negotiator
