@@ -32,10 +32,10 @@
 //!    - 用于细粒度的服务间访问控制
 
 use actr_protocol::{
-    AIdCredential, ActrId, ActrRelay, ActrToSignaling, ActrType, ActrUpEvent, ErrorResponse,
-    PeerToSignaling, Ping, Pong, Realm, RegisterRequest, RegisterResponse, RoleAssignment,
-    RoleNegotiation, SignalingEnvelope, SignalingToActr, actr_relay, actr_to_signaling,
-    peer_to_signaling, register_response, signaling_envelope, signaling_to_actr,
+    AIdCredential, ActrId, ActrIdExt, ActrRelay, ActrToSignaling, ActrType, ActrUpEvent,
+    ErrorResponse, PeerToSignaling, Ping, Pong, Realm, RegisterRequest, RegisterResponse,
+    RoleAssignment, RoleNegotiation, SignalingEnvelope, SignalingToActr, actr_relay,
+    actr_to_signaling, peer_to_signaling, register_response, signaling_envelope, signaling_to_actr,
 };
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
 use actrix_common::realm::Realm as RealmEntity;
@@ -533,7 +533,7 @@ async fn handle_register_request(
         let service_name = request
             .service_spec
             .as_ref()
-            .and_then(|spec| spec.description.clone())
+            .map(|spec| spec.name.clone())
             .unwrap_or_else(|| {
                 format!(
                     "{}/{}",
@@ -818,13 +818,25 @@ async fn handle_actr_to_server(
             handle_unregister(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::CredentialUpdateRequest(req)) => {
-            handle_credential_update(source, req, client_id, server, request_envelope_id).await?;
+            if source != req.actr_id {
+                tracing::error!(
+                    "CredentialUpdateRequest actr_id mismatch: source={} actr_id={}",
+                    source.to_string_repr(),
+                    req.actr_id.to_string_repr()
+                );
+                return Ok(());
+            }
+            handle_credential_update(source, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::DiscoveryRequest(req)) => {
             handle_discovery_request(source, req, client_id, server, request_envelope_id).await?;
         }
         Some(actr_to_signaling::Payload::RouteCandidatesRequest(req)) => {
             handle_route_candidates_request(source, req, client_id, server, request_envelope_id)
+                .await?;
+        }
+        Some(actr_to_signaling::Payload::GetServiceSpecRequest(req)) => {
+            handle_get_service_spec_request(source, req, client_id, server, request_envelope_id)
                 .await?;
         }
         Some(actr_to_signaling::Payload::SubscribeActrUpRequest(req)) => {
@@ -1305,7 +1317,6 @@ async fn cleanup_client(client_id: &str, server: &SignalingServerHandle) {
 #[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id)))]
 async fn handle_credential_update(
     source: ActrId,
-    _req: actr_protocol::CredentialUpdateRequest,
     client_id: &str,
     server: &SignalingServerHandle,
     request_envelope_id: &str,
@@ -1523,18 +1534,26 @@ async fn handle_discovery_request(
 
         // 如果该类型还未添加，创建新条目
         type_map.entry(type_key).or_insert_with(|| {
-            let fingerprint = service
+            let (fingerprint, description, published_at, tags) = service
                 .service_spec
                 .as_ref()
-                .map(|spec| spec.fingerprint.clone())
-                .unwrap_or_else(|| "unknown".to_string());
+                .map(|spec| {
+                    (
+                        spec.fingerprint.clone(),
+                        spec.description.clone(),
+                        spec.published_at,
+                        spec.tags.clone(),
+                    )
+                })
+                .unwrap_or_else(|| ("unknown".to_string(), None, None, Vec::new()));
 
             actr_protocol::discovery_response::TypeEntry {
                 actr_type: service.actor_id.r#type.clone(),
-                description: None,
+                name: service.service_name.clone(),
+                description,
                 service_fingerprint: fingerprint,
-                published_at: Some(service.last_heartbeat_time_secs as i64),
-                tags: vec![],
+                published_at,
+                tags,
             }
         });
     }
@@ -1694,6 +1713,53 @@ async fn handle_route_candidates_request(
         payload: Some(signaling_to_actr::Payload::RouteCandidatesResponse(
             response,
         )),
+    });
+
+    let response_envelope = server.create_envelope(flow, Some(request_envelope_id));
+    send_envelope_to_client(client_id, response_envelope, server).await?;
+
+    Ok(())
+}
+
+/// Handle GetServiceSpec request
+#[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id)))]
+async fn handle_get_service_spec_request(
+    source: ActrId,
+    req: actr_protocol::GetServiceSpecRequest,
+    client_id: &str,
+    server: &SignalingServerHandle,
+    request_envelope_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let service_name = req.name.as_str();
+    info!(
+        "Handle GetServiceSpec request for Actor {} name={}",
+        source.to_string_repr(),
+        service_name
+    );
+
+    // Find matching ServiceSpec in ServiceRegistry
+    let result = server
+        .service_registry
+        .read()
+        .await
+        .discover_by_service_name(service_name)
+        .into_iter()
+        .find_map(|service| service.service_spec.clone())
+        .map(actr_protocol::get_service_spec_response::Result::Success)
+        .unwrap_or_else(|| {
+            actr_protocol::get_service_spec_response::Result::Error(ErrorResponse {
+                code: 404,
+                message: format!("Service specification not found for name={}", service_name),
+            })
+        });
+
+    let response = actr_protocol::GetServiceSpecResponse {
+        result: Some(result),
+    };
+
+    let flow = signaling_envelope::Flow::ServerToActr(SignalingToActr {
+        target: source,
+        payload: Some(signaling_to_actr::Payload::GetServiceSpecResponse(response)),
     });
 
     let response_envelope = server.create_envelope(flow, Some(request_envelope_id));

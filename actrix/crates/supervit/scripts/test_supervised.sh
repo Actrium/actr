@@ -305,6 +305,7 @@ action_create_realm() {
   "public_key": "${test_public_key}",
   "enabled": true,
   "key_id": $(date +%s),
+  "use_servers": [1, 2, 3],
   "version": 1,
   "credential": ${cred}
 }
@@ -366,13 +367,13 @@ main() {
         node_info|node-info|nodeinfo)
             action_node_info
             ;;
-        list_realms|list-realms|listrealms|list_tenants|list-tenants|listtenants)
+        list_realms|list-realms|listrealms)
             action_list_realms
             ;;
-        get_realm|get-realm|getrealm|get_tenant|get-tenant|gettenant)
+        get_realm|get-realm|getrealm)
             action_get_realm
             ;;
-        create_realm|create-realm|createrealms|create_tenant|create-tenant|createtenant)
+        create_realm|create-realm|createrealms)
             action_create_realm
             ;;
         shutdown)

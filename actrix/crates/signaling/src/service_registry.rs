@@ -1157,6 +1157,7 @@ mod tests {
         let actor_id = create_test_actor_id(1);
 
         let service_spec = actr_protocol::ServiceSpec {
+            name: "secure_service".to_string(),
             fingerprint: "sha256:test123".to_string(),
             description: Some("Test service".to_string()),
             protobufs: vec![],

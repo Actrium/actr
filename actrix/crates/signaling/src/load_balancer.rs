@@ -883,6 +883,7 @@ mod tests {
         // 创建候选服务（带 service_spec）
         let mut s1 = create_test_service(1, "test-service");
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "test-service".to_string(),
             fingerprint: "server-fp-compatible".to_string(),
             description: None,
             protobufs: vec![],
@@ -892,6 +893,7 @@ mod tests {
 
         let mut s2 = create_test_service(2, "test-service");
         s2.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "test-service".to_string(),
             fingerprint: "server-fp-backward".to_string(),
             description: None,
             protobufs: vec![],
@@ -901,6 +903,7 @@ mod tests {
 
         let mut s3 = create_test_service(3, "test-service");
         s3.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "test-service".to_string(),
             fingerprint: "server-fp-incompatible".to_string(),
             description: None,
             protobufs: vec![],
@@ -946,6 +949,7 @@ mod tests {
 
         let mut s1 = create_test_service(1, "test-service");
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "test-service".to_string(),
             fingerprint: "unknown-fingerprint".to_string(),
             description: None,
             protobufs: vec![],
@@ -988,6 +992,7 @@ mod tests {
         // 创建候选服务
         let mut s1 = create_test_service(1, "api");
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "api".to_string(),
             fingerprint: "server-v1".to_string(),
             description: None,
             protobufs: vec![],
@@ -997,6 +1002,7 @@ mod tests {
 
         let mut s2 = create_test_service(2, "api");
         s2.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "api".to_string(),
             fingerprint: "server-v2".to_string(),
             description: None,
             protobufs: vec![],
@@ -1052,6 +1058,7 @@ mod tests {
         let mut s1 = create_test_service(1, "worker");
         s1.power_reserve = Some(0.8);
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "worker".to_string(),
             fingerprint: "worker-0.9".to_string(),
             description: None,
             protobufs: vec![],
@@ -1062,6 +1069,7 @@ mod tests {
         let mut s2 = create_test_service(2, "worker");
         s2.power_reserve = Some(0.3);
         s2.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "worker".to_string(),
             fingerprint: "worker-1.0".to_string(),
             description: None,
             protobufs: vec![],
@@ -1109,6 +1117,7 @@ mod tests {
         // 创建候选服务，fingerprint 与客户端完全相同
         let mut s1 = create_test_service(1, "user-api");
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "user-api".to_string(),
             fingerprint: "sha256:exact-match".to_string(),
             description: None,
             protobufs: vec![],
@@ -1146,6 +1155,7 @@ mod tests {
         // 创建候选服务
         let mut s1 = create_test_service(1, "payment-api");
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "payment-api".to_string(),
             fingerprint: "client-v2".to_string(), // 精确匹配
             description: None,
             protobufs: vec![],
@@ -1155,6 +1165,7 @@ mod tests {
 
         let mut s2 = create_test_service(2, "payment-api");
         s2.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "payment-api".to_string(),
             fingerprint: "server-v1".to_string(), // 需要降级
             description: None,
             protobufs: vec![],
@@ -1164,6 +1175,7 @@ mod tests {
 
         let mut s3 = create_test_service(3, "payment-api");
         s3.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "payment-api".to_string(),
             fingerprint: "server-unknown".to_string(), // 缓存未命中
             description: None,
             protobufs: vec![],
@@ -1209,6 +1221,7 @@ mod tests {
         let mut s1 = create_test_service(1, "auth");
         s1.power_reserve = Some(0.3);
         s1.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "auth".to_string(),
             fingerprint: "client-v3".to_string(),
             description: None,
             protobufs: vec![],
@@ -1220,6 +1233,7 @@ mod tests {
         let mut s2 = create_test_service(2, "auth");
         s2.power_reserve = Some(0.9);
         s2.service_spec = Some(actr_protocol::ServiceSpec {
+            name: "auth".to_string(),
             fingerprint: "server-v2".to_string(),
             description: None,
             protobufs: vec![],

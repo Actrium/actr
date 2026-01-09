@@ -76,12 +76,6 @@ impl AisClient {
             acl: None,
         };
 
-        // 序列化为 protobuf
-        let mut request_bytes = Vec::new();
-        request
-            .encode(&mut request_bytes)
-            .map_err(|e| anyhow!("Failed to encode request: {e}"))?;
-
         debug!(
             "Sending refresh_credential request to {} (realm={}, type={}:{})",
             url, realm_id, request.actr_type.manufacturer, request.actr_type.name
@@ -92,7 +86,7 @@ impl AisClient {
             .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
-            .body(request_bytes)
+            .body(request.encode_to_vec())
             .send()
             .await
             .map_err(|e| anyhow!("HTTP request failed: {e}"))?;

@@ -78,7 +78,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// - 8 bits: sequence (每毫秒最多 256 个 ID)
 pub const BITS_LEN_SERIAL_NUMBER: usize = 54;
 
-// Snowflake-like algorithm constants for 54-bit SN
+/// Snowflake-like algorithm constants for 54-bit SN
 const CUSTOM_EPOCH: u64 = 1672531200000; // 2023-01-01 00:00:00 UTC in milliseconds
 const WORKER_ID_BITS: u64 = 5;
 const SEQUENCE_BITS: u64 = 8;
@@ -313,7 +313,7 @@ mod tests {
 
         // Rapidly generate many serial numbers
         for i in 0..1000 {
-            let sn = SerialNumber::sn(i % 10); // Different tenants
+            let sn = SerialNumber::sn(i % 10); // Different realms
             assert!(
                 generated.insert(sn.value()),
                 "Duplicate serial number generated: {}",

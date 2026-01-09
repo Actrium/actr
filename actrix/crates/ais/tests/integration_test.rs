@@ -143,7 +143,7 @@ async fn test_end_to_end_token_issuance_and_validation() {
 
 #[tokio::test]
 #[ignore] // 需要真实 KS 服务运行
-async fn test_token_validation_with_wrong_tenant_fails() {
+async fn test_token_validation_with_wrong_realm_fails() {
     let (issuer_temp_dir, _validator_temp_dir, ks_config, shared_key) = setup_test_environment();
 
     // 创建 Issuer

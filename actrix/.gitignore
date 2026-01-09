@@ -17,3 +17,5 @@ backup/
 .vscode/
 .status
 coverage/
+
+.DS_Store
