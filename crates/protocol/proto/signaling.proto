@@ -48,6 +48,7 @@ message ActrToSignaling {
     // Discovery & selection
     actr.DiscoveryRequest discovery_request = 10;
     actr.RouteCandidatesRequest route_candidates_request = 11;
+    actr.GetServiceSpecRequest get_service_spec_request = 12;
 
     // Presence subscription
     actr.SubscribeActrUpRequest subscribe_actr_up_request = 20;
@@ -70,6 +71,7 @@ message SignalingToActr {
     // Discovery & selection
     actr.DiscoveryResponse discovery_response = 10;
     actr.RouteCandidatesResponse route_candidates_response = 11;
+    actr.GetServiceSpecResponse get_service_spec_response = 12;
 
     // Presence subscription
     actr.SubscribeActrUpResponse subscribe_actr_up_response = 20;

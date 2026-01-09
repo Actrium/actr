@@ -73,11 +73,12 @@ mod tests {
         }
     }
 
-    fn create_test_service(_name: &str, proto_files: Vec<ProtoFile>) -> ServiceSpec {
+    fn create_test_service(name: &str, proto_files: Vec<ProtoFile>) -> ServiceSpec {
         let semantic_fp = Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
             .unwrap_or_else(|_| "placeholder".to_string());
 
         ServiceSpec {
+            name: name.to_string(),
             description: Some("Test service".to_string()),
             fingerprint: semantic_fp,
             protobufs: proto_files

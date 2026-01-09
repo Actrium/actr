@@ -73,6 +73,9 @@ pub enum RawDependency {
     /// 带指纹的依赖配置（必须先匹配，因为它有 required 字段）
     WithFingerprint {
         #[serde(default)]
+        name: Option<String>,
+
+        #[serde(default)]
         realm: Option<u32>,
 
         #[serde(default)]
@@ -114,7 +117,7 @@ pub struct RawSignalingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawDeploymentConfig {
     #[serde(default)]
-    pub realm: Option<u32>,
+    pub realm_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -202,9 +205,9 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-    [package.actr_type]
-    manufacturer = "acme"
-    name = "test-service"
+[package.actr_type]
+manufacturer = "acme"
+name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -213,7 +216,7 @@ user-service = {}
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 
 [scripts]
 run = "cargo run"
@@ -227,39 +230,62 @@ run = "cargo run"
     }
 
     #[test]
-    fn test_parse_complex_dependency() {
+    fn test_parse_dependency_with_empty_attributes() {
         let toml_content = r#"
 [package]
 name = "test"
-
 [package.actr_type]
 manufacturer = "acme"
 name = "test"
-
 [dependencies]
-shared = { actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
-
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.deployment]
-realm = 1001
+user-service = {}
 "#;
+        let config = RawConfig::from_str(toml_content).unwrap();
+        let dep = config.dependencies.get("user-service").unwrap();
+        assert!(matches!(dep, RawDependency::Empty {}));
+    }
 
+    #[test]
+    fn test_parse_dependency_with_name() {
+        let toml_content = r#"
+[package]
+name = "test"
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+[dependencies]
+shared = { name = "logging-service", fingerprint = "service_semantic:abc" }
+"#;
         let config = RawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
+        if let RawDependency::WithFingerprint {
+            name, fingerprint, ..
+        } = dep
+        {
+            assert_eq!(name.as_ref().unwrap(), "logging-service");
+            assert_eq!(fingerprint, "service_semantic:abc");
+        } else {
+            panic!("Expected WithFingerprint");
+        }
+    }
 
-        match dep {
-            RawDependency::WithFingerprint {
-                realm,
-                actr_type,
-                fingerprint,
-            } => {
-                assert_eq!(*realm, Some(9999));
-                assert_eq!(actr_type.as_ref().unwrap(), "logging-service");
-                assert_eq!(fingerprint, "service_semantic:abc123...");
-            }
-            _ => panic!("Expected fingerprint dependency"),
+    #[test]
+    fn test_parse_dependency_without_name() {
+        let toml_content = r#"
+[package]
+name = "test"
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+[dependencies]
+shared = { fingerprint = "service_semantic:abc" }
+"#;
+        let config = RawConfig::from_str(toml_content).unwrap();
+        let dep = config.dependencies.get("shared").unwrap();
+        if let RawDependency::WithFingerprint { name, .. } = dep {
+            assert!(name.is_none());
+        } else {
+            panic!("Expected WithFingerprint");
         }
     }
 }

@@ -520,7 +520,6 @@ async fn call_remote_service(ctx: &Context) -> ActorResult<()> {{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::ServiceName;
     use prost_types::MethodDescriptorProto;
 
     #[test]

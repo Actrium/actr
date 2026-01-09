@@ -1,12 +1,8 @@
 //! Lock file management for actr.lock.toml
 //!
-//! This module provides lock file structures with embedded proto content.
-//! Unlike package managers like cargo/npm that cache large packages separately,
-//! we embed proto content directly in the lock file because:
-//! - Proto files are small (typically 2-10KB each)
-//! - Total size is manageable (even 50 files = ~250KB)
-//! - Simplifies architecture (single source of truth)
-//! - Better for version control (can see proto changes in git diff)
+//! This module provides lock file structures for dependency locking.
+//! Proto content is cached to the project's `proto/` folder, not in the lock file.
+//! The lock file only records metadata (fingerprints, paths) for version locking.
 
 use crate::error::{ConfigError, Result};
 use actr_protocol::ServiceSpec;
@@ -15,6 +11,26 @@ use std::path::Path;
 use std::str::FromStr;
 
 /// Lock file structure for actr.lock.toml
+///
+/// Format matches documentation spec:
+/// ```toml
+/// [metadata]
+/// version = 1
+/// generated_at = "2024-01-15T10:30:00Z"
+///
+/// [[dependency]]
+/// name = "user-service"
+/// actr_type = "acme+user-service"
+/// description = "User management service"
+/// fingerprint = "service_semantic:a1b2c3d4e5f6..."
+/// published_at = 1705315800
+/// tags = ["latest", "stable"]
+/// cached_at = "2024-01-15T10:30:00Z"
+///
+///   [[dependency.files]]
+///   path = "user-service/user.v1.proto"
+///   fingerprint = "semantic:abc123..."
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LockFile {
     /// Lock file metadata
@@ -38,33 +54,60 @@ pub struct LockMetadata {
 /// A locked dependency entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockedDependency {
-    /// Dependency name (matches Actr.toml key)
+    /// Service name (identifier in lock file, matches Actr.toml dependency name property)
     pub name: String,
 
     /// Actor type (e.g., "acme+user-service")
     pub actr_type: String,
 
-    /// Service specification (flattened)
-    #[serde(flatten)]
-    pub spec: ServiceSpecMeta,
+    /// Service description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Service-level semantic fingerprint (format: "service_semantic:hash")
+    pub fingerprint: String,
+
+    /// Publication timestamp (Unix epoch seconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
+
+    /// Tags like "latest", "stable"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 
     /// When this dependency was cached (ISO 8601)
     pub cached_at: String,
+
+    /// Proto file references (path + fingerprint only, no content)
+    #[serde(rename = "files")]
+    pub files: Vec<LockedProtoFile>,
 }
 
-/// Service specification metadata for lock file
-/// Contains complete proto content (not separated into cache)
+/// Proto file reference in lock file (NO content, just path and fingerprint)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockedProtoFile {
+    /// Relative path from project's proto/ folder (e.g., "user-service/user.v1.proto")
+    pub path: String,
+
+    /// Semantic fingerprint of the file (format: "semantic:hash")
+    pub fingerprint: String,
+}
+
+/// Service specification metadata (for backward compatibility and conversions)
+/// Holds proto file references for conversions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSpecMeta {
+    pub name: String,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
     /// Service-level semantic fingerprint
     pub fingerprint: String,
 
-    /// Proto files with embedded content
+    /// Proto files referenced by path
     #[serde(rename = "files")]
-    pub protobufs: Vec<ProtoFileWithContent>,
+    pub protobufs: Vec<ProtoFileMeta>,
 
     /// Publication timestamp (Unix epoch seconds)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -75,20 +118,15 @@ pub struct ServiceSpecMeta {
     pub tags: Vec<String>,
 }
 
-/// Package-level protobuf with embedded content
-/// Note: Represents a merged package, not individual files
+/// Package-level protobuf entry in lock file
+/// Note: References a local file instead of embedding content
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProtoFileWithContent {
-    /// Package name (e.g., "user.v1", "acme.payment.v2")
-    /// Multiple .proto files of the same package are merged
-    #[serde(rename = "package")]
-    pub name: String,
+pub struct ProtoFileMeta {
+    /// Relative path to the proto file (e.g., "remote/user-service/user.v1.proto")
+    pub path: String,
 
-    /// Semantic fingerprint of the merged package content
+    /// Semantic fingerprint of the package content
     pub fingerprint: String,
-
-    /// Merged and normalized package content
-    pub content: String,
 }
 
 // ============================================================================
@@ -98,15 +136,15 @@ pub struct ProtoFileWithContent {
 impl From<ServiceSpec> for ServiceSpecMeta {
     fn from(spec: ServiceSpec) -> Self {
         Self {
+            name: spec.name,
             description: spec.description,
             fingerprint: spec.fingerprint,
             protobufs: spec
                 .protobufs
                 .into_iter()
-                .map(|proto| ProtoFileWithContent {
-                    name: proto.package,
+                .map(|proto| ProtoFileMeta {
+                    path: format!("{}.proto", proto.package),
                     fingerprint: proto.fingerprint,
-                    content: proto.content,
                 })
                 .collect(),
             published_at: spec.published_at,
@@ -118,14 +156,15 @@ impl From<ServiceSpec> for ServiceSpecMeta {
 impl From<ServiceSpecMeta> for ServiceSpec {
     fn from(meta: ServiceSpecMeta) -> Self {
         Self {
+            name: meta.name,
             description: meta.description,
             fingerprint: meta.fingerprint,
             protobufs: meta
                 .protobufs
                 .into_iter()
                 .map(|proto| actr_protocol::service_spec::Protobuf {
-                    package: proto.name, // ProtoFileWithContent.name → Protobuf.package
-                    content: proto.content,
+                    package: package_from_path(&proto.path),
+                    content: String::new(), // Content is no longer in lock file
                     fingerprint: proto.fingerprint,
                 })
                 .collect(),
@@ -206,19 +245,42 @@ impl FromStr for LockFile {
 
 impl LockedDependency {
     /// Create a new locked dependency entry
-    pub fn new(name: String, actr_type: String, spec: ServiceSpecMeta) -> Self {
+    pub fn new(actr_type: String, spec: ServiceSpecMeta) -> Self {
         Self {
-            name,
+            name: spec.name,
             actr_type,
-            spec,
+            description: spec.description,
+            fingerprint: spec.fingerprint,
+            published_at: spec.published_at,
+            tags: spec.tags,
             cached_at: chrono::Utc::now().to_rfc3339(),
+            files: spec
+                .protobufs
+                .iter()
+                .map(|p| LockedProtoFile {
+                    path: p.path.clone(),
+                    fingerprint: p.fingerprint.clone(),
+                })
+                .collect(),
         }
     }
 
-    /// Convert to ServiceSpec
-    pub fn to_service_spec(&self) -> ServiceSpec {
-        self.spec.clone().into()
+    /// Get service-level fingerprint
+    pub fn service_fingerprint(&self) -> &str {
+        &self.fingerprint
     }
+
+    /// Get file fingerprints
+    pub fn file_fingerprints(&self) -> &[LockedProtoFile] {
+        &self.files
+    }
+}
+
+fn package_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.trim_end_matches(".proto").to_string())
 }
 
 // ============================================================================
@@ -232,6 +294,7 @@ mod tests {
     #[test]
     fn test_service_spec_conversion() {
         let spec = ServiceSpec {
+            name: "test-service".to_string(),
             description: Some("Test service".to_string()),
             fingerprint: "service_semantic:abc123".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -246,8 +309,7 @@ mod tests {
         // Convert to meta
         let meta: ServiceSpecMeta = spec.clone().into();
         assert_eq!(meta.protobufs.len(), 1);
-        assert_eq!(meta.protobufs[0].name, "user.v1");
-        assert_eq!(meta.protobufs[0].content, "syntax = \"proto3\";");
+        assert_eq!(meta.protobufs[0].path, "user.v1.proto");
         assert_eq!(meta.protobufs[0].fingerprint, "semantic:xyz");
         assert_eq!(meta.published_at, Some(1705315800));
         assert_eq!(meta.tags.len(), 2);
@@ -257,7 +319,8 @@ mod tests {
         assert_eq!(restored.fingerprint, spec.fingerprint);
         assert_eq!(restored.protobufs.len(), 1);
         assert_eq!(restored.protobufs[0].package, spec.protobufs[0].package);
-        assert_eq!(restored.protobufs[0].content, spec.protobufs[0].content);
+        // Note: content is lost during conversion back to ServiceSpec
+        assert_eq!(restored.protobufs[0].content, "");
     }
 
     #[test]
@@ -266,6 +329,7 @@ mod tests {
         assert!(lock_file.dependencies.is_empty());
 
         let spec_meta = ServiceSpecMeta {
+            name: "test-service".to_string(),
             description: None,
             fingerprint: "service_semantic:test".to_string(),
             protobufs: vec![],
@@ -273,11 +337,7 @@ mod tests {
             tags: vec![],
         };
 
-        let dep = LockedDependency::new(
-            "test-service".to_string(),
-            "acme+test-service".to_string(),
-            spec_meta,
-        );
+        let dep = LockedDependency::new("acme+test-service".to_string(), spec_meta);
 
         lock_file.add_dependency(dep);
         assert_eq!(lock_file.dependencies.len(), 1);
@@ -296,29 +356,27 @@ mod tests {
         let mut lock_file = LockFile::new();
 
         let spec_meta = ServiceSpecMeta {
+            name: "user-service".to_string(),
             description: Some("User service".to_string()),
             fingerprint: "service_semantic:abc123".to_string(),
-            protobufs: vec![ProtoFileWithContent {
-                name: "user.v1".to_string(),
+            protobufs: vec![ProtoFileMeta {
+                path: "user-service/user.v1.proto".to_string(),
                 fingerprint: "semantic:xyz".to_string(),
-                content: "syntax = \"proto3\";\n\npackage user.v1;".to_string(),
             }],
             published_at: Some(1705315800),
             tags: vec!["latest".to_string()],
         };
 
-        let dep = LockedDependency::new(
-            "user-service".to_string(),
-            "acme+user-service".to_string(),
-            spec_meta,
-        );
+        let dep = LockedDependency::new("acme+user-service".to_string(), spec_meta);
 
         lock_file.add_dependency(dep);
 
         // Serialize to TOML
         let toml_str = toml::to_string_pretty(&lock_file).unwrap();
         assert!(toml_str.contains("user-service"));
-        assert!(toml_str.contains("syntax = \"proto3\""));
+        assert!(toml_str.contains("user-service/user.v1.proto"));
+        // Lock file should NOT contain proto content anymore
+        assert!(!toml_str.contains("syntax = \"proto3\""));
         assert!(toml_str.contains("service_semantic:abc123"));
 
         // Deserialize back
@@ -326,34 +384,24 @@ mod tests {
         assert_eq!(restored.dependencies.len(), 1);
         assert_eq!(restored.dependencies[0].name, "user-service");
         assert_eq!(
-            restored.dependencies[0].spec.protobufs[0].content,
-            "syntax = \"proto3\";\n\npackage user.v1;"
+            restored.dependencies[0].files[0].path,
+            "user-service/user.v1.proto"
+        );
+        assert_eq!(
+            restored.dependencies[0].files[0].fingerprint,
+            "semantic:xyz"
         );
     }
 
     #[test]
-    fn test_multiline_proto_content() {
-        let content = r#"syntax = "proto3";
-
-package user.v1;
-
-message User {
-  uint64 id = 1;
-  string name = 2;
-}
-
-service UserService {
-  rpc GetUser(GetUserRequest) returns (GetUserResponse);
-}
-"#;
-
+    fn test_path_serialization() {
         let spec_meta = ServiceSpecMeta {
+            name: "user-service".to_string(),
             description: None,
             fingerprint: "service_semantic:test".to_string(),
-            protobufs: vec![ProtoFileWithContent {
-                name: "user.v1".to_string(),
+            protobufs: vec![ProtoFileMeta {
+                path: "user-service/user.v1.proto".to_string(),
                 fingerprint: "semantic:abc".to_string(),
-                content: content.to_string(),
             }],
             published_at: None,
             tags: vec![],
@@ -362,11 +410,11 @@ service UserService {
         // Serialize
         let toml_str = toml::to_string_pretty(&spec_meta).unwrap();
 
-        // Should use multiline string
-        assert!(toml_str.contains("content = '''") || toml_str.contains("content = \"\"\""));
+        // Should contain path
+        assert!(toml_str.contains("path = \"user-service/user.v1.proto\""));
 
         // Deserialize back
         let restored: ServiceSpecMeta = toml::from_str(&toml_str).unwrap();
-        assert_eq!(restored.protobufs[0].content, content);
+        assert_eq!(restored.protobufs[0].path, "user-service/user.v1.proto");
     }
 }

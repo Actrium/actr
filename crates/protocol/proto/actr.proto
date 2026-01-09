@@ -28,11 +28,12 @@ message ActrId {
 }
 
 message ServiceSpec {
-  optional string description = 1;
-  required string fingerprint = 2; // Deterministic hash combining all proto semantic fingerprints
-  repeated Protobuf protobufs = 3;
-  optional int64 published_at = 4; // Publication timestamp (Unix epoch seconds)
-  repeated string tags = 5; // Tags like "latest", "stable"
+  required string name = 1;
+  optional string description = 2;
+  required string fingerprint = 3; // Deterministic hash combining all proto semantic fingerprints
+  repeated Protobuf protobufs = 4;
+  optional int64 published_at = 5; // Publication timestamp (Unix epoch seconds)
+  repeated string tags = 6; // Tags like "latest", "stable"
 
   message Protobuf {
     required string package = 1;   // Package name (e.g., "user.v1", "acme.payment.v2")
@@ -250,10 +251,11 @@ message DiscoveryRequest {
 message DiscoveryResponse {
   message TypeEntry {
     required ActrType actr_type = 1;
-    optional string description = 2;
-    required string service_fingerprint = 3;
-    optional int64 published_at = 4;
-    repeated string tags = 5;
+    required string name = 2;
+    optional string description = 3;
+    required string service_fingerprint = 4;
+    optional int64 published_at = 5;
+    repeated string tags = 6;
   }
 
   message DiscoveryOk {
@@ -262,6 +264,20 @@ message DiscoveryResponse {
 
   oneof result {
     DiscoveryOk success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+// =========================================================================
+// Get service spec request/response
+// =========================================================================
+message GetServiceSpecRequest {
+  required string name = 1;
+}
+
+message GetServiceSpecResponse {
+  oneof result {
+    ServiceSpec success = 1;
     ErrorResponse error = 2;
   }
 }

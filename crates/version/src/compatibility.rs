@@ -246,7 +246,7 @@ mod tests {
     use super::*;
     use crate::{Fingerprint, ProtoFile};
 
-    fn create_test_service(_name: &str, _version: &str, proto_content: &str) -> ServiceSpec {
+    fn create_test_service(name: &str, _version: &str, proto_content: &str) -> ServiceSpec {
         let proto_files = vec![ProtoFile {
             name: "test.proto".to_string(),
             content: proto_content.to_string(),
@@ -258,6 +258,7 @@ mod tests {
             .unwrap_or_else(|_| "test-fp".to_string());
 
         ServiceSpec {
+            name: name.to_string(),
             description: Some("Test service".to_string()),
             fingerprint: semantic_fp,
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -318,6 +319,7 @@ mod tests {
     fn test_service_validation_errors() {
         // Test empty proto files
         let empty_service = ServiceSpec {
+            name: "empty".to_string(),
             description: None,
             fingerprint: "fp".to_string(),
             protobufs: vec![],
@@ -337,6 +339,7 @@ mod tests {
 
         // Test empty proto content
         let empty_content_service = ServiceSpec {
+            name: "empty-content".to_string(),
             description: None,
             fingerprint: "fp".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -360,6 +363,7 @@ mod tests {
     #[test]
     fn test_file_removed_breaking_change() {
         let base_service = ServiceSpec {
+            name: "base-service".to_string(),
             description: None,
             fingerprint: "fp1".to_string(),
             protobufs: vec![
@@ -380,6 +384,7 @@ mod tests {
 
         // Remove order.proto file
         let candidate_service = ServiceSpec {
+            name: "candidate-service".to_string(),
             description: None,
             fingerprint: "fp2".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -409,6 +414,7 @@ mod tests {
     #[test]
     fn test_file_added_non_breaking() {
         let base_service = ServiceSpec {
+            name: "base-service".to_string(),
             description: None,
             fingerprint: "fp1".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -422,6 +428,7 @@ mod tests {
 
         // Add order.proto file
         let candidate_service = ServiceSpec {
+            name: "candidate-service".to_string(),
             description: None,
             fingerprint: "fp2".to_string(),
             protobufs: vec![
@@ -499,6 +506,7 @@ mod tests {
 
         // Use a more definitively invalid proto content that proto-sign will reject
         let invalid_service = ServiceSpec {
+            name: "invalid-service".to_string(),
             description: None,
             fingerprint: "fp".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -534,6 +542,7 @@ mod tests {
     fn test_base_service_proto_parse_error() {
         // Test error in base service parsing
         let invalid_base_service = ServiceSpec {
+            name: "invalid-base-service".to_string(),
             description: None,
             fingerprint: "fp".to_string(),
             protobufs: vec![actr_protocol::service_spec::Protobuf {
@@ -594,6 +603,7 @@ mod tests {
     fn test_mixed_compatibility_merge() {
         // Create a scenario with multiple files having different compatibility levels
         let base_service = ServiceSpec {
+            name: "base-service".to_string(),
             description: None,
             fingerprint: "fp1".to_string(),
             protobufs: vec![
@@ -614,6 +624,7 @@ mod tests {
 
         let candidate_service =
             ServiceSpec {
+                name: "candidate-service".to_string(),
                 description: None,
                 fingerprint: "fp2".to_string(),
                 protobufs: vec![

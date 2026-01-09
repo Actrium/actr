@@ -51,7 +51,7 @@ impl ParserV1 {
             realm_id: raw
                 .system
                 .deployment
-                .realm
+                .realm_id
                 .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
         };
 
@@ -151,24 +151,28 @@ impl ParserV1 {
     ) -> Result<Vec<Dependency>> {
         deps.iter()
             .map(|(alias, raw_dep)| {
-                let (realm_id, actr_type_str, fingerprint) = match raw_dep {
+                let (realm_id, actr_type_str, fingerprint, name) = match raw_dep {
                     RawDependency::Empty {} => {
-                        // 空依赖声明：使用别名作为 actr_type，无指纹
-                        (None, alias.clone(), None)
+                        // name is same as alias
+                        (None, None, None, alias)
                     }
                     RawDependency::WithFingerprint {
+                        name,
                         realm,
                         actr_type,
                         fingerprint,
                     } => {
-                        let type_str = actr_type.as_ref().unwrap_or(alias).clone();
-                        (*realm, type_str, Some(fingerprint.clone()))
+                        let dep_name = name.as_ref().unwrap_or(alias);
+                        (
+                            realm.to_owned(),
+                            actr_type.as_ref(),
+                            Some(fingerprint),
+                            dep_name,
+                        )
                     }
                 };
 
-                // 解析 ActrType
-                let actr_type = self.parse_actr_type(&actr_type_str)?;
-
+                let actr_type = actr_type_str.map(|s| self.parse_actr_type(s)).transpose()?;
                 // 确定 realm
                 let realm = Realm {
                     realm_id: realm_id.unwrap_or(self_realm.realm_id),
@@ -176,9 +180,10 @@ impl ParserV1 {
 
                 Ok(Dependency {
                     alias: alias.clone(),
+                    name: name.to_string(),
                     realm,
                     actr_type,
-                    fingerprint,
+                    fingerprint: fingerprint.map(|s| s.to_string()),
                 })
             })
             .collect()
@@ -495,7 +500,7 @@ impl ParserV1 {
                 url: child.signaling.url.or(parent.signaling.url),
             },
             deployment: crate::raw::RawDeploymentConfig {
-                realm: child.deployment.realm.or(parent.deployment.realm),
+                realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),
@@ -541,7 +546,7 @@ impl ParserV1 {
         if raw.system.signaling.url.is_none() {
             return Err(ConfigError::MissingField("system.signaling.url"));
         }
-        if raw.system.deployment.realm.is_none() {
+        if raw.system.deployment.realm_id.is_none() {
             return Err(ConfigError::MissingField("system.deployment.realm"));
         }
         Ok(())
@@ -575,7 +580,7 @@ user-service = {}
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 
 [scripts]
 run = "cargo run"
@@ -616,13 +621,13 @@ manufacturer = "acme"
 name = "test"
 
 [dependencies]
-shared = { actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
+shared = { name = "logging-service-pkg", actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
 
 [system.signaling]
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -634,8 +639,10 @@ realm = 1001
         let config = parser.parse(raw).unwrap();
 
         let dep = config.get_dependency("shared").unwrap();
+        assert_eq!(dep.alias, "shared");
+        assert_eq!(dep.name, "logging-service-pkg");
         assert_eq!(dep.realm.realm_id, 9999);
-        assert_eq!(dep.actr_type.name, "logging-service");
+        assert_eq!(dep.actr_type.as_ref().unwrap().name, "logging-service");
         assert!(dep.is_cross_realm(&config.realm));
     }
 
@@ -656,7 +663,7 @@ name = "test"
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -690,7 +697,7 @@ name = "test-"
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();

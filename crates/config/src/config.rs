@@ -84,11 +84,16 @@ pub struct Dependency {
     /// 依赖别名（dependencies 中的 key）
     pub alias: String,
 
+    /// True name of the dependency, provided by the name field in [dependencies].
+    /// If not provided, use alias as name.
+    /// Same as the name field in LockFile.dependency.name.
+    pub name: String,
+
     /// 所属 Realm
     pub realm: Realm,
 
     /// Actor 类型
-    pub actr_type: ActrType,
+    pub actr_type: Option<ActrType>,
 
     /// 服务指纹
     pub fingerprint: Option<String>,
@@ -163,14 +168,6 @@ impl Config {
     /// 根据别名查找依赖
     pub fn get_dependency(&self, alias: &str) -> Option<&Dependency> {
         self.dependencies.iter().find(|d| d.alias == alias)
-    }
-
-    /// 根据 ActrType 查找所有匹配的依赖
-    pub fn find_dependencies_by_type(&self, actr_type: &ActrType) -> Vec<&Dependency> {
-        self.dependencies
-            .iter()
-            .filter(|d| &d.actr_type == actr_type)
-            .collect()
     }
 
     /// 获取所有跨 Realm 的依赖
@@ -252,6 +249,7 @@ impl Config {
             .as_secs() as i64;
 
         Some(actr_protocol::ServiceSpec {
+            name: self.package.name.clone(),
             description: self.package.description.clone(),
             fingerprint,
             protobufs,
@@ -333,20 +331,22 @@ mod tests {
             dependencies: vec![
                 Dependency {
                     alias: "user-service".to_string(),
+                    name: "user-service".to_string(),
                     realm: Realm { realm_id: 1001 },
-                    actr_type: ActrType {
+                    actr_type: Some(ActrType {
                         manufacturer: "acme".to_string(),
                         name: "user-service".to_string(),
-                    },
+                    }),
                     fingerprint: Some("service_semantic:abc123...".to_string()),
                 },
                 Dependency {
                     alias: "shared-logger".to_string(),
+                    name: "shared-logger".to_string(),
                     realm: Realm { realm_id: 9999 },
-                    actr_type: ActrType {
+                    actr_type: Some(ActrType {
                         manufacturer: "common".to_string(),
                         name: "logging-service".to_string(),
-                    },
+                    }),
                     fingerprint: None,
                 },
             ],

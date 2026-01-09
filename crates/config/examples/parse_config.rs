@@ -1,6 +1,7 @@
 //! Example showing how to parse an Actr.toml configuration file
 
 use actr_config::ConfigParser;
+use actr_protocol::ActrTypeExt;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,8 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n📦 Package Information:");
     println!("  Name: {}", config.package.name);
-    println!("  Manufacturer: {}", config.package.actr_type.manufacturer);
-    println!("  Type: {}", config.package.actr_type.name);
+    println!("  Type: {}", config.package.actr_type.to_string_repr());
     if let Some(ref description) = config.package.description {
         println!("  Description: {description}");
     }
@@ -43,10 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         for dep in &config.dependencies {
             let fingerprint = dep.fingerprint.as_deref().unwrap_or("*");
-            println!(
-                "  {} ({}:{}) @ {}",
-                dep.alias, dep.actr_type.manufacturer, dep.actr_type.name, fingerprint
-            );
+            let type_str = if let Some(ref t) = dep.actr_type {
+                t.to_string_repr()
+            } else {
+                "*".to_string()
+            };
+            println!("  {} ({}) @ {}", dep.alias, type_str, fingerprint);
         }
     }
 
