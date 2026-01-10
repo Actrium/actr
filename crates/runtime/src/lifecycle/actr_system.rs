@@ -202,6 +202,17 @@ impl ActrSystem {
     pub fn attach<W: Workload>(self, workload: W) -> ActrNode<W> {
         tracing::info!("📦 Attaching workload");
 
+        // Try to load Actr.lock.toml from config directory
+        let actr_lock_path = self.config.config_dir.join("Actr.lock.toml");
+        let actr_lock = actr_config::lock::LockFile::from_file(&actr_lock_path)
+            .ok()
+            .map(|lock| {
+                tracing::info!(
+                    "📋 Loaded Actr.lock.toml with {} dependencies",
+                    lock.dependencies.len()
+                );
+                lock
+            });
         // 从 network_event_channels 中 take channels（如果存在）
         let (network_event_rx, network_event_result_tx) = self
             .network_event_channels
@@ -226,6 +237,7 @@ impl ActrSystem {
             inproc_mgr: None,            // Set after startup
             workload_to_shell_mgr: None, // Set after startup
             shutdown_token: tokio_util::sync::CancellationToken::new(),
+            actr_lock,
             network_event_rx,
             network_event_result_tx,
         }

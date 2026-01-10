@@ -258,7 +258,10 @@ pub mod prelude {
 
     // Core structures
     pub use crate::actr_ref::ActrRef;
-    pub use crate::lifecycle::{ActrNode, ActrSystem};
+    pub use crate::lifecycle::{
+        ActrNode, ActrSystem, CompatLockFile, CompatLockManager, CompatibilityCheck,
+        DiscoveryResult,
+    };
 
     // Layer 3: Inbound dispatch layer
     pub use crate::inbound::{

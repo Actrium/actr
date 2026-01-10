@@ -95,6 +95,7 @@ impl ParserV1 {
             scripts: raw.scripts,
             webrtc,
             observability,
+            config_dir: self.base_dir.clone(),
         })
     }
 

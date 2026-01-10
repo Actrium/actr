@@ -47,6 +47,10 @@ pub struct Config {
 
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
+
+    /// Directory containing the configuration file (Actr.toml)
+    /// Used for resolving relative paths and finding lock files
+    pub config_dir: PathBuf,
 }
 
 /// 包信息
@@ -364,6 +368,7 @@ mod tests {
                 tracing_endpoint: "http://localhost:4317".to_string(),
                 tracing_service_name: "test-service".to_string(),
             },
+            config_dir: PathBuf::from("."),
         };
 
         // 测试依赖查找

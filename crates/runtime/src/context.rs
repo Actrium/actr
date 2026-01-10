@@ -383,6 +383,7 @@ impl Context for RuntimeContext {
             target_type: target_type.clone(),
             criteria: Some(criteria),
             client_location: None,
+            client_fingerprint: None,
         };
 
         let response = self

@@ -165,15 +165,34 @@ impl<W: Workload> ActrRef<W> {
     }
 
     /// Discover remote actors of the specified type via signaling server.
+    ///
+    /// This method implements the full runtime compatibility negotiation workflow:
+    ///
+    /// 1. **Fast Path**: Check `compat.lock.toml` for cached negotiation results
+    /// 2. **Ideal Path**: Read fingerprint from `Actr.lock.toml` and request exact match
+    /// 3. **Negotiation**: If no exact match, server performs compatibility analysis
+    /// 4. **Result**: Returns candidates with compatibility info, updates caches
+    ///
+    /// The fingerprint is automatically obtained from the `Actr.lock.toml` file
+    /// loaded during `ActrSystem::attach()`.
+    ///
+    /// # Arguments
+    /// - `target_type`: The ActrType of the target service to discover
+    /// - `candidate_count`: Maximum number of candidates to return
+    ///
+    /// # Returns
+    /// A list of compatible `ActrId` candidates.
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn discover_route_candidates(
         &self,
         target_type: &actr_protocol::ActrType,
         candidate_count: u32,
     ) -> ActorResult<Vec<ActrId>> {
-        self.node
+        let result = self
+            .node
             .discover_route_candidates(target_type, candidate_count)
-            .await
+            .await?;
+        Ok(result.candidates)
     }
 
     /// Call Actor method (Shell → Workload RPC)

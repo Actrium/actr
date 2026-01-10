@@ -52,9 +52,11 @@ pwrzv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bytes = "1.10"
+toml = "0.8"
 
 # === TURN authentication ===
 hex = "0.4"
+sha2 = "0.10"
 
 # === 日志记录 ===
 tracing.workspace = true

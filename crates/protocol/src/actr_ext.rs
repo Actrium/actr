@@ -40,6 +40,13 @@ pub enum ActrError {
     /// ACL 权限拒绝
     #[error("Permission denied: {message}")]
     PermissionDenied { message: String },
+
+    /// 依赖未找到 - Actr.lock.toml 中不存在该依赖
+    #[error("Dependency '{service_name}' not found: {message}")]
+    DependencyNotFound {
+        service_name: String,
+        message: String,
+    },
 }
 
 /// Helpers for `ActrType` string conversions

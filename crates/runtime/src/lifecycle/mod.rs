@@ -6,11 +6,13 @@
 
 mod actr_node;
 mod actr_system;
+pub mod compat_lock;
 mod heartbeat;
 mod network_event;
 
-pub use actr_node::{ActrNode, CredentialState};
+pub use actr_node::{ActrNode, CredentialState, DiscoveryResult};
 pub use actr_system::ActrSystem;
+pub use compat_lock::{CompatLockFile, CompatLockManager, CompatibilityCheck, NegotiationEntry};
 pub use heartbeat::heartbeat_task;
 pub use network_event::{
     DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
