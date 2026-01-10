@@ -7,8 +7,11 @@ resolver = "2"
 # Use local protocol/framework definitions for development
 # actr-protocol = { path = "../actr/crates/protocol" }
 # actr-framework = { path = "../actr/crates/framework" }
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "072f979bae2f0ebb1d6f316c672fc0cfe6331c0b" }
-actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "072f979bae2f0ebb1d6f316c672fc0cfe6331c0b" }
+# actr-version = { path = "../actr/crates/version" }
+# Use remote protocol/framework definitions that include tracing headers
+actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-version = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
 
 [workspace.package]
 version = "0.1.1"
@@ -26,6 +29,7 @@ tokio = { version = "1.0", features = ["full"] }
 # Actor-RTC framework dependencies
 actr-framework = { version = "0.1.3" }
 actr-protocol = { version = "0.1.3" }
+actr-version = { version = "0.1.0" }
 prost = "0.14.1"
 prost-types = "0.14.1"
 tonic = { version = "0.14", features = ["tls-ring"] }

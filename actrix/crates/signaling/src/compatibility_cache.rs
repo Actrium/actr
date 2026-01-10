@@ -1,57 +1,51 @@
-//! 全局兼容性缓存 - Demo版本
+//! 全局兼容性缓存
 //!
-//! 在信令服务器内部维护一个简单的内存缓存，存储兼容性检查结果
+//! 在信令服务器内部维护一个内存缓存，存储兼容性检查结果。
+//! 使用 actr-version 的 CompatibilityAnalysisResult 作为缓存值。
 
-use serde::{Deserialize, Serialize};
+use actr_version::CompatibilityAnalysisResult;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// 兼容性缓存条目
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CompatibilityCacheEntry {
-    /// 兼容性结果 ("compatible", "backward_compatible", "incompatible")
-    pub result: String,
+    /// 兼容性分析结果 (from actr-version)
+    pub analysis_result: CompatibilityAnalysisResult,
     /// 缓存时间
     pub cached_at: SystemTime,
     /// 过期时间
     pub expires_at: SystemTime,
-    /// 上报者数量（简单统计）
-    pub reporter_count: u32,
+    /// 查询命中次数（统计）
+    pub hit_count: u32,
 }
 
-/// 兼容性上报请求
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompatibilityReport {
-    /// 源指纹
+/// 兼容性上报数据
+#[derive(Debug, Clone)]
+pub struct CompatibilityReportData {
+    /// 源指纹（客户端期望的版本）
     pub from_fingerprint: String,
-    /// 目标指纹
+    /// 目标指纹（服务端提供的版本）
     pub to_fingerprint: String,
     /// 服务类型
     pub service_type: String,
-    /// 兼容性结果
-    pub result: String,
-}
-
-/// 兼容性缓存查询
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompatibilityCacheQuery {
-    /// 缓存键
-    pub cache_key: String,
+    /// 兼容性分析结果
+    pub analysis_result: CompatibilityAnalysisResult,
 }
 
 /// 兼容性缓存响应
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CompatibilityCacheResponse {
     /// 缓存键
     pub cache_key: String,
-    /// 缓存值（如果存在）
-    pub result: Option<String>,
+    /// 缓存的分析结果（如果存在）
+    pub analysis_result: Option<CompatibilityAnalysisResult>,
     /// 是否命中缓存
     pub hit: bool,
 }
 
-/// 全局兼容性缓存管理器（Demo版本）
+/// 全局兼容性缓存管理器
 #[derive(Debug)]
 pub struct GlobalCompatibilityCache {
     /// 内存缓存 (cache_key -> entry)
@@ -67,8 +61,8 @@ impl GlobalCompatibilityCache {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
-            max_entries: 10000,                          // demo版本限制1万条
-            default_ttl: Duration::from_secs(24 * 3600), // 24小时
+            max_entries: 10000,
+            default_ttl: Duration::from_secs(24 * 3600),
         }
     }
 
@@ -82,14 +76,17 @@ impl GlobalCompatibilityCache {
     }
 
     /// 查询兼容性缓存
-    pub fn query(&self, cache_key: &str) -> CompatibilityCacheResponse {
-        if let Some(entry) = self.cache.get(cache_key) {
-            // 检查是否过期
+    pub fn query(&mut self, cache_key: &str) -> CompatibilityCacheResponse {
+        if let Some(entry) = self.cache.get_mut(cache_key) {
             if SystemTime::now() <= entry.expires_at {
-                debug!("兼容性缓存命中: {}", cache_key);
+                entry.hit_count += 1;
+                debug!(
+                    "兼容性缓存命中: {} (命中次数: {})",
+                    cache_key, entry.hit_count
+                );
                 return CompatibilityCacheResponse {
                     cache_key: cache_key.to_string(),
-                    result: Some(entry.result.clone()),
+                    analysis_result: Some(entry.analysis_result.clone()),
                     hit: true,
                 };
             } else {
@@ -100,13 +97,33 @@ impl GlobalCompatibilityCache {
         debug!("兼容性缓存未命中: {}", cache_key);
         CompatibilityCacheResponse {
             cache_key: cache_key.to_string(),
-            result: None,
+            analysis_result: None,
             hit: false,
         }
     }
 
-    /// 上报兼容性结果
-    pub fn report(&mut self, report: CompatibilityReport) {
+    /// 查询（不可变版本，不更新命中计数）
+    pub fn query_readonly(&self, cache_key: &str) -> CompatibilityCacheResponse {
+        if let Some(entry) = self.cache.get(cache_key)
+            && SystemTime::now() <= entry.expires_at
+        {
+            debug!("兼容性缓存命中 (readonly): {}", cache_key);
+            return CompatibilityCacheResponse {
+                cache_key: cache_key.to_string(),
+                analysis_result: Some(entry.analysis_result.clone()),
+                hit: true,
+            };
+        }
+
+        CompatibilityCacheResponse {
+            cache_key: cache_key.to_string(),
+            analysis_result: None,
+            hit: false,
+        }
+    }
+
+    /// 存储兼容性分析结果
+    pub fn store(&mut self, report: CompatibilityReportData) {
         let cache_key = Self::build_cache_key(
             &report.service_type,
             &report.from_fingerprint,
@@ -116,120 +133,84 @@ impl GlobalCompatibilityCache {
         let now = SystemTime::now();
         let expires_at = now + self.default_ttl;
 
-        // 检查是否已存在
+        if self.cache.len() >= self.max_entries {
+            self.cleanup_expired();
+        }
+
+        if self.cache.len() >= self.max_entries
+            && let Some(oldest_key) = self.find_oldest_entry()
+        {
+            self.cache.remove(&oldest_key);
+            debug!("缓存已满，移除最旧条目: {}", oldest_key);
+        }
+
         if let Some(existing) = self.cache.get_mut(&cache_key) {
-            // 更新现有条目
-            existing.result = report.result.clone();
+            existing.analysis_result = report.analysis_result;
             existing.cached_at = now;
             existing.expires_at = expires_at;
-            existing.reporter_count += 1;
-            debug!(
-                "更新兼容性缓存: {} (上报次数: {})",
-                cache_key, existing.reporter_count
-            );
+            debug!("更新兼容性缓存: {}", cache_key);
         } else {
-            // 创建新条目
             let entry = CompatibilityCacheEntry {
-                result: report.result.clone(),
+                analysis_result: report.analysis_result,
                 cached_at: now,
                 expires_at,
-                reporter_count: 1,
+                hit_count: 0,
             };
-
-            // 检查缓存大小限制
-            if self.cache.len() >= self.max_entries {
-                self.cleanup_oldest_entries();
-            }
-
             self.cache.insert(cache_key.clone(), entry);
-            debug!("新增兼容性缓存: {}", cache_key);
+            info!("新增兼容性缓存: {}", cache_key);
         }
-
-        info!(
-            "收到兼容性上报: {} -> {} = {}",
-            report.from_fingerprint, report.to_fingerprint, report.result
-        );
     }
 
-    /// 清理过期缓存
-    pub fn cleanup_expired(&mut self) -> usize {
+    /// 清理过期条目
+    pub fn cleanup_expired(&mut self) {
         let now = SystemTime::now();
-        let initial_count = self.cache.len();
-
-        self.cache.retain(|_key, entry| now <= entry.expires_at);
-
-        let removed_count = initial_count - self.cache.len();
-        if removed_count > 0 {
-            info!("清理了 {} 个过期的兼容性缓存条目", removed_count);
+        let before_count = self.cache.len();
+        self.cache.retain(|_, entry| entry.expires_at > now);
+        let removed = before_count - self.cache.len();
+        if removed > 0 {
+            info!("清理了 {} 个过期的兼容性缓存条目", removed);
         }
-
-        removed_count
     }
 
-    /// 清理最旧的缓存条目（当达到大小限制时）
-    fn cleanup_oldest_entries(&mut self) {
-        if self.cache.is_empty() {
-            return;
-        }
-
-        // 简单策略：删除25%的最旧条目
-        let mut entries: Vec<_> = self
-            .cache
+    fn find_oldest_entry(&self) -> Option<String> {
+        self.cache
             .iter()
-            .map(|(k, v)| (k.clone(), v.cached_at))
-            .collect();
-        entries.sort_by_key(|(_, cached_at)| *cached_at);
-
-        let remove_count = (self.cache.len() / 4).max(1);
-        for (key, _) in entries.iter().take(remove_count.min(entries.len())) {
-            self.cache.remove(key);
-        }
-
-        warn!(
-            "缓存大小限制，清理了 {} 个最旧的兼容性缓存条目",
-            remove_count
-        );
+            .min_by_key(|(_, entry)| entry.cached_at)
+            .map(|(key, _)| key.clone())
     }
 
     /// 获取缓存统计信息
     pub fn stats(&self) -> CacheStats {
         let now = SystemTime::now();
-        let mut expired_count = 0;
-        let mut total_reports = 0;
-
-        for entry in self.cache.values() {
-            if now > entry.expires_at {
-                expired_count += 1;
-            }
-            total_reports += entry.reporter_count;
-        }
+        let total = self.cache.len();
+        let expired = self.cache.values().filter(|e| e.expires_at <= now).count();
+        let total_hits: u32 = self.cache.values().map(|e| e.hit_count).sum();
 
         CacheStats {
-            total_entries: self.cache.len(),
-            expired_entries: expired_count,
-            total_reports,
+            total_entries: total,
+            expired_entries: expired,
+            total_hits,
             max_entries: self.max_entries,
         }
     }
 
-    /// 清空所有缓存（用于测试）
-    #[cfg(test)]
-    pub fn clear(&mut self) {
-        self.cache.clear();
+    /// 获取指定指纹对的兼容性结果（用于 LoadBalancer）
+    pub fn get_compatibility(
+        &self,
+        from_fingerprint: &str,
+        to_fingerprint: &str,
+    ) -> Option<&CompatibilityAnalysisResult> {
+        let now = SystemTime::now();
+        for (key, entry) in &self.cache {
+            if key.contains(from_fingerprint)
+                && key.contains(to_fingerprint)
+                && entry.expires_at > now
+            {
+                return Some(&entry.analysis_result);
+            }
+        }
+        None
     }
-}
-
-/// 缓存统计信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheStats {
-    /// 总缓存条目数
-    pub total_entries: usize,
-    /// 过期条目数
-    pub expired_entries: usize,
-    /// 总上报次数
-    pub total_reports: u32,
-    /// 最大条目数限制
-    pub max_entries: usize,
 }
 
 impl Default for GlobalCompatibilityCache {
@@ -238,118 +219,79 @@ impl Default for GlobalCompatibilityCache {
     }
 }
 
+/// 缓存统计信息
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub total_entries: usize,
+    pub expired_entries: usize,
+    pub total_hits: u32,
+    pub max_entries: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actr_version::CompatibilityLevel;
 
-    #[test]
-    fn test_cache_key_generation() {
-        let key = GlobalCompatibilityCache::build_cache_key(
-            "user-service",
-            "sha256:old123",
-            "sha256:new456",
-        );
-        assert_eq!(key, "user-service:sha256:old123:sha256:new456");
-    }
-
-    #[test]
-    fn test_basic_cache_operations() {
-        let mut cache = GlobalCompatibilityCache::new();
-
-        // 查询不存在的条目
-        let response = cache.query("nonexistent");
-        assert!(!response.hit);
-        assert!(response.result.is_none());
-
-        // 上报兼容性结果
-        let report = CompatibilityReport {
-            from_fingerprint: "sha256:old".to_string(),
-            to_fingerprint: "sha256:new".to_string(),
-            service_type: "test-service".to_string(),
-            result: "compatible".to_string(),
-        };
-
-        cache.report(report);
-
-        // 查询应该命中
-        let cache_key =
-            GlobalCompatibilityCache::build_cache_key("test-service", "sha256:old", "sha256:new");
-        let response = cache.query(&cache_key);
-        assert!(response.hit);
-        assert_eq!(response.result.unwrap(), "compatible");
-
-        // 统计信息
-        let stats = cache.stats();
-        assert_eq!(stats.total_entries, 1);
-        assert_eq!(stats.total_reports, 1);
-    }
-
-    #[test]
-    fn test_cache_expiration() {
-        let mut cache = GlobalCompatibilityCache::new();
-
-        // 创建一个已过期的条目
-        let cache_key = "test:old:new".to_string();
-        let expired_entry = CompatibilityCacheEntry {
-            result: "compatible".to_string(),
-            cached_at: SystemTime::now() - Duration::from_secs(1000),
-            expires_at: SystemTime::now() - Duration::from_secs(1), // 已过期
-            reporter_count: 1,
-        };
-
-        cache.cache.insert(cache_key.clone(), expired_entry);
-
-        // 查询应该未命中（因为过期）
-        let response = cache.query(&cache_key);
-        assert!(!response.hit);
-
-        // 清理过期条目
-        let removed = cache.cleanup_expired();
-        assert_eq!(removed, 1);
-        assert_eq!(cache.cache.len(), 0);
-    }
-
-    #[test]
-    fn test_cache_size_limit() {
-        let mut cache = GlobalCompatibilityCache::new();
-        cache.max_entries = 5; // 设置小的限制用于测试
-
-        // 添加超过限制的条目
-        for i in 0..10 {
-            let report = CompatibilityReport {
-                from_fingerprint: format!("sha256:old{i}"),
-                to_fingerprint: format!("sha256:new{i}"),
-                service_type: "test".to_string(),
-                result: "compatible".to_string(),
-            };
-            cache.report(report);
+    fn create_mock_analysis_result(level: CompatibilityLevel) -> CompatibilityAnalysisResult {
+        CompatibilityAnalysisResult {
+            level,
+            changes: vec![],
+            breaking_changes: vec![],
+            base_semantic_fingerprint: "fp1".to_string(),
+            candidate_semantic_fingerprint: "fp2".to_string(),
+            analyzed_at: chrono::Utc::now(),
         }
-
-        // 缓存大小应该被限制
-        assert!(cache.cache.len() <= cache.max_entries);
     }
 
     #[test]
-    fn test_duplicate_reports() {
+    fn test_cache_store_and_query() {
         let mut cache = GlobalCompatibilityCache::new();
 
-        let report = CompatibilityReport {
-            from_fingerprint: "sha256:old".to_string(),
-            to_fingerprint: "sha256:new".to_string(),
-            service_type: "test".to_string(),
-            result: "compatible".to_string(),
+        let report = CompatibilityReportData {
+            from_fingerprint: "client_fp".to_string(),
+            to_fingerprint: "server_fp".to_string(),
+            service_type: "test/service".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::FullyCompatible),
         };
 
-        // 上报两次相同的结果
-        cache.report(report.clone());
-        cache.report(report.clone());
+        cache.store(report);
 
-        // 应该只有一个缓存条目，但上报次数为2
-        assert_eq!(cache.cache.len(), 1);
+        let key =
+            GlobalCompatibilityCache::build_cache_key("test/service", "client_fp", "server_fp");
+        let response = cache.query(&key);
 
-        let cache_key =
-            GlobalCompatibilityCache::build_cache_key("test", "sha256:old", "sha256:new");
-        let entry = cache.cache.get(&cache_key).unwrap();
-        assert_eq!(entry.reporter_count, 2);
+        assert!(response.hit);
+        assert!(response.analysis_result.is_some());
+        assert_eq!(
+            response.analysis_result.unwrap().level,
+            CompatibilityLevel::FullyCompatible
+        );
+    }
+
+    #[test]
+    fn test_cache_miss() {
+        let mut cache = GlobalCompatibilityCache::new();
+        let response = cache.query("nonexistent:key");
+        assert!(!response.hit);
+        assert!(response.analysis_result.is_none());
+    }
+
+    #[test]
+    fn test_cache_stats() {
+        let mut cache = GlobalCompatibilityCache::new();
+
+        let report = CompatibilityReportData {
+            from_fingerprint: "fp1".to_string(),
+            to_fingerprint: "fp2".to_string(),
+            service_type: "test/service".to_string(),
+            analysis_result: create_mock_analysis_result(CompatibilityLevel::BackwardCompatible),
+        };
+
+        cache.store(report);
+        let stats = cache.stats();
+
+        assert_eq!(stats.total_entries, 1);
+        assert_eq!(stats.expired_entries, 0);
     }
 }

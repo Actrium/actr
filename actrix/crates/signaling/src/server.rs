@@ -1597,9 +1597,15 @@ async fn handle_route_candidates_request(
     server: &SignalingServerHandle,
     request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // 从请求中获取 client_fingerprint，如果存在则启用兼容性协商模式
+    let client_fingerprint_from_req = req.client_fingerprint.clone();
+
     info!(
-        "🎯 处理 Actor {} 的 RouteCandidates 请求: target_type={}/{}",
-        source.serial_number, req.target_type.manufacturer, req.target_type.name
+        "🎯 处理 Actor {} 的 RouteCandidates 请求: target_type={}/{}, client_fp={:?}",
+        source.serial_number,
+        req.target_type.manufacturer,
+        req.target_type.name,
+        client_fingerprint_from_req
     );
 
     // 从 ServiceRegistry 查询所有匹配 target_type 的实例
@@ -1624,7 +1630,6 @@ async fn handle_route_candidates_request(
     // Apply ACL filtering
     use actrix_common::realm::acl::ActorAcl;
     let source_realm = source.realm.realm_id;
-    // 使用完整的 manufacturer:type 格式
     let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
     let target_type = format!("{}:{}", req.target_type.manufacturer, req.target_type.name);
 
@@ -1632,7 +1637,6 @@ async fn handle_route_candidates_request(
     for candidate in candidates {
         let target_realm = candidate.actor_id.realm.realm_id;
 
-        // Only check ACL if in same realm
         if source_realm == target_realm {
             match ActorAcl::can_discover(source_realm, &source_type, &target_type).await {
                 Ok(true) => acl_filtered_candidates.push(candidate),
@@ -1650,7 +1654,6 @@ async fn handle_route_candidates_request(
                 }
             }
         } else {
-            // Cross-realm access denied
             debug!(
                 "Cross-realm route candidate denied: {} -> {}",
                 source_realm, target_realm
@@ -1663,7 +1666,9 @@ async fn handle_route_candidates_request(
         acl_filtered_candidates.len()
     );
 
-    // 使用 LoadBalancer 进行排序和过滤
+    // 获取客户端 fingerprint（优先使用请求中的，否则从 registry 获取）
+    let client_fingerprint = client_fingerprint_from_req;
+
     // 从请求中提取客户端位置（如果提供）
     let client_location = req.client_location.as_ref().and_then(|loc| {
         if let (Some(lat), Some(lon)) = (loc.latitude, loc.longitude) {
@@ -1673,37 +1678,52 @@ async fn handle_route_candidates_request(
         }
     });
 
-    // 从 ServiceRegistry 提取客户端的 fingerprint
-    let client_fingerprint = {
-        let registry = server.service_registry.read().await;
-        registry
-            .get_service_spec(&source)
-            .map(|spec| spec.fingerprint.clone())
-    };
+    // 兼容性协商逻辑
+    let (ranked_actor_ids, compatibility_info, has_exact_match, is_sub_healthy) =
+        if let Some(client_fp) = &client_fingerprint {
+            // 有 client_fingerprint 就启用协商模式
+            perform_compatibility_negotiation(
+                &acl_filtered_candidates,
+                client_fp,
+                &req.target_type,
+                server,
+                req.criteria.as_ref(),
+                client_id,
+                client_location,
+            )
+            .await
+        } else {
+            // 非协商模式：使用原有的 LoadBalancer 排序
+            let cache_guard = server.compatibility_cache.read().await;
+            let compatibility_cache = Some(&*cache_guard);
 
-    // 获取兼容性缓存引用
-    let cache_guard = server.compatibility_cache.read().await;
-    let compatibility_cache = Some(&*cache_guard);
+            let ranked = LoadBalancer::rank_candidates(
+                acl_filtered_candidates,
+                req.criteria.as_ref(),
+                Some(client_id),
+                client_location,
+                compatibility_cache,
+                client_fingerprint.as_deref(),
+            );
 
-    let ranked_actor_ids = LoadBalancer::rank_candidates(
-        acl_filtered_candidates,
-        req.criteria.as_ref(),
-        Some(client_id),
-        client_location,
-        compatibility_cache,
-        client_fingerprint.as_deref(),
-    );
+            (ranked, vec![], None, None)
+        };
 
     info!(
-        "✅ 为 Actor {} 返回 {} 个排序后的候选",
+        "✅ 为 Actor {} 返回 {} 个候选 (has_exact_match={:?}, is_sub_healthy={:?})",
         source.serial_number,
-        ranked_actor_ids.len()
+        ranked_actor_ids.len(),
+        has_exact_match,
+        is_sub_healthy
     );
 
     let response = actr_protocol::RouteCandidatesResponse {
         result: Some(actr_protocol::route_candidates_response::Result::Success(
             actr_protocol::route_candidates_response::RouteCandidatesOk {
                 candidates: ranked_actor_ids,
+                compatibility_info,
+                has_exact_match,
+                is_sub_healthy,
             },
         )),
     };
@@ -1719,6 +1739,314 @@ async fn handle_route_candidates_request(
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     Ok(())
+}
+
+/// 执行完整的兼容性协商
+///
+/// 返回：(排序后的 ActrId 列表, 兼容性信息列表, 是否有精确匹配, 是否处于亚健康状态)
+async fn perform_compatibility_negotiation(
+    candidates: &[crate::service_registry::ServiceInfo],
+    client_fingerprint: &str,
+    target_type: &ActrType,
+    server: &SignalingServerHandle,
+    criteria: Option<&actr_protocol::route_candidates_request::NodeSelectionCriteria>,
+    _client_id: &str,
+    _client_location: Option<(f64, f64)>,
+) -> (
+    Vec<ActrId>,
+    Vec<actr_protocol::CandidateCompatibilityInfo>,
+    Option<bool>,
+    Option<bool>,
+) {
+    use crate::compatibility_cache::CompatibilityReportData;
+    use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel, ServiceCompatibility};
+
+    let mut exact_matches: Vec<ActrId> = Vec::new();
+    let mut compatible_candidates: Vec<(
+        ActrId,
+        actr_protocol::CompatibilityLevel,
+        Option<CompatibilityAnalysisResult>,
+    )> = Vec::new();
+    let mut compatibility_info: Vec<actr_protocol::CandidateCompatibilityInfo> = Vec::new();
+
+    // 获取 ServiceRegistryStorage 用于查询 Proto specs
+    let storage = {
+        let registry = server.service_registry.read().await;
+        registry.get_storage()
+    };
+
+    // 获取客户端的 ServiceSpec（从 service_specs 表）
+    let client_spec = if let Some(ref storage) = storage {
+        match storage
+            .get_proto_by_fingerprint(target_type, client_fingerprint)
+            .await
+        {
+            Ok(Some(spec)) => Some(spec),
+            Ok(None) => {
+                warn!(
+                    "⚠️ 客户端 fingerprint {} 未找到对应的 spec，将仅使用指纹匹配",
+                    client_fingerprint
+                );
+                None
+            }
+            Err(e) => {
+                warn!("获取客户端 spec 失败: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // 遍历候选实例进行兼容性检查
+    for candidate in candidates {
+        let candidate_fingerprint = candidate
+            .service_spec
+            .as_ref()
+            .map(|s| s.fingerprint.clone())
+            .unwrap_or_default();
+
+        // 第一步：精确匹配检查（快速路径）
+        if candidate_fingerprint == client_fingerprint {
+            info!(
+                "✅ 精确匹配: candidate={} fingerprint={}",
+                candidate.actor_id.serial_number, candidate_fingerprint
+            );
+            exact_matches.push(candidate.actor_id.clone());
+            compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                candidate_id: candidate.actor_id.clone(),
+                candidate_fingerprint: candidate_fingerprint.clone(),
+                analysis_result: None, // 精确匹配无需分析
+                is_exact_match: Some(true),
+            });
+            continue;
+        }
+
+        // 第二步：检查全局兼容性缓存
+        let cache_key = crate::compatibility_cache::GlobalCompatibilityCache::build_cache_key(
+            &format!("{}/{}", target_type.manufacturer, target_type.name),
+            client_fingerprint,
+            &candidate_fingerprint,
+        );
+
+        let mut cache_guard = server.compatibility_cache.write().await;
+        let cache_response = cache_guard.query(&cache_key);
+        drop(cache_guard);
+
+        if cache_response.hit {
+            // 缓存命中，使用缓存的 CompatibilityAnalysisResult
+            if let Some(cached_analysis) = cache_response.analysis_result {
+                let is_compatible = cached_analysis.is_compatible();
+                let level = match cached_analysis.level {
+                    CompatibilityLevel::FullyCompatible => {
+                        actr_protocol::CompatibilityLevel::FullyCompatible
+                    }
+                    CompatibilityLevel::BackwardCompatible => {
+                        actr_protocol::CompatibilityLevel::BackwardCompatible
+                    }
+                    CompatibilityLevel::BreakingChanges => {
+                        actr_protocol::CompatibilityLevel::BreakingChanges
+                    }
+                };
+
+                if is_compatible {
+                    compatible_candidates.push((
+                        candidate.actor_id.clone(),
+                        level,
+                        Some(cached_analysis.clone()),
+                    ));
+                }
+
+                // 将 CompatibilityAnalysisResult 转换为 proto 版本
+                let proto_result = convert_to_proto_analysis_result(&cached_analysis);
+
+                compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                    candidate_id: candidate.actor_id.clone(),
+                    candidate_fingerprint: candidate_fingerprint.clone(),
+                    analysis_result: Some(proto_result),
+                    is_exact_match: Some(false),
+                });
+
+                info!(
+                    "🔄 缓存命中: candidate={} level={:?}",
+                    candidate.actor_id.serial_number, cached_analysis.level
+                );
+                continue;
+            }
+        }
+
+        // 第三步：执行兼容性分析（缓存未命中）
+        if client_spec.is_none() {
+            // 没有客户端 spec，无法进行深度分析
+            compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                candidate_id: candidate.actor_id.clone(),
+                candidate_fingerprint: candidate_fingerprint.clone(),
+                analysis_result: None,
+                is_exact_match: Some(false),
+            });
+            continue;
+        }
+
+        let candidate_spec = match &candidate.service_spec {
+            Some(spec) => spec,
+            None => {
+                compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                    candidate_id: candidate.actor_id.clone(),
+                    candidate_fingerprint: candidate_fingerprint.clone(),
+                    analysis_result: None,
+                    is_exact_match: Some(false),
+                });
+                continue;
+            }
+        };
+
+        // 使用 actr-version 进行深度兼容性分析
+        match ServiceCompatibility::analyze_compatibility(
+            client_spec.as_ref().unwrap(),
+            candidate_spec,
+        ) {
+            Ok(analysis_result) => {
+                let is_compatible = analysis_result.is_compatible();
+                let level = match analysis_result.level {
+                    CompatibilityLevel::FullyCompatible => {
+                        actr_protocol::CompatibilityLevel::FullyCompatible
+                    }
+                    CompatibilityLevel::BackwardCompatible => {
+                        actr_protocol::CompatibilityLevel::BackwardCompatible
+                    }
+                    CompatibilityLevel::BreakingChanges => {
+                        actr_protocol::CompatibilityLevel::BreakingChanges
+                    }
+                };
+
+                // 缓存分析结果
+                {
+                    let mut cache_guard = server.compatibility_cache.write().await;
+                    cache_guard.store(CompatibilityReportData {
+                        from_fingerprint: client_fingerprint.to_string(),
+                        to_fingerprint: candidate_fingerprint.clone(),
+                        service_type: format!("{}/{}", target_type.manufacturer, target_type.name),
+                        analysis_result: analysis_result.clone(),
+                    });
+                }
+
+                if is_compatible {
+                    compatible_candidates.push((
+                        candidate.actor_id.clone(),
+                        level,
+                        Some(analysis_result.clone()),
+                    ));
+                }
+
+                let proto_result = convert_to_proto_analysis_result(&analysis_result);
+
+                compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                    candidate_id: candidate.actor_id.clone(),
+                    candidate_fingerprint: candidate_fingerprint.clone(),
+                    analysis_result: Some(proto_result),
+                    is_exact_match: Some(false),
+                });
+
+                info!(
+                    "🔍 兼容性分析: candidate={} level={:?}",
+                    candidate.actor_id.serial_number, analysis_result.level
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "兼容性分析失败: candidate={} error={}",
+                    candidate.actor_id.serial_number, e
+                );
+                compatibility_info.push(actr_protocol::CandidateCompatibilityInfo {
+                    candidate_id: candidate.actor_id.clone(),
+                    candidate_fingerprint: candidate_fingerprint.clone(),
+                    analysis_result: None,
+                    is_exact_match: Some(false),
+                });
+            }
+        }
+    }
+
+    // 确定返回结果
+    let has_exact_match = !exact_matches.is_empty();
+    let is_sub_healthy = !has_exact_match && !compatible_candidates.is_empty();
+
+    // 构建最终的候选列表
+    let final_candidates: Vec<ActrId> = if has_exact_match {
+        // 优先返回精确匹配
+        exact_matches
+    } else if !compatible_candidates.is_empty() {
+        // 返回兼容的候选（按兼容性级别排序）
+        let mut sorted = compatible_candidates;
+        sorted.sort_by_key(|(_, level, _)| *level as i32);
+        sorted.into_iter().map(|(id, _, _)| id).collect()
+    } else {
+        // 没有兼容的候选
+        vec![]
+    };
+
+    // 如果有数量限制，应用
+    let limit = criteria
+        .map(|c| c.candidate_count as usize)
+        .unwrap_or(usize::MAX);
+    let limited_candidates: Vec<ActrId> = final_candidates.into_iter().take(limit).collect();
+
+    (
+        limited_candidates,
+        compatibility_info,
+        Some(has_exact_match),
+        Some(is_sub_healthy),
+    )
+}
+
+/// 将 actr-version 的 CompatibilityAnalysisResult 转换为 proto 版本
+fn convert_to_proto_analysis_result(
+    result: &actr_version::CompatibilityAnalysisResult,
+) -> actr_protocol::CompatibilityAnalysisResult {
+    let proto_level = match result.level {
+        actr_version::CompatibilityLevel::FullyCompatible => {
+            actr_protocol::CompatibilityLevel::FullyCompatible
+        }
+        actr_version::CompatibilityLevel::BackwardCompatible => {
+            actr_protocol::CompatibilityLevel::BackwardCompatible
+        }
+        actr_version::CompatibilityLevel::BreakingChanges => {
+            actr_protocol::CompatibilityLevel::BreakingChanges
+        }
+    };
+
+    let changes: Vec<actr_protocol::ProtocolChange> = result
+        .changes
+        .iter()
+        .map(|c| actr_protocol::ProtocolChange {
+            change_type: c.change_type.clone(),
+            file_name: c.file_name.clone(),
+            location: c.location.clone(),
+            description: c.description.clone(),
+            is_breaking: c.is_breaking,
+        })
+        .collect();
+
+    let breaking_changes: Vec<actr_protocol::ProtocolChange> = result
+        .breaking_changes
+        .iter()
+        .map(|c| actr_protocol::ProtocolChange {
+            change_type: c.rule.clone(),
+            file_name: c.file.clone(),
+            location: c.location.clone(),
+            description: c.message.clone(),
+            is_breaking: true,
+        })
+        .collect();
+
+    actr_protocol::CompatibilityAnalysisResult {
+        level: proto_level as i32,
+        changes,
+        breaking_changes,
+        base_fingerprint: result.base_semantic_fingerprint.clone(),
+        candidate_fingerprint: result.candidate_semantic_fingerprint.clone(),
+        analyzed_at: result.analyzed_at.timestamp(),
+    }
 }
 
 /// Handle GetServiceSpec request

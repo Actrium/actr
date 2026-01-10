@@ -32,25 +32,35 @@ pub struct ServiceRegistryStorage {
     pool: SqlitePool,
     /// TTL（秒），默认 3600 秒（1 小时）
     default_ttl_secs: u64,
+    /// Proto specs TTL（秒），默认 604800 秒（7 天）
+    proto_ttl_secs: u64,
 }
 
 impl ServiceRegistryStorage {
     /// 创建存储实例
     pub async fn new(database_file: impl AsRef<Path>, ttl_secs: Option<u64>) -> Result<Self> {
+        let db_path = database_file.as_ref();
+
+        // 确保数据库目录存在
+        if let Some(parent) = db_path.parent()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create database directory: {}", parent.display())
+            })?;
+            info!("📁 Created database directory: {}", parent.display());
+        }
+
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&format!("sqlite:{}", database_file.as_ref().display()))
+            .connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to database: {}",
-                    database_file.as_ref().display()
-                )
-            })?;
+            .with_context(|| format!("Failed to connect to database: {}", db_path.display()))?;
 
         let storage = Self {
             pool,
             default_ttl_secs: ttl_secs.unwrap_or(3600), // 默认 1 小时
+            proto_ttl_secs: 604800,                     // Proto specs 默认 7 天
         };
 
         storage.init_schema().await?;
@@ -117,6 +127,27 @@ impl ServiceRegistryStorage {
         .execute(&self.pool)
         .await
         .with_context(|| "Failed to create service_registry table")?;
+
+        // service_specs 表：存储 Proto 内容用于兼容性协商
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS service_specs (
+                actr_type_manufacturer TEXT NOT NULL,
+                actr_type_name TEXT NOT NULL,
+                service_fingerprint TEXT NOT NULL,
+                proto_content BLOB NOT NULL,
+                last_accessed INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (actr_type_manufacturer, actr_type_name, service_fingerprint)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_service_specs_expires_at ON service_specs(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_service_specs_last_accessed ON service_specs(last_accessed);
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .with_context(|| "Failed to create service_specs table")?;
 
         info!("Database schema initialized");
         Ok(())
@@ -442,6 +473,140 @@ impl ServiceRegistryStorage {
             expired_services: expired as u64,
             valid_services: (total - expired) as u64,
         })
+    }
+
+    // =========================================================================
+    // service_specs 表方法：存储 Proto 内容用于兼容性协商
+    // =========================================================================
+
+    /// 保存 Proto spec（用于兼容性协商）
+    ///
+    /// 在 Actor 注册时，如果 ServiceSpec 存在，则提取 Proto 并保存到 service_specs 表。
+    /// 使用 INSERT OR REPLACE 策略，相同指纹的 proto 会更新时间戳。
+    pub async fn save_proto_spec(
+        &self,
+        actr_type: &actr_protocol::ActrType,
+        service_spec: &ServiceSpec,
+    ) -> Result<()> {
+        let now = current_timestamp();
+        let expires_at = now + self.proto_ttl_secs;
+
+        // 序列化 ServiceSpec 为 protobuf bytes（包含完整的 proto 内容）
+        let mut proto_content = Vec::new();
+        service_spec
+            .encode(&mut proto_content)
+            .with_context(|| "Failed to encode ServiceSpec")?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO service_specs (actr_type_manufacturer, actr_type_name, service_fingerprint, proto_content, last_accessed, expires_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(actr_type_manufacturer, actr_type_name, service_fingerprint)
+            DO UPDATE SET proto_content = excluded.proto_content, last_accessed = excluded.last_accessed, expires_at = excluded.expires_at
+            "#,
+        )
+        .bind(&actr_type.manufacturer)
+        .bind(&actr_type.name)
+        .bind(&service_spec.fingerprint)
+        .bind(&proto_content)
+        .bind(now as i64)
+        .bind(expires_at as i64)
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("Failed to save proto spec for {}/{}", actr_type.manufacturer, actr_type.name))?;
+
+        debug!(
+            "Saved proto spec: {}/{} fingerprint={} (expires in {}s)",
+            actr_type.manufacturer, actr_type.name, service_spec.fingerprint, self.proto_ttl_secs
+        );
+
+        Ok(())
+    }
+
+    /// 根据指纹获取 Proto spec
+    ///
+    /// 查询匹配的 Proto，如果找到则更新访问时间（异步执行，避免阻塞查询）。
+    pub async fn get_proto_by_fingerprint(
+        &self,
+        actr_type: &actr_protocol::ActrType,
+        fingerprint: &str,
+    ) -> Result<Option<ServiceSpec>> {
+        let now = current_timestamp();
+
+        // 查询
+        let row = sqlx::query(
+            r#"SELECT proto_content FROM service_specs 
+               WHERE actr_type_manufacturer = ?1 
+               AND actr_type_name = ?2 
+               AND service_fingerprint = ?3
+               AND expires_at > ?4"#,
+        )
+        .bind(&actr_type.manufacturer)
+        .bind(&actr_type.name)
+        .bind(fingerprint)
+        .bind(now as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            use sqlx::Row;
+            let proto_content: Vec<u8> = row.get("proto_content");
+            let service_spec = ServiceSpec::decode(&proto_content[..])
+                .with_context(|| "Failed to decode ServiceSpec")?;
+
+            // 异步更新访问时间和过期时间
+            let pool_clone = self.pool.clone();
+            let manufacturer = actr_type.manufacturer.clone();
+            let name = actr_type.name.clone();
+            let fingerprint_clone = fingerprint.to_string();
+            let ttl = self.proto_ttl_secs;
+            tokio::spawn(async move {
+                let new_expires_at = now + ttl;
+                let _ = sqlx::query(
+                    r#"UPDATE service_specs SET last_accessed = ?1, expires_at = ?2 
+                       WHERE actr_type_manufacturer = ?3 AND actr_type_name = ?4 AND service_fingerprint = ?5"#,
+                )
+                .bind(now as i64)
+                .bind(new_expires_at as i64)
+                .bind(&manufacturer)
+                .bind(&name)
+                .bind(&fingerprint_clone)
+                .execute(&pool_clone)
+                .await;
+            });
+
+            debug!(
+                "Found proto spec: {}/{} fingerprint={}",
+                actr_type.manufacturer, actr_type.name, fingerprint
+            );
+            Ok(Some(service_spec))
+        } else {
+            debug!(
+                "Proto spec not found: {}/{} fingerprint={}",
+                actr_type.manufacturer, actr_type.name, fingerprint
+            );
+            Ok(None)
+        }
+    }
+
+    /// 清理过期的 proto specs
+    pub async fn cleanup_expired_proto_specs(&self) -> Result<u64> {
+        let now = current_timestamp();
+
+        let result = sqlx::query("DELETE FROM service_specs WHERE expires_at <= ?1")
+            .bind(now as i64)
+            .execute(&self.pool)
+            .await?;
+
+        let deleted_count = result.rows_affected();
+        if deleted_count > 0 {
+            info!(
+                "Cleaned up {} expired proto specs from cache",
+                deleted_count
+            );
+        }
+
+        Ok(deleted_count)
     }
 }
 

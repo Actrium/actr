@@ -442,22 +442,19 @@ impl LoadBalancer {
             );
 
             // 查询缓存
-            let response = cache.query(&cache_key);
+            let response = cache.query_readonly(&cache_key);
 
             // 转换为分数
-            candidate.protocol_compatibility_score = if let Some(result) = response.result {
-                let score = match result.as_str() {
-                    "compatible" => 1.0,
-                    "backward_compatible" => 0.5,
-                    "incompatible" => 0.0,
-                    _ => {
-                        warn!("未知的兼容性结果: {}", result);
-                        0.0
-                    }
+            candidate.protocol_compatibility_score = if let Some(result) = response.analysis_result
+            {
+                let score = match result.level {
+                    actr_version::CompatibilityLevel::FullyCompatible => 1.0,
+                    actr_version::CompatibilityLevel::BackwardCompatible => 0.5,
+                    actr_version::CompatibilityLevel::BreakingChanges => 0.0,
                 };
                 debug!(
-                    "候选 {:?}: 兼容性={}, 分数={}",
-                    candidate.actor_id, result, score
+                    "候选 {:?}: 兼容性={:?}, 分数={}",
+                    candidate.actor_id, result.level, score
                 );
                 Some(score)
             } else {
@@ -853,31 +850,53 @@ mod tests {
 
     #[test]
     fn test_calculate_compatibility_scores_with_cache() {
-        use crate::compatibility_cache::{CompatibilityReport, GlobalCompatibilityCache};
+        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
+        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
 
         // 创建缓存并填充测试数据
         let mut cache = GlobalCompatibilityCache::new();
 
         // 上报兼容性结果
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "test-service".to_string(),
             from_fingerprint: "client-fp-001".to_string(),
             to_fingerprint: "server-fp-compatible".to_string(),
-            result: "compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::FullyCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-fp-001".to_string(),
+                candidate_semantic_fingerprint: "server-fp-compatible".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "test-service".to_string(),
             from_fingerprint: "client-fp-001".to_string(),
             to_fingerprint: "server-fp-backward".to_string(),
-            result: "backward_compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::BackwardCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-fp-001".to_string(),
+                candidate_semantic_fingerprint: "server-fp-backward".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "test-service".to_string(),
             from_fingerprint: "client-fp-001".to_string(),
             to_fingerprint: "server-fp-incompatible".to_string(),
-            result: "incompatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::BreakingChanges,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-fp-001".to_string(),
+                candidate_semantic_fingerprint: "server-fp-incompatible".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
         // 创建候选服务（带 service_spec）
@@ -970,23 +989,38 @@ mod tests {
 
     #[test]
     fn test_rank_candidates_with_compatibility_cache() {
-        use crate::compatibility_cache::{CompatibilityReport, GlobalCompatibilityCache};
+        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
+        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
 
         let mut cache = GlobalCompatibilityCache::new();
 
         // 填充缓存
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "api".to_string(),
             from_fingerprint: "client-v2".to_string(),
             to_fingerprint: "server-v2".to_string(),
-            result: "compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::FullyCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-v2".to_string(),
+                candidate_semantic_fingerprint: "server-v2".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "api".to_string(),
             from_fingerprint: "client-v2".to_string(),
             to_fingerprint: "server-v1".to_string(),
-            result: "backward_compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::BackwardCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-v2".to_string(),
+                candidate_semantic_fingerprint: "server-v1".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
         // 创建候选服务
@@ -1036,22 +1070,37 @@ mod tests {
 
     #[test]
     fn test_rank_candidates_multi_factor_with_compatibility() {
-        use crate::compatibility_cache::{CompatibilityReport, GlobalCompatibilityCache};
+        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
+        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
 
         let mut cache = GlobalCompatibilityCache::new();
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "worker".to_string(),
             from_fingerprint: "client-1.0".to_string(),
             to_fingerprint: "worker-1.0".to_string(),
-            result: "compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::FullyCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-1.0".to_string(),
+                candidate_semantic_fingerprint: "worker-1.0".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "worker".to_string(),
             from_fingerprint: "client-1.0".to_string(),
             to_fingerprint: "worker-0.9".to_string(),
-            result: "backward_compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::BackwardCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-1.0".to_string(),
+                candidate_semantic_fingerprint: "worker-0.9".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
         // 创建候选：s1 更快但兼容性低，s2 更慢但兼容性高
@@ -1140,16 +1189,24 @@ mod tests {
 
     #[test]
     fn test_mixed_exact_and_degraded_match() {
-        use crate::compatibility_cache::{CompatibilityReport, GlobalCompatibilityCache};
+        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
+        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
 
         let mut cache = GlobalCompatibilityCache::new();
 
         // 预填充缓存：client-v2 与 server-v1 向后兼容
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "payment-api".to_string(),
             from_fingerprint: "client-v2".to_string(),
             to_fingerprint: "server-v1".to_string(),
-            result: "backward_compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::BackwardCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-v2".to_string(),
+                candidate_semantic_fingerprint: "server-v1".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
         // 创建候选服务
@@ -1206,15 +1263,23 @@ mod tests {
 
     #[test]
     fn test_exact_match_ranking_priority() {
-        use crate::compatibility_cache::{CompatibilityReport, GlobalCompatibilityCache};
+        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
+        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
 
         let mut cache = GlobalCompatibilityCache::new();
 
-        cache.report(CompatibilityReport {
+        cache.store(CompatibilityReportData {
             service_type: "auth".to_string(),
             from_fingerprint: "client-v3".to_string(),
             to_fingerprint: "server-v2".to_string(),
-            result: "compatible".to_string(),
+            analysis_result: CompatibilityAnalysisResult {
+                level: CompatibilityLevel::FullyCompatible,
+                changes: vec![],
+                breaking_changes: vec![],
+                base_semantic_fingerprint: "client-v3".to_string(),
+                candidate_semantic_fingerprint: "server-v2".to_string(),
+                analyzed_at: chrono::Utc::now(),
+            },
         });
 
         // s1: 精确匹配，但 power_reserve 较低

@@ -128,6 +128,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5 分钟
                 loop {
                     interval.tick().await;
+                    // 清理过期的服务注册
                     match storage_for_cleanup.cleanup_expired().await {
                         Ok(deleted) => {
                             if deleted > 0 {
@@ -136,6 +137,17 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                         }
                         Err(e) => {
                             error!("Failed to cleanup expired services: {:?}", e);
+                        }
+                    }
+                    // 同步清理过期的 proto specs（用于兼容性协商）
+                    match storage_for_cleanup.cleanup_expired_proto_specs().await {
+                        Ok(deleted) => {
+                            if deleted > 0 {
+                                info!("🧹 Cleaned up {} expired proto specs from cache", deleted);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to cleanup expired proto specs: {:?}", e);
                         }
                     }
                 }

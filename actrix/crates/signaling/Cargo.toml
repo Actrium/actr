@@ -32,6 +32,7 @@ axum = { workspace = true, features = ["ws"] }
 # Actor-RTC Protocol
 actr-framework = { workspace = true }
 actr-protocol = { workspace = true }
+actr-version = { workspace = true }
 
 # Protobuf
 prost = { workspace = true }
