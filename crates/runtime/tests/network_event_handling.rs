@@ -73,7 +73,7 @@ async fn test_network_available_triggers_recovery() {
     // Note: DefaultNetworkEventProcessor constructor uses SignalingClient
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
         signaling_client_a.clone(),
-        Arc::new(tokio::sync::RwLock::new(Some(coordinator_a.clone()))),
+        Some(coordinator_a.clone()),
     ));
 
     // Create channels for NetworkEventHandle
@@ -175,7 +175,7 @@ async fn test_network_lost_cleanup() {
     // Create processor
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
         signaling_client_a.clone(),
-        Arc::new(tokio::sync::RwLock::new(Some(coordinator_a.clone()))),
+        Some(coordinator_a.clone()),
     ));
 
     // Create handle
@@ -276,7 +276,7 @@ async fn test_result_feedback_mechanism() {
 
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
         signaling_client_a.clone(),
-        Arc::new(tokio::sync::RwLock::new(Some(coordinator_a.clone()))),
+        Some(coordinator_a.clone()),
     ));
 
     let (event_tx, mut event_rx) = mpsc::channel(10);
@@ -369,7 +369,7 @@ async fn test_network_repeatedly_changing() {
 
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
         signaling_client_a.clone(),
-        Arc::new(tokio::sync::RwLock::new(Some(coordinator_a.clone()))),
+        Some(coordinator_a.clone()),
     ));
 
     // Create channels and handle

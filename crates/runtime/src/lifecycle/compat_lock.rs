@@ -462,7 +462,7 @@ mod tests {
         let mut manager = CompatLockManager::new(project_root.clone());
 
         // 验证缓存目录在系统临时目录下
-        let cache_dir = manager.cache_dir();
+        let cache_dir = manager.cache_dir().to_path_buf();
         assert!(cache_dir.starts_with(std::env::temp_dir()));
         assert!(cache_dir.to_string_lossy().contains("actr"));
 
@@ -479,7 +479,7 @@ mod tests {
             .unwrap();
 
         // 验证文件存在于计算出的缓存目录
-        assert!(CompatLockFile::exists(cache_dir).await);
+        assert!(CompatLockFile::exists(&cache_dir).await);
 
         // 验证文件不在项目目录中
         assert!(!project_root.join(COMPAT_LOCK_FILENAME).exists());
@@ -501,7 +501,7 @@ mod tests {
             .unwrap();
 
         // 文件应该被删除（因为没有其他记录）
-        assert!(!CompatLockFile::exists(cache_dir).await);
+        assert!(!CompatLockFile::exists(&cache_dir).await);
     }
 
     #[test]
