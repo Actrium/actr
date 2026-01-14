@@ -446,7 +446,7 @@ impl<W: Workload> ActrNode<W> {
                         actor_id,
                         target_type,
                         candidate_count,
-                        Some(cached_entry.resolved_fingerprint.clone()),
+                        cached_entry.resolved_fingerprint.clone(),
                     )
                     .await?;
 
@@ -505,7 +505,7 @@ impl<W: Workload> ActrNode<W> {
                 actor_id,
                 target_type,
                 candidate_count,
-                Some(client_fingerprint.clone()),
+                client_fingerprint.clone(),
             )
             .await?;
 
@@ -580,7 +580,7 @@ impl<W: Workload> ActrNode<W> {
         actor_id: &ActrId,
         target_type: &ActrType,
         candidate_count: u32,
-        client_fingerprint: Option<String>,
+        client_fingerprint: String,
     ) -> ActorResult<DiscoveryResult> {
         let client = self.signaling_client.as_ref();
 
@@ -1074,6 +1074,28 @@ impl<W: Workload> ActrNode<W> {
                     .await;
                 // Store PSK and public_key for TURN authentication
                 self.psk = register_ok.psk.clone();
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                if let Some(actr_lock) = self.actr_lock.clone() {
+                    self.context_factory
+                        .as_mut()
+                        .expect("ContextFactory must exist")
+                        .set_actr_lock(actr_lock);
+                    tracing::info!(
+                        "✅ Actr.lock.toml set in ContextFactory for fingerprint lookups"
+                    );
+                }
+
+                // Set config_dir in ContextFactory for compat.lock.toml Fast Path
+                self.context_factory
+                    .as_mut()
+                    .expect("ContextFactory must exist")
+                    .set_config_dir(self.config.config_dir.clone());
+                tracing::info!(
+                    "✅ config_dir set in ContextFactory for compat.lock.toml Fast Path"
+                );
 
                 // Persist identity into ContextFactory for later Context creation
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -38,7 +38,7 @@ pub struct LockFile {
     pub metadata: Option<LockMetadata>,
 
     /// Locked dependencies (ordered array for deterministic output)
-    #[serde(rename = "dependency")]
+    #[serde(rename = "dependency", default, skip_serializing_if = "Vec::is_empty")]
     pub dependencies: Vec<LockedDependency>,
 }
 

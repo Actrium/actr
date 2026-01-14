@@ -17,6 +17,10 @@ pub struct RawConfig {
     #[serde(default)]
     pub inherit: Option<PathBuf>,
 
+    /// Lock file 文件所在的目录
+    #[serde(default)]
+    pub config_dir: Option<PathBuf>,
+
     /// 包信息
     pub package: RawPackageConfig,
 

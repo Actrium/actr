@@ -81,7 +81,15 @@ impl ParserV1 {
             None
         };
 
-        // 11. 构建最终配置
+        // 11. 确定 config_dir
+        // 如果 raw.config_dir 存在，则相对于当前 base_dir 解析
+        let config_dir = if let Some(dir) = raw.config_dir {
+            self.base_dir.join(dir)
+        } else {
+            self.base_dir.clone()
+        };
+
+        // 12. 构建最终配置
         Ok(Config {
             package,
             exports,
@@ -95,7 +103,7 @@ impl ParserV1 {
             scripts: raw.scripts,
             webrtc,
             observability,
-            config_dir: self.base_dir.clone(),
+            config_dir,
         })
     }
 
@@ -470,6 +478,7 @@ impl ParserV1 {
         Ok(RawConfig {
             edition: child.edition, // 已验证一致
             inherit: None,
+            config_dir: child.config_dir,
             package: child.package, // package 不继承
             exports: {
                 let mut p = parent.exports;

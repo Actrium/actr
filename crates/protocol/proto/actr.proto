@@ -230,7 +230,7 @@ message RouteCandidatesRequest {
   optional ServiceLocation client_location = 3;  // Client's geographic location for NEAREST ranking
   // Client's service fingerprint for compatibility negotiation.
   // When provided, signaling server performs compatibility negotiation automatically.
-  optional string client_fingerprint = 4;
+  required string client_fingerprint = 4;
 }
 
 // Compatibility level between two protocol versions

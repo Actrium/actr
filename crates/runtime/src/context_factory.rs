@@ -7,7 +7,9 @@ use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
 use crate::outbound::OutGate;
 use crate::transport::InprocTransportManager;
 use crate::wire::webrtc::SignalingClient;
+use actr_config::lock::LockFile;
 use actr_protocol::{AIdCredential, ActrId};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Context factory
@@ -39,6 +41,12 @@ pub struct ContextFactory {
 
     /// Signaling client for discovery
     pub(crate) signaling_client: Arc<dyn SignalingClient>,
+
+    /// Actr.lock.toml for dependency fingerprint lookups
+    pub(crate) actr_lock: Option<LockFile>,
+
+    /// Config directory path for compat.lock.toml
+    pub(crate) config_dir: Option<PathBuf>,
 }
 
 impl ContextFactory {
@@ -75,6 +83,8 @@ impl ContextFactory {
             data_stream_registry,
             media_frame_registry,
             signaling_client,
+            actr_lock: None, // 延迟设置，在 ActrNode::start() 时从 actr_node.actr_lock 传入
+            config_dir: None, // 延迟设置，在 ActrNode::start() 时从 actr_node.config 传入
         }
     }
 
@@ -86,6 +96,26 @@ impl ContextFactory {
     pub fn set_outproc_gate(&mut self, gate: OutGate) {
         tracing::debug!("🔄 Setting outproc OutGate in ContextFactory");
         self.outproc_gate = Some(gate);
+    }
+
+    /// 设置 Actr.lock.toml 文件
+    ///
+    /// # 用途
+    ///
+    /// ActrNode::start() 时调用，用于 discover_route_candidate 获取依赖 fingerprint
+    pub fn set_actr_lock(&mut self, actr_lock: LockFile) {
+        tracing::debug!("🔄 Setting actr_lock in ContextFactory");
+        self.actr_lock = Some(actr_lock);
+    }
+
+    /// 设置配置目录路径
+    ///
+    /// # 用途
+    ///
+    /// ActrNode::start() 时调用，用于 compat.lock.toml Fast Path 缓存
+    pub fn set_config_dir(&mut self, config_dir: PathBuf) {
+        tracing::debug!("🔄 Setting config_dir in ContextFactory: {:?}", config_dir);
+        self.config_dir = Some(config_dir);
     }
 
     /// 获取 Shell → Workload 方向的传输管理器
@@ -126,6 +156,8 @@ impl ContextFactory {
             self.media_frame_registry.clone(), // Clone Arc<MediaFrameRegistry>
             self.signaling_client.clone(),
             credential.clone(),
+            self.actr_lock.clone(),  // Clone Option<LockFile>
+            self.config_dir.clone(), // Clone Option<PathBuf>
         )
     }
 
@@ -145,6 +177,8 @@ impl ContextFactory {
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             credential.clone(),
+            self.actr_lock.clone(),
+            self.config_dir.clone(),
         )
     }
 }

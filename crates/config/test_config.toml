@@ -22,7 +22,7 @@ test = "cargo test"
 url = "ws://localhost:8081"
 
 [system.deployment]
-realm = 1001
+realm_id = 1001
 
 [system.discovery]
 visible = true
