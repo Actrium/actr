@@ -80,7 +80,7 @@ actr-protocol = { path = "crates/protocol", version = "0.1.7" }
 actr-version = { path = "crates/version", version = "0.1.5" }
 actr-config = { path = "crates/config", version = "0.1.8" }
 actr-framework = { path = "crates/framework", version = "0.1.5" }
-actr-framework-protoc-codegen = { path = "crates/framework-protoc-codegen", version = "0.1.7" }
+actr-framework-protoc-codegen = { path = "crates/framework-protoc-codegen", version = "0.1.10" }
 actr-runtime = { path = "crates/runtime", version = "0.1.8" }
 actr-mailbox = { path = "crates/runtime-mailbox", version = "0.1.5" }
 
