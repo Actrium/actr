@@ -1,3 +1,10 @@
+//! Observability module for logging and tracing initialization.
+//!
+//! This module provides unified initialization for logging (via `tracing`) and
+//! optional distributed tracing (via OpenTelemetry). It supports injecting
+//! custom platform-specific layers (e.g., Android Logcat, iOS os_log) while
+//! providing a sensible default (stdout fmt layer) when none is provided.
+
 use crate::error::RuntimeResult;
 use actr_config::ObservabilityConfig;
 #[cfg(feature = "opentelemetry")]
@@ -8,7 +15,15 @@ use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     propagation::TraceContextPropagator, resource::Resource, trace::SdkTracerProvider,
 };
-use tracing_subscriber::{filter::EnvFilter, fmt, layer::SubscriberExt, prelude::*};
+use tracing_subscriber::{
+    Layer, filter::EnvFilter, fmt, layer::SubscriberExt, prelude::*, registry::LookupSpan,
+};
+
+/// Type alias for a boxed tracing layer that can be dynamically composed.
+///
+/// Platform-specific bindings (e.g., `libactr` for Swift/Kotlin) can create
+/// layers using `tracing-android` or `tracing-oslog` and pass them here.
+pub type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
 
 /// Guard for observability resources. Shuts down tracing exporter on drop.
 #[derive(Default)]
@@ -28,7 +43,10 @@ impl Drop for ObservabilityGuard {
     }
 }
 
-/// Initialize logging + (optional) tracing subscriber.
+/// Initialize logging + (optional) tracing subscriber with default fmt layer.
+///
+/// This is the original API for backward compatibility. It uses a stdout-based
+/// fmt layer for local logging output.
 ///
 /// - `RUST_LOG` wins over configured level; fallback to `info` if unset.
 /// - Tracing exporter only activates when both the `opentelemetry` feature is enabled and
@@ -37,6 +55,35 @@ impl Drop for ObservabilityGuard {
 pub fn init_observability(
     cfg: &actr_config::ObservabilityConfig,
 ) -> RuntimeResult<ObservabilityGuard> {
+    init_observability_with_layer(cfg, None::<BoxedLayer<tracing_subscriber::Registry>>)
+}
+
+/// Initialize logging + (optional) tracing subscriber with a custom platform layer.
+///
+/// This extended API allows platform-specific bindings to inject their own
+/// logging layer (e.g., `tracing-android` for Logcat, `tracing-oslog` for Apple).
+///
+/// # Arguments
+///
+/// * `cfg` - Observability configuration (filter level, OTel settings)
+/// * `platform_layer` - Optional custom layer for platform-specific logging.
+///   If `None`, a default `fmt::layer()` outputting to stdout will be used.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// // In libactr for Android:
+/// let android_layer = tracing_android::layer("actr")
+///     .expect("Failed to create Android layer");
+/// let guard = init_observability_with_layer(&cfg, Some(android_layer.boxed()))?;
+/// ```
+pub fn init_observability_with_layer<L>(
+    cfg: &ObservabilityConfig,
+    platform_layer: Option<L>,
+) -> RuntimeResult<ObservabilityGuard>
+where
+    L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
+{
     let level_directive = std::env::var("RUST_LOG")
         .ok()
         .filter(|s| !s.is_empty())
@@ -44,63 +91,95 @@ pub fn init_observability(
     let env_filter =
         EnvFilter::try_new(level_directive.clone()).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    init_subscriber(cfg, env_filter)
+    init_subscriber_internal(cfg, env_filter, platform_layer)
 }
 
+// ============================================================================
+// Internal implementation
+// ============================================================================
+
 #[cfg(not(feature = "opentelemetry"))]
-fn init_subscriber(
+fn init_subscriber_internal<L>(
     _cfg: &ObservabilityConfig,
     env_filter: EnvFilter,
-) -> RuntimeResult<ObservabilityGuard> {
-    let fmt_layer = fmt::layer()
-        .with_target(true)
-        .with_level(true)
-        .with_line_number(true)
-        .with_file(true);
+    platform_layer: Option<L>,
+) -> RuntimeResult<ObservabilityGuard>
+where
+    L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
+{
+    let mut layers = Vec::new();
 
-    let _ = tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .try_init();
+    // Add platform layer or default fmt layer
+    if let Some(layer) = platform_layer {
+        layers.push(layer.boxed());
+    } else {
+        layers.push(create_default_fmt_layer().boxed());
+    }
+
+    // Add env filter
+    layers.push(env_filter.boxed());
+
+    let _ = tracing_subscriber::registry().with(layers).try_init();
+
     Ok(ObservabilityGuard::default())
 }
 
 #[cfg(feature = "opentelemetry")]
-fn init_subscriber(
+fn init_subscriber_internal<L>(
     cfg: &ObservabilityConfig,
     env_filter: EnvFilter,
-) -> RuntimeResult<ObservabilityGuard> {
+    platform_layer: Option<L>,
+) -> RuntimeResult<ObservabilityGuard>
+where
+    L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
+{
+    let mut layers = Vec::new();
+
+    // 1. Add platform layer or default fmt layer
+    if let Some(layer) = platform_layer {
+        layers.push(layer.boxed());
+    } else {
+        layers.push(create_default_fmt_layer().boxed());
+    }
+
+    // 2. Add env filter
+    layers.push(env_filter.boxed());
+
+    // 3. Add OTel layer if enabled
+    let mut tracer_provider = None;
     if cfg.tracing_enabled {
         let provider = build_otel_provider(cfg)?;
         let tracer = provider.tracer("actr-runtime");
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-        let fmt_layer = fmt::layer()
-            .with_target(true)
-            .with_level(true)
-            .with_line_number(true)
-            .with_file(true);
-
-        let _ = tracing_subscriber::registry()
-            .with(env_filter)
-            .with(otel_layer)
-            .with(fmt_layer)
-            .try_init();
-        Ok(ObservabilityGuard {
-            tracer_provider: Some(provider),
-        })
-    } else {
-        let fmt_layer = fmt::layer()
-            .with_target(true)
-            .with_level(true)
-            .with_line_number(true)
-            .with_file(true);
-
-        let _ = tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .try_init();
-        Ok(ObservabilityGuard::default())
+        layers.push(otel_layer.boxed());
+        tracer_provider = Some(provider);
     }
+
+    let _ = tracing_subscriber::registry().with(layers).try_init();
+
+    Ok(ObservabilityGuard { tracer_provider })
+}
+
+/// Create the default fmt layer for stdout output.
+fn create_default_fmt_layer<S>() -> impl Layer<S>
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    // Enable ANSI colors on Linux/Unix platforms for better terminal readability
+    // Disable on mobile platforms (iOS/Android) where colors are not useful
+    let enable_ansi = cfg!(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ));
+
+    fmt::layer()
+        .with_target(true)
+        .with_level(true)
+        .with_line_number(true)
+        .with_file(true)
+        .with_ansi(enable_ansi)
 }
 
 #[cfg(feature = "opentelemetry")]
