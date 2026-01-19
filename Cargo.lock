@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -15,7 +15,7 @@ dependencies = [
 
 [[package]]
 name = "actr-config"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "actr-protocol",
  "actr-version",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework-protoc-codegen"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base122-rs",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "actr-version"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "actr-protocol",
  "anyhow",

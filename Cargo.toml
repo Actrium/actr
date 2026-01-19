@@ -1,6 +1,6 @@
 [package]
 name = "actr"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -76,12 +76,12 @@ collapsible_else_if = "allow"
 
 [workspace.dependencies]
 # === Internal Dependencies (内部依赖) ===
-actr-protocol = { path = "crates/protocol", version = "0.1.6" }
-actr-version = { path = "crates/version", version = "0.1.4" }
-actr-config = { path = "crates/config", version = "0.1.7" }
+actr-protocol = { path = "crates/protocol", version = "0.1.7" }
+actr-version = { path = "crates/version", version = "0.1.5" }
+actr-config = { path = "crates/config", version = "0.1.8" }
 actr-framework = { path = "crates/framework", version = "0.1.5" }
-actr-framework-protoc-codegen = { path = "crates/framework-protoc-codegen", version = "0.1.6" }
-actr-runtime = { path = "crates/runtime", version = "0.1.7" }
+actr-framework-protoc-codegen = { path = "crates/framework-protoc-codegen", version = "0.1.7" }
+actr-runtime = { path = "crates/runtime", version = "0.1.8" }
 actr-mailbox = { path = "crates/runtime-mailbox", version = "0.1.5" }
 
 # === Async Runtime (异步运行时) ===
