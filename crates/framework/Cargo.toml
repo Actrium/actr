@@ -15,7 +15,6 @@ actr-protocol.workspace = true
 async-trait = "0.1"
 bytes = "1.10"
 futures-util = "0.3"
-tokio.workspace = true
 uuid = { version = "1.18", features = ["v4"] }
 
 # Optional dependencies for utilities
@@ -34,3 +33,6 @@ geoip = [
     "flate2",
     "tar",
 ] # GeoIP with auto-download support
+
+[dev-dependencies]
+tokio.workspace = true

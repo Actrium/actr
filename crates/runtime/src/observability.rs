@@ -167,12 +167,10 @@ where
 {
     // Enable ANSI colors on Linux/Unix platforms for better terminal readability
     // Disable on mobile platforms (iOS/Android) where colors are not useful
-    let enable_ansi = cfg!(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "macos"
+    let enable_ansi = cfg!(all(
+        unix,
+        not(target_os = "ios"),
+        not(target_os = "android")
     ));
 
     fmt::layer()
