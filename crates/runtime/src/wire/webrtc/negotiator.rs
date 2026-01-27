@@ -37,13 +37,19 @@ impl WebRtcNegotiator {
 
     /// Create RTCPeerConnection
     ///
+    /// # Arguments
+    /// - `is_answerer`: true if this node is the answerer (passive side), false if offerer (default)
+    ///
     /// # Returns
     /// newCreate's PeerConnection
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip(self), fields(ice_servers = self.config.ice_servers.len()))
+        tracing::instrument(level = "info", skip(self), fields(ice_servers = self.config.ice_servers.len(), is_answerer))
     )]
-    pub async fn create_peer_connection(&self) -> NetworkResult<RTCPeerConnection> {
+    pub async fn create_peer_connection(
+        &self,
+        is_answerer: bool,
+    ) -> NetworkResult<RTCPeerConnection> {
         use webrtc::api::APIBuilder;
         use webrtc::api::media_engine::MediaEngine;
         use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -163,8 +169,25 @@ impl WebRtcNegotiator {
             ..Default::default()
         };
 
-        // Create API with MediaEngine
-        let api = APIBuilder::new().with_media_engine(media_engine).build();
+        // Create SettingEngine with role-based configuration
+        let mut setting_engine = webrtc::api::setting_engine::SettingEngine::default();
+
+        // Apply ICE candidate acceptance wait times (for both Offerer and Answerer)
+        self.apply_ice_wait_times(&mut setting_engine);
+
+        // Apply advanced parameters (UDP ports, NAT 1:1) only for Answerer
+        if is_answerer {
+            tracing::info!("🎭 Applying advanced WebRTC parameters (Answerer mode)");
+            self.apply_answerer_config(&mut setting_engine)?;
+        } else {
+            tracing::info!("🎭 Using default WebRTC configuration (Offerer mode)");
+        }
+
+        // Create API with MediaEngine and SettingEngine
+        let api = APIBuilder::new()
+            .with_media_engine(media_engine)
+            .with_setting_engine(setting_engine)
+            .build();
 
         // Create PeerConnection
         let peer_connection = api.new_peer_connection(rtc_config).await?;
@@ -182,6 +205,71 @@ impl WebRtcNegotiator {
         tracing::info!("✅ Create RTCPeerConnection with VP8, H264, OPUS codecs");
 
         Ok(peer_connection)
+    }
+
+    /// Apply ICE candidate acceptance wait times (for both Offerer and Answerer)
+    fn apply_ice_wait_times(
+        &self,
+        setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
+    ) {
+        use std::time::Duration;
+
+        let advanced = &self.config.advanced;
+
+        setting_engine.set_host_acceptance_min_wait(Some(Duration::from_millis(
+            advanced.ice_host_acceptance_min_wait,
+        )));
+        setting_engine.set_srflx_acceptance_min_wait(Some(Duration::from_millis(
+            advanced.ice_srflx_acceptance_min_wait,
+        )));
+        setting_engine.set_prflx_acceptance_min_wait(Some(Duration::from_millis(
+            advanced.ice_prflx_acceptance_min_wait,
+        )));
+        setting_engine.set_relay_acceptance_min_wait(Some(Duration::from_millis(
+            advanced.ice_relay_acceptance_min_wait,
+        )));
+
+        tracing::info!(
+            "🔧 ICE wait times: host={}ms, srflx={}ms, prflx={}ms, relay={}ms",
+            advanced.ice_host_acceptance_min_wait,
+            advanced.ice_srflx_acceptance_min_wait,
+            advanced.ice_prflx_acceptance_min_wait,
+            advanced.ice_relay_acceptance_min_wait
+        );
+    }
+
+    /// Apply Answerer-specific configuration (UDP ports, NAT 1:1 mapping)
+    fn apply_answerer_config(
+        &self,
+        setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
+    ) -> NetworkResult<()> {
+        use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
+        use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
+
+        let advanced = &self.config.advanced;
+
+        // Apply UDP port strategy
+        if let Some((min, max)) = advanced.udp_ports {
+            let ephemeral = EphemeralUDP::new(min, max).map_err(|e| {
+                crate::transport::error::NetworkError::Other(anyhow::anyhow!(
+                    "Failed to create EphemeralUDP: {}",
+                    e
+                ))
+            })?;
+            setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
+            tracing::info!("🔧 UDP port range: {}-{}", min, max);
+
+            // Apply NAT 1:1 mapping (only when port range is configured)
+            if !advanced.public_ips.is_empty() {
+                setting_engine
+                    .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Srflx);
+                tracing::info!("🔧 NAT 1:1 IPs: {:?}", advanced.public_ips);
+            }
+        } else {
+            tracing::info!("🔧 Using default random UDP ports");
+        }
+
+        Ok(())
     }
 
     /// Create Offer (Trickle ICE mode)

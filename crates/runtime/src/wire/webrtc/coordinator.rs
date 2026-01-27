@@ -1014,7 +1014,8 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
     ) -> RuntimeResult<(oneshot::Receiver<()>, WebRtcConnection)> {
-        let peer_connection = self.negotiator.create_peer_connection().await?;
+        // Create PeerConnection as Offerer (active side)
+        let peer_connection = self.negotiator.create_peer_connection(false).await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>) and
@@ -1227,8 +1228,8 @@ impl WebRtcCoordinator {
 
         tracing::info!("📥 Handling Offer from serial={}", from.serial_number);
 
-        // 1. Create RTCPeerConnection
-        let peer_connection = self.negotiator.create_peer_connection().await?;
+        // 1. Create RTCPeerConnection as Answerer (passive side) - applies advanced parameters
+        let peer_connection = self.negotiator.create_peer_connection(true).await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>)

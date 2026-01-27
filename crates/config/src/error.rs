@@ -44,6 +44,9 @@ pub enum ConfigError {
 
     #[error("Invalid dependency configuration: {0}")]
     InvalidDependency(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 pub type Result<T> = std::result::Result<T, ConfigError>;

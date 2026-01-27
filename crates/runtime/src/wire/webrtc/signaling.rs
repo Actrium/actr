@@ -65,6 +65,9 @@ pub struct SignalingConfig {
 
     /// acknowledge verify configuration
     pub auth_config: Option<AuthConfig>,
+
+    /// WebRTC role preference: "answer" if this node has advanced config
+    pub webrtc_role: Option<String>,
 }
 
 /// reconnection configuration
@@ -340,6 +343,7 @@ impl WebSocketSignalingClient {
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
+            webrtc_role: None,
         };
 
         let client = Arc::new(Self::new(config));
@@ -395,6 +399,12 @@ impl WebSocketSignalingClient {
                 pairs.append_pair("token_key_id", &credential.token_key_id.to_string());
             }
         }
+
+        // Add WebRTC role preference if configured
+        if let Some(role) = &self.config.webrtc_role {
+            url.query_pairs_mut().append_pair("webrtc_role", role);
+        }
+
         url
     }
 

@@ -171,7 +171,8 @@ where
         target_os = "linux",
         target_os = "freebsd",
         target_os = "openbsd",
-        target_os = "netbsd"
+        target_os = "netbsd",
+        target_os = "macos"
     ));
 
     fmt::layer()

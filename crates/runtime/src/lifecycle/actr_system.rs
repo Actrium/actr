@@ -92,12 +92,19 @@ impl ActrSystem {
         tracing::info!("✅ Dead Letter Queue initialized");
 
         // Initialize signaling client (using WebSocketSignalingClient implementation)
+        let webrtc_role = if config.webrtc.advanced.prefer_answerer() {
+            Some("answer".to_string())
+        } else {
+            None
+        };
+
         let signaling_config = SignalingConfig {
             server_url: config.signaling_url.clone(),
             connection_timeout: 30,
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
+            webrtc_role,
         };
 
         let client = Arc::new(WebSocketSignalingClient::new(signaling_config));

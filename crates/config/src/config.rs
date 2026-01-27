@@ -124,6 +124,47 @@ pub struct IceServer {
     pub credential: Option<String>,
 }
 
+/// UDP 端口配置
+type UdpPorts = Option<(u16, u16)>;
+
+/// WebRTC 高级参数配置
+#[derive(Clone, Debug)]
+pub struct WebRtcAdvancedConfig {
+    /// UDP 端口策略
+    pub udp_ports: UdpPorts,
+    /// NAT 1:1 公网 IP 映射
+    pub public_ips: Vec<String>,
+    /// ICE host 候选等待时间（毫秒）
+    pub ice_host_acceptance_min_wait: u64,
+    /// ICE srflx 候选等待时间（毫秒）
+    pub ice_srflx_acceptance_min_wait: u64,
+    /// ICE prflx 候选等待时间（毫秒）
+    pub ice_prflx_acceptance_min_wait: u64,
+    /// ICE relay 候选等待时间（毫秒）
+    pub ice_relay_acceptance_min_wait: u64,
+}
+
+impl WebRtcAdvancedConfig {
+    /// 检查是否配置了高级参数且优先成为 Answerer
+    pub fn prefer_answerer(&self) -> bool {
+        // 如果配置了端口范围或 public_ips，则优先成为 Answerer
+        self.udp_ports.is_some() || !self.public_ips.is_empty()
+    }
+}
+
+impl Default for WebRtcAdvancedConfig {
+    fn default() -> Self {
+        Self {
+            udp_ports: UdpPorts::default(),
+            public_ips: Vec::new(),
+            ice_host_acceptance_min_wait: 0,
+            ice_srflx_acceptance_min_wait: 20,
+            ice_prflx_acceptance_min_wait: 40,
+            ice_relay_acceptance_min_wait: 100,
+        }
+    }
+}
+
 /// WebRTC 配置
 #[derive(Clone, Debug, Default)]
 pub struct WebRtcConfig {
@@ -131,6 +172,8 @@ pub struct WebRtcConfig {
     pub ice_servers: Vec<IceServer>,
     /// ICE 传输策略（All 或 Relay）
     pub ice_transport_policy: IceTransportPolicy,
+    /// 高级参数配置
+    pub advanced: WebRtcAdvancedConfig,
 }
 /// Observability configuration (logging + tracing) resolved from raw config
 #[derive(Debug, Clone)]

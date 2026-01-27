@@ -2,7 +2,8 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile, WebRtcConfig,
+    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile,
+    WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::error::{ConfigError, Result};
@@ -68,10 +69,7 @@ impl ParserV1 {
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
 
-        // 8. 解析 WebRTC 配置
-        let webrtc = self.parse_webrtc(&raw.system.webrtc);
-
-        // 9. 解析 observability 配置
+        // 8. 解析 observability 配置
         let observability = self.parse_observability(&raw.system, &package);
 
         // 10. 解析 ACL (从顶级 acl 读取，放在最后以避免 partial move)
@@ -101,7 +99,7 @@ impl ParserV1 {
             mailbox_path: raw.system.storage.mailbox_path,
             tags: raw.package.tags,
             scripts: raw.scripts,
-            webrtc,
+            webrtc: self.parse_webrtc(&raw.system.webrtc)?,
             observability,
             config_dir,
         })
@@ -397,7 +395,7 @@ impl ParserV1 {
         Ok(Acl { rules })
     }
 
-    fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> WebRtcConfig {
+    fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> Result<WebRtcConfig> {
         let mut ice_servers = Vec::new();
 
         // 解析 STUN URLs
@@ -425,11 +423,47 @@ impl ParserV1 {
             IceTransportPolicy::All
         };
 
-        WebRtcConfig {
+        // 解析端口配置
+        let (udp_ports, public_ips) =
+            if let (Some(start), Some(end)) = (raw.port_range_start, raw.port_range_end) {
+                // 配置了端口范围，启用固定端口模式
+                if start >= end {
+                    // 端口范围无效，抛出错误
+                    return Err(ConfigError::InvalidConfig(format!(
+                        "Invalid port range: start ({}) must be less than end ({})",
+                        start, end
+                    )));
+                } else {
+                    // 端口范围模式
+                    (Some((start, end)), raw.public_ips.clone())
+                }
+            } else {
+                // 未配置端口范围，使用默认模式（随机端口）
+                (None, Vec::new())
+            };
+
+        // 解析 ICE 等待时间
+        let ice_host_acceptance_min_wait = raw.ice_host_acceptance_min_wait.unwrap_or(0);
+        let ice_srflx_acceptance_min_wait = raw.ice_srflx_acceptance_min_wait.unwrap_or(20);
+        let ice_prflx_acceptance_min_wait = raw.ice_prflx_acceptance_min_wait.unwrap_or(40);
+        let ice_relay_acceptance_min_wait = raw.ice_relay_acceptance_min_wait.unwrap_or(100);
+
+        let advanced = WebRtcAdvancedConfig {
+            udp_ports,
+            public_ips,
+            ice_host_acceptance_min_wait,
+            ice_srflx_acceptance_min_wait,
+            ice_prflx_acceptance_min_wait,
+            ice_relay_acceptance_min_wait,
+        };
+
+        Ok(WebRtcConfig {
             ice_servers,
             ice_transport_policy,
-        }
+            advanced,
+        })
     }
+
     fn parse_observability(
         &self,
         raw_system: &RawSystemConfig,
@@ -530,6 +564,32 @@ impl ParserV1 {
                     child.webrtc.turn_urls
                 },
                 force_relay: child.webrtc.force_relay || parent.webrtc.force_relay,
+                ice_host_acceptance_min_wait: child
+                    .webrtc
+                    .ice_host_acceptance_min_wait
+                    .or(parent.webrtc.ice_host_acceptance_min_wait),
+                ice_srflx_acceptance_min_wait: child
+                    .webrtc
+                    .ice_srflx_acceptance_min_wait
+                    .or(parent.webrtc.ice_srflx_acceptance_min_wait),
+                ice_prflx_acceptance_min_wait: child
+                    .webrtc
+                    .ice_prflx_acceptance_min_wait
+                    .or(parent.webrtc.ice_prflx_acceptance_min_wait),
+                ice_relay_acceptance_min_wait: child
+                    .webrtc
+                    .ice_relay_acceptance_min_wait
+                    .or(parent.webrtc.ice_relay_acceptance_min_wait),
+                port_range_start: child
+                    .webrtc
+                    .port_range_start
+                    .or(parent.webrtc.port_range_start),
+                port_range_end: child.webrtc.port_range_end.or(parent.webrtc.port_range_end),
+                public_ips: if child.webrtc.public_ips.is_empty() {
+                    parent.webrtc.public_ips
+                } else {
+                    child.webrtc.public_ips
+                },
             },
             observability: crate::raw::RawObservabilityConfig {
                 filter_level: child
@@ -722,5 +782,40 @@ realm_id = 1001
             result.unwrap_err(),
             ConfigError::InvalidActrType(_)
         ));
+    }
+
+    #[test]
+    fn test_invalid_port_range() {
+        // Test invalid port range (start > end)
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+
+[system.signaling]
+url = "ws://localhost:8081"
+
+[system.deployment]
+realm_id = 1001
+
+[system.webrtc]
+port_range_start = 50100
+port_range_end = 50000
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("Actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse(raw);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
     }
 }

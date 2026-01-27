@@ -137,7 +137,10 @@ pub struct RawStorageConfig {
 }
 
 /// WebRTC 配置
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+///
+/// 不配置端口范围时使用默认模式（随机端口）
+/// 配置 port_range_start/end 时启用固定端口模式
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawWebRtcConfig {
     /// STUN 服务器 URL 列表 (例如 ["stun:localhost:3478"])
     #[serde(default)]
@@ -150,7 +153,53 @@ pub struct RawWebRtcConfig {
     /// 是否强制使用 TURN 中继 (默认 false)
     #[serde(default)]
     pub force_relay: bool,
+
+    /// ICE host 候选等待时间（毫秒）
+    #[serde(default)]
+    pub ice_host_acceptance_min_wait: Option<u64>,
+
+    /// ICE srflx 候选等待时间（毫秒）
+    #[serde(default)]
+    pub ice_srflx_acceptance_min_wait: Option<u64>,
+
+    /// ICE prflx 候选等待时间（毫秒）
+    #[serde(default)]
+    pub ice_prflx_acceptance_min_wait: Option<u64>,
+
+    /// ICE relay 候选等待时间（毫秒）
+    #[serde(default)]
+    pub ice_relay_acceptance_min_wait: Option<u64>,
+
+    /// UDP 端口范围起始值（可选，配置后启用固定端口模式）
+    #[serde(default)]
+    pub port_range_start: Option<u16>,
+
+    /// UDP 端口范围结束值（可选，配置后启用固定端口模式）
+    #[serde(default)]
+    pub port_range_end: Option<u16>,
+
+    /// NAT 1:1 公网 IP 映射（可选）
+    #[serde(default)]
+    pub public_ips: Vec<String>,
 }
+
+impl Default for RawWebRtcConfig {
+    fn default() -> Self {
+        Self {
+            stun_urls: vec![],
+            turn_urls: vec![],
+            force_relay: false,
+            ice_host_acceptance_min_wait: None,
+            ice_srflx_acceptance_min_wait: None,
+            ice_prflx_acceptance_min_wait: None,
+            ice_relay_acceptance_min_wait: None,
+            port_range_start: None,
+            port_range_end: None,
+            public_ips: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawObservabilityConfig {
     /// Filter level (e.g., "info", "debug", "warn", "info,webrtc=debug").
@@ -200,6 +249,28 @@ impl FromStr for RawConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_webrtc_with_port_range() {
+        let toml_content = r#"
+edition = 1
+[package]
+name = "test"
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+[system.webrtc]
+port_range_start = 50000
+port_range_end = 50100
+public_ips = ["1.2.3.4"]
+turn_urls = ["turn:Example"]
+"#;
+        let config = RawConfig::from_str(toml_content).unwrap();
+        assert_eq!(config.system.webrtc.port_range_start, Some(50000));
+        assert_eq!(config.system.webrtc.port_range_end, Some(50100));
+        assert_eq!(config.system.webrtc.public_ips[0], "1.2.3.4");
+        assert_eq!(config.system.webrtc.turn_urls[0], "turn:Example");
+    }
 
     #[test]
     fn test_parse_basic_config() {
