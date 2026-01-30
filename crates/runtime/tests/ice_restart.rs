@@ -52,6 +52,8 @@ async fn test_basic_ice_restart() {
         Err(_) => panic!("Connection timed out"),
     }
 
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
     // Wait a bit to ensure ICE restart count is reset or tracked properly
     // The server tracks total ICE restart offers, so we can check if it increases
     let initial_count = server.get_ice_restart_count();
@@ -179,6 +181,8 @@ async fn test_sequential_ice_restart() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
+        .with_file(true)
+        .with_line_number(true)
         .try_init()
         .ok();
 
@@ -210,7 +214,7 @@ async fn test_sequential_ice_restart() {
         Ok(Err(_)) => panic!("Connection failed (channel closed)"),
         Err(_) => panic!("Connection timed out"),
     }
-
+    tokio::time::sleep(Duration::from_millis(500)).await;
     // First ICE restart
     let initial_count = server.get_ice_restart_count();
     tracing::info!("♻️ First ICE restart...");
@@ -219,7 +223,8 @@ async fn test_sequential_ice_restart() {
         .await
         .expect("first restart_ice failed");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for ICE restart offer to be sent and processed
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     let count1 = server.get_ice_restart_count();
     tracing::info!("📊 First restart offers: {}", count1);
 
@@ -227,6 +232,7 @@ async fn test_sequential_ice_restart() {
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     // Second ICE restart (after first completes/times out)
+
     tracing::info!("♻️ Second ICE restart (after first finished)...");
     peer_offerer
         .restart_ice(&id_answerer)

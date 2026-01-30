@@ -485,3 +485,182 @@ async fn test_network_repeatedly_changing() {
     shutdown_token.cancel();
     tracing::info!("✅ Network repeatedly changing test completed successfully");
 }
+
+/// Test manual cleanup_connections (no debounce, always executes)
+#[tokio::test]
+async fn test_manual_cleanup_connections() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_file(true)
+        .with_line_number(true)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    tracing::info!("🧪 Test: Manual cleanup_connections");
+
+    let server = TestSignalingServer::start().await.unwrap();
+    let id_peer_a = make_actor_id(800);
+
+    let (coordinator_a, signaling_client_a) =
+        create_peer_with_websocket(id_peer_a.clone(), &server.url())
+            .await
+            .unwrap();
+
+    // Create processor
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(
+        signaling_client_a.clone(),
+        Some(coordinator_a.clone()),
+    ));
+
+    // Verify initial state: Connected
+    assert!(signaling_client_a.is_connected());
+
+    // Call cleanup_connections directly (bypassing event loop and debounce)
+    tracing::info!("🧹 Calling cleanup_connections() directly...");
+    let result = processor.cleanup_connections().await;
+
+    tracing::info!("📊 Result: {:?}", result);
+    assert!(result.is_ok(), "cleanup_connections should succeed");
+
+    // Verify state: Should be disconnected
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let is_connected = signaling_client_a.is_connected();
+    tracing::info!("📊 Is connected after cleanup: {}", is_connected);
+    assert!(
+        !is_connected,
+        "Client should be disconnected after cleanup_connections"
+    );
+
+    // Test: cleanup_connections is NOT debounced (call it twice rapidly)
+    tracing::info!("🔄 Testing that cleanup_connections is NOT debounced...");
+
+    // Reconnect first
+    signaling_client_a.connect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(signaling_client_a.is_connected(), "Should be reconnected");
+
+    // Call cleanup twice in rapid succession
+    let start = Instant::now();
+    let result1 = processor.cleanup_connections().await;
+    let result2 = processor.cleanup_connections().await;
+    let elapsed = start.elapsed();
+
+    tracing::info!("📊 First cleanup: {:?}", result1);
+    tracing::info!("📊 Second cleanup: {:?}", result2);
+    tracing::info!("📊 Elapsed time for both calls: {:?}", elapsed);
+
+    // Both should succeed (no debouncing)
+    assert!(result1.is_ok(), "First cleanup should succeed");
+    assert!(result2.is_ok(), "Second cleanup should succeed");
+
+    // Should complete quickly (no debounce delay)
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "cleanup_connections should not be debounced"
+    );
+
+    tracing::info!("✅ Manual cleanup_connections test passed!");
+}
+
+/// Test cleanup_connections followed by network events (recovery after manual cleanup)
+#[tokio::test]
+async fn test_cleanup_then_network_events() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_file(true)
+        .with_line_number(true)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    tracing::info!("🧪 Test: Cleanup then network events (recovery after manual cleanup)");
+
+    let server = TestSignalingServer::start().await.unwrap();
+    let id_peer_a = make_actor_id(900);
+    let id_peer_b = make_actor_id(1000);
+
+    let (coordinator_a, signaling_client_a) =
+        create_peer_with_websocket(id_peer_a.clone(), &server.url())
+            .await
+            .unwrap();
+    let (_coordinator_b, _signaling_client_b) =
+        create_peer_with_websocket(id_peer_b.clone(), &server.url())
+            .await
+            .unwrap();
+
+    // Establish initial connection
+    tracing::info!("🔗 Establishing initial peer connection...");
+    let ready_rx = coordinator_a
+        .initiate_connection(&id_peer_b)
+        .await
+        .expect("initiate failed");
+
+    match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(_)) => {
+            tracing::info!("✅ Initial peer connection established!");
+        }
+        Ok(Err(_)) => panic!("Connection failed (channel closed)"),
+        Err(_) => panic!("Connection timed out"),
+    }
+
+    // Wait for connection to stabilize
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create processor
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(
+        signaling_client_a.clone(),
+        Some(coordinator_a.clone()),
+    ));
+
+    // Step 1: Manual cleanup (simulating app going to background)
+    tracing::info!("📱 Simulating app going to background - calling cleanup_connections()...");
+    let result = processor.cleanup_connections().await;
+    assert!(result.is_ok(), "cleanup should succeed");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !signaling_client_a.is_connected(),
+        "Should be disconnected after cleanup"
+    );
+
+    // Step 2: Trigger network available event (simulating app coming back from background)
+    tracing::info!("📱 Simulating app returning from background - triggering network available...");
+    server.reset_counters();
+
+    let result = processor.process_network_available().await;
+    tracing::info!("📊 Network available result: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Network available should succeed after cleanup"
+    );
+
+    // Verify reconnection
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        signaling_client_a.is_connected(),
+        "Should be reconnected after network available"
+    );
+
+    // Note: After cleanup_connections closes all peer connections,
+    // process_network_available cannot perform ICE restart (no existing connections).
+    // The application needs to re-initiate connections manually.
+    // This test primarily verifies that cleanup doesn't break the signaling layer.
+
+    // Step 3: Manually re-establish connection to verify system is healthy
+    tracing::info!("🔄 Re-establishing connection after cleanup...");
+    let ready_rx = coordinator_a
+        .initiate_connection(&id_peer_b)
+        .await
+        .expect("re-initiate failed");
+
+    match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(_)) => {
+            tracing::info!("✅ Connection re-established successfully!");
+        }
+        Ok(Err(_)) => panic!("Re-connection failed (channel closed)"),
+        Err(_) => panic!("Re-connection timed out"),
+    }
+
+    tracing::info!("✅ Cleanup then network events test passed!");
+}

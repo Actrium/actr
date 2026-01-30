@@ -15,6 +15,6 @@ pub use actr_system::ActrSystem;
 pub use compat_lock::{CompatLockFile, CompatLockManager, CompatibilityCheck, NegotiationEntry};
 pub use heartbeat::heartbeat_task;
 pub use network_event::{
-    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
-    NetworkEventResult,
+    DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle,
+    NetworkEventProcessor, NetworkEventResult,
 };

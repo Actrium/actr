@@ -42,6 +42,7 @@ pub struct ActrSystem {
         Option<(
             tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
             tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+            Option<crate::lifecycle::network_event::DebounceConfig>,
         )>,
     >,
 }
@@ -169,13 +170,19 @@ impl ActrSystem {
     /// 创建 NetworkEventHandle 和内部 channels。
     /// channels 会存储在结构体中，供 attach() 使用。
     ///
+    /// # 参数
+    /// - `debounce_ms`: 防抖窗口时间（毫秒）。如果为 0，则使用默认值。
+    ///
     /// # 注意
     /// - 只能调用一次
     /// - 如果不调用此方法，网络事件功能将不可用
     ///
     /// # Panics
     /// 如果已经调用过此方法，会 panic
-    pub fn create_network_event_handle(&self) -> crate::lifecycle::NetworkEventHandle {
+    pub fn create_network_event_handle(
+        &self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
         // 创建双向 channels
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
@@ -190,7 +197,16 @@ impl ActrSystem {
             panic!("create_network_event_handle() can only be called once");
         }
 
-        *channels = Some((event_rx, result_tx));
+        // 构造防抖配置
+        let debounce_config = if debounce_ms > 0 {
+            Some(crate::lifecycle::network_event::DebounceConfig {
+                window: std::time::Duration::from_millis(debounce_ms),
+            })
+        } else {
+            None
+        };
+
+        *channels = Some((event_rx, result_tx, debounce_config));
 
         // 创建并返回 NetworkEventHandle
         crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
@@ -230,13 +246,13 @@ impl ActrSystem {
             }
         };
         // 从 network_event_channels 中 take channels（如果存在）
-        let (network_event_rx, network_event_result_tx) = self
+        let (network_event_rx, network_event_result_tx, network_event_debounce_config) = self
             .network_event_channels
             .lock()
             .expect("Failed to lock network_event_channels")
             .take()
-            .map(|(rx, tx)| (Some(rx), Some(tx)))
-            .unwrap_or((None, None));
+            .map(|(rx, tx, config)| (Some(rx), Some(tx), config))
+            .unwrap_or((None, None, None));
 
         ActrNode {
             config: self.config,
@@ -256,6 +272,7 @@ impl ActrSystem {
             actr_lock,
             network_event_rx,
             network_event_result_tx,
+            network_event_debounce_config,
         }
     }
 }

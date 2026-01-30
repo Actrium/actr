@@ -183,7 +183,7 @@ async fn test_ice_restart_with_paused_forwarding() {
     // 4. Pause forwarding (simulates network partition/blocking)
     tracing::warn!("⏸️  Pausing message forwarding (simulating network block)...");
     server.pause_forwarding();
-
+    tokio::time::sleep(Duration::from_millis(500)).await;
     // 5. Trigger ICE restart
     tracing::warn!("♻️ Triggering ICE restart while forwarding is paused...");
     // Force ICE restart by picking a new randomly generated candidate or just triggering the restart logic

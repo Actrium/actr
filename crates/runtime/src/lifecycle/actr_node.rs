@@ -117,6 +117,10 @@ pub struct ActrNode<W: Workload> {
     /// Network event result sender (to NetworkEventHandle)
     pub(crate) network_event_result_tx:
         Option<tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>>,
+
+    /// Network event debounce configuration
+    pub(crate) network_event_debounce_config:
+        Option<crate::lifecycle::network_event::DebounceConfig>,
 }
 
 /// Credential state for shared access between tasks
@@ -739,7 +743,9 @@ impl<W: Workload> ActrNode<W> {
         event_processor: Arc<dyn crate::lifecycle::network_event::NetworkEventProcessor>,
         shutdown_token: CancellationToken,
     ) {
-        use crate::lifecycle::network_event::{NetworkEvent, NetworkEventResult};
+        use crate::lifecycle::network_event::{
+            NetworkEvent, NetworkEventResult, deduplicate_network_events,
+        };
 
         tracing::info!("🔄 Network event loop started");
 
@@ -747,31 +753,63 @@ impl<W: Workload> ActrNode<W> {
             tokio::select! {
                 // 接收网络事件
                 Some(event) = event_rx.recv() => {
-                    let start = std::time::Instant::now();
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    // 队列清理：按类型去重，保留每种类型的最新事件
+                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-                    let result = match &event {
-                        NetworkEvent::Available => {
-                            event_processor.process_network_available().await
+                    // 收集队列中的所有事件
+                    let mut all_events = vec![event];
+                    while let Ok(next_event) = event_rx.try_recv() {
+                        all_events.push(next_event);
+                    }
+
+                    let total_events = all_events.len();
+
+                    // 按类型去重
+                    let events_to_process = deduplicate_network_events(all_events);
+
+                    let processed_count = events_to_process.len();
+                    let discarded_count = total_events - processed_count;
+
+                    if discarded_count > 0 {
+                        tracing::info!(
+                            total_events = total_events,
+                            processed_count = processed_count,
+                            discarded_count = discarded_count,
+                            "🗑️ Deduplicated {} stale events (by type), processing {} unique events",
+                            discarded_count,
+                            processed_count
+                        );
+                    }
+
+                    // 处理去重后的事件
+                    for latest_event in events_to_process {
+                        let start = std::time::Instant::now();
+
+                        let result = match &latest_event {
+                            NetworkEvent::Available => {
+                                event_processor.process_network_available().await
+                            }
+                            NetworkEvent::Lost => {
+                                event_processor.process_network_lost().await
+                            }
+                            NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
+                                event_processor.process_network_type_changed(*is_wifi, *is_cellular).await
+                            }
+                        };
+
+                        let duration_ms = start.elapsed().as_millis() as u64;
+
+                        // 构造处理结果
+                        let event_result = match result {
+                            Ok(_) => NetworkEventResult::success(latest_event.clone(), duration_ms),
+                            Err(e) => NetworkEventResult::failure(latest_event.clone(), e, duration_ms),
+                        };
+
+                        // 发送结果（忽略发送失败，避免阻塞）
+                        if let Err(e) = result_tx.send(event_result).await {
+                            tracing::warn!("Failed to send event result: {}", e);
                         }
-                        NetworkEvent::Lost => {
-                            event_processor.process_network_lost().await
-                        }
-                        NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
-                            event_processor.process_network_type_changed(*is_wifi, *is_cellular).await
-                        }
-                    };
-
-                    let duration_ms = start.elapsed().as_millis() as u64;
-
-                    // 构造处理结果
-                    let event_result = match result {
-                        Ok(_) => NetworkEventResult::success(event.clone(), duration_ms),
-                        Err(e) => NetworkEventResult::failure(event.clone(), e, duration_ms),
-                    };
-
-                    // 发送结果（忽略发送失败，避免阻塞）
-                    if let Err(e) = result_tx.send(event_result).await {
-                        tracing::warn!("Failed to send event result: {}", e);
                     }
                 }
 
@@ -1265,10 +1303,20 @@ impl<W: Workload> ActrNode<W> {
                     use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
 
                     // 创建 DefaultNetworkEventProcessor
-                    let event_processor = Arc::new(DefaultNetworkEventProcessor::new(
-                        self.signaling_client.clone(),
-                        self.webrtc_coordinator.clone(),
-                    ));
+                    // 如果有防抖配置，使用 new_with_debounce
+                    let event_processor =
+                        if let Some(config) = self.network_event_debounce_config.clone() {
+                            Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+                                self.signaling_client.clone(),
+                                self.webrtc_coordinator.clone(),
+                                config,
+                            ))
+                        } else {
+                            Arc::new(DefaultNetworkEventProcessor::new(
+                                self.signaling_client.clone(),
+                                self.webrtc_coordinator.clone(),
+                            ))
+                        };
 
                     let shutdown = self.shutdown_token.clone();
 
