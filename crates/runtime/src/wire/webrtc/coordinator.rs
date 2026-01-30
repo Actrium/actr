@@ -76,6 +76,8 @@ struct PeerNegotiationState {
     ready_tx: Option<oneshot::Sender<()>>,
     /// Ready receiver for proactive offerer path
     ready_rx: Option<oneshot::Receiver<()>>,
+    /// Whether remote peer has fixed network configuration
+    remote_fixed: bool,
 }
 
 /// Simple exponential backoff iterator for retries
@@ -1014,8 +1016,17 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
     ) -> RuntimeResult<(oneshot::Receiver<()>, WebRtcConnection)> {
+        // Retrieve remote_fixed from peer negotiation state
+        let remote_fixed = {
+            let neg = self.peer_negotiation.lock().await;
+            neg.get(target).map(|s| s.remote_fixed).unwrap_or(false)
+        };
+
         // Create PeerConnection as Offerer (active side)
-        let peer_connection = self.negotiator.create_peer_connection(false).await?;
+        let peer_connection = self
+            .negotiator
+            .create_peer_connection(false, remote_fixed)
+            .await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>) and
@@ -1228,8 +1239,17 @@ impl WebRtcCoordinator {
 
         tracing::info!("📥 Handling Offer from serial={}", from.serial_number);
 
+        // Retrieve remote_fixed from peer negotiation state
+        let remote_fixed = {
+            let neg = self.peer_negotiation.lock().await;
+            neg.get(from).map(|s| s.remote_fixed).unwrap_or(false)
+        };
+
         // 1. Create RTCPeerConnection as Answerer (passive side) - applies advanced parameters
-        let peer_connection = self.negotiator.create_peer_connection(true).await?;
+        let peer_connection = self
+            .negotiator
+            .create_peer_connection(true, remote_fixed)
+            .await?;
         let peer_connection_arc = Arc::new(peer_connection);
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>)
@@ -3084,6 +3104,18 @@ impl WebRtcCoordinator {
     )]
     async fn handle_role_assignment(self: &Arc<Self>, assign: RoleAssignment, peer: ActrId) {
         tracing::debug!(?assign, ?peer, "handle_role_assignment");
+
+        // Store remote_fixed information in peer negotiation state
+        {
+            let mut neg = self.peer_negotiation.lock().await;
+            let state = neg.entry(peer.clone()).or_default();
+            state.remote_fixed = assign.remote_fixed.unwrap_or(false);
+            tracing::info!(
+                "🔧 Stored remote_fixed={} for peer {}",
+                state.remote_fixed,
+                peer.serial_number
+            );
+        }
 
         // ========== Check for role change to offerer and clean up if needed ==========
         // Only clean up when becoming offerer (we need to initiate a new connection)

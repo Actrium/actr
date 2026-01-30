@@ -1319,6 +1319,7 @@ mod tests {
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
+            webrtc_role: None,
         };
 
         let client = WebSocketSignalingClient::new(config);

@@ -377,6 +377,7 @@ message RoleNegotiation {
 // Signaling server assigns the offerer role to one side
 message RoleAssignment {
   required bool is_offerer = 1;
+  optional bool remote_fixed = 2 [default = false];  // Whether remote peer has fixed network config
 }
 
 // =========================================================================

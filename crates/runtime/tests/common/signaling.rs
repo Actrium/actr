@@ -215,7 +215,10 @@ impl TestSignalingServer {
                 relay.payload.as_ref()
             {
                 let is_offerer = role_neg.to.serial_number > role_neg.from.serial_number;
-                let assignment = actr_protocol::RoleAssignment { is_offerer };
+                let assignment = actr_protocol::RoleAssignment {
+                    is_offerer,
+                    remote_fixed: None,
+                };
 
                 let response_envelope = SignalingEnvelope {
                     envelope_version: 1,

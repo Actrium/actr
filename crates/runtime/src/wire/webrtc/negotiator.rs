@@ -39,16 +39,18 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `is_answerer`: true if this node is the answerer (passive side), false if offerer (default)
+    /// - `remote_fixed`: true if remote peer has fixed network configuration
     ///
     /// # Returns
     /// newCreate's PeerConnection
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip(self), fields(ice_servers = self.config.ice_servers.len(), is_answerer))
+        tracing::instrument(level = "info", skip(self), fields(ice_servers = self.config.ice_servers.len(), is_answerer, remote_fixed))
     )]
     pub async fn create_peer_connection(
         &self,
         is_answerer: bool,
+        remote_fixed: bool,
     ) -> NetworkResult<RTCPeerConnection> {
         use webrtc::api::APIBuilder;
         use webrtc::api::media_engine::MediaEngine;
@@ -178,7 +180,7 @@ impl WebRtcNegotiator {
         // Apply advanced parameters (UDP ports, NAT 1:1) only for Answerer
         if is_answerer {
             tracing::info!("🎭 Applying advanced WebRTC parameters (Answerer mode)");
-            self.apply_answerer_config(&mut setting_engine)?;
+            self.apply_answerer_config(&mut setting_engine, remote_fixed)?;
         } else {
             tracing::info!("🎭 Using default WebRTC configuration (Offerer mode)");
         }
@@ -242,11 +244,15 @@ impl WebRtcNegotiator {
     fn apply_answerer_config(
         &self,
         setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
+        remote_fixed: bool,
     ) -> NetworkResult<()> {
         use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
         use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
         let advanced = &self.config.advanced;
+
+        // Determine if local has fixed configuration
+        let local_fixed = advanced.udp_ports.is_some() && !advanced.public_ips.is_empty();
 
         // Apply UDP port strategy
         if let Some((min, max)) = advanced.udp_ports {
@@ -258,15 +264,49 @@ impl WebRtcNegotiator {
             })?;
             setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
             tracing::info!("🔧 UDP port range: {}-{}", min, max);
-
-            // Apply NAT 1:1 mapping (only when port range is configured)
-            if !advanced.public_ips.is_empty() {
-                setting_engine
-                    .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Srflx);
-                tracing::info!("🔧 NAT 1:1 IPs: {:?}", advanced.public_ips);
-            }
         } else {
             tracing::info!("🔧 Using default random UDP ports");
+        }
+
+        // Apply NAT 1:1 mapping based on local and remote configuration
+        if !advanced.public_ips.is_empty() {
+            match (local_fixed, remote_fixed) {
+                (true, true) => {
+                    // Both sides configured → Srflx only
+                    setting_engine
+                        .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Srflx);
+                    tracing::info!(
+                        "🔧 NAT 1:1 IPs (Srflx only): {:?} [local_fixed={}, remote_fixed={}]",
+                        advanced.public_ips,
+                        local_fixed,
+                        remote_fixed
+                    );
+                }
+                (true, false) => {
+                    // Only local configured → Host only
+                    setting_engine
+                        .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Host);
+                    tracing::info!(
+                        "🔧 NAT 1:1 IPs (Host only): {:?} [local_fixed={}, remote_fixed={}]",
+                        advanced.public_ips,
+                        local_fixed,
+                        remote_fixed
+                    );
+                }
+                (false, _) => {
+                    // Local not configured → Host + Srflx (default behavior)
+                    setting_engine
+                        .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Host);
+                    setting_engine
+                        .set_nat_1to1_ips(advanced.public_ips.clone(), RTCIceCandidateType::Srflx);
+                    tracing::info!(
+                        "🔧 NAT 1:1 IPs (Host + Srflx): {:?} [local_fixed={}, remote_fixed={}]",
+                        advanced.public_ips,
+                        local_fixed,
+                        remote_fixed
+                    );
+                }
+            }
         }
 
         Ok(())
