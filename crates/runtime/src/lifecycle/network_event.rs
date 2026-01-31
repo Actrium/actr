@@ -297,6 +297,48 @@ impl DefaultNetworkEventProcessor {
             }
         }
     }
+
+    /// 内部重连方法（不进行防抖检查）
+    ///
+    /// 用于 `process_network_type_changed()` 等需要确保重连的场景
+    /// 与 `process_network_available()` 的区别：
+    /// - 不进行防抖检查（内部调用总是执行）
+    /// - 适用于已经通过防抖检查的复合操作
+    async fn reconnect_internal(&self) -> Result<(), String> {
+        tracing::info!("🔄 Internal reconnect (bypassing debounce)");
+
+        // Step 1: 强制断开现有连接（避免"僵尸连接"）
+        if self.signaling_client.is_connected() {
+            tracing::info!("🔌 Disconnecting existing connection to ensure fresh state...");
+            let _ = self.signaling_client.disconnect().await;
+        }
+
+        // Step 2: 延迟等待网络稳定
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Step 3: 建立新的 WebSocket 连接
+        tracing::info!("🔄 Reconnecting WebSocket...");
+        match self.signaling_client.connect().await {
+            Ok(_) => {
+                tracing::info!("✅ WebSocket reconnected successfully");
+            }
+            Err(e) => {
+                let err_msg = format!("WebSocket reconnect failed: {}", e);
+                tracing::error!("❌ {}", err_msg);
+                return Err(err_msg);
+            }
+        }
+
+        // Step 4: 触发 ICE 重启（如果 WebRTC 已初始化）
+        let coordinator = self.webrtc_coordinator.clone();
+
+        if let Some(coordinator) = coordinator {
+            tracing::info!("♻️ Triggering ICE restart for failed connections...");
+            coordinator.retry_failed_connections().await;
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -394,14 +436,22 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         // 网络类型变化通常意味着 IP 地址变化
         // 视为断网 + 恢复序列
 
-        // Step 1: 作为网络丢失处理
-        self.process_network_lost().await?;
+        // Step 1: 清理现有连接
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🧹 Clearing pending ICE restart attempts...");
+            coordinator.clear_pending_restarts().await;
+        }
+
+        if self.signaling_client.is_connected() {
+            tracing::info!("🔌 Disconnecting WebSocket...");
+            let _ = self.signaling_client.disconnect().await;
+        }
 
         // Step 2: 等待网络稳定
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // Step 3: 作为网络恢复处理
-        self.process_network_available().await?;
+        // Step 3: 使用内部重连方法（绕过防抖检查）
+        self.reconnect_internal().await?;
 
         Ok(())
     }
