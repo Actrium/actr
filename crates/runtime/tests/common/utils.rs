@@ -85,3 +85,180 @@ pub async fn create_peer_with_websocket(
 
     Ok((coordinator, signaling_client_arc))
 }
+
+/// Spawn a task to receive and handle RPC responses
+///
+/// This function starts a background task that:
+/// 1. Receives messages from the coordinator
+/// 2. Parses them as RpcEnvelope
+/// 3. Routes responses to OutprocOutGate.handle_response
+///
+/// # Returns
+/// A JoinHandle that can be used to abort the task
+pub fn spawn_response_receiver(
+    coordinator: Arc<WebRtcCoordinator>,
+    gate: Arc<actr_runtime::outbound::OutprocOutGate>,
+    peer_name: &str,
+) -> tokio::task::JoinHandle<()> {
+    let peer_name = peer_name.to_string();
+    tokio::spawn(async move {
+        use actr_protocol::prost::Message;
+        tracing::info!("🎯 {} response receiver task started", peer_name);
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_id_bytes, message_data, _payload_type))) => {
+                    // Parse sender ID
+                    let sender_id = match ActrId::decode(&sender_id_bytes[..]) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::error!("{}: Failed to decode sender ID: {}", peer_name, e);
+                            continue;
+                        }
+                    };
+
+                    // Parse response envelope
+                    match actr_protocol::RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(envelope) => {
+                            tracing::debug!(
+                                "📨 {} received response: {}",
+                                peer_name,
+                                envelope.request_id
+                            );
+
+                            // Convert envelope to result
+                            let result = if let Some(error) = envelope.error {
+                                Err(actr_protocol::ProtocolError::TransportError(format!(
+                                    "RPC error {}: {}",
+                                    error.code, error.message
+                                )))
+                            } else if let Some(payload) = envelope.payload {
+                                Ok(payload)
+                            } else {
+                                Err(actr_protocol::ProtocolError::DecodeError(
+                                    "Invalid response: no payload or error".to_string(),
+                                ))
+                            };
+
+                            // Route to handle_response
+                            match gate.handle_response(&envelope.request_id, result).await {
+                                Ok(true) => {
+                                    tracing::debug!(
+                                        "✅ {} handled response for {}",
+                                        peer_name,
+                                        envelope.request_id
+                                    );
+                                }
+                                Ok(false) => {
+                                    tracing::warn!(
+                                        "⚠️ {} no pending request found for {}",
+                                        peer_name,
+                                        envelope.request_id
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "{}: Failed to handle response: {}",
+                                        peer_name,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("📪 {} message channel closed", peer_name);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("{}: Error receiving message: {}", peer_name, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+}
+
+/// Spawn an Echo server task
+///
+/// This function starts a background task that:
+/// 1. Receives RPC requests from the coordinator
+/// 2. Sends back a simple "pong" response
+///
+/// # Returns
+/// A JoinHandle that can be used to abort the task
+pub fn spawn_echo_responder(
+    coordinator: Arc<WebRtcCoordinator>,
+    gate: Arc<actr_runtime::outbound::OutprocOutGate>,
+    peer_name: &str,
+) -> tokio::task::JoinHandle<()> {
+    let peer_name = peer_name.to_string();
+    tokio::spawn(async move {
+        use actr_protocol::prost::Message;
+        tracing::info!("🎯 {} echo responder task started", peer_name);
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_id_bytes, message_data, _payload_type))) => {
+                    // Parse sender ID
+                    let sender_id = match ActrId::decode(&sender_id_bytes[..]) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::error!("{}: Failed to decode sender ID: {}", peer_name, e);
+                            continue;
+                        }
+                    };
+
+                    // Parse request
+                    match actr_protocol::RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(request) => {
+                            tracing::debug!(
+                                "📨 {} received request: {}",
+                                peer_name,
+                                request.request_id
+                            );
+
+                            // Create simple echo response
+                            let response = actr_protocol::RpcEnvelope {
+                                request_id: request.request_id.clone(),
+                                route_key: "response".to_string(),
+                                payload: Some(bytes::Bytes::from("pong")),
+                                timeout_ms: 0,
+                                ..Default::default()
+                            };
+
+                            // Send response
+                            if let Err(e) = gate.send_message(&sender_id, response).await {
+                                tracing::error!(
+                                    "{}: Failed to send response for {}: {}",
+                                    peer_name,
+                                    request.request_id,
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "✅ {} sent response for {}",
+                                    peer_name,
+                                    request.request_id
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("{}: Failed to decode RpcEnvelope: {}", peer_name, e);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    tracing::info!("📪 {} message channel closed", peer_name);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("{}: Error receiving message: {}", peer_name, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+}

@@ -430,6 +430,90 @@ impl WebRtcCoordinator {
         })
     }
 
+    /// Wait for at least one DataChannel to be in Open state (Event-driven version)
+    ///
+    /// This prevents SCTP write failures by ensuring the DataChannel is fully ready
+    /// before marking the connection as established.
+    ///
+    /// Instead of polling, this method subscribes to DataChannelOpened events for
+    /// immediate notification when a DataChannel becomes ready.
+    ///
+    /// # Arguments
+    /// - `peer_id`: The peer ID to wait for
+    /// - `event_broadcaster`: Event broadcaster to subscribe to
+    /// - `webrtc_conn`: The WebRTC connection to check (for quick check)
+    /// - `timeout`: Maximum time to wait for DataChannel to open
+    ///
+    /// # Returns
+    /// - `true` if at least one DataChannel is Open within timeout
+    /// - `false` if timeout expires without any DataChannel opening
+    async fn wait_for_data_channel_open_event(
+        peer_id: &ActrId,
+        event_broadcaster: &ConnectionEventBroadcaster,
+        webrtc_conn: &super::connection::WebRtcConnection,
+        timeout: Duration,
+    ) -> bool {
+        // Quick check: if DataChannel is already open, return immediately
+        if webrtc_conn.has_open_data_channel().await {
+            tracing::debug!(
+                "✅ DataChannel already open for peer {}",
+                peer_id.to_string_repr()
+            );
+            return true;
+        }
+
+        // Subscribe to events
+        let mut event_rx = event_broadcaster.subscribe();
+        let target_peer = peer_id.clone();
+
+        // Create a pinned sleep future for the timeout
+        let sleep = tokio::time::sleep(timeout);
+        tokio::pin!(sleep);
+
+        // Wait for DataChannelOpened event or timeout
+        loop {
+            tokio::select! {
+                _ = &mut sleep => {
+                    // Timeout reached
+                    break;
+                }
+                res = event_rx.recv() => {
+                    match res {
+                        Ok(ConnectionEvent::DataChannelOpened { peer_id, payload_type })
+                            if peer_id == target_peer =>
+                        {
+                            tracing::info!(
+                                "✅ DataChannel opened for peer {} (payload_type={:?}, event-driven)",
+                                peer_id.to_string_repr(),
+                                payload_type
+                            );
+                            return true;
+                        }
+                        Ok(_) => {
+                            // Other events, continue waiting
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("⚠️ Event stream lagged by {} events, continuing...", n);
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::warn!("⚠️ Event channel closed while waiting for DataChannel");
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::warn!(
+            "⚠️ Timeout waiting for DataChannel to open for peer {} ({:?})",
+            target_peer.to_string_repr(),
+            timeout
+        );
+        false
+    }
+
     /// Start health check task to clean up stale connections
     ///
     /// Periodically checks peer connection states and cleans up:
@@ -1552,7 +1636,7 @@ impl WebRtcCoordinator {
         answer_sdp: String,
     ) -> RuntimeResult<()> {
         // Get corresponding PeerConnection and ready_tx
-        let (peer_connection, ready_tx, is_renegotiation) = {
+        let (peer_connection, ready_tx, webrtc_conn, is_renegotiation) = {
             let mut peers = self.peers.write().await;
             tracing::info!(
                 "🔍 [LOOKUP] Searching for: id={}, total peers={}",
@@ -1568,8 +1652,9 @@ impl WebRtcCoordinator {
 
             let pc = state.peer_connection.clone();
             let tx = state.ready_tx.take();
+            let wc = state.webrtc_conn.clone();
             let is_reneg = tx.is_none(); // If ready_tx already taken, this is renegotiation
-            (pc, tx, is_reneg)
+            (pc, tx, wc, is_reneg)
         };
 
         if is_renegotiation {
@@ -1595,36 +1680,38 @@ impl WebRtcCoordinator {
             from.to_string_repr()
         );
 
-        // Wait for PeerConnection to actually connect (max 5 seconds)
-        let pc_clone = peer_connection.clone();
+        // Wait for DataChannel to be ready (max 5 seconds)
         let peers = Arc::clone(&self.peers);
         let from_id = from.clone();
+        let webrtc_conn_for_wait = webrtc_conn.clone();
+        let event_broadcaster = self.event_broadcaster.clone();
+
         tokio::spawn(async move {
-            let start = tokio::time::Instant::now();
-            loop {
-                let state = pc_clone.connection_state();
-                if state == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected {
-                    tracing::info!("✅ PeerConnection fully connected");
-                    // Mark ICE restart attempt complete
-                    let mut peers_guard = peers.write().await;
-                    if let Some(s) = peers_guard.get_mut(&from_id) {
-                        s.ice_restart_inflight = false;
-                        s.ice_restart_attempts = 0;
-                    }
-                    break;
+            // FIX: Wait for at least one DataChannel to be Open before marking ready
+            // This prevents SCTP write failures due to race condition
+            // Using event-driven approach for instant notification
+            // DataChannel can only open after ICE is Connected, so no need to poll ICE state separately
+            if Self::wait_for_data_channel_open_event(
+                &from_id,
+                &event_broadcaster,
+                &webrtc_conn_for_wait,
+                Duration::from_secs(5), // Total timeout for connection to be ready
+            )
+            .await
+            {
+                tracing::info!("✅ DataChannel verified open, connection fully ready");
+
+                // Mark ICE restart attempt complete
+                let mut peers_guard = peers.write().await;
+                if let Some(s) = peers_guard.get_mut(&from_id) {
+                    s.ice_restart_inflight = false;
+                    s.ice_restart_attempts = 0;
                 }
-                if state == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed {
-                    tracing::error!("❌ PeerConnection failed");
-                    return;
-                }
-                if start.elapsed() > std::time::Duration::from_secs(5) {
-                    tracing::warn!("⚠️ PeerConnection connection timeout (5s)");
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            } else {
+                tracing::warn!("⚠️ DataChannel failed to open within 5s timeout");
             }
 
-            // Notify initiate_connection that connection is ready
+            // Notify initiate_connection that connection is ready (or failed)
             if let Some(tx) = ready_tx {
                 let _ = tx.send(());
             }

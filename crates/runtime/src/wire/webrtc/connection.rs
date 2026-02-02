@@ -364,9 +364,26 @@ impl WebRtcConnection {
             .create_data_channel(&label, Some(dc_config))
             .await?;
 
+        // Register on_open callback to send DataChannelOpened event
+        let event_tx_for_open = self.event_tx.clone();
+        let peer_id_for_open = self.peer_id.clone();
+        let payload_type_for_open = payload_type;
+
         data_channel.on_open(Box::new(move || {
+            let event_tx = event_tx_for_open.clone();
+            let peer_id = peer_id_for_open.clone();
+            let payload_type = payload_type_for_open;
+
             tracing::info!("🔄 WebRTC DataChannel opened: {:?}", payload_type);
-            Box::pin(async move {})
+
+            Box::pin(async move {
+                // Send DataChannelOpened event
+                let _ = event_tx.send(ConnectionEvent::DataChannelOpened {
+                    peer_id,
+                    payload_type,
+                });
+                tracing::debug!("📣 DataChannelOpened event sent for {:?}", payload_type);
+            })
         }));
 
         let channel_id = data_channel.id();
@@ -580,6 +597,31 @@ impl WebRtcConnection {
             idx
         );
         let label = format!("{payload_type:?}");
+
+        // Register on_open callback to send DataChannelOpened event
+        let event_tx_for_open = self.event_tx.clone();
+        let peer_id_for_open = self.peer_id.clone();
+        let payload_type_for_open = payload_type;
+
+        data_channel.on_open(Box::new(move || {
+            let event_tx = event_tx_for_open.clone();
+            let peer_id = peer_id_for_open.clone();
+            let payload_type = payload_type_for_open;
+
+            tracing::info!(
+                "🔄 WebRTC DataChannel opened (received): {:?}",
+                payload_type
+            );
+
+            Box::pin(async move {
+                // Send DataChannelOpened event
+                let _ = event_tx.send(ConnectionEvent::DataChannelOpened {
+                    peer_id,
+                    payload_type,
+                });
+                tracing::debug!("📣 DataChannelOpened event sent for {:?}", payload_type);
+            })
+        }));
 
         // Set error handler
         let payload_type_for_error = payload_type;

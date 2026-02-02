@@ -52,6 +52,14 @@ pub enum ConnectionEvent {
         payload_type: PayloadType,
     },
 
+    /// DataChannel opened for specific payload type
+    /// This event is fired when a DataChannel transitions to Open state,
+    /// indicating SCTP layer is ready for data transmission
+    DataChannelOpened {
+        peer_id: ActrId,
+        payload_type: PayloadType,
+    },
+
     /// Connection fully closed (triggers full cleanup)
     ConnectionClosed { peer_id: ActrId },
 
@@ -74,6 +82,7 @@ impl ConnectionEvent {
         match self {
             ConnectionEvent::StateChanged { peer_id, .. } => peer_id,
             ConnectionEvent::DataChannelClosed { peer_id, .. } => peer_id,
+            ConnectionEvent::DataChannelOpened { peer_id, .. } => peer_id,
             ConnectionEvent::ConnectionClosed { peer_id } => peer_id,
             ConnectionEvent::IceRestartStarted { peer_id } => peer_id,
             ConnectionEvent::IceRestartCompleted { peer_id, .. } => peer_id,
