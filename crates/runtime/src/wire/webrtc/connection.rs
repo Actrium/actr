@@ -203,6 +203,21 @@ impl WebRtcConnection {
         *self.connected.blocking_read()
     }
 
+    /// Check if any DataChannel is open
+    pub async fn has_open_data_channel(&self) -> bool {
+        use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+
+        let channels = self.data_channels.read().await;
+        for channel_opt in channels.iter() {
+            if let Some(channel) = channel_opt {
+                if channel.ready_state() == RTCDataChannelState::Open {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Close connection and broadcast ConnectionClosed event
     pub async fn close(&self) -> NetworkResult<()> {
         *self.connected.write().await = false;
