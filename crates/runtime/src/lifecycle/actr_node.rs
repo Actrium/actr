@@ -796,6 +796,9 @@ impl<W: Workload> ActrNode<W> {
                             NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                                 event_processor.process_network_type_changed(*is_wifi, *is_cellular).await
                             }
+                            NetworkEvent::CleanupConnections => {
+                                event_processor.cleanup_connections().await
+                            }
                         };
 
                         let duration_ms = start.elapsed().as_millis() as u64;

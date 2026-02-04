@@ -96,7 +96,10 @@ async fn test_network_available_triggers_recovery() {
                         NetworkEvent::Lost => processor_clone.process_network_lost().await,
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
-                        }
+                        },
+                        NetworkEvent::CleanupConnections => {
+                            processor_clone.cleanup_connections().await
+                        },
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -197,7 +200,10 @@ async fn test_network_lost_cleanup() {
                         NetworkEvent::Lost => processor_clone.process_network_lost().await,
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
-                        }
+                        },
+                        NetworkEvent::CleanupConnections => {
+                            processor_clone.cleanup_connections().await
+                        },
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let event_result = match result {
@@ -391,6 +397,9 @@ async fn test_network_repeatedly_changing() {
                         NetworkEvent::Lost => processor_clone.process_network_lost().await,
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
+                        },
+                        NetworkEvent::CleanupConnections => {
+                            processor_clone.cleanup_connections().await
                         }
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;

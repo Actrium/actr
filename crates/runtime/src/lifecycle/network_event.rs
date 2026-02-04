@@ -85,6 +85,14 @@ pub enum NetworkEvent {
 
     /// 网络类型变化（WiFi ↔ Cellular）
     TypeChanged { is_wifi: bool, is_cellular: bool },
+
+    /// 主动清理所有连接
+    ///
+    /// 用于应用生命周期管理场景：
+    /// - 应用进入后台
+    /// - 用户主动登出
+    /// - 应用即将退出
+    CleanupConnections,
 }
 
 /// 网络事件处理结果
@@ -293,6 +301,13 @@ impl DefaultNetworkEventProcessor {
                     }
                 }
                 *last = Some(now);
+                true
+            }
+            // CleanupConnections 不进行防抖检查，主动清理总是立即执行
+            NetworkEvent::CleanupConnections => {
+                tracing::debug!(
+                    "🧹 CleanupConnections event - no debouncing (always execute immediately)"
+                );
                 true
             }
         }
@@ -559,6 +574,22 @@ impl NetworkEventHandle {
             is_cellular,
         })
         .await
+    }
+
+    /// 主动清理所有连接
+    ///
+    /// 此方法用于主动清理所有网络连接，适用于以下场景：
+    /// - 应用进入后台（iOS/Android）
+    /// - 用户主动登出
+    /// - 应用即将退出
+    /// - 需要重置网络状态
+    ///
+    /// # Returns
+    /// - `Ok(NetworkEventResult)`: Processing result
+    /// - `Err(String)`: Failed to send event or receive result
+    pub async fn cleanup_connections(&self) -> Result<NetworkEventResult, String> {
+        self.send_event_and_await_result(NetworkEvent::CleanupConnections)
+            .await
     }
 
     /// Send event and await result (internal helper)
