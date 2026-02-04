@@ -1122,8 +1122,22 @@ async fn handle_actr_relay(
         // 使用 determine_webrtc_role 函数确定角色
         let is_offerer = determine_webrtc_role(&from, &to, &clients_guard);
 
+        // 判断双方是否有固定网络配置 (webrtc_role == "answer")
+        let from_fixed = clients_guard
+            .values()
+            .find(|c| c.actor_id.as_ref() == Some(&from))
+            .and_then(|c| c.webrtc_role.as_deref())
+            == Some("answer");
+
+        let to_fixed = clients_guard
+            .values()
+            .find(|c| c.actor_id.as_ref() == Some(&to))
+            .and_then(|c| c.webrtc_role.as_deref())
+            == Some("answer");
+
         drop(clients_guard);
 
+        // 发送给 from 的 RoleAssignment，remote_fixed 表示 to 的配置状态
         let new_relay = ActrRelay {
             // source: peer actor (对端)，target: 该 assignment 的接收方
             source: from.clone(),
@@ -1131,6 +1145,7 @@ async fn handle_actr_relay(
             target: to.clone(),
             payload: Some(actr_relay::Payload::RoleAssignment(RoleAssignment {
                 is_offerer,
+                remote_fixed: Some(to_fixed),
             })),
         };
         send_role_assignment(
@@ -1142,6 +1157,7 @@ async fn handle_actr_relay(
         )
         .await?;
 
+        // 发送给 to 的 RoleAssignment，remote_fixed 表示 from 的配置状态
         let new_relay = ActrRelay {
             // source: peer actor (对端)，target: 该 assignment 的接收方
             source: from.clone(),
@@ -1149,6 +1165,7 @@ async fn handle_actr_relay(
             target: to.clone(),
             payload: Some(actr_relay::Payload::RoleAssignment(RoleAssignment {
                 is_offerer: !is_offerer,
+                remote_fixed: Some(from_fixed),
             })),
         };
 
@@ -1736,11 +1753,11 @@ async fn handle_route_candidates_request(
 
     // 兼容性协商逻辑
     let (ranked_actor_ids, compatibility_info, has_exact_match, is_sub_healthy) =
-        if let Some(client_fp) = &client_fingerprint {
+        if !client_fingerprint.is_empty() {
             // 有 client_fingerprint 就启用协商模式
             perform_compatibility_negotiation(
                 &acl_filtered_candidates,
-                client_fp,
+                &client_fingerprint,
                 &req.target_type,
                 server,
                 req.criteria.as_ref(),
@@ -1759,7 +1776,7 @@ async fn handle_route_candidates_request(
                 Some(client_id),
                 client_location,
                 compatibility_cache,
-                client_fingerprint.as_deref(),
+                Some(&client_fingerprint),
             );
 
             (ranked, vec![], None, None)
