@@ -19,6 +19,12 @@ use tracing::{debug, error, info, warn};
 
 use crate::service_registry_storage::ServiceRegistryStorage;
 
+/// 服务过期阈值（秒）- 超过此时间未收到心跳则认为服务过期
+pub const SERVICE_EXPIRY_THRESHOLD_SECS: u64 = 5;
+
+/// 清理任务执行间隔（秒）
+pub const CLEANUP_INTERVAL_SECS: u64 = 1;
+
 /// 服务能力描述
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceCapabilities {
@@ -587,10 +593,10 @@ impl ServiceRegistry {
         }
     }
 
-    /// 清理过期服务（超过5分钟未更新）
+    /// 清理过期服务（超过指定时间未更新）
     pub fn cleanup_expired_services(&mut self) {
         let current_time = current_timestamp();
-        let expiry_threshold = 300; // 5分钟
+        let expiry_threshold = SERVICE_EXPIRY_THRESHOLD_SECS;
 
         let mut services_to_remove = Vec::new();
 

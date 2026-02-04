@@ -163,7 +163,9 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
     {
         let registry_for_cleanup = server.service_registry.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5 分钟
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                crate::service_registry::CLEANUP_INTERVAL_SECS,
+            ));
             loop {
                 interval.tick().await;
                 let mut registry = registry_for_cleanup.write().await;
