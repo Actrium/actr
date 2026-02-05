@@ -169,12 +169,13 @@ impl<W: Workload> ActrRef<W> {
     /// This method implements the full runtime compatibility negotiation workflow:
     ///
     /// 1. **Fast Path**: Check `compat.lock.toml` for cached negotiation results
-    /// 2. **Ideal Path**: Read fingerprint from `Actr.lock.toml` and request exact match
+    /// 2. **Ideal Path**: Read fingerprint from `Actr.lock.toml` (when available) and request exact match
     /// 3. **Negotiation**: If no exact match, server performs compatibility analysis
     /// 4. **Result**: Returns candidates with compatibility info, updates caches
     ///
-    /// The fingerprint is automatically obtained from the `Actr.lock.toml` file
-    /// loaded during `ActrSystem::attach()`.
+    /// The fingerprint is automatically obtained from `Actr.lock.toml` when available.
+    /// If it is missing and no compat.lock.toml entry exists, discovery proceeds without a fingerprint
+    /// and skips compatibility negotiation.
     ///
     /// # Arguments
     /// - `target_type`: The ActrType of the target service to discover

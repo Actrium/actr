@@ -225,7 +225,7 @@ impl ActrSystem {
     pub fn attach<W: Workload>(self, workload: W) -> ActrNode<W> {
         tracing::info!("📦 Attaching workload");
 
-        // Load Actr.lock.toml from config directory (REQUIRED)
+        // Try to load Actr.lock.toml from config directory (optional)
         let actr_lock_path = self.config.config_dir.join("Actr.lock.toml");
         let actr_lock = match actr_config::lock::LockFile::from_file(&actr_lock_path) {
             Ok(lock) => {
@@ -236,13 +236,13 @@ impl ActrSystem {
                 Some(lock)
             }
             Err(e) => {
-                // Terminate if lock file is missing or invalid
-                tracing::error!(
-                    "❌ FAILED TO LOAD Actr.lock.toml with path {:?}, ERR: {}",
+                // If lock file is missing or invalid, continue without dependency fingerprints
+                tracing::warn!(
+                    "⚠️ Actr.lock.toml not loaded (path: {:?}, ERR: {}). Continuing without dependency fingerprints.",
                     actr_lock_path,
                     e
                 );
-                panic!("Actr.lock.toml is missing or invalid. Run 'actr install' to generate it.");
+                None
             }
         };
         // 从 network_event_channels 中 take channels（如果存在）

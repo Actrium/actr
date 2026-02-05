@@ -110,6 +110,10 @@ shared-cache = { name = "redis-proxy", actr_type = "acme+CacheService" }
 
 ### Actr.lock.toml (锁定的依赖)
 
+> 说明：Actr.lock.toml **推荐**用于锁定远程依赖和 fingerprint，但对纯本地部署不是硬性要求。
+> 缺少该文件时 runtime 仍然可以启动，只是无法使用基于 fingerprint 的精确依赖匹配，
+> 远程发现将退化为协商流程或在首次远程调用时提示依赖未锁定。
+
 ```toml
 [[dependency]]
 # name 是远程服务的唯一标识，用于去重和服务发现

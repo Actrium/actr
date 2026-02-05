@@ -601,30 +601,43 @@ impl Context for RuntimeContext {
         }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 1: Get fingerprint from Actr.lock.toml (REQUIRED)
+        // Step 1: Get fingerprint from Actr.lock.toml (when available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        let client_fingerprint = self.get_dependency_fingerprint(target_type).ok_or_else(|| {
-            tracing::error!(
-                severity = 10,
-                error_category = "dependency_missing",
-                "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in Actr.lock.toml.\n\
-                 Please run 'actr install' to generate the lock file with all dependencies.",
-                service_name
-            );
-            ProtocolError::Actr(ActrError::DependencyNotFound {
-                service_name: service_name.clone(),
-                message: format!(
-                    "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
-                    service_name
-                ),
-            })
-        })?;
+        let client_fingerprint = match self.get_dependency_fingerprint(target_type) {
+            Some(fingerprint) => fingerprint,
+            None => {
+                if self.actr_lock.is_none() {
+                    tracing::debug!(
+                        "Actr.lock.toml not loaded; sending discovery without fingerprint for '{}'",
+                        service_name
+                    );
+                    String::new()
+                } else {
+                    tracing::error!(
+                        severity = 10,
+                        error_category = "dependency_missing",
+                        "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in Actr.lock.toml.\n\
+                         Please run 'actr install' to generate the lock file with all dependencies.",
+                        service_name
+                    );
+                    return Err(ProtocolError::Actr(ActrError::DependencyNotFound {
+                        service_name: service_name.clone(),
+                        message: format!(
+                            "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
+                            service_name
+                        ),
+                    }));
+                }
+            }
+        };
 
-        tracing::debug!(
-            "📋 Found dependency fingerprint for '{}': {}",
-            service_name,
-            &client_fingerprint[..20.min(client_fingerprint.len())]
-        );
+        if !client_fingerprint.is_empty() {
+            tracing::debug!(
+                "📋 Found dependency fingerprint for '{}': {}",
+                service_name,
+                &client_fingerprint[..20.min(client_fingerprint.len())]
+            );
+        }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Step 2: Send discovery request to signaling server
@@ -639,14 +652,16 @@ impl Context for RuntimeContext {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Step 3 & 4: Handle negotiation result
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        self.handle_negotiation_result(
-            target_type,
-            &client_fingerprint,
-            &result.compatibility_info,
-            has_exact_match,
-            is_sub_healthy,
-        )
-        .await;
+        if !client_fingerprint.is_empty() {
+            self.handle_negotiation_result(
+                target_type,
+                &client_fingerprint,
+                &result.compatibility_info,
+                has_exact_match,
+                is_sub_healthy,
+            )
+            .await;
+        }
 
         // Log result
         tracing::info!(
