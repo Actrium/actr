@@ -212,3 +212,177 @@ async fn test_debounce_does_not_cross_event_types() {
     assert_eq!(stats.connections, 2);
     assert_eq!(stats.disconnections, 2);
 }
+
+/// 复现竞态条件：Swift 端同时发送 Network Available 和 Network Type Changed
+///
+/// 问题流程：
+/// 1. T0: Swift 发送 Network Available 事件 -> Rust 处理，记录防抖时间戳
+/// 2. T0+few ms: Swift 发送 Network Type Changed 事件 -> Rust 开始处理
+/// 3. T0+670ms: TypeChanged 内部调用 process_network_available()
+/// 4. 防抖检查：670ms < 2000ms (防抖窗口)，被过滤！
+/// 5. 结果：WebSocket 断开后没有重连
+///
+/// 这个测试验证了这个设计缺陷
+#[tokio::test]
+async fn test_race_condition_type_changed_internal_call_debounced() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    // 使用较长的防抖窗口（模拟生产环境的 2 秒）
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(2000),
+        },
+    ));
+
+    // 模拟 Swift 端同时发送两个事件
+    // Event 1: Network Available (T0)
+    tracing::info!("📱 [T0] Swift sends Network Available");
+    processor
+        .process_network_available()
+        .await
+        .expect("first available should succeed");
+
+    let stats_after_available = client.get_stats();
+    tracing::info!(
+        "📊 After Available: connections={}, disconnections={}",
+        stats_after_available.connections,
+        stats_after_available.disconnections
+    );
+
+    // 断言：第一次 Available 应该成功执行
+    // 初始 connect + process_available 中的 connect = 2
+    assert_eq!(
+        stats_after_available.connections, 2,
+        "First Available should reconnect"
+    );
+    assert_eq!(
+        stats_after_available.disconnections, 1,
+        "First Available should disconnect once"
+    );
+    assert!(client.is_connected(), "Should be connected after Available");
+
+    // Event 2: Network Type Changed (T0+10ms)
+    // 模拟 Swift 几乎同时发送 TypeChanged 事件
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    tracing::info!("📱 [T0+10ms] Swift sends Network Type Changed");
+
+    // 开始处理 TypeChanged
+    // 这会：
+    // 1. 调用 process_network_lost() -> 断开连接
+    // 2. 等待 500ms
+    // 3. 调用 process_network_available() -> 被防抖过滤！！！
+
+    processor
+        .process_network_type_changed(true, false) // WiFi connected
+        .await
+        .expect("type changed should not return error");
+
+    // 关键检查：TypeChanged 完成后的状态
+    let stats_after_type_changed = client.get_stats();
+    tracing::info!(
+        "📊 After TypeChanged: connections={}, disconnections={}",
+        stats_after_type_changed.connections,
+        stats_after_type_changed.disconnections
+    );
+    tracing::info!("📊 Is connected: {}", client.is_connected());
+
+    // 这是 BUG 的体现！
+    // 期望行为：TypeChanged 应该重新连接 (connected = true)
+    // 实际行为（由于防抖）：内部的 process_network_available 被过滤，没有重连
+
+    // 让我们验证这个 BUG
+    let is_connected_after = client.is_connected();
+    let final_connections = stats_after_type_changed.connections;
+    let final_disconnections = stats_after_type_changed.disconnections;
+
+    // TypeChanged 会调用：
+    // - process_network_lost() -> disconnections + 1
+    // - process_network_available() -> 但被防抖！不会执行 connect
+    //
+    // 所以：
+    // - disconnections 应该是 2 (Available断开1次 + TypeChanged调用Lost断开1次)
+    // - connections 应该还是 2 (因为内部 Available 被防抖，没有执行 connect)
+    // - is_connected 应该是 false！
+
+    tracing::info!("🔍 Verifying race condition:");
+    tracing::info!(
+        "   - Final connections: {} (expected 2 due to debounce bug)",
+        final_connections
+    );
+    tracing::info!(
+        "   - Final disconnections: {} (expected 2)",
+        final_disconnections
+    );
+    tracing::info!(
+        "   - Is connected: {} (expected false due to bug)",
+        is_connected_after
+    );
+
+    // 由于 process_network_lost 内部也有防抖检查，让我们看实际结果
+    // 如果这个测试通过（connected = false），说明 BUG 被复现了
+    // 如果这个测试失败（connected = true），说明防抖机制已经被修复
+
+    assert!(
+        !is_connected_after,
+        "BUG REPRODUCED: After TypeChanged, client should be disconnected because \
+         the internal process_network_available() call was debounced. \
+         connections={}, disconnections={}. \
+         This proves the race condition where internal calls are incorrectly debounced.",
+        final_connections, final_disconnections
+    );
+
+    tracing::info!("✅ Race condition BUG confirmed: WebSocket is disconnected after TypeChanged!");
+    tracing::info!("   The internal process_network_available() was debounced because");
+    tracing::info!("   the external Available event at T0 set the debounce timestamp.");
+}
+
+/// 对比测试：当没有预先的 Available 事件时，TypeChanged 应该正常工作
+#[tokio::test]
+async fn test_type_changed_works_without_prior_available() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(2000),
+        },
+    );
+
+    // 直接发送 TypeChanged，没有预先的 Available
+    processor
+        .process_network_type_changed(true, false)
+        .await
+        .expect("type changed should succeed");
+
+    let stats = client.get_stats();
+    tracing::info!(
+        "📊 TypeChanged without prior Available: connections={}, disconnections={}",
+        stats.connections,
+        stats.disconnections
+    );
+
+    // 这种情况下应该正常工作
+    // TypeChanged 会：
+    // 1. Lost: disconnect
+    // 2. Wait 500ms
+    // 3. Available: disconnect + connect
+    //
+    // 但是 Available 内部也会被 Lost 的防抖影响吗？让我们看看
+    // 实际上 Available 和 Lost 是不同的事件类型，不共享防抖状态
+
+    assert!(
+        client.is_connected(),
+        "Without prior Available event, TypeChanged should complete successfully"
+    );
+}
