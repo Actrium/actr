@@ -758,13 +758,15 @@ impl WebRtcCoordinator {
     pub async fn close_all_peers(&self) -> RuntimeResult<()> {
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
-        // Take snapshot of peers and clear map
-        let peers_snapshot: Vec<Arc<RTCPeerConnection>> = {
+        // Take snapshot of peers (with peer_id) and clear map
+        let peers_snapshot: Vec<(ActrId, Arc<RTCPeerConnection>)> = {
             let mut peers = self.peers.write().await;
-            let conns: Vec<Arc<RTCPeerConnection>> =
-                peers.values().map(|p| p.peer_connection.clone()).collect();
+            let snapshot: Vec<(ActrId, Arc<RTCPeerConnection>)> = peers
+                .iter()
+                .map(|(id, state)| (id.clone(), state.peer_connection.clone()))
+                .collect();
             peers.clear();
-            conns
+            snapshot
         };
 
         // Clear pending ICE candidates
@@ -777,9 +779,16 @@ impl WebRtcCoordinator {
         #[cfg(feature = "opentelemetry")]
         self.root_context_map.write().await.clear();
 
-        // Close each RTCPeerConnection
-        for pc in peers_snapshot {
-            tracing::info!("🔻 Closing PeerConnection");
+        // Close each RTCPeerConnection and send ConnectionClosed event
+        for (peer_id, pc) in peers_snapshot {
+            tracing::info!("🔻 Closing PeerConnection for {}", peer_id.serial_number);
+
+            // CRITICAL: Send ConnectionClosed event BEFORE closing PeerConnection
+            // This allows OutprocOutGate to cleanup DestTransport cache
+            self.event_broadcaster
+                .send(ConnectionEvent::ConnectionClosed {
+                    peer_id: peer_id.clone(),
+                });
 
             if let Err(e) = pc.close().await {
                 tracing::warn!("⚠️ Failed to close PeerConnection: {}", e);
