@@ -1671,7 +1671,7 @@ async fn handle_route_candidates_request(
     request_envelope_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 从请求中获取 client_fingerprint，如果存在则启用兼容性协商模式
-    let client_fingerprint_from_req = req.client_fingerprint.clone();
+    let client_fingerprint_from_req = req.client_fingerprint.trim().to_string();
 
     info!(
         "🎯 处理 Actor {} 的 RouteCandidates 请求: target_type={}/{}, client_fp={:?}",
@@ -1776,7 +1776,7 @@ async fn handle_route_candidates_request(
                 Some(client_id),
                 client_location,
                 compatibility_cache,
-                Some(&client_fingerprint),
+                None,
             );
 
             (ranked, vec![], None, None)
