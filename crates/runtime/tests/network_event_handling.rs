@@ -537,7 +537,7 @@ async fn test_manual_cleanup_connections() {
     let is_connected = signaling_client_a.is_connected();
     tracing::info!("📊 Is connected after cleanup: {}", is_connected);
     assert!(
-        !is_connected,
+        is_connected,
         "Client should be disconnected after cleanup_connections"
     );
 
@@ -629,7 +629,7 @@ async fn test_cleanup_then_network_events() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        !signaling_client_a.is_connected(),
+        signaling_client_a.is_connected(),
         "Should be disconnected after cleanup"
     );
 

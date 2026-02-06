@@ -67,4 +67,4 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --verbose --all-features
+        run: cargo test --workspace --verbose --all-features

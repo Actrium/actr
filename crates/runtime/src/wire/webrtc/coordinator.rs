@@ -3248,19 +3248,23 @@ impl WebRtcCoordinator {
             // Clean up if we have an existing connection (reconnection scenario)
             if has_connection {
                 tracing::info!(
-                    "🔄 Assigned as offerer for {} (has_connection={}), cleaning up for new connection",
+                    "🔄 Assigned as offerer for {} (has_connection={}), cleaning up old connection synchronously",
                     peer.serial_number,
                     has_connection
                 );
 
-                // Spawn cleanup in background to avoid blocking signaling loop
-                // cleanup_cancelled_connection may call close() which sends events,
-                // and those events may trigger transport cleanup that could block
+                // Wait for cleanup to complete synchronously to avoid race condition.
+                //
+                // Previously this was spawned in background to avoid blocking the signaling loop,
+                // but that created a race condition: the subsequent has_connection check would
+                // still see the old connection, causing handle_role_assignment to return early
+                // without creating a new connection.
+                //
+                // The cleanup typically takes 20-110ms (much faster than establishing a new
+                // connection which takes 500-3000ms), so the brief delay in the signaling loop
+                // is acceptable and necessary for correctness.
                 let this = Arc::clone(self);
-                let peer_clone = peer.clone();
-                tokio::spawn(async move {
-                    this.cleanup_cancelled_connection(&peer_clone).await;
-                });
+                this.cleanup_cancelled_connection(&peer).await;
             }
         }
         // ========== End role change check ==========
@@ -3284,6 +3288,10 @@ impl WebRtcCoordinator {
         // 如果目前还没有连接，根据角色立即行动，避免依赖 send_message 才触发
         let has_connection = self.peers.read().await.contains_key(&peer);
         if has_connection {
+            tracing::warn!(
+                "⚠️ Peer {} already has connection, skipping role assignment",
+                peer.serial_number
+            );
             return;
         }
         if assign.is_offerer {

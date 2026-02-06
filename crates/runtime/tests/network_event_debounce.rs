@@ -327,22 +327,36 @@ async fn test_race_condition_type_changed_internal_call_debounced() {
         is_connected_after
     );
 
-    // 由于 process_network_lost 内部也有防抖检查，让我们看实际结果
-    // 如果这个测试通过（connected = false），说明 BUG 被复现了
-    // 如果这个测试失败（connected = true），说明防抖机制已经被修复
+    // 验证正确行为：reconnect_internal() 应该绕过防抖，成功重连
+    //
+    // TypeChanged 内部调用链：
+    // 1. process_network_lost() -> disconnections + 1
+    // 2. wait 500ms
+    // 3. reconnect_internal() -> 绕过防抖，强制重连 -> connections + 1
+    //
+    // 因此期望：
+    // - connections = 3 (initial + Available + TypeChanged内部重连)
+    // - disconnections = 2 (Available断开 + TypeChanged断开)
+    // - is_connected = true ✅ (成功重连)
 
+    assert_eq!(
+        final_connections, 3,
+        "TypeChanged should trigger reconnect via reconnect_internal()"
+    );
+    assert_eq!(
+        final_disconnections, 2,
+        "TypeChanged should disconnect once, Available disconnects once"
+    );
     assert!(
-        !is_connected_after,
-        "BUG REPRODUCED: After TypeChanged, client should be disconnected because \
-         the internal process_network_available() call was debounced. \
-         connections={}, disconnections={}. \
-         This proves the race condition where internal calls are incorrectly debounced.",
-        final_connections, final_disconnections
+        is_connected_after,
+        "BUG FIX VERIFIED: After TypeChanged, client should be connected because \
+         reconnect_internal() bypasses debounce. \
+         This proves the fix where internal calls correctly bypass debounce."
     );
 
-    tracing::info!("✅ Race condition BUG confirmed: WebSocket is disconnected after TypeChanged!");
-    tracing::info!("   The internal process_network_available() was debounced because");
-    tracing::info!("   the external Available event at T0 set the debounce timestamp.");
+    tracing::info!("✅ Debounce bypass working correctly!");
+    tracing::info!("   reconnect_internal() successfully bypassed debounce");
+    tracing::info!("   TypeChanged completed with successful reconnection");
 }
 
 /// 对比测试：当没有预先的 Available 事件时，TypeChanged 应该正常工作
