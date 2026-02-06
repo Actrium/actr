@@ -511,6 +511,22 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         }
 
         tracing::info!("✅ Connection cleanup completed");
+
+        // Step 4: 立即重新建立信令连接
+        // 确保 App 回到前台后立即可用，不需要等待自动重连
+        tracing::info!("🔌 Re-establishing signaling connection...");
+        match self.signaling_client.connect().await {
+            Ok(_) => {
+                tracing::info!("✅ Signaling reconnected successfully after cleanup");
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to reconnect signaling after cleanup: {}", e);
+                tracing::error!("❌ {}", err_msg);
+                return Err(err_msg);
+            }
+        }
+
+        tracing::info!("✅ Connection cleanup and reconnect completed");
         Ok(())
     }
 }

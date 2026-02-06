@@ -1007,6 +1007,19 @@ impl WebRtcCoordinator {
             peers.remove(target)
         }; // Lock released here
 
+        // 🆕 Send ConnectionClosed event BEFORE closing connections
+        //    This allows WirePool and other components to update their state immediately
+        if state_to_close.is_some() {
+            tracing::info!(
+                "🔔 Broadcasting ConnectionClosed event for peer {} (failed connection cleanup)",
+                target.serial_number
+            );
+            self.event_broadcaster
+                .send(ConnectionEvent::ConnectionClosed {
+                    peer_id: target.clone(),
+                });
+        }
+
         if let Some(state) = state_to_close {
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
@@ -1057,7 +1070,20 @@ impl WebRtcCoordinator {
             peers.remove(target)
         }; // Lock released here
 
-        // Now close outside the lock (close() may send ConnectionClosed event)
+        // 2. 🆕 Send ConnectionClosed event BEFORE closing connections
+        //    This allows WirePool and other components to update their state immediately
+        if state_to_close.is_some() {
+            tracing::info!(
+                "🔔 Broadcasting ConnectionClosed event for peer {} (health check cleanup)",
+                target.serial_number
+            );
+            self.event_broadcaster
+                .send(ConnectionEvent::ConnectionClosed {
+                    peer_id: target.clone(),
+                });
+        }
+
+        // 3. Now close outside the lock (close() may send additional events)
         if let Some(state) = state_to_close {
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
@@ -1075,10 +1101,10 @@ impl WebRtcCoordinator {
             }
         }
 
-        // 2. Clear pending candidates
+        // 4. Clear pending candidates
         self.pending_candidates.write().await.remove(target);
 
-        // 3. Clear negotiation state (role negotiation only, no restart_handle)
+        // 5. Clear negotiation state (role negotiation only, no restart_handle)
         if self.peer_negotiation.lock().await.remove(target).is_some() {
             tracing::debug!(
                 "🧹 Clearing negotiation state for serial={}",
@@ -1086,7 +1112,7 @@ impl WebRtcCoordinator {
             );
         }
 
-        // 4. Cancel in-flight restart task if any (from peers lock)
+        // 6. Cancel in-flight restart task if any (from peers lock)
         // Note: We need to abort the task before removing the peer state
         if let Some(peer_state) = self.peers.read().await.get(target) {
             if let Some(ref handle) = peer_state.restart_task_handle {
