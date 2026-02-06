@@ -1075,7 +1075,7 @@ impl<W: Workload> ActrNode<W> {
         // Use send_register_request to send and wait for response
         let register_response = self
             .signaling_client
-            .send_register_request(register_request)
+            .send_register_request(register_request.clone())
             .await
             .map_err(|e| {
                 actr_protocol::ProtocolError::TransportError(format!(
@@ -1289,6 +1289,7 @@ impl<W: Workload> ActrNode<W> {
                     let actor_id_for_heartbeat = actor_id.clone();
                     let credential_state_for_heartbeat = credential_state.clone();
                     let mailbox_for_heartbeat = self.mailbox.clone();
+                    let register_request_for_heartbeat = register_request.clone();
 
                     // Use interval from registration response, default to 30s
                     let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
@@ -1305,6 +1306,7 @@ impl<W: Workload> ActrNode<W> {
                         credential_state_for_heartbeat,
                         mailbox_for_heartbeat,
                         heartbeat_interval,
+                        register_request_for_heartbeat,
                     ));
 
                     task_handles.push(heartbeat_handle);

@@ -947,11 +947,24 @@ impl SignalingClient for WebSocketSignalingClient {
             )
         })?;
 
-        // Extract Pong from response
+        // Extract Pong from response, or handle Error response
         if let Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) = response_envelope.flow
         {
-            if let Some(signaling_to_actr::Payload::Pong(pong)) = server_to_actr.payload {
-                return Ok(pong);
+            match server_to_actr.payload {
+                Some(signaling_to_actr::Payload::Pong(pong)) => {
+                    return Ok(pong);
+                }
+                Some(signaling_to_actr::Payload::Error(err)) => {
+                    // Check if it's a credential expired error (401)
+                    if err.code == 401 {
+                        return Err(NetworkError::CredentialExpired(err.message));
+                    }
+                    return Err(NetworkError::AuthenticationError(format!(
+                        "{} ({})",
+                        err.message, err.code
+                    )));
+                }
+                _ => {}
             }
         }
 

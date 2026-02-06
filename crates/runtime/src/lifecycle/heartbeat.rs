@@ -4,9 +4,10 @@
 //! to the signaling server and handling responses.
 
 use crate::lifecycle::CredentialState;
+use crate::transport::error::NetworkError;
 use crate::wire::webrtc::SignalingClient;
 use actr_mailbox::Mailbox;
-use actr_protocol::{ActrId, ActrIdExt, ServiceAvailabilityState};
+use actr_protocol::{ActrId, ActrIdExt, RegisterRequest, ServiceAvailabilityState};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +70,7 @@ async fn get_power_reserve_and_availability(
 ///
 /// This function sends a heartbeat message to the signaling server,
 /// waits for the Pong response, and handles credential warnings if present.
+/// If credential has expired (401 error), it triggers re-registration.
 ///
 /// # Arguments
 /// * `client` - Signaling client for sending heartbeats
@@ -76,12 +78,14 @@ async fn get_power_reserve_and_availability(
 /// * `credential_state` - Shared credential state
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats (used for timeout calculation)
+/// * `register_request` - RegisterRequest for re-registration on credential expiry
 async fn send_heartbeat_and_handle_response(
     client: &Arc<dyn SignalingClient>,
     actor_id: &ActrId,
     credential_state: &CredentialState,
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
+    register_request: &RegisterRequest,
 ) {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -105,6 +109,19 @@ async fn send_heartbeat_and_handle_response(
 
     let pong = match pong_response {
         Ok(Ok(pong)) => pong,
+        Ok(Err(NetworkError::CredentialExpired(msg))) => {
+            // Credential has expired, trigger re-registration
+            tracing::warn!(
+                "⚠️ Credential expired during heartbeat: {}. Attempting re-registration.",
+                msg
+            );
+            tokio::spawn(re_register_task(
+                client.clone(),
+                register_request.clone(),
+                credential_state.clone(),
+            ));
+            return;
+        }
         Ok(Err(e)) => {
             tracing::warn!("⚠️ Failed to send heartbeat or receive Pong: {}", e);
             return;
@@ -144,6 +161,7 @@ async fn send_heartbeat_and_handle_response(
 ///
 /// This task runs in a loop, sending heartbeat messages at the specified interval
 /// and handling Pong responses, including credential warnings.
+/// If credential has expired (401 error), it triggers re-registration.
 ///
 /// # Arguments
 /// * `shutdown` - Cancellation token for graceful shutdown
@@ -152,6 +170,7 @@ async fn send_heartbeat_and_handle_response(
 /// * `credential_state` - Shared credential state
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats
+/// * `register_request` - RegisterRequest for re-registration on credential expiry
 pub async fn heartbeat_task(
     shutdown: CancellationToken,
     client: Arc<dyn SignalingClient>,
@@ -159,6 +178,7 @@ pub async fn heartbeat_task(
     credential_state: CredentialState,
     mailbox: Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
+    register_request: RegisterRequest,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
 
@@ -175,6 +195,7 @@ pub async fn heartbeat_task(
                     &credential_state,
                     &mailbox,
                     heartbeat_interval,
+                    &register_request,
                 )
                 .await;
             }
@@ -246,6 +267,74 @@ async fn credential_refresh_task(
         }
         Err(e) => {
             tracing::warn!("⚠️ Failed to send credential update request: {}", e);
+        }
+    }
+}
+
+/// Re-register actor after credential expiry
+///
+/// This function sends a register request to the signaling server
+/// and updates the shared credential state upon success.
+/// This is triggered when the credential has completely expired (beyond tolerance period)
+/// and a normal credential refresh is not possible.
+///
+/// # Arguments
+/// * `client` - Signaling client for sending register request
+/// * `register_request` - RegisterRequest containing actor type, realm, and service spec
+/// * `credential_state` - Shared credential state to update
+async fn re_register_task(
+    client: Arc<dyn SignalingClient>,
+    register_request: RegisterRequest,
+    credential_state: CredentialState,
+) {
+    tracing::info!(
+        "🔄 Re-registering actor after credential expiry (type: {}/{})",
+        register_request.actr_type.manufacturer,
+        register_request.actr_type.name
+    );
+
+    match client.send_register_request(register_request.clone()).await {
+        Ok(register_response) => {
+            match register_response.result {
+                Some(actr_protocol::register_response::Result::Success(register_ok)) => {
+                    let new_actor_id = &register_ok.actr_id;
+                    let new_credential = register_ok.credential;
+                    let new_expires_at = register_ok.credential_expires_at;
+                    let new_psk = register_ok.psk;
+
+                    // Update shared credential state
+                    credential_state
+                        .update(new_credential.clone(), new_expires_at, new_psk.clone())
+                        .await;
+
+                    tracing::info!(
+                        "✅ Re-registration successful (ActrId: {}, new key_id: {})",
+                        new_actor_id.to_string_repr(),
+                        new_credential.token_key_id
+                    );
+
+                    if new_psk.is_some() {
+                        tracing::debug!("🔑 PSK updated for TURN authentication");
+                    }
+
+                    if let Some(expires_at) = &new_expires_at {
+                        tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
+                    }
+                }
+                Some(actr_protocol::register_response::Result::Error(err)) => {
+                    tracing::error!(
+                        "❌ Re-registration failed: code={}, message={}",
+                        err.code,
+                        err.message
+                    );
+                }
+                None => {
+                    tracing::error!("❌ Re-registration response missing result");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to send re-register request: {}", e);
         }
     }
 }

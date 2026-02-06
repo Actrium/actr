@@ -37,6 +37,10 @@ pub enum NetworkError {
     #[error("Authentication error: {0}")]
     AuthenticationError(String),
 
+    /// Credential expired error (requires re-registration)
+    #[error("Credential expired: {0}")]
+    CredentialExpired(String),
+
     /// Permission error
     #[error("Permission error: {0}")]
     PermissionError(String),
@@ -212,6 +216,7 @@ impl NetworkError {
             NetworkError::JsonError(_) => "json",
             NetworkError::BroadcastError(_) => "broadcast",
             NetworkError::Timeout(_) => "timeout",
+            NetworkError::CredentialExpired(_) => "credential_expired",
             NetworkError::Other(_) => "other",
         }
     }
@@ -221,7 +226,8 @@ impl NetworkError {
         match self {
             NetworkError::ConfigurationError(_)
             | NetworkError::AuthenticationError(_)
-            | NetworkError::PermissionError(_) => 10,
+            | NetworkError::PermissionError(_)
+            | NetworkError::CredentialExpired(_) => 10,
 
             NetworkError::WebRtcError(_)
             | NetworkError::SignalingError(_)

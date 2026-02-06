@@ -184,6 +184,9 @@ impl From<crate::transport::error::NetworkError> for RuntimeError {
                 RuntimeError::PermissionDenied(err.to_string())
             }
 
+            // Credential expired - treated as authentication failure requiring re-registration
+            NetworkError::CredentialExpired(_) => RuntimeError::PermissionDenied(err.to_string()),
+
             // Decode/encode failures → poison messages
             NetworkError::DeserializationError(msg) => RuntimeError::DecodeFailure {
                 message: msg,
