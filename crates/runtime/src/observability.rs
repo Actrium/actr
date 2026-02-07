@@ -107,19 +107,17 @@ fn init_subscriber_internal<L>(
 where
     L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {
-    let mut layers = Vec::new();
-
-    // Add platform layer or default fmt layer
-    if let Some(layer) = platform_layer {
-        layers.push(layer.boxed());
+    // Apply the filter to the output layer using with_filter()
+    // This ensures the filter properly gates events before they reach the output layer
+    let filtered_layer = if let Some(layer) = platform_layer {
+        layer.with_filter(env_filter).boxed()
     } else {
-        layers.push(create_default_fmt_layer().boxed());
-    }
+        create_default_fmt_layer().with_filter(env_filter).boxed()
+    };
 
-    // Add env filter
-    layers.push(env_filter.boxed());
-
-    let _ = tracing_subscriber::registry().with(layers).try_init();
+    let _ = tracing_subscriber::registry()
+        .with(filtered_layer)
+        .try_init();
 
     Ok(ObservabilityGuard::default())
 }
@@ -133,29 +131,32 @@ fn init_subscriber_internal<L>(
 where
     L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {
-    let mut layers = Vec::new();
-
-    // 1. Add platform layer or default fmt layer
-    if let Some(layer) = platform_layer {
-        layers.push(layer.boxed());
+    // Apply the filter to the output layer using with_filter()
+    // This ensures the filter properly gates events before they reach the output layer
+    // Note: OTel layer receives all events for distributed tracing purposes
+    let filtered_output_layer = if let Some(layer) = platform_layer {
+        layer.with_filter(env_filter).boxed()
     } else {
-        layers.push(create_default_fmt_layer().boxed());
-    }
+        create_default_fmt_layer().with_filter(env_filter).boxed()
+    };
 
-    // 2. Add env filter
-    layers.push(env_filter.boxed());
-
-    // 3. Add OTel layer if enabled
+    // Add OTel layer if enabled (unfiltered - tracing benefits from all events)
     let mut tracer_provider = None;
     if cfg.tracing_enabled {
         let provider = build_otel_provider(cfg)?;
         let tracer = provider.tracer("actr-runtime");
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-        layers.push(otel_layer.boxed());
-        tracer_provider = Some(provider);
-    }
 
-    let _ = tracing_subscriber::registry().with(layers).try_init();
+        let _ = tracing_subscriber::registry()
+            .with(filtered_output_layer)
+            .with(otel_layer)
+            .try_init();
+        tracer_provider = Some(provider);
+    } else {
+        let _ = tracing_subscriber::registry()
+            .with(filtered_output_layer)
+            .try_init();
+    }
 
     Ok(ObservabilityGuard { tracer_provider })
 }
