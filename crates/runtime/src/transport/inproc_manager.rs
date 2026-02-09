@@ -311,19 +311,22 @@ impl InprocTransportManager {
         let (response_tx, response_rx) = oneshot::channel();
 
         // Register pending request
+        let request_id = envelope.request_id.clone();
+        let timeout_ms = envelope.timeout_ms;
         self.pending_requests
             .write()
             .await
-            .insert(envelope.request_id.clone(), response_tx);
+            .insert(request_id, response_tx);
 
         // Send
         let lane = self.get_lane(payload_type, identifier).await?;
         lane.send_envelope(envelope).await?;
 
         // Wait for response
-        let result = tokio::time::timeout(Duration::from_secs(30), response_rx)
+        let timeout_duration = Duration::from_millis(timeout_ms as u64);
+        let result = tokio::time::timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| NetworkError::TimeoutError("Request timeout".into()))?
+            .map_err(|_| NetworkError::TimeoutError(format!("Request timeout: {}ms", timeout_ms)))?
             .map_err(|_| NetworkError::ConnectionError("Response channel closed".into()))?;
 
         // result is ActorResult<Bytes>, convert to NetworkError if error
