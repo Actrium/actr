@@ -110,6 +110,7 @@ dependencies = [
  "actr-framework",
  "actr-mailbox",
  "actr-protocol",
+ "actr-runtime",
  "actr-version",
  "anyhow",
  "async-trait",

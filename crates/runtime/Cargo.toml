@@ -76,8 +76,11 @@ opentelemetry = [
     "dep:tracing-opentelemetry",
     "actr-config/opentelemetry",
 ]
+# Enable test utilities for integration tests (e.g., force ICE restart on all connections)
+test-utils = []
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.23"
 prost = "0.14"
+actr-runtime = { path = ".", features = ["test-utils"] }
