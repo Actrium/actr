@@ -204,6 +204,14 @@ pub trait SignalingClient: Send + Sync {
     /// Set actor ID and credential state for reconnect URL parameters.
     async fn set_actor_id(&self, actor_id: ActrId);
     async fn set_credential_state(&self, credential_state: CredentialState);
+
+    /// Clear stored actor ID and credential state.
+    ///
+    /// After calling this, `connect()` will produce a clean WebSocket URL
+    /// without identity query parameters, so the signaling server treats
+    /// the connection as brand-new rather than a reconnect of the old actor.
+    /// This is required before re-registration when the credential has expired.
+    async fn clear_identity(&self);
 }
 
 /// High-level signaling connection state.
@@ -1122,6 +1130,11 @@ impl SignalingClient for WebSocketSignalingClient {
     async fn set_credential_state(&self, credential_state: CredentialState) {
         *self.credential_state.lock().await = Some(credential_state);
     }
+
+    async fn clear_identity(&self) {
+        *self.actor_id.lock().await = None;
+        *self.credential_state.lock().await = None;
+    }
 }
 
 /// signaling statistics info
@@ -1309,6 +1322,11 @@ mod tests {
 
         async fn set_credential_state(&self, credential_state: CredentialState) {
             *self.credential_state.lock().await = Some(credential_state);
+        }
+
+        async fn clear_identity(&self) {
+            *self.actor_id.lock().await = None;
+            *self.credential_state.lock().await = None;
         }
     }
 

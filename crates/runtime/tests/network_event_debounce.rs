@@ -137,6 +137,8 @@ impl SignalingClient for FakeSignalingClient {
     async fn set_actor_id(&self, _actor_id: ActrId) {}
 
     async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+    async fn clear_identity(&self) {}
 }
 
 #[tokio::test]

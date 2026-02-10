@@ -79,6 +79,8 @@ async fn get_power_reserve_and_availability(
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats (used for timeout calculation)
 /// * `register_request` - RegisterRequest for re-registration on credential expiry
+/// Returns `Some(new_actor_id)` when re-registration assigns a new ActrId,
+/// so the caller can update its loop variable for subsequent heartbeats.
 async fn send_heartbeat_and_handle_response(
     client: &Arc<dyn SignalingClient>,
     actor_id: &ActrId,
@@ -86,7 +88,7 @@ async fn send_heartbeat_and_handle_response(
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: &RegisterRequest,
-) {
+) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
 
@@ -115,20 +117,27 @@ async fn send_heartbeat_and_handle_response(
                 "⚠️ Credential expired during heartbeat: {}. Attempting re-registration.",
                 msg
             );
-            tokio::spawn(re_register_task(
+            let new_actor_id = re_register_task(
                 client.clone(),
+                actor_id.clone(),
                 register_request.clone(),
                 credential_state.clone(),
-            ));
-            return;
+            )
+            .await;
+
+            // Return updated ActrId only if it actually changed
+            if &new_actor_id != actor_id {
+                return Some(new_actor_id);
+            }
+            return None;
         }
         Ok(Err(e)) => {
             tracing::warn!("⚠️ Failed to send heartbeat or receive Pong: {}", e);
-            return;
+            return None;
         }
         Err(_) => {
             tracing::warn!("⚠️ Heartbeat timeout after {}s", ping_timeout_secs);
-            return;
+            return None;
         }
     };
 
@@ -155,6 +164,7 @@ async fn send_heartbeat_and_handle_response(
             credential_state.clone(),
         ));
     }
+    None
 }
 
 /// Heartbeat task that periodically sends Ping messages to signaling server
@@ -181,6 +191,7 @@ pub async fn heartbeat_task(
     register_request: RegisterRequest,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
+    let mut actor_id = actor_id;
 
     loop {
         tokio::select! {
@@ -189,7 +200,7 @@ pub async fn heartbeat_task(
                 break;
             }
             _ = interval.tick() => {
-                send_heartbeat_and_handle_response(
+                if let Some(new_actor_id) = send_heartbeat_and_handle_response(
                     &client,
                     &actor_id,
                     &credential_state,
@@ -197,7 +208,14 @@ pub async fn heartbeat_task(
                     heartbeat_interval,
                     &register_request,
                 )
-                .await;
+                .await {
+                    tracing::info!(
+                        "🔄 Heartbeat actor_id updated: {} -> {}",
+                        actor_id.to_string_repr(),
+                        new_actor_id.to_string_repr(),
+                    );
+                    actor_id = new_actor_id;
+                }
             }
         }
     }
@@ -273,68 +291,109 @@ async fn credential_refresh_task(
 
 /// Re-register actor after credential expiry
 ///
-/// This function sends a register request to the signaling server
-/// and updates the shared credential state upon success.
-/// This is triggered when the credential has completely expired (beyond tolerance period)
-/// and a normal credential refresh is not possible.
+/// When the credential has completely expired (key deleted from key store),
+/// neither heartbeat nor credential refresh will work because the server
+/// cannot validate the old credential. The server also rejects a plain
+/// RegisterRequest with 409 "Already registered" because the actor is still
+/// registered on the existing WebSocket session.
+///
+/// The solution is to disconnect the WebSocket first (which causes the server
+/// to clean up the stale registration), reconnect with a fresh session,
+/// and then register again.
 ///
 /// # Arguments
 /// * `client` - Signaling client for sending register request
+/// * `actor_id` - Current actor ID (used for logging)
 /// * `register_request` - RegisterRequest containing actor type, realm, and service spec
 /// * `credential_state` - Shared credential state to update
 async fn re_register_task(
     client: Arc<dyn SignalingClient>,
+    actor_id: ActrId,
     register_request: RegisterRequest,
     credential_state: CredentialState,
-) {
+) -> ActrId {
     tracing::info!(
-        "🔄 Re-registering actor after credential expiry (type: {}/{})",
+        "🔄 Re-registering actor {} after credential expiry (type: {}/{})",
+        actor_id.to_string_repr(),
         register_request.actr_type.manufacturer,
         register_request.actr_type.name
     );
 
+    // Step 0: Clear identity from the signaling client so the reconnect URL
+    // does not carry the old actor_id / expired credential. Without this the
+    // signaling server treats the new WebSocket as a "reconnect" of the old
+    // actor and restores its registered state, causing 409 "Already registered".
+    client.clear_identity().await;
+
+    // Step 1: Disconnect to clear the server-side registration state.
+    // The server returns 409 "Already registered" if we try to register
+    // while still connected with the old session. Disconnecting forces
+    // the server to clean up the stale registration.
+    tracing::info!("🔌 Disconnecting signaling client to clear stale registration");
+    if let Err(e) = client.disconnect().await {
+        tracing::warn!("⚠️ Disconnect failed (non-fatal, continuing): {}", e);
+    }
+
+    // Step 2: Reconnect to get a fresh WebSocket connection.
+    // If an auto-reconnector is running, connect() may return immediately
+    // via the "already connected" fast-path, which is fine.
+    tracing::info!("🔗 Reconnecting signaling client for re-registration");
+    if let Err(e) = client.connect().await {
+        tracing::error!("❌ Failed to reconnect for re-registration: {}", e);
+        return actor_id;
+    }
+
+    // Step 3: Send register request on the fresh connection
     match client.send_register_request(register_request.clone()).await {
-        Ok(register_response) => {
-            match register_response.result {
-                Some(actr_protocol::register_response::Result::Success(register_ok)) => {
-                    let new_actor_id = &register_ok.actr_id;
-                    let new_credential = register_ok.credential;
-                    let new_expires_at = register_ok.credential_expires_at;
-                    let new_psk = register_ok.psk;
+        Ok(register_response) => match register_response.result {
+            Some(actr_protocol::register_response::Result::Success(register_ok)) => {
+                let new_actor_id = register_ok.actr_id.clone();
+                let new_credential = register_ok.credential;
+                let new_expires_at = register_ok.credential_expires_at;
+                let new_psk = register_ok.psk;
 
-                    // Update shared credential state
-                    credential_state
-                        .update(new_credential.clone(), new_expires_at, new_psk.clone())
-                        .await;
+                // Update shared credential state
+                credential_state
+                    .update(new_credential.clone(), new_expires_at, new_psk.clone())
+                    .await;
 
-                    tracing::info!(
-                        "✅ Re-registration successful (ActrId: {}, new key_id: {})",
-                        new_actor_id.to_string_repr(),
-                        new_credential.token_key_id
-                    );
+                // Update signaling client identity so future auto-reconnects
+                // carry the correct actor ID and credential.
+                client.set_actor_id(new_actor_id.clone()).await;
+                client.set_credential_state(credential_state.clone()).await;
 
-                    if new_psk.is_some() {
-                        tracing::debug!("🔑 PSK updated for TURN authentication");
-                    }
+                tracing::info!(
+                    "✅ Re-registration successful (ActrId: {}, new key_id: {})",
+                    new_actor_id.to_string_repr(),
+                    new_credential.token_key_id
+                );
 
-                    if let Some(expires_at) = &new_expires_at {
-                        tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
-                    }
+                if new_psk.is_some() {
+                    tracing::debug!("🔑 PSK updated for TURN authentication");
                 }
-                Some(actr_protocol::register_response::Result::Error(err)) => {
-                    tracing::error!(
-                        "❌ Re-registration failed: code={}, message={}",
-                        err.code,
-                        err.message
-                    );
+
+                if let Some(expires_at) = &new_expires_at {
+                    tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
                 }
-                None => {
-                    tracing::error!("❌ Re-registration response missing result");
-                }
+
+                new_actor_id
             }
-        }
+            Some(actr_protocol::register_response::Result::Error(err)) => {
+                tracing::error!(
+                    "❌ Re-registration failed: code={}, message={}",
+                    err.code,
+                    err.message
+                );
+                actor_id
+            }
+            None => {
+                tracing::error!("❌ Re-registration response missing result");
+                actor_id
+            }
+        },
         Err(e) => {
             tracing::error!("❌ Failed to send re-register request: {}", e);
+            actor_id
         }
     }
 }
