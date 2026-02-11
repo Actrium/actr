@@ -1024,12 +1024,6 @@ impl WebRtcCoordinator {
                 });
         }
 
-        tracing::debug!(
-            "🧹 Cleaned up failed connection attempt for serial={} state_to_close={}",
-            target.serial_number,
-            state_to_close.is_some()
-        );
-
         if let Some(state) = state_to_close {
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
@@ -1040,10 +1034,6 @@ impl WebRtcCoordinator {
             }
         }
 
-        tracing::debug!(
-            "🧹 Cleaned up failed connection attempt for serial={} webrtc_conn.close().await",
-            target.serial_number
-        );
         // Close WebRtcConnection
         if let Err(e) = webrtc_conn.close().await {
             tracing::warn!(
@@ -1052,11 +1042,6 @@ impl WebRtcCoordinator {
                 e
             );
         }
-
-        tracing::debug!(
-            "🧹 Cleaned up failed connection attempt for serial={} pending_candidates.remove(target)",
-            target.serial_number
-        );
 
         // Clear pending candidates
         {
@@ -1082,29 +1067,7 @@ impl WebRtcCoordinator {
             target.serial_number
         );
 
-        // 🔧 FIX: Cancel in-flight restart task FIRST (before removing peer_state)
-        // This is critical to prevent the race condition where:
-        // 1. RoleAssignment triggers cleanup during ICE restart backoff
-        // 2. Old code removed peer_state first, then tried to abort task
-        // 3. Abort never executed because peer_state was already gone
-        // 4. Task woke up from backoff and killed the new healthy connection
-        //
-        // Note: We abort the task within a read lock since JoinHandle::abort()
-        // doesn't require ownership and is very fast (just sets a flag).
-        {
-            let peers = self.peers.read().await;
-            if let Some(state) = peers.get(target) {
-                if let Some(ref handle) = state.restart_task_handle {
-                    handle.abort();
-                    tracing::info!(
-                        "🧹 Aborted in-flight restart task for serial={}",
-                        target.serial_number
-                    );
-                }
-            }
-        }
-
-        // 1. Remove from peers map, release lock, THEN close
+        // 1. Remove from peers map FIRST, release lock, THEN close
         //    This avoids deadlock: close() sends events that may trigger this method again
         let state_to_close = {
             let mut peers = self.peers.write().await;
@@ -1126,8 +1089,6 @@ impl WebRtcCoordinator {
 
         // 3. Now close outside the lock (close() may send additional events)
         if let Some(state) = state_to_close {
-            tracing::debug!("🔧 Closing connections for serial={}", target.serial_number);
-
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
                     "⚠️ Failed to close peer_connection during cancel cleanup for {}: {}",
@@ -1135,10 +1096,6 @@ impl WebRtcCoordinator {
                     e
                 );
             }
-            tracing::debug!(
-                "🔧 Closed peer_connection for serial={}",
-                target.serial_number
-            );
             if let Err(e) = state.webrtc_conn.close().await {
                 tracing::warn!(
                     "⚠️ Failed to close webrtc_conn during cancel cleanup for {}: {}",
@@ -1146,15 +1103,10 @@ impl WebRtcCoordinator {
                     e
                 );
             }
-            tracing::debug!("✅ Connections closed for serial={}", target.serial_number);
         }
 
         // 4. Clear pending candidates
         self.pending_candidates.write().await.remove(target);
-        tracing::debug!(
-            "🧹 Clearing pending candidates for serial={}",
-            target.serial_number
-        );
 
         // 5. Clear negotiation state (role negotiation only, no restart_handle)
         if self.peer_negotiation.lock().await.remove(target).is_some() {
@@ -1162,6 +1114,18 @@ impl WebRtcCoordinator {
                 "🧹 Clearing negotiation state for serial={}",
                 target.serial_number
             );
+        }
+
+        // 6. Cancel in-flight restart task if any (from peers lock)
+        // Note: We need to abort the task before removing the peer state
+        if let Some(peer_state) = self.peers.read().await.get(target) {
+            if let Some(ref handle) = peer_state.restart_task_handle {
+                handle.abort();
+                tracing::debug!(
+                    "🧹 Aborted restart task for serial={}",
+                    target.serial_number
+                );
+            }
         }
 
         tracing::debug!(
@@ -3046,61 +3010,6 @@ impl WebRtcCoordinator {
                 target.serial_number
             );
             tokio::time::sleep(delay).await;
-
-            // 🔧 FIX: Check connection state after backoff sleep
-            // This is the second layer of defense against the race condition:
-            // If RoleAssignment established a new connection during our backoff,
-            // we should detect it here and exit gracefully instead of continuing
-            // with restart attempts that could interfere with the healthy connection.
-            {
-                let peers_guard = peers.read().await;
-                if let Some(state) = peers_guard.get(target) {
-                    if matches!(state.current_state, RTCPeerConnectionState::Connected) {
-                        // Clean up restart state flags before returning
-                        drop(peers_guard);
-                        let mut peers_guard = peers.write().await;
-                        if let Some(state) = peers_guard.get_mut(target) {
-                            state.ice_restart_inflight = false;
-                            state.ice_restart_attempts = 0;
-                        }
-                        tracing::info!(
-                            "✅ Connection already restored during backoff for serial={}, stopping restart attempts",
-                            target.serial_number
-                        );
-                        return Ok(true);
-                    }
-                } else {
-                    // Peer state removed - cleanup was called, we should exit
-                    tracing::info!(
-                        "🧹 Peer removed during backoff for serial={}, stopping restart attempts",
-                        target.serial_number
-                    );
-                    return Ok(false);
-                }
-            }
-        }
-
-        // 🔧 FIX: Final check before cleanup - ensure we really need to drop the connection
-        // This prevents the catastrophic scenario where we kill a healthy connection
-        // that was established through RoleAssignment while we were retrying.
-        {
-            let peers_guard = peers.read().await;
-            if let Some(state) = peers_guard.get(target) {
-                if matches!(state.current_state, RTCPeerConnectionState::Connected) {
-                    // Clean up restart state flags before returning
-                    drop(peers_guard);
-                    let mut peers_guard = peers.write().await;
-                    if let Some(state) = peers_guard.get_mut(target) {
-                        state.ice_restart_inflight = false;
-                        state.ice_restart_attempts = 0;
-                    }
-                    tracing::warn!(
-                        "⚠️ Connection became Connected after all retries failed for serial={}, skipping cleanup",
-                        target.serial_number
-                    );
-                    return Ok(true);
-                }
-            }
         }
 
         if !restart_ok {
@@ -3379,12 +3288,8 @@ impl WebRtcCoordinator {
                 // is acceptable and necessary for correctness.
                 let this = Arc::clone(self);
                 this.cleanup_cancelled_connection(&peer).await;
-
-                // fixme: 50ms delay is not a good solution
-                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-        tracing::debug!("end role change check");
         // ========== End role change check ==========
 
         // 先尝试唤醒等待的协商

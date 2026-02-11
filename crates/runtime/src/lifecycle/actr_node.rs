@@ -1038,7 +1038,6 @@ impl<W: Workload> ActrNode<W> {
     /// # Returns
     /// - `ActrRef<W>`: Lightweight reference for Shell to call Workload methods
     pub async fn start(mut self) -> ActorResult<crate::actr_ref::ActrRef<W>> {
-        println!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
         tracing::info!("🚀 Starting ActrNode");
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

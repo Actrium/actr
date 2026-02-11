@@ -330,19 +330,6 @@ impl WebSocketSignalingClient {
                                 tracing::warn!(
                                     "📡 Signaling state is DISCONNECTED, attempting reconnect"
                                 );
-                                // FIXME: Missing cooldown period between reconnect rounds
-                                // Current behavior: If connect() exhausts all retries (10 attempts),
-                                // it immediately triggers another round by sending Disconnected signal.
-                                // This creates a fast-fail loop in long-term network outages.
-                                //
-                                // Suggested fix: Add a delay here after connect() failures:
-                                // ```
-                                // if let Err(e) = self_clone.connect().await {
-                                //     tracing::error!("❌ Signaling reconnect failed: {e}");
-                                //     // Add cooldown before next round (e.g., 30-60 seconds)
-                                //     tokio::time::sleep(Duration::from_secs(30)).await;
-                                // }
-                                // ```
                                 if let Err(e) = self_clone.connect().await {
                                     tracing::error!("❌ Signaling reconnect failed: {e}");
                                 } else {
@@ -818,17 +805,6 @@ impl SignalingClient for WebSocketSignalingClient {
             Err(e) => {
                 // Explicitly notify waiting tasks that connection failed
                 // This allows them to retry immediately instead of waiting for timeout
-                // FIXME: Temporary workaround - triggers auto-reconnector to retry immediately
-                // Problem: In long-term network outage scenarios, this creates a fast-fail loop:
-                // 1. connect_with_retries exhausts 10 attempts (~5 minutes with backoff)
-                // 2. Returns Err, we send Disconnected signal
-                // 3. start_auto_reconnector wakes up immediately and calls connect() again
-                // 4. If network is still down, another 10 attempts are wasted quickly
-                // 5. This repeats indefinitely without sufficient cooldown period
-                //
-                // Better solution: Add a cooldown delay in start_auto_reconnector after
-                // connect() failures, or implement a separate "reconnect round" counter
-                // with longer delays between rounds (e.g., wait 30s-60s between rounds).
                 let _ = self.state_tx.send(ConnectionState::Disconnected);
                 tracing::error!("Connection failed: {e}");
                 Err(e)
