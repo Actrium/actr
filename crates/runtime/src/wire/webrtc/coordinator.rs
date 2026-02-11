@@ -1089,6 +1089,7 @@ impl WebRtcCoordinator {
 
         // 3. Now close outside the lock (close() may send additional events)
         if let Some(state) = state_to_close {
+            tracing::debug!("🔧 Closing connections for serial={}", target.serial_number);
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
                     "⚠️ Failed to close peer_connection during cancel cleanup for {}: {}",
@@ -1104,9 +1105,16 @@ impl WebRtcCoordinator {
                 );
             }
         }
-
+        tracing::debug!(
+            "🔧 Closed peer_connection for serial={}",
+            target.serial_number
+        );
         // 4. Clear pending candidates
         self.pending_candidates.write().await.remove(target);
+        tracing::debug!(
+            "🧹 Clearing pending candidates for serial={}",
+            target.serial_number
+        );
 
         // 5. Clear negotiation state (role negotiation only, no restart_handle)
         if self.peer_negotiation.lock().await.remove(target).is_some() {
@@ -1115,7 +1123,10 @@ impl WebRtcCoordinator {
                 target.serial_number
             );
         }
-
+        tracing::debug!(
+            "🧹 Clearing negotiation state for serial={}",
+            target.serial_number
+        );
         // 6. Cancel in-flight restart task if any (from peers lock)
         // Note: We need to abort the task before removing the peer state
         if let Some(peer_state) = self.peers.read().await.get(target) {

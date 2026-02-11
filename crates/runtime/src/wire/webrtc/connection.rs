@@ -220,30 +220,63 @@ impl WebRtcConnection {
 
     /// Close connection and broadcast ConnectionClosed event
     pub async fn close(&self) -> NetworkResult<()> {
+        tracing::debug!(
+            "🔒 [close] Acquiring connected write lock for peer {:?}",
+            self.peer_id
+        );
         *self.connected.write().await = false;
+
+        tracing::debug!(
+            "🔒 [close] Calling peer_connection.close() for peer {:?}",
+            self.peer_id
+        );
         self.peer_connection.close().await?;
 
         // clear blank DataChannel Cache
+        tracing::debug!(
+            "🔒 [close] Acquiring data_channels write lock for peer {:?}",
+            self.peer_id
+        );
         let mut channels = self.data_channels.write().await;
         *channels = [None, None, None, None];
 
         // clear blank MediaTrack Cache
+        tracing::debug!(
+            "🔒 [close] Acquiring media_tracks write lock for peer {:?}",
+            self.peer_id
+        );
         let mut tracks = self.media_tracks.write().await;
         tracks.clear();
 
         // clear blank sequence number cache
+        tracing::debug!(
+            "🔒 [close] Acquiring track_sequence_numbers write lock for peer {:?}",
+            self.peer_id
+        );
         let mut seq_nums = self.track_sequence_numbers.write().await;
         seq_nums.clear();
 
         // clear blank SSRC cache
+        tracing::debug!(
+            "🔒 [close] Acquiring track_ssrcs write lock for peer {:?}",
+            self.peer_id
+        );
         let mut ssrcs = self.track_ssrcs.write().await;
         ssrcs.clear();
 
         // clear blank Lane Cache
+        tracing::debug!(
+            "🔒 [close] Acquiring lane_cache write lock for peer {:?}",
+            self.peer_id
+        );
         let mut cache = self.lane_cache.write().await;
         *cache = [None, None, None, None];
 
         // Broadcast ConnectionClosed event
+        tracing::debug!(
+            "📣 [close] Sending ConnectionClosed event for peer {:?}",
+            self.peer_id
+        );
         let _ = self.event_tx.send(ConnectionEvent::ConnectionClosed {
             peer_id: self.peer_id.clone(),
         });
