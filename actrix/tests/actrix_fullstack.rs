@@ -1,7 +1,7 @@
 use actr_protocol::acl_rule::{Permission, Principal};
 use actr_protocol::{
     Acl, AclRule, ActrType, Realm, RegisterRequest, RegisterResponse, peer_to_signaling,
-    register_response, signaling_envelope, signaling_to_actr,
+    register_response, route_candidates_response, signaling_envelope, signaling_to_actr,
 };
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
 use futures::{SinkExt, StreamExt};
@@ -638,6 +638,163 @@ async fn signaling_rejects_expired_credential() {
                 assert_eq!(err.code, 401, "expired credential should be rejected");
             }
             other => panic!("expected error for expired credential, got {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_route_candidates_with_acl() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Service registers with ACL allowing client:sdp to discover/route
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client-sdp".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+    let (_svc_w, _svc_r, svc_ok) = ws_register(port, "mfg", "svc-rtp", Some(acl)).await;
+
+    // Client registers
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-sdp", None).await;
+
+    // RouteCandidates should return the service because ACL allows
+    let route_req = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(
+            actr_protocol::actr_to_signaling::Payload::RouteCandidatesRequest(
+                actr_protocol::RouteCandidatesRequest {
+                    target_type: ActrType {
+                        manufacturer: "mfg".into(),
+                        name: "svc-rtp".into(),
+                    },
+                    client_fingerprint: "".into(),
+                    criteria: Some(
+                        actr_protocol::route_candidates_request::NodeSelectionCriteria {
+                            candidate_count: 5,
+                            ranking_factors: vec![],
+                            minimal_dependency_requirement: None,
+                            minimal_health_requirement: None,
+                        },
+                    ),
+                    client_location: None,
+                },
+            ),
+        ),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(route_req)),
+    )
+    .await;
+    let resp = recv_envelope(&mut cli_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RouteCandidatesResponse(rsp)) => match rsp.result {
+                Some(route_candidates_response::Result::Success(ok)) => {
+                    assert!(
+                        ok.candidates
+                            .iter()
+                            .any(|id| id.serial_number == svc_ok.actr_id.serial_number),
+                        "expected routed candidate"
+                    );
+                }
+                other => panic!("unexpected route result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_route_candidates_acl_denied() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Service registers without ACL (default deny)
+    let (_svc_w, _svc_r, _svc_ok) = ws_register(port, "mfg", "svc-deny-route", None).await;
+
+    // Client registers
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-sdp", None).await;
+
+    let route_req = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(
+            actr_protocol::actr_to_signaling::Payload::RouteCandidatesRequest(
+                actr_protocol::RouteCandidatesRequest {
+                    target_type: ActrType {
+                        manufacturer: "mfg".into(),
+                        name: "svc-deny-route".into(),
+                    },
+                    client_fingerprint: "".into(),
+                    criteria: Some(
+                        actr_protocol::route_candidates_request::NodeSelectionCriteria {
+                            candidate_count: 5,
+                            ranking_factors: vec![],
+                            minimal_dependency_requirement: None,
+                            minimal_health_requirement: None,
+                        },
+                    ),
+                    client_location: None,
+                },
+            ),
+        ),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(route_req)),
+    )
+    .await;
+    let resp = recv_envelope(&mut cli_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RouteCandidatesResponse(rsp)) => match rsp.result {
+                Some(route_candidates_response::Result::Success(ok)) => {
+                    assert!(
+                        ok.candidates.is_empty(),
+                        "ACL deny should yield empty route candidates"
+                    );
+                }
+                other => panic!("unexpected route result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
         },
         other => panic!("unexpected flow {other:?}"),
     }
