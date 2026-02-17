@@ -31,6 +31,56 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTRIX_SHARED_KEY: &str = "0123456789abcdef0123456789abcdef";
 const DEFAULT_TOKEN_TTL: u64 = 3600;
 
+/// Convenience bundle for a running actrix instance
+struct ActrixHarness {
+    tmp: tempfile::TempDir,
+    port: u16,
+    log_path: PathBuf,
+    data_dir: PathBuf,
+    child: Child,
+}
+
+impl ActrixHarness {
+    /// Start actrix with default features (AIS/KS/Signaling) and wait for health
+    async fn start(token_ttl: u64) -> Self {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let port = choose_port();
+        let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, token_ttl);
+        let log_path = tmp.path().join("actrix_fullstack.log");
+        let data_dir = tmp.path().join("data");
+        ensure_realm(&data_dir, 1001).await;
+        let mut child = spawn_actrix(&config_path, &log_path);
+
+        let base = format!("http://127.0.0.1:{port}");
+        wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+        wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+        wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+        ensure_realm(&data_dir, 1001).await;
+
+        Self {
+            tmp,
+            port,
+            config_path,
+            log_path,
+            data_dir,
+            child,
+        }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn log_path(&self) -> &PathBuf {
+        &self.log_path
+    }
+
+    /// Shutdown child, ignoring errors
+    fn shutdown(self) {
+        graceful_shutdown(self.child);
+    }
+}
+
 #[cfg(test)]
 use serial_test::serial;
 
@@ -281,22 +331,18 @@ fn graceful_shutdown(mut child: Child) {
 #[tokio::test]
 #[serial]
 async fn actrix_end_to_end_register_and_health() {
-    let tmp = tempfile::tempdir().expect("temp dir");
-    let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
-    let log_path = tmp.path().join("actrix_fullstack.log");
-    ensure_realm(&tmp.path().join("data"), 1001).await;
-    let mut child = spawn_actrix(&config_path, &log_path);
+    let mut harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
 
-    let base = format!("http://127.0.0.1:{port}");
+    let base = harness.base_url();
     let ks_health = format!("{base}/ks/health");
     let ais_health = format!("{base}/ais/health");
     let signaling_health = format!("{base}/signaling/health");
 
-    wait_for_health(&ks_health, &mut child, &log_path).await;
-    wait_for_health(&ais_health, &mut child, &log_path).await;
-    wait_for_health(&signaling_health, &mut child, &log_path).await;
-    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let log_path = harness.log_path().clone();
+    wait_for_health(&ks_health, &mut harness.child, &log_path).await;
+    wait_for_health(&ais_health, &mut harness.child, &log_path).await;
+    wait_for_health(&signaling_health, &mut harness.child, &log_path).await;
+    ensure_realm(&harness.data_dir, 1001).await;
 
     let client = reqwest::Client::new();
 
@@ -367,7 +413,7 @@ async fn actrix_end_to_end_register_and_health() {
         client_cert: None,
         client_key: None,
     };
-    AIdCredentialValidator::init(&ks_client_cfg, ACTRIX_SHARED_KEY, tmp.path())
+    AIdCredentialValidator::init(&ks_client_cfg, ACTRIX_SHARED_KEY, harness.tmp.path())
         .await
         .expect("validator init");
     let (claims, _) = AIdCredentialValidator::check(&ok.credential, 1001)
@@ -376,7 +422,7 @@ async fn actrix_end_to_end_register_and_health() {
     assert_eq!(claims.realm_id, 1001);
 
     // WebSocket signaling ping/pong with valid credential
-    let ws_url = format!("ws://127.0.0.1:{}/signaling/ws", port);
+    let ws_url = format!("ws://127.0.0.1:{}/signaling/ws", harness.port);
     let (ws_stream, _) = connect_async(&ws_url).await.expect("ws connect");
     let (mut write, mut read) = ws_stream.split();
 
@@ -490,7 +536,7 @@ async fn actrix_end_to_end_register_and_health() {
         other => panic!("unexpected flow: {other:?}"),
     }
 
-    graceful_shutdown(child);
+    harness.shutdown();
 }
 
 #[tokio::test]
