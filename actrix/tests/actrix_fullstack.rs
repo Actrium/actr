@@ -1,7 +1,8 @@
 use actr_protocol::acl_rule::{Permission, Principal};
 use actr_protocol::{
-    Acl, AclRule, ActrType, Realm, RegisterRequest, RegisterResponse, peer_to_signaling,
-    register_response, route_candidates_response, signaling_envelope, signaling_to_actr,
+    Acl, AclRule, ActrRelay, ActrType, Realm, RegisterRequest, RegisterResponse, RoleNegotiation,
+    actr_relay, peer_to_signaling, register_response, route_candidates_response,
+    signaling_envelope, signaling_to_actr,
 };
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
 use futures::{SinkExt, StreamExt};
@@ -799,5 +800,84 @@ async fn signaling_route_candidates_acl_denied() {
         other => panic!("unexpected flow {other:?}"),
     }
 
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_actr_relay_role_assignment() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Service registers with ACL allowing client-offer
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client-offer".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+    let (mut svc_w, mut svc_r, svc_ok) = ws_register(port, "mfg", "svc-relay", Some(acl)).await;
+
+    // Client registers
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-offer", None).await;
+
+    // Send role negotiation relay
+    let relay = ActrRelay {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        target: svc_ok.actr_id.clone(),
+        payload: Some(actr_relay::Payload::RoleNegotiation(RoleNegotiation {
+            from: cli_ok.actr_id.clone(),
+            to: svc_ok.actr_id.clone(),
+            realm_id: 1001,
+        })),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrRelay(relay)),
+    )
+    .await;
+
+    // Client should receive RoleAssignment
+    let client_resp = recv_envelope(&mut cli_r).await;
+    let mut got_client_assignment = false;
+    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = client_resp.flow {
+        if let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload {
+            got_client_assignment = true;
+            assert!(assign.remote_fixed.is_some());
+        }
+    }
+    assert!(got_client_assignment, "client should get role assignment");
+
+    // Service should receive RoleAssignment
+    let service_resp = recv_envelope(&mut svc_r).await;
+    let mut got_service_assignment = false;
+    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = service_resp.flow {
+        if let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload {
+            got_service_assignment = true;
+            assert!(assign.remote_fixed.is_some());
+        }
+    }
+    assert!(got_service_assignment, "service should get role assignment");
+
+    // Cleanup
+    let _ = cli_w.send(WsMessage::Close(None)).await;
+    let _ = svc_w.send(WsMessage::Close(None)).await;
     graceful_shutdown(child);
 }
