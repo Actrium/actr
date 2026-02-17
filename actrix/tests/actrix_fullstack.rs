@@ -1147,6 +1147,138 @@ async fn signaling_get_service_spec_returns_spec() {
 
 #[tokio::test]
 #[serial]
+async fn signaling_get_service_spec_not_found() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Client without any services, just to issue request
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-nospec", None).await;
+
+    let get_spec = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::GetServiceSpecRequest(
+            actr_protocol::GetServiceSpecRequest {
+                name: "non-existent-svc".into(),
+            },
+        )),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(get_spec)),
+    )
+    .await;
+    let resp = recv_envelope(&mut cli_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::GetServiceSpecResponse(rsp)) => match rsp.result {
+                Some(actr_protocol::get_service_spec_response::Result::Error(err)) => {
+                    assert_eq!(err.code, 404, "missing spec should return 404");
+                }
+                other => panic!("unexpected get spec result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_subscribe_and_unsubscribe_actr_up() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Subscriber
+    let (mut sub_w, mut sub_r, sub_ok) = ws_register(port, "mfg", "subscriber", None).await;
+
+    // Subscribe to target type
+    let subscribe = actr_protocol::ActrToSignaling {
+        source: sub_ok.actr_id.clone(),
+        credential: sub_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::SubscribeActrUpRequest(
+            actr_protocol::SubscribeActrUpRequest {
+                target_type: ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "svc-subject".into(),
+                },
+            },
+        )),
+    };
+    send_envelope(
+        &mut sub_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(subscribe)),
+    )
+    .await;
+    let resp = recv_envelope(&mut sub_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::SubscribeActrUpResponse(rsp)) => match rsp.result {
+                Some(actr_protocol::subscribe_actr_up_response::Result::Success(_)) => {}
+                other => panic!("unexpected subscribe result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    // Unsubscribe should also succeed
+    let unsubscribe = actr_protocol::ActrToSignaling {
+        source: sub_ok.actr_id.clone(),
+        credential: sub_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::UnsubscribeActrUpRequest(
+            actr_protocol::UnsubscribeActrUpRequest {
+                target_type: ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "svc-subject".into(),
+                },
+            },
+        )),
+    };
+    send_envelope(
+        &mut sub_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(unsubscribe)),
+    )
+    .await;
+    let resp2 = recv_envelope(&mut sub_r).await;
+    match resp2.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::UnsubscribeActrUpResponse(rsp)) => match rsp.result {
+                Some(actr_protocol::unsubscribe_actr_up_response::Result::Success(_)) => {}
+                other => panic!("unexpected unsubscribe result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
 async fn signaling_route_candidates_compatibility_cache_hit() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
