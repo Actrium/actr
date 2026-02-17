@@ -315,5 +315,65 @@ async fn actrix_end_to_end_register_and_health() {
         other => panic!("unexpected flow: {other:?}"),
     }
 
+    // Tamper credential to ensure 401 is returned
+    let mut bad_cred = ok.credential.clone();
+    if !bad_cred.encrypted_token.is_empty() {
+        let mut tampered = bad_cred.encrypted_token.to_vec();
+        tampered[0] ^= 0xFF;
+        bad_cred.encrypted_token = tampered.into();
+    }
+    let bad_msg = actr_protocol::ActrToSignaling {
+        source: ok.actr_id.clone(),
+        credential: bad_cred,
+        payload: Some(actr_protocol::actr_to_signaling::Payload::Ping(
+            actr_protocol::Ping {
+                availability: 50,
+                mailbox_backlog: 1.0,
+                power_reserve: 50.0,
+                ..Default::default()
+            },
+        )),
+    };
+    let mut buf = Vec::new();
+    actr_protocol::SignalingEnvelope {
+        envelope_version: 1,
+        envelope_id: Uuid::new_v4().to_string(),
+        timestamp: prost_types::Timestamp {
+            seconds: chrono::Utc::now().timestamp(),
+            nanos: 0,
+        },
+        reply_for: None,
+        traceparent: None,
+        tracestate: None,
+        flow: Some(actr_protocol::signaling_envelope::Flow::ActrToServer(
+            bad_msg,
+        )),
+    }
+    .encode(&mut buf)
+    .expect("encode bad envelope");
+    write
+        .send(WsMessage::Binary(buf.into()))
+        .await
+        .expect("send bad ping");
+
+    let resp = read.next().await.expect("ws response").expect("ws msg");
+    let err_env = match resp {
+        WsMessage::Binary(data) => {
+            actr_protocol::SignalingEnvelope::decode(&data[..]).expect("decode signaling resp")
+        }
+        other => panic!("expected binary ws message, got {other:?}"),
+    };
+    match err_env.flow {
+        Some(actr_protocol::signaling_envelope::Flow::ServerToActr(server_msg)) => {
+            match server_msg.payload {
+                Some(actr_protocol::signaling_to_actr::Payload::Error(err)) => {
+                    assert_eq!(err.code, 401, "expected 401 for bad credential");
+                }
+                other => panic!("expected Error, got {other:?}"),
+            }
+        }
+        other => panic!("unexpected flow: {other:?}"),
+    }
+
     graceful_shutdown(child);
 }
