@@ -172,11 +172,12 @@ async fn recv_envelope(read: &mut WsRead) -> actr_protocol::SignalingEnvelope {
     }
 }
 
-async fn ws_register(
+async fn ws_register_with_spec(
     port: u16,
     manufacturer: &str,
     name: &str,
     acl: Option<Acl>,
+    service_spec: Option<actr_protocol::ServiceSpec>,
 ) -> (WsWrite, WsRead, register_response::RegisterOk) {
     let (mut write, mut read) = connect_ws(port).await;
 
@@ -186,7 +187,7 @@ async fn ws_register(
             name: name.to_string(),
         },
         realm: Realm { realm_id: 1001 },
-        service_spec: None,
+        service_spec,
         acl,
     };
 
@@ -208,6 +209,15 @@ async fn ws_register(
     };
 
     (write, read, register_ok)
+}
+
+async fn ws_register(
+    port: u16,
+    manufacturer: &str,
+    name: &str,
+    acl: Option<Acl>,
+) -> (WsWrite, WsRead, register_response::RegisterOk) {
+    ws_register_with_spec(port, manufacturer, name, acl, None).await
 }
 
 async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
@@ -800,6 +810,254 @@ async fn signaling_route_candidates_acl_denied() {
         other => panic!("unexpected flow {other:?}"),
     }
 
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_route_candidates_respects_limit_and_sorting() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // ACL: allow client-route to reach the services
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client-route".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+
+    // Register two service instances with different load indicators
+    let (mut svc1_w, svc1_r, svc1_ok) = ws_register(port, "mfg", "svc-route", Some(acl.clone())).await;
+    let (mut svc2_w, svc2_r, svc2_ok) = ws_register(port, "mfg", "svc-route", Some(acl.clone())).await;
+
+    // Update runtime metrics via ping (own data per call to avoid lifetimes)
+    let send_ping = |mut w: WsWrite, ok: register_response::RegisterOk, power: f32, backlog: f32| async move {
+        let ping = actr_protocol::ActrToSignaling {
+            source: ok.actr_id.clone(),
+            credential: ok.credential.clone(),
+            payload: Some(actr_protocol::actr_to_signaling::Payload::Ping(
+                actr_protocol::Ping {
+                    availability: 50,
+                    mailbox_backlog: backlog,
+                    power_reserve: power,
+                    ..Default::default()
+                },
+            )),
+        };
+        send_envelope(&mut w, make_envelope(signaling_envelope::Flow::ActrToServer(ping))).await;
+        w
+    };
+
+    svc1_w = send_ping(svc1_w, svc1_ok.clone(), 10.0, 5.0).await; // lower power, higher backlog
+    svc2_w = send_ping(svc2_w, svc2_ok.clone(), 80.0, 1.0).await; // higher power, lower backlog
+
+    // Wait for ping metrics to be ingested
+    sleep(Duration::from_millis(200)).await;
+
+    // Client registers
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-route", None).await;
+
+    // Request route candidates with sorting and limit=1
+    let route_req = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(
+            actr_protocol::actr_to_signaling::Payload::RouteCandidatesRequest(
+                actr_protocol::RouteCandidatesRequest {
+                    target_type: ActrType {
+                        manufacturer: "mfg".into(),
+                        name: "svc-route".into(),
+                    },
+                    client_fingerprint: "".into(),
+                    criteria: Some(
+                        actr_protocol::route_candidates_request::NodeSelectionCriteria {
+                            candidate_count: 1,
+                            ranking_factors: vec![
+                                actr_protocol::route_candidates_request::node_selection_criteria::NodeRankingFactor::MaximumPowerReserve as i32,
+                                actr_protocol::route_candidates_request::node_selection_criteria::NodeRankingFactor::MinimumMailboxBacklog as i32,
+                            ],
+                            minimal_dependency_requirement: None,
+                            minimal_health_requirement: None,
+                        },
+                    ),
+                    client_location: None,
+                },
+            ),
+        ),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(route_req)),
+    )
+    .await;
+
+    let resp = recv_envelope(&mut cli_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RouteCandidatesResponse(rsp)) => match rsp.result {
+                Some(route_candidates_response::Result::Success(ok)) => {
+                    assert_eq!(ok.candidates.len(), 1, "limit=1 should return exactly one candidate");
+                    assert_eq!(ok.candidates.len(), 1);
+                    let winner = ok.candidates[0].serial_number;
+                    assert_eq!(winner, svc2_ok.actr_id.serial_number, "higher power reserve should win");
+                }
+                other => panic!("unexpected route result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    // Close sockets and shutdown
+    let _ = cli_w.send(WsMessage::Close(None)).await;
+    let _ = svc1_w.send(WsMessage::Close(None)).await;
+    let _ = svc2_w.send(WsMessage::Close(None)).await;
+    let _ = svc1_r.into_future();
+    let _ = svc2_r.into_future();
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_route_candidates_prefers_exact_fingerprint() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // ACL allow client-fp
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client-fp".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+
+    // Helper to build a simple ServiceSpec with unique fingerprint
+    let make_spec = |fingerprint: &str| actr_protocol::ServiceSpec {
+        name: "svc-fp".into(),
+        description: Some("test svc spec".into()),
+        fingerprint: fingerprint.into(),
+        protobufs: vec![actr_protocol::service_spec::Protobuf {
+            package: "echo.v1".into(),
+            content: "service Echo { rpc Ping (Ping) returns (Pong); }".into(),
+            fingerprint: format!("fp::{fingerprint}"),
+        }],
+        published_at: None,
+        tags: vec!["stable".into()],
+    };
+
+    let spec_exact = make_spec("fp-exact");
+    let spec_backward = make_spec("fp-backward");
+
+    // Register two service instances with different fingerprints
+    let (_svc_exact_w, _svc_exact_r, svc_exact_ok) = ws_register_with_spec(
+        port,
+        "mfg",
+        "svc-fp-exact",
+        Some(acl.clone()),
+        Some(spec_exact.clone()),
+    )
+    .await;
+
+    let (_svc_bw_w, _svc_bw_r, _svc_bw_ok) = ws_register_with_spec(
+        port,
+        "mfg",
+        "svc-fp-bw",
+        Some(acl.clone()),
+        Some(spec_backward.clone()),
+    )
+    .await;
+
+    // Client registers
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-fp", None).await;
+
+    // Request route candidates with client_fingerprint matching spec_exact
+    let route_req = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(
+            actr_protocol::actr_to_signaling::Payload::RouteCandidatesRequest(
+                actr_protocol::RouteCandidatesRequest {
+                    target_type: ActrType {
+                        manufacturer: "mfg".into(),
+                        name: "svc-fp-exact".into(),
+                    },
+                    client_fingerprint: spec_exact.fingerprint.clone(),
+                    criteria: Some(
+                        actr_protocol::route_candidates_request::NodeSelectionCriteria {
+                            candidate_count: 2,
+                            ranking_factors: vec![
+                                actr_protocol::route_candidates_request::node_selection_criteria::NodeRankingFactor::BestCompatibility as i32,
+                            ],
+                            minimal_dependency_requirement: None,
+                            minimal_health_requirement: None,
+                        },
+                    ),
+                    client_location: None,
+                },
+            ),
+        ),
+    };
+
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(route_req)),
+    )
+    .await;
+
+    let resp = recv_envelope(&mut cli_r).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RouteCandidatesResponse(rsp)) => match rsp.result {
+                Some(route_candidates_response::Result::Success(ok)) => {
+                    assert!(ok.has_exact_match.unwrap_or(false), "should report exact match");
+                    assert_eq!(
+                        ok.candidates.first().map(|c| c.serial_number),
+                        Some(svc_exact_ok.actr_id.serial_number),
+                        "exact fingerprint service should rank first"
+                    );
+                }
+                other => panic!("unexpected route result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    let _ = cli_w.send(WsMessage::Close(None)).await;
     graceful_shutdown(child);
 }
 
