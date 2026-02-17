@@ -11,6 +11,9 @@ use std::{
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+use serial_test::serial;
+
 fn choose_port() -> u16 {
     if let Some(p) = std::env::var("ACTRIX_TEST_PORT")
         .ok()
@@ -130,6 +133,7 @@ fn graceful_shutdown(mut child: Child) {
 }
 
 #[tokio::test]
+#[serial]
 async fn actrix_starts_serves_health_and_shuts_down() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();

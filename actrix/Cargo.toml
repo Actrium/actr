@@ -184,3 +184,4 @@ libc = "0.2"
 actr-protocol = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
+serial_test = "3.3"

@@ -77,6 +77,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "serial_test",
  "signaling",
  "strum 0.26.3",
  "stun 0.1.1",
