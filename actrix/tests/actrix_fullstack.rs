@@ -1,7 +1,9 @@
-use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
+use actr_protocol::acl_rule::{Permission, Principal};
+use actr_protocol::{
+    Acl, AclRule, ActrType, Realm, RegisterRequest, RegisterResponse, peer_to_signaling,
+    register_response, signaling_envelope, signaling_to_actr,
+};
 use actrix_common::aid::credential::validator::AIdCredentialValidator;
-use actrix_common::realm::Realm as DbRealm;
-use actrix_common::storage::db;
 use futures::{SinkExt, StreamExt};
 use prost::Message;
 use serde_json::Value;
@@ -13,27 +15,33 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio::time::sleep;
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message as WsMessage,
+};
 use uuid::Uuid;
+
+type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type WsWrite = futures::stream::SplitSink<WsStream, WsMessage>;
+type WsRead = futures::stream::SplitStream<WsStream>;
 
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTRIX_SHARED_KEY: &str = "0123456789abcdef0123456789abcdef";
+const DEFAULT_TOKEN_TTL: u64 = 3600;
 
 #[cfg(test)]
 use serial_test::serial;
 
 fn choose_port() -> u16 {
-    if let Some(p) = std::env::var("ACTRIX_TEST_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-    {
-        return p;
-    }
-    49080 + (std::process::id() as u16 % 1000)
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind ephemeral")
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
-fn write_fullstack_config(dir: &PathBuf, port: u16) -> PathBuf {
+fn write_fullstack_config(dir: &PathBuf, port: u16, token_ttl_secs: u64) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -75,6 +83,8 @@ key_ttl_seconds = 3600
 path = "ks.db"
 
 [services.ais]
+[services.ais.server]
+token_ttl_secs = {token_ttl}
 
 [services.signaling]
 [services.signaling.server]
@@ -90,6 +100,7 @@ pid = "{pid}"
         sqlite = data_dir.display(),
         shared = ACTRIX_SHARED_KEY,
         port = port,
+        token_ttl = token_ttl_secs,
         pid = dir.join("actrix.pid").display()
     )
     .expect("write config");
@@ -109,16 +120,93 @@ fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
 }
 
 async fn ensure_realm(sqlite_dir: &PathBuf, realm_id: u32) {
-    if !db::is_database_initialized() {
-        db::set_db_path(sqlite_dir).await.expect("init db path");
+    let db = actrix_common::storage::db::Database::new(sqlite_dir)
+        .await
+        .expect("init db");
+    db.execute(&format!(
+        "INSERT OR IGNORE INTO realm (realm_id, name, status, expires_at)
+         VALUES ({realm_id}, 'test-realm', 0, NULL)"
+    ))
+    .await
+    .expect("insert realm");
+}
+
+async fn connect_ws(port: u16) -> (WsWrite, WsRead) {
+    let ws_url = format!("ws://127.0.0.1:{}/signaling/ws", port);
+    let (ws_stream, _) = connect_async(&ws_url).await.expect("ws connect");
+    ws_stream.split()
+}
+
+fn make_envelope(flow: signaling_envelope::Flow) -> actr_protocol::SignalingEnvelope {
+    actr_protocol::SignalingEnvelope {
+        envelope_version: 1,
+        envelope_id: Uuid::new_v4().to_string(),
+        timestamp: prost_types::Timestamp {
+            seconds: chrono::Utc::now().timestamp(),
+            nanos: 0,
+        },
+        reply_for: None,
+        traceparent: None,
+        tracestate: None,
+        flow: Some(flow),
     }
-    if !DbRealm::exists_by_realm_id(realm_id).await {
-        let mut realm = DbRealm::new(realm_id, "test-realm".to_string());
-        realm
-            .save()
-            .await
-            .expect("create realm for signaling validation");
+}
+
+async fn send_envelope(write: &mut WsWrite, env: actr_protocol::SignalingEnvelope) {
+    let mut buf = Vec::new();
+    env.encode(&mut buf).expect("encode envelope");
+    write
+        .send(WsMessage::Binary(buf.into()))
+        .await
+        .expect("send envelope");
+}
+
+async fn recv_envelope(read: &mut WsRead) -> actr_protocol::SignalingEnvelope {
+    let resp = read.next().await.expect("ws response").expect("ws msg");
+    match resp {
+        WsMessage::Binary(data) => {
+            actr_protocol::SignalingEnvelope::decode(&data[..]).expect("decode signaling resp")
+        }
+        other => panic!("expected binary ws message, got {other:?}"),
     }
+}
+
+async fn ws_register(
+    port: u16,
+    manufacturer: &str,
+    name: &str,
+    acl: Option<Acl>,
+) -> (WsWrite, WsRead, register_response::RegisterOk) {
+    let (mut write, mut read) = connect_ws(port).await;
+
+    let register_req = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: manufacturer.to_string(),
+            name: name.to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl,
+    };
+
+    let env = make_envelope(signaling_envelope::Flow::PeerToServer(
+        actr_protocol::PeerToSignaling {
+            payload: Some(peer_to_signaling::Payload::RegisterRequest(register_req)),
+        },
+    ));
+    send_envelope(&mut write, env).await;
+    let resp = recv_envelope(&mut read).await;
+    let register_ok = match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RegisterResponse(RegisterResponse {
+                result: Some(register_response::Result::Success(ok)),
+            })) => ok,
+            other => panic!("expected register success, got {other:?}"),
+        },
+        other => panic!("unexpected flow: {other:?}"),
+    };
+
+    (write, read, register_ok)
 }
 
 async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
@@ -169,7 +257,7 @@ fn graceful_shutdown(mut child: Child) {
 async fn actrix_end_to_end_register_and_health() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -182,6 +270,7 @@ async fn actrix_end_to_end_register_and_health() {
     wait_for_health(&ks_health, &mut child, &log_path).await;
     wait_for_health(&ais_health, &mut child, &log_path).await;
     wait_for_health(&signaling_health, &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
 
     let client = reqwest::Client::new();
 
@@ -373,6 +462,184 @@ async fn actrix_end_to_end_register_and_health() {
             }
         }
         other => panic!("unexpected flow: {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_register_and_discovery_acl_allow() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Service registers with ACL allowing client:* to discover
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+    let (_ws_service_write, _ws_service_read, _service_ok) =
+        ws_register(port, "mfg", "svc", Some(acl)).await;
+
+    // Client registers (no ACL needed)
+    let (mut client_write, mut client_read, client_ok) =
+        ws_register(port, "mfg", "client", None).await;
+
+    // Discovery should return the service type because ACL allows it
+    let discover = actr_protocol::ActrToSignaling {
+        source: client_ok.actr_id.clone(),
+        credential: client_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::DiscoveryRequest(
+            actr_protocol::DiscoveryRequest {
+                manufacturer: Some("mfg".into()),
+                limit: Some(10),
+            },
+        )),
+    };
+    let env = make_envelope(signaling_envelope::Flow::ActrToServer(discover));
+    send_envelope(&mut client_write, env).await;
+    let resp = recv_envelope(&mut client_read).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::DiscoveryResponse(rsp)) => match rsp.result {
+                Some(actr_protocol::discovery_response::Result::Success(ok)) => {
+                    assert!(
+                        !ok.entries.is_empty(),
+                        "expected at least one service entry"
+                    );
+                    assert_eq!(ok.entries[0].actr_type.name, "svc");
+                    assert_eq!(ok.entries[0].actr_type.manufacturer, "mfg");
+                }
+                other => panic!("unexpected discovery result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_discovery_acl_denied() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Service registers without ACL (default deny)
+    let (_ws_service_write, _ws_service_read, _service_ok) =
+        ws_register(port, "mfg", "svc-deny", None).await;
+
+    // Client registers
+    let (mut client_write, mut client_read, client_ok) =
+        ws_register(port, "mfg", "client", None).await;
+
+    let discover = actr_protocol::ActrToSignaling {
+        source: client_ok.actr_id.clone(),
+        credential: client_ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::DiscoveryRequest(
+            actr_protocol::DiscoveryRequest {
+                manufacturer: Some("mfg".into()),
+                limit: Some(10),
+            },
+        )),
+    };
+    let env = make_envelope(signaling_envelope::Flow::ActrToServer(discover));
+    send_envelope(&mut client_write, env).await;
+    let resp = recv_envelope(&mut client_read).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::DiscoveryResponse(rsp)) => match rsp.result {
+                Some(actr_protocol::discovery_response::Result::Success(ok)) => {
+                    assert!(
+                        ok.entries.is_empty(),
+                        "ACL default deny should yield empty discovery list"
+                    );
+                }
+                other => panic!("unexpected discovery result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    }
+
+    graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_rejects_expired_credential() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, 1);
+    let log_path = tmp.path().join("actrix_fullstack.log");
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let base = format!("http://127.0.0.1:{port}");
+    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
+    ensure_realm(&tmp.path().join("data"), 1001).await;
+
+    // Register actor
+    let (mut write, mut read, ok) = ws_register(port, "mfg", "shortlived", None).await;
+
+    // Wait for credential to expire
+    sleep(Duration::from_secs(2)).await;
+
+    // Send ping with expired credential -> expect 401 error
+    let ping_msg = actr_protocol::ActrToSignaling {
+        source: ok.actr_id.clone(),
+        credential: ok.credential.clone(),
+        payload: Some(actr_protocol::actr_to_signaling::Payload::Ping(
+            actr_protocol::Ping {
+                availability: 50,
+                mailbox_backlog: 1.0,
+                power_reserve: 50.0,
+                ..Default::default()
+            },
+        )),
+    };
+    let env = make_envelope(signaling_envelope::Flow::ActrToServer(ping_msg));
+    send_envelope(&mut write, env).await;
+    let resp = recv_envelope(&mut read).await;
+    match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::Error(err)) => {
+                assert_eq!(err.code, 401, "expired credential should be rejected");
+            }
+            other => panic!("expected error for expired credential, got {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
     }
 
     graceful_shutdown(child);
