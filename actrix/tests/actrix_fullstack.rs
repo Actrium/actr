@@ -9,6 +9,7 @@ use futures::{SinkExt, StreamExt};
 use prost::Message;
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     fs,
     io::Write,
     path::PathBuf,
@@ -1536,6 +1537,109 @@ async fn signaling_route_candidates_compatibility_cache_hit() {
     assert!(!info2.is_empty(), "compatibility info should still be present on cache hit");
 
     let _ = cli_w.send(WsMessage::Close(None)).await;
+    harness.shutdown();
+}
+
+#[tokio::test]
+#[serial]
+async fn signaling_concurrent_registration_keeps_unique_route_candidates() {
+    let harness = ActrixHarness::start(DEFAULT_TOKEN_TTL).await;
+    let port = harness.port;
+
+    let acl = Acl {
+        rules: vec![AclRule {
+            principals: vec![Principal {
+                realm: Some(Realm { realm_id: 1001 }),
+                actr_type: Some(ActrType {
+                    manufacturer: "mfg".into(),
+                    name: "client-concurrent".into(),
+                }),
+            }],
+            permission: Permission::Allow as i32,
+        }],
+    };
+
+    let service_count = 8usize;
+    let mut service_tasks = Vec::with_capacity(service_count);
+    for _ in 0..service_count {
+        let acl_clone = acl.clone();
+        service_tasks.push(tokio::spawn(async move {
+            ws_register(port, "mfg", "svc-concurrent", Some(acl_clone)).await
+        }));
+    }
+
+    let mut service_sockets = Vec::with_capacity(service_count);
+    let mut expected_serials = HashSet::new();
+    for task in service_tasks {
+        let (w, _r, ok) = task.await.expect("registration task should complete");
+        expected_serials.insert(ok.actr_id.serial_number);
+        service_sockets.push(w);
+    }
+    assert_eq!(
+        expected_serials.len(),
+        service_count,
+        "each concurrent service registration should get a unique serial"
+    );
+
+    let (mut cli_w, mut cli_r, cli_ok) = ws_register(port, "mfg", "client-concurrent", None).await;
+    let route_req = actr_protocol::ActrToSignaling {
+        source: cli_ok.actr_id.clone(),
+        credential: cli_ok.credential.clone(),
+        payload: Some(
+            actr_protocol::actr_to_signaling::Payload::RouteCandidatesRequest(
+                actr_protocol::RouteCandidatesRequest {
+                    target_type: ActrType {
+                        manufacturer: "mfg".into(),
+                        name: "svc-concurrent".into(),
+                    },
+                    client_fingerprint: "".into(),
+                    criteria: Some(
+                        actr_protocol::route_candidates_request::NodeSelectionCriteria {
+                            candidate_count: 32,
+                            ranking_factors: vec![],
+                            minimal_dependency_requirement: None,
+                            minimal_health_requirement: None,
+                        },
+                    ),
+                    client_location: None,
+                },
+            ),
+        ),
+    };
+    send_envelope(
+        &mut cli_w,
+        make_envelope(signaling_envelope::Flow::ActrToServer(route_req)),
+    )
+    .await;
+
+    let resp = recv_envelope(&mut cli_r).await;
+    let candidates = match resp.flow {
+        Some(signaling_envelope::Flow::ServerToActr(server_msg)) => match server_msg.payload {
+            Some(signaling_to_actr::Payload::RouteCandidatesResponse(rsp)) => match rsp.result {
+                Some(route_candidates_response::Result::Success(ok)) => ok.candidates,
+                other => panic!("unexpected route result {other:?}"),
+            },
+            other => panic!("unexpected payload {other:?}"),
+        },
+        other => panic!("unexpected flow {other:?}"),
+    };
+
+    let unique_candidates: HashSet<u64> = candidates.iter().map(|c| c.serial_number).collect();
+    assert_eq!(
+        candidates.len(),
+        unique_candidates.len(),
+        "route candidates must not contain duplicates"
+    );
+    assert_eq!(
+        unique_candidates.len(),
+        service_count,
+        "all concurrently registered services should be routable"
+    );
+
+    let _ = cli_w.send(WsMessage::Close(None)).await;
+    for mut w in service_sockets {
+        let _ = w.send(WsMessage::Close(None)).await;
+    }
     harness.shutdown();
 }
 

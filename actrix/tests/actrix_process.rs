@@ -76,6 +76,56 @@ pid = "{pid}"
     config_path
 }
 
+fn write_config_with_sqlite_path(dir: &PathBuf, port: u16, sqlite_path: &str) -> PathBuf {
+    let config_path = dir.join("config.toml");
+    let mut f = fs::File::create(&config_path).expect("create config file");
+    writeln!(
+        f,
+        r#"
+name = "actrix-test-invalid-db"
+enable = 16  # ENABLE_KS
+env = "dev"
+sqlite_path = "{sqlite}"
+actrix_shared_key = "0123456789abcdef0123456789abcdef"
+location_tag = "local,test,default"
+
+[bind]
+[bind.http]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = {port}
+
+[bind.ice]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = 0
+
+[turn]
+advertised_ip = "127.0.0.1"
+advertised_port = 3478
+relay_port_range = "49152-65535"
+realm = "actor-rtc.local"
+
+[services.ks]
+# defaults
+
+[observability.log]
+output = "console"
+level = "info"
+
+[process]
+pid = "{pid}"
+"#,
+        sqlite = sqlite_path,
+        port = port,
+        pid = dir.join("actrix.pid").display()
+    )
+    .expect("write config");
+    config_path
+}
+
 fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_actrix"));
     let log_file = fs::File::create(log_path).expect("create log file");
@@ -151,4 +201,40 @@ async fn actrix_starts_serves_health_and_shuts_down() {
     assert_eq!(body["service"], "ks");
 
     graceful_shutdown(child);
+}
+
+#[tokio::test]
+#[serial]
+async fn actrix_exits_when_database_path_is_unavailable() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let config_path =
+        write_config_with_sqlite_path(&tmp.path().to_path_buf(), port, "/proc/actrix-db-denied");
+    let log_path = tmp.path().join("actrix-invalid-db.log");
+    let mut child = spawn_actrix(&config_path, &log_path);
+
+    let start = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("check child status") {
+            assert!(
+                !status.success(),
+                "process should exit with non-zero status when db init fails"
+            );
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
+            let log_lower = log.to_lowercase();
+            assert!(
+                log_lower.contains("database")
+                    || log.contains("数据库")
+                    || log_lower.contains("sqlite"),
+                "expected database failure hint in logs, got: {log}"
+            );
+            return;
+        }
+
+        if start.elapsed() > START_TIMEOUT {
+            graceful_shutdown(child);
+            panic!("actrix should fail fast when database path is unavailable");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
