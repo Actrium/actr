@@ -36,7 +36,7 @@ cargo test -p ais           # Test AIS (Actor Identity Service) crate
 cargo test -p signaling     # Test signaling crate
 
 # Build individual crates
-cargo build -p base
+cargo build -p platform
 cargo build -p ks
 cargo build -p ais
 ```
@@ -56,22 +56,25 @@ The system uses a **modular service architecture** with fine-grained control:
 ### Workspace Structure
 ```
 ├── crates/
-│   ├── base/           # Shared configuration, storage, utilities
-│   ├── ais/            # Actor Identity Service (token issuing/validation)
-│   ├── ks/             # Key Server (cryptographic key management)
-│   ├── signaling/      # WebRTC signaling service  
-│   ├── stun/           # STUN server implementation
-│   ├── turn/           # TURN server implementation
-│   └── supervit/       # Supervisor/monitoring service
-├── src/                # Main application orchestrator
-└── deploy/             # Deployment tooling and wizards
+│   ├── actrixd/        # Main application orchestrator binary crate
+│   ├── contracts/      # Shared gRPC protocol definitions (package: actrix-proto)
+│   ├── platform/       # Shared lifecycle/config/state/auth/events
+│   ├── control/        # Canonical admin control-plane implementation (package: admin)
+│   ├── sdk/            # Unified public facade (package: actrix-sdk)
+│   ├── services/
+│   │   ├── ais/        # Actor Identity Service
+│   │   ├── ks/         # Key Server
+│   │   ├── signaling/  # WebRTC signaling service
+│   │   ├── stun/       # STUN server implementation
+│   │   └── turn/       # TURN server implementation
+└── deploy/             # Minimal deployment bootstrap tooling
 ```
 
 ### Key Components
 
-1. **ServiceManager** (`src/service/manager.rs`): Orchestrates all services with unified shutdown handling
+1. **ServiceManager** (`crates/actrixd/src/service/manager.rs`): Orchestrates all services with unified shutdown handling
 
-2. **Configuration System** (`crates/common/src/config/`): Single source of truth using TOML
+2. **Configuration System** (`crates/platform/src/config/`): Single source of truth using TOML
    - Uses bitmask for service enable/disable (位掩码控制)
    - Supports environment-specific settings (dev/prod/test)
 
@@ -89,7 +92,7 @@ The system uses a **modular service architecture** with fine-grained control:
 
 **✅ FIXED - Token Validation Now Works:**
 ```rust
-// crates/common/src/aid/credential/validator.rs:132-169
+// crates/platform/src/aid/credential/validator.rs:132-169
 async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError> {
     // 1. Try cache first
     match self.key_cache.get_cached_key(key_id).await? {
@@ -114,7 +117,7 @@ async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError>
 
 **🔐 Private Key Storage:**
 ```rust
-// crates/ks/src/storage.rs:91 - Plaintext storage
+// crates/services/ks/src/storage.rs:91 - Plaintext storage
 "INSERT INTO keys (public_key, secret_key, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)"
 ```
 - **Risk**: Private keys stored as Base64 plaintext in SQLite
@@ -122,7 +125,7 @@ async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError>
 
 **🔑 Shared PSK Authentication:**
 ```rust
-// crates/common/src/config/mod.rs:137
+// crates/platform/src/config/mod.rs:137
 actrix_shared_key: "default-auxes-shared-key-change-in-production"
 ```
 - **Risk**: All services share same PSK, default value is publicly known
@@ -130,7 +133,7 @@ actrix_shared_key: "default-auxes-shared-key-change-in-production"
 
 **⏰ Key Lifecycle Management:**
 ```rust
-// crates/ks/src/storage.rs:88 - Fixed expiration
+// crates/services/ks/src/storage.rs:88 - Fixed expiration
 let expires_at = now + 3600; // Hardcoded 1 hour
 ```
 - **Issues**: No key rotation, no expired key cleanup, no configurable TTL
@@ -138,7 +141,7 @@ let expires_at = now + 3600; // Hardcoded 1 hour
 
 **🎯 Access Control:**
 ```rust
-// crates/ks/src/handlers.rs:159 - Overly permissive
+// crates/services/ks/src/handlers.rs:159 - Overly permissive
 match app_state.storage.get_secret_key(key_id)? {
     Some(secret_key) => { /* Any authenticated service gets any key */ }
 }
@@ -150,7 +153,7 @@ match app_state.storage.get_secret_key(key_id)? {
 
 **📝 Information Leakage:**
 ```rust
-// crates/ks/src/handlers.rs:169 & 199
+// crates/services/ks/src/handlers.rs:169 & 199
 info!("Found secret key for key_id: {}", key_id);
 warn!("Secret key not found for key_id: {}", key_id);
 ```
@@ -168,7 +171,7 @@ None => { /* Database query + error, slower */ }
 
 **🔧 Hardcoded Token Key ID:**
 ```rust
-// crates/ais/src/issuer.rs:83
+// crates/services/ais/src/issuer.rs:83
 token_key_id: 1, // Fixed value, prevents key rotation
 ```
 - **Impact**: Cannot rotate encryption keys, single point of failure
@@ -252,7 +255,7 @@ realm = "webrtc.rs"
 - **Encryption**: Uses ECIES for token encryption with keys from KS
 - **Routes**: `POST /allocate` (protobuf binary in/out)
 
-### Base Crate
+### Platform Crate
 - **Config**: Unified configuration system with TOML support
 - **Storage**: SQLite abstractions and nonce storage for replay protection
 - **AID**: Token claims, validation, and credential management utilities

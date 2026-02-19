@@ -26,7 +26,7 @@
 
 ### 1.1 服务分类
 
-**文件**: `src/service/mod.rs:1-14`
+**文件**: `crates/actrixd/src/service/mod.rs:1-14`
 
 Actrix 服务分为两大类:
 
@@ -60,7 +60,7 @@ pub trait IceService: Send + Sync + Debug {
 
 ### 1.2 服务类型枚举
 
-**文件**: `src/service/mod.rs:48-56`
+**文件**: `crates/actrixd/src/service/mod.rs:48-56`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, Display, PartialEq, Eq)]
@@ -95,7 +95,7 @@ pub enum ServiceType {
 
 #### 2.1.1 接口定义
 
-**文件**: `src/service/mod.rs:85-112`
+**文件**: `crates/actrixd/src/service/mod.rs:85-112`
 
 ```rust
 #[async_trait]
@@ -129,7 +129,7 @@ pub trait HttpRouterService: Send + Sync + Debug {
 
 #### 2.1.2 实现示例 - KS HTTP Service
 
-**文件**: `src/service/http/ks.rs:20-90`
+**文件**: `crates/actrixd/src/service/http/ks.rs:20-90`
 
 ```rust
 pub struct KsHttpService {
@@ -193,7 +193,7 @@ impl HttpRouterService for KsHttpService {
 
 #### 2.1.3 实现示例 - AIS HTTP Service
 
-**文件**: `src/service/http/ais.rs`
+**文件**: `crates/actrixd/src/service/http/ais.rs`
 
 ```rust
 pub struct AisHttpService {
@@ -266,7 +266,7 @@ endpoint = "http://localhost:50052"  # gRPC 端口
 
 #### 2.2.1 接口定义
 
-**文件**: `src/service/mod.rs:114-142`
+**文件**: `crates/actrixd/src/service/mod.rs:114-142`
 
 ```rust
 #[async_trait]
@@ -300,7 +300,7 @@ pub trait IceService: Send + Sync + Debug {
 
 #### 2.2.2 实现示例 - STUN Service
 
-**文件**: `src/service/ice/stun.rs:15-100`
+**文件**: `crates/actrixd/src/service/ice/stun.rs:15-100`
 
 ```rust
 pub struct StunService {
@@ -359,7 +359,7 @@ impl IceService for StunService {
 
 #### 2.2.3 实现示例 - TURN Service
 
-**文件**: `src/service/ice/turn.rs:15-120`
+**文件**: `crates/actrixd/src/service/ice/turn.rs:15-120`
 
 ```rust
 pub struct TurnService {
@@ -419,7 +419,7 @@ impl IceService for TurnService {
 
 ### 2.3 ServiceInfo - 服务元数据
 
-**文件**: `src/service/info.rs:10-80`
+**文件**: `crates/actrixd/src/service/info.rs:10-80`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -480,7 +480,7 @@ impl ServiceInfo {
 
 ### 3.1 结构定义
 
-**文件**: `src/service/manager.rs:23-31`
+**文件**: `crates/actrixd/src/service/manager.rs:23-31`
 
 ```rust
 pub struct ServiceManager {
@@ -503,7 +503,7 @@ pub struct ServiceManager {
 
 ### 3.2 创建服务管理器
 
-**文件**: `src/service/manager.rs:34-45`
+**文件**: `crates/actrixd/src/service/manager.rs:34-45`
 
 ```rust
 impl ServiceManager {
@@ -523,7 +523,7 @@ impl ServiceManager {
 
 ### 3.3 添加服务
 
-**文件**: `src/service/manager.rs:47-51`
+**文件**: `crates/actrixd/src/service/manager.rs:47-51`
 
 ```rust
 pub fn add_service(&mut self, service: ServiceContainer) {
@@ -534,7 +534,7 @@ pub fn add_service(&mut self, service: ServiceContainer) {
 
 ### 3.4 启动所有服务
 
-**文件**: `src/service/manager.rs:126-178`
+**文件**: `crates/actrixd/src/service/manager.rs:126-178`
 
 ```rust
 pub async fn start_all(&mut self) -> Result<()> {
@@ -601,7 +601,7 @@ pub async fn start_all(&mut self) -> Result<()> {
 
 ### 3.5 启动 HTTP 服务器
 
-**文件**: `src/service/manager.rs:180-315`
+**文件**: `crates/actrixd/src/service/manager.rs:180-315`
 
 ```rust
 async fn start_http_services(
@@ -732,7 +732,7 @@ async fn start_http_services(
 
 ### 3.6 启动 ICE 服务
 
-**文件**: `src/service/manager.rs:317-360`
+**文件**: `crates/actrixd/src/service/manager.rs:317-360`
 
 ```rust
 async fn start_ice_service(
@@ -782,9 +782,9 @@ async fn start_ice_service(
 
 ### 3.7 注册到管理平台
 
-**文件**: `src/service/manager.rs:49-74`
+**文件**: `crates/actrixd/src/service/manager.rs:49-74`
 
-服务通过 SupervitClient 的 Report RPC 自动上报到管理平台：
+服务通过 AdminClient（由 `actrix-sdk` 导出）的 Report RPC 自动上报到管理平台：
 
 ```rust
 pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
@@ -800,7 +800,7 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
         }
     };
 
-    // 服务注册通过 SupervitClient 的 Report RPC 自动完成
+    // 服务注册通过 AdminClient 的 Report RPC 自动完成
     info!(
         "Service registration via gRPC: {} services will be reported to {}",
         services.len(),
@@ -817,9 +817,9 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
 
 **实现方式**:
 
-- 服务状态通过 SupervitClient 的 Unary RPC 自动上报
+- 服务状态通过 AdminClient 的 Unary RPC 自动上报
 - 不需要手动构建和发送注册负载
-- SupervitClient 在其他地方初始化并管理连接
+- AdminClient 在其他地方初始化并管理连接
 
 ---
 
@@ -827,7 +827,7 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
 
 ### 4.1 完整启动序列
 
-**文件**: `src/main.rs:250-350` (ApplicationLauncher::run_application)
+**文件**: `crates/actrixd/src/main.rs:250-350` (ApplicationLauncher::run_application)
 
 ```
 1. 加载配置文件
@@ -881,7 +881,7 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
 
 ### 4.2 实际启动代码
 
-**文件**: `src/main.rs:280-360`
+**文件**: `crates/actrixd/src/main.rs:280-360`
 
 ```rust
 fn run_application(config_path: &PathBuf) -> Result<()> {
@@ -966,7 +966,7 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
 
 ### 5.1 位掩码控制
 
-**文件**: `crates/common/src/config/mod.rs:24-34`
+**文件**: `crates/platform/src/config/mod.rs:24-34`
 
 ```rust
 pub struct ActrixConfig {
@@ -1108,7 +1108,7 @@ endpoint = "http://localhost:4317"
 
 ### 6.1 ServiceStatus 枚举
 
-**文件**: `crates/common/src/monitoring/mod.rs:10-25`
+**文件**: `crates/platform/src/monitoring/mod.rs:10-25`
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1137,7 +1137,7 @@ impl ServiceStatus {
 
 **KS 服务健康检查**:
 
-**文件**: `crates/ks/src/handlers.rs:240-260`
+**文件**: `crates/services/ks/src/handlers.rs:240-260`
 
 ```rust
 async fn health_check_handler(
@@ -1176,7 +1176,7 @@ curl https://actrix.example.com/ks/health
 
 #### 6.3.1 TURN 认证缓存统计
 
-**文件**: `crates/turn/src/authenticator.rs:84-88`
+**文件**: `crates/services/turn/src/authenticator.rs:84-88`
 
 ```rust
 impl Authenticator {
@@ -1200,7 +1200,7 @@ if size as f64 / capacity as f64 > 0.9 {
 
 #### 6.3.2 KS 密钥统计
 
-**文件**: `crates/ks/src/storage.rs:250-270`
+**文件**: `crates/services/ks/src/storage.rs:250-270`
 
 ```rust
 impl KeyStorage {
@@ -1269,7 +1269,7 @@ Timeline:
 
 ### 7.1 关闭机制
 
-**文件**: `src/service/manager.rs:400-450`
+**文件**: `crates/actrixd/src/service/manager.rs:400-450`
 
 ```rust
 impl ServiceManager {
@@ -1334,7 +1334,7 @@ impl ServiceManager {
 
 ### 7.2 信号处理
 
-**文件**: `src/main.rs:340-360`
+**文件**: `crates/actrixd/src/main.rs:340-360`
 
 ```rust
 // 等待关闭信号
@@ -1365,51 +1365,16 @@ manager.shutdown().await?;
 
 ### 8.1 systemd 服务
 
-**文件**: `install/actrix.service`
-
-```ini
-[Unit]
-Description=Actrix WebRTC Auxiliary Services
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=actrix
-Group=actrix
-WorkingDirectory=/opt/actrix
-ExecStart=/opt/actrix/bin/actrix --config /etc/actrix/config.toml
-Restart=on-failure
-RestartSec=5s
-
-# 安全加固
-PrivateTmp=yes
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/lib/actrix /var/log/actrix
-
-# 能力
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# 日志
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=actrix
-
-[Install]
-WantedBy=multi-user.target
-```
+**说明**: 推荐使用 `deploy` 的引导命令自动生成并安装 systemd 单元（模板由代码内联维护）。
 
 **安装和启动**:
 
 ```bash
-# 复制服务文件
-sudo cp install/actrix.service /etc/systemd/system/
+# 安装二进制
+cargo run --manifest-path deploy/Cargo.toml -- install
 
-# 重新加载 systemd
-sudo systemctl daemon-reload
+# 安装并启动 systemd 单元
+cargo run --manifest-path deploy/Cargo.toml -- service
 
 # 启用开机自启
 sudo systemctl enable actrix
@@ -1656,7 +1621,7 @@ info!("TURN auth cache: {}/{} ({}%)",
 
 **优化**:
 ```rust
-// crates/turn/src/authenticator.rs:24
+// crates/services/turn/src/authenticator.rs:24
 // 增加缓存容量
 let capacity = NonZeroUsize::new(5000).unwrap();  // 从 1000 增加到 5000
 ```
@@ -1743,7 +1708,7 @@ journalctl -u actrix | grep "HTTP POST /ks/generate" | wc -l
 - [CRATES.md](./CRATES.md) - Crate 详细文档
 - [API.md](./API.md) - API 参考 (待创建)
 - [CONFIGURATION.md](./CONFIGURATION.md) - 配置参考 (待更新)
-- [install/README.md](../install/README.md) - 部署指南
+- [deploy/README.md](../deploy/README.md) - 部署指南
 
 **最后验证时间**: 2025-11-03
 **代码版本**: v0.1.0+enhancements

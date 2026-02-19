@@ -34,6 +34,60 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Generate a systemd service unit file from script configuration.
+generate_service_file() {
+    local output_file="$1"
+    cat > "$output_file" <<EOF
+[Unit]
+Description=Actrix - Actor-RTC Auxiliary Services
+Documentation=https://github.com/actor-rtc/actrix
+After=network.target
+
+[Service]
+Type=simple
+User=${USER}
+Group=${GROUP}
+
+# Environment variables
+Environment=RUST_LOG=info
+Environment=RUST_BACKTRACE=1
+Environment=ACTRIX_PATH=${INSTALL_DIR}
+
+# Working directory
+WorkingDirectory=${INSTALL_DIR}
+
+# Start command
+ExecStart=${INSTALL_DIR}/actrix --config ${INSTALL_DIR}/config.toml
+
+# Reload configuration without restart
+ExecReload=/bin/kill -HUP \$MAINPID
+
+# Restart policy
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=actrix
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${INSTALL_DIR}/logs ${INSTALL_DIR}/database.db
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 # Check if script is run as root
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -95,7 +149,12 @@ install_actrix() {
 
     # Install systemd service
     print_info "Installing systemd service..."
-    cp deploy/actrix.service "$SERVICE_FILE"
+    local service_tmp
+    service_tmp="$(mktemp)"
+    generate_service_file "$service_tmp"
+    cp "$service_tmp" "$SERVICE_FILE"
+    chmod 644 "$SERVICE_FILE"
+    rm -f "$service_tmp"
     systemctl daemon-reload
 
     print_info "Installation completed!"
@@ -177,11 +236,16 @@ update_actrix() {
     chown "$USER:$GROUP" "$INSTALL_DIR/actrix"
 
     # Update service file if changed
-    if ! cmp -s deploy/actrix.service "$SERVICE_FILE"; then
+    local service_tmp
+    service_tmp="$(mktemp)"
+    generate_service_file "$service_tmp"
+    if ! cmp -s "$service_tmp" "$SERVICE_FILE"; then
         print_info "Updating service file..."
-        cp deploy/actrix.service "$SERVICE_FILE"
+        cp "$service_tmp" "$SERVICE_FILE"
+        chmod 644 "$SERVICE_FILE"
         systemctl daemon-reload
     fi
+    rm -f "$service_tmp"
 
     # Restart service if it was running
     if [ "$WAS_RUNNING" = true ]; then

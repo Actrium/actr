@@ -42,7 +42,7 @@ name = "actrix"
 version = "0.1.1"
 dependencies = [
  "actr-protocol",
- "actrix-common",
+ "actrix-sdk",
  "ais",
  "anyhow",
  "async-trait",
@@ -68,6 +68,7 @@ dependencies = [
  "opentelemetry-jaeger",
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.31.0",
+ "platform",
  "prometheus",
  "prost",
  "prost-types",
@@ -81,7 +82,6 @@ dependencies = [
  "signaling",
  "strum 0.26.3",
  "stun 0.1.1",
- "supervit",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -104,51 +104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "actrix-common"
-version = "0.1.1"
-dependencies = [
- "actr-protocol",
- "actrix-proto",
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "ecies",
- "hex",
- "hmac",
- "ks",
- "lazy_static",
- "nonce-auth",
- "once_cell",
- "proc-macro2",
- "prometheus",
- "prost",
- "prost-types",
- "pwrzv",
- "quote",
- "rand 0.8.5",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "sqlx",
- "strum 0.27.2",
- "syn",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "toml 0.8.23",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "actrix-proto"
 version = "0.1.1"
 dependencies = [
@@ -157,6 +112,32 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "actrix-sdk"
+version = "0.1.1"
+dependencies = [
+ "admin",
+]
+
+[[package]]
+name = "admin"
+version = "0.1.1"
+dependencies = [
+ "actrix-proto",
+ "chrono",
+ "hex",
+ "nonce-auth",
+ "platform",
+ "pwrzv",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]
@@ -208,7 +189,6 @@ name = "ais"
 version = "0.1.1"
 dependencies = [
  "actr-protocol",
- "actrix-common",
  "anyhow",
  "axum",
  "base64",
@@ -216,6 +196,7 @@ dependencies = [
  "governor",
  "ks",
  "nonce-auth",
+ "platform",
  "prost",
  "prost-types",
  "rand 0.8.5",
@@ -2859,6 +2840,51 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "platform"
+version = "0.1.1"
+dependencies = [
+ "actr-protocol",
+ "actrix-proto",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "ecies",
+ "hex",
+ "hmac",
+ "ks",
+ "lazy_static",
+ "nonce-auth",
+ "once_cell",
+ "proc-macro2",
+ "prometheus",
+ "prost",
+ "prost-types",
+ "pwrzv",
+ "quote",
+ "rand 0.8.5",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "sqlx",
+ "strum 0.27.2",
+ "syn",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "toml 0.8.23",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "poly1305"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3765,7 +3791,6 @@ version = "0.1.1"
 dependencies = [
  "actr-protocol",
  "actr-version",
- "actrix-common",
  "anyhow",
  "axum",
  "base64",
@@ -3774,6 +3799,7 @@ dependencies = [
  "futures-util",
  "governor",
  "opentelemetry 0.31.0",
+ "platform",
  "prost",
  "prost-types",
  "reqwest",
@@ -4107,8 +4133,8 @@ dependencies = [
 name = "stun"
 version = "0.1.1"
 dependencies = [
- "actrix-common",
  "anyhow",
+ "platform",
  "stun 0.8.0",
  "thiserror 2.0.18",
  "tokio",
@@ -4168,40 +4194,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "supervit"
-version = "0.1.1"
-dependencies = [
- "actrix-common",
- "actrix-proto",
- "anyhow",
- "async-trait",
- "base64",
- "chrono",
- "clap",
- "hex",
- "hmac",
- "nonce-auth",
- "once_cell",
- "prost",
- "prost-types",
- "pwrzv",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-test",
- "tonic",
- "tonic-prost",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "syn"
@@ -4461,17 +4453,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "tokio-test"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6d24790a10a7af737693a3e8f1d03faef7e6ca0cc99aae5066f533766de545"
-dependencies = [
- "futures-core",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -4864,7 +4845,6 @@ name = "turn"
 version = "0.1.1"
 dependencies = [
  "actr-protocol",
- "actrix-common",
  "anyhow",
  "base64",
  "chrono",
@@ -4874,6 +4854,7 @@ dependencies = [
  "md5",
  "nonce-auth",
  "once_cell",
+ "platform",
  "prost",
  "prost-types",
  "rsa",

@@ -79,20 +79,13 @@ cargo build --release -p deploy
 
 部署助手按以下模块组织：
 
-- **`config/`**: 配置向导和部署设置
-  - `wizard.rs`: 交互式配置向导
-  - `install_config.rs`: 安装路径配置
-  - `deployment_config.rs`: 完整部署配置
-- **`services.rs`**: 服务选择和位掩码计算
-- **`system/`**: 系统操作和工具
-  - `install.rs`: 应用程序和 systemd 服务安装
-  - `uninstall.rs`: 选择性组件移除
+- **`cli/`**: 子命令定义（`deps/install/service/uninstall`）
+- **`config/`**: 安装路径配置（`install_config.rs`）
+- **`system/`**: 系统操作和引导流程
+  - `install.rs`: 二进制安装与 systemd 部署
+  - `uninstall.rs`: 卸载流程
   - `dependencies.rs`: 系统依赖检查
-  - `helpers.rs`: 输入处理和权限工具
-- **`template/`**: 模板处理和文件生成
-  - `processor.rs`: 配置模板处理
-  - `systemd_service.rs`: Systemd 服务模板处理
-- **`menu/`**: 基于页面导航的交互式菜单系统
+- **`tpl/`**: 模板渲染逻辑（`systemd_service.rs`，模板内联）
 
 ## 服务配置
 
@@ -112,13 +105,10 @@ cargo build --release -p deploy
 ## 模板系统
 
 该工具使用基于模板的配置系统：
-- 模板位于 `tpl/` 目录中，编译时嵌入
-- 配置模板：`tpl/config.toml` 包含全面的服务设置
-- Systemd 服务模板：`tpl/actrix.service` 包含安全加固配置
+- Systemd 服务模板与渲染逻辑位于 `src/tpl/systemd_service.rs`（内联常量）
 - 模板使用占位符替换（`{{VARIABLE}}`）语法
 - 自动创建目录并设置正确权限
 - 需要时使用 sudo 安全写入文件
-- 使用 `env!("CARGO_MANIFEST_DIR")` 进行可靠的路径解析
 
 ## 用户管理
 

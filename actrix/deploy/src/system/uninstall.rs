@@ -1,16 +1,11 @@
 //! Application uninstallation utilities
 
 use anyhow::Result;
-use dialoguer::{Confirm, theme::ColorfulTheme};
+use std::io::{self, Write};
 use std::process::Command;
-
-#[cfg(unix)]
-use users::{get_group_by_name, get_user_by_name};
 
 /// Uninstall application with selective component removal
 pub fn uninstall_application() -> Result<()> {
-    let theme = ColorfulTheme::default();
-
     println!("🔍 Checking what's installed...");
 
     // Check what's currently installed
@@ -34,11 +29,11 @@ pub fn uninstall_application() -> Result<()> {
 
     #[cfg(unix)]
     {
-        if get_user_by_name("actor-rtc").is_some() {
+        if user_exists("actor-rtc") {
             components_found.push("System user (actor-rtc)");
         }
 
-        if get_group_by_name("actor-rtc").is_some() {
+        if group_exists("actor-rtc") {
             components_found.push("System group (actor-rtc)");
         }
     }
@@ -60,43 +55,34 @@ pub fn uninstall_application() -> Result<()> {
     let mut removed_count = 0;
 
     // 1. Stop and remove systemd service
-    if std::path::Path::new(service_file).exists() {
-        if Confirm::with_theme(&theme)
-            .with_prompt("Remove systemd service? (This will stop the service if running)")
-            .default(true)
-            .interact()?
-        {
-            if let Err(e) = remove_systemd_service() {
-                println!("⚠️  Failed to remove systemd service: {}", e);
-            } else {
-                removed_count += 1;
-            }
+    if std::path::Path::new(service_file).exists()
+        && prompt_confirm(
+            "Remove systemd service? (This will stop the service if running)",
+            true,
+        )?
+    {
+        if let Err(e) = remove_systemd_service() {
+            println!("⚠️  Failed to remove systemd service: {}", e);
+        } else {
+            removed_count += 1;
         }
     }
 
     // 2. Remove application files
-    if std::path::Path::new(install_dir).exists() {
-        if Confirm::with_theme(&theme)
-            .with_prompt("Remove application files? (/opt/actor-rtc-actrix)")
-            .default(true)
-            .interact()?
-        {
-            if let Err(e) = remove_directory(install_dir) {
-                println!("⚠️  Failed to remove application files: {}", e);
-            } else {
-                println!("✅ Application files removed");
-                removed_count += 1;
-            }
+    if std::path::Path::new(install_dir).exists()
+        && prompt_confirm("Remove application files? (/opt/actor-rtc-actrix)", true)?
+    {
+        if let Err(e) = remove_directory(install_dir) {
+            println!("⚠️  Failed to remove application files: {}", e);
+        } else {
+            println!("✅ Application files removed");
+            removed_count += 1;
         }
     }
 
     // 3. Remove configuration files (optional)
     if std::path::Path::new(config_dir).exists() {
-        if Confirm::with_theme(&theme)
-            .with_prompt("Remove configuration files? (/etc/actor-rtc-actrix)")
-            .default(false)
-            .interact()?
-        {
+        if prompt_confirm("Remove configuration files? (/etc/actor-rtc-actrix)", false)? {
             if let Err(e) = remove_directory(config_dir) {
                 println!("⚠️  Failed to remove configuration files: {}", e);
             } else {
@@ -111,15 +97,11 @@ pub fn uninstall_application() -> Result<()> {
     // 4. Remove system user and group
     #[cfg(unix)]
     {
-        let user_exists = get_user_by_name("actor-rtc").is_some();
-        let group_exists = get_group_by_name("actor-rtc").is_some();
+        let has_user = user_exists("actor-rtc");
+        let has_group = group_exists("actor-rtc");
 
-        if user_exists {
-            if Confirm::with_theme(&theme)
-                .with_prompt("Remove system user 'actor-rtc'?")
-                .default(true)
-                .interact()?
-            {
+        if has_user {
+            if prompt_confirm("Remove system user 'actor-rtc'?", true)? {
                 if let Err(e) = remove_user("actor-rtc") {
                     println!("⚠️  Failed to remove user: {}", e);
                 } else {
@@ -130,12 +112,8 @@ pub fn uninstall_application() -> Result<()> {
             }
         }
 
-        if group_exists {
-            if Confirm::with_theme(&theme)
-                .with_prompt("Remove system group 'actor-rtc'?")
-                .default(true)
-                .interact()?
-            {
+        if has_group {
+            if prompt_confirm("Remove system group 'actor-rtc'?", true)? {
                 if let Err(e) = remove_group("actor-rtc") {
                     println!("⚠️  Failed to remove group: {}", e);
                 } else {
@@ -159,6 +137,24 @@ pub fn uninstall_application() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn user_exists(username: &str) -> bool {
+    Command::new("id")
+        .arg(username)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn group_exists(groupname: &str) -> bool {
+    Command::new("getent")
+        .args(["group", groupname])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 fn remove_systemd_service() -> Result<()> {
@@ -237,6 +233,28 @@ fn remove_group(groupname: &str) -> Result<()> {
             Ok(())
         } else {
             anyhow::bail!("Failed to remove group '{}': {}", groupname, error);
+        }
+    }
+}
+
+fn prompt_confirm(prompt: &str, default: bool) -> Result<bool> {
+    let hint = if default { "Y/n" } else { "y/N" };
+    loop {
+        print!("{} [{}]: ", prompt, hint);
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let value = input.trim().to_ascii_lowercase();
+
+        if value.is_empty() {
+            return Ok(default);
+        }
+
+        match value.as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("Please enter y/yes or n/no."),
         }
     }
 }

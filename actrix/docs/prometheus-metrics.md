@@ -8,9 +8,9 @@
 
 ### 全局 Registry
 
-- 位置: `crates/common/src/metrics.rs`
-- 全局 Registry: `actrix_common::metrics::REGISTRY`
-- 初始化: 在 `src/main.rs` 启动时自动注册所有基础指标
+- 位置: `crates/platform/src/metrics.rs`
+- 全局 Registry: `platform::metrics::REGISTRY`
+- 初始化: 在 `crates/actrixd/src/main.rs` 启动时自动注册所有基础指标
 
 ### 指标分类
 
@@ -48,12 +48,12 @@
 
 ### 方式一：使用全局 Metrics（避免循环依赖）
 
-由于 `actrix-common` 依赖 `ks`，为避免循环依赖，各服务采用独立定义 metrics 的方式。
+由于 `platform` 依赖 `ks`，为避免循环依赖，各服务采用独立定义 metrics 的方式。
 
 **示例：KS 服务**
 
 ```rust
-// crates/ks/src/handlers.rs
+// crates/services/ks/src/handlers.rs
 use lazy_static::lazy_static;
 use prometheus::{HistogramVec, IntCounterVec, ...};
 
@@ -76,9 +76,9 @@ pub fn register_ks_metrics(registry: &prometheus::Registry) -> Result<(), promet
 **在启动时注册：**
 
 ```rust
-// src/main.rs
+// crates/actrixd/src/main.rs
 if config.is_ks_enabled() {
-    ks::register_ks_metrics(&actrix_common::metrics::REGISTRY)?;
+    ks::register_ks_metrics(&platform::metrics::REGISTRY)?;
 }
 ```
 
@@ -184,7 +184,7 @@ rate(actrix_auth_failures_total[5m]) by (reason)
 ## 当前实现状态
 
 ### ✅ 已完成
-- [x] 基础 metrics 模块 (`actrix-common/src/metrics.rs`)
+- [x] 基础 metrics 模块 (`platform/src/metrics.rs`)
 - [x] 全局 /metrics HTTP 端点
 - [x] KS 服务完整集成
   - 密钥生成计数
@@ -249,9 +249,9 @@ pub use handlers::register_your_service_metrics;
 ### 步骤 4: 启动时注册
 
 ```rust
-// src/main.rs
+// crates/actrixd/src/main.rs
 if config.is_your_service_enabled() {
-    your_service::register_your_service_metrics(&actrix_common::metrics::REGISTRY)?;
+    your_service::register_your_service_metrics(&platform::metrics::REGISTRY)?;
 }
 ```
 

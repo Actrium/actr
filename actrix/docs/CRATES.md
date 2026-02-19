@@ -10,24 +10,24 @@
 
 ## 📋 目录
 
-- [1. base - 基础设施库](#1-base---基础设施库)
+- [1. platform - 基础设施库](#1-platform---基础设施库)
 - [2. ks - Key Server 密钥服务](#2-ks---key-server-密钥服务)
 - [3. stun - STUN 服务器](#3-stun---stun-服务器)
 - [4. turn - TURN 服务器](#4-turn---turn-服务器)
 - [5. signaling - WebRTC 信令服务](#5-signaling---webrtc-信令服务)
 - [6. ais - Actor Identity Service (未启用)](#6-ais---actor-identity-service-未启用)
-- [7. supervit - Supervisor 客户端 (未启用)](#7-supervit---supervisor-客户端-未启用)
+- [7. sdk - 统一导出门面](#7-sdk---统一导出门面)
 
 ---
 
-## 1. base - 基础设施库
+## 1. platform - 基础设施库
 
-**位置**: `crates/common/`
+**位置**: `crates/platform/`
 **功能**: 为所有服务提供基础设施组件
 
 ### 1.1 模块结构
 
-**文件**: `crates/common/src/lib.rs:5-13`
+**文件**: `crates/platform/src/lib.rs:5-13`
 
 ```rust
 pub mod aid;              // Actor Identity 管理
@@ -44,7 +44,7 @@ pub mod util;             // 工具函数
 
 #### 1.2.1 ActrixConfig - 主配置结构
 
-**文件**: `crates/common/src/config/mod.rs:23-170`
+**文件**: `crates/platform/src/config/mod.rs:23-170`
 
 核心配置结构:
 
@@ -70,7 +70,7 @@ pub struct ActrixConfig {
 
 #### 1.2.2 服务启用位掩码
 
-**文件**: `crates/common/src/config/mod.rs:186-190`
+**文件**: `crates/platform/src/config/mod.rs:186-190`
 
 ```rust
 pub const ENABLE_SIGNALING: u8 = 0b00001;  // 位 0 (1)
@@ -89,7 +89,7 @@ enable = 1   # 仅启用 Signaling
 
 #### 1.2.3 服务检查方法
 
-**文件**: `crates/common/src/config/mod.rs:193-233`
+**文件**: `crates/platform/src/config/mod.rs:193-233`
 
 ```rust
 impl ActrixConfig {
@@ -122,7 +122,7 @@ impl ActrixConfig {
 
 #### 1.2.4 配置验证
 
-**文件**: `crates/common/src/config/mod.rs:316-403`
+**文件**: `crates/platform/src/config/mod.rs:316-403`
 
 完整的配置验证逻辑:
 
@@ -189,7 +189,7 @@ pub fn validate(&self) -> Result<(), Vec<String>> {
 
 #### 1.2.5 TracingConfig - OpenTelemetry 追踪配置
 
-**文件**: `crates/common/src/config/tracing.rs:1-80`
+**文件**: `crates/platform/src/config/tracing.rs:1-80`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,7 +226,7 @@ impl TracingConfig {
 
 #### 1.3.1 SqliteNonceStorage - Nonce 存储
 
-**文件**: `crates/common/src/storage/nonce_storage.rs:1-150`
+**文件**: `crates/platform/src/storage/nonce_storage.rs:1-150`
 
 用于防重放攻击的 Nonce 存储:
 
@@ -283,7 +283,7 @@ impl nonce_auth::StorageBackend for SqliteNonceStorage {
 
 #### 1.4.1 模块结构
 
-**文件**: `crates/common/src/aid/mod.rs:1-11`
+**文件**: `crates/platform/src/aid/mod.rs:1-11`
 
 ```rust
 pub mod identity_claims;  // Identity Claims 定义
@@ -297,7 +297,7 @@ pub use key_cache::KeyCache;
 
 #### 1.4.2 IdentityClaims - 身份声明
 
-**文件**: `crates/common/src/aid/identity_claims.rs:10-53`
+**文件**: `crates/platform/src/aid/identity_claims.rs:10-53`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,7 +348,7 @@ impl IdentityClaims {
 
 #### 1.4.3 AIdCredential - 加密凭证
 
-**文件**: `crates/common/src/aid/credential/`
+**文件**: `crates/platform/src/aid/credential/`
 
 使用 ECIES 加密的 Actor Identity Credential:
 
@@ -377,7 +377,7 @@ fn encrypt_claims(
 
 #### 1.4.4 KeyCache - 密钥缓存
 
-**文件**: `crates/common/src/aid/key_cache.rs:20-120`
+**文件**: `crates/platform/src/aid/key_cache.rs:20-120`
 
 用于缓存从 KS 服务获取的密钥:
 
@@ -434,7 +434,7 @@ impl KeyCache {
 
 ### 1.5 错误类型系统 (error)
 
-**文件**: `crates/common/src/error/mod.rs:10-80`
+**文件**: `crates/platform/src/error/mod.rs:10-80`
 
 ```rust
 #[derive(Debug, Error)]
@@ -463,7 +463,7 @@ pub type Result<T> = std::result::Result<T, BaseError>;
 
 ### 1.6 Realm 管理
 
-**文件**: `crates/common/src/realm/mod.rs`
+**文件**: `crates/platform/src/realm/mod.rs`
 
 ```rust
 pub struct Realm {
@@ -491,7 +491,7 @@ pub struct ActorAcl {
 
 #### 1.7.1 TlsConfigurer - TLS 配置
 
-**文件**: `crates/common/src/util/tls.rs:15-80`
+**文件**: `crates/platform/src/util/tls.rs:15-80`
 
 ```rust
 pub struct TlsConfigurer;
@@ -528,12 +528,12 @@ impl TlsConfigurer {
 
 ## 2. ks - Key Server 密钥服务
 
-**位置**: `crates/ks/`
+**位置**: `crates/services/ks/`
 **功能**: 椭圆曲线密钥生成和管理服务
 
 ### 2.1 概述
 
-**文件**: `crates/ks/src/lib.rs:1-8`
+**文件**: `crates/services/ks/src/lib.rs:1-8`
 
 ```rust
 //! Key Server (KS) - 椭圆曲线密钥生成和管理服务
@@ -547,7 +547,7 @@ impl TlsConfigurer {
 
 ### 2.2 模块结构
 
-**文件**: `crates/ks/src/lib.rs:9-26`
+**文件**: `crates/services/ks/src/lib.rs:9-26`
 
 ```rust
 pub mod client;           // KS 客户端
@@ -570,7 +570,7 @@ pub use types::{GenerateKeyRequest, GenerateKeyResponse,
 
 ### 2.3 配置定义
 
-**文件**: `crates/ks/src/config.rs:10-40`
+**文件**: `crates/services/ks/src/config.rs:10-40`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -599,7 +599,7 @@ impl Default for KeyServerConfig {
 
 ### 2.4 存储层 - KeyStorage
 
-**文件**: `crates/ks/src/storage.rs:15-300`
+**文件**: `crates/services/ks/src/storage.rs:15-300`
 
 #### 2.4.1 结构定义
 
@@ -614,7 +614,7 @@ pub struct KeyStorage {
 
 #### 2.4.2 初始化和表创建
 
-**文件**: `crates/ks/src/storage.rs:24-79`
+**文件**: `crates/services/ks/src/storage.rs:24-79`
 
 ```rust
 impl KeyStorage {
@@ -668,7 +668,7 @@ impl KeyStorage {
 
 #### 2.4.3 密钥存储
 
-**文件**: `crates/ks/src/storage.rs:85-130`
+**文件**: `crates/services/ks/src/storage.rs:85-130`
 
 ```rust
 /// 存储新的密钥对，key_id 由数据库自动生成
@@ -702,7 +702,7 @@ fn store_key(&self, public_key: &str, secret_key: &str) -> KsResult<u32> {
 
 #### 2.4.4 密钥查询
 
-**文件**: `crates/ks/src/storage.rs:135-180`
+**文件**: `crates/services/ks/src/storage.rs:135-180`
 
 ```rust
 /// 获取公钥
@@ -756,7 +756,7 @@ pub fn get_secret_key(&self, key_id: u32) -> KsResult<Option<String>> {
 
 #### 2.4.5 密钥生成
 
-**文件**: `crates/ks/src/storage.rs:185-220`
+**文件**: `crates/services/ks/src/storage.rs:185-220`
 
 ```rust
 /// 生成新的 ECIES 密钥对
@@ -783,7 +783,7 @@ pub fn generate_key_pair(&self) -> KsResult<KeyPair> {
 
 ### 2.5 HTTP 处理器
 
-**文件**: `crates/ks/src/handlers.rs:1-300`
+**文件**: `crates/services/ks/src/handlers.rs:1-300`
 
 #### 2.5.1 KSState - 服务状态
 
@@ -833,7 +833,7 @@ impl KSState {
 
 #### 2.5.2 创建路由
 
-**文件**: `crates/ks/src/handlers.rs:86-92`
+**文件**: `crates/services/ks/src/handlers.rs:86-92`
 
 ```rust
 pub fn create_router(state: KSState) -> Router {
@@ -847,7 +847,7 @@ pub fn create_router(state: KSState) -> Router {
 
 #### 2.5.3 生成密钥处理器
 
-**文件**: `crates/ks/src/handlers.rs:120-180`
+**文件**: `crates/services/ks/src/handlers.rs:120-180`
 
 ```rust
 async fn generate_key_handler(
@@ -875,7 +875,7 @@ async fn generate_key_handler(
 
 #### 2.5.4 获取私钥处理器
 
-**文件**: `crates/ks/src/handlers.rs:185-230`
+**文件**: `crates/services/ks/src/handlers.rs:185-230`
 
 ```rust
 async fn get_secret_key_handler(
@@ -909,7 +909,7 @@ async fn get_secret_key_handler(
 
 ### 2.6 客户端
 
-**文件**: `crates/ks/src/client.rs:20-150`
+**文件**: `crates/services/ks/src/client.rs:20-150`
 
 ```rust
 pub struct Client {
@@ -986,7 +986,7 @@ impl Client {
 
 ### 2.7 错误类型
 
-**文件**: `crates/ks/src/error.rs:10-60`
+**文件**: `crates/services/ks/src/error.rs:10-60`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1035,12 +1035,12 @@ impl IntoResponse for KsError {
 
 ## 3. stun - STUN 服务器
 
-**位置**: `crates/stun/`
+**位置**: `crates/services/stun/`
 **功能**: STUN 协议实现，用于 NAT 穿越
 
 ### 3.1 概述
 
-**文件**: `crates/stun/src/lib.rs:1-4`
+**文件**: `crates/services/stun/src/lib.rs:1-4`
 
 ```rust
 //! STUN 服务器实现
@@ -1050,7 +1050,7 @@ impl IntoResponse for KsError {
 
 ### 3.2 核心函数 - create_stun_server_with_shutdown
 
-**文件**: `crates/stun/src/lib.rs:17-71`
+**文件**: `crates/services/stun/src/lib.rs:17-71`
 
 ```rust
 /// 创建并运行 STUN 服务器，支持优雅关闭
@@ -1112,7 +1112,7 @@ pub async fn create_stun_server_with_shutdown(
 
 ### 3.3 STUN 消息识别
 
-**文件**: `crates/stun/src/lib.rs:73-80`
+**文件**: `crates/services/stun/src/lib.rs:73-80`
 
 ```rust
 /// 检查数据是否为 STUN 消息
@@ -1141,7 +1141,7 @@ ChannelData 前两位为 01 (0x40)
 
 ### 3.4 数据包处理
 
-**文件**: `crates/stun/src/lib.rs:82-113`
+**文件**: `crates/services/stun/src/lib.rs:82-113`
 
 ```rust
 /// 处理潜在的 STUN 数据包
@@ -1178,7 +1178,7 @@ pub async fn process_packet(
 
 ### 3.5 绑定请求处理
 
-**文件**: `crates/stun/src/lib.rs:115-141`
+**文件**: `crates/services/stun/src/lib.rs:115-141`
 
 ```rust
 async fn handle_binding_request(
@@ -1217,7 +1217,7 @@ async fn handle_binding_request(
 
 ### 3.6 错误类型
 
-**文件**: `crates/stun/src/error.rs:10-45`
+**文件**: `crates/services/stun/src/error.rs:10-45`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1256,12 +1256,12 @@ impl StunError {
 
 ## 4. turn - TURN 服务器
 
-**位置**: `crates/turn/`
+**位置**: `crates/services/turn/`
 **功能**: TURN 协议实现，用于网络中继
 
 ### 4.1 概述
 
-**文件**: `crates/turn/src/lib.rs:1-4`
+**文件**: `crates/services/turn/src/lib.rs:1-4`
 
 ```rust
 //! TURN 服务器实现
@@ -1271,7 +1271,7 @@ impl StunError {
 
 ### 4.2 模块结构
 
-**文件**: `crates/turn/src/lib.rs:5-11`
+**文件**: `crates/services/turn/src/lib.rs:5-11`
 
 ```rust
 mod authenticator;        // 认证器 (带 LRU 缓存)
@@ -1283,7 +1283,7 @@ pub use error::{ErrorSeverity, TurnError};
 
 ### 4.3 创建 TURN 服务器
 
-**文件**: `crates/turn/src/lib.rs:24-89`
+**文件**: `crates/services/turn/src/lib.rs:24-89`
 
 ```rust
 /// 创建并初始化 TURN 服务器
@@ -1358,7 +1358,7 @@ pub async fn create_turn_server(
 
 ### 4.4 关闭 TURN 服务器
 
-**文件**: `crates/turn/src/lib.rs:91-104`
+**文件**: `crates/services/turn/src/lib.rs:91-104`
 
 ```rust
 pub async fn shutdown_turn_server(server: &Server) -> error::Result<()> {
@@ -1378,7 +1378,7 @@ pub async fn shutdown_turn_server(server: &Server) -> error::Result<()> {
 
 ### 4.5 Authenticator - 认证器 (带 LRU 缓存)
 
-**文件**: `crates/turn/src/authenticator.rs:1-198`
+**文件**: `crates/services/turn/src/authenticator.rs:1-198`
 
 #### 4.5.1 全局 LRU 缓存
 
@@ -1536,7 +1536,7 @@ impl AuthHandler for Authenticator {
 
 ### 4.6 错误类型
 
-**文件**: `crates/turn/src/error.rs:10-70`
+**文件**: `crates/services/turn/src/error.rs:10-70`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1583,12 +1583,12 @@ impl TurnError {
 
 ## 5. signaling - WebRTC 信令服务
 
-**位置**: `crates/signaling/`
+**位置**: `crates/services/signaling/`
 **功能**: 基于 protobuf SignalingEnvelope 的 WebSocket 信令服务
 
 ### 5.1 概述
 
-**文件**: `crates/signaling/src/lib.rs:1-12`
+**文件**: `crates/services/signaling/src/lib.rs:1-12`
 
 ```rust
 //! Actor-RTC 信令服务
@@ -1606,7 +1606,7 @@ pub use service_registry::ServiceRegistry;
 
 ### 5.2 SignalingServer - 信令服务器
 
-**文件**: `crates/signaling/src/server.rs:30-150`
+**文件**: `crates/services/signaling/src/server.rs:30-150`
 
 #### 5.2.1 结构定义
 
@@ -1786,7 +1786,7 @@ impl SignalingServerHandle {
 
 ### 5.3 GlobalCompatibilityCache - 兼容性缓存
 
-**文件**: `crates/signaling/src/compatibility_cache.rs:15-120`
+**文件**: `crates/services/signaling/src/compatibility_cache.rs:15-120`
 
 用于缓存客户端之间的媒体能力协商结果:
 
@@ -1835,7 +1835,7 @@ impl GlobalCompatibilityCache {
 
 ### 5.4 ServiceRegistry - 服务注册表
 
-**文件**: `crates/signaling/src/service_registry.rs:15-100`
+**文件**: `crates/services/signaling/src/service_registry.rs:15-100`
 
 用于服务发现和健康检查:
 
@@ -1912,7 +1912,7 @@ impl ServiceRegistry {
 
 ## 6. ais - Actor Identity Service ✅
 
-**位置**: `crates/ais/`
+**位置**: `crates/services/ais/`
 **状态**: ✅ 已启用并全面重构优化
 
 ### 6.1 功能说明
@@ -1935,7 +1935,7 @@ AIS (Actor Identity Service) 是 Actrix 系统的核心身份服务，负责：
 
 #### 6.2.1 Snowflake 序列号生成器 (sn.rs)
 
-**位置**: `crates/ais/src/sn.rs`
+**位置**: `crates/services/ais/src/sn.rs`
 
 **54-bit 序列号结构**:
 ```
@@ -1953,7 +1953,7 @@ AIS (Actor Identity Service) 是 Actrix 系统的核心身份服务，负责：
 
 **关键实现**:
 ```rust
-// crates/ais/src/sn.rs:99-133
+// crates/services/ais/src/sn.rs:99-133
 static SNOWFLAKE_STATE: AtomicU64 = AtomicU64::new(0);
 static WORKER_ID: OnceLock<u64> = OnceLock::new();
 
@@ -1978,7 +1978,7 @@ loop {
 
 #### 6.2.2 Token 签发器 (issuer.rs)
 
-**位置**: `crates/ais/src/issuer.rs`
+**位置**: `crates/services/ais/src/issuer.rs`
 
 **职责**:
 - 处理 `RegisterRequest` 并生成 `RegisterResponse`
@@ -1988,7 +1988,7 @@ loop {
 
 **密钥管理策略**:
 ```rust
-// crates/ais/src/issuer.rs:116-159
+// crates/services/ais/src/issuer.rs:116-159
 - 启动时从本地 SQLite 加载缓存密钥
 - 如果过期则从 KS 获取
 - 后台任务定期刷新（避免服务中断）
@@ -1997,7 +1997,7 @@ loop {
 
 #### 6.2.3 本地密钥缓存 (storage.rs)
 
-**位置**: `crates/ais/src/storage.rs`
+**位置**: `crates/services/ais/src/storage.rs`
 
 **数据模型**:
 ```sql
@@ -2063,7 +2063,7 @@ timeout_seconds = 30
 
 ### 6.5 测试覆盖
 
-**单元测试**: `crates/ais/src/**/tests`
+**单元测试**: `crates/services/ais/src/**/tests`
 - Snowflake 序列号生成（唯一性、并发安全）
 - Token 签发流程
 - 密钥缓存和刷新逻辑
@@ -2085,21 +2085,17 @@ cargo test -p ais
 
 ---
 
-## 7. supervit - Supervisor 客户端 (未启用)
+## 7. sdk - 统一导出门面
 
-**位置**: `crates/supervit/`
-**状态**: ⚠️ 当前在 workspace 中被 exclude
+**位置**: `crates/sdk/`
+**功能**: 统一对外导出 control/contracts 的公共 API，并集中维护兼容别名。
 
 ### 7.1 功能说明
 
-Supervisor 客户端负责:
-- 向管理平台报告服务状态
-- 接收远程管理命令
-- 上报监控指标
-
-### 7.2 重新启用步骤
-
-参考 AIS 的重新启用流程。
+SDK 门面负责:
+- 统一导出 Admin 控制面 Client/Server API
+- 对外提供稳定的单一导入入口（`actrix-sdk`）
+- 集中维护历史兼容别名（例如 Supervit 命名）
 
 ---
 
@@ -2107,29 +2103,29 @@ Supervisor 客户端负责:
 
 ```
 actrix (main binary)
-├── base ⭐ (基础设施)
+├── platform ⭐ (基础设施)
 │   ├── rusqlite 0.35.0
 │   ├── nonce-auth 0.6.1
 │   ├── ecies 0.2.9
 │   └── actr-protocol 0.2.0
 │
 ├── ks (密钥服务)
-│   ├── base
+│   ├── platform
 │   ├── axum 0.8.0
 │   └── reqwest 0.12.0
 │
 ├── stun (STUN 服务器)
-│   ├── base
+│   ├── platform
 │   └── webrtc-stun 0.10.3
 │
 ├── turn (TURN 服务器)
-│   ├── base
+│   ├── platform
 │   ├── turn 0.7.4
 │   ├── lru 0.12.0
 │   └── md5 0.7.0
 │
 └── signaling (信令服务)
-    ├── base
+    ├── platform
     ├── actr-protocol 0.2.0
     ├── axum 0.8.0
     └── tokio-tungstenite 0.24.0
@@ -2139,9 +2135,9 @@ actrix (main binary)
 
 ## 🔧 编译特性 (Features)
 
-### base crate
+### platform crate
 
-**文件**: `crates/common/Cargo.toml:30-35`
+**文件**: `crates/platform/Cargo.toml:30-35`
 
 ```toml
 [features]
@@ -2221,7 +2217,7 @@ cargo build --release --features opentelemetry
 
 ## 📚 测试覆盖
 
-### base crate
+### platform crate
 - ✅ 配置加载和验证
 - ✅ Nonce 存储和查询
 - ✅ TracingConfig URL 验证
@@ -2282,7 +2278,7 @@ async fn main() -> anyhow::Result<()> {
 ### 示例 2: 配置加载和验证
 
 ```rust
-use base::config::ActrixConfig;
+use platform::config::ActrixConfig;
 
 fn main() -> anyhow::Result<()> {
     // 从文件加载

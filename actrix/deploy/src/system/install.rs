@@ -1,25 +1,21 @@
 //! Application installation utilities
 
 use anyhow::Result;
-use dialoguer::{Confirm, Input, theme::ColorfulTheme};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{SystemProvider, SystemProviderFactory};
 use crate::config::InstallConfig;
-use crate::template::SystemdServiceTemplate;
+use crate::tpl::SystemdServiceTemplate;
 
 /// Install application files to system directories
 pub fn install_application(config: &InstallConfig) -> Result<()> {
-    // Detect system provider
-    let provider = SystemProviderFactory::detect()?;
-
     println!("Creating directory structure...");
 
     // Create installation directories
     let directories = config.all_directories();
     for dir in &directories {
-        provider.create_directory(dir, Some(0o755))?;
+        create_directory_with_permissions(dir, 0o755)?;
     }
 
     println!("✅ Directory structure created successfully");
@@ -30,15 +26,15 @@ pub fn install_application(config: &InstallConfig) -> Result<()> {
     println!("📦 Found source binary: {}", source_binary.display());
 
     let target_binary = config.binary_path();
-    provider.copy_file(&source_binary, &target_binary)?;
+    copy_file_with_sudo(&source_binary, &target_binary)?;
 
     // Make binary executable
-    provider.set_file_permissions(&target_binary, 0o755)?;
-    println!("✅ Auxes binary installed to {}", target_binary.display());
+    set_file_permissions(&target_binary, 0o755)?;
+    println!("✅ Actrix binary installed to {}", target_binary.display());
 
     // Add symlink to PATH if requested
     if config.add_to_path {
-        add_to_path(provider.as_ref(), &target_binary, &config.symlink_path())?;
+        add_to_path(&target_binary, &config.symlink_path())?;
     }
 
     println!();
@@ -54,10 +50,7 @@ pub fn install_application(config: &InstallConfig) -> Result<()> {
 
 /// Deploy application as systemd service
 pub fn install_systemd_service() -> Result<()> {
-    // Detect system provider
-    let provider = SystemProviderFactory::detect()?;
-
-    if !provider.has_systemd() {
+    if !has_systemd() {
         anyhow::bail!("systemd is not available on this system");
     }
 
@@ -83,27 +76,25 @@ pub fn install_systemd_service() -> Result<()> {
 
 /// Configure configuration file path
 fn configure_config_path() -> Result<PathBuf> {
-    let theme = ColorfulTheme::default();
-
     println!("📁 Configuration File Path");
     println!("══════════════════════════");
     println!("Specify the configuration file path for the service:");
     println!();
 
-    let config_path: String = Input::with_theme(&theme)
-        .with_prompt("Configuration file path")
-        .default("/etc/actor-rtc-actrix/config.toml".to_string())
-        .interact_text()?;
+    let config_path = prompt_text(
+        "Configuration file path",
+        "/etc/actor-rtc-actrix/config.toml",
+    )?;
 
     let path = PathBuf::from(config_path);
 
     // Check if file exists
     if !path.exists() {
         println!("⚠️  Configuration file does not exist: {}", path.display());
-        let confirm = Confirm::with_theme(&theme)
-            .with_prompt("Continue with deployment? (you'll need to create the config later)")
-            .default(true)
-            .interact()?;
+        let confirm = prompt_confirm(
+            "Continue with deployment? (you'll need to create the config later)",
+            true,
+        )?;
 
         if !confirm {
             anyhow::bail!("Deployment cancelled - configuration file required");
@@ -118,8 +109,6 @@ fn configure_config_path() -> Result<PathBuf> {
 
 /// Configure systemd service settings
 fn configure_service_settings() -> Result<InstallConfig> {
-    let theme = ColorfulTheme::default();
-
     println!("📋 Systemd Service Configuration");
     println!("═══════════════════════════════");
     println!("Configure service settings (press Enter for defaults):");
@@ -128,16 +117,13 @@ fn configure_service_settings() -> Result<InstallConfig> {
     let default_config = InstallConfig::default();
 
     // Installation directory
-    let install_dir: String = Input::with_theme(&theme)
-        .with_prompt("Installation directory")
-        .default(default_config.install_dir.to_string_lossy().to_string())
-        .interact_text()?;
+    let install_dir = prompt_text(
+        "Installation directory",
+        &default_config.install_dir.to_string_lossy(),
+    )?;
 
     // Binary name
-    let binary_name: String = Input::with_theme(&theme)
-        .with_prompt("Service/binary name")
-        .default(default_config.binary_name.clone())
-        .interact_text()?;
+    let binary_name = prompt_text("Service/binary name", &default_config.binary_name)?;
 
     println!();
 
@@ -150,31 +136,20 @@ fn configure_service_settings() -> Result<InstallConfig> {
 
 /// Configure systemd service user and group
 fn configure_service_user() -> Result<(String, String)> {
-    let theme = ColorfulTheme::default();
-
     println!("👤 Service User Configuration");
     println!("════════════════════════════");
     println!();
 
     // Service user
-    let service_user: String = Input::with_theme(&theme)
-        .with_prompt("Service user")
-        .default("actor-rtc".to_string())
-        .interact_text()?;
+    let service_user = prompt_text("Service user", "actor-rtc")?;
 
     // Service group
-    let service_group: String = Input::with_theme(&theme)
-        .with_prompt("Service group")
-        .default("actor-rtc".to_string())
-        .interact_text()?;
+    let service_group = prompt_text("Service group", "actor-rtc")?;
 
     // Check if user exists
     if !user_exists(&service_user) {
         println!("⚠️  User '{}' does not exist", service_user);
-        let create_user = Confirm::with_theme(&theme)
-            .with_prompt("Create system user?")
-            .default(true)
-            .interact()?;
+        let create_user = prompt_confirm("Create system user?", true)?;
 
         if create_user {
             create_system_user(&service_user)?;
@@ -190,10 +165,7 @@ fn configure_service_user() -> Result<(String, String)> {
     // Check if group exists
     if !group_exists(&service_group) {
         println!("⚠️  Group '{}' does not exist", service_group);
-        let create_group = Confirm::with_theme(&theme)
-            .with_prompt("Create system group?")
-            .default(true)
-            .interact()?;
+        let create_group = prompt_confirm("Create system group?", true)?;
 
         if create_group {
             create_system_group(&service_group)?;
@@ -295,7 +267,10 @@ fn find_actrix_binary() -> Result<PathBuf> {
         std::env::current_dir()?,
     ];
 
-    let target_paths = ["target/release/auxes", "auxes/target/release/auxes"];
+    let target_paths = [
+        "target/release/actrix",
+        "crates/actrixd/target/release/actrix",
+    ];
     let max_steps_up = 4; // Maximum directory levels to go up
 
     for base_dir in &search_bases {
@@ -326,11 +301,7 @@ fn find_actrix_binary() -> Result<PathBuf> {
     )
 }
 
-fn add_to_path(
-    _provider: &dyn SystemProvider,
-    binary_path: &Path,
-    symlink_path: &Path,
-) -> Result<()> {
+fn add_to_path(binary_path: &Path, symlink_path: &Path) -> Result<()> {
     // Remove existing symlink if it exists
     let _ = Command::new("sudo")
         .args(["rm", "-f", &symlink_path.to_string_lossy()])
@@ -369,7 +340,7 @@ fn add_to_path(
 }
 
 /// Verify that critical files exist before deploying service
-fn verify_deployment_files(install_config: &InstallConfig, config_path: &PathBuf) -> Result<()> {
+fn verify_deployment_files(install_config: &InstallConfig, config_path: &Path) -> Result<()> {
     println!("🔍 Verifying deployment files...");
     println!();
 
@@ -419,8 +390,7 @@ fn verify_deployment_files(install_config: &InstallConfig, config_path: &PathBuf
         }
 
         if !config_path.exists() {
-            println!("   • Run configuration wizard first to generate config.toml");
-            println!("   • Or manually create the configuration file");
+            println!("   • Create the configuration file manually (default path shown above)");
         }
 
         if !install_dir.exists() {
@@ -433,4 +403,103 @@ fn verify_deployment_files(install_config: &InstallConfig, config_path: &PathBuf
     println!("✅ All critical files verified");
     println!();
     Ok(())
+}
+
+fn has_systemd() -> bool {
+    std::path::Path::new("/run/systemd/system").exists() || command_exists("systemctl")
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new("which")
+        .arg(command)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn create_directory_with_permissions(path: &Path, mode: u32) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    if std::fs::create_dir_all(path).is_err() {
+        let output = Command::new("sudo")
+            .args(["mkdir", "-p", &path.to_string_lossy()])
+            .output()?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to create directory {}: {}", path.display(), error);
+        }
+    }
+
+    set_file_permissions(path, mode)?;
+    Ok(())
+}
+
+fn copy_file_with_sudo(src: &Path, dst: &Path) -> Result<()> {
+    let output = Command::new("sudo")
+        .args(["cp", &src.to_string_lossy(), &dst.to_string_lossy()])
+        .output()?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Failed to copy file from {} to {}: {}",
+            src.display(),
+            dst.display(),
+            error
+        );
+    }
+
+    Ok(())
+}
+
+fn set_file_permissions(path: &Path, mode: u32) -> Result<()> {
+    let mode_str = format!("{:o}", mode);
+    let output = Command::new("sudo")
+        .args(["chmod", &mode_str, &path.to_string_lossy()])
+        .output()?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to set permissions on {}: {}", path.display(), error);
+    }
+
+    Ok(())
+}
+
+fn prompt_text(prompt: &str, default: &str) -> Result<String> {
+    print!("{} [{}]: ", prompt, default);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let value = input.trim();
+    if value.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn prompt_confirm(prompt: &str, default: bool) -> Result<bool> {
+    let hint = if default { "Y/n" } else { "y/N" };
+    loop {
+        print!("{} [{}]: ", prompt, hint);
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let value = input.trim().to_ascii_lowercase();
+
+        if value.is_empty() {
+            return Ok(default);
+        }
+
+        match value.as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("Please enter y/yes or n/no."),
+        }
+    }
 }

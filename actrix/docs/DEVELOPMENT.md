@@ -47,27 +47,34 @@ make all  # fmt, clippy, test, build, coverage
 
 ```
 actrix/
-├── src/                    # 主程序
-│   ├── main.rs            # 入口点、可观测性初始化
-│   ├── cli.rs             # 命令行参数
-│   ├── service/           # 服务管理
-│   │   ├── manager.rs     # 生命周期管理
-│   │   └── container.rs   # 服务容器枚举
-│   └── error.rs           # 错误类型
 ├── crates/
-│   ├── base/              # 共享基础库
-│   │   ├── config/        # 配置系统
-│   │   ├── storage/       # SQLite 抽象
-│   │   └── aid/           # Actor ID 相关
-│   ├── ks/                # 密钥服务
-│   ├── stun/              # STUN 服务器
-│   ├── turn/              # TURN 服务器
-│   │   └── authenticator.rs  # LRU 缓存实现
-│   └── signaling/         # 信令服务(新版本)
-├── install/               # 部署脚本
-├── docker/                # Docker compose 文件
-├── docs/                  # 文档
-└── AGENTS.md              # AI 开发助手指南
+│   ├── actrixd/                # 主程序 crate
+│   │   ├── src/
+│   │   │   ├── main.rs         # 入口点、可观测性初始化
+│   │   │   ├── cli.rs          # 命令行参数
+│   │   │   ├── admin/          # 内置 admin 运行时编排
+│   │   │   ├── service/        # 服务管理
+│   │   │   │   ├── manager.rs  # 生命周期管理
+│   │   │   │   └── container.rs
+│   │   │   └── error.rs        # 错误类型
+│   │   └── tests/
+│   ├── contracts/              # gRPC 协议与消息定义（package: actrix-proto）
+│   ├── platform/               # 共享基础库（lifecycle/cfg/state/auth/events）
+│   │   ├── config/             # 配置系统
+│   │   ├── storage/            # SQLite 抽象
+│   │   └── aid/                # Actor ID 相关
+│   ├── control/                # 内置 admin 控制面实现（package: admin）
+│   ├── sdk/                    # 统一导出门面（package: actrix-sdk）
+│   └── services/               # 业务服务集合
+│       ├── ais/                # 身份服务
+│       ├── ks/                 # 密钥服务
+│       ├── signaling/          # 信令服务
+│       ├── stun/               # STUN 服务器
+│       └── turn/               # TURN 服务器（含 LRU 认证缓存）
+├── deploy/                     # 最小部署引导工具
+├── docker-compose.yml          # Docker compose 定义
+├── docs/                       # 文档
+└── AGENTS.md                   # AI 开发助手指南
 ```
 
 ## 开发工作流
@@ -91,7 +98,7 @@ cargo clippy -- -D warnings
 cargo test
 
 # 本地运行
-cargo run -- --config config.example.toml
+cargo run -p actrix -- --config config.example.toml
 ```
 
 ### 3. 提交代码
@@ -136,7 +143,7 @@ cargo new --lib crates/myservice
 ```toml
 [workspace]
 members = [
-    "src",
+    "crates/actrixd",
     "crates/myservice",
     # ...
 ]
@@ -168,7 +175,7 @@ impl MyService {
 ### 4. 添加到 ServiceContainer
 
 ```rust
-// src/service/container.rs
+// crates/actrixd/src/service/container.rs
 pub enum ServiceContainer {
     // 现有服务...
     MyService(MyService),
@@ -188,7 +195,7 @@ impl ServiceContainer {
 ### 5. 添加到 ServiceManager
 
 ```rust
-// src/service/manager.rs
+// crates/actrixd/src/service/manager.rs
 impl ServiceManager {
     pub async fn start_myservice(&mut self) -> Result<()> {
         let service = MyService::new(/* config */)?;
@@ -201,7 +208,7 @@ impl ServiceManager {
 ### 6. 更新配置
 
 ```rust
-// crates/common/src/config/mod.rs
+// crates/platform/src/config/mod.rs
 pub const ENABLE_MYSERVICE: u8 = 0b100000;  // 新位
 
 impl ActrixConfig {
@@ -217,13 +224,13 @@ impl ActrixConfig {
 
 ```bash
 # 全局 debug
-RUST_LOG=debug cargo run
+RUST_LOG=debug cargo run -p actrix
 
 # 特定模块
-RUST_LOG=actrix::service=debug,ks=trace cargo run
+RUST_LOG=actrix::service=debug,ks=trace cargo run -p actrix
 
 # 仅错误
-RUST_LOG=error cargo run
+RUST_LOG=error cargo run -p actrix
 ```
 
 ### 使用 GDB/LLDB
@@ -407,7 +414,7 @@ cargo install cargo-license
 
 - [AGENTS.md](../AGENTS.md) - AI 助手开发指南
 - [CLAUDE.md](../CLAUDE.md) - 项目上下文
-- [install/README.md](../install/README.md) - 部署指南
+- [deploy/README.md](../deploy/README.md) - 部署指南
 - [Rust Book](https://doc.rust-lang.org/book/)
 - [Tokio 文档](https://tokio.rs)
 - [Axum 文档](https://docs.rs/axum/)

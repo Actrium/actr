@@ -13,7 +13,7 @@
 **新用户**: 按此顺序阅读
 1. [README.md](../README.md) - 项目简介
 2. [CONFIGURATION.md](./CONFIGURATION.md) - 配置你的服务
-3. [install/README.md](../install/README.md) - 部署到生产环境
+3. [deploy/README.md](../deploy/README.md) - 部署到生产环境
 
 **开发者**: 深入了解
 1. [ARCHITECTURE.md](./ARCHITECTURE.md) - 整体架构
@@ -46,7 +46,7 @@
 **适合**: 核心开发者
 
 **内容**:
-- 所有 crate 的详细实现 (base, ks, stun, turn, signaling)
+- 所有 crate 的详细实现 (platform, ks, stun, turn, signaling)
 - 每个结构体、trait、函数的完整签名
 - 性能特性 (LRU 缓存、异步处理)
 - 安全分析和最佳实践
@@ -106,7 +106,7 @@
 
 ## 📖 补充文档
 
-### [install/README.md](../install/README.md)
+### [deploy/README.md](../deploy/README.md)
 **类型**: 部署指南
 **篇幅**: ~250 行
 
@@ -156,7 +156,7 @@
 
 1. [CONFIGURATION.md](./CONFIGURATION.md) - 了解配置选项
 2. [config.example.toml](../config.example.toml) - 复制配置模板
-3. [install/README.md](../install/README.md) - 按步骤部署
+3. [deploy/README.md](../deploy/README.md) - 按步骤部署
 4. [SERVICES.md](./SERVICES.md) - 故障排查
 
 ### 场景 2: 我想集成 KS API
@@ -175,7 +175,7 @@
 ### 场景 4: 我遇到了问题
 
 1. [SERVICES.md](./SERVICES.md) - 故障排查章节
-2. [install/README.md](../install/README.md) - 部署问题
+2. [deploy/README.md](../deploy/README.md) - 部署问题
 3. [CONFIGURATION.md](./CONFIGURATION.md) - 配置验证
 4. [GitHub Issues](https://github.com/actor-rtc/actrix/issues)
 
@@ -191,7 +191,7 @@
 | API.md | ~200 | 2025-11-03 | 100% 验证 |
 | CONFIGURATION.md | ~585 | 已存在 | 100% 验证 |
 | ENHANCEMENTS.md | ~880 | 已存在 | 项目历史 |
-| install/README.md | ~250 | 已存在 | 部署指南 |
+| deploy/README.md | ~250 | 已存在 | 部署指南 |
 | DEVELOPMENT.md | ~200 | 已存在 | 开发流程 |
 
 **总计**: ~4800 行精炼文档
@@ -203,22 +203,22 @@
 **架构**: ARCHITECTURE.md
 **配置**: CONFIGURATION.md
 **API**: API.md
-**部署**: install/README.md, SERVICES.md
+**部署**: deploy/README.md, SERVICES.md
 **开发**: DEVELOPMENT.md, CRATES.md
 **KS 服务**: CRATES.md, API.md
 **STUN/TURN**: CRATES.md, SERVICES.md
 **认证**: API.md (Nonce-Auth), CRATES.md (Authenticator)
 **追踪**: SERVICES.md (OpenTelemetry), ENHANCEMENTS.md (HTTP Trace Layer)
-**Docker**: SERVICES.md, install/README.md
-**systemd**: SERVICES.md, install/README.md
-**故障排查**: SERVICES.md, install/README.md
+**Docker**: SERVICES.md, deploy/README.md
+**systemd**: SERVICES.md, deploy/README.md
+**故障排查**: SERVICES.md, deploy/README.md
 
 ---
 
 ## 📝 文档约定
 
 **代码引用格式**: `file_path:line_number`
-**示例**: `src/service/manager.rs:23-31`
+**示例**: `crates/actrixd/src/service/manager.rs:23-31`
 
 **标记含义**:
 - ✅ 已实现/已启用

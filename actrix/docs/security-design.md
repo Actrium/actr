@@ -357,13 +357,13 @@ pub struct SupervisordConfig {
 ### 4.2 客户端实现
 
 ```rust
-pub struct SupervitClient {
-    config: SupervitConfig,
+pub struct AdminClient {
+    config: AdminConfig,
     client: Option<GrpcSupervisorClient<InterceptedService<Channel, AuthInterceptor>>>,
     auth_interceptor: AuthInterceptor,
 }
 
-impl SupervitClient {
+impl AdminClient {
     pub async fn connect(&mut self) -> Result<()> {
         // 1. 配置 TLS
         let mut endpoint = Endpoint::from_shared(self.config.endpoint.clone())?;

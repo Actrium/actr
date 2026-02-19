@@ -59,9 +59,9 @@ Key settings to change:
 # Start server
 ./target/release/actrix --config config.toml
 
-# Or use systemd (see deploy/README.md)
-sudo ./deploy/install.sh install
-sudo systemctl start actrix
+# Or bootstrap with deploy helper
+cargo run --manifest-path deploy/Cargo.toml -- install
+cargo run --manifest-path deploy/Cargo.toml -- service
 ```
 
 ## Configuration
@@ -172,8 +172,11 @@ http://localhost:16686
 ### Systemd Service
 
 ```bash
-# Install as systemd service
-sudo ./deploy/install.sh install
+# Install binary payload
+cargo run --manifest-path deploy/Cargo.toml -- install
+
+# Install systemd unit
+cargo run --manifest-path deploy/Cargo.toml -- service
 
 # Start service
 sudo systemctl start actrix
@@ -181,12 +184,9 @@ sudo systemctl enable actrix
 
 # View logs
 sudo journalctl -u actrix -f
-
-# Update binary
-sudo ./deploy/install.sh update
 ```
 
-See [deploy/README.md](deploy/README.md) for complete deployment guide.
+See [deploy/README.md](deploy/README.md) for deployment details.
 
 ### Docker (Future)
 
@@ -235,16 +235,25 @@ cargo test -p turn
 
 ### Project Structure
 
-```
+``` 
 actrix/
-├── src/              # Main application
 ├── crates/
-│   ├── base/        # Shared config, storage, utilities
-│   ├── ks/          # Key Server
-│   ├── stun/        # STUN Server
-│   ├── turn/        # TURN Server (with LRU cache)
-│   └── ...
-├── deploy/          # Deployment scripts
+│   ├── actrixd/      # Main binary crate (orchestrator)
+│   │   ├── src/
+│   │   │   ├── admin/
+│   │   │   └── service/
+│   │   └── tests/
+│   ├── contracts/    # gRPC protobuf definitions (package: actrix-proto)
+│   ├── platform/     # Shared lifecycle/config/state/auth/event foundation
+│   ├── control/      # Canonical admin control-plane implementation (package: admin)
+│   ├── sdk/          # Unified public facade (package: actrix-sdk)
+│   ├── services/     # Node service implementations
+│   │   ├── ais/
+│   │   ├── ks/
+│   │   ├── signaling/
+│   │   ├── stun/
+│   │   └── turn/
+├── deploy/           # Minimal bootstrap helper (deps/install/service/uninstall)
 ├── docs/            # Documentation
 └── AGENTS.md        # AI development guide
 ```
@@ -334,7 +343,7 @@ Apache License 2.0
 - **[SERVICES.md](docs/SERVICES.md)** - 服务管理、部署、运维
 - **[API.md](docs/API.md)** - HTTP API 参考
 - **[CONFIGURATION.md](docs/CONFIGURATION.md)** - 配置参考
-- **[install/README.md](install/README.md)** - 生产部署指南
+- **[deploy/README.md](deploy/README.md)** - 生产部署指南
 - **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** - 开发指南
 
 ## Related Projects

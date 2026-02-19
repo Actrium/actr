@@ -1,10 +1,9 @@
 //! Installation configuration for binary deployment
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Installation configuration for binary files only
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct InstallConfig {
     /// Installation directory (default: /opt/actor-rtc-actrix)
     pub install_dir: PathBuf,

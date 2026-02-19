@@ -242,14 +242,14 @@ services:
 ```yaml
 services:
   actrix-1:
-    <<: *actrix-common
+    <<: *base
     container_name: actrix-1
     ports:
       - "8443:8443"
       - "3478:3478/udp"
 
   actrix-2:
-    <<: *actrix-common
+    <<: *base
     container_name: actrix-2
     ports:
       - "8444:8443"
@@ -441,7 +441,7 @@ deploy docker --legacy --run
 ## 相关文档
 
 - [配置指南](./CONFIGURATION.md) - 详细配置说明
-- [部署指南](../install/README.md) - Systemd 部署方式
+- [部署指南](../deploy/README.md) - Systemd 部署方式
 - [Dockerfile](../docker/Dockerfile) - Docker 镜像构建
 - [API 文档](./API.md) - HTTP API 接口
 
