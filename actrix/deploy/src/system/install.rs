@@ -7,9 +7,12 @@ use std::process::Command;
 
 use crate::config::InstallConfig;
 use crate::tpl::SystemdServiceTemplate;
+use super::dependencies::{detect_service_manager, ServiceManager};
 
 /// Install application files to system directories
 pub fn install_application(config: &InstallConfig) -> Result<()> {
+    validate_supported_install_dir(&config.install_dir, "installation")?;
+
     println!("Creating directory structure...");
 
     // Create installation directories
@@ -50,11 +53,20 @@ pub fn install_application(config: &InstallConfig) -> Result<()> {
 
 /// Deploy application as systemd service
 pub fn install_systemd_service() -> Result<()> {
-    if !has_systemd() {
-        anyhow::bail!("systemd is not available on this system");
+    match detect_service_manager() {
+        ServiceManager::Systemd => {
+            println!("✅ Service manager detected: systemd");
+        }
+        manager => {
+            anyhow::bail!(
+                "Unsupported service manager environment: {}. \
+                 `deploy service` currently supports only systemd. \
+                 Use manual process management on this host.",
+                manager.as_str()
+            );
+        }
     }
 
-    println!("✅ systemd is available");
     println!();
 
     // Configure configuration file path
@@ -121,6 +133,8 @@ fn configure_service_settings() -> Result<InstallConfig> {
         "Installation directory",
         &default_config.install_dir.to_string_lossy(),
     )?;
+    let install_dir = PathBuf::from(install_dir);
+    validate_supported_install_dir(&install_dir, "service deployment")?;
 
     // Binary name
     let binary_name = prompt_text("Service/binary name", &default_config.binary_name)?;
@@ -128,7 +142,7 @@ fn configure_service_settings() -> Result<InstallConfig> {
     println!();
 
     Ok(InstallConfig {
-        install_dir: PathBuf::from(install_dir),
+        install_dir,
         binary_name,
         add_to_path: false, // Not relevant for systemd service
     })
@@ -343,6 +357,7 @@ fn add_to_path(binary_path: &Path, symlink_path: &Path) -> Result<()> {
 fn verify_deployment_files(install_config: &InstallConfig, config_path: &Path) -> Result<()> {
     println!("🔍 Verifying deployment files...");
     println!();
+    validate_supported_install_dir(&install_config.install_dir, "service deployment")?;
 
     let mut missing_files = Vec::new();
 
@@ -405,16 +420,38 @@ fn verify_deployment_files(install_config: &InstallConfig, config_path: &Path) -
     Ok(())
 }
 
-fn has_systemd() -> bool {
-    std::path::Path::new("/run/systemd/system").exists() || command_exists("systemctl")
+fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result<()> {
+    let normalized = normalize_install_dir(install_dir)?;
+
+    if normalized.starts_with(Path::new("/home")) {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             Paths under '/home' are blocked for service hardening consistency. \
+             Use a root-owned path such as '/opt/actor-rtc-actrix'.",
+            operation,
+            normalized.display()
+        );
+    }
+
+    if normalized.starts_with(Path::new("/tmp")) {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             Paths under '/tmp' are blocked for service hardening consistency. \
+             Use a persistent path such as '/opt/actor-rtc-actrix'.",
+            operation,
+            normalized.display()
+        );
+    }
+
+    Ok(())
 }
 
-fn command_exists(command: &str) -> bool {
-    Command::new("which")
-        .arg(command)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+fn normalize_install_dir(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
 }
 
 fn create_directory_with_permissions(path: &Path, mode: u32) -> Result<()> {

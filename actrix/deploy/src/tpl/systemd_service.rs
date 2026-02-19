@@ -1,7 +1,9 @@
 //! Systemd service template processing
 
 use anyhow::Result;
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::config::InstallConfig;
@@ -21,7 +23,7 @@ User={{SERVICE_USER}}
 Group={{SERVICE_GROUP}}
 WorkingDirectory={{INSTALL_DIR}}
 ExecStart={{INSTALL_DIR}}/bin/actrix --config {{CONFIG_PATH}}
-ExecReload=/bin/kill -HUP \$MAINPID
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -33,7 +35,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths={{INSTALL_DIR}}/logs {{INSTALL_DIR}}/db
+ReadWritePaths={{READ_WRITE_PATHS}}
 
 # Resource limits
 LimitNOFILE=65536
@@ -42,6 +44,12 @@ LimitNPROC=4096
 [Install]
 WantedBy=multi-user.target
 "#;
+
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeConfig {
+    pid: Option<String>,
+    sqlite_path: Option<String>,
+}
 
 /// Systemd service template processor
 pub struct SystemdServiceTemplate {
@@ -94,19 +102,23 @@ impl SystemdServiceTemplate {
     }
 
     fn create_service_content(&self, service_user: &str, service_group: &str) -> Result<String> {
-        let install_dir_str = self.install_config.install_dir.to_string_lossy();
-        let config_path_str = self.config_path.to_string_lossy();
+        let install_dir_str = self.install_config.install_dir.to_string_lossy().to_string();
+        let config_path_str = self.config_path.to_string_lossy().to_string();
+        let read_write_paths = self.collect_read_write_paths().join(" ");
+
+        println!("ℹ️  ReadWritePaths: {}", read_write_paths);
 
         let mut placeholders = HashMap::new();
-        placeholders.insert("SERVICE_USER", service_user);
-        placeholders.insert("SERVICE_GROUP", service_group);
-        placeholders.insert("INSTALL_DIR", &install_dir_str);
-        placeholders.insert("CONFIG_PATH", &config_path_str);
+        placeholders.insert("SERVICE_USER".to_string(), service_user.to_string());
+        placeholders.insert("SERVICE_GROUP".to_string(), service_group.to_string());
+        placeholders.insert("INSTALL_DIR".to_string(), install_dir_str);
+        placeholders.insert("CONFIG_PATH".to_string(), config_path_str);
+        placeholders.insert("READ_WRITE_PATHS".to_string(), read_write_paths);
 
         let mut result = SYSTEMD_SERVICE_TEMPLATE.to_string();
         for (key, value) in placeholders {
             let placeholder = format!("{{{{{}}}}}", key);
-            result = result.replace(&placeholder, value);
+            result = result.replace(&placeholder, &value);
         }
 
         Ok(result)
@@ -178,18 +190,19 @@ impl SystemdServiceTemplate {
         }
 
         // Check if service is actually running
-        let status_output = Command::new("systemctl")
-            .args(["is-active", service_name])
+        let status_output = Command::new("sudo")
+            .args(["systemctl", "is-active", service_name])
             .output()?;
 
-        if status_output.status.success() {
-            let status_str = String::from_utf8_lossy(&status_output.stdout);
-            let status = status_str.trim();
-            if status == "active" {
-                println!("✅ Service started successfully");
-            } else {
-                println!("⚠️  Service status: {}", status);
-            }
+        let status_str = String::from_utf8_lossy(&status_output.stdout);
+        let status = status_str.trim();
+        if status == "active" {
+            println!("✅ Service started successfully");
+        } else if !status.is_empty() {
+            println!("⚠️  Service status: {}", status);
+        } else {
+            let error = String::from_utf8_lossy(&status_output.stderr);
+            println!("⚠️  Unable to read service status after start: {}", error);
         }
 
         Ok(())
@@ -200,8 +213,8 @@ impl SystemdServiceTemplate {
         println!("📊 Service Status");
         println!("════════════════");
 
-        let output = Command::new("systemctl")
-            .args(["status", service_name, "--no-pager", "--lines=10"])
+        let output = Command::new("sudo")
+            .args(["systemctl", "status", service_name, "--no-pager", "--lines=10"])
             .output()?;
 
         if output.status.success() {
@@ -213,5 +226,56 @@ impl SystemdServiceTemplate {
         }
 
         Ok(())
+    }
+
+    fn resolve_runtime_path(&self, raw_path: &str) -> PathBuf {
+        let path = PathBuf::from(raw_path);
+        if path.is_absolute() {
+            path
+        } else {
+            self.install_config.install_dir.join(path)
+        }
+    }
+
+    fn collect_read_write_paths(&self) -> Vec<String> {
+        let mut paths = BTreeSet::new();
+        paths.insert(self.install_config.logs_dir().to_string_lossy().to_string());
+        paths.insert(self.install_config.db_dir().to_string_lossy().to_string());
+
+        match std::fs::read_to_string(&self.config_path) {
+            Ok(config_text) => match toml::from_str::<RuntimeConfig>(&config_text) {
+                Ok(runtime_cfg) => {
+                    if let Some(sqlite_path) = runtime_cfg.sqlite_path
+                        && !sqlite_path.trim().is_empty()
+                    {
+                        let resolved = self.resolve_runtime_path(sqlite_path.trim());
+                        paths.insert(resolved.to_string_lossy().to_string());
+                    }
+
+                    if let Some(pid_path) = runtime_cfg.pid
+                        && !pid_path.trim().is_empty()
+                    {
+                        let resolved = self.resolve_runtime_path(pid_path.trim());
+                        if let Some(parent) = resolved.parent() {
+                            paths.insert(parent.to_string_lossy().to_string());
+                        }
+                    }
+                }
+                Err(err) => {
+                    println!(
+                        "⚠️  Failed to parse config TOML for runtime paths (using defaults): {}",
+                        err
+                    );
+                }
+            },
+            Err(err) => {
+                println!(
+                    "⚠️  Failed to read config file for runtime paths (using defaults): {}",
+                    err
+                );
+            }
+        }
+
+        paths.into_iter().collect()
     }
 }

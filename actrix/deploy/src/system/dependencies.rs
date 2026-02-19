@@ -3,6 +3,21 @@
 use anyhow::Result;
 use std::process::Command;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceManager {
+    Systemd,
+    Unsupported,
+}
+
+impl ServiceManager {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Systemd => "systemd",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
 /// Check system dependencies and compatibility
 pub fn check_dependencies() -> Result<()> {
     let mut all_good = true;
@@ -15,11 +30,13 @@ pub fn check_dependencies() -> Result<()> {
         all_good = false;
     }
 
-    // Check for systemd
-    if has_systemd() {
-        println!("✅ Init system: systemd");
-    } else {
-        println!("⚠️  Init system: non-systemd (manual service management required)");
+    // Check supported service manager
+    match detect_service_manager() {
+        ServiceManager::Systemd => println!("✅ Service manager: systemd"),
+        ServiceManager::Unsupported => {
+            println!("⚠️  Service manager: unsupported (only systemd is currently implemented)");
+            all_good = false;
+        }
     }
 
     // Check for required commands
@@ -64,6 +81,14 @@ pub(super) fn command_exists(cmd: &str) -> bool {
 
 pub(super) fn has_systemd() -> bool {
     command_exists("systemctl") && std::path::Path::new("/run/systemd/system").exists()
+}
+
+pub(super) fn detect_service_manager() -> ServiceManager {
+    if has_systemd() {
+        ServiceManager::Systemd
+    } else {
+        ServiceManager::Unsupported
+    }
 }
 
 pub(super) fn has_user_management() -> bool {
