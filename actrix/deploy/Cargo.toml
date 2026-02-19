@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/actor-rtc/actrix"
+repository = "https://github.com/Actrium/actrix"
 description = "Bootstrap deployment helper for actrix WebRTC services"
 
 [[bin]]

@@ -2,7 +2,7 @@ syntax = "proto2";
 
 package ks.v1;
 
-// Import NonceCredential from supervisor common definitions
+// Import NonceCredential from admin common definitions
 import "common.proto";
 
 // Key Server 服务定义
@@ -24,7 +24,7 @@ service KeyServer {
 
 message GenerateKeyRequest {
   // nonce-auth 认证凭证
-  required supervisor.v1.NonceCredential credential = 1;
+  required admin.v1.NonceCredential credential = 1;
 }
 
 message GenerateKeyResponse {
@@ -49,7 +49,7 @@ message GetSecretKeyRequest {
   required uint32 key_id = 1;
 
   // nonce-auth 认证凭证
-  required supervisor.v1.NonceCredential credential = 2;
+  required admin.v1.NonceCredential credential = 2;
 }
 
 message GetSecretKeyResponse {

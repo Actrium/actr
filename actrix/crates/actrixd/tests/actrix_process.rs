@@ -1,4 +1,4 @@
-use actrix_sdk::testing::{self, GetNodeInfoRequest, ShutdownRequest, SupervisedServiceClient};
+use actrix_sdk::testing::{self, GetNodeInfoRequest, NodeAdminServiceClient, ShutdownRequest};
 use ks::{GrpcClient, GrpcClientConfig};
 use nonce_auth::CredentialBuilder;
 use platform::storage::db::Database;
@@ -17,9 +17,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_ACTRIX_SHARED_KEY: &str = "0123456789abcdef0123456789abcdef";
 const TEST_VALID_KEK_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-const TEST_SUPERVISOR_SHARED_SECRET: &str =
+const TEST_ADMIN_SHARED_SECRET: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const TEST_SUPERVISOR_NODE_ID: &str = "actrix-process-node";
+const TEST_ADMIN_NODE_ID: &str = "actrix-process-node";
 const TEST_TLS_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIUEtoFL1fivjqWKHCAUVysBEESK2YwDQYJKoZIhvcNAQEL
 BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDIxODA2MjU1MFoXDTI3MDIx
@@ -513,12 +513,12 @@ level = "info"
     config_path
 }
 
-fn write_config_with_supervisor(
+fn write_config_with_admin(
     dir: &PathBuf,
     port: u16,
-    supervisor_bind_ip: &str,
-    supervisor_port: u16,
-    supervisor_endpoint: &str,
+    admin_bind_ip: &str,
+    admin_port: u16,
+    admin_endpoint: &str,
 ) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -527,12 +527,12 @@ fn write_config_with_supervisor(
     writeln!(
         f,
         r#"
-name = "actrix-test-supervisor"
+name = "actrix-test-admin"
 enable = 16  # ENABLE_KS
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
-location_tag = "local,test,supervisor"
+location_tag = "local,test,admin"
 pid = "{pid}"
 
 [bind]
@@ -557,23 +557,23 @@ realm = "actor-rtc.local"
 [services.ks]
 # defaults
 
-[supervisor]
+[admin]
 connect_timeout_secs = 1
 status_report_interval_secs = 5
 health_check_interval_secs = 5
 enable_tls = false
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 node_name = "actrix-test-node"
-ip = "{supervisor_bind_ip}"
-port = {supervisor_port}
+ip = "{admin_bind_ip}"
+port = {admin_port}
 advertised_ip = "127.0.0.1"
 
-[supervisor.client]
+[admin.client]
 node_id = "{node_id}"
 shared_secret = "{shared_secret}"
-endpoint = "{supervisor_endpoint}"
+endpoint = "{admin_endpoint}"
 
 [observability.log]
 output = "console"
@@ -582,11 +582,11 @@ level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
-        supervisor_bind_ip = supervisor_bind_ip,
-        supervisor_port = supervisor_port,
-        node_id = TEST_SUPERVISOR_NODE_ID,
-        shared_secret = TEST_SUPERVISOR_SHARED_SECRET,
-        supervisor_endpoint = supervisor_endpoint,
+        admin_bind_ip = admin_bind_ip,
+        admin_port = admin_port,
+        node_id = TEST_ADMIN_NODE_ID,
+        shared_secret = TEST_ADMIN_SHARED_SECRET,
+        admin_endpoint = admin_endpoint,
         pid = dir.join("actrix.pid").display()
     )
     .expect("write config");
@@ -878,11 +878,11 @@ fn write_test_tls_cert_pair(dir: &PathBuf) -> (PathBuf, PathBuf) {
     (cert_path, key_path)
 }
 
-async fn wait_for_supervisord(
+async fn wait_for_admin_api(
     endpoint: &str,
     child: &mut Child,
     log_path: &PathBuf,
-) -> SupervisedServiceClient<tonic::transport::Channel> {
+) -> NodeAdminServiceClient<tonic::transport::Channel> {
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().unwrap_or(None) {
@@ -890,13 +890,13 @@ async fn wait_for_supervisord(
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(client) = SupervisedServiceClient::connect(endpoint.to_string()).await {
+        if let Ok(client) = NodeAdminServiceClient::connect(endpoint.to_string()).await {
             return client;
         }
 
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(log_path).unwrap_or_default();
-            panic!("supervisord grpc not ready at {endpoint}\nlogs:\n{log}");
+            panic!("admin_api grpc not ready at {endpoint}\nlogs:\n{log}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -939,7 +939,7 @@ async fn wait_for_ks_grpc_client(
 }
 
 fn build_node_info_credential(shared_secret: &[u8]) -> testing::NonceCredential {
-    let payload = format!("node_info:{TEST_SUPERVISOR_NODE_ID}");
+    let payload = format!("node_info:{TEST_ADMIN_NODE_ID}");
     let credential = CredentialBuilder::new(shared_secret)
         .sign(payload.as_bytes())
         .expect("build node info credential");
@@ -950,7 +950,7 @@ fn build_node_info_credential_with_timestamp(
     shared_secret: &[u8],
     timestamp: u64,
 ) -> testing::NonceCredential {
-    let payload = format!("node_info:{TEST_SUPERVISOR_NODE_ID}");
+    let payload = format!("node_info:{TEST_ADMIN_NODE_ID}");
     let credential = CredentialBuilder::new(shared_secret)
         .with_time_provider(move || Ok(timestamp))
         .sign(payload.as_bytes())
@@ -959,7 +959,7 @@ fn build_node_info_credential_with_timestamp(
 }
 
 fn build_shutdown_credential(shared_secret: &[u8]) -> testing::NonceCredential {
-    let payload = format!("shutdown:{TEST_SUPERVISOR_NODE_ID}");
+    let payload = format!("shutdown:{TEST_ADMIN_NODE_ID}");
     let credential = CredentialBuilder::new(shared_secret)
         .sign(payload.as_bytes())
         .expect("build shutdown credential");
@@ -1721,18 +1721,18 @@ async fn actrix_exits_on_incompatible_existing_schema() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_exits_when_supervisord_bind_address_is_invalid() {
+async fn actrix_exits_when_admin_api_bind_address_is_invalid() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "invalid-bind-ip",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:50051",
     );
-    let log_path = tmp.path().join("actrix-invalid-supervisord-bind.log");
+    let log_path = tmp.path().join("actrix-invalid-admin_api-bind.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let start = Instant::now();
@@ -1740,20 +1740,20 @@ async fn actrix_exits_when_supervisord_bind_address_is_invalid() {
         if let Some(status) = child.try_wait().expect("check child status") {
             assert!(
                 !status.success(),
-                "process should exit with non-zero status when supervisord bind address is invalid"
+                "process should exit with non-zero status when admin_api bind address is invalid"
             );
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             assert!(
-                log.contains("Failed to parse supervisord bind address")
-                    || log.to_lowercase().contains("supervisord bind address"),
-                "expected supervisord bind parse failure in logs, got: {log}"
+                log.contains("Failed to parse admin_api bind address")
+                    || log.to_lowercase().contains("admin_api bind address"),
+                "expected admin_api bind parse failure in logs, got: {log}"
             );
             return;
         }
 
         if start.elapsed() > START_TIMEOUT {
             graceful_shutdown(child);
-            panic!("actrix should fail fast on invalid supervisord bind address");
+            panic!("actrix should fail fast on invalid admin_api bind address");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -1975,26 +1975,26 @@ async fn actrix_serves_https_health_in_prod_with_valid_tls_config() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_supervisord_serves_node_info_and_rejects_bad_signature() {
+async fn actrix_admin_api_serves_node_info_and_rejects_bad_signature() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "127.0.0.1",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:1",
     );
-    let log_path = tmp.path().join("actrix-supervisord-auth.log");
+    let log_path = tmp.path().join("actrix-admin_api-auth.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
-    let endpoint = format!("http://127.0.0.1:{supervisor_port}");
-    let mut client = wait_for_supervisord(&endpoint, &mut child, &log_path).await;
-    let shared_secret = hex::decode(TEST_SUPERVISOR_SHARED_SECRET).expect("decode shared secret");
+    let endpoint = format!("http://127.0.0.1:{admin_port}");
+    let mut client = wait_for_admin_api(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_ADMIN_SHARED_SECRET).expect("decode shared secret");
     let valid_credential = build_node_info_credential(&shared_secret);
 
     let ok = client
@@ -2005,8 +2005,8 @@ async fn actrix_supervisord_serves_node_info_and_rejects_bad_signature() {
         .expect("get node info with valid credential")
         .into_inner();
     assert!(ok.success);
-    assert_eq!(ok.node_id, TEST_SUPERVISOR_NODE_ID);
-    assert_eq!(ok.location_tag, "local,test,supervisor");
+    assert_eq!(ok.node_id, TEST_ADMIN_NODE_ID);
+    assert_eq!(ok.location_tag, "local,test,admin");
 
     let mut bad_credential = valid_credential;
     bad_credential.signature.push('x');
@@ -2023,26 +2023,26 @@ async fn actrix_supervisord_serves_node_info_and_rejects_bad_signature() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_supervisord_shutdown_rpc_stops_process() {
+async fn actrix_admin_api_shutdown_rpc_stops_process() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "127.0.0.1",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:1",
     );
-    let log_path = tmp.path().join("actrix-supervisord-shutdown.log");
+    let log_path = tmp.path().join("actrix-admin_api-shutdown.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
-    let endpoint = format!("http://127.0.0.1:{supervisor_port}");
-    let mut client = wait_for_supervisord(&endpoint, &mut child, &log_path).await;
-    let shared_secret = hex::decode(TEST_SUPERVISOR_SHARED_SECRET).expect("decode shared secret");
+    let endpoint = format!("http://127.0.0.1:{admin_port}");
+    let mut client = wait_for_admin_api(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_ADMIN_SHARED_SECRET).expect("decode shared secret");
 
     let resp = client
         .shutdown(ShutdownRequest {
@@ -2069,7 +2069,7 @@ async fn actrix_supervisord_shutdown_rpc_stops_process() {
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             graceful_shutdown(child);
-            panic!("actrix should exit after supervisor shutdown rpc within timeout\nlogs:\n{log}");
+            panic!("actrix should exit after admin shutdown rpc within timeout\nlogs:\n{log}");
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2078,26 +2078,26 @@ async fn actrix_supervisord_shutdown_rpc_stops_process() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_supervisord_rejects_bad_shutdown_signature_and_keeps_running() {
+async fn actrix_admin_api_rejects_bad_shutdown_signature_and_keeps_running() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "127.0.0.1",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:1",
     );
-    let log_path = tmp.path().join("actrix-supervisord-bad-shutdown.log");
+    let log_path = tmp.path().join("actrix-admin_api-bad-shutdown.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
-    let endpoint = format!("http://127.0.0.1:{supervisor_port}");
-    let mut client = wait_for_supervisord(&endpoint, &mut child, &log_path).await;
-    let shared_secret = hex::decode(TEST_SUPERVISOR_SHARED_SECRET).expect("decode shared secret");
+    let endpoint = format!("http://127.0.0.1:{admin_port}");
+    let mut client = wait_for_admin_api(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_ADMIN_SHARED_SECRET).expect("decode shared secret");
     let mut bad_credential = build_shutdown_credential(&shared_secret);
     bad_credential.signature.push('x');
 
@@ -2123,26 +2123,26 @@ async fn actrix_supervisord_rejects_bad_shutdown_signature_and_keeps_running() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_supervisord_rejects_duplicate_nonce_on_node_info_and_keeps_running() {
+async fn actrix_admin_api_rejects_duplicate_nonce_on_node_info_and_keeps_running() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "127.0.0.1",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:1",
     );
-    let log_path = tmp.path().join("actrix-supervisord-replay.log");
+    let log_path = tmp.path().join("actrix-admin_api-replay.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
-    let endpoint = format!("http://127.0.0.1:{supervisor_port}");
-    let mut client = wait_for_supervisord(&endpoint, &mut child, &log_path).await;
-    let shared_secret = hex::decode(TEST_SUPERVISOR_SHARED_SECRET).expect("decode shared secret");
+    let endpoint = format!("http://127.0.0.1:{admin_port}");
+    let mut client = wait_for_admin_api(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_ADMIN_SHARED_SECRET).expect("decode shared secret");
     let replay_credential = build_node_info_credential(&shared_secret);
 
     let first = client
@@ -2173,26 +2173,26 @@ async fn actrix_supervisord_rejects_duplicate_nonce_on_node_info_and_keeps_runni
 
 #[tokio::test]
 #[serial]
-async fn actrix_supervisord_rejects_stale_node_info_timestamp_and_keeps_running() {
+async fn actrix_admin_api_rejects_stale_node_info_timestamp_and_keeps_running() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let supervisor_port = choose_port();
-    let config_path = write_config_with_supervisor(
+    let admin_port = choose_port();
+    let config_path = write_config_with_admin(
         &tmp.path().to_path_buf(),
         port,
         "127.0.0.1",
-        supervisor_port,
+        admin_port,
         "http://127.0.0.1:1",
     );
-    let log_path = tmp.path().join("actrix-supervisord-stale-ts.log");
+    let log_path = tmp.path().join("actrix-admin_api-stale-ts.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
-    let endpoint = format!("http://127.0.0.1:{supervisor_port}");
-    let mut client = wait_for_supervisord(&endpoint, &mut child, &log_path).await;
-    let shared_secret = hex::decode(TEST_SUPERVISOR_SHARED_SECRET).expect("decode shared secret");
+    let endpoint = format!("http://127.0.0.1:{admin_port}");
+    let mut client = wait_for_admin_api(&endpoint, &mut child, &log_path).await;
+    let shared_secret = hex::decode(TEST_ADMIN_SHARED_SECRET).expect("decode shared secret");
     let stale_ts = (chrono::Utc::now().timestamp() as u64).saturating_sub(301);
     let stale_credential = build_node_info_credential_with_timestamp(&shared_secret, stale_ts);
 

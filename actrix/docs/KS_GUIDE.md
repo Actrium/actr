@@ -1848,4 +1848,4 @@ sqlite3 /var/lib/actrix/ks.db \
 **文档版本**: v1.0
 **最后更新**: 2025-11-03
 **维护者**: Actrix Team
-**反馈**: https://github.com/actor-rtc/actrix/issues
+**反馈**: https://github.com/Actrium/actrix/issues

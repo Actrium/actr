@@ -1,15 +1,15 @@
-use actrix::service::SupervisordGrpcService;
+use actrix::service::AdminApiGrpcService;
 use actrix_sdk::testing::{
     self, ConfigType, CreateRealmRequest, DeleteRealmRequest, GetConfigRequest, GetNodeInfoRequest,
-    GetRealmRequest, ListRealmsRequest, REALM_ENABLED_KEY, REALM_USE_SERVERS_KEY,
-    REALM_VERSION_KEY, ResourceType, ShutdownRequest, SupervisedServiceClient, UpdateConfigRequest,
+    GetRealmRequest, ListRealmsRequest, NodeAdminServiceClient, REALM_ENABLED_KEY,
+    REALM_USE_SERVERS_KEY, REALM_VERSION_KEY, ResourceType, ShutdownRequest, UpdateConfigRequest,
     UpdateRealmRequest,
 };
 use nonce_auth::CredentialBuilder;
 use platform::{
     ServiceCollector,
-    config::SupervisorConfig,
-    config::supervisor::{SupervisorClientConfig, SupervisordConfig},
+    config::AdminPlaneConfig,
+    config::admin::{AdminApiConfig, AdminClientConfig},
     realm::{Realm as RealmEntity, RealmConfig},
     storage::db::set_db_path,
 };
@@ -26,13 +26,13 @@ use tonic::Code;
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const TEST_SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const TEST_NODE_ID: &str = "supervisord-grpc-test-node";
-const TEST_LOCATION_TAG: &str = "local,test,supervisord-grpc";
+const TEST_NODE_ID: &str = "admin_api-grpc-test-node";
+const TEST_LOCATION_TAG: &str = "local,test,admin_api-grpc";
 
 static DB_INIT: OnceCell<()> = OnceCell::const_new();
 
 struct RunningServer {
-    client: SupervisedServiceClient<tonic::transport::Channel>,
+    client: NodeAdminServiceClient<tonic::transport::Channel>,
     shared_secret: Vec<u8>,
     shutdown_tx: broadcast::Sender<()>,
     handle: JoinHandle<()>,
@@ -58,7 +58,7 @@ fn unique_realm_id() -> u32 {
 async fn init_global_test_db() {
     DB_INIT
         .get_or_init(|| async {
-            let db_dir = std::env::temp_dir().join("actrix_supervisord_grpc_test_db");
+            let db_dir = std::env::temp_dir().join("actrix_admin_api_grpc_test_db");
             std::fs::create_dir_all(&db_dir).expect("create test db directory");
 
             for name in ["actrix.db", "actrix.db-shm", "actrix.db-wal"] {
@@ -82,8 +82,8 @@ async fn init_global_test_db() {
         .await;
 }
 
-fn build_supervisor_config(port: u16) -> SupervisorConfig {
-    SupervisorConfig {
+fn build_admin_config(port: u16) -> AdminPlaneConfig {
+    AdminPlaneConfig {
         connect_timeout_secs: 5,
         status_report_interval_secs: 5,
         health_check_interval_secs: 5,
@@ -93,13 +93,13 @@ fn build_supervisor_config(port: u16) -> SupervisorConfig {
         client_key: None,
         ca_cert: None,
         max_clock_skew_secs: 300,
-        supervisord: SupervisordConfig {
-            node_name: "supervisord-grpc-test".into(),
+        api: AdminApiConfig {
+            node_name: "admin_api-grpc-test".into(),
             ip: "127.0.0.1".into(),
             port,
             advertised_ip: "127.0.0.1".into(),
         },
-        client: SupervisorClientConfig {
+        client: AdminClientConfig {
             node_id: TEST_NODE_ID.into(),
             endpoint: "http://127.0.0.1:1".into(),
             shared_secret: TEST_SHARED_SECRET.into(),
@@ -130,23 +130,23 @@ fn build_node_info_credential(shared_secret: &[u8], node_id: &str) -> testing::N
     build_credential_for_payload(shared_secret, &format!("node_info:{node_id}"))
 }
 
-async fn wait_for_supervisord_client(
+async fn wait_for_admin_api_client(
     endpoint: &str,
-) -> SupervisedServiceClient<tonic::transport::Channel> {
+) -> NodeAdminServiceClient<tonic::transport::Channel> {
     let start = Instant::now();
     loop {
-        if let Ok(client) = SupervisedServiceClient::connect(endpoint.to_string()).await {
+        if let Ok(client) = NodeAdminServiceClient::connect(endpoint.to_string()).await {
             return client;
         }
 
         if start.elapsed() > START_TIMEOUT {
-            panic!("supervisord grpc not ready at {endpoint}");
+            panic!("admin_api grpc not ready at {endpoint}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-async fn start_supervisord_service() -> RunningServer {
+async fn start_admin_api_service() -> RunningServer {
     init_global_test_db().await;
 
     let temp = tempfile::tempdir().expect("create temp dir");
@@ -157,8 +157,8 @@ async fn start_supervisord_service() -> RunningServer {
 
     let service_collector = ServiceCollector::new();
     let (shutdown_tx, _) = broadcast::channel(8);
-    let mut service = SupervisordGrpcService::new(
-        build_supervisor_config(port),
+    let mut service = AdminApiGrpcService::new(
+        build_admin_config(port),
         temp.path().to_path_buf(),
         TEST_LOCATION_TAG.to_string(),
         service_collector,
@@ -167,10 +167,10 @@ async fn start_supervisord_service() -> RunningServer {
     let handle = service
         .start(addr, shutdown_tx.clone())
         .await
-        .expect("start supervisord grpc service");
+        .expect("start admin_api grpc service");
 
     let endpoint = format!("http://127.0.0.1:{port}");
-    let client = wait_for_supervisord_client(&endpoint).await;
+    let client = wait_for_admin_api_client(&endpoint).await;
 
     RunningServer {
         client,
@@ -181,24 +181,24 @@ async fn start_supervisord_service() -> RunningServer {
     }
 }
 
-async fn stop_supervisord_service(server: RunningServer) {
+async fn stop_admin_api_service(server: RunningServer) {
     let _ = server.shutdown_tx.send(());
     tokio::time::timeout(STOP_TIMEOUT, server.handle)
         .await
-        .expect("supervisord grpc handle should stop")
-        .expect("supervisord grpc task should not panic");
+        .expect("admin_api grpc handle should stop")
+        .expect("admin_api grpc task should not panic");
 }
 
 #[tokio::test]
 #[serial]
-async fn supervisord_grpc_covers_config_realm_nodeinfo_shutdown_and_auth_rejection() {
+async fn admin_api_grpc_covers_config_realm_nodeinfo_shutdown_and_auth_rejection() {
     let RunningServer {
         mut client,
         shared_secret,
         shutdown_tx,
         handle,
         _temp,
-    } = start_supervisord_service().await;
+    } = start_admin_api_service().await;
 
     let config_type = ConfigType::LogLevel as i32;
     let config_key = "log.level".to_string();
@@ -470,14 +470,14 @@ async fn supervisord_grpc_covers_config_realm_nodeinfo_shutdown_and_auth_rejecti
     let _ = shutdown_tx.send(());
     tokio::time::timeout(STOP_TIMEOUT, handle)
         .await
-        .expect("supervisord grpc handle should stop after shutdown")
-        .expect("supervisord grpc task should not panic");
+        .expect("admin_api grpc handle should stop after shutdown")
+        .expect("admin_api grpc task should not panic");
 }
 
 #[tokio::test]
 #[serial]
-async fn supervisord_grpc_rejects_duplicate_nonce_and_expired_timestamp() {
-    let mut server = start_supervisord_service().await;
+async fn admin_api_grpc_rejects_duplicate_nonce_and_expired_timestamp() {
+    let mut server = start_admin_api_service().await;
     let node_payload = format!("node_info:{TEST_NODE_ID}");
 
     let replay_credential = build_credential_for_payload(&server.shared_secret, &node_payload);
@@ -522,13 +522,13 @@ async fn supervisord_grpc_rejects_duplicate_nonce_and_expired_timestamp() {
         stale_err.message()
     );
 
-    stop_supervisord_service(server).await;
+    stop_admin_api_service(server).await;
 }
 
 #[tokio::test]
 #[serial]
-async fn supervisord_grpc_rejects_bad_signature_for_update_config_and_keeps_previous_value() {
-    let mut server = start_supervisord_service().await;
+async fn admin_api_grpc_rejects_bad_signature_for_update_config_and_keeps_previous_value() {
+    let mut server = start_admin_api_service().await;
 
     let config_type = ConfigType::LogLevel as i32;
     let config_key = "log.secure_level".to_string();
@@ -584,13 +584,13 @@ async fn supervisord_grpc_rejects_bad_signature_for_update_config_and_keeps_prev
     assert!(get_after_reject.success);
     assert_eq!(get_after_reject.config_value.as_deref(), Some("info"));
 
-    stop_supervisord_service(server).await;
+    stop_admin_api_service(server).await;
 }
 
 #[tokio::test]
 #[serial]
-async fn supervisord_grpc_tolerates_corrupted_use_servers_metadata() {
-    let mut server = start_supervisord_service().await;
+async fn admin_api_grpc_tolerates_corrupted_use_servers_metadata() {
+    let mut server = start_admin_api_service().await;
     let realm_id = unique_realm_id();
 
     let create = server
@@ -663,13 +663,13 @@ async fn supervisord_grpc_tolerates_corrupted_use_servers_metadata() {
         .into_inner();
     assert!(delete_realm.success);
 
-    stop_supervisord_service(server).await;
+    stop_admin_api_service(server).await;
 }
 
 #[tokio::test]
 #[serial]
-async fn supervisord_grpc_tolerates_corrupted_enabled_and_version_metadata() {
-    let mut server = start_supervisord_service().await;
+async fn admin_api_grpc_tolerates_corrupted_enabled_and_version_metadata() {
+    let mut server = start_admin_api_service().await;
     let realm_id = unique_realm_id();
 
     let create = server
@@ -755,5 +755,5 @@ async fn supervisord_grpc_tolerates_corrupted_enabled_and_version_metadata() {
         .into_inner();
     assert!(delete_realm.success);
 
-    stop_supervisord_service(server).await;
+    stop_admin_api_service(server).await;
 }

@@ -1,9 +1,9 @@
 use actrix_proto::{
+    admin::v1::NonceCredential,
     ks::v1::{
         GenerateKeyRequest, GetSecretKeyRequest, HealthCheckRequest,
         key_server_client::KeyServerClient,
     },
-    supervisor::v1::NonceCredential,
 };
 use base64::Engine as _;
 use ks::{

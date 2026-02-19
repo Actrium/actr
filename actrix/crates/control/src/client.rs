@@ -1,4 +1,4 @@
-//! gRPC client for admin supervisor communication
+//! gRPC client for admin admin communication
 
 use crate::config::AdminConfig;
 use crate::error::{AdminError, Result};
@@ -6,9 +6,9 @@ use crate::metrics::collect_system_metrics;
 use crate::nonce_auth::generate_credential;
 use crate::realm::get_max_realm_version;
 use crate::{
-    HealthCheckRequest, HealthCheckResponse, RegisterNodeRequest, RegisterNodeResponse,
-    ReportRequest, ReportResponse, ServiceAdvertisement, ServiceAdvertisementStatus,
-    SupervisorServiceClient as GrpcSupervisorClient,
+    ControlServiceClient as GrpcAdminClient, HealthCheckRequest, HealthCheckResponse,
+    RegisterNodeRequest, RegisterNodeResponse, ReportRequest, ReportResponse, ServiceAdvertisement,
+    ServiceAdvertisementStatus,
 };
 use platform::ServiceCollector;
 
@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 /// Admin gRPC 客户端
 pub struct AdminClient {
     config: AdminConfig,
-    client: Option<GrpcSupervisorClient<Channel>>,
+    client: Option<GrpcAdminClient<Channel>>,
     shared_secret: Vec<u8>,    // hex decoded shared secret
     service_tags: Vec<String>, // normalized service tags
     service_collector: ServiceCollector,
@@ -55,10 +55,10 @@ impl AdminClient {
         })
     }
 
-    /// 连接到 supervisor 服务器
+    /// 连接到 admin 服务器
     pub async fn connect(&mut self) -> Result<()> {
         info!(
-            "Connecting to supervisor at: {} (node: {})",
+            "Connecting to admin at: {} (node: {})",
             self.config.endpoint, self.config.node_id
         );
 
@@ -77,9 +77,9 @@ impl AdminClient {
         }
 
         let channel = endpoint.connect().await?;
-        self.client = Some(GrpcSupervisorClient::new(channel));
+        self.client = Some(GrpcAdminClient::new(channel));
 
-        info!("Successfully connected to supervisor");
+        info!("Successfully connected to admin");
         Ok(())
     }
 
@@ -170,7 +170,7 @@ impl AdminClient {
         Ok(response)
     }
 
-    /// Register node information (including supervisord advertised address)
+    /// Register node information (including admin_api advertised address)
     pub async fn register_node(&mut self) -> Result<RegisterNodeResponse> {
         let location_tag = self.config.location_tag.clone();
         let name = self.config.name.clone().unwrap_or_else(|| {
@@ -350,7 +350,7 @@ impl AdminClient {
             }
         };
 
-        // 获取本地最大 realm 版本号（用于 Supervisor 检测同步滞后）
+        // 获取本地最大 realm 版本号（用于 Admin 检测同步滞后）
         let realm_sync_version = get_max_realm_version().await.unwrap_or(0);
 
         let timestamp = chrono::Utc::now().timestamp();
@@ -478,7 +478,7 @@ impl AdminClient {
     /// 断开连接
     pub fn disconnect(&mut self) {
         self.client = None;
-        info!("Disconnected from supervisor");
+        info!("Disconnected from admin");
     }
 }
 

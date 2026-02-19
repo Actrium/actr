@@ -60,7 +60,7 @@ pub struct ActrixConfig {
     pub bind: BindConfig,                   // 网络绑定配置
     pub turn: TurnConfig,                   // TURN 服务配置
     pub location_tag: String,               // 位置标签
-    pub supervisor: Option<SupervisorConfig>, // Supervisor 配置
+    pub admin: Option<AdminConfig>, // Admin 配置
     pub services: ServicesConfig,            // 服务配置
     pub sqlite_path: PathBuf,                // SQLite 数据库目录
     pub actrix_shared_key: String,           // 内部服务通信密钥
@@ -2088,14 +2088,14 @@ cargo test -p ais
 ## 7. sdk - 统一导出门面
 
 **位置**: `crates/sdk/`
-**功能**: 统一对外导出 control/contracts 的公共 API，并集中维护兼容别名。
+**功能**: 统一对外导出控制面 API，并按职责分层组织 SDK 导出。
 
 ### 7.1 功能说明
 
 SDK 门面负责:
 - 统一导出 Admin 控制面 Client/Server API
 - 对外提供稳定的单一导入入口（`actrix-sdk`）
-- 集中维护历史兼容别名（例如 Supervit 命名）
+- 将内部集成测试相关导出收敛到 `testing` 分层（feature 门控）
 
 ---
 

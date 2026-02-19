@@ -1,8 +1,8 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile all proto files
-    // - common.proto: shared types for supervisor.v1
-    // - supervisor.proto: SupervisorService (Node calls Supervisor)
-    // - supervised.proto: SupervisedService (Supervisor calls Node)
+    // - common.proto: shared types for admin.v1
+    // - admin.proto: ControlService (Node calls Admin)
+    // - node_admin.proto: NodeAdminService (Admin calls Node)
     // - keyserver.proto: KeyServer service (imports common.proto)
     tonic_prost_build::configure()
         .build_server(true)
@@ -10,8 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compile_protos(
             &[
                 "proto/common.proto",
-                "proto/supervisor.proto",
-                "proto/supervised.proto",
+                "proto/admin.proto",
+                "proto/node_admin.proto",
                 "proto/keyserver.proto",
             ],
             &["proto/"],
@@ -19,8 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Rebuild if any proto file changes
     println!("cargo:rerun-if-changed=proto/common.proto");
-    println!("cargo:rerun-if-changed=proto/supervisor.proto");
-    println!("cargo:rerun-if-changed=proto/supervised.proto");
+    println!("cargo:rerun-if-changed=proto/admin.proto");
+    println!("cargo:rerun-if-changed=proto/node_admin.proto");
     println!("cargo:rerun-if-changed=proto/keyserver.proto");
 
     Ok(())

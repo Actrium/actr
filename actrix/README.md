@@ -25,7 +25,7 @@ A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, 
 
 ```bash
 # Clone repository
-git clone https://github.com/actor-rtc/actrix.git
+git clone https://github.com/Actrium/actrix.git
 cd actrix
 
 # Build release binary
@@ -353,7 +353,7 @@ Apache License 2.0
 
 ## Support
 
-- GitHub Issues: https://github.com/actor-rtc/actrix/issues
+- GitHub Issues: https://github.com/Actrium/actrix/issues
 - Documentation: [docs/INDEX.md](docs/INDEX.md)
 
 ---

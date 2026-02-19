@@ -350,89 +350,89 @@ endpoint = "http://otel-collector:4317"  # OTel Collector
 
 **验证**: 必须以 `http://` 或 `https://` 开头
 
-## Supervisor 配置 (可选)
+## Admin 配置 (可选)
 
-**用途**: 与 Supervisor 管理平台的 gRPC 集成，用于服务注册、状态上报和远程管理
+**用途**: 与 Admin 管理平台的 gRPC 集成，用于服务注册、状态上报和远程管理
 
 ```toml
-[supervisor]
+[admin]
 connect_timeout_secs = 30
 status_report_interval_secs = 60
 health_check_interval_secs = 30
 enable_tls = false
-# tls_domain = "supervisor.example.com"       # required when enable_tls = true
+# tls_domain = "admin.example.com"       # required when enable_tls = true
 # client_cert = "/path/to/client-cert.pem"    # optional (mTLS)
 # client_key = "/path/to/client-key.pem"      # optional (mTLS)
 # ca_cert = "/path/to/ca-cert.pem"            # optional
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 node_name = "actrix-node"
 ip = "0.0.0.0"
 port = 50055
 advertised_ip = "127.0.0.1"
 
-[supervisor.client]
+[admin.client]
 node_id = "actrix-node-01"
 # name = "actrix-edge-01"                     # optional
-endpoint = "http://supervisor.example.com:50051"
+endpoint = "http://admin.example.com:50051"
 shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
 
-### supervisor.connect_timeout_secs (可选)
+### admin.connect_timeout_secs (可选)
 
 **类型**: `u64`  \
 **默认值**: `30`  \
 **用途**: 连接超时时间（秒）
 
-### supervisor.status_report_interval_secs (可选)
+### admin.status_report_interval_secs (可选)
 
 **类型**: `u64`  \
 **默认值**: `60`  \
 **用途**: 状态上报间隔（秒）
 
-### supervisor.health_check_interval_secs (可选)
+### admin.health_check_interval_secs (可选)
 
 **类型**: `u64`  \
 **默认值**: `30`  \
 **用途**: 健康检查间隔（秒）
 
-### supervisor.enable_tls / supervisor.tls_domain / supervisor.client_cert / supervisor.client_key / supervisor.ca_cert (可选)
+### admin.enable_tls / admin.tls_domain / admin.client_cert / admin.client_key / admin.ca_cert (可选)
 
-**用途**: 控制连接到 Supervisor 时的 TLS/mTLS 行为；当 `enable_tls = true` 时需要配置 `tls_domain`，配置 mTLS 时需要同时提供 `client_cert` 与 `client_key`
+**用途**: 控制连接到 Admin 时的 TLS/mTLS 行为；当 `enable_tls = true` 时需要配置 `tls_domain`，配置 mTLS 时需要同时提供 `client_cert` 与 `client_key`
 
-### supervisor.max_clock_skew_secs (可选)
+### admin.max_clock_skew_secs (可选)
 
 **类型**: `u64`  \
 **默认值**: `300`  \
 **用途**: nonce-auth 允许的最大时间偏差（秒）
 
-### supervisor.supervisord.node_name (可选)
+### admin.api.node_name (可选)
 
 **类型**: `String`  \
-**用途**: Supervisord 服务展示名称，未配置时回退到 `supervisor.client.name` 或 `node_id`
+**用途**: AdminApi 服务展示名称，未配置时回退到 `admin.client.name` 或 `node_id`
 
-### supervisor.supervisord.ip / port / advertised_ip (必需)
+### admin.api.ip / port / advertised_ip (必需)
 
-**用途**: Supervisord gRPC 服务监听地址与对外曝光地址；`advertised_ip:port` 将写入注册信息，供 Supervisor 回连
+**用途**: AdminApi gRPC 服务监听地址与对外曝光地址；`advertised_ip:port` 将写入注册信息，供 Admin 回连
 
-### supervisor.client.node_id (必需)
+### admin.client.node_id (必需)
 
 **类型**: `String`  \
-**用途**: 节点唯一标识符，在 Supervisor 平台中用于识别此服务实例
+**用途**: 节点唯一标识符，在 Admin 平台中用于识别此服务实例
 
-### supervisor.client.name (可选)
+### admin.client.name (可选)
 
 **类型**: `String`  \
 **用途**: 节点展示名称，未配置时回退到 `node_id`
 
-### supervisor.client.endpoint (必需)
+### admin.client.endpoint (必需)
 
 **类型**: `String` (URL)  \
-**用途**: Supervisor 平台的 gRPC 入口地址  \
+**用途**: Admin 平台的 gRPC 入口地址  \
 **格式**: `http://hostname:port` 或 `https://hostname:port`
 
-### supervisor.client.shared_secret (必需)
+### admin.client.shared_secret (必需)
 
 **类型**: `String` (Hex)  \
 **用途**: 共享密钥，用于 nonce-auth 认证的 HMAC 签名  \
@@ -545,23 +545,23 @@ enable = true
 service_name = "actrix-prod-01"
 endpoint = "http://otel-collector.internal:4317"
 
-[supervisor]
+[admin]
 connect_timeout_secs = 30
 status_report_interval_secs = 60
 health_check_interval_secs = 30
 enable_tls = true
-tls_domain = "supervisor.example.com"
+tls_domain = "admin.example.com"
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 node_name = "actrix-prod-01"
 ip = "0.0.0.0"
 port = 50055
 advertised_ip = "203.0.113.10"
 
-[supervisor.client]
+[admin.client]
 node_id = "actrix-prod-01"
-endpoint = "https://supervisor.example.com:50051"
+endpoint = "https://admin.example.com:50051"
 shared_secret = "REPLACE_WITH_HEX_SECRET"
 ```
 
@@ -648,7 +648,7 @@ chown actrix:actrix config.toml
 ### 3. 生产清单
 
 - [ ] 修改 actrix_shared_key
-- [ ] 修改 supervisor.shared_secret
+- [ ] 修改 admin.shared_secret
 - [ ] 使用有效 TLS 证书
 - [ ] 启用文件日志和轮转
 - [ ] 设置 user/group

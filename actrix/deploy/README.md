@@ -21,4 +21,4 @@ cargo run --manifest-path deploy/Cargo.toml -- uninstall
 ## 目录说明
 
 - `src/`：部署引导代码（CLI + systemd/安装逻辑）
-- `install.sh`：历史脚本（兼容保留）
+- `install.sh`：脚本化安装入口

@@ -40,7 +40,7 @@ generate_service_file() {
     cat > "$output_file" <<EOF
 [Unit]
 Description=Actrix - Actor-RTC Auxiliary Services
-Documentation=https://github.com/actor-rtc/actrix
+Documentation=https://github.com/Actrium/actrix
 After=network.target
 
 [Service]

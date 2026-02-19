@@ -28,11 +28,6 @@ use tracing::info;
 use url::Url;
 
 // 重新导出服务实现
-/// Compatibility re-export for historical API name.
-///
-/// Keep this symbol while internal naming converges to `AdminApiGrpcService`.
-#[allow(unused_imports)]
-pub use grpc::SupervisordGrpcService;
 pub use grpc::{AdminApiGrpcService, KsGrpcService};
 pub use http::{AisService, KsHttpService, SignalingService};
 pub use ice::{StunService, TurnService};

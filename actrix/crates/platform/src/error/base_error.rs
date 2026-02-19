@@ -29,8 +29,8 @@ pub enum BaseError {
     SignalingService { message: String },
 
     /// 监管服务错误
-    #[error("Supervisor service error: {message}")]
-    SupervisorService { message: String },
+    #[error("Admin service error: {message}")]
+    ControlService { message: String },
 
     /// TURN 服务错误
     #[error("TURN service error: {message}")]
@@ -109,8 +109,8 @@ impl BaseError {
     }
 
     /// 创建监管服务错误
-    pub fn supervisor_service(message: impl Into<String>) -> Self {
-        Self::SupervisorService {
+    pub fn control_service(message: impl Into<String>) -> Self {
+        Self::ControlService {
             message: message.into(),
         }
     }

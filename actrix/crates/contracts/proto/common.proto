@@ -1,6 +1,6 @@
 syntax = "proto2";
 
-package supervisor.v1;
+package admin.v1;
 
 // ============================================================================
 // Authentication credential (nonce-auth compatible)

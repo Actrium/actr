@@ -3,21 +3,21 @@
 //! 本模块是 Actor-RTC 辅助服务配置的"单一真理之源"。
 //! 所有配置项的定义、文档、默认值都在这里统一管理。
 
+pub mod admin;
 pub mod ais;
 pub mod bind;
 pub mod ks;
 pub mod services;
 pub mod signaling;
-pub mod supervisor;
 pub mod tracing;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub mod turn;
 
+pub use crate::config::admin::AdminPlaneConfig;
 pub use crate::config::ais::AisConfig;
 pub use crate::config::bind::BindConfig;
 pub use crate::config::services::ServicesConfig;
 pub use crate::config::signaling::SignalingConfig;
-pub use crate::config::supervisor::SupervisorConfig;
 pub use crate::config::tracing::TracingConfig;
 pub use crate::config::turn::TurnConfig;
 use ::ks::storage::StorageBackend;
@@ -96,11 +96,11 @@ pub struct ActrixConfig {
     /// 例如：us-west-1, office-beijing, edge-node-01
     pub location_tag: String,
 
-    /// Supervisor 平台集成配置（可选）
+    /// Admin 平台集成配置（可选）
     ///
-    /// 配置与 Supervisor 管理平台的集成，包括认证信息和连接地址。
+    /// 配置与 Admin 管理平台的集成，包括认证信息和连接地址。
     /// 如果不需要接入管理平台，可以省略此配置段。
-    pub supervisor: Option<SupervisorConfig>,
+    pub admin: Option<AdminPlaneConfig>,
 
     /// 服务配置集合
     ///
@@ -248,7 +248,7 @@ impl Default for ActrixConfig {
             bind: BindConfig::default(),
             turn: TurnConfig::default(),
             location_tag: "default-location".to_string(),
-            supervisor: None,
+            admin: None,
             services: ServicesConfig::default(),
             sqlite_path: PathBuf::from("database"),
             actrix_shared_key: "XDDYE8d+yMfdXcdWMrXprcUk2uzjnmoX6nCfFw1gGIg=".to_string(),
@@ -301,9 +301,9 @@ impl ActrixConfig {
         self.is_stun_enabled() || self.is_turn_enabled()
     }
 
-    /// 检查是否启用了 Supervisor 客户端
-    pub fn is_supervisor_enabled(&self) -> bool {
-        self.supervisor.as_ref().is_some_and(|config| {
+    /// 检查是否启用了 Admin 客户端
+    pub fn is_admin_enabled(&self) -> bool {
+        self.admin.as_ref().is_some_and(|config| {
             !config.client.node_id.trim().is_empty() && !config.client.endpoint.trim().is_empty()
         })
     }
@@ -593,11 +593,11 @@ impl ActrixConfig {
             }
         }
 
-        // Supervisor 配置校验
-        if let Some(ref supervisor) = self.supervisor
-            && let Err(e) = supervisor.validate()
+        // Admin 配置校验
+        if let Some(ref admin) = self.admin
+            && let Err(e) = admin.validate()
         {
-            errors.push(format!("Supervisor configuration error: {e}"));
+            errors.push(format!("Admin configuration error: {e}"));
         }
 
         if errors.is_empty() {

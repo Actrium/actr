@@ -12,7 +12,7 @@ const SYSTEMD_SERVICE_TEMPLATE: &str = r#"# actrix systemd service file template
 
 [Unit]
 Description=Actor-RTC Auxiliary Servers
-Documentation=https://github.com/actor-rtc/actrix
+Documentation=https://github.com/Actrium/actrix
 After=network.target
 
 [Service]

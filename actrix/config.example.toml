@@ -193,31 +193,31 @@ ws_path = "/signaling"
 # endpoint = "http://remote-ais:8080"  # (optional)
 
 # ============================================================================
-# Supervisor Platform Integration (optional)
+# Admin Platform Integration (optional)
 # ============================================================================
-# Enable Supervisor platform integration by configuring the [supervisor] section.
+# Enable Admin platform integration by configuring the [admin] section.
 # This enables both:
-#   - Supervisord gRPC service (listens on ip:port, implements SupervisedService)
-#   - Supervisor client (connects to endpoint, registers node and reports status)
+#   - AdminApi gRPC service (listens on ip:port, implements NodeAdminService)
+#   - Admin client (connects to endpoint, registers node and reports status)
 #
-[supervisor]
+[admin]
 # Connection timeout in seconds (optional, default: 30)
 connect_timeout_secs = 30
 
 # Status report interval in seconds (optional, default: 60)
-# How often to send status reports to Supervisor
+# How often to send status reports to Admin
 status_report_interval_secs = 60
 
 # Health check interval in seconds (optional, default: 30)
-# How often to perform health checks with Supervisor
+# How often to perform health checks with Admin
 health_check_interval_secs = 30
 
-# Enable TLS for connections to Supervisor (optional, default: false)
+# Enable TLS for connections to Admin (optional, default: false)
 enable_tls = false
 
 # TLS domain for certificate verification (required when enable_tls is true)
 # Must match the certificate's Common Name (CN) or Subject Alternative Name (SAN)
-# tls_domain = "supervisor.example.com"  # (required if enable_tls = true)
+# tls_domain = "admin.example.com"  # (required if enable_tls = true)
 
 # Client certificate path for mTLS (optional)
 # If provided, both client_cert and client_key must be set
@@ -235,27 +235,27 @@ enable_tls = false
 # Used for nonce-auth timestamp validation
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 # Optional human readable node name
 node_name = "actrix-edge-01"
 
-# Supervisord gRPC bind IP address (optional, default: "0.0.0.0")
-# Network interface IP address to bind the supervisord gRPC service
+# AdminApi gRPC bind IP address (optional, default: "0.0.0.0")
+# Network interface IP address to bind the admin_api gRPC service
 ip = "0.0.0.0"
 
-# Supervisord gRPC bind port (optional, default: 50055)
-# Port number for the supervisord gRPC service to listen on
+# AdminApi gRPC bind port (optional, default: 50055)
+# Port number for the admin_api gRPC service to listen on
 port = 50055
 
-# Supervisord gRPC advertised IP address (optional, default: "127.0.0.1")
-# Public IP address that Supervisor will use to connect back to this node
+# AdminApi gRPC advertised IP address (optional, default: "127.0.0.1")
+# Public IP address that Admin will use to connect back to this node
 # In NAT environments, this is typically the router's public IP
 advertised_ip = "127.0.0.1"
 
-[supervisor.client]
-# Copy these values from Supervisor management platform after creating a node
+[admin.client]
+# Copy these values from Admin management platform after creating a node
 # Node unique identifier (required)
-# Must be unique within the Supervisor platform
+# Must be unique within the Admin platform
 node_id = "actrix-node-01"
 
 # Optional display name (defaults to node_id if omitted)
@@ -265,9 +265,9 @@ node_id = "actrix-node-01"
 # Hex-encoded, must be at least 64 hex characters (32 bytes)
 shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-# Supervisor gRPC server endpoint (required)
+# Admin gRPC server endpoint (required)
 # Format: http://hostname:port or https://hostname:port
-endpoint = "http://supervisor.example.com:50051"
+endpoint = "http://admin.example.com:50051"
 
 # ============================================================================
 # Production Configuration Example

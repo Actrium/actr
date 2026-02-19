@@ -11,9 +11,9 @@ fn main() {
     println!("cargo:rerun-if-changed=src/config");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let out_dir = env::var("OUT_DIR").unwrap();
     let config_dir = Path::new(&manifest_dir).join("src/config");
-    let template_output_path =
-        Path::new(&manifest_dir).join("../../deploy/tpl/config.template.toml");
+    let template_output_path = Path::new(&out_dir).join("config.template.toml");
 
     // Ensure output directory exists
     if let Some(parent) = template_output_path.parent()
@@ -312,7 +312,7 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         // Tracing config fields
         "service_name" => "\"actrix\"".to_string(),
         "endpoint" => {
-            if section_prefix.contains("supervisor") {
+            if section_prefix.contains("admin") {
                 "\"http://localhost:50051\"".to_string()
             } else {
                 "\"http://127.0.0.1:4317\"".to_string()
@@ -342,7 +342,7 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         "relay_port_range" => "\"49152-65535\"".to_string(),
         "realm" => "\"actor-rtc.local\"".to_string(),
 
-        // Supervisor config
+        // Admin config
         "node_id" => "\"\"".to_string(),
         "secret" => "\"\"".to_string(),
         "shared_secret" => {

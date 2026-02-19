@@ -1,14 +1,14 @@
 syntax = "proto2";
 
-package supervisor.v1;
+package admin.v1;
 
 import "common.proto";
 
 // ============================================================================
-// SupervisedService - Implemented by Node, called by Supervisor
+// NodeAdminService - Implemented by Node, called by Admin
 // ============================================================================
 
-service SupervisedService {
+service NodeAdminService {
   // ------------ Configuration management ------------
   rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);

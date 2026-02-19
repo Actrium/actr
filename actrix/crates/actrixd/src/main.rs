@@ -308,7 +308,7 @@ impl ApplicationLauncher {
     ) -> Result<ServiceManager> {
         info!("📊 计划启动的服务:");
         // 数据库已在 run_services_with_privilege_drop 中提前初始化，
-        // 以确保 AdminApiGrpcService（兼容别名: SupervisordGrpcService）可以安全处理 RPC 回调
+        // 以确保 AdminApiGrpcService 可以安全处理 RPC 回调
 
         // 初始化 Prometheus metrics registry
         let registry = &platform::metrics::REGISTRY;
@@ -414,14 +414,14 @@ impl ApplicationLauncher {
             info!("🔌 gRPC 服务:");
             info!("  - KS gRPC Server: 127.0.0.1:50052");
         }
-        if config.is_supervisor_enabled()
-            && let Some(supervisor_cfg) = &config.supervisor
+        if config.is_admin_enabled()
+            && let Some(admin_cfg) = &config.admin
         {
-            let supervisord_cfg = &supervisor_cfg.supervisord;
+            let admin_api_cfg = &admin_cfg.api;
             info!(
-                "  - Supervisord gRPC Server: {} (advertised: {})",
-                supervisord_cfg.bind_addr(),
-                supervisord_cfg.advertised_addr()
+                "  - AdminApi gRPC Server: {} (advertised: {})",
+                admin_api_cfg.bind_addr(),
+                admin_api_cfg.advertised_addr()
             );
         }
     }

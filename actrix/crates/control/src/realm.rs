@@ -153,8 +153,8 @@ fn parse_use_servers(raw: &str) -> Vec<ResourceType> {
 
 /// Get the maximum realm version across all realms.
 ///
-/// This is used to report the sync status to the Supervisor.
-/// The Supervisor can use this to detect version lag and push missing realms.
+/// This is used to report the sync status to the Admin.
+/// The Admin can use this to detect version lag and push missing realms.
 ///
 /// Returns 0 if the database is not initialized or no realms exist.
 pub async fn get_max_realm_version() -> Result<u64, AdminError> {

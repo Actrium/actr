@@ -7,7 +7,7 @@ This document is a concise guide for AI coding assistants working on Actrix.
 - HTTP port sharing: all HTTP-based services (AIS, KS HTTP API, Signaling) share the same instance-level port defined by `bind.http` or `bind.https`.
 
 ## Project summary
-- Repository: https://github.com/actor-rtc/actrix
+- Repository: https://github.com/Actrium/actrix
 - License: Apache 2.0
 - Rust: 1.88+ (Edition 2024)
 - Layout: workspace with multiple crates

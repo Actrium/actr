@@ -4,7 +4,7 @@
 //!
 //! # Modules
 //!
-//! - [`supervisor::v1`]: Supervisor service definitions (SupervisorService and SupervisedService)
+//! - [`admin::v1`]: Admin service definitions (ControlService and NodeAdminService)
 //! - [`ks::v1`]: Key Server service definitions
 //!
 //! # Usage
@@ -12,7 +12,7 @@
 //! ## Direct module access
 //!
 //! ```ignore
-//! use actrix_proto::supervisor::v1::{RegisterNodeRequest, ReportRequest};
+//! use actrix_proto::admin::v1::{RegisterNodeRequest, ReportRequest};
 //! use actrix_proto::ks::v1::{GenerateKeyRequest, KeyServerClient};
 //! ```
 //!
@@ -23,7 +23,7 @@
 //! ```ignore
 //! use actrix_proto::{
 //!     NonceCredential, RealmInfo, ResourceType,
-//!     SupervisorServiceClient, SupervisedServiceServer,
+//!     ControlServiceClient, NodeAdminServiceServer,
 //! };
 //! ```
 //!
@@ -31,17 +31,17 @@
 //!
 //! ## Cross-Package References
 //!
-//! The `ks.v1` package imports `NonceCredential` from `supervisor.v1` for consistent
+//! The `ks.v1` package imports `NonceCredential` from `admin.v1` for consistent
 //! authentication across all services. When using KS gRPC types directly, reference
-//! the credential type via `actrix_proto::supervisor::v1::NonceCredential`.
+//! the credential type via `actrix_proto::admin::v1::NonceCredential`.
 
-/// Supervisor service protocol definitions.
+/// Admin service protocol definitions.
 ///
-/// Contains both `SupervisorService` (Node → Supervisor) and
-/// `SupervisedService` (Supervisor → Node) definitions.
-pub mod supervisor {
+/// Contains both `ControlService` (Node → Admin) and
+/// `NodeAdminService` (Admin → Node) definitions.
+pub mod admin {
     pub mod v1 {
-        tonic::include_proto!("supervisor.v1");
+        tonic::include_proto!("admin.v1");
     }
 }
 
@@ -55,10 +55,10 @@ pub mod ks {
 }
 
 // ============================================================================
-// Re-exports: Common Types (from supervisor.v1)
+// Re-exports: Common Types (from admin.v1)
 // ============================================================================
 
-pub use supervisor::v1::{
+pub use admin::v1::{
     // Enums
     ConfigType,
     // Shared message types
@@ -75,13 +75,13 @@ pub use supervisor::v1::{
 };
 
 // ============================================================================
-// Re-exports: SupervisorService (Node calls Supervisor)
+// Re-exports: ControlService (Node calls Admin)
 // ============================================================================
 
-pub use supervisor::v1::{
+pub use admin::v1::{
     // Health check (aliased to avoid collision with ks::v1)
-    HealthCheckRequest as SupervisorHealthCheckRequest,
-    HealthCheckResponse as SupervisorHealthCheckResponse,
+    HealthCheckRequest as ControlHealthCheckRequest,
+    HealthCheckResponse as ControlHealthCheckResponse,
     // Registration
     RegisterNodeRequest,
     RegisterNodeResponse,
@@ -89,15 +89,15 @@ pub use supervisor::v1::{
     ReportRequest,
     ReportResponse,
     // Client and server
-    supervisor_service_client::SupervisorServiceClient,
-    supervisor_service_server::{SupervisorService, SupervisorServiceServer},
+    control_service_client::ControlServiceClient,
+    control_service_server::{ControlService, ControlServiceServer},
 };
 
 // ============================================================================
-// Re-exports: SupervisedService (Supervisor calls Node)
+// Re-exports: NodeAdminService (Admin calls Node)
 // ============================================================================
 
-pub use supervisor::v1::{
+pub use admin::v1::{
     // Realm management
     CreateRealmRequest,
     CreateRealmResponse,
@@ -120,8 +120,8 @@ pub use supervisor::v1::{
     UpdateRealmRequest,
     UpdateRealmResponse,
     // Client and server
-    supervised_service_client::SupervisedServiceClient,
-    supervised_service_server::{SupervisedService, SupervisedServiceServer},
+    node_admin_service_client::NodeAdminServiceClient,
+    node_admin_service_server::{NodeAdminService, NodeAdminServiceServer},
 };
 
 // ============================================================================
@@ -129,7 +129,7 @@ pub use supervisor::v1::{
 // ============================================================================
 
 pub use ks::v1::{
-    // Health check (aliased to avoid collision with supervisor::v1)
+    // Health check (aliased to avoid collision with admin::v1)
     HealthCheckRequest as KsHealthCheckRequest,
     HealthCheckResponse as KsHealthCheckResponse,
     // Client and server

@@ -1,7 +1,7 @@
 //! Admin control-plane library for actrix nodes.
 //!
 //! This crate is the canonical implementation for node-side control-plane
-//! behavior (register/report client + supervised gRPC API server).
+//! behavior (register/report client + node_admin gRPC API server).
 
 pub mod auth;
 pub mod client;
@@ -24,14 +24,14 @@ pub use service::AdminApiService;
 
 // Re-export commonly used proto types from actrix-proto.
 pub use actrix_proto::{
-    ConfigType, CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest, DeleteRealmResponse,
-    Directive, DirectiveType, GetConfigRequest, GetConfigResponse, GetNodeInfoRequest,
-    GetNodeInfoResponse, GetRealmRequest, GetRealmResponse, ListRealmsRequest, ListRealmsResponse,
+    ConfigType, ControlHealthCheckRequest as HealthCheckRequest,
+    ControlHealthCheckResponse as HealthCheckResponse, ControlService, ControlServiceClient,
+    ControlServiceServer, CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest,
+    DeleteRealmResponse, Directive, DirectiveType, GetConfigRequest, GetConfigResponse,
+    GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest, GetRealmResponse, ListRealmsRequest,
+    ListRealmsResponse, NodeAdminService, NodeAdminServiceClient, NodeAdminServiceServer,
     NonceCredential, RegisterNodeRequest, RegisterNodeResponse, ReportRequest, ReportResponse,
     ResourceType, ServiceAdvertisement, ServiceAdvertisementStatus, ServiceStatus, ShutdownRequest,
-    ShutdownResponse, SupervisedService, SupervisedServiceClient, SupervisedServiceServer,
-    SupervisorHealthCheckRequest as HealthCheckRequest,
-    SupervisorHealthCheckResponse as HealthCheckResponse, SupervisorService,
-    SupervisorServiceClient, SupervisorServiceServer, SystemMetrics, UpdateConfigRequest,
-    UpdateConfigResponse, UpdateRealmRequest, UpdateRealmResponse,
+    ShutdownResponse, SystemMetrics, UpdateConfigRequest, UpdateConfigResponse, UpdateRealmRequest,
+    UpdateRealmResponse,
 };

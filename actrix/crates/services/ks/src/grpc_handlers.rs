@@ -7,9 +7,9 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, info, warn};
 
 // 导入生成的 protobuf 代码
+use actrix_proto::admin::v1::NonceCredential;
 use actrix_proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
 use actrix_proto::ks::v1::*;
-use actrix_proto::supervisor::v1::NonceCredential;
 
 /// KS gRPC 服务状态
 #[derive(Clone)]

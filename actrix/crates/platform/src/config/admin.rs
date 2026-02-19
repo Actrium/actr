@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Supervisor 平台集成配置（顶层共享设置 + 角色子段）
+/// Admin 平台集成配置（顶层共享设置 + 角色子段）
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SupervisorConfig {
+pub struct AdminPlaneConfig {
     /// 连接超时（秒）
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_secs: u64,
@@ -47,18 +47,18 @@ pub struct SupervisorConfig {
     #[serde(default = "default_max_clock_skew")]
     pub max_clock_skew_secs: u64,
 
-    /// Supervisord 回调服务配置（供管理平台回连）
+    /// AdminApi 回调服务配置（供管理平台回连）
     #[serde(default)]
-    pub supervisord: SupervisordConfig,
+    pub api: AdminApiConfig,
 
-    /// Supervisor 客户端配置（主动注册 + 上报）
+    /// Admin 客户端配置（主动注册 + 上报）
     #[serde(default)]
-    pub client: SupervisorClientConfig,
+    pub client: AdminClientConfig,
 }
 
-/// Supervisord gRPC 服务配置
+/// AdminApi gRPC 服务配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SupervisordConfig {
+pub struct AdminApiConfig {
     /// 节点显示名称（必填），默认回退到 node_id
     ///
     /// 在 UI 和监控中用于展示的节点名称。建议使用具有业务含义的名称。
@@ -67,38 +67,38 @@ pub struct SupervisordConfig {
 
     /// Bind IP address
     ///
-    /// Network interface IP address to bind the supervisord gRPC service.
+    /// Network interface IP address to bind the api gRPC service.
     /// Typically use "0.0.0.0" to listen on all interfaces.
     #[serde(default = "default_bind_ip")]
     pub ip: String,
 
     /// Bind port
     ///
-    /// Port number for the supervisord gRPC service to listen on.
+    /// Port number for the api gRPC service to listen on.
     /// Default is 50055.
     #[serde(default = "default_bind_port")]
     pub port: u16,
 
     /// Advertised IP address
     ///
-    /// Public IP address that clients (Supervisor) will use to connect.
+    /// Public IP address that clients (Admin) will use to connect.
     /// In NAT environments, this is typically the router's public IP.
     #[serde(default = "default_advertised_ip")]
     pub advertised_ip: String,
 }
 
-/// Supervisor 客户端配置
+/// Admin 客户端配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SupervisorClientConfig {
+pub struct AdminClientConfig {
     /// 节点唯一标识符
     ///
-    /// 在 Supervisor 平台中的唯一标识符，用于识别此服务实例。
+    /// 在 Admin 平台中的唯一标识符，用于识别此服务实例。
     pub node_id: String,
 
-    /// Supervisor gRPC endpoint
+    /// Admin gRPC endpoint
     ///
     /// gRPC 服务器地址，格式：http://hostname:port 或 https://hostname:port
-    /// 示例：http://supervisor.example.com:50051
+    /// 示例：http://admin.example.com:50051
     pub endpoint: String,
 
     /// Shared secret (hex encoded for HMAC signatures)
@@ -141,7 +141,7 @@ fn default_advertised_ip() -> String {
     "127.0.0.1".to_string()
 }
 
-impl Default for SupervisorConfig {
+impl Default for AdminPlaneConfig {
     fn default() -> Self {
         Self {
             connect_timeout_secs: default_connect_timeout(),
@@ -153,29 +153,29 @@ impl Default for SupervisorConfig {
             client_key: None,
             ca_cert: None,
             max_clock_skew_secs: default_max_clock_skew(),
-            supervisord: SupervisordConfig::default(),
-            client: SupervisorClientConfig::default(),
+            api: AdminApiConfig::default(),
+            client: AdminClientConfig::default(),
         }
     }
 }
 
-impl SupervisorConfig {
+impl AdminPlaneConfig {
     /// Get the bind address as SocketAddr string
     ///
     /// Returns a string in the format "ip:port" for binding the gRPC server.
     pub fn bind_addr(&self) -> String {
-        self.supervisord.bind_addr()
+        self.api.bind_addr()
     }
 
     /// Get the advertised address for registration
     ///
-    /// Returns a string in the format "advertised_ip:port" for Supervisor registration.
+    /// Returns a string in the format "advertised_ip:port" for Admin registration.
     pub fn advertised_addr(&self) -> String {
-        self.supervisord.advertised_addr()
+        self.api.advertised_addr()
     }
 
     pub fn node_name(&self) -> &str {
-        self.supervisord.node_name.as_str()
+        self.api.node_name.as_str()
     }
 
     pub fn node_id(&self) -> &str {
@@ -204,50 +204,47 @@ impl SupervisorConfig {
         // client section
         let client = &self.client;
         if client.node_id.trim().is_empty() {
-            errors.push("supervisor.client.node_id cannot be empty".to_string());
+            errors.push("admin.client.node_id cannot be empty".to_string());
         }
 
         if client.endpoint.trim().is_empty() {
-            errors.push("supervisor.client.endpoint cannot be empty".to_string());
+            errors.push("admin.client.endpoint cannot be empty".to_string());
         } else if !client.endpoint.starts_with("http://")
             && !client.endpoint.starts_with("https://")
         {
-            errors
-                .push("supervisor.client.endpoint must start with http:// or https://".to_string());
+            errors.push("admin.client.endpoint must start with http:// or https://".to_string());
         }
 
         let secret = &client.shared_secret;
         if secret.trim().is_empty() {
-            errors
-                .push("supervisor.client.shared_secret is required for authentication".to_string());
+            errors.push("admin.client.shared_secret is required for authentication".to_string());
         } else {
             if secret.len() < 64 {
                 errors.push(
-                    "supervisor.client.shared_secret must be at least 64 hex characters (32 bytes)"
+                    "admin.client.shared_secret must be at least 64 hex characters (32 bytes)"
                         .to_string(),
                 );
             }
             if hex::decode(secret).is_err() {
-                errors
-                    .push("supervisor.client.shared_secret must be a valid hex string".to_string());
+                errors.push("admin.client.shared_secret must be a valid hex string".to_string());
             }
         }
 
-        // supervisord section
-        let supervisord = &self.supervisord;
-        if supervisord.node_name.trim().is_empty() {
-            errors.push("supervisor.supervisord.node_name cannot be empty".to_string());
+        // api section
+        let api = &self.api;
+        if api.node_name.trim().is_empty() {
+            errors.push("admin.api.node_name cannot be empty".to_string());
         }
-        if supervisord.ip.trim().is_empty() {
-            errors.push("supervisor.supervisord.ip cannot be empty".to_string());
-        }
-
-        if supervisord.advertised_ip.trim().is_empty() {
-            errors.push("supervisor.supervisord.advertised_ip cannot be empty".to_string());
+        if api.ip.trim().is_empty() {
+            errors.push("admin.api.ip cannot be empty".to_string());
         }
 
-        if supervisord.port == 0 {
-            errors.push("supervisor.supervisord.port must be greater than 0".to_string());
+        if api.advertised_ip.trim().is_empty() {
+            errors.push("admin.api.advertised_ip cannot be empty".to_string());
+        }
+
+        if api.port == 0 {
+            errors.push("admin.api.port must be greater than 0".to_string());
         }
 
         if self.enable_tls && self.tls_domain.is_none() {
@@ -273,7 +270,7 @@ impl SupervisorConfig {
     }
 }
 
-impl SupervisordConfig {
+impl AdminApiConfig {
     /// 返回绑定地址 "ip:port"
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.ip, self.port)
@@ -285,7 +282,7 @@ impl SupervisordConfig {
     }
 }
 
-impl Default for SupervisordConfig {
+impl Default for AdminApiConfig {
     fn default() -> Self {
         Self {
             node_name: default_node_name(),
@@ -296,7 +293,7 @@ impl Default for SupervisordConfig {
     }
 }
 
-impl Default for SupervisorClientConfig {
+impl Default for AdminClientConfig {
     fn default() -> Self {
         Self {
             node_id: String::new(),
@@ -314,21 +311,21 @@ mod tests {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
     }
 
-    fn base_config() -> SupervisorConfig {
-        SupervisorConfig {
-            client: SupervisorClientConfig {
+    fn base_config() -> AdminPlaneConfig {
+        AdminPlaneConfig {
+            client: AdminClientConfig {
                 node_id: "test-node".to_string(),
                 endpoint: "http://localhost:50051".to_string(),
                 shared_secret: valid_secret(),
             },
-            supervisord: SupervisordConfig::default(),
+            api: AdminApiConfig::default(),
             ..Default::default()
         }
     }
 
     #[test]
     fn test_default_config() {
-        let config = SupervisorConfig::default();
+        let config = AdminPlaneConfig::default();
         let client = &config.client;
         assert_eq!(client.endpoint, "http://localhost:50051");
         assert_eq!(config.connect_timeout_secs, 30);
@@ -405,8 +402,8 @@ mod tests {
     fn test_validate_valid_tls_config() {
         let mut config = base_config();
         config.enable_tls = true;
-        config.client.endpoint = "https://supervisor.example.com:50051".to_string();
-        config.tls_domain = Some("supervisor.example.com".to_string());
+        config.client.endpoint = "https://admin.example.com:50051".to_string();
+        config.tls_domain = Some("admin.example.com".to_string());
         assert!(config.validate().is_ok());
     }
 
@@ -414,8 +411,8 @@ mod tests {
     fn test_validate_valid_mtls_config() {
         let mut config = base_config();
         config.enable_tls = true;
-        config.client.endpoint = "https://supervisor.example.com:50051".to_string();
-        config.tls_domain = Some("supervisor.example.com".to_string());
+        config.client.endpoint = "https://admin.example.com:50051".to_string();
+        config.tls_domain = Some("admin.example.com".to_string());
         config.client_cert = Some("/path/to/cert.pem".to_string());
         config.client_key = Some("/path/to/key.pem".to_string());
         config.ca_cert = Some("/path/to/ca.pem".to_string());

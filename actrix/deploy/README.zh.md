@@ -145,5 +145,5 @@ cargo build --release -p deploy
 
 本助手的主要目标是帮助新手用户快速上手。部分配置项未在工具界面中直接体现，包括：
 - 用于本地调试的 http 选项配置
-- 用于受管模式的 supervisor 相关配置
+- 用于受管模式的 admin 相关配置
 请结合文档和 example，直接在 .config 文件中完成相关配置。

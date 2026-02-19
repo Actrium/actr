@@ -1,8 +1,8 @@
 use actrix_proto::{
     CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest, DeleteRealmResponse,
     GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest,
-    GetRealmResponse, ListRealmsRequest, ListRealmsResponse, NonceCredential, ShutdownRequest,
-    ShutdownResponse, SupervisedService, UpdateConfigRequest, UpdateConfigResponse,
+    GetRealmResponse, ListRealmsRequest, ListRealmsResponse, NodeAdminService, NonceCredential,
+    ShutdownRequest, ShutdownResponse, UpdateConfigRequest, UpdateConfigResponse,
     UpdateRealmRequest, UpdateRealmResponse,
 };
 use nonce_auth::{CredentialVerifier, NonceError, storage::NonceStorage};
@@ -83,9 +83,9 @@ impl<S> AuthService<S> {
 }
 
 #[tonic::async_trait]
-impl<S> SupervisedService for AuthService<S>
+impl<S> NodeAdminService for AuthService<S>
 where
-    S: SupervisedService + Send + Sync + Clone + 'static,
+    S: NodeAdminService + Send + Sync + Clone + 'static,
 {
     async fn update_config(
         &self,

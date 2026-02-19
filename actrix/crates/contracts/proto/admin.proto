@@ -1,14 +1,14 @@
 syntax = "proto2";
 
-package supervisor.v1;
+package admin.v1;
 
 import "common.proto";
 
 // ============================================================================
-// SupervisorService - Implemented by Supervisor, called by Node
+// ControlService - Implemented by Admin, called by Node
 // ============================================================================
 
-service SupervisorService {
+service ControlService {
   // Node registration, called when establishing connection
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
 
@@ -50,7 +50,7 @@ message RegisterNodeRequest {
   required string name = 2;                 // Node name (human readable)
   required string location_tag = 3;         // Geographic location tag
   required string version = 4;              // Node version
-  required string agent_addr = 5;           // SupervisedService listen address (host:port)
+  required string agent_addr = 5;           // NodeAdminService listen address (host:port)
   required NonceCredential credential = 6;  // Authentication credential
   // Field 7 reserved (was public_key, no longer used)
   optional string location = 8;             // Optional location detail (free-form)
@@ -93,7 +93,7 @@ message ReportResponse {
 }
 
 // ============================================================================
-// Directive - Supervisor commands to Node
+// Directive - Admin commands to Node
 // ============================================================================
 
 enum DirectiveType {

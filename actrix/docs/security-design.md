@@ -11,15 +11,15 @@
 
 **现有配置：**
 ```rust
-SupervisorConfig {
+AdminConfig {
     connect_timeout_secs: u64,
     status_report_interval_secs: u64,
     health_check_interval_secs: u64,
     enable_tls: bool,
     tls_domain: Option<String>,
     max_clock_skew_secs: u64,
-    supervisord: Option<SupervisordConfig>,
-    client: Option<SupervisorClientConfig>,
+    api: Option<AdminApiConfig>,
+    client: Option<AdminClientConfig>,
 }
 ```
 
@@ -88,7 +88,7 @@ SupervisorConfig {
 │  │  │  ┌────────────────────────────────────┐   │     │   │
 │  │  │  │  应用层认证保护                     │   │     │   │
 │  │  │  │                                      │   │     │   │
-│  │  │  │  actrix-node ←─gRPC─→ supervisor  │   │     │   │
+│  │  │  │  actrix-node ←─gRPC─→ admin  │   │     │   │
 │  │  │  │  (已认证)              (已认证)    │   │     │   │
 │  │  │  │                                      │   │     │   │
 │  │  │  └────────────────────────────────────┘   │     │   │
@@ -125,19 +125,19 @@ SupervisorConfig {
 **技术：mTLS (Mutual TLS)**
 
 ```toml
-[supervisor]
+[admin]
 enable_tls = true
-tls_domain = "supervisor.example.com"
+tls_domain = "admin.example.com"
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 ip = "0.0.0.0"
 port = 50055
 advertised_ip = "203.0.113.10"
 
-[supervisor.client]
+[admin.client]
 node_id = "actrix-01"
-endpoint = "https://supervisor.example.com:50051"
+endpoint = "https://admin.example.com:50051"
 shared_secret = "<replace-with-hex>"
 
 # 客户端证书认证（可选）
@@ -257,7 +257,7 @@ impl ReplayProtection {
 
 **配置：**
 ```toml
-[supervisor.security]
+[admin.security]
 max_clock_skew_secs = 300  # 5 分钟
 nonce_cache_size = 10000   # 缓存 1 万个 nonce
 nonce_ttl_secs = 600       # nonce 10 分钟后自动清理
@@ -305,13 +305,13 @@ impl NodePermissions {
 **配置示例：**
 ```toml
 # 普通节点
-[[supervisor.nodes]]
+[[admin.nodes]]
 node_id = "actrix-node-01"
 shared_secret = "hex_encoded_secret"
 permissions = ["ReportStatus", "HealthCheck", "RealmRead"]
 
 # 管理节点
-[[supervisor.nodes]]
+[[admin.nodes]]
 node_id = "actrix-admin-01"
 shared_secret = "hex_encoded_admin_secret"
 permissions = ["*"]  # 所有权限
@@ -325,7 +325,7 @@ permissions = ["*"]  # 所有权限
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SupervisorConfig {
+pub struct AdminConfig {
     pub connect_timeout_secs: u64,
     pub status_report_interval_secs: u64,
     pub health_check_interval_secs: u64,
@@ -335,18 +335,18 @@ pub struct SupervisorConfig {
     pub client_key: Option<String>,
     pub ca_cert: Option<String>,
     pub max_clock_skew_secs: u64,
-    pub supervisord: Option<SupervisordConfig>,
-    pub client: Option<SupervisorClientConfig>,
+    pub api: Option<AdminApiConfig>,
+    pub client: Option<AdminClientConfig>,
 }
 
-pub struct SupervisorClientConfig {
+pub struct AdminClientConfig {
     pub node_id: String,
     pub name: Option<String>,
     pub endpoint: String,
     pub shared_secret: Option<String>,
 }
 
-pub struct SupervisordConfig {
+pub struct AdminApiConfig {
     pub node_name: Option<String>,
     pub ip: String,
     pub port: u16,
@@ -359,7 +359,7 @@ pub struct SupervisordConfig {
 ```rust
 pub struct AdminClient {
     config: AdminConfig,
-    client: Option<GrpcSupervisorClient<InterceptedService<Channel, AuthInterceptor>>>,
+    client: Option<GrpcAdminClient<InterceptedService<Channel, AuthInterceptor>>>,
     auth_interceptor: AuthInterceptor,
 }
 
@@ -377,7 +377,7 @@ impl AdminClient {
         let channel = endpoint.connect().await?;
 
         // 3. 添加认证拦截器
-        let client = GrpcSupervisorClient::with_interceptor(
+        let client = GrpcAdminClient::with_interceptor(
             channel,
             self.auth_interceptor.clone(),
         );
@@ -402,13 +402,13 @@ impl AdminClient {
 ### 4.3 服务端验证
 
 ```rust
-pub struct SupervisorAuthService {
+pub struct AdminAuthService {
     permissions: Arc<NodePermissions>,
     replay_protection: Arc<ReplayProtection>,
     secrets: Arc<HashMap<String, Vec<u8>>>,
 }
 
-impl SupervisorAuthService {
+impl AdminAuthService {
     pub fn verify_request<T>(&self, request: &Request<T>) -> Result<String> {
         // 1. 提取 metadata
         let metadata = request.metadata();
@@ -462,7 +462,7 @@ openssl req -x509 -newkey rsa:4096 -nodes \
 # 2. 生成服务端证书
 openssl req -newkey rsa:4096 -nodes \
     -keyout server-key.pem -out server-req.pem \
-    -subj "/CN=supervisor.example.com"
+    -subj "/CN=admin.example.com"
 openssl x509 -req -in server-req.pem -CA ca-cert.pem -CAkey ca-key.pem \
     -CAcreateserial -out server-cert.pem -days 365
 
@@ -481,39 +481,39 @@ openssl rand -hex 32  # 输出 64 字符的 hex 字符串
 
 **节点配置（actrix-node-01）：**
 ```toml
-[supervisor]
+[admin]
 connect_timeout_secs = 30
 status_report_interval_secs = 60
 health_check_interval_secs = 30
 enable_tls = true
-tls_domain = "supervisor.example.com"
+tls_domain = "admin.example.com"
 max_clock_skew_secs = 300
 
-[supervisor.supervisord]
+[admin.api]
 node_name = "actrix-01"
 ip = "0.0.0.0"
 port = 50055
 advertised_ip = "203.0.113.10"
 
-[supervisor.client]
+[admin.client]
 node_id = "actrix-01"
-endpoint = "https://supervisor.example.com:50051"
+endpoint = "https://admin.example.com:50051"
 shared_secret = "a1b2c3d4e5f6...64位hex字符串"
 client_cert = "/etc/actrix/certs/client-actrix-01-cert.pem"
 client_key = "/etc/actrix/certs/client-actrix-01-key.pem"
 ca_cert = "/etc/actrix/certs/ca-cert.pem"
 ```
 
-**Supervisor 配置：**
+**Admin 配置：**
 ```toml
 [server]
 bind_addr = "0.0.0.0:50051"
 
 # L1: TLS
 enable_tls = true
-server_cert = "/etc/supervisor/certs/server-cert.pem"
-server_key = "/etc/supervisor/certs/server-key.pem"
-ca_cert = "/etc/supervisor/certs/ca-cert.pem"
+server_cert = "/etc/admin/certs/server-cert.pem"
+server_key = "/etc/admin/certs/server-key.pem"
+ca_cert = "/etc/admin/certs/ca-cert.pem"
 require_client_cert = true
 
 # L3: 防重放
@@ -550,7 +550,7 @@ permissions = ["*"]
    - 定期轮换 shared_secret（建议每季度）
 
 3. **网络隔离**
-   - Supervisor 端口不对公网开放
+   - Admin 端口不对公网开放
    - 使用 VPC/VPN 限制访问
    - 配置防火墙规则
 
@@ -563,12 +563,12 @@ permissions = ["*"]
 
 **密钥泄露应对：**
 ```bash
-# 1. 立即撤销泄露节点的访问权限（修改 supervisor 配置）
+# 1. 立即撤销泄露节点的访问权限（修改 admin 配置）
 # 2. 生成新的 shared_secret
 openssl rand -hex 32 > new_secret.txt
 
 # 3. 更新节点配置
-# 4. 重启节点和 supervisor
+# 4. 重启节点和 admin
 # 5. 审计日志，查找异常访问
 ```
 

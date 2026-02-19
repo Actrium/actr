@@ -14,9 +14,9 @@ This crate consolidates all protobuf definitions used across Actrix components i
 
 ```
 actrix_proto
-├── supervisor::v1    # Supervisor service definitions
-│   ├── SupervisorService (Node → Supervisor)
-│   ├── SupervisedService (Supervisor → Node)
+├── admin::v1    # Admin service definitions
+│   ├── ControlService (Node → Admin)
+│   ├── NodeAdminService (Admin → Node)
 │   └── Common types (NonceCredential, RealmInfo, etc.)
 └── ks::v1            # Key Server service definitions
     └── KeyServer service
@@ -26,9 +26,9 @@ actrix_proto
 
 | File | Package | Description |
 |------|---------|-------------|
-| `common.proto` | `supervisor.v1` | Shared types: NonceCredential, RealmInfo, SystemMetrics, etc. |
-| `supervisor.proto` | `supervisor.v1` | SupervisorService - Node registration and reporting |
-| `supervised.proto` | `supervisor.v1` | SupervisedService - Realm/config management from Supervisor |
+| `common.proto` | `admin.v1` | Shared types: NonceCredential, RealmInfo, SystemMetrics, etc. |
+| `admin.proto` | `admin.v1` | ControlService - Node registration and reporting |
+| `node_admin.proto` | `admin.v1` | NodeAdminService - Realm/config management from Admin |
 | `keyserver.proto` | `ks.v1` | KeyServer - Key generation and retrieval |
 
 ## Usage
@@ -36,7 +36,7 @@ actrix_proto
 ### Direct module access
 
 ```rust
-use actrix_proto::supervisor::v1::{RegisterNodeRequest, ReportRequest};
+use actrix_proto::admin::v1::{RegisterNodeRequest, ReportRequest};
 use actrix_proto::ks::v1::{GenerateKeyRequest, KeyServerClient};
 ```
 
@@ -46,7 +46,7 @@ use actrix_proto::ks::v1::{GenerateKeyRequest, KeyServerClient};
 // Common types re-exported at crate root
 use actrix_proto::{
     NonceCredential, RealmInfo, ResourceType,
-    SupervisorServiceClient, SupervisedServiceServer,
+    ControlServiceClient, NodeAdminServiceServer,
 };
 ```
 
@@ -54,7 +54,7 @@ use actrix_proto::{
 
 ### Cross-Package References
 
-The `ks.v1` package imports types from `supervisor.v1` (specifically `NonceCredential` for authentication). This creates a dependency between packages but allows consistent authentication across all services.
+The `ks.v1` package imports types from `admin.v1` (specifically `NonceCredential` for authentication). This creates a dependency between packages but allows consistent authentication across all services.
 
 ### Proto2 vs Proto3
 

@@ -17,16 +17,16 @@ pub struct AdminConfig {
     #[serde(skip, default)]
     pub location_tag: String,
 
-    /// Supervisor gRPC 服务器地址
+    /// Admin gRPC 服务器地址
     /// 格式: http://hostname:port 或 https://hostname:port
-    /// 示例: "http://supervisor.example.com:50051"
+    /// 示例: "http://admin.example.com:50051"
     pub endpoint: String,
 
-    /// AdminApiService gRPC advertised address (for Supervisor callback)
+    /// AdminApiService gRPC advertised address (for Admin callback)
     ///
-    /// This is the address that Supervisor will use to connect back to this node.
+    /// This is the address that Admin will use to connect back to this node.
     /// Format: "ip:port" (e.g., "203.0.113.10:50055")
-    /// This value is typically passed from SupervisorConfig.advertised_addr().
+    /// This value is typically passed from AdminConfig.advertised_addr().
     #[serde(default = "default_agent_addr")]
     pub agent_addr: String,
 

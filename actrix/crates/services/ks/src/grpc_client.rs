@@ -1,10 +1,10 @@
 //! KS gRPC 客户端
 
 use crate::error::KsError;
+use actrix_proto::admin::v1::NonceCredential;
 use actrix_proto::ks::v1::{
     GenerateKeyRequest, GetSecretKeyRequest, HealthCheckRequest, key_server_client::KeyServerClient,
 };
-use actrix_proto::supervisor::v1::NonceCredential;
 use base64::prelude::*;
 use ecies::{PublicKey, SecretKey};
 use nonce_auth::CredentialBuilder;

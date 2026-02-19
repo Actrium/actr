@@ -1,7 +1,7 @@
 use crate::error::Result as AdminResult;
 use crate::metrics::collect_system_metrics;
 use crate::realm::{RealmMetadata, load_realm_metadata, persist_realm_metadata, realm_to_proto};
-use actrix_proto::SupervisedService;
+use actrix_proto::NodeAdminService;
 use actrix_proto::{
     ConfigType, CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest, DeleteRealmResponse,
     GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest,
@@ -34,9 +34,9 @@ struct ConfigKey {
     key: String,
 }
 
-/// AdminApiService gRPC service (SupervisedService) implementation.
+/// AdminApiService gRPC service (NodeAdminService) implementation.
 ///
-/// Handles realm lifecycle, config delivery, and node control coming from Supervisor.
+/// Handles realm lifecycle, config delivery, and node control coming from Admin.
 #[derive(Clone)]
 pub struct AdminApiService {
     node_id: String,
@@ -51,7 +51,7 @@ pub struct AdminApiService {
 }
 
 impl AdminApiService {
-    /// Create a new supervisord service instance.
+    /// Create a new admin_api service instance.
     pub fn new(
         node_id: impl Into<String>,
         name: impl Into<String>,
@@ -183,7 +183,7 @@ impl AdminApiService {
 }
 
 #[tonic::async_trait]
-impl SupervisedService for AdminApiService {
+impl NodeAdminService for AdminApiService {
     async fn update_config(
         &self,
         request: Request<UpdateConfigRequest>,

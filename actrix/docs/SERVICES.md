@@ -68,7 +68,7 @@ pub enum ServiceType {
     Stun,        // STUN 服务 (ICE)
     Turn,        // TURN 服务 (ICE)
     Signaling,   // 信令服务 (HTTP/WS)
-    Supervisor,  // 管理平台客户端 (HTTP)
+    Admin,  // 管理平台客户端 (HTTP)
     Ais,         // Actor Identity Service (HTTP)
     Ks,          // Key Server (HTTP)
 }
@@ -85,7 +85,7 @@ pub enum ServiceType {
 | **TURN**       | ICE     | ✅ 已启用 | 4 (0b00100)  | 网络中继       |
 | **AIS**        | HTTP    | ✅ 已启用 | 8 (0b01000)  | Actor 身份服务 |
 | **Signaling**  | HTTP/WS | ⚠️ 待重构 | 1 (0b00001)  | WebRTC 信令    |
-| **Supervisor** | HTTP    | ⚠️ 可选   | -            | 管理平台客户端 |
+| **Admin** | HTTP    | ⚠️ 可选   | -            | 管理平台客户端 |
 
 ---
 
@@ -789,7 +789,7 @@ async fn start_ice_service(
 ```rust
 pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
     // 检查是否配置了管理平台
-    let managed_config = match &self.config.supervisor {
+    let managed_config = match &self.config.admin {
         Some(config) => config,
         None => {
             warn!(

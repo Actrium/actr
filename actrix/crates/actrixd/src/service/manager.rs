@@ -44,7 +44,7 @@ impl ServiceManager {
     /// 注册服务到管理平台
     pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
         // 检查是否配置了管理平台
-        let managed_config = match &self.config.supervisor {
+        let managed_config = match &self.config.admin {
             Some(config) => config,
             None => {
                 warn!(
