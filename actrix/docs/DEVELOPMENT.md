@@ -52,7 +52,8 @@ actrix/
 │   │   ├── src/
 │   │   │   ├── main.rs         # 入口点、可观测性初始化
 │   │   │   ├── cli.rs          # 命令行参数
-│   │   │   ├── admin/          # 内置 admin 运行时编排
+│   │   │   ├── recording_pipeline.rs  # recording 出口初始化
+│   │   │   ├── process.rs      # pid/权限切换
 │   │   │   ├── service/        # 服务管理
 │   │   │   │   ├── manager.rs  # 生命周期管理
 │   │   │   │   └── container.rs
@@ -63,7 +64,7 @@ actrix/
 │   │   ├── config/             # 配置系统
 │   │   ├── storage/            # SQLite 抽象
 │   │   └── aid/                # Actor ID 相关
-│   ├── control/                # 内置 admin 控制面实现（package: admin）
+│   ├── control/                # 控制面协议实现（package: admin）
 │   ├── sdk/                    # 统一导出门面（package: actrix-sdk）
 │   └── services/               # 业务服务集合
 │       ├── ais/                # 身份服务
@@ -72,7 +73,6 @@ actrix/
 │       ├── stun/               # STUN 服务器
 │       └── turn/               # TURN 服务器（含 LRU 认证缓存）
 ├── deploy/                     # 最小部署引导工具
-├── docker-compose.yml          # Docker compose 定义
 ├── docs/                       # 文档
 └── AGENTS.md                   # AI 开发助手指南
 ```

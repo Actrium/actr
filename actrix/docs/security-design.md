@@ -125,20 +125,14 @@ AdminConfig {
 **技术：mTLS (Mutual TLS)**
 
 ```toml
-[admin]
-enable_tls = true
-tls_domain = "admin.example.com"
-max_clock_skew_secs = 300
+[control]
+head = "grpc_api"
 
-[admin.api]
-ip = "0.0.0.0"
-port = 50055
-advertised_ip = "203.0.113.10"
-
-[admin.client]
+[control.grpc_api]
 node_id = "actrix-01"
-endpoint = "https://admin.example.com:50051"
+node_name = "actrix-01"
 shared_secret = "<replace-with-hex>"
+max_clock_skew_secs = 300
 
 # 客户端证书认证（可选）
 client_cert = "/etc/actrix/certs/client.crt"
@@ -481,24 +475,14 @@ openssl rand -hex 32  # 输出 64 字符的 hex 字符串
 
 **节点配置（actrix-node-01）：**
 ```toml
-[admin]
-connect_timeout_secs = 30
-status_report_interval_secs = 60
-health_check_interval_secs = 30
-enable_tls = true
-tls_domain = "admin.example.com"
-max_clock_skew_secs = 300
+[control]
+head = "grpc_api"
 
-[admin.api]
-node_name = "actrix-01"
-ip = "0.0.0.0"
-port = 50055
-advertised_ip = "203.0.113.10"
-
-[admin.client]
+[control.grpc_api]
 node_id = "actrix-01"
-endpoint = "https://admin.example.com:50051"
+node_name = "actrix-01"
 shared_secret = "a1b2c3d4e5f6...64位hex字符串"
+max_clock_skew_secs = 300
 client_cert = "/etc/actrix/certs/client-actrix-01-cert.pem"
 client_key = "/etc/actrix/certs/client-actrix-01-key.pem"
 ca_cert = "/etc/actrix/certs/ca-cert.pem"

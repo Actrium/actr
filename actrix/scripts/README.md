@@ -170,5 +170,5 @@ crontab -e
 ## 相关文档
 
 - [配置指南](../docs/CONFIGURATION.md)
-- [Docker 部署](../docs/DOCKER_DEPLOY.md)
+- [服务说明](../docs/SERVICES.md)
 - [部署工具](../deploy/README.md)

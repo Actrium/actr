@@ -310,93 +310,52 @@ sink = "otlp+grpc://127.0.0.1:4317"  # Jaeger/Tempo/OTel Collector
 cargo build --features opentelemetry
 ```
 
-## Admin 配置 (可选)
+## Control 配置（常驻）
 
-**用途**: 与 Admin 管理平台的 gRPC 集成，用于服务注册、状态上报和远程管理
+**用途**: 控制面始终启用，复用主 HTTP/HTTPS 端口，不单独开 control 端口。
 
 ```toml
-[admin]
-connect_timeout_secs = 30
-status_report_interval_secs = 60
-health_check_interval_secs = 30
-enable_tls = false
-# tls_domain = "admin.example.com"       # required when enable_tls = true
-# client_cert = "/path/to/client-cert.pem"    # optional (mTLS)
-# client_key = "/path/to/client-key.pem"      # optional (mTLS)
-# ca_cert = "/path/to/ca-cert.pem"            # optional
-max_clock_skew_secs = 300
+[control]
+head = "admin_ui"  # admin_ui | grpc_api
 
-[admin.api]
-node_name = "actrix-node"
-ip = "0.0.0.0"
-port = 50055
-advertised_ip = "127.0.0.1"
-
-[admin.client]
+[control.grpc_api]
 node_id = "actrix-node-01"
-# name = "actrix-edge-01"                     # optional
-endpoint = "http://admin.example.com:50051"
+node_name = "actrix-edge-01"
 shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+max_clock_skew_secs = 300
 ```
 
-### admin.connect_timeout_secs (可选)
+### control.head（必需，带默认）
 
-**类型**: `u64`  \
-**默认值**: `30`  \
-**用途**: 连接超时时间（秒）
+**类型**: `String` (`admin_ui` / `grpc_api`)  \
+**默认值**: `"admin_ui"`  \
+**用途**:
+- `admin_ui`: `/admin` 提供本地管理 UI
+- `grpc_api`: `/admin.v1.NodeAdminService/*` 提供 NodeAdminService（给 supervisor 使用）
+  兼容路径：`/admin/grpc/admin.v1.NodeAdminService/*`
 
-### admin.status_report_interval_secs (可选)
+### control.grpc_api.node_id（grpc_api 模式必需）
 
-**类型**: `u64`  \
-**默认值**: `60`  \
-**用途**: 状态上报间隔（秒）
+**类型**: `String`  \
+**用途**: gRPC 认证载荷中的节点标识
 
-### admin.health_check_interval_secs (可选)
+### control.grpc_api.node_name（可选）
 
-**类型**: `u64`  \
-**默认值**: `30`  \
-**用途**: 健康检查间隔（秒）
+**类型**: `String`  \
+**默认值**: `"actrix-node"`  \
+**用途**: 节点展示名称；为空时回退到 `node_id`
 
-### admin.enable_tls / admin.tls_domain / admin.client_cert / admin.client_key / admin.ca_cert (可选)
+### control.grpc_api.shared_secret（grpc_api 模式必需）
 
-**用途**: 控制连接到 Admin 时的 TLS/mTLS 行为；当 `enable_tls = true` 时需要配置 `tls_domain`，配置 mTLS 时需要同时提供 `client_cert` 与 `client_key`
+**类型**: `String` (Hex)  \
+**用途**: nonce-auth 共享密钥  \
+**要求**: 至少 64 个 hex 字符（32 字节）
 
-### admin.max_clock_skew_secs (可选)
+### control.grpc_api.max_clock_skew_secs（可选）
 
 **类型**: `u64`  \
 **默认值**: `300`  \
 **用途**: nonce-auth 允许的最大时间偏差（秒）
-
-### admin.api.node_name (可选)
-
-**类型**: `String`  \
-**用途**: AdminApi 服务展示名称，未配置时回退到 `admin.client.name` 或 `node_id`
-
-### admin.api.ip / port / advertised_ip (必需)
-
-**用途**: AdminApi gRPC 服务监听地址与对外曝光地址；`advertised_ip:port` 将写入注册信息，供 Admin 回连
-
-### admin.client.node_id (必需)
-
-**类型**: `String`  \
-**用途**: 节点唯一标识符，在 Admin 平台中用于识别此服务实例
-
-### admin.client.name (可选)
-
-**类型**: `String`  \
-**用途**: 节点展示名称，未配置时回退到 `node_id`
-
-### admin.client.endpoint (必需)
-
-**类型**: `String` (URL)  \
-**用途**: Admin 平台的 gRPC 入口地址  \
-**格式**: `http://hostname:port` 或 `https://hostname:port`
-
-### admin.client.shared_secret (必需)
-
-**类型**: `String` (Hex)  \
-**用途**: 共享密钥，用于 nonce-auth 认证的 HMAC 签名  \
-**要求**: 至少 64 个 hex 字符（32 字节），建议使用 `openssl rand -hex 32` 生成
 
 ## KS (Key Server) 配置 (可选)
 
@@ -497,24 +456,14 @@ realm = "actrix.example.com"
 [recording.audit]
 sink = "otlp+grpc://otel-collector.internal:4317"
 
-[admin]
-connect_timeout_secs = 30
-status_report_interval_secs = 60
-health_check_interval_secs = 30
-enable_tls = true
-tls_domain = "admin.example.com"
-max_clock_skew_secs = 300
+[control]
+head = "grpc_api"
 
-[admin.api]
-node_name = "actrix-prod-01"
-ip = "0.0.0.0"
-port = 50055
-advertised_ip = "203.0.113.10"
-
-[admin.client]
+[control.grpc_api]
 node_id = "actrix-prod-01"
-endpoint = "https://admin.example.com:50051"
+node_name = "actrix-prod-01"
 shared_secret = "REPLACE_WITH_HEX_SECRET"
+max_clock_skew_secs = 300
 ```
 
 ### 开发配置
@@ -595,7 +544,7 @@ chown actrix:actrix config.toml
 ### 3. 生产清单
 
 - [ ] 修改 actrix_shared_key
-- [ ] 修改 admin.shared_secret
+- [ ] 修改 control.grpc_api.shared_secret（若使用 grpc_api 头）
 - [ ] 使用有效 TLS 证书
 - [ ] 配置 `recording.sink` 或 `recording.<channel>.sink`
 - [ ] 设置 user/group

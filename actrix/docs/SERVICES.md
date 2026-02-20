@@ -780,46 +780,26 @@ async fn start_ice_service(
 5. 保存任务句柄
 6. 通知启动完成
 
-### 3.7 注册到管理平台
+### 3.7 控制面状态获取
 
 **文件**: `crates/actrixd/src/service/manager.rs:49-74`
 
-服务通过 AdminClient（由 `actrix-sdk` 导出）的 Report RPC 自动上报到管理平台：
+控制面采用 pull 模式，服务状态由 `/admin`（或 gRPC 头）按需读取，不做主动上报：
 
 ```rust
 pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
-    // 检查是否配置了管理平台
-    let managed_config = match &self.config.admin {
-        Some(config) => config,
-        None => {
-            warn!(
-                "No management platform configured, skipping service registration for '{:?}'",
-                services
-            );
-            return Ok(());
-        }
-    };
-
-    // 服务注册通过 AdminClient 的 Report RPC 自动完成
-    info!(
-        "Service registration via gRPC: {} services will be reported to {}",
-        services.len(),
-        managed_config
-            .client
-            .as_ref()
-            .map(|c| c.endpoint.as_str())
-            .unwrap_or("<missing endpoint>")
+    debug!(
+        "Control plane is pull-based, skipping active service registration for {} services",
+        services.len()
     );
-
     Ok(())
 }
 ```
 
 **实现方式**:
-
-- 服务状态通过 AdminClient 的 Unary RPC 自动上报
-- 不需要手动构建和发送注册负载
-- AdminClient 在其他地方初始化并管理连接
+- 服务状态保存在 `ServiceCollector`
+- control 头（`admin_ui` / `grpc_api`）通过共享状态读取
+- 不再存在独立管理端口或主动注册流程
 
 ---
 
@@ -1386,104 +1366,13 @@ sudo journalctl -u actrix -f
 
 ### 8.2 Docker 部署
 
-**Dockerfile**:
+当前仓库不再维护 `deploy docker` 子命令，也不提供内置 Docker 模板。
 
-```dockerfile
-# 构建阶段
-FROM rust:1.88-bullseye as builder
+如需容器化，请按你的运行环境自行维护 Dockerfile / compose，并保持以下约束：
 
-WORKDIR /build
-COPY . .
-
-# 构建发布版本 (带 OpenTelemetry)
-RUN cargo build --release --features opentelemetry
-
-# 运行阶段
-FROM debian:bullseye-slim
-
-# 安装运行时依赖
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 创建用户
-RUN groupadd -r actrix && useradd -r -g actrix actrix
-
-# 复制二进制文件
-COPY --from=builder /build/target/release/actrix /usr/local/bin/actrix
-
-# 创建目录
-RUN mkdir -p /var/lib/actrix /var/log/actrix /etc/actrix && \
-    chown -R actrix:actrix /var/lib/actrix /var/log/actrix
-
-USER actrix
-WORKDIR /var/lib/actrix
-
-# 暴露端口
-EXPOSE 8443 3478/udp
-
-# 启动命令
-ENTRYPOINT ["/usr/local/bin/actrix"]
-CMD ["--config", "/etc/actrix/config.toml"]
-```
-
-**docker-compose.yml**:
-
-```yaml
-version: '3.8'
-
-services:
-  actrix:
-    build: .
-    container_name: actrix
-    restart: unless-stopped
-    ports:
-      - "8443:8443"
-      - "3478:3478/udp"
-    volumes:
-      - ./config.toml:/etc/actrix/config.toml:ro
-      - ./certs:/etc/actrix/certs:ro
-      - actrix-data:/var/lib/actrix
-      - actrix-logs:/var/log/actrix
-    environment:
-      - RUST_LOG=info
-    networks:
-      - actrix-network
-
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: actrix-jaeger
-    restart: unless-stopped
-    ports:
-      - "16686:16686"  # Jaeger UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    networks:
-      - actrix-network
-
-volumes:
-  actrix-data:
-  actrix-logs:
-
-networks:
-  actrix-network:
-    driver: bridge
-```
-
-**启动**:
-
-```bash
-# 构建并启动
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f actrix
-
-# 停止
-docker-compose down
-```
+1. 只暴露主 HTTP/HTTPS 端口（control 复用 `/admin`，不单独开端口）。
+2. 挂载 `config.toml` 与数据目录（`sqlite_path`）。
+3. 生产环境优先使用 HTTPS 绑定和文件型 recording sink。
 
 ### 8.3 目录结构
 

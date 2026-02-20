@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
 
 当前的HTTP服务实现使用简化的路由器，实际项目中需要：
 
-1. **Admin服务**: 调用`admin` crate的路由器构建函数
+1. **Control服务**: 调用 `service/http/control.rs` 构建 `/admin` 控制面
 2. **Authority服务**: 调用`authority` crate的路由器构建函数
 3. **Signaling服务**: 调用`signaling` crate的路由器构建函数
 4. **Status服务**: 集成系统监控和健康检查功能
@@ -183,14 +183,13 @@ async fn main() -> anyhow::Result<()> {
 例如：
 
 ```rust
-// 在AdminService::build_router()中
+// 在控制面路由构建中
 async fn build_router(&mut self) -> Result<Router> {
-    let admin_config = admin::AdminConfig {
-        secret_key: self.config.admin.secret_key.clone(),
-        private_key_path: self.config.admin.private_key_path.clone(),
-        token_expire_seconds: self.config.admin.token_expire_seconds as i64,
-    };
-    Ok(admin::create_admin_router(admin_config))
+    Ok(control::build_control_router(
+        &self.config,
+        self.service_collector.clone(),
+        self.shutdown_tx.clone(),
+    ).await?)
 }
 ```
 
