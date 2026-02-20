@@ -39,7 +39,7 @@ generate_service_file() {
     local output_file="$1"
     cat > "$output_file" <<EOF
 [Unit]
-Description=Actrix - Actor-RTC Auxiliary Services
+Description=Actrix Auxiliary Services
 Documentation=https://github.com/Actrium/actrix
 After=network.target
 

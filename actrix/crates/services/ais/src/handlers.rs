@@ -7,7 +7,6 @@ use platform::aid::AidError;
 use prost::Message;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tracing::{debug, error};
 
 /// AIS 服务状态
 #[derive(Clone)]
@@ -44,7 +43,7 @@ async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
     let request = match RegisterRequest::decode(body) {
         Ok(req) => req,
         Err(err) => {
-            error!("Failed to decode protobuf request: {}", err);
+            platform::recording::error!("Failed to decode protobuf request: {}", err);
             let error_result = RegisterResponse {
                 result: Some(register_response::Result::Error(ErrorResponse {
                     code: 400, // Bad Request
@@ -55,16 +54,18 @@ async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
         }
     };
 
-    debug!(
+    platform::recording::debug!(
         "Received register request for realm {}, type {}:{}",
-        request.realm.realm_id, request.actr_type.manufacturer, request.actr_type.name
+        request.realm.realm_id,
+        request.actr_type.manufacturer,
+        request.actr_type.name
     );
 
     // 调用 issuer 签发 credential
     let result = match state.issuer.issue_credential(&request).await {
         Ok(response) => {
             if let Some(register_response::Result::Success(ref register_ok)) = response.result {
-                debug!(
+                platform::recording::debug!(
                     "Successfully registered ActrId: realm={}, serial_number={}, type={}:{}",
                     register_ok.actr_id.realm.realm_id,
                     register_ok.actr_id.serial_number,
@@ -75,7 +76,7 @@ async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
             response
         }
         Err(err) => {
-            error!("Failed to register ActrId: {}", err);
+            platform::recording::error!("Failed to register ActrId: {}", err);
             RegisterResponse {
                 result: Some(register_response::Result::Error(
                     aid_error_to_error_response(err),
@@ -104,7 +105,7 @@ async fn health_check(State(state): State<AISState>) -> Json<Value> {
     let db_status = match state.issuer.check_database_health().await {
         Ok(()) => "ok",
         Err(e) => {
-            error!("Database health check failed: {}", e);
+            platform::recording::error!("Database health check failed: {}", e);
             checks["status"] = json!("degraded");
             "failed"
         }
@@ -115,7 +116,7 @@ async fn health_check(State(state): State<AISState>) -> Json<Value> {
     let ks_status = match state.issuer.check_ks_health().await {
         Ok(()) => "ok",
         Err(e) => {
-            error!("KS health check failed: {}", e);
+            platform::recording::error!("KS health check failed: {}", e);
             checks["status"] = json!("degraded");
             "failed"
         }
@@ -126,7 +127,7 @@ async fn health_check(State(state): State<AISState>) -> Json<Value> {
     let cache_status = match state.issuer.check_key_cache_health().await {
         Ok(info) => json!({"status": "ok", "key_id": info.key_id, "expires_in": info.expires_in}),
         Err(e) => {
-            error!("Key cache health check failed: {}", e);
+            platform::recording::error!("Key cache health check failed: {}", e);
             checks["status"] = json!("degraded");
             json!({"status": "failed", "error": e.to_string()})
         }
@@ -148,7 +149,7 @@ async fn rotate_key(State(state): State<AISState>) -> Json<Value> {
             "new_key_id": new_key_id
         })),
         Err(e) => {
-            error!("Failed to rotate key: {}", e);
+            platform::recording::error!("Failed to rotate key: {}", e);
             Json(json!({
                 "status": "error",
                 "message": format!("Key rotation failed: {}", e)
@@ -167,7 +168,7 @@ async fn get_current_key(State(state): State<AISState>) -> Json<Value> {
             "key_id": key_id
         })),
         Err(e) => {
-            error!("Failed to get current key: {}", e);
+            platform::recording::error!("Failed to get current key: {}", e);
             Json(json!({
                 "status": "error",
                 "message": format!("Failed to get key: {}", e)
@@ -180,7 +181,7 @@ async fn get_current_key(State(state): State<AISState>) -> Json<Value> {
 fn encode_result(result: RegisterResponse) -> Bytes {
     let mut buf = Vec::new();
     if let Err(err) = result.encode(&mut buf) {
-        error!("Failed to encode RegisterResponse: {}", err);
+        platform::recording::error!("Failed to encode RegisterResponse: {}", err);
         // 返回一个编码错误的 ErrorResponse
         let error_result = RegisterResponse {
             result: Some(register_response::Result::Error(ErrorResponse {

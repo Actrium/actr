@@ -1,4 +1,4 @@
-//! Actor-RTC 信令服务
+//! Actrix 信令服务
 //!
 //! 基于 protobuf SignalingEnvelope 协议的 WebSocket 信令服务
 //!
@@ -13,6 +13,7 @@
 //! - [`presence`] - Presence 订阅管理
 //! - [`load_balancer`] - 负载均衡算法
 //! - [`geo`] - 地理位置和距离计算
+#![deny(clippy::disallowed_macros)]
 
 pub mod actr_type_utils;
 pub mod ais_client;

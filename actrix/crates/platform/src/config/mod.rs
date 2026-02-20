@@ -1,6 +1,6 @@
 //! 统一配置管理系统
 //!
-//! 本模块是 Actor-RTC 辅助服务配置的"单一真理之源"。
+//! 本模块是 Actrix 辅助服务配置的"单一真理之源"。
 //! 所有配置项的定义、文档、默认值都在这里统一管理。
 
 pub mod admin;
@@ -9,7 +9,6 @@ pub mod bind;
 pub mod ks;
 pub mod services;
 pub mod signaling;
-pub mod tracing;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub mod turn;
 
@@ -18,12 +17,12 @@ pub use crate::config::ais::AisConfig;
 pub use crate::config::bind::BindConfig;
 pub use crate::config::services::ServicesConfig;
 pub use crate::config::signaling::SignalingConfig;
-pub use crate::config::tracing::TracingConfig;
 pub use crate::config::turn::TurnConfig;
 use ::ks::storage::StorageBackend;
 use std::path::{Path, PathBuf};
+use url::Url;
 
-/// Actor-RTC 辅助服务的主配置结构体
+/// Actrix 辅助服务的主配置结构体
 ///
 /// 这是系统的核心配置，包含了所有服务的配置信息。
 /// 配置文件使用 TOML 格式，支持完整的类型安全加载。
@@ -132,75 +131,133 @@ pub struct ActrixConfig {
     /// - 字段名保留 actrix_shared_key 以保持向后兼容
     pub actrix_shared_key: String,
 
-    /// 可观测性配置（日志 + 追踪）
+    /// 记录管线配置（日志 + 追踪）
     ///
-    /// 将日志和 OpenTelemetry 追踪配置合并到统一的 observability 段，便于统一管理。
+    /// 将日志和 OpenTelemetry 追踪配置合并到统一的 recording 段，便于统一管理。
     #[serde(default)]
-    pub observability: ObservabilityConfig,
+    pub recording: RecordingConfig,
 }
 
-/// 可观测性配置
+/// 记录管线配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ObservabilityConfig {
+pub struct RecordingConfig {
     /// 过滤级别（用于日志与追踪）
     ///
     /// 支持 EnvFilter 语法（如 "info,hyper=warn"）。默认值 "info"。
     #[serde(default = "default_filter_level")]
     pub filter_level: String,
 
-    #[serde(default)]
-    pub log: LogConfig,
-
-    /// OpenTelemetry 追踪配置（可选）
+    /// 全局记录出口 URI（single sink）
     ///
-    /// 配置分布式追踪系统，支持导出到 Jaeger/Grafana Tempo 等 OTLP 后端。
-    /// 需要编译时启用 `opentelemetry` feature。
+    /// 作为所有通道默认出口；可被 [recording.<channel>] 覆盖。
+    ///
+    /// 支持：
+    /// - file://...
+    /// - otlp+http://...
+    /// - otlp+grpc://...
     #[serde(default)]
-    pub tracing: TracingConfig,
+    pub sink: Option<String>,
+
+    /// OTLP 上报 service.name
+    #[serde(default = "default_recording_service_name")]
+    pub service_name: String,
+
+    /// observability 通道特定出口覆盖
+    #[serde(default)]
+    pub observability: RecordingChannelConfig,
+    /// audit 通道特定出口覆盖
+    #[serde(default)]
+    pub audit: RecordingChannelConfig,
+    /// security 通道特定出口覆盖
+    #[serde(default)]
+    pub security: RecordingChannelConfig,
+    /// operations 通道特定出口覆盖
+    #[serde(default)]
+    pub operations: RecordingChannelConfig,
 }
 
-/// 日志配置
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LogConfig {
-    /// 日志输出目标
+/// 单通道出口覆盖配置（spec）
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RecordingChannelConfig {
+    /// 记录出口 URI（single sink）
     ///
-    /// 控制日志输出位置：
-    /// - "console": 仅输出到控制台（默认）
-    /// - "file": 输出到文件
-    #[serde(default = "default_log_output")]
-    pub output: String,
-
-    /// 日志轮转开关
-    ///
-    /// 当 output = "file" 时有效：
-    /// - true: 按天轮转日志文件
-    /// - false: 追加到单个文件
+    /// 支持：
+    /// - file://...
+    /// - otlp+http://...
+    /// - otlp+grpc://...
     #[serde(default)]
-    pub rotate: bool,
-
-    /// 日志文件路径
-    ///
-    /// 当 output = "file" 时有效
-    #[serde(default = "default_log_path")]
-    pub path: String,
+    pub sink: Option<String>,
 }
 
-impl Default for ObservabilityConfig {
+impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
-            log: LogConfig::default(),
+            sink: None,
+            service_name: default_recording_service_name(),
+            observability: RecordingChannelConfig::default(),
+            audit: RecordingChannelConfig::default(),
+            security: RecordingChannelConfig::default(),
+            operations: RecordingChannelConfig::default(),
             filter_level: default_filter_level(),
-            tracing: TracingConfig::default(),
         }
     }
 }
 
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            output: default_log_output(),
-            rotate: false,
-            path: default_log_path(),
+fn normalized_optional_uri(uri: &Option<String>) -> Option<String> {
+    uri.as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn any_recording_file_sink(recording: &RecordingConfig) -> bool {
+    [
+        &recording.sink,
+        &recording.observability.sink,
+        &recording.audit.sink,
+        &recording.security.sink,
+        &recording.operations.sink,
+    ]
+    .into_iter()
+    .filter_map(normalized_optional_uri)
+    .any(|sink| sink.starts_with("file://"))
+}
+
+fn validate_recording_sink_field(field: &str, value: &Option<String>, errors: &mut Vec<String>) {
+    let Some(uri) = normalized_optional_uri(value) else {
+        return;
+    };
+
+    let parsed = match Url::parse(&uri) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            errors.push(format!(
+                "Invalid URI in {field}: {uri} (parse error: {error})"
+            ));
+            return;
+        }
+    };
+
+    match parsed.scheme() {
+        "file" => {
+            if parsed.to_file_path().is_err() {
+                errors.push(format!(
+                    "Invalid file URI in {field}: {uri} (cannot convert to local file path)"
+                ));
+            }
+        }
+        "otlp+http" | "otlp+grpc" => {
+            if parsed.host_str().is_none() {
+                errors.push(format!(
+                    "Invalid OTLP URI in {field}: {uri} (host is required)"
+                ));
+            }
+        }
+        _ => {
+            errors.push(format!(
+                "Invalid URI scheme in {field}: expected file://, otlp+http:// or otlp+grpc://, got {}",
+                parsed.scheme()
+            ));
         }
     }
 }
@@ -209,16 +266,12 @@ fn default_enable() -> u8 {
     6 // STUN + TURN (默认启用 ICE 服务)
 }
 
-fn default_log_output() -> String {
-    "console".to_string()
-}
-
-fn default_log_path() -> String {
-    "logs/".to_string()
-}
-
 fn default_filter_level() -> String {
     "info".to_string()
+}
+
+fn default_recording_service_name() -> String {
+    "actrix".to_string()
 }
 
 fn serialize_pathbuf<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
@@ -252,7 +305,7 @@ impl Default for ActrixConfig {
             services: ServicesConfig::default(),
             sqlite_path: PathBuf::from("database"),
             actrix_shared_key: "XDDYE8d+yMfdXcdWMrXprcUk2uzjnmoX6nCfFw1gGIg=".to_string(),
-            observability: ObservabilityConfig::default(),
+            recording: RecordingConfig::default(),
         }
     }
 }
@@ -326,31 +379,14 @@ impl ActrixConfig {
         &self.actrix_shared_key
     }
 
-    /// 获取追踪配置
-    ///
-    /// 返回 OpenTelemetry 追踪配置的引用
-    pub fn tracing_config(&self) -> &TracingConfig {
-        &self.observability.tracing
+    /// 返回记录管线配置引用
+    pub fn recording_config(&self) -> &RecordingConfig {
+        &self.recording
     }
 
-    /// 返回可观测性配置引用
-    pub fn observability_config(&self) -> &ObservabilityConfig {
-        &self.observability
-    }
-
-    /// 返回日志配置引用
-    pub fn log_config(&self) -> &LogConfig {
-        &self.observability.log
-    }
-
-    /// 检查是否使用控制台日志输出
-    pub fn is_console_logging(&self) -> bool {
-        self.observability.log.output == "console"
-    }
-
-    /// 检查是否应该轮转日志
-    pub fn should_rotate_logs(&self) -> bool {
-        self.observability.log.output == "file" && self.observability.log.rotate
+    /// 返回 OTLP service.name
+    pub fn recording_service_name(&self) -> &str {
+        &self.recording.service_name
     }
 
     /// 获取日志/追踪过滤级别，优先使用 RUST_LOG
@@ -365,7 +401,7 @@ impl ActrixConfig {
                     Some(trimmed)
                 }
             })
-            .unwrap_or_else(|| self.observability.filter_level.clone())
+            .unwrap_or_else(|| self.recording.filter_level.clone())
     }
 
     /// 从文件加载配置
@@ -437,7 +473,7 @@ impl ActrixConfig {
         // 验证过滤级别（EnvFilter 语法）
         {
             let main_level = self
-                .observability
+                .recording
                 .filter_level
                 .split(',')
                 .next()
@@ -446,18 +482,37 @@ impl ActrixConfig {
             if !["trace", "debug", "info", "warn", "error"].contains(&main_level) {
                 errors.push(format!(
                     "Invalid filter level '{}', must start with one of: trace, debug, info, warn, error",
-                    self.observability.filter_level
+                    self.recording.filter_level
                 ));
             }
         }
 
-        // 验证日志输出
-        if !["console", "file"].contains(&self.observability.log.output.as_str()) {
-            errors.push(format!(
-                "Invalid log output '{}' (observability.log.output), must be 'console' or 'file'",
-                self.observability.log.output
-            ));
+        if self.recording.service_name.trim().is_empty() {
+            errors.push("recording.service_name cannot be empty".to_string());
         }
+
+        // 验证新的 URI 记录出口配置（single sink, global + per-channel）
+        validate_recording_sink_field("recording.sink", &self.recording.sink, &mut errors);
+        validate_recording_sink_field(
+            "recording.observability.sink",
+            &self.recording.observability.sink,
+            &mut errors,
+        );
+        validate_recording_sink_field(
+            "recording.audit.sink",
+            &self.recording.audit.sink,
+            &mut errors,
+        );
+        validate_recording_sink_field(
+            "recording.security.sink",
+            &self.recording.security.sink,
+            &mut errors,
+        );
+        validate_recording_sink_field(
+            "recording.operations.sink",
+            &self.recording.operations.sink,
+            &mut errors,
+        );
 
         // 验证 actrix_shared_key
         if self.actrix_shared_key.contains("default") || self.actrix_shared_key.contains("change") {
@@ -475,11 +530,6 @@ impl ActrixConfig {
             .unwrap_or(true)
         {
             errors.push("SQLite database path cannot be empty".to_string());
-        }
-
-        // 验证追踪配置
-        if let Err(e) = self.observability.tracing.validate() {
-            errors.push(format!("Tracing configuration error: {e}"));
         }
 
         // 验证 TURN 配置（如果启用）
@@ -582,14 +632,9 @@ impl ActrixConfig {
                 errors.push("Production environment should enable HTTPS".to_string());
             }
 
-            // 生产环境应使用文件日志
-            if self.observability.log.output == "console" {
-                errors.push("Warning: Production environment should use file logging (observability.log.output = \"file\")".to_string());
-            }
-
-            // 生产环境建议启用日志轮转
-            if self.observability.log.output == "file" && !self.observability.log.rotate {
-                errors.push("Warning: Production environment should enable log rotation (observability.log.rotate = true)".to_string());
+            // 生产环境建议至少配置一个 file:// 出口
+            if !any_recording_file_sink(&self.recording) {
+                errors.push("Warning: Production environment should configure recording.sink (file://...) or channel-specific recording.<channel>.sink".to_string());
             }
         }
 
@@ -624,6 +669,86 @@ mod tests {
         assert!(config.is_turn_enabled());
         assert!(!config.is_ais_enabled()); // AIS 默认不启用
         assert!(!config.is_ks_enabled()); // KS 默认不启用
+        assert_eq!(config.recording.service_name, "actrix");
+        assert!(config.recording.sink.is_none());
+    }
+
+    #[test]
+    fn test_recording_global_plus_spec_deserialize() {
+        let mut config = ActrixConfig::default();
+        config.recording.sink = Some("file:///tmp/actrix.log".to_string());
+        config.recording.audit.sink = Some("otlp+http://127.0.0.1:4318/v1/logs".to_string());
+        config.recording.security.sink = Some("otlp+grpc://127.0.0.1:4317".to_string());
+
+        let toml = config.to_toml().expect("config should serialize");
+        let parsed = ActrixConfig::from_toml(&toml).expect("config should deserialize");
+        assert_eq!(
+            parsed.recording.sink.as_deref(),
+            Some("file:///tmp/actrix.log")
+        );
+        assert_eq!(
+            parsed.recording.audit.sink.as_deref(),
+            Some("otlp+http://127.0.0.1:4318/v1/logs")
+        );
+        assert_eq!(
+            parsed.recording.security.sink.as_deref(),
+            Some("otlp+grpc://127.0.0.1:4317")
+        );
+    }
+
+    #[test]
+    fn test_recording_sink_validation_rejects_invalid_scheme() {
+        let mut config = ActrixConfig::default();
+        config.recording.sink = Some("http://127.0.0.1:4317".to_string());
+
+        let errors = config.validate().expect_err("validation should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("Invalid URI scheme in recording.sink")),
+            "expected invalid scheme error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_recording_sink_validation_accepts_supported_schemes() {
+        let mut config = ActrixConfig::default();
+        config.recording.sink = Some("file:///tmp/actrix.log".to_string());
+        config.recording.audit.sink = Some("otlp+http://127.0.0.1:4318/v1/logs".to_string());
+        config.recording.security.sink = Some("otlp+grpc://127.0.0.1:4317".to_string());
+
+        assert!(
+            config.validate().is_ok(),
+            "supported sink schemes should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_recording_sink_validation_rejects_otlp_uri_without_host() {
+        let mut config = ActrixConfig::default();
+        config.recording.sink = Some("otlp+grpc:///v1/traces".to_string());
+
+        let errors = config.validate().expect_err("validation should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("Invalid OTLP URI in recording.sink")),
+            "expected missing-host error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_recording_sink_validation_rejects_invalid_file_uri() {
+        let mut config = ActrixConfig::default();
+        config.recording.sink = Some("file://relative-path.log".to_string());
+
+        let errors = config.validate().expect_err("validation should fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("Invalid file URI in recording.sink")),
+            "expected invalid file-uri error, got: {errors:?}"
+        );
     }
 
     #[test]

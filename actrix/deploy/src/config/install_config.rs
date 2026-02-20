@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// Installation configuration for binary files only
 #[derive(Debug, Clone)]
 pub struct InstallConfig {
-    /// Installation directory (default: /opt/actor-rtc-actrix)
+    /// Installation directory (default: /opt/actrix)
     pub install_dir: PathBuf,
     /// Binary name (default: actrix)
     pub binary_name: String,
@@ -16,7 +16,7 @@ pub struct InstallConfig {
 impl Default for InstallConfig {
     fn default() -> Self {
         Self {
-            install_dir: PathBuf::from("/opt/actor-rtc-actrix"),
+            install_dir: PathBuf::from("/opt/actrix"),
             binary_name: "actrix".to_string(),
             add_to_path: true,
         }

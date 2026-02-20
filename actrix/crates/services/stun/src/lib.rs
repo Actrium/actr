@@ -1,6 +1,7 @@
 //! STUN 服务器实现
 //!
 //! 提供 STUN 协议服务器功能，用于 NAT 发现和网络穿越
+#![deny(clippy::disallowed_macros)]
 
 pub mod error;
 
@@ -10,7 +11,6 @@ pub use error::{ErrorSeverity, Result, StunError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{debug, error, info};
 use webrtc_stun::message::{BINDING_REQUEST, BINDING_SUCCESS, Message};
 use webrtc_stun::xoraddr::XorMappedAddress;
 
@@ -19,7 +19,7 @@ pub async fn create_stun_server_with_shutdown(
     socket: Arc<UdpSocket>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<()> {
-    info!(
+    platform::recording::info!(
         "Starting STUN server with shutdown support on {}",
         socket.local_addr()?
     );
@@ -36,7 +36,7 @@ pub async fn create_stun_server_with_shutdown(
 
                         // Check if this might be a STUN message before processing
                         if is_stun_message(packet_data) {
-                            debug!("Received potential STUN packet from {} ({} bytes)", src_addr, len);
+                            platform::recording::debug!("Received potential STUN packet from {} ({} bytes)", src_addr, len);
 
                             // Process the packet in the background to avoid blocking the receive loop
                             let socket_clone = socket.clone();
@@ -44,15 +44,15 @@ pub async fn create_stun_server_with_shutdown(
 
                             tokio::spawn(async move {
                                 if let Err(e) = process_packet(socket_clone, &packet_data, src_addr).await {
-                                    error!("Failed to process STUN packet from {}: {}", src_addr, e);
+                                    platform::recording::error!("Failed to process STUN packet from {}: {}", src_addr, e);
                                 }
                             });
                         } else {
-                            debug!("Received non-STUN packet from {} ({} bytes), ignoring", src_addr, len);
+                            platform::recording::debug!("Received non-STUN packet from {} ({} bytes), ignoring", src_addr, len);
                         }
                     }
                     Err(e) => {
-                        error!("Error receiving UDP packet: {}", e);
+                        platform::recording::error!("Error receiving UDP packet: {}", e);
                         return Err(e.into());
                     }
                 }
@@ -60,13 +60,13 @@ pub async fn create_stun_server_with_shutdown(
 
             // Handle shutdown signal
             _ = shutdown_rx.recv() => {
-                info!("Received shutdown signal, stopping STUN server");
+                platform::recording::info!("Received shutdown signal, stopping STUN server");
                 break;
             }
         }
     }
 
-    info!("STUN server has been shut down");
+    platform::recording::info!("STUN server has been shut down");
     Ok(())
 }
 
@@ -88,7 +88,7 @@ pub async fn process_packet(socket: Arc<UdpSocket>, data: &[u8], src: SocketAddr
     if let Err(e) = msg.write(data) {
         // This might not be a STUN message or it's malformed.
         // Log as trace because other handlers (e.g., TURN) might process it.
-        debug!(
+        platform::recording::debug!(
             "Failed to parse data as STUN message from {}: {}, data_len={}",
             src,
             e,
@@ -99,13 +99,18 @@ pub async fn process_packet(socket: Arc<UdpSocket>, data: &[u8], src: SocketAddr
 
     if msg.typ == BINDING_REQUEST {
         if let Err(e) = handle_binding_request(&socket, &msg, src).await {
-            error!("Failed to handle STUN binding request from {}: {}", src, e);
+            platform::recording::error!(
+                "Failed to handle STUN binding request from {}: {}",
+                src,
+                e
+            );
             // Even if handling fails, we don't want to kill the server loop, so return Ok.
         }
     } else {
-        debug!(
+        platform::recording::debug!(
             "Received non-binding STUN message type {:?} from {}",
-            msg.typ, src
+            msg.typ,
+            src
         );
     }
 
@@ -117,7 +122,7 @@ async fn handle_binding_request(
     request: &Message,
     src: SocketAddr,
 ) -> Result<()> {
-    debug!("Processing binding request from {}", src);
+    platform::recording::debug!("Processing binding request from {}", src);
 
     // Create Binding Success response
     let mut response_msg = Message::new();
@@ -135,7 +140,7 @@ async fn handle_binding_request(
 
     // Send response
     socket.send_to(&response_msg.raw, src).await?;
-    debug!("Sent STUN Binding Success response to {}", src);
+    platform::recording::debug!("Sent STUN Binding Success response to {}", src);
 
     Ok(())
 }

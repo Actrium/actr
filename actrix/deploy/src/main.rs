@@ -1,4 +1,4 @@
-//! Deploy helper for actor-rtc auxiliary services
+//! Deploy helper for Actrix auxiliary services
 
 use anyhow::Result;
 use clap::Parser;

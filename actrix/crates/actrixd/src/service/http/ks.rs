@@ -10,7 +10,6 @@ use ks::{create_ks_state, create_router};
 use platform::config::ActrixConfig;
 use platform::storage::nonce::SqliteNonceStorage;
 use platform::{ServiceInfo, ServiceType};
-use tracing::info;
 
 /// KS HTTP 服务实现
 #[derive(Debug)]
@@ -44,7 +43,7 @@ impl HttpRouterService for KsHttpService {
     }
 
     async fn build_router(&mut self) -> Result<Router> {
-        info!("Building KS router");
+        platform::recording::info!("Building KS router");
 
         // 创建 KS 状态
         let ks_service_config = self
@@ -73,7 +72,7 @@ impl HttpRouterService for KsHttpService {
         // 获取 KS 路由器
         let router = create_router(ks_state);
 
-        info!("KS router built successfully");
+        platform::recording::info!("KS router built successfully");
         Ok(router)
     }
 

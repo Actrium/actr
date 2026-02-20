@@ -54,7 +54,7 @@ env = "test"  # 测试环境
 ```
 
 **环境差异**:
-- `prod`: 要求 HTTPS, 建议文件日志和轮转
+- `prod`: 要求 HTTPS, 建议配置 `file://` 记录出口
 - `dev`: 允许 HTTP, 宽松验证
 - `test`: 用于自动化测试
 
@@ -109,9 +109,9 @@ location_tag = "aliyun,beijing,zone-b"
 location_tag = "office,beijing,rack-01"
 ```
 
-## 可观测性配置
+## Recording 管线配置
 
-### observability.filter_level (必需)
+### recording.filter_level (必需)
 
 **类型**: `String`  
 **允许值**: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` (支持 EnvFilter 语法，如 `info,hyper=warn`)  
@@ -119,58 +119,47 @@ location_tag = "office,beijing,rack-01"
 **用途**: 统一的日志与追踪过滤规则。若设置了 `RUST_LOG` 环境变量，则优先生效。
 
 ```toml
-[observability]
+[recording]
 filter_level = "info"          # 默认过滤级别
 # RUST_LOG=debug,hyper=info    # 环境变量覆盖配置
 ```
 
-### observability.log.output (可选)
+### recording.sink (可选)
+
+**类型**: `String` (URI)  
+**格式**: `file://...` / `otlp+http://...` / `otlp+grpc://...`  
+**用途**: 全局记录出口。作为所有通道默认 sink。
+
+```toml
+[recording]
+sink = "file:///var/log/actrix/actrix.log"
+```
+
+### recording.service_name (可选)
 
 **类型**: `String`  
-**允许值**: `"console"`, `"file"`  
-**默认值**: `"console"`  
-**用途**: 日志输出目标
+**默认值**: `"actrix"`  
+**用途**: OTLP 导出使用的 `service.name`
 
 ```toml
-[observability.log]
-output = "console"  # 控制台 (开发)
-output = "file"     # 文件 (生产)
+[recording]
+service_name = "actrix-prod-01"
 ```
 
-### observability.log.rotate (可选)
+### recording.<channel>.sink (可选)
 
-**类型**: `bool`  
-**默认值**: `false`  
-**用途**: 启用按天日志轮转 (仅当 output = "file" 时)
-
-```toml
-[observability.log]
-output = "file"
-rotate = true   # actrix-2025-01-15.log
-rotate = false  # actrix.log (追加)
-```
-
-### observability.log.path (可选)
-
-**类型**: `String` (目录路径)  
-**默认值**: `"logs/"`  
-**用途**: 日志文件目录 (仅当 output = "file" 时)
+**通道**: `observability` / `audit` / `security` / `operations`  
+**用途**: 分通道覆盖。采用“global + spec 覆盖”规则：先读 `[recording]`，再用 `[recording.<channel>]` 覆盖。
 
 ```toml
-[observability.log]
-output = "file"
-path = "/var/log/actrix/"
-```
+[recording]
+sink = "file:///var/log/actrix/actrix.log"
 
-### observability.tracing (可选)
+[recording.audit]
+sink = "otlp+http://127.0.0.1:4318/v1/logs"    # 仅 audit 覆盖
 
-**用途**: OpenTelemetry 分布式追踪配置（需要 `opentelemetry` feature）
-
-```toml
-[observability.tracing]
-enable = true
-service_name = "actrix"
-endpoint = "http://127.0.0.1:4317"
+[recording.security]
+sink = "otlp+grpc://127.0.0.1:4317"            # 仅 security 覆盖
 ```
 
 ## 进程管理 (可选)
@@ -308,47 +297,18 @@ realm = "actrix.example.com"
 
 ## OpenTelemetry 追踪 (可选)
 
-### observability.tracing.enable (可选)
-
-**类型**: `bool`  
-**默认值**: `false`  
-**用途**: 启用 OpenTelemetry 追踪
+通过 `recording.sink` 或 `recording.<channel>.sink` 中的 `otlp+http://...` / `otlp+grpc://...` 启用。未配置 OTLP sink 时不导出。
 
 ```toml
-[observability.tracing]
-enable = true
+[recording]
+service_name = "actrix-prod-01"
+sink = "otlp+grpc://127.0.0.1:4317"  # Jaeger/Tempo/OTel Collector
 ```
 
-**注意**: 需要编译时启用 feature:
+**注意**: 需要编译时启用 `opentelemetry` feature:
 ```bash
 cargo build --features opentelemetry
 ```
-
-### observability.tracing.service_name (可选)
-
-**类型**: `String`  
-**默认值**: `"actrix"`  
-**用途**: 服务名称 (在 Jaeger 等显示)
-
-```toml
-[observability.tracing]
-service_name = "actrix-prod-01"
-```
-
-### observability.tracing.endpoint (可选)
-
-**类型**: `String` (URL)  
-**默认值**: `"http://127.0.0.1:4317"`  
-**用途**: OTLP gRPC 端点
-
-```toml
-[observability.tracing]
-endpoint = "http://127.0.0.1:4317"  # Jaeger
-endpoint = "http://tempo:4317"      # Grafana Tempo
-endpoint = "http://otel-collector:4317"  # OTel Collector
-```
-
-**验证**: 必须以 `http://` 或 `https://` 开头
 
 ## Admin 配置 (可选)
 
@@ -470,8 +430,7 @@ cargo run -- test config.toml
 #### 警告 (允许启动)
 - ⚠️ 使用默认 actrix_shared_key
 - ⚠️ 密钥长度 < 16
-- ⚠️ 生产环境使用控制台日志
-- ⚠️ 生产环境未启用日志轮转
+- ⚠️ 生产环境未配置任何 `file://` 记录出口
 
 ## 配置示例
 
@@ -485,11 +444,9 @@ sqlite_path = "database"
 actrix_shared_key = "my-secure-key-min-16-chars"
 location_tag = "dev,local"
 
-[observability]
+[recording]
 filter_level = "info"
-
-[observability.log]
-output = "console"
+# 默认 stdout（未配置 file://）
 
 [bind.ice]
 domain_name = "localhost"
@@ -508,13 +465,10 @@ sqlite_path = "/var/lib/actrix"
 actrix_shared_key = "REPLACE_WITH_STRONG_32_CHAR_HEX_KEY"
 location_tag = "aws,us-west-2,zone-a"
 
-[observability]
+[recording]
 filter_level = "info"
-
-[observability.log]
-output = "file"
-rotate = true
-path = "/var/log/actrix/"
+sink = "file:///var/log/actrix/actrix.log"
+service_name = "actrix-prod-01"
 
 pid = "/var/run/actrix.pid"
 user = "actrix"
@@ -540,10 +494,8 @@ advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.example.com"
 
-[observability.tracing]
-enable = true
-service_name = "actrix-prod-01"
-endpoint = "http://otel-collector.internal:4317"
+[recording.audit]
+sink = "otlp+grpc://otel-collector.internal:4317"
 
 [admin]
 connect_timeout_secs = 30
@@ -575,11 +527,9 @@ sqlite_path = "database"
 actrix_shared_key = "dev-key-16-chars-min"
 location_tag = "local,dev"
 
-[observability]
+[recording]
 filter_level = "debug"
-
-[observability.log]
-output = "console"
+# 默认 stdout（未配置 file://）
 
 [bind.http]
 domain_name = "localhost"
@@ -598,16 +548,13 @@ advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "localhost"
-
-[observability.tracing]
-enable = false  # 开发时可选
 ```
 
 ## 环境变量
 
 ### RUST_LOG
 
-覆盖 `observability.filter_level` 配置:
+覆盖 `recording.filter_level` 配置:
 
 ```bash
 RUST_LOG=debug ./actrix
@@ -650,7 +597,7 @@ chown actrix:actrix config.toml
 - [ ] 修改 actrix_shared_key
 - [ ] 修改 admin.shared_secret
 - [ ] 使用有效 TLS 证书
-- [ ] 启用文件日志和轮转
+- [ ] 配置 `recording.sink` 或 `recording.<channel>.sink`
 - [ ] 设置 user/group
 - [ ] 配置防火墙规则
 - [ ] 测试配置: `actrix test config.toml`
@@ -673,7 +620,7 @@ Error: TOML parse error...
 $ actrix test config.toml
 ❌ 配置验证发现问题:
   1. ❌ Security warning: actrix_shared_key appears to be a default value
-  2. ⚠️ Warning: Production environment should use file logging
+  2. ⚠️ Warning: Production environment should configure recording.sink (file://...) or channel-specific recording.<channel>.sink
 ```
 
 ### 端口冲突

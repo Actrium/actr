@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is **Actrix** - a collection of WebRTC auxiliary servers providing Signaling, STUN, TURN, and identity services. It's designed as an internal backend service collection for the Actor-RTC ecosystem.
+This is **Actrix** - a collection of WebRTC auxiliary servers providing Signaling, STUN, TURN, and identity services. It's designed as an internal backend service collection for the Actrix ecosystem.
 
 ## Build and Development Commands
 

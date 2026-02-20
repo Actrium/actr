@@ -8,6 +8,10 @@ use std::process::Command;
 use crate::config::InstallConfig;
 use crate::tpl::SystemdServiceTemplate;
 use super::dependencies::{detect_service_manager, ServiceManager};
+use super::firewall::{apply_firewall, plan_firewall};
+
+const DEFAULT_SERVICE_USER: &str = "actrix";
+const DEFAULT_SERVICE_GROUP: &str = "actrix";
 
 /// Install application files to system directories
 pub fn install_application(config: &InstallConfig) -> Result<()> {
@@ -79,6 +83,9 @@ pub fn install_systemd_service() -> Result<()> {
     // Verify critical files exist before creating service
     verify_deployment_files(&install_config, &config_path)?;
 
+    // Generate firewall changes and let user choose apply/skip
+    configure_firewall_step(&config_path)?;
+
     // Create systemd service
     let service_template = SystemdServiceTemplate::new(install_config, config_path);
     service_template.generate_service_file(&service_user, &service_group)?;
@@ -95,7 +102,7 @@ fn configure_config_path() -> Result<PathBuf> {
 
     let config_path = prompt_text(
         "Configuration file path",
-        "/etc/actor-rtc-actrix/config.toml",
+        "/etc/actrix/config.toml",
     )?;
 
     let path = PathBuf::from(config_path);
@@ -155,10 +162,10 @@ fn configure_service_user() -> Result<(String, String)> {
     println!();
 
     // Service user
-    let service_user = prompt_text("Service user", "actor-rtc")?;
+    let service_user = prompt_text("Service user", DEFAULT_SERVICE_USER)?;
 
     // Service group
-    let service_group = prompt_text("Service group", "actor-rtc")?;
+    let service_group = prompt_text("Service group", DEFAULT_SERVICE_GROUP)?;
 
     // Check if user exists
     if !user_exists(&service_user) {
@@ -182,7 +189,7 @@ fn configure_service_user() -> Result<(String, String)> {
         let create_group = prompt_confirm("Create system group?", true)?;
 
         if create_group {
-            create_system_group(&service_group)?;
+            create_system_group(&service_group, &service_user)?;
         } else {
             println!("❌ Service deployment requires the group to exist");
             anyhow::bail!(
@@ -223,12 +230,12 @@ fn create_system_user(username: &str) -> Result<()> {
             "useradd",
             "--system",
             "--home-dir",
-            "/opt/actor-rtc-actrix",
+            "/opt/actrix",
             "--no-create-home",
             "--shell",
             "/usr/sbin/nologin",
             "--comment",
-            "actor-rtc actrix service user",
+            "actrix service user",
             username,
         ])
         .output()?;
@@ -244,7 +251,7 @@ fn create_system_user(username: &str) -> Result<()> {
 }
 
 /// Create a system group
-fn create_system_group(groupname: &str) -> Result<()> {
+fn create_system_group(groupname: &str, username: &str) -> Result<()> {
     println!("👥 Creating system group: {}", groupname);
 
     let output = Command::new("sudo")
@@ -255,8 +262,6 @@ fn create_system_group(groupname: &str) -> Result<()> {
         println!("✅ System group '{}' created", groupname);
 
         // Add user to group if both exist
-        // Note: This assumes the user was just created above
-        let username = "actor-rtc"; // Default user name
         if user_exists(username) {
             let output = Command::new("sudo")
                 .args(["usermod", "-a", "-G", groupname, username])
@@ -420,6 +425,69 @@ fn verify_deployment_files(install_config: &InstallConfig, config_path: &Path) -
     Ok(())
 }
 
+fn configure_firewall_step(config_path: &Path) -> Result<()> {
+    println!("🔥 Firewall Configuration");
+    println!("════════════════════════");
+
+    let preview = match plan_firewall(config_path) {
+        Ok(Some(preview)) => preview,
+        Ok(None) => {
+            println!("ℹ️  No external listener ports detected from config; skipping firewall step.");
+            println!();
+            return Ok(());
+        }
+        Err(error) => {
+            println!(
+                "⚠️  Failed to build firewall plan from config (skipping firewall step): {}",
+                error
+            );
+            println!();
+            return Ok(());
+        }
+    };
+
+    println!(
+        "Detected firewall manager: {}{}",
+        preview.manager_name,
+        if preview.manager_active {
+            ""
+        } else {
+            " (inactive/not-running)"
+        }
+    );
+    println!("Planned inbound rules:");
+    for rule in &preview.rules {
+        println!("  • {}", rule);
+    }
+    println!();
+
+    if !preview.commands.is_empty() {
+        println!("Generated commands:");
+        for cmd in &preview.commands {
+            println!("  {}", cmd);
+        }
+        println!();
+    }
+
+    if !preview.supported {
+        println!("⚠️  No supported firewall manager found (supported: ufw, firewalld).");
+        println!("ℹ️  Continue service deployment without auto-applying firewall rules.");
+        println!();
+        return Ok(());
+    }
+
+    let apply_now = prompt_confirm("Apply generated firewall configuration now?", false)?;
+    if apply_now {
+        apply_firewall(config_path)?;
+        println!("✅ Firewall rules applied");
+    } else {
+        println!("⏭️  Firewall configuration skipped by user choice");
+    }
+    println!();
+
+    Ok(())
+}
+
 fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result<()> {
     let normalized = normalize_install_dir(install_dir)?;
 
@@ -427,7 +495,7 @@ fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result
         anyhow::bail!(
             "Unsupported installation directory for {}: '{}'. \
              Paths under '/home' are blocked for service hardening consistency. \
-             Use a root-owned path such as '/opt/actor-rtc-actrix'.",
+             Use a root-owned path such as '/opt/actrix'.",
             operation,
             normalized.display()
         );
@@ -437,7 +505,7 @@ fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result
         anyhow::bail!(
             "Unsupported installation directory for {}: '{}'. \
              Paths under '/tmp' are blocked for service hardening consistency. \
-             Use a persistent path such as '/opt/actor-rtc-actrix'.",
+             Use a persistent path such as '/opt/actrix'.",
             operation,
             normalized.display()
         );

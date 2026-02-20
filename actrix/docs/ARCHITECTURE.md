@@ -25,7 +25,7 @@
 
 ## 概览
 
-Actrix 是 **Actor-RTC 生态系统**的 WebRTC 辅助服务集合，提供关键的网络基础设施：
+Actrix 是 **Actrix 生态系统**的 WebRTC 辅助服务集合，提供关键的网络基础设施：
 
 - **STUN** - NAT 穿越地址发现（RFC 5389）
 - **TURN** - 中继传输服务（RFC 5766）
@@ -321,7 +321,7 @@ pub struct ActrixConfig {
     pub services: ServicesConfig,
     pub sqlite_path: PathBuf,            // SQLite 目录
     pub actrix_shared_key: String,       // 内部通信密钥
-    pub observability: ObservabilityConfig, // 日志+追踪配置
+    pub recording: RecordingConfig, // 记录管线配置（日志+追踪）
 }
 ```
 
@@ -647,54 +647,57 @@ CREATE TABLE keys (
 
 ## 可观测性
 
+### 范围定义（Observability / Audit / Security / Operations）
+
+为避免术语混用，Actrix 在生产环境按以下 4 个逻辑域组织运行数据与事件：
+
+| 逻辑域 | 核心问题 | 主要内容 | 非目标 |
+|--------|----------|----------|--------|
+| **observability** | 系统当前怎么运行、哪里慢、哪里坏 | logs / metrics / traces（可包含 profile） | 责任追溯与合规证据 |
+| **audit** | 谁在什么时候对什么做了什么，结果如何 | 管理/配置/权限/关键数据变更的审计记录 | 性能分析与故障定位 |
+| **security** | 是否存在攻击或风险，是否触发防护策略 | 认证失败、授权拒绝、限流命中、异常行为、安全告警 | 运维流程编排 |
+| **operations** | 运行治理动作是否正确执行并满足稳定性目标 | 发布/回滚、扩缩容、值班事件、SLO 告警状态、处置记录 | 低层信号采集本身 |
+
+最小落地约束：
+
+- 采用 **4 个逻辑域 + 1 套统一事件模型**，避免并行建设多套系统。
+- 同一事件可被路由到多个逻辑域（例如配置变更可同时进入 `audit` 与 `observability`）。
+- 敏感信息（密钥、凭证、私钥、明文 secret）禁止写入任何逻辑域日志。
+
 ### 1. 日志系统
 
 **配置**: `crates/platform/src/config/mod.rs`
 
 ```rust
-pub struct ObservabilityConfig {
-    pub log: LogConfig,         // 日志配置
-    pub filter_level: String,   // EnvFilter 语法，RUST_LOG 优先
-    pub tracing: TracingConfig, // OpenTelemetry 配置
+pub struct RecordingConfig {
+    pub filter_level: String, // EnvFilter 语法，RUST_LOG 优先
+    pub sink: Option<String>, // 全局 sink: file://... | otlp+http://... | otlp+grpc://...
+    pub service_name: String, // OTLP service.name
+    pub observability: RecordingChannelConfig,
+    pub audit: RecordingChannelConfig,
+    pub security: RecordingChannelConfig,
+    pub operations: RecordingChannelConfig,
 }
 
-pub struct LogConfig {
-    pub output: String,     // console/file
-    pub rotate: bool,       // 日志轮转开关
-    pub path: String,       // 日志目录
+pub struct RecordingChannelConfig {
+    pub sink: Option<String>, // file://... | otlp+http://... | otlp+grpc://...
 }
 ```
 
-**实现**: `crates/actrixd/src/observability.rs`
+**实现**: `crates/actrixd/src/recording_pipeline.rs`
 
 ```rust
-fn init_observability(config: &ObservabilityConfig) -> Result<ObservabilityGuard> {
-    let env_filter = resolve_env_filter(config); // RUST_LOG 优先，解析失败回退 info
-
-    match config.log.output.as_str() {
-        "file" => {
-            fs::create_dir_all(&config.log.path)?;
-            let (writer, guard) = build_file_writer(&config.log, config.log.rotate)?;
-            // fmt layer 使用文件 writer；tracing.enable 且配置验证通过时附加 OTLP layer
-        }
-        _ => {
-            // 控制台 fmt layer，基于 env_filter；Otel 附加逻辑与文件模式一致
-        }
-    }
+fn init_recording_pipeline(config: &ActrixConfig) -> Result<RecordingPipelineGuard> {
+    let recording = config.recording_config();
+    let env_filter = resolve_env_filter(recording); // RUST_LOG 优先，解析失败回退 info
+    // sink: global + per-channel override
+    // 未配置 sink 时默认 stdout
 }
 ```
 
 ### 2. OpenTelemetry 追踪
 
-**配置**: `crates/platform/src/config/tracing.rs`
-
-```rust
-pub struct TracingConfig {
-    pub enable: bool,
-    pub service_name: String,    // 默认: "actrix"
-    pub endpoint: String,        // OTLP gRPC 端点
-}
-```
+**配置**: `crates/platform/src/config/mod.rs` (`RecordingConfig`)
 
 **HTTP Trace Layer**: `crates/actrixd/src/service/trace.rs`
 
@@ -717,10 +720,9 @@ cargo build --features opentelemetry
 
 ```toml
 # config.toml
-[observability.tracing]
-enable = true
+[recording]
 service_name = "actrix-prod"
-endpoint = "http://localhost:4317"
+sink = "otlp+grpc://localhost:4317"
 ```
 
 ### 3. 健康检查
@@ -746,13 +748,13 @@ endpoint = "http://localhost:4317"
 3. ApplicationLauncher::find_config_file(path)
    ├─ 检查提供的路径
    ├─ ./config.toml
-   └─ /etc/actor-rtc-actrix/config.toml
+   └─ /etc/actrix/config.toml
    ↓
 4. ActrixConfig::from_file(path)
    ├─ 解析 TOML
    └─ 验证配置
    ↓
-5. init_observability(config.observability_config())
+5. init_recording_pipeline(&config)
    ├─ 初始化日志
    └─ 初始化 OpenTelemetry (可选)
    ↓

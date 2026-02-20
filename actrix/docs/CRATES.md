@@ -64,7 +64,7 @@ pub struct ActrixConfig {
     pub services: ServicesConfig,            // 服务配置
     pub sqlite_path: PathBuf,                // SQLite 数据库目录
     pub actrix_shared_key: String,           // 内部服务通信密钥
-    pub observability: ObservabilityConfig,  // 日志 + 追踪配置
+    pub recording: RecordingConfig,          // 记录管线配置（日志 + 追踪）
 }
 ```
 
@@ -142,14 +142,14 @@ pub fn validate(&self) -> Result<(), Vec<String>> {
 
     // 3. 验证过滤级别 (EnvFilter 主级别前缀)
     let main_level = self
-        .observability
+        .recording
         .filter_level
         .split(',')
         .next()
         .unwrap_or("")
         .trim();
     if !["trace", "debug", "info", "warn", "error"].contains(&main_level) {
-        errors.push(format!("Invalid filter level '{}'", self.observability.filter_level));
+        errors.push(format!("Invalid filter level '{}'", self.recording.filter_level));
     }
 
     // 4. 安全检查 - actrix_shared_key
@@ -178,8 +178,13 @@ pub fn validate(&self) -> Result<(), Vec<String>> {
             || self.bind.https.as_ref().unwrap().port == 0 {
             errors.push("Production should enable HTTPS".to_string());
         }
-        if self.observability.log.output == "console" {
-            errors.push("Production should use file logging".to_string());
+        if self.recording.sink.is_none()
+            && self.recording.observability.sink.is_none()
+            && self.recording.audit.sink.is_none()
+            && self.recording.security.sink.is_none()
+            && self.recording.operations.sink.is_none()
+        {
+            errors.push("Production should configure at least one file:// recording sink".to_string());
         }
     }
 
@@ -187,40 +192,32 @@ pub fn validate(&self) -> Result<(), Vec<String>> {
 }
 ```
 
-#### 1.2.5 TracingConfig - OpenTelemetry 追踪配置
+#### 1.2.5 RecordingConfig - 统一记录管线配置
 
-**文件**: `crates/platform/src/config/tracing.rs:1-80`
+**文件**: `crates/platform/src/config/mod.rs`
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TracingConfig {
-    pub enable: bool,           // 是否启用追踪
-    pub service_name: String,   // 服务名称
-    pub endpoint: String,       // OTLP endpoint (gRPC)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecordingConfig {
+    pub filter_level: String,
+    pub sink: Option<String>,      // file://..., otlp+http://..., otlp+grpc://...
+    pub service_name: String,
+    pub observability: RecordingChannelConfig,
+    pub audit: RecordingChannelConfig,
+    pub security: RecordingChannelConfig,
+    pub operations: RecordingChannelConfig,
 }
 
-impl TracingConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.enable {
-            if self.endpoint.trim().is_empty() {
-                return Err("Endpoint cannot be empty when tracing is enabled");
-            }
-
-            // 验证 URL 格式
-            if !self.endpoint.starts_with("http://")
-                && !self.endpoint.starts_with("https://") {
-                return Err("Endpoint must start with http:// or https://");
-            }
-        }
-        Ok(())
-    }
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RecordingChannelConfig {
+    pub sink: Option<String>,
 }
 ```
 
 **actrix 版本优势**:
-- ✅ 包含 URL 格式验证 (检查 http:// 或 https:// 前缀)
-- ✅ 完整的单元测试覆盖
-- ✅ 更详细的文档注释
+- ✅ 单字段 URI sink 模型（更简洁）
+- ✅ 支持全局默认 + 分通道覆盖
+- ✅ 配置验证在单一入口完成
 
 ### 1.3 存储系统 (storage)
 
@@ -1591,7 +1588,7 @@ impl TurnError {
 **文件**: `crates/services/signaling/src/lib.rs:1-12`
 
 ```rust
-//! Actor-RTC 信令服务
+//! Actrix 信令服务
 //!
 //! 基于 protobuf SignalingEnvelope 协议的 WebSocket 信令服务
 
@@ -2220,7 +2217,7 @@ cargo build --release --features opentelemetry
 ### platform crate
 - ✅ 配置加载和验证
 - ✅ Nonce 存储和查询
-- ✅ TracingConfig URL 验证
+- ✅ Recording URI 校验（file:// 与 http(s)://）
 
 ### ks crate
 - ✅ 密钥生成和存储

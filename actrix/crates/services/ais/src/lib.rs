@@ -79,6 +79,7 @@
 //! # 配置选项
 //!
 //! 参见 [`platform::config::AisConfig`] 获取完整配置说明。
+#![deny(clippy::disallowed_macros)]
 
 pub mod handlers;
 pub mod issuer;
@@ -94,14 +95,13 @@ use crate::ks_client_wrapper::create_ks_client;
 use anyhow::{Context, Result};
 use axum::Router;
 use platform::config::AisConfig;
-use tracing::info;
 
 /// 创建 AIS 路由器，遵循项目的 HttpRouterService 架构
 pub async fn create_ais_router(
     config: &AisConfig,
     global_config: &platform::config::ActrixConfig,
 ) -> Result<Router> {
-    info!("Creating AIS router with config");
+    platform::recording::info!("Creating AIS router with config");
 
     // 获取 KS 客户端配置
     let ks_client_config = config
@@ -113,7 +113,7 @@ pub async fn create_ais_router(
         .await
         .context("Failed to create KS gRPC client")?;
 
-    info!("KS gRPC client created successfully");
+    platform::recording::info!("KS gRPC client created successfully");
 
     // 创建 Issuer 配置
     let issuer_config = IssuerConfig {
@@ -135,7 +135,7 @@ pub async fn create_ais_router(
     // 创建路由器
     let router = create_router(state);
 
-    info!("AIS router created successfully");
+    platform::recording::info!("AIS router created successfully");
     Ok(router)
 }
 

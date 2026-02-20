@@ -5,6 +5,7 @@
 //! 2. 基于 key_id 查询私钥给验证服务
 //! 3. PSK 签名验证和防重放攻击保护
 //! 4. 多存储后端支持：SQLite, PostgreSQL
+#![deny(clippy::disallowed_macros)]
 
 #[cfg(test)]
 pub mod client;
@@ -14,6 +15,7 @@ pub mod error;
 pub mod grpc_client;
 pub mod grpc_handlers;
 pub mod handlers;
+pub mod recording;
 pub mod storage;
 pub mod types;
 

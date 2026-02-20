@@ -5,7 +5,6 @@ use platform::realm::{Realm, RealmConfig};
 use platform::storage::is_database_initialized;
 use std::convert::TryFrom;
 use std::str::FromStr;
-use tracing::{debug, warn};
 
 /// Config key for realm enable flag
 pub const REALM_ENABLED_KEY: &str = "realm.enabled";
@@ -142,7 +141,7 @@ fn parse_use_servers(raw: &str) -> Vec<ResourceType> {
             .filter_map(|v| ResourceType::try_from(v).ok())
             .collect(),
         Err(e) => {
-            warn!(
+            platform::recording::warn!(
                 "Failed to parse realm use_servers, fallback to empty: {}",
                 e
             );
@@ -160,14 +159,14 @@ fn parse_use_servers(raw: &str) -> Vec<ResourceType> {
 pub async fn get_max_realm_version() -> Result<u64, AdminError> {
     // Check if database is initialized to avoid panic in test environments
     if !is_database_initialized() {
-        debug!("Database not initialized, returning 0 for max realm version");
+        platform::recording::debug!("Database not initialized, returning 0 for max realm version");
         return Ok(0);
     }
 
     let realms = match Realm::get_all().await {
         Ok(t) => t,
         Err(e) => {
-            debug!("Failed to load realm list: {}", e);
+            platform::recording::debug!("Failed to load realm list: {}", e);
             return Ok(0);
         }
     };
@@ -183,7 +182,11 @@ pub async fn get_max_realm_version() -> Result<u64, AdminError> {
                     }
                 }
                 Err(e) => {
-                    debug!("Skip realm {} version check: {}", realm.realm_id, e);
+                    platform::recording::debug!(
+                        "Skip realm {} version check: {}",
+                        realm.realm_id,
+                        e
+                    );
                 }
             }
         }

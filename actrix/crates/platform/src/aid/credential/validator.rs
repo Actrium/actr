@@ -12,7 +12,6 @@ use ks::GrpcClient;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error};
 
 /// AId Token 验证器 - 提供静态方法验证和解密 Token
 pub struct AIdCredentialValidator {
@@ -84,7 +83,7 @@ impl AIdCredentialValidator {
     /// 使用 AIdCredential 进行验证，并返回密钥是否在容忍期
     ///
     /// # Arguments
-    /// * `credential` - 来自 actor-rtc-proto 的 AIdCredential
+    /// * `credential` - 来自 actr-protocol 的 AIdCredential
     /// * `realm_id` - 期望的 Realm ID
     ///
     /// # Returns
@@ -130,7 +129,7 @@ impl AIdCredentialValidator {
     /// 使用提供的密钥检查 credential (解密 + 验证有效性)
     ///
     /// # Arguments  
-    /// * `credential` - 来自 actor-rtc-proto 的 AIdCredential
+    /// * `credential` - 来自 actr-protocol 的 AIdCredential
     /// * `realm_id` - 期望的 Realm ID
     /// * `secret_key` - 用于解密的密钥
     ///
@@ -177,18 +176,18 @@ impl AIdCredentialValidator {
         &self,
         key_id: u32,
     ) -> Result<(SecretKey, bool), AidError> {
-        debug!("Fetching secret key for key_id: {}", key_id);
+        crate::recording::debug!("Fetching secret key for key_id: {}", key_id);
 
         // 1. 首先尝试从 SQLite 缓存获取
         match self.key_cache.get_cached_key(key_id).await? {
             Some((secret_key, expires_at, tolerance_seconds)) => {
-                debug!("Found cached secret key for key_id: {}", key_id);
+                crate::recording::debug!("Found cached secret key for key_id: {}", key_id);
                 // 计算是否在容忍期内
                 let in_tolerance = Self::calculate_tolerance_status(expires_at, tolerance_seconds);
                 return Ok((secret_key, in_tolerance));
             }
             None => {
-                debug!(
+                crate::recording::debug!(
                     "No cached key found for key_id: {}, fetching from KS",
                     key_id
                 );
@@ -199,7 +198,7 @@ impl AIdCredentialValidator {
         let (secret_key, expires_at, tolerance_seconds) = {
             let mut client = self.ks_client.write().await;
             client.fetch_secret_key(key_id).await.map_err(|e| {
-                error!("Failed to fetch secret key {} from KS: {}", key_id, e);
+                crate::recording::error!("Failed to fetch secret key {} from KS: {}", key_id, e);
                 AidError::DecryptionFailed(format!("KS error: {e}"))
             })?
         };
@@ -211,9 +210,9 @@ impl AIdCredentialValidator {
             .await
         {
             // 缓存失败不应该影响主要功能，只记录错误
-            error!("Failed to cache secret key {}: {}", key_id, cache_err);
+            crate::recording::error!("Failed to cache secret key {}: {}", key_id, cache_err);
         } else {
-            debug!("Successfully cached secret key for key_id: {}", key_id);
+            crate::recording::debug!("Successfully cached secret key for key_id: {}", key_id);
         }
 
         // 4. 计算容忍期状态

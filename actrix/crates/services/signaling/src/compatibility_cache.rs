@@ -6,7 +6,6 @@
 use actr_version::CompatibilityAnalysisResult;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
-use tracing::{debug, info};
 
 /// 兼容性缓存条目
 #[derive(Debug, Clone)]
@@ -80,9 +79,10 @@ impl GlobalCompatibilityCache {
         if let Some(entry) = self.cache.get_mut(cache_key) {
             if SystemTime::now() <= entry.expires_at {
                 entry.hit_count += 1;
-                debug!(
+                platform::recording::debug!(
                     "兼容性缓存命中: {} (命中次数: {})",
-                    cache_key, entry.hit_count
+                    cache_key,
+                    entry.hit_count
                 );
                 return CompatibilityCacheResponse {
                     cache_key: cache_key.to_string(),
@@ -90,11 +90,11 @@ impl GlobalCompatibilityCache {
                     hit: true,
                 };
             } else {
-                debug!("兼容性缓存过期: {}", cache_key);
+                platform::recording::debug!("兼容性缓存过期: {}", cache_key);
             }
         }
 
-        debug!("兼容性缓存未命中: {}", cache_key);
+        platform::recording::debug!("兼容性缓存未命中: {}", cache_key);
         CompatibilityCacheResponse {
             cache_key: cache_key.to_string(),
             analysis_result: None,
@@ -107,7 +107,7 @@ impl GlobalCompatibilityCache {
         if let Some(entry) = self.cache.get(cache_key)
             && SystemTime::now() <= entry.expires_at
         {
-            debug!("兼容性缓存命中 (readonly): {}", cache_key);
+            platform::recording::debug!("兼容性缓存命中 (readonly): {}", cache_key);
             return CompatibilityCacheResponse {
                 cache_key: cache_key.to_string(),
                 analysis_result: Some(entry.analysis_result.clone()),
@@ -141,14 +141,14 @@ impl GlobalCompatibilityCache {
             && let Some(oldest_key) = self.find_oldest_entry()
         {
             self.cache.remove(&oldest_key);
-            debug!("缓存已满，移除最旧条目: {}", oldest_key);
+            platform::recording::debug!("缓存已满，移除最旧条目: {}", oldest_key);
         }
 
         if let Some(existing) = self.cache.get_mut(&cache_key) {
             existing.analysis_result = report.analysis_result;
             existing.cached_at = now;
             existing.expires_at = expires_at;
-            debug!("更新兼容性缓存: {}", cache_key);
+            platform::recording::debug!("更新兼容性缓存: {}", cache_key);
         } else {
             let entry = CompatibilityCacheEntry {
                 analysis_result: report.analysis_result,
@@ -157,7 +157,7 @@ impl GlobalCompatibilityCache {
                 hit_count: 0,
             };
             self.cache.insert(cache_key.clone(), entry);
-            info!("新增兼容性缓存: {}", cache_key);
+            platform::recording::info!("新增兼容性缓存: {}", cache_key);
         }
     }
 
@@ -168,7 +168,7 @@ impl GlobalCompatibilityCache {
         self.cache.retain(|_, entry| entry.expires_at > now);
         let removed = before_count - self.cache.len();
         if removed > 0 {
-            info!("清理了 {} 个过期的兼容性缓存条目", removed);
+            platform::recording::info!("清理了 {} 个过期的兼容性缓存条目", removed);
         }
     }
 

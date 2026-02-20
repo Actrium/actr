@@ -16,6 +16,7 @@ opentelemetry = [
     "dep:opentelemetry-otlp",
     "dep:opentelemetry-jaeger",
     "dep:tracing-opentelemetry",
+    "platform/opentelemetry",
     "signaling/opentelemetry",
 ]
 
@@ -101,3 +102,4 @@ actr-protocol = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 serial_test = "3.3"
+opentelemetry-proto = { version = "0.31.0", default-features = false, features = ["gen-tonic", "trace"] }

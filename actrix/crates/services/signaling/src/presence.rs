@@ -33,7 +33,6 @@ use actr_protocol::{ActrId, ActrType};
 use platform::RealmError;
 use platform::realm::acl::ActorAcl;
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
 
 use crate::actr_type_utils::type_key;
 
@@ -66,9 +65,11 @@ impl PresenceManager {
     /// manager.subscribe(client_actor_id, user_service_type);
     /// ```
     pub fn subscribe(&mut self, subscriber: ActrId, target_type: ActrType) {
-        info!(
+        platform::recording::info!(
             "Actor {} 订阅 {}/{} 上线事件",
-            subscriber.serial_number, target_type.manufacturer, target_type.name
+            subscriber.serial_number,
+            target_type.manufacturer,
+            target_type.name
         );
 
         let subscribers = self.subscriptions.entry(target_type).or_default();
@@ -76,9 +77,9 @@ impl PresenceManager {
         // 避免重复订阅
         if !subscribers.iter().any(|id| id == &subscriber) {
             subscribers.push(subscriber);
-            debug!("订阅成功，当前订阅者数量: {}", subscribers.len());
+            platform::recording::debug!("订阅成功，当前订阅者数量: {}", subscribers.len());
         } else {
-            warn!("Actor {} 已经订阅过该类型", subscriber.serial_number);
+            platform::recording::warn!("Actor {} 已经订阅过该类型", subscriber.serial_number);
         }
     }
 
@@ -92,9 +93,11 @@ impl PresenceManager {
     /// - `true`: 成功取消订阅
     /// - `false`: 该订阅不存在
     pub fn unsubscribe(&mut self, subscriber: &ActrId, target_type: &ActrType) -> bool {
-        info!(
+        platform::recording::info!(
             "Actor {} 取消订阅 {}/{} 上线事件",
-            subscriber.serial_number, target_type.manufacturer, target_type.name
+            subscriber.serial_number,
+            target_type.manufacturer,
+            target_type.name
         );
 
         if let Some(subscribers) = self.subscriptions.get_mut(target_type) {
@@ -103,22 +106,23 @@ impl PresenceManager {
 
             let removed = subscribers.len() < original_len;
             if removed {
-                debug!("取消订阅成功，剩余订阅者数量: {}", subscribers.len());
+                platform::recording::debug!("取消订阅成功，剩余订阅者数量: {}", subscribers.len());
 
                 // 如果没有订阅者了，删除整个条目
                 if subscribers.is_empty() {
                     self.subscriptions.remove(target_type);
-                    debug!("该类型已无订阅者，移除订阅表条目");
+                    platform::recording::debug!("该类型已无订阅者，移除订阅表条目");
                 }
             } else {
-                warn!("Actor {} 未订阅该类型", subscriber.serial_number);
+                platform::recording::warn!("Actor {} 未订阅该类型", subscriber.serial_number);
             }
 
             removed
         } else {
-            warn!(
+            platform::recording::warn!(
                 "类型 {}/{} 不存在任何订阅",
-                target_type.manufacturer, target_type.name
+                target_type.manufacturer,
+                target_type.name
             );
             false
         }
@@ -134,7 +138,7 @@ impl PresenceManager {
     /// # 返回
     /// 取消的订阅数量
     pub fn unsubscribe_all(&mut self, subscriber: &ActrId) -> usize {
-        info!("清理 Actor {} 的所有订阅", subscriber.serial_number);
+        platform::recording::info!("清理 Actor {} 的所有订阅", subscriber.serial_number);
 
         let mut removed_count = 0;
 
@@ -149,7 +153,7 @@ impl PresenceManager {
         });
 
         if removed_count > 0 {
-            info!("清理了 {} 个订阅", removed_count);
+            platform::recording::info!("清理了 {} 个订阅", removed_count);
         }
 
         removed_count
@@ -221,28 +225,28 @@ impl PresenceManager {
                     allowed_subscribers.push(subscriber_id.clone());
                 }
                 Ok(false) => {
-                    debug!(
-                        subscriber = %subscriber_id.serial_number,
-                        target = %target_actor_id.serial_number,
-                        "ACL denied discovery notification"
+                    platform::recording::debug!(
+                        "ACL denied discovery notification: subscriber={}, target={}",
+                        subscriber_id.serial_number,
+                        target_actor_id.serial_number
                     );
                 }
                 Err(e) => {
-                    warn!(
-                        subscriber = %subscriber_id.serial_number,
-                        target = %target_actor_id.serial_number,
-                        error = %e,
-                        "ACL check failed, denying notification"
+                    platform::recording::warn!(
+                        "ACL check failed, denying notification: subscriber={}, target={}, error={}",
+                        subscriber_id.serial_number,
+                        target_actor_id.serial_number,
+                        e
                     );
                 }
             }
         }
 
-        info!(
-            target_type = ?target_type,
-            total_subscribers = total_count,
-            allowed_subscribers = allowed_subscribers.len(),
-            "ACL filtering completed for presence notification"
+        platform::recording::info!(
+            "ACL filtering completed for presence notification: target_type={:?}, total_subscribers={}, allowed_subscribers={}",
+            target_type,
+            total_count,
+            allowed_subscribers.len()
         );
 
         allowed_subscribers
@@ -268,10 +272,10 @@ impl PresenceManager {
 
         // Only check ACL if actors are in the same realm
         if from_realm != to_realm {
-            debug!(
-                from_realm = %from_realm,
-                to_realm = %to_realm,
-                "Cross-realm discovery denied"
+            platform::recording::debug!(
+                "Cross-realm discovery denied: from_realm={}, to_realm={}",
+                from_realm,
+                to_realm
             );
             return Ok(false);
         }

@@ -350,16 +350,13 @@ sqlite3 /var/lib/actrix/ks.db "
 启用详细日志记录:
 
 ```toml
-[observability]
+[recording]
 filter_level = "info"   # 可被 RUST_LOG 覆盖
+sink = "file:///var/log/actrix/actrix.log"
+service_name = "actrix-prod"
 
-[observability.log]
-output = "file"
-path = "/var/log/actrix"
-
-[observability.tracing]
-enable = true
-endpoint = "http://jaeger:4317"
+[recording.audit]
+sink = "otlp+grpc://jaeger:4317"
 ```
 
 ---

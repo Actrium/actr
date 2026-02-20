@@ -1,28 +1,27 @@
-//! Actor-RTC 辅助服务器主程序
+//! Actrix 辅助服务器主程序
 //!
 //! 启动和管理 WebRTC 相关的辅助服务，包括信令、STUN、TURN 等服务
+#![deny(clippy::disallowed_macros)]
 
 mod admin;
 mod cli;
 // mod config; // 已迁移到独立的 config crate
 mod error;
-mod observability;
 mod process;
+mod recording_pipeline;
 mod service;
 
 use admin::AdminRuntime;
 use anyhow::Context;
 use clap::Parser;
-use observability::init_observability;
 use platform::config::ActrixConfig;
+use recording_pipeline::init_recording_pipeline;
 use service::{
     AisService, KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService,
     StunService, TurnService,
 };
 use std::path::{Path, PathBuf};
 use tokio::task::JoinHandle;
-
-use tracing::{error, info, warn};
 
 macro_rules! bootstrap_info {
     ($($arg:tt)*) => {
@@ -86,7 +85,7 @@ impl ApplicationLauncher {
             // 1. Current working directory
             PathBuf::from("config.toml"),
             // 2. System config directory
-            PathBuf::from("/etc/actor-rtc-actrix/config.toml"),
+            PathBuf::from("/etc/actrix/config.toml"),
         ];
 
         bootstrap_info!("Searching for config file in default locations...");
@@ -123,20 +122,20 @@ impl ApplicationLauncher {
         let config_path = config_file.as_ref().unwrap_or(default_config);
         match ActrixConfig::from_file(config_path) {
             Ok(config) => {
-                info!("✅ 配置文件解析成功: {:?}", config_path);
+                platform::recording::info!("✅ 配置文件解析成功: {:?}", config_path);
 
                 // 验证配置
                 match config.validate() {
                     Ok(()) => {
-                        info!("✅ 配置验证通过");
+                        platform::recording::info!("✅ 配置验证通过");
                     }
                     Err(errors) => {
-                        error!("❌ 配置验证发现问题:");
+                        platform::recording::error!("❌ 配置验证发现问题:");
                         for (i, err) in errors.iter().enumerate() {
                             if err.starts_with("Warning:") {
-                                info!("  {}. ⚠️  {}", i + 1, err);
+                                platform::recording::info!("  {}. ⚠️  {}", i + 1, err);
                             } else {
-                                error!("  {}. ❌ {}", i + 1, err);
+                                platform::recording::error!("  {}. ❌ {}", i + 1, err);
                             }
                         }
                         // 检查是否有非警告错误
@@ -147,12 +146,12 @@ impl ApplicationLauncher {
                     }
                 }
 
-                // 不需要再次初始化 observability，因为已经初始化了基本日志
-                info!("✅ 完整配置验证通过");
+                // 不需要再次初始化 recording 管线，因为已经初始化了基本日志
+                platform::recording::info!("✅ 完整配置验证通过");
                 Ok(())
             }
             Err(e) => {
-                error!("❌ 配置文件解析失败: {}", e);
+                platform::recording::error!("❌ 配置文件解析失败: {}", e);
                 Err(Error::service_validation(format!("配置解析失败: {e}")))
             }
         }
@@ -202,8 +201,8 @@ impl ApplicationLauncher {
             })?;
         }
 
-        // 初始化可观测性系统（日志 + 追踪）
-        let _observability_guard = init_observability(&config)?;
+        // 初始化记录管线（日志 + 追踪）
+        let _recording_pipeline_guard = init_recording_pipeline(&config)?;
 
         // 写入 PID 文件（在绑定端口之前，需要权限）
         let pid_path = process::ProcessManager::write_pid_file(config.get_pid_path().as_deref())?;
@@ -223,14 +222,14 @@ impl ApplicationLauncher {
         user: Option<String>,
         group: Option<String>,
     ) -> Result<()> {
-        info!("🚀 启动 WebRTC 辅助服务器集群");
+        platform::recording::info!("🚀 启动 WebRTC 辅助服务器集群");
 
         // First initialize the database,
         // ensure it is ready before any service that may access it starts
         platform::storage::db::set_db_path(&config.sqlite_path)
             .await
             .map_err(|e| Error::custom(format!("数据库初始化失败: {e}")))?;
-        info!("✅ 数据库初始化完成");
+        platform::recording::info!("✅ 数据库初始化完成");
 
         // 初始化全局关闭通道（供所有服务共享）
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(10);
@@ -246,7 +245,7 @@ impl ApplicationLauncher {
         let admin_runtime = AdminRuntime::from_config(&config, &service_manager);
 
         if config.is_ks_enabled() {
-            info!("启动 KS gRPC 服务器...");
+            platform::recording::info!("启动 KS gRPC 服务器...");
             let grpc_addr = "127.0.0.1:50052".parse().map_err(|e| {
                 Error::service_startup(format!("Failed to parse gRPC address: {e}"))
             })?;
@@ -269,7 +268,7 @@ impl ApplicationLauncher {
 
         let handle_futures = service_manager.start_all().await?;
         handle_futs.extend(handle_futures);
-        info!("启动所有服务...");
+        platform::recording::info!("启动所有服务...");
 
         // Start admin client after all services are started
         if let Some(admin_runtime) = &admin_runtime
@@ -279,10 +278,10 @@ impl ApplicationLauncher {
         }
 
         // 端口绑定完成后，切换用户和组
-        info!("服务启动完成，准备切换用户权限...");
+        platform::recording::info!("服务启动完成，准备切换用户权限...");
         if let Err(e) = process::ProcessManager::drop_privileges(user.as_deref(), group.as_deref())
         {
-            error!("Failed to drop privileges: {}", e);
+            platform::recording::error!("Failed to drop privileges: {}", e);
             // 继续运行，但记录错误
         }
 
@@ -291,13 +290,13 @@ impl ApplicationLauncher {
 
         for handle in handle_futs {
             if let Err(e) = handle.await {
-                error!("Service task terminated unexpectedly: {}", e);
+                platform::recording::error!("Service task terminated unexpectedly: {}", e);
                 let _ = shutdown_tx.send(());
             }
         }
         service_manager.stop_all().await?;
 
-        info!("🛑 所有服务已安全关闭");
+        platform::recording::info!("🛑 所有服务已安全关闭");
         Ok(())
     }
 
@@ -306,14 +305,14 @@ impl ApplicationLauncher {
         config: ActrixConfig,
         shutdown_tx: tokio::sync::broadcast::Sender<()>,
     ) -> Result<ServiceManager> {
-        info!("📊 计划启动的服务:");
+        platform::recording::info!("📊 计划启动的服务:");
         // 数据库已在 run_services_with_privilege_drop 中提前初始化，
         // 以确保 AdminApiGrpcService 可以安全处理 RPC 回调
 
         // 初始化 Prometheus metrics registry
         let registry = &platform::metrics::REGISTRY;
         if let Err(e) = platform::metrics::register_metrics() {
-            warn!(
+            platform::recording::warn!(
                 "Prometheus metrics registration warning (may already be registered): {}",
                 e
             );
@@ -323,45 +322,45 @@ impl ApplicationLauncher {
         if config.is_ks_enabled()
             && let Err(e) = ks::register_ks_metrics(registry)
         {
-            warn!(
+            platform::recording::warn!(
                 "KS metrics registration warning (may already be registered): {}",
                 e
             );
         }
 
-        info!("✅ Prometheus metrics registry 初始化成功");
+        platform::recording::info!("✅ Prometheus metrics registry 初始化成功");
 
         let mut service_manager = ServiceManager::new(config.clone(), shutdown_tx.clone());
         // 添加ICE服务 - 细粒度控制STUN和TURN
         if config.is_ice_enabled() {
             if config.is_turn_enabled() {
-                info!("  - TURN Server (UDP, 包含内置 STUN 支持)");
+                platform::recording::info!("  - TURN Server (UDP, 包含内置 STUN 支持)");
                 let turn_service = TurnService::new(config.clone());
                 service_manager.add_service(ServiceContainer::turn(turn_service));
             } else if config.is_stun_enabled() {
-                info!("  - STUN Server (UDP)");
+                platform::recording::info!("  - STUN Server (UDP)");
                 let stun_service = StunService::new(config.clone());
                 service_manager.add_service(ServiceContainer::stun(stun_service));
             }
         } else {
-            info!("ICE服务(STUN/TURN)已禁用");
+            platform::recording::info!("ICE服务(STUN/TURN)已禁用");
         }
 
         // 添加HTTP路由服务 - 每个服务独立控制
         if config.is_signaling_enabled() {
-            info!("  - Signaling WebSocket Service (/signaling)");
+            platform::recording::info!("  - Signaling WebSocket Service (/signaling)");
             let signaling_service = SignalingService::new(config.clone());
             service_manager.add_service(ServiceContainer::signaling(signaling_service));
         }
 
         if config.is_ais_enabled() {
-            info!("  - AIS Service (/ais)");
+            platform::recording::info!("  - AIS Service (/ais)");
             let ais_service = AisService::new(config.clone());
             service_manager.add_service(ServiceContainer::ais(ais_service));
         }
 
         if config.is_ks_enabled() {
-            info!("  - KS Service (/ks)");
+            platform::recording::info!("  - KS Service (/ks)");
             let ks_service = KsHttpService::new(config.clone());
             service_manager.add_service(ServiceContainer::ks(ks_service));
         }
@@ -388,37 +387,37 @@ impl ApplicationLauncher {
             urls.push(("HTTPS", https_url, wss_url));
         }
 
-        info!("✅ 所有服务已启动");
+        platform::recording::info!("✅ 所有服务已启动");
 
         if !urls.is_empty() {
             for (protocol, http_url, _ws_url) in &urls {
-                info!("📡 {} 服务器监听在: {}", protocol, http_url);
-                info!("🔧 可用的API端点:");
+                platform::recording::info!("📡 {} 服务器监听在: {}", protocol, http_url);
+                platform::recording::info!("🔧 可用的API端点:");
                 if config.is_signaling_enabled() {
-                    info!("  - {}/signaling/ws", _ws_url);
+                    platform::recording::info!("  - {}/signaling/ws", _ws_url);
                 }
                 if config.is_ks_enabled() {
-                    info!("  - {}/ks/health", http_url);
+                    platform::recording::info!("  - {}/ks/health", http_url);
                 }
                 if config.is_ais_enabled() {
-                    info!("  - {}/ais/health", http_url);
-                    info!("  - {}/ais/register (POST protobuf)", http_url);
+                    platform::recording::info!("  - {}/ais/health", http_url);
+                    platform::recording::info!("  - {}/ais/register (POST protobuf)", http_url);
                 }
             }
         } else {
-            info!("📡 没有配置 HTTP/HTTPS 服务器");
+            platform::recording::info!("📡 没有配置 HTTP/HTTPS 服务器");
         }
 
         // 显示 gRPC 服务信息
         if config.is_ks_enabled() {
-            info!("🔌 gRPC 服务:");
-            info!("  - KS gRPC Server: 127.0.0.1:50052");
+            platform::recording::info!("🔌 gRPC 服务:");
+            platform::recording::info!("  - KS gRPC Server: 127.0.0.1:50052");
         }
         if config.is_admin_enabled()
             && let Some(admin_cfg) = &config.admin
         {
             let admin_api_cfg = &admin_cfg.api;
-            info!(
+            platform::recording::info!(
                 "  - AdminApi gRPC Server: {} (advertised: {})",
                 admin_api_cfg.bind_addr(),
                 admin_api_cfg.advertised_addr()
@@ -431,10 +430,10 @@ impl ApplicationLauncher {
 async fn setup_ctrl_c_handler(shutdown_tx: tokio::sync::broadcast::Sender<()>) {
     tokio::spawn(async move {
         if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("无法监听Ctrl-C信号: {}", e);
+            platform::recording::error!("无法监听Ctrl-C信号: {}", e);
             return;
         }
-        info!("收到Ctrl-C信号，开始优雅关闭...");
+        platform::recording::info!("收到Ctrl-C信号，开始优雅关闭...");
         let _ = shutdown_tx.send(());
     });
 }

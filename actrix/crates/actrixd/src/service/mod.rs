@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use axum::Router;
 use platform::{ServiceInfo, ServiceState};
 use std::fmt::Debug;
-use tracing::info;
 use url::Url;
 
 // 重新导出服务实现
@@ -56,7 +55,7 @@ pub trait HttpRouterService: Send + Sync + Debug {
 
     /// 服务停止回调
     async fn on_stop(&mut self) -> Result<()> {
-        info!("HTTP router service '{}' stopped", self.info().name);
+        platform::recording::info!("HTTP router service '{}' stopped", self.info().name);
         self.info_mut().status = ServiceState::Unknown;
         Ok(())
     }
@@ -83,7 +82,7 @@ pub trait IceService: Send + Sync + Debug {
 
     /// 停止ICE服务
     async fn stop(&mut self) -> Result<()> {
-        info!("ICE service '{}' stopped", self.info().name);
+        platform::recording::info!("ICE service '{}' stopped", self.info().name);
         self.info_mut().status = ServiceState::Unknown;
         Ok(())
     }

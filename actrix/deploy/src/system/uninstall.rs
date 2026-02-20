@@ -4,13 +4,15 @@ use anyhow::Result;
 use std::io::{self, Write};
 use std::process::Command;
 
+const DEFAULT_SYSTEM_ACCOUNT: &str = "actrix";
+
 /// Uninstall application with selective component removal
 pub fn uninstall_application() -> Result<()> {
     println!("🔍 Checking what's installed...");
 
     // Check what's currently installed
-    let install_dir = "/opt/actor-rtc-actrix";
-    let config_dir = "/etc/actor-rtc-actrix";
+    let install_dir = "/opt/actrix";
+    let config_dir = "/etc/actrix";
     let service_file = "/etc/systemd/system/actrix.service";
 
     let mut components_found = Vec::new();
@@ -29,17 +31,17 @@ pub fn uninstall_application() -> Result<()> {
 
     #[cfg(unix)]
     {
-        if user_exists("actor-rtc") {
-            components_found.push("System user (actor-rtc)");
+        if user_exists(DEFAULT_SYSTEM_ACCOUNT) {
+            components_found.push("System user (actrix)");
         }
 
-        if group_exists("actor-rtc") {
-            components_found.push("System group (actor-rtc)");
+        if group_exists(DEFAULT_SYSTEM_ACCOUNT) {
+            components_found.push("System group (actrix)");
         }
     }
 
     if components_found.is_empty() {
-        println!("✅ No actor-rtc-actrix components found on this system.");
+        println!("✅ No actrix components found on this system.");
         return Ok(());
     }
 
@@ -70,7 +72,7 @@ pub fn uninstall_application() -> Result<()> {
 
     // 2. Remove application files
     if std::path::Path::new(install_dir).exists()
-        && prompt_confirm("Remove application files? (/opt/actor-rtc-actrix)", true)?
+        && prompt_confirm("Remove application files? (/opt/actrix)", true)?
     {
         if let Err(e) = remove_directory(install_dir) {
             println!("⚠️  Failed to remove application files: {}", e);
@@ -82,7 +84,7 @@ pub fn uninstall_application() -> Result<()> {
 
     // 3. Remove configuration files (optional)
     if std::path::Path::new(config_dir).exists() {
-        if prompt_confirm("Remove configuration files? (/etc/actor-rtc-actrix)", false)? {
+        if prompt_confirm("Remove configuration files? (/etc/actrix)", false)? {
             if let Err(e) = remove_directory(config_dir) {
                 println!("⚠️  Failed to remove configuration files: {}", e);
             } else {
@@ -97,12 +99,12 @@ pub fn uninstall_application() -> Result<()> {
     // 4. Remove system user and group
     #[cfg(unix)]
     {
-        let has_user = user_exists("actor-rtc");
-        let has_group = group_exists("actor-rtc");
-
-        if has_user {
-            if prompt_confirm("Remove system user 'actor-rtc'?", true)? {
-                if let Err(e) = remove_user("actor-rtc") {
+        if user_exists(DEFAULT_SYSTEM_ACCOUNT) {
+            if prompt_confirm(
+                &format!("Remove system user '{DEFAULT_SYSTEM_ACCOUNT}'?"),
+                true,
+            )? {
+                if let Err(e) = remove_user(DEFAULT_SYSTEM_ACCOUNT) {
                     println!("⚠️  Failed to remove user: {}", e);
                 } else {
                     removed_count += 1;
@@ -112,9 +114,12 @@ pub fn uninstall_application() -> Result<()> {
             }
         }
 
-        if has_group {
-            if prompt_confirm("Remove system group 'actor-rtc'?", true)? {
-                if let Err(e) = remove_group("actor-rtc") {
+        if group_exists(DEFAULT_SYSTEM_ACCOUNT) {
+            if prompt_confirm(
+                &format!("Remove system group '{DEFAULT_SYSTEM_ACCOUNT}'?"),
+                true,
+            )? {
+                if let Err(e) = remove_group(DEFAULT_SYSTEM_ACCOUNT) {
                     println!("⚠️  Failed to remove group: {}", e);
                 } else {
                     removed_count += 1;

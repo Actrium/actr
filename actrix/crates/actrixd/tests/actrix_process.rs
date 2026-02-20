@@ -6,12 +6,27 @@ use serde_json::Value;
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 use tonic::Code;
+#[cfg(feature = "opentelemetry")]
+use {
+    axum::{Router, body::Bytes, extract::State, http::StatusCode, routing::post},
+    opentelemetry_proto::tonic::collector::trace::v1::{
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+        trace_service_client::TraceServiceClient,
+        trace_service_server::{TraceService, TraceServiceServer},
+    },
+    std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    tokio::{sync::oneshot, task::JoinHandle},
+    tonic::{Request, Response, Status},
+};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -87,7 +102,7 @@ fn choose_port() -> u16 {
         .port()
 }
 
-fn write_minimal_config(dir: &PathBuf, port: u16) -> PathBuf {
+fn write_minimal_config(dir: &Path, port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -120,15 +135,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -138,7 +151,60 @@ level = "info"
     config_path
 }
 
-fn write_minimal_config_with_ks_kek(dir: &PathBuf, port: u16, kek: &str) -> PathBuf {
+#[cfg(feature = "opentelemetry")]
+fn write_minimal_config_with_recording_sink(dir: &Path, port: u16, sink: &str) -> PathBuf {
+    let data_dir = dir.join("data");
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    let config_path = dir.join("config.toml");
+    let mut f = fs::File::create(&config_path).expect("create config file");
+    writeln!(
+        f,
+        r#"
+name = "actrix-test-otlp"
+enable = 16  # ENABLE_KS
+env = "dev"
+sqlite_path = "{sqlite}"
+actrix_shared_key = "0123456789abcdef0123456789abcdef"
+location_tag = "local,test,otlp"
+pid = "{pid}"
+
+[bind]
+[bind.http]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = {port}
+
+[bind.ice]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = 0
+
+[turn]
+advertised_ip = "127.0.0.1"
+advertised_port = 3478
+relay_port_range = "49152-65535"
+realm = "actrix.local"
+
+[services.ks]
+# defaults
+
+[recording]
+filter_level = "info"
+service_name = "actrix-otlp-e2e"
+sink = "{sink}"
+"#,
+        sqlite = data_dir.display(),
+        port = port,
+        pid = dir.join("actrix.pid").display(),
+        sink = sink
+    )
+    .expect("write config");
+    config_path
+}
+
+fn write_minimal_config_with_ks_kek(dir: &Path, port: u16, kek: &str) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -171,14 +237,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 kek = "{kek}"
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -189,7 +254,7 @@ level = "info"
     config_path
 }
 
-fn write_minimal_config_with_custom_pid_path(dir: &PathBuf, port: u16, pid_path: &str) -> PathBuf {
+fn write_minimal_config_with_custom_pid_path(dir: &Path, port: u16, pid_path: &str) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -222,14 +287,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -239,7 +303,7 @@ level = "info"
     config_path
 }
 
-fn write_minimal_config_without_pid(dir: &PathBuf, port: u16) -> PathBuf {
+fn write_minimal_config_without_pid(dir: &Path, port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -271,14 +335,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port
@@ -288,14 +351,53 @@ level = "info"
 }
 
 fn write_minimal_config_with_file_logging(
-    dir: &PathBuf,
+    dir: &Path,
     port: u16,
     rotate: bool,
+) -> (PathBuf, PathBuf) {
+    write_minimal_config_with_file_logging_route(dir, port, rotate, "global")
+}
+
+fn write_minimal_config_with_file_logging_route(
+    dir: &Path,
+    port: u16,
+    _rotate: bool,
+    log_route: &str,
 ) -> (PathBuf, PathBuf) {
     let data_dir = dir.join("data");
     let log_dir = dir.join("logs");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::create_dir_all(&log_dir).expect("create log dir");
+
+    let global_sink_line = if log_route == "global" {
+        format!("sink = \"file://{}\"", log_dir.join("actrix.log").display())
+    } else {
+        String::new()
+    };
+
+    let channel_overrides = if log_route == "per_channel" {
+        format!(
+            r#"
+[recording.observability]
+sink = "file://{}"
+
+[recording.audit]
+sink = "file://{}"
+
+[recording.security]
+sink = "file://{}"
+
+[recording.operations]
+sink = "file://{}"
+"#,
+            log_dir.join("actrix-observability.log").display(),
+            log_dir.join("actrix-audit.log").display(),
+            log_dir.join("actrix-security.log").display(),
+            log_dir.join("actrix-operations.log").display(),
+        )
+    } else {
+        String::new()
+    };
 
     let config_path = dir.join("config.toml");
     let mut f = fs::File::create(&config_path).expect("create config file");
@@ -327,35 +429,29 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "file"
-path = "{log_path}"
-rotate = {rotate}
-level = "info"
+[recording]
+filter_level = "info"
+{global_sink_line}
+{channel_overrides}
 
 "#,
         sqlite = data_dir.display(),
         port = port,
         pid = dir.join("actrix.pid").display(),
-        log_path = log_dir.display(),
-        rotate = rotate
+        global_sink_line = global_sink_line,
+        channel_overrides = channel_overrides
     )
     .expect("write config");
 
     (config_path, log_dir)
 }
 
-fn write_minimal_config_with_user_group(
-    dir: &PathBuf,
-    port: u16,
-    user: &str,
-    group: &str,
-) -> PathBuf {
+fn write_minimal_config_with_user_group(dir: &Path, port: u16, user: &str, group: &str) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
 
@@ -391,15 +487,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -412,7 +506,7 @@ level = "info"
     config_path
 }
 
-fn write_config_with_sqlite_path(dir: &PathBuf, port: u16, sqlite_path: &str) -> PathBuf {
+fn write_config_with_sqlite_path(dir: &Path, port: u16, sqlite_path: &str) -> PathBuf {
     let config_path = dir.join("config.toml");
     let mut f = fs::File::create(&config_path).expect("create config file");
     writeln!(
@@ -443,15 +537,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 "#,
         sqlite = sqlite_path,
         port = port,
@@ -461,7 +553,7 @@ level = "info"
     config_path
 }
 
-fn write_config_with_http_bind_ip(dir: &PathBuf, port: u16, bind_ip: &str) -> PathBuf {
+fn write_config_with_http_bind_ip(dir: &Path, port: u16, bind_ip: &str) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -494,15 +586,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -514,7 +604,7 @@ level = "info"
 }
 
 fn write_config_with_admin(
-    dir: &PathBuf,
+    dir: &Path,
     port: u16,
     admin_bind_ip: &str,
     admin_port: u16,
@@ -552,7 +642,7 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
@@ -575,10 +665,8 @@ node_id = "{node_id}"
 shared_secret = "{shared_secret}"
 endpoint = "{admin_endpoint}"
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -593,7 +681,7 @@ level = "info"
     config_path
 }
 
-fn write_ice_only_config(dir: &PathBuf, enable: u8, ice_port: u16) -> PathBuf {
+fn write_ice_only_config(dir: &Path, enable: u8, ice_port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -620,11 +708,10 @@ port = {ice_port}
 advertised_ip = "127.0.0.1"
 advertised_port = {ice_port}
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         enable = enable,
         sqlite = data_dir.display(),
@@ -635,7 +722,7 @@ level = "info"
     config_path
 }
 
-fn write_ks_without_http_or_https_bind_config(dir: &PathBuf, ice_port: u16) -> PathBuf {
+fn write_ks_without_http_or_https_bind_config(dir: &Path, ice_port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -662,14 +749,13 @@ port = {ice_port}
 advertised_ip = "127.0.0.1"
 advertised_port = {ice_port}
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         pid = dir.join("actrix.pid").display(),
@@ -679,7 +765,7 @@ level = "info"
     config_path
 }
 
-fn write_prod_ks_without_https_bind_config(dir: &PathBuf, port: u16) -> PathBuf {
+fn write_prod_ks_without_https_bind_config(dir: &Path, port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -712,14 +798,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         sqlite = data_dir.display(),
         pid = dir.join("actrix.pid").display(),
@@ -729,22 +814,18 @@ level = "info"
     config_path
 }
 
-fn write_ks_https_only_with_missing_tls_files_config(
-    dir: &PathBuf,
-    port: u16,
-    env: &str,
-) -> PathBuf {
+fn write_ks_https_only_with_missing_tls_files_config(dir: &Path, port: u16, env: &str) -> PathBuf {
     let cert_path = dir.join("missing-cert.pem");
     let key_path = dir.join("missing-key.pem");
     write_ks_https_only_config(dir, port, env, &cert_path, &key_path)
 }
 
 fn write_ks_https_only_config(
-    dir: &PathBuf,
+    dir: &Path,
     port: u16,
     env: &str,
-    cert_path: &PathBuf,
-    key_path: &PathBuf,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -780,14 +861,13 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 # defaults
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
         env = env,
         sqlite = data_dir.display(),
@@ -800,7 +880,7 @@ level = "info"
     config_path
 }
 
-fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
+fn spawn_actrix(config: &Path, log_path: &Path) -> Child {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_actrix"));
     let log_file = fs::File::create(log_path).expect("create log file");
     Command::new(bin)
@@ -812,7 +892,7 @@ fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
         .expect("spawn actrix")
 }
 
-fn spawn_actrix_from_workdir(workdir: &PathBuf, log_path: &PathBuf) -> Child {
+fn spawn_actrix_from_workdir(workdir: &Path, log_path: &Path) -> Child {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_actrix"));
     let log_file = fs::File::create(log_path).expect("create log file");
     Command::new(bin)
@@ -823,7 +903,7 @@ fn spawn_actrix_from_workdir(workdir: &PathBuf, log_path: &PathBuf) -> Child {
         .expect("spawn actrix")
 }
 
-async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
+async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::new();
     let start = Instant::now();
     loop {
@@ -832,10 +912,10 @@ async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(log_path).unwrap_or_default();
@@ -845,7 +925,7 @@ async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
     }
 }
 
-async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: &PathBuf) {
+async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()
@@ -857,10 +937,10 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(log_path).unwrap_or_default();
@@ -870,7 +950,158 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
     }
 }
 
-fn write_test_tls_cert_pair(dir: &PathBuf) -> (PathBuf, PathBuf) {
+#[cfg(feature = "opentelemetry")]
+#[derive(Clone)]
+struct OtlpHttpCollectorState {
+    export_count: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn otlp_http_export_handler(
+    State(state): State<OtlpHttpCollectorState>,
+    body: Bytes,
+) -> StatusCode {
+    if !body.is_empty() {
+        state.export_count.fetch_add(1, Ordering::Relaxed);
+    }
+    StatusCode::OK
+}
+
+#[cfg(feature = "opentelemetry")]
+#[derive(Clone)]
+struct MockTraceService {
+    export_count: Arc<AtomicUsize>,
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tonic::async_trait]
+impl TraceService for MockTraceService {
+    async fn export(
+        &self,
+        request: Request<ExportTraceServiceRequest>,
+    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
+        let _ = request;
+        self.export_count.fetch_add(1, Ordering::Relaxed);
+        Ok(Response::new(ExportTraceServiceResponse::default()))
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+struct MockCollectorHandle {
+    export_count: Arc<AtomicUsize>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn start_mock_otlp_http_collector(port: u16) -> MockCollectorHandle {
+    let export_count = Arc::new(AtomicUsize::new(0));
+    let state = OtlpHttpCollectorState {
+        export_count: Arc::clone(&export_count),
+    };
+    let router = Router::new()
+        .route("/v1/traces", post(otlp_http_export_handler))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("bind mock otlp http collector");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    MockCollectorHandle {
+        export_count,
+        shutdown_tx: Some(shutdown_tx),
+        task,
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn start_mock_otlp_grpc_collector(port: u16) -> MockCollectorHandle {
+    let export_count = Arc::new(AtomicUsize::new(0));
+    let trace_service = MockTraceService {
+        export_count: Arc::clone(&export_count),
+    };
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(TraceServiceServer::new(trace_service))
+            .serve_with_shutdown(addr, async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    wait_for_mock_otlp_grpc_collector_ready(port).await;
+    export_count.store(0, Ordering::Relaxed);
+
+    MockCollectorHandle {
+        export_count,
+        shutdown_tx: Some(shutdown_tx),
+        task,
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn wait_for_mock_otlp_grpc_collector_ready(port: u16) {
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let start = Instant::now();
+
+    loop {
+        if let Ok(mut client) = TraceServiceClient::connect(endpoint.clone()).await {
+            let probe = Request::new(ExportTraceServiceRequest::default());
+            if client.export(probe).await.is_ok() {
+                return;
+            }
+        }
+
+        if start.elapsed() > START_TIMEOUT {
+            panic!(
+                "mock OTLP gRPC collector failed readiness probe within {:?} at {}",
+                START_TIMEOUT, endpoint
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn wait_for_otlp_export(export_count: &Arc<AtomicUsize>, log_path: &Path, sink_uri: &str) {
+    let start = Instant::now();
+    loop {
+        if export_count.load(Ordering::Relaxed) > 0 {
+            return;
+        }
+
+        if start.elapsed() > START_TIMEOUT {
+            let log = fs::read_to_string(log_path).unwrap_or_default();
+            panic!(
+                "did not receive OTLP export for sink '{}' within {:?}\nlogs:\n{}",
+                sink_uri, START_TIMEOUT, log
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+async fn stop_mock_collector(mut collector: MockCollectorHandle) {
+    if let Some(shutdown_tx) = collector.shutdown_tx.take() {
+        let _ = shutdown_tx.send(());
+    }
+
+    let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, collector.task).await;
+}
+
+fn write_test_tls_cert_pair(dir: &Path) -> (PathBuf, PathBuf) {
     let cert_path = dir.join("tls-cert.pem");
     let key_path = dir.join("tls-key.pem");
     fs::write(&cert_path, TEST_TLS_CERT_PEM).expect("write test tls cert");
@@ -881,7 +1112,7 @@ fn write_test_tls_cert_pair(dir: &PathBuf) -> (PathBuf, PathBuf) {
 async fn wait_for_admin_api(
     endpoint: &str,
     child: &mut Child,
-    log_path: &PathBuf,
+    log_path: &Path,
 ) -> NodeAdminServiceClient<tonic::transport::Channel> {
     let start = Instant::now();
     loop {
@@ -905,7 +1136,7 @@ async fn wait_for_admin_api(
 async fn wait_for_ks_grpc_client(
     shared_key: &str,
     child: &mut Child,
-    log_path: &PathBuf,
+    log_path: &Path,
 ) -> GrpcClient {
     let start = Instant::now();
     let endpoint = "http://127.0.0.1:50052".to_string();
@@ -988,7 +1219,7 @@ fn is_stun_binding_success(packet: &[u8], txid: [u8; 12]) -> bool {
         && packet[8..20] == txid
 }
 
-async fn wait_for_stun_binding_success(target: &str, child: &mut Child, log_path: &PathBuf) {
+async fn wait_for_stun_binding_success(target: &str, child: &mut Child, log_path: &Path) {
     let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
         .expect("bind udp probe socket");
@@ -1049,7 +1280,7 @@ fn graceful_shutdown(mut child: Child) {
 async fn actrix_starts_serves_health_and_shuts_down() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1070,7 +1301,7 @@ async fn actrix_starts_serves_health_and_shuts_down() {
 async fn actrix_ks_grpc_health_and_key_lifecycle() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-ks-grpc.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1114,7 +1345,7 @@ async fn actrix_ks_grpc_health_and_key_lifecycle() {
 async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-ks-grpc-bad-secret.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1160,8 +1391,7 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
 async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_minimal_config_with_ks_kek(&tmp.path().to_path_buf(), port, TEST_VALID_KEK_HEX);
+    let config_path = write_minimal_config_with_ks_kek(tmp.path(), port, TEST_VALID_KEK_HEX);
     let log_path = tmp.path().join("actrix-ks-grpc-kek.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1193,8 +1423,7 @@ async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
 async fn actrix_exits_when_ks_kek_is_invalid() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_minimal_config_with_ks_kek(&tmp.path().to_path_buf(), port, "invalid-kek");
+    let config_path = write_minimal_config_with_ks_kek(tmp.path(), port, "invalid-kek");
     let log_path = tmp.path().join("actrix-invalid-kek.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1229,9 +1458,9 @@ async fn actrix_exits_when_ks_kek_is_invalid() {
 async fn actrix_starts_with_default_config_in_working_directory() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    write_minimal_config(&tmp.path().to_path_buf(), port);
+    write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-default-cwd.log");
-    let mut child = spawn_actrix_from_workdir(&tmp.path().to_path_buf(), &log_path);
+    let mut child = spawn_actrix_from_workdir(tmp.path(), &log_path);
 
     let health_url = format!("http://127.0.0.1:{}/ks/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
@@ -1244,7 +1473,7 @@ async fn actrix_starts_with_default_config_in_working_directory() {
 async fn actrix_starts_without_pid_file_configured() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config_without_pid(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config_without_pid(tmp.path(), port);
     let log_path = tmp.path().join("actrix-no-pid.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1264,7 +1493,7 @@ async fn actrix_starts_without_pid_file_configured() {
 async fn actrix_writes_pid_file_and_cleans_on_shutdown() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-pid.log");
     let pid_path = tmp.path().join("actrix.pid");
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1296,7 +1525,7 @@ async fn actrix_writes_pid_file_and_cleans_on_shutdown() {
 async fn actrix_shutdown_tolerates_missing_pid_file() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-missing-pid.log");
     let pid_path = tmp.path().join("actrix.pid");
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1315,7 +1544,7 @@ async fn actrix_writes_pid_file_in_nested_directory_and_cleans_on_shutdown() {
     let port = choose_port();
     let pid_path = tmp.path().join("run").join("state").join("actrix.pid");
     let config_path = write_minimal_config_with_custom_pid_path(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         pid_path.to_str().expect("pid path to string"),
     );
@@ -1351,7 +1580,7 @@ async fn actrix_writes_pid_file_in_nested_directory_and_cleans_on_shutdown() {
 async fn actrix_exposes_prometheus_metrics_endpoint() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-metrics.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1379,8 +1608,7 @@ async fn actrix_exposes_prometheus_metrics_endpoint() {
 async fn actrix_writes_logs_to_file_when_configured() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let (config_path, log_dir) =
-        write_minimal_config_with_file_logging(&tmp.path().to_path_buf(), port, false);
+    let (config_path, log_dir) = write_minimal_config_with_file_logging(tmp.path(), port, false);
     let expected_log_file = log_dir.join("actrix.log");
     let bootstrap_log_path = tmp.path().join("actrix-bootstrap.log");
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
@@ -1414,11 +1642,53 @@ async fn actrix_writes_logs_to_file_when_configured() {
 
 #[tokio::test]
 #[serial]
-async fn actrix_writes_rotated_logs_when_configured() {
+async fn actrix_writes_per_channel_log_file_when_configured() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
     let (config_path, log_dir) =
-        write_minimal_config_with_file_logging(&tmp.path().to_path_buf(), port, true);
+        write_minimal_config_with_file_logging_route(tmp.path(), port, false, "per_channel");
+    let expected_observability_file = log_dir.join("actrix-observability.log");
+    let unexpected_global_file = log_dir.join("actrix.log");
+    let bootstrap_log_path = tmp.path().join("actrix-channel-bootstrap.log");
+    let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
+
+    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
+
+    graceful_shutdown(child);
+
+    let start = Instant::now();
+    loop {
+        if expected_observability_file.exists() {
+            let content = fs::read_to_string(&expected_observability_file).unwrap_or_default();
+            if !content.trim().is_empty() {
+                assert!(
+                    !unexpected_global_file.exists(),
+                    "actrix.log should not be used in per_channel log routing"
+                );
+                return;
+            }
+        }
+
+        if start.elapsed() > SHUTDOWN_TIMEOUT {
+            let bootstrap_log = fs::read_to_string(&bootstrap_log_path).unwrap_or_default();
+            panic!(
+                "expected per_channel observability log output at {}\nbootstrap logs:\n{}",
+                expected_observability_file.display(),
+                bootstrap_log
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn actrix_writes_rotated_logs_when_configured() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let port = choose_port();
+    let (config_path, log_dir) = write_minimal_config_with_file_logging(tmp.path(), port, true);
     let bootstrap_log_path = tmp.path().join("actrix-rotate-bootstrap.log");
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
@@ -1452,13 +1722,60 @@ async fn actrix_writes_rotated_logs_when_configured() {
     }
 }
 
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+#[serial]
+async fn actrix_exports_spans_to_otlp_http_sink() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let service_port = choose_port();
+    let collector_port = choose_port();
+    let sink_uri = format!("otlp+http://127.0.0.1:{collector_port}/v1/traces");
+    let config_path = write_minimal_config_with_recording_sink(tmp.path(), service_port, &sink_uri);
+    let bootstrap_log_path = tmp.path().join("actrix-otlp-http-bootstrap.log");
+    let collector = start_mock_otlp_http_collector(collector_port).await;
+    let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
+
+    let health_url = format!("http://127.0.0.1:{service_port}/ks/health");
+    wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
+
+    // Trigger at least one HTTP request span and flush on shutdown.
+    let _ = reqwest::get(&health_url).await;
+    let shutdown = tokio::task::spawn_blocking(move || graceful_shutdown(child));
+    wait_for_otlp_export(&collector.export_count, &bootstrap_log_path, &sink_uri).await;
+    shutdown.await.expect("wait graceful shutdown");
+    stop_mock_collector(collector).await;
+}
+
+#[cfg(feature = "opentelemetry")]
+#[tokio::test]
+#[serial]
+async fn actrix_exports_spans_to_otlp_grpc_sink() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let service_port = choose_port();
+    let collector_port = choose_port();
+    let sink_uri = format!("otlp+grpc://127.0.0.1:{collector_port}");
+    let config_path = write_minimal_config_with_recording_sink(tmp.path(), service_port, &sink_uri);
+    let bootstrap_log_path = tmp.path().join("actrix-otlp-grpc-bootstrap.log");
+    let collector = start_mock_otlp_grpc_collector(collector_port).await;
+    let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
+
+    let health_url = format!("http://127.0.0.1:{service_port}/ks/health");
+    wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
+
+    // Trigger at least one HTTP request span and flush on shutdown.
+    let _ = reqwest::get(&health_url).await;
+    let shutdown = tokio::task::spawn_blocking(move || graceful_shutdown(child));
+    wait_for_otlp_export(&collector.export_count, &bootstrap_log_path, &sink_uri).await;
+    shutdown.await.expect("wait graceful shutdown");
+    stop_mock_collector(collector).await;
+}
+
 #[tokio::test]
 #[serial]
 async fn actrix_starts_with_user_and_group_set_on_non_root() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_minimal_config_with_user_group(&tmp.path().to_path_buf(), port, "nobody", "nogroup");
+    let config_path = write_minimal_config_with_user_group(tmp.path(), port, "nobody", "nogroup");
     let log_path = tmp.path().join("actrix-user-group.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1484,7 +1801,7 @@ async fn actrix_starts_with_user_and_group_set_on_non_root() {
 async fn actrix_stun_only_serves_binding_success() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let ice_port = choose_port();
-    let config_path = write_ice_only_config(&tmp.path().to_path_buf(), 2, ice_port);
+    let config_path = write_ice_only_config(tmp.path(), 2, ice_port);
     let log_path = tmp.path().join("actrix-stun-only.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1498,7 +1815,7 @@ async fn actrix_stun_only_serves_binding_success() {
 async fn actrix_turn_only_serves_binding_success() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let ice_port = choose_port();
-    let config_path = write_ice_only_config(&tmp.path().to_path_buf(), 4, ice_port);
+    let config_path = write_ice_only_config(tmp.path(), 4, ice_port);
     let log_path = tmp.path().join("actrix-turn-only.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1512,8 +1829,7 @@ async fn actrix_turn_only_serves_binding_success() {
 async fn actrix_exits_when_database_path_is_unavailable() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_config_with_sqlite_path(&tmp.path().to_path_buf(), port, "/proc/actrix-db-denied");
+    let config_path = write_config_with_sqlite_path(tmp.path(), port, "/proc/actrix-db-denied");
     let log_path = tmp.path().join("actrix-invalid-db.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1548,8 +1864,7 @@ async fn actrix_exits_when_database_path_is_unavailable() {
 async fn actrix_exits_when_http_bind_ip_is_invalid() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_config_with_http_bind_ip(&tmp.path().to_path_buf(), port, "invalid-bind-ip");
+    let config_path = write_config_with_http_bind_ip(tmp.path(), port, "invalid-bind-ip");
     let log_path = tmp.path().join("actrix-invalid-http-bind-ip.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1585,7 +1900,7 @@ async fn actrix_exits_when_http_port_is_already_in_use() {
     let port = choose_port();
     let occupied = std::net::TcpListener::bind(("127.0.0.1", port))
         .expect("occupy port before starting actrix");
-    let config_path = write_minimal_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_minimal_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-http-port-conflict.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1625,7 +1940,7 @@ async fn actrix_exits_when_pid_parent_path_is_not_directory() {
     fs::write(&blocked_parent, "not-a-directory").expect("create blocker file");
     let bad_pid = blocked_parent.join("actrix.pid");
     let config_path = write_minimal_config_with_custom_pid_path(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         bad_pid
             .to_str()
@@ -1684,11 +1999,8 @@ async fn actrix_exits_on_incompatible_existing_schema() {
     .await
     .expect("create incompatible realm table");
 
-    let config_path = write_config_with_sqlite_path(
-        &tmp.path().to_path_buf(),
-        port,
-        &data_dir.display().to_string(),
-    );
+    let config_path =
+        write_config_with_sqlite_path(tmp.path(), port, &data_dir.display().to_string());
     let log_path = tmp.path().join("actrix-incompatible-schema.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1726,7 +2038,7 @@ async fn actrix_exits_when_admin_api_bind_address_is_invalid() {
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "invalid-bind-ip",
         admin_port,
@@ -1764,8 +2076,7 @@ async fn actrix_exits_when_admin_api_bind_address_is_invalid() {
 async fn actrix_exits_when_http_service_has_no_http_or_https_bind_config() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let ice_port = choose_port();
-    let config_path =
-        write_ks_without_http_or_https_bind_config(&tmp.path().to_path_buf(), ice_port);
+    let config_path = write_ks_without_http_or_https_bind_config(tmp.path(), ice_port);
     let log_path = tmp.path().join("actrix-no-http-bind.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1798,7 +2109,7 @@ async fn actrix_exits_when_http_service_has_no_http_or_https_bind_config() {
 async fn actrix_exits_in_production_without_https_bind_config() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_prod_ks_without_https_bind_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_prod_ks_without_https_bind_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix-prod-no-https.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1832,8 +2143,7 @@ async fn actrix_exits_in_production_without_https_bind_config() {
 async fn actrix_exits_when_dev_https_fallback_tls_files_are_missing() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_ks_https_only_with_missing_tls_files_config(&tmp.path().to_path_buf(), port, "dev");
+    let config_path = write_ks_https_only_with_missing_tls_files_config(tmp.path(), port, "dev");
     let log_path = tmp.path().join("actrix-dev-https-missing-tls.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1869,8 +2179,7 @@ async fn actrix_exits_when_dev_https_fallback_tls_files_are_missing() {
 async fn actrix_exits_when_prod_https_tls_files_are_missing() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path =
-        write_ks_https_only_with_missing_tls_files_config(&tmp.path().to_path_buf(), port, "prod");
+    let config_path = write_ks_https_only_with_missing_tls_files_config(tmp.path(), port, "prod");
     let log_path = tmp.path().join("actrix-prod-https-missing-tls.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1906,14 +2215,8 @@ async fn actrix_exits_when_prod_https_tls_files_are_missing() {
 async fn actrix_serves_https_health_in_dev_when_only_https_bind_is_configured() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let (cert_path, key_path) = write_test_tls_cert_pair(&tmp.path().to_path_buf());
-    let config_path = write_ks_https_only_config(
-        &tmp.path().to_path_buf(),
-        port,
-        "dev",
-        &cert_path,
-        &key_path,
-    );
+    let (cert_path, key_path) = write_test_tls_cert_pair(tmp.path());
+    let config_path = write_ks_https_only_config(tmp.path(), port, "dev", &cert_path, &key_path);
     let log_path = tmp.path().join("actrix-dev-https.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1942,14 +2245,8 @@ async fn actrix_serves_https_health_in_dev_when_only_https_bind_is_configured() 
 async fn actrix_serves_https_health_in_prod_with_valid_tls_config() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let (cert_path, key_path) = write_test_tls_cert_pair(&tmp.path().to_path_buf());
-    let config_path = write_ks_https_only_config(
-        &tmp.path().to_path_buf(),
-        port,
-        "prod",
-        &cert_path,
-        &key_path,
-    );
+    let (cert_path, key_path) = write_test_tls_cert_pair(tmp.path());
+    let config_path = write_ks_https_only_config(tmp.path(), port, "prod", &cert_path, &key_path);
     let log_path = tmp.path().join("actrix-prod-https.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1980,7 +2277,7 @@ async fn actrix_admin_api_serves_node_info_and_rejects_bad_signature() {
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "127.0.0.1",
         admin_port,
@@ -2028,7 +2325,7 @@ async fn actrix_admin_api_shutdown_rpc_stops_process() {
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "127.0.0.1",
         admin_port,
@@ -2083,7 +2380,7 @@ async fn actrix_admin_api_rejects_bad_shutdown_signature_and_keeps_running() {
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "127.0.0.1",
         admin_port,
@@ -2128,7 +2425,7 @@ async fn actrix_admin_api_rejects_duplicate_nonce_on_node_info_and_keeps_running
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "127.0.0.1",
         admin_port,
@@ -2178,7 +2475,7 @@ async fn actrix_admin_api_rejects_stale_node_info_timestamp_and_keeps_running() 
     let port = choose_port();
     let admin_port = choose_port();
     let config_path = write_config_with_admin(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         "127.0.0.1",
         admin_port,

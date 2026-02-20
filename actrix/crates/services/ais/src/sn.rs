@@ -2,7 +2,7 @@
 //!
 //! # 协议约束
 //!
-//! 根据 [actor-rtc-proto](https://github.com/actor-rtc/proto) 定义：
+//! 根据 [actr-protocol](https://github.com/Actrium/proto) 定义：
 //! ```proto
 //! message ActorId {
 //!     uint64 serial_number  = 1;  // 54-bit 限制

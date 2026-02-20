@@ -29,7 +29,7 @@ uuid = { workspace = true, features = ["v4"] }
 # WebSocket implementation
 axum = { workspace = true, features = ["ws"] }
 
-# Actor-RTC Protocol
+# Actrix Protocol
 actr-protocol = { workspace = true }
 actr-version = { workspace = true }
 

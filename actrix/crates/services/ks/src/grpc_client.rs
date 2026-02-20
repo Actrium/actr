@@ -11,7 +11,6 @@ use nonce_auth::CredentialBuilder;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
-use tracing::{debug, info};
 
 /// KS gRPC 客户端配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,7 +62,7 @@ impl GrpcClient {
             endpoint = endpoint
                 .tls_config(tls_config)
                 .map_err(|e| KsError::Internal(format!("TLS configuration error: {e}")))?;
-            info!("TLS enabled for KS gRPC client");
+            crate::recording::info!("TLS enabled for KS gRPC client");
         }
 
         let channel = endpoint
@@ -87,11 +86,11 @@ impl GrpcClient {
 
         let mut tls_config = ClientTlsConfig::new().domain_name(tls_domain);
 
-        debug!("Configuring TLS with domain: {}", tls_domain);
+        crate::recording::debug!("Configuring TLS with domain: {}", tls_domain);
 
         // 加载 CA 证书
         if let Some(ca_cert_path) = &config.ca_cert {
-            debug!("Loading CA certificate from: {}", ca_cert_path);
+            crate::recording::debug!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert_pem = std::fs::read(ca_cert_path).map_err(|e| {
                 KsError::Config(format!(
                     "Failed to read CA certificate from {ca_cert_path}: {e}"
@@ -100,13 +99,13 @@ impl GrpcClient {
 
             let ca_cert = Certificate::from_pem(ca_cert_pem);
             tls_config = tls_config.ca_certificate(ca_cert);
-            info!("CA certificate loaded for server verification");
+            crate::recording::info!("CA certificate loaded for server verification");
         }
 
         // 加载客户端证书和私钥（mTLS）
         if let (Some(cert_path), Some(key_path)) = (&config.client_cert, &config.client_key) {
-            debug!("Loading client certificate from: {}", cert_path);
-            debug!("Loading client private key from: {}", key_path);
+            crate::recording::debug!("Loading client certificate from: {}", cert_path);
+            crate::recording::debug!("Loading client private key from: {}", key_path);
 
             let client_cert_pem = std::fs::read(cert_path).map_err(|e| {
                 KsError::Config(format!(
@@ -122,7 +121,7 @@ impl GrpcClient {
 
             let identity = Identity::from_pem(client_cert_pem, client_key_pem);
             tls_config = tls_config.identity(identity);
-            info!("mTLS enabled: client certificate and key loaded");
+            crate::recording::info!("mTLS enabled: client certificate and key loaded");
         } else if config.client_cert.is_some() || config.client_key.is_some() {
             return Err(KsError::Config(
                 "Both client_cert and client_key must be provided for mTLS".to_string(),
@@ -149,7 +148,7 @@ impl GrpcClient {
 
         let request = tonic::Request::new(GenerateKeyRequest { credential });
 
-        debug!("Requesting key generation from KS via gRPC");
+        crate::recording::debug!("Requesting key generation from KS via gRPC");
 
         let response = self
             .client
@@ -172,9 +171,11 @@ impl GrpcClient {
                 KsError::Crypto(format!("Failed to parse compressed public key: {e}"))
             })?;
 
-            info!(
+            crate::recording::info!(
                 "Successfully generated key pair with key_id {} via gRPC, expires_at: {}, tolerance_seconds: {}",
-                resp.key_id, resp.expires_at, resp.tolerance_seconds
+                resp.key_id,
+                resp.expires_at,
+                resp.tolerance_seconds
             );
             Ok((
                 resp.key_id,
@@ -212,7 +213,7 @@ impl GrpcClient {
 
         let request = tonic::Request::new(GetSecretKeyRequest { key_id, credential });
 
-        debug!("Fetching secret key {} from KS via gRPC", key_id);
+        crate::recording::debug!("Fetching secret key {} from KS via gRPC", key_id);
 
         let response = self
             .client
@@ -234,9 +235,11 @@ impl GrpcClient {
         let secret_key = SecretKey::parse(&secret_key_array)
             .map_err(|e| KsError::Crypto(format!("Failed to parse secret key: {e}")))?;
 
-        info!(
+        crate::recording::info!(
             "Successfully fetched secret key {} from KS via gRPC, expires_at: {}, tolerance: {}s",
-            key_id, resp.expires_at, resp.tolerance_seconds
+            key_id,
+            resp.expires_at,
+            resp.tolerance_seconds
         );
         Ok((secret_key, resp.expires_at, resp.tolerance_seconds))
     }

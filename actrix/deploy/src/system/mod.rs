@@ -1,6 +1,7 @@
 //! System utilities module
 
 mod dependencies;
+mod firewall;
 mod install;
 mod uninstall;
 

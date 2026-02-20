@@ -11,7 +11,7 @@ pub enum Commands {
     /// Install application files
     Install {
         /// Installation directory
-        #[arg(long, default_value = "/opt/actor-rtc-actrix")]
+        #[arg(long, default_value = "/opt/actrix")]
         install_dir: PathBuf,
         /// Binary name
         #[arg(long, default_value = "actrix")]

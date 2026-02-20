@@ -6,7 +6,6 @@ use crate::config::ActrixConfig;
 use crate::monitoring::{ServiceState, service_type::ServiceType};
 use actrix_proto::{ResourceType, ServiceStatus as ProtoServiceStatus};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
 use url::Url;
 
 /// Basic service information
@@ -147,7 +146,7 @@ impl ServiceInfo {
     /// Set service status to running
     pub fn set_running(&mut self, url: Url) {
         self.status = ServiceState::Running(url.to_string());
-        info!(
+        crate::recording::info!(
             "Service '{}' is now running at {}/{}",
             self.name,
             self.url(),
@@ -159,7 +158,7 @@ impl ServiceInfo {
     pub fn set_error(&mut self, error: impl Into<String>) {
         let error_msg = error.into();
         self.status = ServiceState::Error(error_msg.clone());
-        error!(
+        crate::recording::error!(
             "Service '{}' encountered error: {}/{}",
             self.name,
             self.url(),

@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
 
 /// Process management utilities
 pub struct ProcessManager;
@@ -33,7 +32,7 @@ impl ProcessManager {
             writeln!(file, "{pid}")
                 .with_context(|| format!("Failed to write PID to file: {path:?}"))?;
 
-            info!("PID file written: {:?} (PID: {})", path, pid);
+            platform::recording::info!("PID file written: {:?} (PID: {})", path, pid);
             Ok(Some(path.to_path_buf()))
         } else {
             Ok(None)
@@ -45,10 +44,10 @@ impl ProcessManager {
         if let Some(path) = pid_path {
             if let Err(e) = fs::remove_file(path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    warn!("Failed to remove PID file {:?}: {}", path, e);
+                    platform::recording::warn!("Failed to remove PID file {:?}: {}", path, e);
                 }
             } else {
-                info!("PID file removed: {:?}", path);
+                platform::recording::info!("PID file removed: {:?}", path);
             }
         }
     }
@@ -73,14 +72,14 @@ impl ProcessManager {
         // Only root can switch users
         if !current_uid.is_root() {
             if user.is_some() || group.is_some() {
-                warn!("Not running as root, cannot switch user/group");
+                platform::recording::warn!("Not running as root, cannot switch user/group");
             }
             return Ok(());
         }
 
         // Switch group first (while we still have privileges)
         if let Some(group_name) = group {
-            info!("Switching to group: {}", group_name);
+            platform::recording::info!("Switching to group: {}", group_name);
 
             // Look up group by name
             let group_info = nix::unistd::Group::from_name(group_name)?
@@ -101,15 +100,16 @@ impl ProcessManager {
             setgid(group_info.gid)
                 .with_context(|| format!("Failed to set group ID to {group_name}"))?;
 
-            info!(
+            platform::recording::info!(
                 "Successfully switched to group: {} (GID: {})",
-                group_name, group_info.gid
+                group_name,
+                group_info.gid
             );
         }
 
         // Switch user (this must be done last as it drops privileges)
         if let Some(user_name) = user {
-            info!("Switching to user: {}", user_name);
+            platform::recording::info!("Switching to user: {}", user_name);
 
             // Look up user by name
             let user_info = nix::unistd::User::from_name(user_name)?
@@ -135,9 +135,10 @@ impl ProcessManager {
             setuid(user_info.uid)
                 .with_context(|| format!("Failed to set user ID to {user_name}"))?;
 
-            info!(
+            platform::recording::info!(
                 "Successfully switched to user: {} (UID: {})",
-                user_name, user_info.uid
+                user_name,
+                user_info.uid
             );
         }
 
@@ -148,7 +149,7 @@ impl ProcessManager {
     #[cfg(not(unix))]
     pub fn drop_privileges(_user: Option<&str>, _group: Option<&str>) -> Result<()> {
         if _user.is_some() || _group.is_some() {
-            warn!("User/group switching is not supported on this platform");
+            platform::recording::warn!("User/group switching is not supported on this platform");
         }
         Ok(())
     }

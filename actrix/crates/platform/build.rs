@@ -41,7 +41,7 @@ fn generate_config_template(
     let mut template_content = String::new();
 
     // Add file header comments
-    template_content.push_str("# Actor-RTC 辅助服务配置文件模板\n");
+    template_content.push_str("# Actrix 辅助服务配置文件模板\n");
     template_content.push_str("# 此文件由 config crate 的 build.rs 自动生成\n");
     template_content.push_str("# 请根据实际部署环境修改相应的配置值\n\n");
 
@@ -285,14 +285,7 @@ fn type_to_string(ty: &Type) -> String {
 fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &str) -> String {
     match field_name {
         // Main config fields
-        "enable" => {
-            // Differentiate between top-level enable and tracing.enable
-            if section_prefix.contains("tracing") {
-                "false".to_string()
-            } else {
-                "15".to_string()
-            }
-        }
+        "enable" => "15".to_string(),
         "name" => "\"actrix-default\"".to_string(),
         "env" => "\"dev\"".to_string(),
         "user" => "\"actrix\"".to_string(),
@@ -303,11 +296,9 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         "sqlite_path" => "\"database\"".to_string(),
         "actrix_shared_key" => "\"CHANGE_ME_32_CHAR_RANDOM_KEY_HERE\"".to_string(),
 
-        // Observability config fields
+        // Recording pipeline config fields
         "filter_level" => "\"info\"".to_string(),
-        "output" => "\"console\"".to_string(),
-        "rotate" => "false".to_string(),
-        "path" => "\"logs/\"".to_string(),
+        "sink" => "\"file:///var/log/actrix/actrix.log\"".to_string(),
 
         // Tracing config fields
         "service_name" => "\"actrix\"".to_string(),
@@ -340,7 +331,14 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         "cert" => "\"certificates/server.crt\"".to_string(),
         "key" => "\"certificates/server.key\"".to_string(),
         "relay_port_range" => "\"49152-65535\"".to_string(),
-        "realm" => "\"actor-rtc.local\"".to_string(),
+        "realm" => "\"actrix.local\"".to_string(),
+        "path" => {
+            if section_prefix.contains("services.ks.storage.sqlite") {
+                "\"ks.db\"".to_string()
+            } else {
+                "\"\"".to_string()
+            }
+        }
 
         // Admin config
         "node_id" => "\"\"".to_string(),

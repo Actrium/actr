@@ -6,7 +6,6 @@ use ecies::{PublicKey, SecretKey};
 use nonce_auth::CredentialBuilder;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, info};
 
 /// KS 服务客户端
 #[derive(Debug, Clone)]
@@ -66,7 +65,7 @@ impl Client {
 
         let request = GenerateKeyRequest { credential };
 
-        debug!("Requesting key generation from KS at {}", url);
+        crate::recording::debug!("Requesting key generation from KS at {}", url);
 
         // 发送请求
         let response = self.client.post(&url).json(&request).send().await?;
@@ -93,9 +92,10 @@ impl Client {
             let public_key = PublicKey::parse_compressed(&public_key_array).map_err(|e| {
                 crate::error::KsError::Crypto(format!("Failed to parse compressed public key: {e}"))
             })?;
-            info!(
+            crate::recording::info!(
                 "Successfully generated key pair with key_id {} and expires_at: {}",
-                response.key_id, response.expires_at
+                response.key_id,
+                response.expires_at
             );
             Ok((response.key_id, public_key, response.expires_at))
         } else {
@@ -126,7 +126,7 @@ impl Client {
             ("credential", serde_json::to_string(&credential)?),
         ];
 
-        debug!("Fetching secret key {} from KS at {}", key_id, url);
+        crate::recording::debug!("Fetching secret key {} from KS at {}", key_id, url);
 
         // 发送请求
         let response = self.client.get(&url).query(&query_params).send().await?;
@@ -156,9 +156,10 @@ impl Client {
             crate::error::KsError::Crypto(format!("Failed to parse secret key: {e}"))
         })?;
 
-        info!(
+        crate::recording::info!(
             "Successfully fetched secret key {} from KS with expires_at: {}",
-            key_id, response.expires_at
+            key_id,
+            response.expires_at
         );
         Ok((secret_key, response.expires_at))
     }

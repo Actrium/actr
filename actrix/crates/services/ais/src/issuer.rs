@@ -83,7 +83,6 @@ use rand::RngCore;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
 
 /// AId Token 签发器配置
 #[derive(Debug, Clone)]
@@ -165,7 +164,7 @@ impl AIdIssuer {
     async fn ensure_key_loaded(&self) -> Result<(), AidError> {
         // 先尝试从缓存加载
         if self.key_cache.read().await.is_some() {
-            debug!("Key already in cache");
+            platform::recording::debug!("Key already in cache");
             return Ok(());
         }
 
@@ -180,15 +179,17 @@ impl AIdIssuer {
                 .await
                 .map_err(|e| AidError::GenerationFailed(e.to_string()))?
             {
-                warn!("Stored key expired beyond tolerance, fetching new key from KS");
+                platform::recording::warn!(
+                    "Stored key expired beyond tolerance, fetching new key from KS"
+                );
                 self.refresh_key_from_ks().await?;
             } else {
-                debug!("Loaded key from storage: key_id={}", record.key_id);
+                platform::recording::debug!("Loaded key from storage: key_id={}", record.key_id);
                 self.load_key_from_record(&record)?;
             }
         } else {
             // 没有存储的密钥，从 KS 获取
-            info!("No stored key found, fetching from KS");
+            platform::recording::info!("No stored key found, fetching from KS");
             self.refresh_key_from_ks().await?;
         }
 
@@ -224,7 +225,7 @@ impl AIdIssuer {
 
     /// 从 KS 刷新密钥
     async fn refresh_key_from_ks(&self) -> Result<(), AidError> {
-        info!("Fetching new key from KS");
+        platform::recording::info!("Fetching new key from KS");
 
         Self::refresh_key_internal(
             &self.ks_client,
@@ -234,7 +235,7 @@ impl AIdIssuer {
         )
         .await?;
 
-        info!("Key refreshed successfully");
+        platform::recording::info!("Key refreshed successfully");
         Ok(())
     }
 
@@ -243,7 +244,7 @@ impl AIdIssuer {
     /// 立即从 KS 生成新密钥并更新缓存
     /// 返回新的 key_id
     pub async fn rotate_key(&self) -> Result<u32, AidError> {
-        info!("Manual key rotation triggered");
+        platform::recording::info!("Manual key rotation triggered");
 
         Self::refresh_key_internal(
             &self.ks_client,
@@ -259,7 +260,7 @@ impl AIdIssuer {
             AidError::GenerationFailed("No key available after rotation".to_string())
         })?;
 
-        info!("Manual key rotation completed, new key_id: {}", key_id);
+        platform::recording::info!("Manual key rotation completed, new key_id: {}", key_id);
         Ok(key_id)
     }
 
@@ -292,13 +293,13 @@ impl AIdIssuer {
                 let should_refresh = match key_storage.should_refresh().await {
                     Ok(should) => should,
                     Err(e) => {
-                        error!("Failed to check key refresh status: {}", e);
+                        platform::recording::error!("Failed to check key refresh status: {}", e);
                         continue;
                     }
                 };
 
                 if should_refresh {
-                    info!("Key expiring soon, rotation triggered");
+                    platform::recording::info!("Key expiring soon, rotation triggered");
                     should_rotate = true;
                 }
 
@@ -306,37 +307,45 @@ impl AIdIssuer {
                 if config.enable_periodic_rotation && !should_rotate {
                     match Self::should_periodic_rotate(&key_storage, &config).await {
                         Ok(true) => {
-                            info!("Periodic rotation interval reached, rotation triggered");
+                            platform::recording::info!(
+                                "Periodic rotation interval reached, rotation triggered"
+                            );
                             should_rotate = true;
                         }
                         Ok(false) => {}
                         Err(e) => {
-                            error!("Failed to check periodic rotation status: {}", e);
+                            platform::recording::error!(
+                                "Failed to check periodic rotation status: {}",
+                                e
+                            );
                             continue;
                         }
                     }
                 }
 
                 if !should_rotate {
-                    debug!("Key rotation not needed yet");
+                    platform::recording::debug!("Key rotation not needed yet");
                     continue;
                 }
 
-                debug!("Background key rotation triggered");
+                platform::recording::debug!("Background key rotation triggered");
 
                 // 轮替密钥
                 match Self::refresh_key_internal(&ks_client, &key_storage, &key_cache, &config)
                     .await
                 {
-                    Ok(()) => info!("Background key rotation successful"),
+                    Ok(()) => platform::recording::info!("Background key rotation successful"),
                     Err(e) => {
-                        warn!("Background key rotation failed: {}, will retry later", e);
+                        platform::recording::warn!(
+                            "Background key rotation failed: {}, will retry later",
+                            e
+                        );
                     }
                 }
             }
         });
 
-        info!("Background key refresh task started");
+        platform::recording::info!("Background key refresh task started");
     }
 
     /// 检查是否需要定期轮替密钥

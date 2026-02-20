@@ -20,7 +20,6 @@ use std::sync::{
 };
 use std::time::Instant;
 use std::{collections::HashMap, str::FromStr};
-use tracing::{debug, info, warn};
 
 lazy_static! {
     /// KS 服务指标
@@ -111,15 +110,16 @@ impl KSState {
             let total_keys = match storage.get_key_count().await {
                 Ok(count) => count,
                 Err(e) => {
-                    warn!("Failed to get key count for cleanup check: {}", e);
+                    crate::recording::warn!("Failed to get key count for cleanup check: {}", e);
                     return;
                 }
             };
 
             if total_keys < CLEANUP_MIN_KEYS {
-                debug!(
+                crate::recording::debug!(
                     "Skipping cleanup: only {} keys (threshold: {})",
-                    total_keys, CLEANUP_MIN_KEYS
+                    total_keys,
+                    CLEANUP_MIN_KEYS
                 );
                 return;
             }
@@ -128,14 +128,15 @@ impl KSState {
             match storage.cleanup_expired_keys().await {
                 Ok(cleaned) => {
                     if cleaned > 0 {
-                        info!(
+                        crate::recording::info!(
                             "Lazy cleanup: removed {} expired keys (total: {})",
-                            cleaned, total_keys
+                            cleaned,
+                            total_keys
                         );
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to cleanup expired keys: {}", e);
+                    crate::recording::warn!("Failed to cleanup expired keys: {}", e);
                 }
             }
         });
@@ -176,16 +177,16 @@ pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
     actrix_shared_key: &str,
     sqlite_path: &std::path::Path,
 ) -> Result<KSState, KsError> {
-    info!("Initializing KS state from KsServiceConfig");
+    crate::recording::info!("Initializing KS state from KsServiceConfig");
 
     // 创建密钥加密器
     let encryptor = match service_config.get_kek_source() {
         Some(kek_source) => {
-            info!("KEK configured, enabling private key encryption");
+            crate::recording::info!("KEK configured, enabling private key encryption");
             KeyEncryptor::from_kek_source(&kek_source)?
         }
         None => {
-            info!("No KEK configured, private keys will be stored in plaintext");
+            crate::recording::info!("No KEK configured, private keys will be stored in plaintext");
             KeyEncryptor::no_encryption()
         }
     };
@@ -228,7 +229,7 @@ async fn generate_key_handler(
     Json(request): Json<GenerateKeyRequest>,
 ) -> Result<Json<GenerateKeyResponse>, KsError> {
     let start_time = Instant::now();
-    info!("Received key generation request");
+    crate::recording::info!("Received key generation request");
 
     // 验证凭据
     let request_data = request.request_payload();
@@ -290,7 +291,7 @@ async fn generate_key_handler(
         .with_label_values(&["ks", "POST", "/generate", "200"])
         .inc();
 
-    info!("Generated key pair with key_id: {}", key_pair.key_id);
+    crate::recording::info!("Generated key pair with key_id: {}", key_pair.key_id);
     Ok(Json(response))
 }
 
@@ -300,7 +301,7 @@ async fn get_secret_key_handler(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<GetSecretKeyResponse>, KsError> {
     let start_time = Instant::now();
-    info!("Received secret key request for key_id: {}", key_id);
+    crate::recording::info!("Received secret key request for key_id: {}", key_id);
 
     let request_key_id = params
         .get("key_id")
@@ -407,9 +408,12 @@ async fn get_secret_key_handler(
 
                 // 检查是否超过了过期时间 + 容忍期
                 if key_record.expires_at + app_state.tolerance_seconds < now {
-                    warn!(
+                    crate::recording::warn!(
                         "Key {} has expired beyond tolerance period. Expires at: {}, Tolerance: {}s, Now: {}",
-                        key_id, key_record.expires_at, app_state.tolerance_seconds, now
+                        key_id,
+                        key_record.expires_at,
+                        app_state.tolerance_seconds,
+                        now
                     );
                     let duration = start_time.elapsed().as_secs_f64();
                     KS_REQUEST_DURATION
@@ -423,9 +427,11 @@ async fn get_secret_key_handler(
 
                 // 记录是否在容忍期内（用于日志）
                 if key_record.expires_at < now {
-                    warn!(
+                    crate::recording::warn!(
                         "Key {} is in tolerance period (expired at: {}, now: {})",
-                        key_id, key_record.expires_at, now
+                        key_id,
+                        key_record.expires_at,
+                        now
                     );
                 }
             }
@@ -453,14 +459,15 @@ async fn get_secret_key_handler(
                 .with_label_values(&["ks", "GET", "/secret", "200"])
                 .inc();
 
-            info!(
+            crate::recording::info!(
                 "Returned secret key for key_id: {}, expires_at: {}",
-                key_id, key_record.expires_at
+                key_id,
+                key_record.expires_at
             );
             Ok(Json(response))
         }
         None => {
-            debug!("Secret key retrieval failed: key not found");
+            crate::recording::debug!("Secret key retrieval failed: key not found");
             let duration = start_time.elapsed().as_secs_f64();
             KS_REQUEST_DURATION
                 .with_label_values(&["ks", "GET", "/secret", "404"])
@@ -476,7 +483,7 @@ async fn get_secret_key_handler(
 async fn health_check_handler(
     State(app_state): State<KSState>,
 ) -> Result<Json<serde_json::Value>, KsError> {
-    debug!("Health check requested");
+    crate::recording::debug!("Health check requested");
 
     let key_count = app_state.storage.get_key_count().await?;
 

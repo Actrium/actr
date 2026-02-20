@@ -465,8 +465,8 @@ message SignalingEnvelope {
 ### 完整文档
 
 详见：
-- `/d/actor-rtc/actr/crates/protocol/proto/signaling.proto`
-- `/d/actor-rtc/actr/crates/protocol/proto/actr.proto`
+- `/d/Actrium/actr/crates/protocol/proto/signaling.proto`
+- `/d/Actrium/actr/crates/protocol/proto/actr.proto`
 
 ---
 

@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use base64::prelude::*;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, trace};
 
 /// PostgreSQL 存储后端
 #[derive(Clone)]
@@ -53,9 +52,12 @@ impl PostgresBackend {
         // 初始化数据库表
         backend.init().await?;
 
-        info!(
+        crate::recording::info!(
             "PostgreSQL storage initialized: host={}:{}, db={}, key_ttl={}s",
-            config.host, config.port, config.database, key_ttl
+            config.host,
+            config.port,
+            config.database,
+            key_ttl
         );
 
         Ok(backend)
@@ -89,7 +91,7 @@ impl KeyStorageBackend for PostgresBackend {
         .await
         .map_err(|e| KsError::Internal(format!("Failed to create index: {e}")))?;
 
-        debug!("PostgreSQL tables and indexes initialized");
+        crate::recording::debug!("PostgreSQL tables and indexes initialized");
         Ok(())
     }
 
@@ -131,9 +133,10 @@ impl KeyStorageBackend for PostgresBackend {
 
         let key_id = row.0 as u32;
 
-        info!(
+        crate::recording::info!(
             "Generated and stored new key pair in PostgreSQL: key_id={}, expires_at={}",
-            key_id, expires_at
+            key_id,
+            expires_at
         );
 
         Ok(KeyPair {
@@ -156,9 +159,9 @@ impl KeyStorageBackend for PostgresBackend {
                 })?;
 
         if result.is_some() {
-            debug!("Found public key for key_id: {} in PostgreSQL", key_id);
+            crate::recording::debug!("Found public key for key_id: {} in PostgreSQL", key_id);
         } else {
-            debug!("No public key found for key_id: {} in PostgreSQL", key_id);
+            crate::recording::debug!("No public key found for key_id: {} in PostgreSQL", key_id);
         }
 
         Ok(result)
@@ -177,9 +180,9 @@ impl KeyStorageBackend for PostgresBackend {
                 })?;
 
         if result.is_some() {
-            trace!("Secret key found in PostgreSQL database");
+            crate::recording::trace!("Secret key found in PostgreSQL database");
         } else {
-            trace!("Secret key not found in PostgreSQL database");
+            crate::recording::trace!("Secret key not found in PostgreSQL database");
         }
 
         Ok(result)
@@ -200,7 +203,7 @@ impl KeyStorageBackend for PostgresBackend {
 
         match result {
             Some((id, public_key, created_at, expires_at)) => {
-                debug!("Found key record for key_id: {} in PostgreSQL", key_id);
+                crate::recording::debug!("Found key record for key_id: {} in PostgreSQL", key_id);
                 Ok(Some(KeyRecord {
                     key_id: id as u32,
                     public_key,
@@ -209,7 +212,10 @@ impl KeyStorageBackend for PostgresBackend {
                 }))
             }
             None => {
-                debug!("No key record found for key_id: {} in PostgreSQL", key_id);
+                crate::recording::debug!(
+                    "No key record found for key_id: {} in PostgreSQL",
+                    key_id
+                );
                 Ok(None)
             }
         }
@@ -240,7 +246,7 @@ impl KeyStorageBackend for PostgresBackend {
         let deleted_count = result.rows_affected() as u32;
 
         if deleted_count > 0 {
-            info!("Cleaned up {} expired keys from PostgreSQL", deleted_count);
+            crate::recording::info!("Cleaned up {} expired keys from PostgreSQL", deleted_count);
         }
 
         Ok(deleted_count)

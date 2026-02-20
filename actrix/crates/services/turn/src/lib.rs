@@ -1,6 +1,7 @@
 //! TURN 服务器实现
 //!
 //! 提供 TURN 中继服务器功能，用于 NAT 穿越和网络中继
+#![deny(clippy::disallowed_macros)]
 
 // TURN server implementation modules
 mod authenticator;
@@ -15,7 +16,6 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::*;
 use turn_crate::auth::AuthHandler;
 use turn_crate::relay::relay_range::*;
 use turn_crate::server::config::*;
@@ -29,21 +29,22 @@ pub async fn create_turn_server(
     realm: &str,
     auth_handler: Arc<dyn AuthHandler + Send + Sync>,
 ) -> error::Result<Server> {
-    info!("Creating TURN server with advertised IP: {}", advertised_ip);
+    platform::recording::info!("Creating TURN server with advertised IP: {}", advertised_ip);
 
     // Get the local address of the socket
     let local_addr = match socket.local_addr() {
         Ok(addr) => addr.ip().to_string(),
         Err(e) => {
-            error!("Failed to get local address from socket: {}", e);
+            platform::recording::error!("Failed to get local address from socket: {}", e);
             // Fall back to 0.0.0.0 if we can't get the actual address
             "0.0.0.0".to_string()
         }
     };
 
-    info!(
+    platform::recording::info!(
         "TURN server will use local address: {} and advertised IP: {}",
-        local_addr, advertised_ip
+        local_addr,
+        advertised_ip
     );
 
     // Parse advertised IP
@@ -51,7 +52,7 @@ pub async fn create_turn_server(
         Ok(ip) => ip,
         Err(e) => {
             let err_msg = format!("Invalid advertised IP address: {e}");
-            error!("{}", err_msg);
+            platform::recording::error!("{}", err_msg);
             return Err(TurnError::Configuration {
                 field: "advertised_ip".to_string(),
                 value: advertised_ip.to_string(),
@@ -84,27 +85,27 @@ pub async fn create_turn_server(
         Ok(server) => server,
         Err(e) => {
             let err_msg = format!("Failed to create TURN server: {e}");
-            error!("{}", err_msg);
+            platform::recording::error!("{}", err_msg);
             return Err(TurnError::ServerStartFailed { reason: err_msg });
         }
     };
 
-    info!("TURN server created successfully (includes STUN functionality)");
+    platform::recording::info!("TURN server created successfully (includes STUN functionality)");
     Ok(server)
 }
 
 // Shutdown the TURN server
 pub async fn shutdown_turn_server(server: &Server) -> error::Result<()> {
-    info!("Shutting down TURN server");
+    platform::recording::info!("Shutting down TURN server");
 
     if let Err(e) = server.close().await {
-        error!("Error while closing TURN server: {e}");
+        platform::recording::error!("Error while closing TURN server: {e}");
         return Err(TurnError::ServerShutdownFailed {
             reason: format!("Failed to close TURN server: {e}"),
         });
     }
 
-    info!("TURN server has been shut down");
+    platform::recording::info!("TURN server has been shut down");
     Ok(())
 }
 

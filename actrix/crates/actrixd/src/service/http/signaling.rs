@@ -7,7 +7,6 @@ use axum::{Router, routing::get};
 use platform::config::ActrixConfig;
 use platform::{ServiceInfo, ServiceType};
 use signaling::create_signaling_router_with_config;
-use tracing::info;
 
 /// Signaling WebSocket服务实现
 #[derive(Debug)]
@@ -41,14 +40,14 @@ impl HttpRouterService for SignalingService {
     }
 
     async fn build_router(&mut self) -> Result<Router> {
-        info!("Building Signaling router");
+        platform::recording::info!("Building Signaling router");
         let signaling_router = create_signaling_router_with_config(&self.config).await?;
 
         let router = Router::new()
             .route("/health", get(|| async { "Signaling is healthy" }))
             .merge(signaling_router);
 
-        info!("Signaling router built successfully");
+        platform::recording::info!("Signaling router built successfully");
         Ok(router)
     }
 

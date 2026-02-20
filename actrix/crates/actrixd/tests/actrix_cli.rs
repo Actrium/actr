@@ -38,13 +38,12 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()
@@ -97,14 +96,12 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 
-[observability.log]
-output = "console"
-rotate = false
-level = "info"
+[recording]
+filter_level = "info"
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()
@@ -149,13 +146,12 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 # Intentionally no [services.ks] to trigger validation error for ENABLE_KS.
 
-[observability.log]
-output = "console"
-level = "info"
+[recording]
+filter_level = "info"
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()

@@ -203,22 +203,22 @@ impl ActorAcl {
     ) -> Result<bool, RealmError> {
         match Self::get_by_types(realm_id, from_type, to_type).await? {
             Some(acl) => {
-                tracing::debug!(
-                    realm_id = %realm_id,
-                    from_type = %from_type,
-                    to_type = %to_type,
-                    access = acl.access(),
-                    "ACL rule found"
+                crate::recording::debug!(
+                    "ACL rule found: realm_id={}, from_type={}, to_type={}, access={}",
+                    realm_id,
+                    from_type,
+                    to_type,
+                    acl.access()
                 );
                 Ok(acl.access())
             }
             None => {
                 // Default policy: deny if no rule exists
-                tracing::debug!(
-                    realm_id = %realm_id,
-                    from_type = %from_type,
-                    to_type = %to_type,
-                    "No ACL rule found, denying discovery (default policy)"
+                crate::recording::debug!(
+                    "No ACL rule found, denying discovery (default policy): realm_id={}, from_type={}, to_type={}",
+                    realm_id,
+                    from_type,
+                    to_type
                 );
                 Ok(false)
             }

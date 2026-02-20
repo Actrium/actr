@@ -2,6 +2,7 @@
 //!
 //! This crate is the canonical implementation for node-side control-plane
 //! behavior (register/report client + node_admin gRPC API server).
+#![deny(clippy::disallowed_macros)]
 
 pub mod auth;
 pub mod client;

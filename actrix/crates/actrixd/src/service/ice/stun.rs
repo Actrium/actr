@@ -9,7 +9,6 @@ use platform::{ServiceInfo, ServiceType};
 use std::sync::Arc;
 use stun;
 use tokio::net::UdpSocket;
-use tracing::{error, info};
 use url::Url;
 
 /// STUN服务实现
@@ -53,12 +52,12 @@ impl IceService for StunService {
         let ice_bind = &self.config.bind.ice;
         let addr = format!("{}:{}", ice_bind.ip, ice_bind.port);
 
-        info!("Starting STUN service on {}", addr);
+        platform::recording::info!("Starting STUN service on {}", addr);
 
         // 绑定UDP套接字
         let socket = match UdpSocket::bind(&addr).await {
             Ok(socket) => {
-                info!("STUN service listening on: {}", addr);
+                platform::recording::info!("STUN service listening on: {}", addr);
                 Arc::new(socket)
             }
             Err(e) => {
@@ -76,15 +75,15 @@ impl IceService for StunService {
         oneshot_tx
             .send(self.info.clone())
             .map_err(|e| anyhow::anyhow!("Failed to send STUN service info: {e:?}"))?;
-        info!("STUN service started successfully");
+        platform::recording::info!("STUN service started successfully");
 
         // 启动STUN服务器（带优雅关闭支持）
         if let Err(e) = stun::create_stun_server_with_shutdown(socket.clone(), shutdown_rx).await {
             let error_msg = format!("STUN server stopped with error: {e}");
             self.info.set_error(&error_msg);
-            error!("{}", error_msg);
+            platform::recording::error!("{}", error_msg);
         } else {
-            info!("STUN server shut down gracefully");
+            platform::recording::info!("STUN server shut down gracefully");
         }
 
         self.stop().await?;
@@ -92,13 +91,13 @@ impl IceService for StunService {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        info!("Stopping STUN service");
+        platform::recording::info!("Stopping STUN service");
 
         // 清理状态
         self.socket = None;
         self.info.status = ServiceState::Unknown;
 
-        info!("STUN service stopped");
+        platform::recording::info!("STUN service stopped");
         Ok(())
     }
 }

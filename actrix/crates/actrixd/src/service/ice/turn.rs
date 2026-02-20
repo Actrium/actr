@@ -8,7 +8,6 @@ use platform::status::services::ServiceState;
 use platform::{ServiceInfo, ServiceType};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{error, info};
 use url::Url;
 
 /// TURN服务实现
@@ -52,12 +51,12 @@ impl IceService for TurnService {
         let ice_bind = &self.config.bind.ice;
         let addr = format!("{}:{}", ice_bind.ip, ice_bind.port);
 
-        info!("Starting TURN service on {}", addr);
+        platform::recording::info!("Starting TURN service on {}", addr);
 
         // 绑定UDP套接字
         let socket = match UdpSocket::bind(&addr).await {
             Ok(socket) => {
-                info!("TURN service listening on: {}", addr);
+                platform::recording::info!("TURN service listening on: {}", addr);
                 Arc::new(socket)
             }
             Err(e) => {
@@ -93,7 +92,7 @@ impl IceService for TurnService {
                 oneshot_tx
                     .send(self.info.clone())
                     .map_err(|e| anyhow::anyhow!("Failed to send TURN service info: {e:?}"))?;
-                info!("TURN service started successfully");
+                platform::recording::info!("TURN service started successfully");
                 server
             }
             Err(e) => {
@@ -105,11 +104,11 @@ impl IceService for TurnService {
 
         // 等待关闭信号
         let _ = shutdown_rx.recv().await;
-        info!("TURN service received shutdown signal");
+        platform::recording::info!("TURN service received shutdown signal");
 
         // 关闭TURN服务器
         if let Err(e) = turn::shutdown_turn_server(&turn_server).await {
-            error!("Error shutting down TURN server: {}", e);
+            platform::recording::error!("Error shutting down TURN server: {}", e);
         }
 
         self.stop().await?;
@@ -117,12 +116,12 @@ impl IceService for TurnService {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        info!("Stopping TURN service");
+        platform::recording::info!("Stopping TURN service");
 
         self.socket = None;
         self.info.status = ServiceState::Unknown;
 
-        info!("TURN service stopped");
+        platform::recording::info!("TURN service stopped");
         Ok(())
     }
 }

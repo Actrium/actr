@@ -8,6 +8,10 @@ description = "Actrix platform core infrastructure components"
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
+
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -15,6 +19,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }

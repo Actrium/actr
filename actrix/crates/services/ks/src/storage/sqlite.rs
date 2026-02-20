@@ -13,7 +13,6 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, trace};
 
 /// SQLite 存储后端
 #[derive(Clone)]
@@ -72,7 +71,7 @@ impl SqliteBackend {
         // 初始化数据库表
         backend.init().await?;
 
-        info!(
+        crate::recording::info!(
             "SQLite storage initialized with sqlx: path={}, key_ttl={}s, encryption={}, WAL mode enabled",
             file.display(),
             key_ttl,
@@ -108,7 +107,7 @@ impl KeyStorageBackend for SqliteBackend {
             .await
             .map_err(|e| KsError::Internal(format!("Failed to create index: {e}")))?;
 
-        debug!("SQLite tables and indexes initialized");
+        crate::recording::debug!("SQLite tables and indexes initialized");
         Ok(())
     }
 
@@ -150,7 +149,7 @@ impl KeyStorageBackend for SqliteBackend {
 
         let key_id = result.last_insert_rowid() as u32;
 
-        debug!("Generated key with ID: {}", key_id);
+        crate::recording::debug!("Generated key with ID: {}", key_id);
 
         // 返回明文私钥（供调用方使用）
         Ok(KeyPair {
@@ -172,10 +171,10 @@ impl KeyStorageBackend for SqliteBackend {
             })?;
 
         if let Some((public_key,)) = result {
-            debug!("Found public key for key_id: {}", key_id);
+            crate::recording::debug!("Found public key for key_id: {}", key_id);
             Ok(Some(public_key))
         } else {
-            debug!("No public key found for key_id: {}", key_id);
+            crate::recording::debug!("No public key found for key_id: {}", key_id);
             Ok(None)
         }
     }
@@ -192,12 +191,12 @@ impl KeyStorageBackend for SqliteBackend {
             })?;
 
         if let Some((encrypted_secret_key,)) = result {
-            trace!("Secret key found in SQLite database");
+            crate::recording::trace!("Secret key found in SQLite database");
             // 解密私钥（如果启用了加密）
             let decrypted_secret_key = self.encryptor.decrypt(&encrypted_secret_key)?;
             Ok(Some(decrypted_secret_key))
         } else {
-            trace!("Secret key not found in SQLite database");
+            crate::recording::trace!("Secret key not found in SQLite database");
             Ok(None)
         }
     }
@@ -216,7 +215,7 @@ impl KeyStorageBackend for SqliteBackend {
         })?;
 
         if let Some((key_id_db, public_key, created_at, expires_at)) = result {
-            debug!("Found key record for key_id: {}", key_id);
+            crate::recording::debug!("Found key record for key_id: {}", key_id);
             Ok(Some(KeyRecord {
                 key_id: key_id_db as u32,
                 public_key,
@@ -224,7 +223,7 @@ impl KeyStorageBackend for SqliteBackend {
                 expires_at: expires_at as u64,
             }))
         } else {
-            debug!("No key record found for key_id: {}", key_id);
+            crate::recording::debug!("No key record found for key_id: {}", key_id);
             Ok(None)
         }
     }
@@ -252,7 +251,7 @@ impl KeyStorageBackend for SqliteBackend {
 
         let deleted = result.rows_affected() as u32;
         if deleted > 0 {
-            debug!("Cleaned up {} expired keys", deleted);
+            crate::recording::debug!("Cleaned up {} expired keys", deleted);
         }
 
         Ok(deleted)

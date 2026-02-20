@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::time::interval;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
-use tracing::{debug, error, info, warn};
 
 /// Admin gRPC 客户端
 pub struct AdminClient {
@@ -57,9 +56,10 @@ impl AdminClient {
 
     /// 连接到 admin 服务器
     pub async fn connect(&mut self) -> Result<()> {
-        info!(
+        platform::recording::info!(
             "Connecting to admin at: {} (node: {})",
-            self.config.endpoint, self.config.node_id
+            self.config.endpoint,
+            self.config.node_id
         );
 
         let mut endpoint = Endpoint::from_shared(self.config.endpoint.clone())
@@ -73,13 +73,13 @@ impl AdminClient {
             endpoint = endpoint
                 .tls_config(tls_config)
                 .map_err(|e| AdminError::Config(format!("TLS configuration error: {e}")))?;
-            info!("TLS enabled for connection");
+            platform::recording::info!("TLS enabled for connection");
         }
 
         let channel = endpoint.connect().await?;
         self.client = Some(GrpcAdminClient::new(channel));
 
-        info!("Successfully connected to admin");
+        platform::recording::info!("Successfully connected to admin");
         Ok(())
     }
 
@@ -92,11 +92,11 @@ impl AdminClient {
 
         let mut tls_config = ClientTlsConfig::new().domain_name(tls_domain);
 
-        debug!("Configuring TLS with domain: {}", tls_domain);
+        platform::recording::debug!("Configuring TLS with domain: {}", tls_domain);
 
         // 加载 CA 证书（验证服务端证书）
         if let Some(ca_cert_path) = &self.config.ca_cert {
-            debug!("Loading CA certificate from: {}", ca_cert_path);
+            platform::recording::debug!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert_pem = std::fs::read(ca_cert_path).map_err(|e| {
                 AdminError::Config(format!(
                     "Failed to read CA certificate from {ca_cert_path}: {e}"
@@ -105,15 +105,15 @@ impl AdminClient {
 
             let ca_cert = Certificate::from_pem(ca_cert_pem);
             tls_config = tls_config.ca_certificate(ca_cert);
-            info!("CA certificate loaded for server verification");
+            platform::recording::info!("CA certificate loaded for server verification");
         }
 
         // 加载客户端证书和私钥（mTLS）
         if let (Some(cert_path), Some(key_path)) =
             (&self.config.client_cert, &self.config.client_key)
         {
-            debug!("Loading client certificate from: {}", cert_path);
-            debug!("Loading client private key from: {}", key_path);
+            platform::recording::debug!("Loading client certificate from: {}", cert_path);
+            platform::recording::debug!("Loading client private key from: {}", key_path);
 
             let client_cert_pem = std::fs::read(cert_path).map_err(|e| {
                 AdminError::Config(format!(
@@ -129,7 +129,7 @@ impl AdminClient {
 
             let identity = Identity::from_pem(client_cert_pem, client_key_pem);
             tls_config = tls_config.identity(identity);
-            info!("mTLS enabled: client certificate and key loaded");
+            platform::recording::info!("mTLS enabled: client certificate and key loaded");
         } else if self.config.client_cert.is_some() || self.config.client_key.is_some() {
             // 如果只配置了证书或私钥其中一个，报错
             return Err(AdminError::Config(
@@ -158,11 +158,11 @@ impl AdminClient {
         )
         .await?;
 
-        debug!("Sending status report for node: {}", self.config.node_id);
+        platform::recording::debug!("Sending status report for node: {}", self.config.node_id);
 
         let response = client.report(request).await?.into_inner();
 
-        debug!(
+        platform::recording::debug!(
             "Status report acknowledged, next interval: {}s",
             response.next_report_interval_secs
         );
@@ -198,13 +198,14 @@ impl AdminClient {
 
         let client = self.client.as_mut().ok_or(AdminError::ConnectionClosed)?;
 
-        debug!(
+        platform::recording::debug!(
             "Registering node {} with advertised address {}",
-            self.config.node_id, self.config.agent_addr
+            self.config.node_id,
+            self.config.agent_addr
         );
 
         let response = client.register_node(request).await?.into_inner();
-        debug!(
+        platform::recording::debug!(
             "Register response received, heartbeat interval: {}s",
             response.heartbeat_interval_secs
         );
@@ -235,13 +236,13 @@ impl AdminClient {
                 match AdminClient::new(report_config.clone(), service_collector.clone()) {
                     Ok(c) => c,
                     Err(e) => {
-                        error!("Failed to create report client: {}", e);
+                        platform::recording::error!("Failed to create report client: {}", e);
                         return;
                     }
                 };
 
             if let Err(e) = client.connect().await {
-                error!("Failed to connect report client: {}", e);
+                platform::recording::error!("Failed to connect report client: {}", e);
                 return;
             }
 
@@ -258,37 +259,43 @@ impl AdminClient {
                 .await
                 {
                     Ok(request) => {
-                        debug!("Sending status report for node: {}", node_id);
+                        platform::recording::debug!("Sending status report for node: {}", node_id);
                         match client.client.as_mut() {
                             Some(grpc_client) => match grpc_client.report(request).await {
                                 Ok(response) => {
                                     let resp = response.into_inner();
-                                    debug!("Status report acknowledged");
+                                    platform::recording::debug!("Status report acknowledged");
                                     // 动态调整上报间隔
                                     if resp.next_report_interval_secs > 0
                                         && resp.next_report_interval_secs as u64 != interval_secs
                                     {
                                         interval_secs = resp.next_report_interval_secs as u64;
                                         ticker = interval(Duration::from_secs(interval_secs));
-                                        info!("Adjusted report interval to {}s", interval_secs);
+                                        platform::recording::info!(
+                                            "Adjusted report interval to {}s",
+                                            interval_secs
+                                        );
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to send status report: {}", e);
+                                    platform::recording::error!(
+                                        "Failed to send status report: {}",
+                                        e
+                                    );
                                 }
                             },
                             None => {
-                                error!("Client not connected");
+                                platform::recording::error!("Client not connected");
                                 break;
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to create status report: {}", e);
+                        platform::recording::warn!("Failed to create status report: {}", e);
                     }
                 }
             }
-            info!("Status reporting stopped");
+            platform::recording::info!("Status reporting stopped");
         });
 
         Ok(())
@@ -309,11 +316,11 @@ impl AdminClient {
             credential,
         };
 
-        debug!("Sending health check request with nonce-auth credential");
+        platform::recording::debug!("Sending health check request with nonce-auth credential");
 
         let response = client.health_check(request).await?.into_inner();
 
-        debug!(
+        platform::recording::debug!(
             "Health check successful, latency: {}ms",
             response.latency_ms
         );
@@ -338,11 +345,11 @@ impl AdminClient {
         let power_reserve_level = match pwrzv::get_power_reserve_level_direct().await {
             Ok(level) => {
                 let clamped = Self::clamp_power_reserve(level);
-                debug!("Power reserve level: {:.2} -> {}", level, clamped);
+                platform::recording::debug!("Power reserve level: {:.2} -> {}", level, clamped);
                 clamped
             }
             Err(e) => {
-                warn!(
+                platform::recording::warn!(
                     "Failed to get power reserve level from pwrzv: {}, using default 0",
                     e
                 );
@@ -458,11 +465,15 @@ impl AdminClient {
         match pwrzv::get_power_reserve_level_direct().await {
             Ok(level) => {
                 let clamped = Self::clamp_power_reserve(level);
-                debug!("Power reserve level (init): {:.2} -> {}", level, clamped);
+                platform::recording::debug!(
+                    "Power reserve level (init): {:.2} -> {}",
+                    level,
+                    clamped
+                );
                 Some(clamped)
             }
             Err(e) => {
-                warn!(
+                platform::recording::warn!(
                     "Failed to get power reserve level from pwrzv (init): {}, returning None",
                     e
                 );
@@ -478,7 +489,7 @@ impl AdminClient {
     /// 断开连接
     pub fn disconnect(&mut self) {
         self.client = None;
-        info!("Disconnected from admin");
+        platform::recording::info!("Disconnected from admin");
     }
 }
 

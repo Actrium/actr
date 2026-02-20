@@ -6,7 +6,6 @@ use actr_protocol::{ActrType, Realm, RegisterRequest, RegisterResponse, register
 use anyhow::{Result, anyhow};
 use prost::Message;
 use std::time::Duration;
-use tracing::{debug, error};
 
 /// AIS 客户端配置
 #[derive(Debug, Clone)]
@@ -78,9 +77,12 @@ impl AisClient {
             ws_address: None,
         };
 
-        debug!(
+        platform::recording::debug!(
             "Sending refresh_credential request to {} (realm={}, type={}:{})",
-            url, realm_id, request.actr_type.manufacturer, request.actr_type.name
+            url,
+            realm_id,
+            request.actr_type.manufacturer,
+            request.actr_type.name
         );
 
         // 发送 HTTP POST 请求
@@ -100,7 +102,7 @@ impl AisClient {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
-            error!("AIS returned HTTP {}: {}", status, body);
+            platform::recording::error!("AIS returned HTTP {}: {}", status, body);
             return Err(anyhow!("AIS HTTP error {status}: {body}"));
         }
 
@@ -116,14 +118,15 @@ impl AisClient {
         // 检查响应结果
         match &register_response.result {
             Some(register_response::Result::Success(ok)) => {
-                debug!(
+                platform::recording::debug!(
                     "Successfully refreshed credential: realm={}, serial_number={}",
-                    ok.actr_id.realm.realm_id, ok.actr_id.serial_number
+                    ok.actr_id.realm.realm_id,
+                    ok.actr_id.serial_number
                 );
                 Ok(register_response)
             }
             Some(register_response::Result::Error(err)) => {
-                error!("AIS returned error: {} - {}", err.code, err.message);
+                platform::recording::error!("AIS returned error: {} - {}", err.code, err.message);
                 Err(anyhow!("AIS error {}: {}", err.code, err.message))
             }
             None => Err(anyhow!("Empty response from AIS")),

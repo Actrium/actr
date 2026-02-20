@@ -7,7 +7,6 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
-use tracing::{error, info, warn};
 
 /// Admin API gRPC service launcher.
 ///
@@ -82,16 +81,16 @@ impl AdminApiGrpcService {
             let shutdown_tx = shutdown_tx_for_handler.clone();
             async move {
                 if let Some(reason) = reason {
-                    warn!("AdminApi shutdown requested: {}", reason);
+                    platform::recording::warn!("AdminApi shutdown requested: {}", reason);
                 } else {
-                    warn!("AdminApi shutdown requested");
+                    platform::recording::warn!("AdminApi shutdown requested");
                 }
                 let _ = shutdown_tx.send(());
                 Ok(())
             }
         });
 
-        info!("🚀 Starting AdminApi gRPC service on {}", addr);
+        platform::recording::info!("🚀 Starting AdminApi gRPC service on {}", addr);
         let mut shutdown_rx = shutdown_tx.subscribe();
         let max_clock_skew_secs = admin_cfg.max_clock_skew_secs;
         let handle = tokio::spawn(async move {
@@ -105,14 +104,14 @@ impl AdminApiGrpcService {
             let result = Server::builder()
                 .add_service(NodeAdminServiceServer::new(authed_service))
                 .serve_with_shutdown(addr, async move {
-                    info!("✅ AdminApi gRPC service listening on {}", addr);
+                    platform::recording::info!("✅ AdminApi gRPC service listening on {}", addr);
                     let _ = shutdown_rx.recv().await;
-                    info!("AdminApi gRPC service received shutdown signal");
+                    platform::recording::info!("AdminApi gRPC service received shutdown signal");
                 })
                 .await;
 
             if let Err(err) = result {
-                error!("AdminApi gRPC service error: {}", err);
+                platform::recording::error!("AdminApi gRPC service error: {}", err);
             }
 
             let _ = shutdown_tx.send(());

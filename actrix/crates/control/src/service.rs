@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
-use tracing::warn;
 
 type MetricsFuture = Pin<Box<dyn Future<Output = AdminResult<SystemMetrics>> + Send>>;
 type MetricsProvider = Arc<dyn Fn() -> MetricsFuture + Send + Sync>;
@@ -234,7 +233,7 @@ impl NodeAdminService for AdminApiService {
         request: Request<CreateRealmRequest>,
     ) -> GrpcResult<Response<CreateRealmResponse>> {
         let req = request.into_inner();
-        tracing::info!("CreateRealm request received: realm_id={}", req.realm_id);
+        platform::recording::info!("CreateRealm request received: realm_id={}", req.realm_id);
 
         let use_servers: Vec<ResourceType> = req
             .use_servers
@@ -264,19 +263,24 @@ impl NodeAdminService for AdminApiService {
 
         if let Err(status) = self.persist_metadata_for(&realm, &metadata).await {
             let err_msg = status.message().to_string();
-            warn!("Realm created but metadata persistence failed: {}", err_msg);
+            platform::recording::warn!(
+                "Realm created but metadata persistence failed: {}",
+                err_msg
+            );
 
             if let Err(clean_err) = self.delete_realm_configs(&realm).await {
-                warn!(
+                platform::recording::warn!(
                     "Failed to clean realm configs after metadata error (realm_id={}): {}",
-                    realm.realm_id, clean_err
+                    realm.realm_id,
+                    clean_err
                 );
             }
 
             if let Err(delete_err) = Realm::delete_instance(realm.realm_id).await {
-                warn!(
+                platform::recording::warn!(
                     "Failed to roll back realm after metadata error (realm_id={}): {}",
-                    realm.realm_id, delete_err
+                    realm.realm_id,
+                    delete_err
                 );
             }
 
@@ -304,7 +308,7 @@ impl NodeAdminService for AdminApiService {
         request: Request<GetRealmRequest>,
     ) -> GrpcResult<Response<GetRealmResponse>> {
         let req = request.into_inner();
-        tracing::debug!("GetRealm request received: realm_id={}", req.realm_id);
+        platform::recording::debug!("GetRealm request received: realm_id={}", req.realm_id);
 
         match self.get_realm(req.realm_id).await {
             Ok((realm, metadata)) => {
@@ -369,13 +373,14 @@ impl NodeAdminService for AdminApiService {
 
         if let Err(status) = self.persist_metadata_for(&realm, &metadata).await {
             let err_msg = status.message().to_string();
-            warn!("Realm metadata update failed: {}", err_msg);
+            platform::recording::warn!("Realm metadata update failed: {}", err_msg);
 
             let mut rollback_realm = original_realm;
             if let Err(rollback_err) = rollback_realm.save().await {
-                warn!(
+                platform::recording::warn!(
                     "Failed to roll back realm after metadata error (realm_id={}): {}",
-                    rollback_realm.realm_id, rollback_err
+                    rollback_realm.realm_id,
+                    rollback_err
                 );
             }
 
@@ -383,9 +388,10 @@ impl NodeAdminService for AdminApiService {
                 .persist_metadata_for(&rollback_realm, &original_metadata)
                 .await
             {
-                warn!(
+                platform::recording::warn!(
                     "Failed to roll back realm metadata (realm_id={}): {}",
-                    rollback_realm.realm_id, rollback_meta_err
+                    rollback_realm.realm_id,
+                    rollback_meta_err
                 );
             }
 
@@ -457,7 +463,7 @@ impl NodeAdminService for AdminApiService {
         request: Request<ListRealmsRequest>,
     ) -> GrpcResult<Response<ListRealmsResponse>> {
         let req = request.into_inner();
-        tracing::debug!(
+        platform::recording::debug!(
             "ListRealms request received: page_size={:?}, page_token={:?}",
             req.page_size,
             req.page_token
@@ -471,7 +477,7 @@ impl NodeAdminService for AdminApiService {
         for realm in realms {
             match self.build_realm_info(realm).await {
                 Ok(info) => realms_info.push(info),
-                Err(e) => warn!("Skip realm due to metadata error: {}", e),
+                Err(e) => platform::recording::warn!("Skip realm due to metadata error: {}", e),
             }
         }
 
@@ -493,7 +499,7 @@ impl NodeAdminService for AdminApiService {
         request: Request<GetNodeInfoRequest>,
     ) -> GrpcResult<Response<GetNodeInfoResponse>> {
         let _req = request.into_inner();
-        tracing::debug!("GetNodeInfo request received");
+        platform::recording::debug!("GetNodeInfo request received");
 
         let uptime_secs = self.started_at.elapsed().as_secs() as i64;
         let metrics = self.collect_metrics().await?;
@@ -530,7 +536,7 @@ impl NodeAdminService for AdminApiService {
                 return Ok(Response::new(response));
             }
         } else {
-            warn!("Shutdown requested but no handler registered");
+            platform::recording::warn!("Shutdown requested but no handler registered");
         }
 
         let estimated = if req.graceful {

@@ -19,7 +19,6 @@ use platform::config::ActrixConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::{collections::HashMap, str::FromStr};
-use tracing::{error, info, warn};
 
 /// Signaling Server 状态（用于 Axum State）
 #[derive(Clone)]
@@ -31,7 +30,7 @@ pub struct SignalingState {
 ///
 /// 返回一个可以挂载到主 HTTP 服务器的 Router
 pub async fn create_signaling_router() -> Result<Router> {
-    info!("Creating Signaling Axum router");
+    platform::recording::info!("Creating Signaling Axum router");
 
     let server = SignalingServer::new();
     let state = SignalingState {
@@ -42,7 +41,7 @@ pub async fn create_signaling_router() -> Result<Router> {
         .route("/ws", get(websocket_handler))
         .with_state(state);
 
-    info!("Signaling Axum router created successfully");
+    platform::recording::info!("Signaling Axum router created successfully");
     Ok(router)
 }
 
@@ -50,12 +49,12 @@ pub async fn create_signaling_router() -> Result<Router> {
 ///
 /// 初始化 AIdCredentialValidator 和 AIS 客户端，并返回可挂载的 Router
 pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Result<Router> {
-    info!("Creating Signaling Axum router with config");
+    platform::recording::info!("Creating Signaling Axum router with config");
 
     // 初始化 AIdCredentialValidator
     if let Some(signaling_config) = &config.services.signaling {
         if let Some(ks_client_config) = signaling_config.get_ks_client_config(config) {
-            info!("Initializing AIdCredentialValidator with KS config");
+            platform::recording::info!("Initializing AIdCredentialValidator with KS config");
             AIdCredentialValidator::init(
                 &ks_client_config,
                 config.get_actrix_shared_key(),
@@ -63,16 +62,22 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
             )
             .await
             .map_err(|e| {
-                error!("Failed to initialize AIdCredentialValidator: {}", e);
+                platform::recording::error!("Failed to initialize AIdCredentialValidator: {}", e);
                 anyhow::anyhow!("AIdCredentialValidator initialization failed: {e}")
             })?;
-            info!("✅ AIdCredentialValidator initialized successfully");
+            platform::recording::info!("✅ AIdCredentialValidator initialized successfully");
         } else {
-            warn!("⚠️  No KS config found for Signaling service, credential validation will fail");
-            warn!("    Please configure services.signaling.dependencies.ks in config.toml");
+            platform::recording::warn!(
+                "⚠️  No KS config found for Signaling service, credential validation will fail"
+            );
+            platform::recording::warn!(
+                "    Please configure services.signaling.dependencies.ks in config.toml"
+            );
         }
     } else {
-        warn!("⚠️  Signaling config not found, credential validation will fail");
+        platform::recording::warn!(
+            "⚠️  Signaling config not found, credential validation will fail"
+        );
     }
 
     // 创建 SignalingServer
@@ -99,7 +104,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
     {
         Ok(storage) => {
             let storage_arc = Arc::new(storage);
-            info!(
+            platform::recording::info!(
                 "✅ ServiceRegistry cache initialized at: {}",
                 cache_db_file.display()
             );
@@ -113,11 +118,14 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                 match registry.restore_from_storage().await {
                     Ok(count) => {
                         if count > 0 {
-                            info!("✅ Restored {} services from cache", count);
+                            platform::recording::info!("✅ Restored {} services from cache", count);
                         }
                     }
                     Err(e) => {
-                        warn!("⚠️  Failed to restore services from cache: {}", e);
+                        platform::recording::warn!(
+                            "⚠️  Failed to restore services from cache: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -132,30 +140,44 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
                     match storage_for_cleanup.cleanup_expired().await {
                         Ok(deleted) => {
                             if deleted > 0 {
-                                info!("🧹 Cleaned up {} expired services from cache", deleted);
+                                platform::recording::info!(
+                                    "🧹 Cleaned up {} expired services from cache",
+                                    deleted
+                                );
                             }
                         }
                         Err(e) => {
-                            error!("Failed to cleanup expired services: {:?}", e);
+                            platform::recording::error!(
+                                "Failed to cleanup expired services: {:?}",
+                                e
+                            );
                         }
                     }
                     // 同步清理过期的 proto specs（用于兼容性协商）
                     match storage_for_cleanup.cleanup_expired_proto_specs().await {
                         Ok(deleted) => {
                             if deleted > 0 {
-                                info!("🧹 Cleaned up {} expired proto specs from cache", deleted);
+                                platform::recording::info!(
+                                    "🧹 Cleaned up {} expired proto specs from cache",
+                                    deleted
+                                );
                             }
                         }
                         Err(e) => {
-                            error!("Failed to cleanup expired proto specs: {:?}", e);
+                            platform::recording::error!(
+                                "Failed to cleanup expired proto specs: {:?}",
+                                e
+                            );
                         }
                     }
                 }
             });
         }
         Err(e) => {
-            warn!("⚠️  Failed to initialize ServiceRegistry cache: {:?}", e);
-            warn!("    Service discovery will work but won't survive restarts");
+            platform::recording::warn!("⚠️  Failed to initialize ServiceRegistry cache: {:?}", e);
+            platform::recording::warn!(
+                "    Service discovery will work but won't survive restarts"
+            );
         }
     }
 
@@ -180,7 +202,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
 
         // 初始化连接速率限制器
         if rate_limit_config.connection.enabled {
-            info!(
+            platform::recording::info!(
                 "Initializing connection rate limiter: {}/min, burst: {}, max concurrent: {}/IP",
                 rate_limit_config.connection.per_minute,
                 rate_limit_config.connection.burst_size,
@@ -189,30 +211,31 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
             server.connection_rate_limiter = Some(Arc::new(
                 crate::ratelimit::ConnectionRateLimiter::new(rate_limit_config.connection.clone()),
             ));
-            info!("✅ Connection rate limiter initialized");
+            platform::recording::info!("✅ Connection rate limiter initialized");
         } else {
-            info!("⚠️  Connection rate limiting is disabled");
+            platform::recording::info!("⚠️  Connection rate limiting is disabled");
         }
 
         // 初始化消息速率限制器
         if rate_limit_config.message.enabled {
-            info!(
+            platform::recording::info!(
                 "Initializing message rate limiter: {}/sec, burst: {}",
-                rate_limit_config.message.per_second, rate_limit_config.message.burst_size
+                rate_limit_config.message.per_second,
+                rate_limit_config.message.burst_size
             );
             server.message_rate_limiter = Some(Arc::new(
                 crate::ratelimit::MessageRateLimiter::new(rate_limit_config.message.clone()),
             ));
-            info!("✅ Message rate limiter initialized");
+            platform::recording::info!("✅ Message rate limiter initialized");
         } else {
-            info!("⚠️  Message rate limiting is disabled");
+            platform::recording::info!("⚠️  Message rate limiting is disabled");
         }
     }
 
     // 初始化 AIS 客户端（如果配置存在）
     if let Some(signaling_config) = &config.services.signaling {
         if let Some(ais_client_config) = signaling_config.get_ais_client_config(config) {
-            info!(
+            platform::recording::info!(
                 "Initializing AIS client with endpoint: {}",
                 ais_client_config.endpoint
             );
@@ -222,15 +245,17 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
             }) {
                 Ok(ais_client) => {
                     server.ais_client = Some(Arc::new(ais_client));
-                    info!("✅ AIS client initialized successfully");
+                    platform::recording::info!("✅ AIS client initialized successfully");
                 }
                 Err(e) => {
-                    error!("Failed to initialize AIS client: {:?}", e);
-                    warn!("⚠️  Credential refresh will not be available");
+                    platform::recording::error!("Failed to initialize AIS client: {:?}", e);
+                    platform::recording::warn!("⚠️  Credential refresh will not be available");
                 }
             }
         } else {
-            info!("ℹ️  No AIS config found, credential refresh will not be available");
+            platform::recording::info!(
+                "ℹ️  No AIS config found, credential refresh will not be available"
+            );
         }
     }
 
@@ -243,7 +268,7 @@ pub async fn create_signaling_router_with_config(config: &ActrixConfig) -> Resul
         .route("/ws", get(websocket_handler))
         .with_state(state);
 
-    info!("Signaling Axum router created successfully");
+    platform::recording::info!("Signaling Axum router created successfully");
     Ok(router)
 }
 
@@ -260,7 +285,7 @@ async fn websocket_handler(
     if let Some(ref limiter) = state.server.connection_rate_limiter
         && let Err(e) = limiter.check_connection(client_ip).await
     {
-        warn!("🚫 IP {} 连接速率限制触发: {}", client_ip, e);
+        platform::recording::warn!("🚫 IP {} 连接速率限制触发: {}", client_ip, e);
         return axum::http::StatusCode::TOO_MANY_REQUESTS.into_response();
     }
 
@@ -274,7 +299,7 @@ async fn handle_websocket(
     client_ip: std::net::IpAddr,
     params: HashMap<String, String>,
 ) {
-    info!("📡 新 WebSocket 连接: IP={}", client_ip);
+    platform::recording::info!("📡 新 WebSocket 连接: IP={}", client_ip);
 
     // 从 URL 获取 actor_id/token（如果提供），用于无注册重连。
     let mut url_identity: Option<(actr_protocol::ActrId, actr_protocol::AIdCredential)> = None;
@@ -296,14 +321,14 @@ async fn handle_websocket(
                         };
                         url_identity = Some((actor_id, credential));
                     } else {
-                        warn!("⚠️ 无法解析 token (base64) 来自 URL 参数");
+                        platform::recording::warn!("⚠️ 无法解析 token (base64) 来自 URL 参数");
                     }
                 } else {
-                    warn!("⚠️ 提供了 actor_id 但缺少 token 参数");
+                    platform::recording::warn!("⚠️ 提供了 actor_id 但缺少 token 参数");
                 }
             }
             Err(e) => {
-                error!("⚠️ 无法解析 actor_id 字符串 '{}': {}", actor_str, e);
+                platform::recording::error!("⚠️ 无法解析 actor_id 字符串 '{}': {}", actor_str, e);
             }
         }
     }
@@ -311,7 +336,7 @@ async fn handle_websocket(
     // 提取 webrtc_role 参数（如果存在）
     let webrtc_role = params.get("webrtc_role").cloned();
     if let Some(ref role) = webrtc_role {
-        info!("🎭 WebRTC 角色: {}", role);
+        platform::recording::info!("🎭 WebRTC 角色: {}", role);
     }
 
     // 增加连接计数
@@ -341,7 +366,7 @@ async fn handle_websocket(
     )
     .await
     {
-        error!("WebSocket connection error: {}", e);
+        platform::recording::error!("WebSocket connection error: {}", e);
     }
 
     // 减少连接计数

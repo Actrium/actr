@@ -36,7 +36,6 @@ use actr_protocol::{
     ActrId, ServiceAvailabilityState, ServiceDependencyState,
     route_candidates_request::{NodeSelectionCriteria, node_selection_criteria::NodeRankingFactor},
 };
-use tracing::{debug, info, warn};
 
 /// 负载均衡器
 pub struct LoadBalancer;
@@ -76,12 +75,12 @@ impl LoadBalancer {
         let criteria = match criteria {
             Some(c) => c,
             None => {
-                info!("未指定选择标准，返回所有候选");
+                platform::recording::info!("未指定选择标准，返回所有候选");
                 return candidates.into_iter().map(|s| s.actor_id).collect();
             }
         };
 
-        info!(
+        platform::recording::info!(
             "负载均衡排序: 候选数量={}, 排序因子数量={}",
             candidates.len(),
             criteria.ranking_factors.len()
@@ -90,17 +89,17 @@ impl LoadBalancer {
         // 1. 应用健康要求过滤
         if let Some(min_health) = criteria.minimal_health_requirement {
             candidates = Self::filter_by_health(&candidates, min_health);
-            debug!("健康过滤后剩余: {} 个", candidates.len());
+            platform::recording::debug!("健康过滤后剩余: {} 个", candidates.len());
         }
 
         // 2. 应用依赖要求过滤
         if let Some(min_dependency) = criteria.minimal_dependency_requirement {
             candidates = Self::filter_by_dependency(&candidates, min_dependency);
-            debug!("依赖过滤后剩余: {} 个", candidates.len());
+            platform::recording::debug!("依赖过滤后剩余: {} 个", candidates.len());
         }
 
         if candidates.is_empty() {
-            warn!("过滤后无可用候选");
+            platform::recording::warn!("过滤后无可用候选");
             return Vec::new();
         }
 
@@ -128,7 +127,7 @@ impl LoadBalancer {
                     Self::sort_by_affinity(&mut candidates, client_id);
                 }
                 Err(_) => {
-                    warn!("未知的排序因子: {}", factor);
+                    platform::recording::warn!("未知的排序因子: {}", factor);
                 }
             }
         }
@@ -147,7 +146,7 @@ impl LoadBalancer {
     /// 健康状态优先级排序：FULL > DEGRADED > None(未知) > OVERLOADED > UNAVAILABLE
     /// 过滤掉所有低于 min_health 要求的候选
     fn filter_by_health(candidates: &[ServiceInfo], min_health: i32) -> Vec<ServiceInfo> {
-        debug!(
+        platform::recording::debug!(
             "应用健康过滤: min_health={}",
             ServiceAvailabilityState::try_from(min_health)
                 .map(|s| format!("{s:?}"))
@@ -173,7 +172,7 @@ impl LoadBalancer {
             .cloned()
             .collect();
 
-        debug!(
+        platform::recording::debug!(
             "健康过滤后: {} -> {} 个候选",
             candidates.len(),
             filtered.len()
@@ -194,7 +193,7 @@ impl LoadBalancer {
     /// 依赖状态优先级排序：HEALTHY > WARNING > None(未知) > BROKEN
     /// 过滤掉所有低于 min_dependency 要求的候选
     fn filter_by_dependency(candidates: &[ServiceInfo], min_dependency: i32) -> Vec<ServiceInfo> {
-        debug!(
+        platform::recording::debug!(
             "应用依赖过滤: min_dependency={}",
             ServiceDependencyState::try_from(min_dependency)
                 .map(|s| format!("{s:?}"))
@@ -218,7 +217,7 @@ impl LoadBalancer {
             .cloned()
             .collect();
 
-        debug!(
+        platform::recording::debug!(
             "依赖过滤后: {} -> {} 个候选",
             candidates.len(),
             filtered.len()
@@ -238,7 +237,7 @@ impl LoadBalancer {
     ///
     /// 有 power_reserve 的优先，按值降序；None 的放到末尾
     fn sort_by_power_reserve(candidates: &mut [ServiceInfo]) {
-        debug!("按 power_reserve 排序");
+        platform::recording::debug!("按 power_reserve 排序");
 
         candidates.sort_by(|a, b| {
             match (a.power_reserve, b.power_reserve) {
@@ -259,7 +258,7 @@ impl LoadBalancer {
     ///
     /// 有 mailbox_backlog 的优先，按值升序；None 的放到末尾
     fn sort_by_mailbox_backlog(candidates: &mut [ServiceInfo]) {
-        debug!("按 mailbox_backlog 排序");
+        platform::recording::debug!("按 mailbox_backlog 排序");
 
         candidates.sort_by(|a, b| {
             match (a.mailbox_backlog, b.mailbox_backlog) {
@@ -281,7 +280,7 @@ impl LoadBalancer {
     /// 注意：protocol_compatibility_score 应该在调用此函数前预先计算好
     /// 计算方式参考 CompatibilityCache 模块（基于 protobuf fingerprint）
     fn sort_by_compatibility(candidates: &mut [ServiceInfo]) {
-        debug!("按协议兼容性排序");
+        platform::recording::debug!("按协议兼容性排序");
 
         candidates.sort_by(|a, b| {
             match (
@@ -312,9 +311,10 @@ impl LoadBalancer {
         use crate::geo::haversine_distance;
 
         if let Some((client_lat, client_lon)) = client_location {
-            debug!(
+            platform::recording::debug!(
                 "按地理距离排序（客户端坐标: {}, {}）",
-                client_lat, client_lon
+                client_lat,
+                client_lon
             );
 
             // 计算每个候选到客户端的距离
@@ -342,7 +342,7 @@ impl LoadBalancer {
                 }
             });
         } else {
-            debug!("按地理位置排序（无客户端坐标，仅优先有位置的候选）");
+            platform::recording::debug!("按地理位置排序（无客户端坐标，仅优先有位置的候选）");
 
             // 简单实现：有 geo_location 的排前面，None 的排后面
             candidates.sort_by(|a, b| {
@@ -364,7 +364,7 @@ impl LoadBalancer {
     /// # 参数
     /// - `client_id`: 可选的客户端 ID，用于匹配粘滞列表
     fn sort_by_affinity(candidates: &mut [ServiceInfo], client_id: Option<&str>) {
-        debug!("按客户端会话粘滞排序: client_id={:?}", client_id);
+        platform::recording::debug!("按客户端会话粘滞排序: client_id={:?}", client_id);
 
         candidates.sort_by_key(|s| {
             if let Some(cid) = client_id {
@@ -405,7 +405,7 @@ impl LoadBalancer {
         cache: &GlobalCompatibilityCache,
         client_fingerprint: &str,
     ) {
-        debug!(
+        platform::recording::debug!(
             "计算兼容性分数: client_fingerprint={}, 候选数量={}",
             client_fingerprint,
             candidates.len()
@@ -416,7 +416,7 @@ impl LoadBalancer {
             let candidate_fingerprint = match &candidate.service_spec {
                 Some(spec) => &spec.fingerprint,
                 None => {
-                    debug!(
+                    platform::recording::debug!(
                         "候选服务 {:?} 无 service_spec，跳过兼容性计算",
                         candidate.actor_id
                     );
@@ -427,9 +427,10 @@ impl LoadBalancer {
             // 🎯 优化：精确匹配直接满分，无需查缓存
             if candidate_fingerprint == client_fingerprint {
                 candidate.protocol_compatibility_score = Some(1.0);
-                debug!(
+                platform::recording::debug!(
                     "候选 {:?}: 精确匹配 (fingerprint={})",
-                    candidate.actor_id, candidate_fingerprint
+                    candidate.actor_id,
+                    candidate_fingerprint
                 );
                 continue;
             }
@@ -452,13 +453,15 @@ impl LoadBalancer {
                     actr_version::CompatibilityLevel::BackwardCompatible => 0.5,
                     actr_version::CompatibilityLevel::BreakingChanges => 0.0,
                 };
-                debug!(
+                platform::recording::debug!(
                     "候选 {:?}: 兼容性={:?}, 分数={}",
-                    candidate.actor_id, result.level, score
+                    candidate.actor_id,
+                    result.level,
+                    score
                 );
                 Some(score)
             } else {
-                debug!("候选 {:?}: 无兼容性缓存数据", candidate.actor_id);
+                platform::recording::debug!("候选 {:?}: 无兼容性缓存数据", candidate.actor_id);
                 None
             };
         }

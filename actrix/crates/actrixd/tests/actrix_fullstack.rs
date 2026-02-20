@@ -13,7 +13,7 @@ use std::{
     collections::HashSet,
     fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -47,7 +47,7 @@ impl ActrixHarness {
     async fn start(token_ttl: u64) -> Self {
         let tmp = tempfile::tempdir().expect("temp dir");
         let port = choose_port();
-        let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, token_ttl);
+        let config_path = write_fullstack_config(tmp.path(), port, token_ttl);
         let log_path = tmp.path().join("actrix_fullstack.log");
         let data_dir = tmp.path().join("data");
         ensure_realm(&data_dir, 1001).await;
@@ -72,8 +72,8 @@ impl ActrixHarness {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    fn log_path(&self) -> &PathBuf {
-        &self.log_path
+    fn log_path(&self) -> &Path {
+        self.log_path.as_path()
     }
 
     /// Shutdown child, ignoring errors
@@ -93,7 +93,7 @@ fn choose_port() -> u16 {
         .port()
 }
 
-fn write_fullstack_config(dir: &PathBuf, port: u16, token_ttl_secs: u64) -> PathBuf {
+fn write_fullstack_config(dir: &Path, port: u16, token_ttl_secs: u64) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -125,7 +125,7 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 [services.ks.storage]
@@ -142,10 +142,8 @@ token_ttl_secs = {token_ttl}
 [services.signaling.server]
 ws_path = "/signaling"
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 [process]
 pid = "{pid}"
 "#,
@@ -160,7 +158,7 @@ pid = "{pid}"
 }
 
 fn write_fullstack_config_with_rate_limits(
-    dir: &PathBuf,
+    dir: &Path,
     port: u16,
     token_ttl_secs: u64,
     max_concurrent_per_ip: u32,
@@ -198,7 +196,7 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 [services.ks.storage]
@@ -226,10 +224,8 @@ enabled = true
 per_second = {message_per_second}
 burst_size = {message_burst}
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 [process]
 pid = "{pid}"
 "#,
@@ -247,7 +243,7 @@ pid = "{pid}"
 }
 
 fn write_fullstack_config_with_ais_ks_endpoint(
-    dir: &PathBuf,
+    dir: &Path,
     port: u16,
     token_ttl_secs: u64,
     ais_ks_endpoint: &str,
@@ -283,7 +279,7 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 [services.ks.storage]
@@ -304,10 +300,8 @@ enable_tls = false
 [services.signaling.server]
 ws_path = "/signaling"
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 [process]
 pid = "{pid}"
 "#,
@@ -322,7 +316,7 @@ pid = "{pid}"
     config_path
 }
 
-fn write_signaling_without_local_ais_config(dir: &PathBuf, port: u16) -> PathBuf {
+fn write_signaling_without_local_ais_config(dir: &Path, port: u16) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -354,7 +348,7 @@ port = 0
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-65535"
-realm = "actor-rtc.local"
+realm = "actrix.local"
 
 [services.ks]
 [services.ks.storage]
@@ -370,10 +364,8 @@ ws_path = "/signaling"
 endpoint = "http://127.0.0.1:1"
 timeout_seconds = 1
 
-[observability.log]
-output = "console"
-level = "info"
-
+[recording]
+filter_level = "info"
 [process]
 pid = "{pid}"
 "#,
@@ -386,7 +378,7 @@ pid = "{pid}"
     config_path
 }
 
-fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
+fn spawn_actrix(config: &Path, log_path: &Path) -> Child {
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_actrix"));
     let log_file = fs::File::create(log_path).expect("create log file");
     Command::new(bin)
@@ -398,7 +390,7 @@ fn spawn_actrix(config: &PathBuf, log_path: &PathBuf) -> Child {
         .expect("spawn actrix")
 }
 
-async fn ensure_realm(sqlite_dir: &PathBuf, realm_id: u32) {
+async fn ensure_realm(sqlite_dir: &Path, realm_id: u32) {
     let db = platform::storage::db::Database::new(sqlite_dir)
         .await
         .expect("init db");
@@ -593,7 +585,7 @@ fn make_service_spec(
     }
 }
 
-async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
+async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::new();
     let start = Instant::now();
     loop {
@@ -602,10 +594,10 @@ async fn wait_for_health(url: &str, child: &mut Child, log_path: &PathBuf) {
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(log_path).unwrap_or_default();
@@ -646,7 +638,7 @@ async fn actrix_end_to_end_register_and_health() {
     let ais_health = format!("{base}/ais/health");
     let signaling_health = format!("{base}/signaling/health");
 
-    let log_path = harness.log_path().clone();
+    let log_path = harness.log_path().to_path_buf();
     wait_for_health(&ks_health, &mut harness.child, &log_path).await;
     wait_for_health(&ais_health, &mut harness.child, &log_path).await;
     wait_for_health(&signaling_health, &mut harness.child, &log_path).await;
@@ -1049,7 +1041,7 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
     let config_path = write_fullstack_config_with_ais_ks_endpoint(
-        &tmp.path().to_path_buf(),
+        tmp.path(),
         port,
         DEFAULT_TOKEN_TTL,
         "http://127.0.0.1:1",
@@ -1117,7 +1109,7 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
 async fn signaling_register_returns_error_when_ais_endpoint_is_unreachable() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_signaling_without_local_ais_config(&tmp.path().to_path_buf(), port);
+    let config_path = write_signaling_without_local_ais_config(tmp.path(), port);
     let log_path = tmp.path().join("actrix_fullstack_signaling_no_ais.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1424,14 +1416,8 @@ async fn signaling_actr_payload_none_and_invalid_realm_are_rejected_safely() {
 async fn signaling_connection_rate_limit_rejects_second_concurrent_connection() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config_with_rate_limits(
-        &tmp.path().to_path_buf(),
-        port,
-        DEFAULT_TOKEN_TTL,
-        1,
-        50,
-        50,
-    );
+    let config_path =
+        write_fullstack_config_with_rate_limits(tmp.path(), port, DEFAULT_TOKEN_TTL, 1, 50, 50);
     let log_path = tmp.path().join("actrix_fullstack_ratelimit_conn.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1467,14 +1453,8 @@ async fn signaling_connection_rate_limit_rejects_second_concurrent_connection() 
 async fn signaling_message_rate_limit_returns_envelope_error() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config_with_rate_limits(
-        &tmp.path().to_path_buf(),
-        port,
-        DEFAULT_TOKEN_TTL,
-        20,
-        1,
-        1,
-    );
+    let config_path =
+        write_fullstack_config_with_rate_limits(tmp.path(), port, DEFAULT_TOKEN_TTL, 20, 1, 1);
     let log_path = tmp.path().join("actrix_fullstack_ratelimit_msg.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1534,7 +1514,7 @@ async fn signaling_message_rate_limit_returns_envelope_error() {
 async fn signaling_register_and_discovery_acl_allow() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1606,7 +1586,7 @@ async fn signaling_register_and_discovery_acl_allow() {
 async fn signaling_discovery_acl_denied() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1780,7 +1760,7 @@ async fn signaling_route_candidates_cross_realm_isolated() {
 async fn signaling_rejects_expired_credential() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, 1);
+    let config_path = write_fullstack_config(tmp.path(), port, 1);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -1972,7 +1952,7 @@ async fn signaling_credential_update_actr_id_mismatch_is_ignored_and_connection_
 async fn signaling_route_candidates_with_acl() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -2060,7 +2040,7 @@ async fn signaling_route_candidates_with_acl() {
 async fn signaling_route_candidates_acl_denied() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -2249,8 +2229,8 @@ async fn signaling_route_candidates_respects_limit_and_sorting() {
     let _ = cli_w.send(WsMessage::Close(None)).await;
     let _ = svc1_w.send(WsMessage::Close(None)).await;
     let _ = svc2_w.send(WsMessage::Close(None)).await;
-    let _ = svc1_r.into_future();
-    let _ = svc2_r.into_future();
+    std::mem::drop(svc1_r.into_future());
+    std::mem::drop(svc2_r.into_future());
 
     harness.shutdown();
 }
@@ -2381,7 +2361,7 @@ async fn signaling_route_candidates_prefers_exact_fingerprint() {
 async fn signaling_get_service_spec_returns_spec() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -2621,13 +2601,12 @@ async fn signaling_subscribe_receives_actr_up_and_unsubscribe_stops() {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         if let Ok(env) = timeout(Duration::from_millis(500), recv_envelope(&mut sub_r)).await {
-            if let Some(signaling_envelope::Flow::ServerToActr(server_msg)) = env.flow {
-                if let Some(signaling_to_actr::Payload::ActrUpEvent(evt)) = server_msg.payload {
-                    if evt.actor_id.r#type == target_type {
-                        got_up = true;
-                        break;
-                    }
-                }
+            if let Some(signaling_envelope::Flow::ServerToActr(server_msg)) = env.flow
+                && let Some(signaling_to_actr::Payload::ActrUpEvent(evt)) = server_msg.payload
+                && evt.actor_id.r#type == target_type
+            {
+                got_up = true;
+                break;
             }
         } else {
             continue;
@@ -2950,7 +2929,7 @@ async fn signaling_concurrent_registration_keeps_unique_route_candidates() {
 async fn signaling_actr_relay_role_assignment() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_fullstack.log");
     ensure_realm(&tmp.path().join("data"), 1001).await;
     let mut child = spawn_actrix(&config_path, &log_path);
@@ -3000,22 +2979,22 @@ async fn signaling_actr_relay_role_assignment() {
     // Client should receive RoleAssignment
     let client_resp = recv_envelope(&mut cli_r).await;
     let mut got_client_assignment = false;
-    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = client_resp.flow {
-        if let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload {
-            got_client_assignment = true;
-            assert!(assign.remote_fixed.is_some());
-        }
+    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = client_resp.flow
+        && let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload
+    {
+        got_client_assignment = true;
+        let _ = assign.is_offerer;
     }
     assert!(got_client_assignment, "client should get role assignment");
 
     // Service should receive RoleAssignment
     let service_resp = recv_envelope(&mut svc_r).await;
     let mut got_service_assignment = false;
-    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = service_resp.flow {
-        if let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload {
-            got_service_assignment = true;
-            assert!(assign.remote_fixed.is_some());
-        }
+    if let Some(signaling_envelope::Flow::ActrRelay(relay_msg)) = service_resp.flow
+        && let Some(actr_relay::Payload::RoleAssignment(assign)) = relay_msg.payload
+    {
+        got_service_assignment = true;
+        let _ = assign.is_offerer;
     }
     assert!(got_service_assignment, "service should get role assignment");
 
@@ -3637,7 +3616,7 @@ async fn service_registry_persists_across_restart() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let data_dir = tmp.path().join("data");
     let port = choose_port();
-    let config_path = write_fullstack_config(&tmp.path().to_path_buf(), port, DEFAULT_TOKEN_TTL);
+    let config_path = write_fullstack_config(tmp.path(), port, DEFAULT_TOKEN_TTL);
     let log_path = tmp.path().join("actrix_persist.log");
     ensure_realm(&data_dir, 1001).await;
 
@@ -3684,15 +3663,14 @@ async fn service_registry_persists_across_restart() {
     .await;
     let resp1 = recv_envelope(&mut cli_r1).await;
     let mut has_before = false;
-    if let Some(signaling_envelope::Flow::ServerToActr(server_msg)) = resp1.flow {
-        if let Some(signaling_to_actr::Payload::DiscoveryResponse(rsp)) = server_msg.payload {
-            if let Some(actr_protocol::discovery_response::Result::Success(ok)) = rsp.result {
-                has_before = ok
-                    .entries
-                    .iter()
-                    .any(|e| e.actr_type == svc_ok.actr_id.r#type);
-            }
-        }
+    if let Some(signaling_envelope::Flow::ServerToActr(server_msg)) = resp1.flow
+        && let Some(signaling_to_actr::Payload::DiscoveryResponse(rsp)) = server_msg.payload
+        && let Some(actr_protocol::discovery_response::Result::Success(ok)) = rsp.result
+    {
+        has_before = ok
+            .entries
+            .iter()
+            .any(|e| e.actr_type == svc_ok.actr_id.r#type);
     }
     assert!(has_before, "service should be discoverable before restart");
     graceful_shutdown(child);

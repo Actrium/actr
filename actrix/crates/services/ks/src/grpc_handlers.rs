@@ -4,7 +4,6 @@ use crate::{error::KsError, storage::KeyStorage};
 use nonce_auth::{CredentialVerifier, NonceError, storage::NonceStorage};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
-use tracing::{debug, info, warn};
 
 // 导入生成的 protobuf 代码
 use actrix_proto::admin::v1::NonceCredential;
@@ -76,7 +75,7 @@ impl KeyServer for KsGrpcService {
         &self,
         request: Request<GenerateKeyRequest>,
     ) -> Result<Response<GenerateKeyResponse>, Status> {
-        info!("Received gRPC GenerateKey request");
+        crate::recording::info!("Received gRPC GenerateKey request");
 
         let req = request.into_inner();
 
@@ -101,7 +100,7 @@ impl KeyServer for KsGrpcService {
             .map_err(|e| Status::internal(format!("Failed to get key record: {e}")))?
             .ok_or_else(|| Status::internal("Failed to get key record after creation"))?;
 
-        info!("Generated key pair with key_id: {}", key_pair.key_id);
+        crate::recording::info!("Generated key pair with key_id: {}", key_pair.key_id);
 
         let response = GenerateKeyResponse {
             key_id: key_pair.key_id,
@@ -121,7 +120,7 @@ impl KeyServer for KsGrpcService {
         let req = request.into_inner();
         let key_id = req.key_id;
 
-        info!("Received gRPC GetSecretKey request for key_id: {}", key_id);
+        crate::recording::info!("Received gRPC GetSecretKey request for key_id: {}", key_id);
 
         // 验证凭证（proto2 required 字段直接是结构体类型）
         let request_data = format!("get_secret_key:{key_id}");
@@ -148,13 +147,13 @@ impl KeyServer for KsGrpcService {
 
             // 检查是否超过了过期时间 + 容忍期
             if key_record.expires_at + tolerance_seconds < now {
-                warn!("Key {} has expired beyond tolerance period", key_id);
+                crate::recording::warn!("Key {} has expired beyond tolerance period", key_id);
                 return Err(Status::not_found(format!("Key {key_id} has expired")));
             }
 
             // 记录是否在容忍期内
             if key_record.expires_at < now {
-                warn!("Key {} is in tolerance period", key_id);
+                crate::recording::warn!("Key {} is in tolerance period", key_id);
             }
         }
 
@@ -166,9 +165,10 @@ impl KeyServer for KsGrpcService {
             .map_err(|e| Status::internal(format!("Failed to get secret key: {e}")))?
             .ok_or_else(|| Status::not_found(format!("Secret key not found: {key_id}")))?;
 
-        info!(
+        crate::recording::info!(
             "Found secret key for key_id: {}, expires_at: {}",
-            key_id, key_record.expires_at
+            key_id,
+            key_record.expires_at
         );
 
         let response = GetSecretKeyResponse {
@@ -186,7 +186,7 @@ impl KeyServer for KsGrpcService {
         &self,
         _request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
-        debug!("gRPC health check requested");
+        crate::recording::debug!("gRPC health check requested");
 
         let key_count = self
             .storage

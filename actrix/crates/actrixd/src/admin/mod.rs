@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
 
 /// 内置 admin 运行时。
 ///
@@ -50,7 +49,7 @@ impl AdminRuntime {
             ));
         }
 
-        info!("启动 AdminApi gRPC 服务器...");
+        platform::recording::info!("启动 AdminApi gRPC 服务器...");
         let bind_addr_str = self.admin_config.api.bind_addr();
         let bind_addr: SocketAddr = bind_addr_str.parse().map_err(|e| {
             Error::service_startup(format!(
@@ -82,28 +81,28 @@ impl AdminRuntime {
         let client_config = self.build_client_config();
         let service_collector = self.service_collector.clone();
 
-        info!("Starting Admin client (register and status reporting)...");
+        platform::recording::info!("Starting Admin client (register and status reporting)...");
         Some(tokio::spawn(async move {
             match AdminClient::new(client_config.clone(), service_collector) {
                 Ok(mut client) => {
                     if let Err(e) = client.connect().await {
-                        warn!("Admin client connect failed: {}", e);
+                        platform::recording::warn!("Admin client connect failed: {}", e);
                         return;
                     }
 
                     if let Err(e) = client.register_node().await {
-                        warn!("Register node failed: {}", e);
+                        platform::recording::warn!("Register node failed: {}", e);
                     } else {
-                        info!("✅ Node registered successfully with services");
+                        platform::recording::info!("✅ Node registered successfully with services");
                     }
 
                     if let Err(e) = client.start_status_reporting().await {
-                        warn!("Start status reporting failed: {}", e);
+                        platform::recording::warn!("Start status reporting failed: {}", e);
                     } else {
-                        info!("✅ Status reporting started");
+                        platform::recording::info!("✅ Status reporting started");
                     }
                 }
-                Err(e) => warn!("Create admin client failed: {}", e),
+                Err(e) => platform::recording::warn!("Create admin client failed: {}", e),
             }
         }))
     }

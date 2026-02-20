@@ -35,7 +35,7 @@ impl Default for TurnConfig {
             advertised_ip: "127.0.0.1".to_string(),
             advertised_port: 3478,
             relay_port_range: "49152-65535".to_string(),
-            realm: "actor-rtc.local".to_string(),
+            realm: "actrix.local".to_string(),
         }
     }
 }

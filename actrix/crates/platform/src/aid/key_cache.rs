@@ -11,7 +11,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
 
 /// 密钥缓存管理器
 #[derive(Debug, Clone)]
@@ -48,7 +47,7 @@ impl KeyCache {
         // 初始化数据库表
         cache.init_tables().await?;
 
-        info!(
+        crate::recording::info!(
             "Key cache initialized with database: {}",
             cache_db_file.as_ref().display()
         );
@@ -81,7 +80,7 @@ impl KeyCache {
                 AidError::DecryptionFailed(format!("Failed to create cache index: {e}"))
             })?;
 
-        debug!("Cache database tables initialized");
+        crate::recording::debug!("Cache database tables initialized");
         Ok(())
     }
 
@@ -107,7 +106,7 @@ impl KeyCache {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| {
-            error!("Database error when querying cached key {}: {}", key_id, e);
+            crate::recording::error!("Database error when querying cached key {}: {}", key_id, e);
             AidError::DecryptionFailed(format!("Cache query error: {e}"))
         })?;
 
@@ -127,9 +126,10 @@ impl KeyCache {
 
                 // 检查密钥是否过期（使用 KS 服务返回的过期时间）
                 if expires_at > 0 && (expires_at as u64) <= now {
-                    debug!(
+                    crate::recording::debug!(
                         "Cached key {} expired (KS expires_at: {}), removing from cache",
-                        key_id, expires_at
+                        key_id,
+                        expires_at
                     );
                     // 删除过期的缓存项
                     let _ = sqlx::query("DELETE FROM key_cache WHERE key_id = ?1")
@@ -155,7 +155,7 @@ impl KeyCache {
                     AidError::DecryptionFailed(format!("Failed to parse cached key: {e}"))
                 })?;
 
-                debug!("Found valid cached key for key_id: {}", key_id);
+                crate::recording::debug!("Found valid cached key for key_id: {}", key_id);
                 Ok(Some((
                     secret_key,
                     expires_at as u64,
@@ -163,7 +163,7 @@ impl KeyCache {
                 )))
             }
             None => {
-                debug!("No cached key found for key_id: {}", key_id);
+                crate::recording::debug!("No cached key found for key_id: {}", key_id);
                 Ok(None)
             }
         }
@@ -198,9 +198,11 @@ impl KeyCache {
         .await
         .map_err(|e| AidError::DecryptionFailed(format!("Failed to cache key: {e}")))?;
 
-        debug!(
+        crate::recording::debug!(
             "Cached key {} with KS expires_at: {}, tolerance: {}s",
-            key_id, expires_at, tolerance_seconds
+            key_id,
+            expires_at,
+            tolerance_seconds
         );
         Ok(())
     }
@@ -224,7 +226,7 @@ impl KeyCache {
         let deleted_count = result.rows_affected() as u32;
 
         if deleted_count > 0 {
-            info!("Cleaned up {} expired cached keys", deleted_count);
+            crate::recording::info!("Cleaned up {} expired cached keys", deleted_count);
         }
 
         Ok(deleted_count)
@@ -245,16 +247,16 @@ impl KeyCache {
 
         // 如果距离上次清理超过1小时（3600秒），则进行清理
         if should_cleanup {
-            debug!("Triggering cache cleanup after 1 hour interval");
+            crate::recording::debug!("Triggering cache cleanup after 1 hour interval");
 
             match self.cleanup_expired_keys().await {
                 Ok(count) => {
                     if count > 0 {
-                        info!("Cache cleanup: removed {} expired keys", count);
+                        crate::recording::info!("Cache cleanup: removed {} expired keys", count);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to cleanup expired cache keys: {}", e);
+                    crate::recording::error!("Failed to cleanup expired cache keys: {}", e);
                 }
             }
 

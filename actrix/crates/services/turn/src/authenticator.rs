@@ -12,7 +12,6 @@ use std::hash::Hasher;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-use tracing::{debug, error, warn};
 use turn_crate::Error;
 use turn_crate::auth::AuthHandler;
 use twox_hash::XxHash64;
@@ -22,7 +21,7 @@ pub struct Authenticator;
 
 impl Authenticator {
     pub fn new() -> Result<Self, Error> {
-        tracing::info!("TURN 认证器初始化完成 (启用 LRU 缓存)");
+        platform::recording::info!("TURN 认证器初始化完成 (启用 LRU 缓存)");
         Ok(Self)
     }
 
@@ -37,7 +36,7 @@ impl Authenticator {
     pub fn clear_cache() {
         let mut cache = AUTH_KEY_CACHE.lock().expect("auth cache poisoned");
         cache.clear();
-        tracing::info!("TURN 认证密钥缓存已清空");
+        platform::recording::info!("TURN 认证密钥缓存已清空");
     }
 }
 
@@ -77,7 +76,7 @@ impl AuthHandler for Authenticator {
         server_realm: &str,
         src_addr: SocketAddr,
     ) -> Result<Vec<u8>, Error> {
-        debug!(
+        platform::recording::debug!(
             "Processing TURN authentication request: username={:?}, realm={}, src={}",
             username.as_bytes(),
             server_realm,
@@ -92,13 +91,13 @@ impl AuthHandler for Authenticator {
             .get(&cache_key)
             .cloned()
         {
-            debug!("TURN 认证缓存命中: username={}", username);
+            platform::recording::debug!("TURN 认证缓存命中: username={}", username);
             return Ok(cached);
         }
 
         // 2️⃣ 缓存未命中，解析 Claims 获取 key_id
         let claims = Claims::decode(username).map_err(|e| {
-            warn!(
+            platform::recording::warn!(
                 "Failed to parse claims: username={:?}, error={}",
                 username.as_bytes(),
                 e
@@ -114,9 +113,11 @@ impl AuthHandler for Authenticator {
 
         let identity_claims = AIdCredentialValidator::check_sync(&credential, claims.realm_id)
             .map_err(|e| {
-                error!(
+                platform::recording::error!(
                     "Failed to decrypt or verify claims: realm_id={}, key_id={}, error={}",
-                    claims.realm_id, claims.key_id, e
+                    claims.realm_id,
+                    claims.key_id,
+                    e
                 );
                 Error::Other(format!("Failed to check credential: {e}"))
             })?;
@@ -127,9 +128,11 @@ impl AuthHandler for Authenticator {
                 .map_err(|_| "Not in tokio runtime context")?;
             handle.block_on(async { RealmEntity::validate_realm(identity_claims.realm_id).await })
         }) {
-            warn!(
+            platform::recording::warn!(
                 "⚠️  TURN 认证 realm 验证失败: realm_id={}, actor_id={}, error={}",
-                identity_claims.realm_id, identity_claims.actor_id, e
+                identity_claims.realm_id,
+                identity_claims.actor_id,
+                e
             );
             return Err(Error::Other(format!("Realm validation failed: {e}")));
         }
@@ -150,7 +153,7 @@ impl AuthHandler for Authenticator {
             .expect("auth cache poisoned")
             .put(cache_key, result.clone());
 
-        debug!(
+        platform::recording::debug!(
             "TURN authentication successful: realm_id={}, actor_id={}, cache_size={}/{}",
             identity_claims.realm_id,
             identity_claims.actor_id,
@@ -217,7 +220,7 @@ mod tests {
         let src_addr: SocketAddr = "127.0.0.1:3478".parse().expect("valid socket addr");
 
         let err = auth
-            .auth_handle("invalid-claims-format", "actor-rtc.local", src_addr)
+            .auth_handle("invalid-claims-format", "actrix.local", src_addr)
             .expect_err("invalid claims should be rejected");
 
         assert!(
@@ -238,7 +241,7 @@ mod tests {
         Authenticator::clear_cache();
         let auth = Authenticator::new().expect("authenticator should initialize");
         let username = "non-decodable-user";
-        let server_realm = "actor-rtc.local";
+        let server_realm = "actrix.local";
         let src_addr: SocketAddr = "127.0.0.1:3478".parse().expect("valid socket addr");
         let expected_key = vec![0xAB; 16];
 

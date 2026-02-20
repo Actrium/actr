@@ -831,11 +831,11 @@ pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> 
 
 ```
 1. 加载配置文件
-   ├─ 查找配置文件 (config.toml 或 /etc/actor-rtc-actrix/config.toml)
+   ├─ 查找配置文件 (config.toml 或 /etc/actrix/config.toml)
    ├─ 解析 TOML
    └─ 验证配置
 
-2. 初始化可观测性系统
+2. 初始化 recording 管线
    ├─ 创建日志目录
    ├─ 配置 tracing 订阅器
    ├─ (可选) 初始化 OpenTelemetry
@@ -897,8 +897,8 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
         return Err(Error::custom("Configuration validation failed"));
     }
 
-    // 3. 初始化可观测性
-    let _guard = Self::init_observability(config.observability_config())?;
+    // 3. 初始化 recording 管线
+    let _guard = init_recording_pipeline(&config)?;
 
     // 4. 创建 Tokio runtime 并运行
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1054,13 +1054,13 @@ sqlite_path = "/var/lib/actrix"
 actrix_shared_key = "your-strong-random-key-here"
 
 # 日志/追踪配置
-[observability]
+[recording]
 filter_level = "info"      # RUST_LOG 覆盖时优先生效
+sink = "file:///var/log/actrix/actrix.log"
+service_name = "actrix-prod"
 
-[observability.log]
-output = "file"
-rotate = true
-path = "/var/log/actrix"
+[recording.audit]
+sink = "otlp+grpc://localhost:4317"
 
 # 位置标签
 location_tag = "us-west-1"
@@ -1095,11 +1095,7 @@ key_ttl_seconds = 3600
 [services.ks.storage.sqlite]
 path = "/var/lib/actrix/ks.db"
 
-# OpenTelemetry 追踪
-[observability.tracing]
-enable = true
-service_name = "actrix-prod"
-endpoint = "http://localhost:4317"
+# OpenTelemetry 追踪（通过 recording.sink / recording.<channel>.sink 的 otlp+* URI）
 ```
 
 ---
@@ -1239,10 +1235,9 @@ impl KeyStorage {
 **启用追踪** (需要 `opentelemetry` feature):
 
 ```toml
-[observability.tracing]
-enable = true
+[recording]
 service_name = "actrix-prod-us-west-1"
-endpoint = "http://jaeger:4317"  # Jaeger OTLP gRPC endpoint
+sink = "otlp+grpc://jaeger:4317"  # Jaeger OTLP endpoint
 ```
 
 **追踪内容**:

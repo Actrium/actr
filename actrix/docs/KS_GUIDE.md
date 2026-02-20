@@ -25,7 +25,7 @@
 
 ### 什么是 KS?
 
-**KS (Key Server)** 是 Actrix 项目中的**椭圆曲线密钥管理服务**，为整个 Actor-RTC 生态系统提供加密密钥的生成、存储和查询能力。
+**KS (Key Server)** 是 Actrix 项目中的**椭圆曲线密钥管理服务**，为整个 Actrix 生态系统提供加密密钥的生成、存储和查询能力。
 
 ### 核心功能
 
@@ -1446,12 +1446,12 @@ actrix_shared_key = "your-strong-key-change-me"  # ⚠️ 必须更改!
 sqlite_path = "/var/lib/actrix"  # 数据库存储目录，主数据库文件为 {sqlite_path}/actrix.db
 
 # 日志配置
-[observability]
+[recording]
 filter_level = "info"   # 可被 RUST_LOG 覆盖
+sink = "file:///var/log/actrix/actrix.log"
 
-[observability.log]
-output = "file"
-path = "/var/log/actrix"
+[recording.audit]
+sink = "otlp+grpc://jaeger:4317"
 ```
 
 ### 2. 启动和停止

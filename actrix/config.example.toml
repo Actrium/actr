@@ -44,44 +44,31 @@ location_tag = "local,dev,default"
 # Generate a strong key: openssl rand -hex 32
 actrix_shared_key = "example-key-please-replace-with-secure-random-value-32chars+"
 
-# Observability (logging + tracing)
-[observability]
+# Recording pipeline (logging + tracing)
+[recording]
 # Unified filter for logs and tracing (EnvFilter syntax)
 # If RUST_LOG is set, it overrides this value.
 filter_level = "info"
-
-[observability.log]
-# Log output destination: console/file
-# - console: Output to stdout (default, recommended for development)
-# - file: Output to log files (recommended for production)
-output = "console"
-
-# Log rotation (only applies when output = "file")
-# - true: Create new log file daily (actrix-2024-01-15.log, actrix-2024-01-16.log, etc.)
-# - false: Append to single file (actrix.log)
-rotate = false
-
-# Log file directory (only applies when output = "file")
-# All log files will be stored in this directory
-path = "logs/"
-
-# ============================================================================
-# OpenTelemetry Distributed Tracing Configuration (requires opentelemetry feature)
-# ============================================================================
-[observability.tracing]
-# Enable tracing export to OTLP backend
-# To use this, compile with: cargo build --features opentelemetry
-enable = false
-
-# Service name for tracing (appears in Jaeger UI)
+# Global sink (optional, single value)
+# Supported URI schemes:
+# - file://...
+# - otlp+http://...
+# - otlp+grpc://...
+# sink = "file:///var/log/actrix/actrix.log"
 service_name = "actrix"
 
-# OTLP gRPC endpoint
-# Examples:
-#   - Jaeger (docker): http://127.0.0.1:4317
-#   - Grafana Tempo: http://tempo:4317
-#   - OpenTelemetry Collector: http://otel-collector:4317
-endpoint = "http://127.0.0.1:4317"
+# Optional per-channel overrides (global + override)
+# [recording.observability]
+# sink = "file:///var/log/actrix/observability.log"
+#
+# [recording.audit]
+# sink = "otlp+http://127.0.0.1:4318/v1/logs"
+#
+# [recording.security]
+# sink = "otlp+grpc://127.0.0.1:4317"
+#
+# [recording.operations]
+# sink = "file:///var/log/actrix/operations.log"
 
 # Process management (optional)
 # pid = "/var/run/actrix.pid"  # (optional)
@@ -277,10 +264,10 @@ endpoint = "http://admin.example.com:50051"
 #
 # Key differences from development:
 # - env = "prod"
-# - observability.log.output = "file" with rotate = true
+# - recording.sink = "file:///var/log/actrix/actrix.log"
 # - HTTPS with valid certificates
 # - Real public IP for TURN
-# - OpenTelemetry enabled with production endpoint
+# - optional per-channel sink override for OTLP
 # - Strong actrix_shared_key
 #
 # Example production config:
@@ -288,13 +275,12 @@ endpoint = "http://admin.example.com:50051"
 # enable = 22
 # name = "actrix-prod-01"
 # env = "prod"
-# [observability]
+# [recording]
 # filter_level = "info"
-# 
-# [observability.log]
-# output = "file"
-# rotate = true
-# path = "/var/log/actrix/"
+# sink = "file:///var/log/actrix/actrix.log"
+# service_name = "actrix-prod-01"
+# [recording.audit]
+# sink = "otlp+grpc://otel-collector.internal:4317"
 # 
 # sqlite_path = "/var/lib/actrix"
 # location_tag = "aws,us-west-2,zone-a"
@@ -302,11 +288,6 @@ endpoint = "http://admin.example.com:50051"
 # pid = "/var/run/actrix.pid"
 # user = "actrix"
 # group = "actrix"
-#
-# [observability.tracing]
-# enable = true
-# service_name = "actrix-prod-01"
-# endpoint = "http://otel-collector.internal:4317"
 #
 # [bind.https]
 # domain_name = "actrix.example.com"

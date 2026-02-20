@@ -54,7 +54,6 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, warn};
 
 // ========== 常量配置 ==========
 
@@ -123,7 +122,9 @@ impl KeyStorage {
         .await
         .context("Failed to create current_key table")?;
 
-        info!("Key storage initialized with sqlx (max_connections=10, WAL mode enabled)");
+        platform::recording::info!(
+            "Key storage initialized with sqlx (max_connections=10, WAL mode enabled)"
+        );
         Ok(Self { pool })
     }
 
@@ -147,9 +148,10 @@ impl KeyStorage {
         );
 
         if let Some(ref key) = record {
-            debug!(
+            platform::recording::debug!(
                 "Retrieved key record: key_id={}, expires_at={}",
-                key.key_id, key.expires_at
+                key.key_id,
+                key.expires_at
             );
         }
 
@@ -171,9 +173,10 @@ impl KeyStorage {
         .await
         .context("Failed to update current key")?;
 
-        debug!(
+        platform::recording::debug!(
             "Updated current key: key_id={}, expires_at={}",
-            record.key_id, record.expires_at
+            record.key_id,
+            record.expires_at
         );
 
         Ok(())
@@ -188,7 +191,7 @@ impl KeyStorage {
         let key = match self.get_current_key().await? {
             Some(key) => key,
             None => {
-                debug!("No current key found, refresh needed");
+                platform::recording::debug!("No current key found, refresh needed");
                 return Ok(true);
             }
         };
@@ -202,13 +205,15 @@ impl KeyStorage {
         let refresh_threshold = key.expires_at.saturating_sub(KEY_REFRESH_ADVANCE_SECS);
 
         if now >= refresh_threshold {
-            debug!(
+            platform::recording::debug!(
                 "Key refresh needed: now={}, expires_at={}, threshold={}",
-                now, key.expires_at, refresh_threshold
+                now,
+                key.expires_at,
+                refresh_threshold
             );
             Ok(true)
         } else {
-            debug!(
+            platform::recording::debug!(
                 "Key still valid: now={}, expires_at={}, remaining={}s",
                 now,
                 key.expires_at,
@@ -236,9 +241,11 @@ impl KeyStorage {
         let expired_beyond = now > key.expires_at + key.tolerance_seconds;
 
         if expired_beyond {
-            warn!(
+            platform::recording::warn!(
                 "Key expired beyond tolerance: now={}, expires_at={}, tolerance={}s",
-                now, key.expires_at, key.tolerance_seconds
+                now,
+                key.expires_at,
+                key.tolerance_seconds
             );
         }
 

@@ -12,7 +12,6 @@ use aes_gcm::{
 };
 use base64::prelude::*;
 use rand::RngCore;
-use tracing::{debug, info};
 
 /// KEK (Key Encryption Key) 来源
 #[derive(Debug, Clone)]
@@ -45,7 +44,7 @@ impl std::fmt::Debug for KeyEncryptor {
 impl KeyEncryptor {
     /// 创建无加密的加密器（兼容模式）
     pub fn no_encryption() -> Self {
-        debug!("Creating KeyEncryptor in no-encryption mode");
+        crate::recording::debug!("Creating KeyEncryptor in no-encryption mode");
         Self { cipher: None }
     }
 
@@ -53,11 +52,11 @@ impl KeyEncryptor {
     pub fn from_kek_source(source: &KekSource) -> KsResult<Self> {
         let kek = match source {
             KekSource::Direct(key) => {
-                debug!("Loading KEK from direct configuration");
+                crate::recording::debug!("Loading KEK from direct configuration");
                 key.clone()
             }
             KekSource::Environment(env_var) => {
-                debug!("Loading KEK from environment variable: {}", env_var);
+                crate::recording::debug!("Loading KEK from environment variable: {}", env_var);
                 std::env::var(env_var).map_err(|e| {
                     KsError::Config(format!(
                         "Failed to read KEK from environment variable {env_var}: {e}"
@@ -65,7 +64,7 @@ impl KeyEncryptor {
                 })?
             }
             KekSource::File(path) => {
-                debug!("Loading KEK from file: {}", path);
+                crate::recording::debug!("Loading KEK from file: {}", path);
                 std::fs::read_to_string(path).map_err(|e| {
                     KsError::Config(format!("Failed to read KEK from file {path}: {e}"))
                 })?
@@ -108,7 +107,7 @@ impl KeyEncryptor {
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)
             .map_err(|e| KsError::Crypto(format!("Failed to create cipher: {e}")))?;
 
-        info!("KEK loaded successfully");
+        crate::recording::info!("KEK loaded successfully");
         Ok(Self {
             cipher: Some(cipher),
         })

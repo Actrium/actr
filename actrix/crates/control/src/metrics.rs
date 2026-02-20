@@ -3,14 +3,13 @@
 use crate::error::{AdminError, Result};
 use actrix_proto::{ServiceStatus, SystemMetrics};
 use std::sync::Arc;
-use tracing::warn;
 
 /// 收集系统指标
 pub async fn collect_system_metrics() -> Result<SystemMetrics> {
     let (_, details) = pwrzv::get_power_reserve_level_with_details_direct()
         .await
         .map_err(|e| {
-            warn!("Failed to read system metrics: {}", e);
+            platform::recording::warn!("Failed to read system metrics: {}", e);
             AdminError::Metrics(e.to_string())
         })?;
 

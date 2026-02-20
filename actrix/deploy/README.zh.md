@@ -1,6 +1,6 @@
 # 部署助手
 
-用 Rust 编写的现代化、交互式 Actor-RTC 辅助服务部署助手。
+用 Rust 编写的现代化、交互式 Actrix 辅助服务部署助手。
 
 ## 功能特性
 
@@ -16,6 +16,7 @@
 - 🛡️ **权限处理**: 需要时智能提升 sudo 权限
 - ⚡ **输入缓冲清理**: 防止快速按键干扰后续输入
 - 🔧 **Systemd 集成**: 完整的服务部署和状态监控
+- 🔥 **防火墙引导**: 基于配置自动生成规则，确认后可一键应用或跳过
 
 ## 安装
 
@@ -70,8 +71,8 @@ cargo build --release -p deploy
 ## 选项参数
 
 - `--debug`: 启用调试模式（显示将要执行的操作但不实际执行）
-- `--config <PATH>`: 指定配置文件路径（默认：`/etc/actor-rtc-actrix/config.toml`）
-- `--install-dir <PATH>`: 设置安装目录（默认：`/opt/actor-rtc-actrix`）
+- `--config <PATH>`: 指定配置文件路径（默认：`/etc/actrix/config.toml`）
+- `--install-dir <PATH>`: 设置安装目录（默认：`/opt/actrix`）
 - `--binary-name <NAME>`: 设置二进制文件名（默认：`auxes`）
 - `--add-to-path`: 添加二进制文件符号链接到系统 PATH
 
@@ -132,9 +133,9 @@ cargo build --release -p deploy
 卸载向导提供对移除内容的精细控制：
 
 1. **Systemd 服务**: 停止并移除服务文件
-2. **应用程序文件**: 移除 `/opt/actor-rtc-actrix` 目录
-3. **配置文件**: 可选移除 `/etc/actor-rtc-actrix`（默认保留）
-4. **系统用户/组**: 可选移除 `actor-rtc` 用户和组
+2. **应用程序文件**: 移除 `/opt/actrix` 目录
+3. **配置文件**: 可选移除 `/etc/actrix`（默认保留）
+4. **系统用户/组**: 可选移除 `actrix` 用户和组
 
 每个组件都可以单独选择移除，允许您：
 - 保留配置同时移除二进制文件

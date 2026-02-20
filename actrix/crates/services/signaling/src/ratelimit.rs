@@ -13,7 +13,6 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
 
 /// 连接速率限制器（基于 IP）
 #[derive(Debug)]
@@ -49,9 +48,11 @@ impl ConnectionRateLimiter {
         if let Some(&count) = connections.get(&ip)
             && count >= self.config.max_concurrent_per_ip
         {
-            warn!(
+            platform::recording::warn!(
                 "IP {} exceeded max concurrent connections: {}/{}",
-                ip, count, self.config.max_concurrent_per_ip
+                ip,
+                count,
+                self.config.max_concurrent_per_ip
             );
             return Err(format!(
                 "Too many concurrent connections from your IP: {}/{}",
@@ -76,11 +77,11 @@ impl ConnectionRateLimiter {
 
         match limiter.check() {
             Ok(_) => {
-                debug!("IP {} passed connection rate limit check", ip);
+                platform::recording::debug!("IP {} passed connection rate limit check", ip);
                 Ok(())
             }
             Err(_) => {
-                warn!("IP {} exceeded connection rate limit", ip);
+                platform::recording::warn!("IP {} exceeded connection rate limit", ip);
                 Err(format!(
                     "Too many connection attempts. Limit: {} connections/minute",
                     self.config.per_minute
@@ -97,7 +98,7 @@ impl ConnectionRateLimiter {
 
         let mut connections = self.connections.write().await;
         *connections.entry(ip).or_insert(0) += 1;
-        debug!(
+        platform::recording::debug!(
             "IP {} connection count: {}",
             ip,
             connections.get(&ip).unwrap()
@@ -113,7 +114,7 @@ impl ConnectionRateLimiter {
         let mut connections = self.connections.write().await;
         if let Some(count) = connections.get_mut(&ip) {
             *count = count.saturating_sub(1);
-            debug!("IP {} connection count decreased to: {}", ip, count);
+            platform::recording::debug!("IP {} connection count decreased to: {}", ip, count);
 
             // 如果连接数为 0，移除记录以节省内存
             if *count == 0 {
@@ -169,14 +170,17 @@ impl MessageRateLimiter {
 
         match limiter.check() {
             Ok(_) => {
-                debug!(
+                platform::recording::debug!(
                     "Connection {} passed message rate limit check",
                     connection_id
                 );
                 Ok(())
             }
             Err(_) => {
-                warn!("Connection {} exceeded message rate limit", connection_id);
+                platform::recording::warn!(
+                    "Connection {} exceeded message rate limit",
+                    connection_id
+                );
                 Err(format!(
                     "Too many messages. Limit: {} messages/second",
                     self.config.per_second
@@ -193,7 +197,7 @@ impl MessageRateLimiter {
 
         let mut limiters = self.limiters.write().await;
         limiters.remove(connection_id);
-        debug!("Removed rate limiter for connection {}", connection_id);
+        platform::recording::debug!("Removed rate limiter for connection {}", connection_id);
     }
 
     /// 获取统计信息

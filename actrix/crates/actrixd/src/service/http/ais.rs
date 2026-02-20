@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use axum::Router;
 use platform::config::ActrixConfig;
 use platform::{ServiceInfo, ServiceType};
-use tracing::info;
 
 /// AIS HTTP 服务实现
 #[derive(Debug)]
@@ -44,7 +43,7 @@ impl HttpRouterService for AisService {
     }
 
     async fn build_router(&mut self) -> Result<Router> {
-        info!("Building AIS router");
+        platform::recording::info!("Building AIS router");
 
         // 获取 AIS 配置
         let ais_config = self
@@ -59,7 +58,7 @@ impl HttpRouterService for AisService {
 
         let router = Router::new().merge(ais_router);
 
-        info!("AIS router built successfully");
+        platform::recording::info!("AIS router built successfully");
         Ok(router)
     }
 

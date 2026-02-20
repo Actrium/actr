@@ -84,7 +84,7 @@ impl Realm {
         .fetch_all(pool)
         .await?;
 
-        tracing::info!("获取所有 Realm: {:?}", realms);
+        crate::recording::info!("获取所有 Realm: {:?}", realms);
         Ok(realms)
     }
 

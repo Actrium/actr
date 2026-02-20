@@ -8,11 +8,12 @@ use crate::service::container::ServiceContainer;
 use anyhow::Result;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
-use platform::{ServiceCollector, ServiceInfo, ServiceType, TlsConfigurer, config::ActrixConfig};
+use platform::{
+    ServiceCollector, ServiceInfo, ServiceType, TlsConfigurer, config::ActrixConfig, recording,
+};
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
-use tracing::{error, info, warn};
 use url::Url;
 
 /// 服务管理器，负责管理多个服务的生命周期
@@ -37,7 +38,7 @@ impl ServiceManager {
 
     /// 添加服务到管理器
     pub fn add_service(&mut self, service: ServiceContainer) {
-        info!("Adding service '{}' to manager", service.info().name);
+        platform::recording::info!("Adding service '{}' to manager", service.info().name);
         self.services.push(service);
     }
 
@@ -47,7 +48,7 @@ impl ServiceManager {
         let managed_config = match &self.config.admin {
             Some(config) => config,
             None => {
-                warn!(
+                platform::recording::warn!(
                     "No management platform configured, skipping service registration for '{:?}'",
                     services
                 );
@@ -56,7 +57,7 @@ impl ServiceManager {
         };
 
         // gRPC 模式下，服务注册通过 AdminClient 的 Report RPC 自动完成
-        info!(
+        platform::recording::info!(
             "Service registration via gRPC mode: {} services will be reported through AdminClient to {}",
             services.len(),
             managed_config.client.endpoint
@@ -67,7 +68,7 @@ impl ServiceManager {
 
     /// 启动所有服务
     pub async fn start_all(&mut self) -> Result<Vec<JoinHandle<()>>> {
-        info!(
+        platform::recording::info!(
             "Starting all {} types ({}) services.",
             self.services.len(),
             self.services
@@ -127,7 +128,7 @@ impl ServiceManager {
         let is_dev = self.config.env.to_lowercase() == "dev";
         let protocol = if is_dev { "HTTP" } else { "HTTPS" };
 
-        info!(
+        platform::recording::info!(
             "Starting {} server with {} route services (environment: {})",
             protocol,
             services.len(),
@@ -208,9 +209,10 @@ impl ServiceManager {
 
             match router_result {
                 Ok(router) => {
-                    info!(
+                    platform::recording::info!(
                         "Adding route '{}' for service '{}'",
-                        route_prefix, service_name
+                        route_prefix,
+                        service_name
                     );
                     app = app.nest(&route_prefix, router);
 
@@ -230,20 +232,50 @@ impl ServiceManager {
                     };
 
                     if let Err(e) = start_result {
-                        error!("Failed to start service '{}': {:?}", service_name, e);
+                        platform::recording::error!(
+                            "Failed to start service '{}': {:?}",
+                            service_name,
+                            e
+                        );
                     }
                 }
                 Err(e) => {
-                    error!(
+                    platform::recording::error!(
                         "Failed to build router for service '{}': {:?}",
-                        service_name, e
+                        service_name,
+                        e
                     );
                 }
             }
         }
 
         // 添加全局 Prometheus metrics 端点
-        info!("Adding /metrics endpoint for Prometheus");
+        if let Err(error) =
+            recording::log!(recording::Record::<{ recording::CHANNEL_OBSERVABILITY }> {
+                id: recording::RecordId::new(),
+                kind: "http.metrics.endpoint.added".to_string(),
+                common: recording::Common {
+                    level: recording::RecordLevel::Info,
+                    outcome: recording::Outcome::Success,
+                    ..Default::default()
+                },
+                observability: Some(recording::ObservabilityPayload {
+                    summary: Some("Adding /metrics endpoint for Prometheus".to_string()),
+                    component: Some("http.server".to_string()),
+                    operation: Some("http.metrics_endpoint.add".to_string()),
+                    protocol: Some(recording::Protocol::Http),
+                    route: Some("/metrics".to_string()),
+                    method: Some("GET".to_string()),
+                    ..Default::default()
+                }),
+                audit: None,
+                security: None,
+                operations: None,
+                attributes: serde_json::Map::new(),
+            })
+        {
+            platform::recording::warn!("Failed to emit recording for /metrics route: {}", error);
+        }
         app = app.route("/metrics", axum::routing::get(metrics_handler));
 
         // 添加全局中间件层
@@ -256,7 +288,7 @@ impl ServiceManager {
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid bind address '{bind_addr}': {e}"))?;
 
-        info!("{} server listening on {}", protocol, addr);
+        platform::recording::info!("{} server listening on {}", protocol, addr);
         notify.notify_one();
 
         let shutdown_tx = self.shutdown_tx.clone();
@@ -269,15 +301,15 @@ impl ServiceManager {
                 tokio::select! {
                     result = server => {
                         if let Err(e) = result {
-                            error!("HTTPS server error: {}", e);
+                            platform::recording::error!("HTTPS server error: {}", e);
                             let _ = shutdown_tx.send(());
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        info!("HTTPS server received shutdown signal");
+                        platform::recording::info!("HTTPS server received shutdown signal");
                     }
                 }
-                info!("HTTPS server stopped");
+                platform::recording::info!("HTTPS server stopped");
             })
         } else {
             // 启动HTTP服务器
@@ -293,13 +325,13 @@ impl ServiceManager {
                 )
                 .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.recv().await;
-                    info!("HTTP server received shutdown signal");
+                    platform::recording::info!("HTTP server received shutdown signal");
                 });
                 if let Err(e) = server.await {
-                    error!("HTTP server error: {}", e);
+                    platform::recording::error!("HTTP server error: {}", e);
                     let _ = shutdown_tx.send(());
                 }
-                info!("HTTP server stopped");
+                platform::recording::info!("HTTP server stopped");
             })
         };
 
@@ -323,7 +355,7 @@ impl ServiceManager {
                 let (tx, rx) = tokio::sync::oneshot::channel::<ServiceInfo>();
                 let handle = tokio::spawn(async move {
                     if let Err(e) = s.start(shutdown_rx, tx).await {
-                        error!("Failed to start STUN service: {:?}", e);
+                        platform::recording::error!("Failed to start STUN service: {:?}", e);
                         let _ = shutdown_tx.send(());
                     }
                 });
@@ -338,7 +370,7 @@ impl ServiceManager {
                 let (tx, rx) = tokio::sync::oneshot::channel::<ServiceInfo>();
                 let handle = tokio::spawn(async move {
                     if let Err(e) = s.start(shutdown_rx, tx).await {
-                        error!("Failed to start TURN service: {:?}", e);
+                        platform::recording::error!("Failed to start TURN service: {:?}", e);
                         let _ = shutdown_tx.send(());
                     }
                 });
@@ -366,7 +398,10 @@ impl ServiceManager {
                 Ok(handle)
             }
             _ => {
-                error!("Invalid service type for ICE service: {}", service_name);
+                platform::recording::error!(
+                    "Invalid service type for ICE service: {}",
+                    service_name
+                );
                 Err(anyhow::anyhow!(
                     "Invalid service type for ICE service: {service_name}"
                 ))
@@ -381,7 +416,7 @@ impl ServiceManager {
 
     /// Stop all services
     pub async fn stop_all(&mut self) -> Result<()> {
-        info!("Stopping all services");
+        platform::recording::info!("Stopping all services");
 
         let _ = self.shutdown_tx.send(());
         for service in &mut self.services {
@@ -394,7 +429,7 @@ impl ServiceManager {
             }
         }
 
-        info!("All services stopped");
+        platform::recording::info!("All services stopped");
         Ok(())
     }
 }

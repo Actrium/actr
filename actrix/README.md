@@ -1,6 +1,6 @@
-# Actrix - Actor-RTC Auxiliary Servers
+# Actrix Auxiliary Servers
 
-A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Key Server (KS), and service coordination for the Actor-RTC ecosystem.
+A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Key Server (KS), and service coordination for the Actrix ecosystem.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
@@ -14,7 +14,7 @@ A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, 
 
 ### Infrastructure
 - ⚡ **High Performance**: LRU caching, async runtime, non-blocking I/O
-- 📊 **Observability**: OpenTelemetry tracing, log rotation, structured logging
+- 📊 **Observability**: OpenTelemetry tracing, structured recording pipeline
 - 🔐 **Security**: TLS/HTTPS, PSK authentication, nonce-based replay protection
 - 🎛️ **Flexible Configuration**: TOML-based, bitmask service control, comprehensive validation
 - 🚀 **Production Ready**: Systemd integration, automated deployment, health checks
@@ -48,7 +48,7 @@ Key settings to change:
 - `actrix_shared_key` - Generate with: `openssl rand -hex 32`
 - `turn.advertised_ip` - Your server's public IP
 - `bind.https.cert/key` - TLS certificate paths
-- `observability.log.output` - Set to `"file"` for production
+- `recording.sink` - Set to `file:///...` for production file sink
 
 ### Running
 
@@ -93,12 +93,13 @@ enable = 6
 name = "actrix-01"
 env = "prod"
 
-[observability]
+[recording]
 filter_level = "info"    # RUST_LOG overrides if set
+sink = "file:///var/log/actrix/actrix.log"
+service_name = "actrix"
 
-[observability.log]
-output = "file"
-rotate = true
+[recording.audit]
+sink = "otlp+http://127.0.0.1:4318/v1/logs"
 
 [bind.ice]
 advertised_ip = "203.0.113.10"
@@ -114,28 +115,26 @@ realm = "example.com"
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete reference.
 
-## Observability
+## Recording
 
 ### Logging
 
 **Console Output** (development):
 ```toml
-[observability]
+[recording]
 filter_level = "debug"  # overridden by RUST_LOG if set
-
-[observability.log]
-output = "console"
+# no sink: defaults to stdout
 ```
 
-**File Output with Rotation** (production):
+**File Output** (production):
 ```toml
-[observability]
+[recording]
 filter_level = "info"  # overridden by RUST_LOG if set
+sink = "file:///var/log/actrix/actrix.log"
+service_name = "actrix-prod"
 
-[observability.log]
-output = "file"
-rotate = true
-path = "/var/log/actrix/"
+[recording.security]
+sink = "otlp+grpc://otel-collector.internal:4317"
 ```
 
 ### OpenTelemetry Tracing
@@ -148,10 +147,9 @@ docker-compose -f docker/jaeger-compose.yml up -d
 cargo build --release --features opentelemetry
 
 # 3. Configure endpoint
-[observability.tracing]
-enable = true
+[recording]
 service_name = "actrix"
-endpoint = "http://127.0.0.1:4317"
+sink = "otlp+grpc://127.0.0.1:4317"
 
 # 4. Access UI
 http://localhost:16686
@@ -305,7 +303,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed security analysis.
 ### Completed (v0.2.0)
 
 - [x] OpenTelemetry tracing support
-- [x] Log rotation and file output
+- [x] URI-based recording sinks (file/OTLP)
 - [x] TURN LRU authentication cache
 - [x] Configuration validation
 - [x] Deployment automation (systemd)
@@ -322,7 +320,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed security analysis.
 
 ## Contributing
 
-This is an internal project for the Actor-RTC ecosystem. When contributing:
+This is an internal project for the Actrix ecosystem. When contributing:
 
 1. Follow code patterns in [AGENTS.md](AGENTS.md)
 2. Add tests for new features
@@ -348,8 +346,8 @@ Apache License 2.0
 
 ## Related Projects
 
-- [actr-protocol](https://github.com/actor-rtc/actr-protocol) - Protobuf definitions
-- [actr-framework](https://github.com/actor-rtc/actr-framework) - Actor framework
+- [actr-protocol](https://github.com/Actrium/actr-protocol) - Protobuf definitions
+- [actr-framework](https://github.com/Actrium/actr-framework) - Actor framework
 
 ## Support
 

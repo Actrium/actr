@@ -13,7 +13,7 @@ const SYSTEMD_SERVICE_TEMPLATE: &str = r#"# actrix systemd service file template
 # This file is a template, actual deployment will generate real service file based on configured paths
 
 [Unit]
-Description=Actor-RTC Auxiliary Servers
+Description=Actrix Auxiliary Servers
 Documentation=https://github.com/Actrium/actrix
 After=network.target
 

@@ -82,14 +82,14 @@ impl IntoResponse for KsError {
             }
             KsError::Database(_) | KsError::Internal(_) | KsError::Crypto(_) => {
                 // 不向客户端暴露内部错误详情
-                tracing::error!("Internal error: {:?}", self);
+                crate::recording::error!("Internal error: {:?}", self);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),
                 )
             }
             _ => {
-                tracing::error!("Unexpected error: {:?}", self);
+                crate::recording::error!("Unexpected error: {:?}", self);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),

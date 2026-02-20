@@ -8,7 +8,6 @@ use platform::{config::ActrixConfig, storage::nonce::SqliteNonceStorage};
 use std::net::SocketAddr;
 use tokio::{sync::broadcast, task::JoinHandle};
 use tonic::transport::Server;
-use tracing::{error, info};
 
 /// KS gRPC 服务实现
 #[derive(Debug)]
@@ -27,7 +26,7 @@ impl KsGrpcService {
         addr: SocketAddr,
         shutdown_tx: broadcast::Sender<()>,
     ) -> Result<JoinHandle<()>> {
-        info!("Starting KS gRPC service on {}", addr);
+        platform::recording::info!("Starting KS gRPC service on {}", addr);
 
         let ks_service_config = self
             .config
@@ -45,12 +44,14 @@ impl KsGrpcService {
         // 创建密钥加密器
         let encryptor = match ks_service_config.get_kek_source() {
             Some(kek_source) => {
-                info!("KEK configured, enabling private key encryption");
+                platform::recording::info!("KEK configured, enabling private key encryption");
                 KeyEncryptor::from_kek_source(&kek_source)
                     .map_err(|e| anyhow::anyhow!("Failed to create key encryptor: {e}"))?
             }
             None => {
-                info!("No KEK configured, private keys will be stored in plaintext");
+                platform::recording::info!(
+                    "No KEK configured, private keys will be stored in plaintext"
+                );
                 KeyEncryptor::no_encryption()
             }
         };
@@ -72,7 +73,7 @@ impl KsGrpcService {
             ks_service_config.tolerance_seconds,
         );
 
-        info!("KS gRPC service created successfully");
+        platform::recording::info!("KS gRPC service created successfully");
 
         let mut shutdown_rx = shutdown_tx.subscribe();
         let handle = tokio::spawn(async move {
@@ -80,15 +81,15 @@ impl KsGrpcService {
                 .add_service(grpc_service)
                 .serve_with_shutdown(addr, async move {
                     let _ = shutdown_rx.recv().await;
-                    info!("KS gRPC service received shutdown signal");
+                    platform::recording::info!("KS gRPC service received shutdown signal");
                 })
                 .await
-                .map_err(|err| error!("KS gRPC service error: {}", err))
+                .map_err(|err| platform::recording::error!("KS gRPC service error: {}", err))
                 .ok();
             let _ = shutdown_tx.send(());
         });
 
-        info!("✅ KS gRPC service listening on {}", addr);
+        platform::recording::info!("✅ KS gRPC service listening on {}", addr);
 
         Ok(handle)
     }
