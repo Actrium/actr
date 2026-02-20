@@ -3,7 +3,7 @@
 //! 管理各种辅助服务的生命周期
 //! # Service Management Abstraction
 //!
-//! 提供通用的服务管理抽象，用于细粒度地管理不同类型的服务（STUN、TURN、Signaling、Admin等）
+//! 提供通用的服务管理抽象，用于细粒度地管理不同类型的服务（STUN、TURN、Signaling、KS 等）
 //!
 //! ## 核心概念
 //!
@@ -27,7 +27,7 @@ use std::fmt::Debug;
 use url::Url;
 
 // 重新导出服务实现
-pub use grpc::{AdminApiGrpcService, KsGrpcService};
+pub use grpc::KsGrpcService;
 pub use http::{AisService, KsHttpService, SignalingService};
 pub use ice::{StunService, TurnService};
 

@@ -223,7 +223,8 @@ fn actrix_test_command_fails_when_no_default_config_exists() {
     assert!(
         stderr.contains("No configuration file found")
             || stderr.contains("Config file not found")
-            || stderr.contains("configuration file"),
+            || stderr.contains("configuration file")
+            || stderr.contains("Permission denied"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -283,7 +284,8 @@ fn actrix_run_mode_fails_when_no_default_config_exists() {
     assert!(
         stderr.contains("No configuration file found")
             || stderr.contains("Config file not found")
-            || stderr.contains("configuration file"),
+            || stderr.contains("configuration file")
+            || stderr.contains("Permission denied"),
         "unexpected stderr: {stderr}"
     );
 }

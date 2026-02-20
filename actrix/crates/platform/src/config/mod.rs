@@ -3,18 +3,18 @@
 //! 本模块是 Actrix 辅助服务配置的"单一真理之源"。
 //! 所有配置项的定义、文档、默认值都在这里统一管理。
 
-pub mod admin;
 pub mod ais;
 pub mod bind;
+pub mod control;
 pub mod ks;
 pub mod services;
 pub mod signaling;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub mod turn;
 
-pub use crate::config::admin::AdminPlaneConfig;
 pub use crate::config::ais::AisConfig;
 pub use crate::config::bind::BindConfig;
+pub use crate::config::control::{ControlConfig, ControlHead};
 pub use crate::config::services::ServicesConfig;
 pub use crate::config::signaling::SignalingConfig;
 pub use crate::config::turn::TurnConfig;
@@ -28,13 +28,12 @@ use url::Url;
 /// 配置文件使用 TOML 格式，支持完整的类型安全加载。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActrixConfig {
-    /// Service enable flags (bitmask) - Primary switch for all services
+    /// Service enable flags (bitmask) - Primary switch for业务服务
     ///
-    /// This is the primary control mechanism for enabling services. Each service
-    /// must have its corresponding bit set in this mask to be enabled. All services
-    /// (Signaling, AIS, KS, STUN, TURN) are controlled exclusively by this bitmask.
+    /// This is the primary control mechanism for enabling业务服务。
+    /// `control` 是常驻控制面能力，不受该位掩码控制。
     ///
-    /// Bit positions:
+    /// Bit positions（仅业务服务）:
     /// - Bit 0 (1): Signaling service
     /// - Bit 1 (2): STUN service
     /// - Bit 2 (4): TURN service
@@ -95,11 +94,11 @@ pub struct ActrixConfig {
     /// 例如：us-west-1, office-beijing, edge-node-01
     pub location_tag: String,
 
-    /// Admin 平台集成配置（可选）
+    /// 控制面配置（常驻）
     ///
-    /// 配置与 Admin 管理平台的集成，包括认证信息和连接地址。
-    /// 如果不需要接入管理平台，可以省略此配置段。
-    pub admin: Option<AdminPlaneConfig>,
+    /// 控制面始终可用，不受 `enable` 位掩码控制。
+    #[serde(default)]
+    pub control: ControlConfig,
 
     /// 服务配置集合
     ///
@@ -301,7 +300,7 @@ impl Default for ActrixConfig {
             bind: BindConfig::default(),
             turn: TurnConfig::default(),
             location_tag: "default-location".to_string(),
-            admin: None,
+            control: ControlConfig::default(),
             services: ServicesConfig::default(),
             sqlite_path: PathBuf::from("database"),
             actrix_shared_key: "XDDYE8d+yMfdXcdWMrXprcUk2uzjnmoX6nCfFw1gGIg=".to_string(),
@@ -354,11 +353,9 @@ impl ActrixConfig {
         self.is_stun_enabled() || self.is_turn_enabled()
     }
 
-    /// 检查是否启用了 Admin 客户端
-    pub fn is_admin_enabled(&self) -> bool {
-        self.admin.as_ref().is_some_and(|config| {
-            !config.client.node_id.trim().is_empty() && !config.client.endpoint.trim().is_empty()
-        })
+    /// 当前控制面头类型
+    pub fn control_head(&self) -> ControlHead {
+        self.control.head
     }
 
     /// 获取 PID 文件路径，如果没有配置则使用默认值
@@ -468,6 +465,14 @@ impl ActrixConfig {
                 "Invalid environment '{}', must be one of: dev, prod, test",
                 self.env
             ));
+        }
+
+        // control 始终挂载在主 HTTP/HTTPS 端口，必须存在至少一个绑定。
+        if self.bind.http.is_none() && self.bind.https.is_none() {
+            errors.push(
+                "Control plane requires bind.http or bind.https because /admin is always served"
+                    .to_string(),
+            );
         }
 
         // 验证过滤级别（EnvFilter 语法）
@@ -638,11 +643,8 @@ impl ActrixConfig {
             }
         }
 
-        // Admin 配置校验
-        if let Some(ref admin) = self.admin
-            && let Err(e) = admin.validate()
-        {
-            errors.push(format!("Admin configuration error: {e}"));
+        if let Err(e) = self.control.validate() {
+            errors.push(format!("Control configuration error: {e}"));
         }
 
         if errors.is_empty() {

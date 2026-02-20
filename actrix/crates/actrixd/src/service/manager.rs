@@ -3,7 +3,7 @@
 //\! 实现了服务的启动、停止和管理逻辑
 //! 服务管理器模块 - 负责管理多个服务的生命周期
 
-use super::{HttpRouterService, IceService};
+use super::{HttpRouterService, IceService, http::build_control_router};
 use crate::service::container::ServiceContainer;
 use anyhow::Result;
 use axum::Router;
@@ -44,25 +44,11 @@ impl ServiceManager {
 
     /// 注册服务到管理平台
     pub async fn register_services(&self, services: Vec<ServiceInfo>) -> Result<()> {
-        // 检查是否配置了管理平台
-        let managed_config = match &self.config.admin {
-            Some(config) => config,
-            None => {
-                platform::recording::warn!(
-                    "No management platform configured, skipping service registration for '{:?}'",
-                    services
-                );
-                return Ok(());
-            }
-        };
-
-        // gRPC 模式下，服务注册通过 AdminClient 的 Report RPC 自动完成
-        platform::recording::info!(
-            "Service registration via gRPC mode: {} services will be reported through AdminClient to {}",
-            services.len(),
-            managed_config.client.endpoint
+        // 当前控制面为 pull 模式（/admin），不做主动注册。
+        platform::recording::debug!(
+            "Control plane is pull-based, skipping active service registration for {} services",
+            services.len()
         );
-
         Ok(())
     }
 
@@ -93,14 +79,12 @@ impl ServiceManager {
         let notify = Arc::new(Notify::new());
         let notify_clone = notify.clone();
         let mut handle_futs = Vec::new();
-        // 启动HTTP服务器（合并所有HTTP路由服务）
-        if !http_services.is_empty() {
-            let handle = self
-                .start_http_services(http_services, notify_clone)
-                .await?;
-            handle_futs.push(handle);
-            notify.notified().await;
-        }
+        // 启动HTTP服务器（控制面 /admin 常驻，因此总是启动）
+        let handle = self
+            .start_http_services(http_services, notify_clone)
+            .await?;
+        handle_futs.push(handle);
+        notify.notified().await;
         let notify_clone = notify.clone();
 
         // 启动ICE服务
@@ -193,6 +177,19 @@ impl ServiceManager {
         // 添加 HTTP 追踪层（支持 OpenTelemetry 上下文传播）
         use crate::service::trace::http_trace_layer;
         use tower_http::cors::CorsLayer;
+
+        // Control 平面始终复用主 HTTP 端口。
+        let control_router = build_control_router(
+            &self.config,
+            self.service_collector.clone(),
+            self.shutdown_tx.clone(),
+        )
+        .await?;
+        platform::recording::info!(
+            "Adding control routes for head '{:?}'",
+            self.config.control_head()
+        );
+        app = app.merge(control_router);
 
         for service in &mut services {
             let route_prefix = match service.route_prefix() {
@@ -407,11 +404,6 @@ impl ServiceManager {
                 ))
             }
         }
-    }
-
-    /// Return service registry handle for accessing service statuses
-    pub fn service_collector(&self) -> ServiceCollector {
-        self.service_collector.clone()
     }
 
     /// Stop all services

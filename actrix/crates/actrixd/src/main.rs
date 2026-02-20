@@ -3,7 +3,6 @@
 //! 启动和管理 WebRTC 相关的辅助服务，包括信令、STUN、TURN 等服务
 #![deny(clippy::disallowed_macros)]
 
-mod admin;
 mod cli;
 // mod config; // 已迁移到独立的 config crate
 mod error;
@@ -11,10 +10,9 @@ mod process;
 mod recording_pipeline;
 mod service;
 
-use admin::AdminRuntime;
 use anyhow::Context;
 use clap::Parser;
-use platform::config::ActrixConfig;
+use platform::config::{ActrixConfig, ControlHead};
 use recording_pipeline::init_recording_pipeline;
 use service::{
     AisService, KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService,
@@ -242,7 +240,6 @@ impl ApplicationLauncher {
 
         let mut service_manager =
             Self::create_service_manager(config.clone(), shutdown_tx.clone()).await?;
-        let admin_runtime = AdminRuntime::from_config(&config, &service_manager);
 
         if config.is_ks_enabled() {
             platform::recording::info!("启动 KS gRPC 服务器...");
@@ -258,24 +255,12 @@ impl ApplicationLauncher {
             handle_futs.push(grpc_future);
         }
 
-        if let Some(admin_runtime) = &admin_runtime {
-            let grpc_future = admin_runtime.start_server(shutdown_tx.clone()).await?;
-            handle_futs.push(grpc_future);
-        }
-
         // wait for gRPC service to start
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         let handle_futures = service_manager.start_all().await?;
         handle_futs.extend(handle_futures);
         platform::recording::info!("启动所有服务...");
-
-        // Start admin client after all services are started
-        if let Some(admin_runtime) = &admin_runtime
-            && let Some(register_handle) = admin_runtime.start_client()
-        {
-            handle_futs.push(register_handle);
-        }
 
         // 端口绑定完成后，切换用户和组
         platform::recording::info!("服务启动完成，准备切换用户权限...");
@@ -307,7 +292,7 @@ impl ApplicationLauncher {
     ) -> Result<ServiceManager> {
         platform::recording::info!("📊 计划启动的服务:");
         // 数据库已在 run_services_with_privilege_drop 中提前初始化，
-        // 以确保 AdminApiGrpcService 可以安全处理 RPC 回调
+        // 以确保 control gRPC 头可以安全处理 RPC 回调
 
         // 初始化 Prometheus metrics registry
         let registry = &platform::metrics::REGISTRY;
@@ -365,6 +350,11 @@ impl ApplicationLauncher {
             service_manager.add_service(ServiceContainer::ks(ks_service));
         }
 
+        platform::recording::info!(
+            "  - Control Service (/admin, head={:?})",
+            config.control_head()
+        );
+
         Ok(service_manager)
     }
 
@@ -403,6 +393,19 @@ impl ApplicationLauncher {
                     platform::recording::info!("  - {}/ais/health", http_url);
                     platform::recording::info!("  - {}/ais/register (POST protobuf)", http_url);
                 }
+                match config.control_head() {
+                    ControlHead::AdminUi => {
+                        platform::recording::info!("  - {}/admin", http_url);
+                        platform::recording::info!("  - {}/admin/health", http_url);
+                    }
+                    ControlHead::GrpcApi => {
+                        platform::recording::info!(
+                            "  - {}/admin.v1.NodeAdminService/<Method>",
+                            http_url
+                        );
+                        platform::recording::info!("  - {}/admin/health", http_url);
+                    }
+                }
             }
         } else {
             platform::recording::info!("📡 没有配置 HTTP/HTTPS 服务器");
@@ -412,16 +415,6 @@ impl ApplicationLauncher {
         if config.is_ks_enabled() {
             platform::recording::info!("🔌 gRPC 服务:");
             platform::recording::info!("  - KS gRPC Server: 127.0.0.1:50052");
-        }
-        if config.is_admin_enabled()
-            && let Some(admin_cfg) = &config.admin
-        {
-            let admin_api_cfg = &admin_cfg.api;
-            platform::recording::info!(
-                "  - AdminApi gRPC Server: {} (advertised: {})",
-                admin_api_cfg.bind_addr(),
-                admin_api_cfg.advertised_addr()
-            );
         }
     }
 }

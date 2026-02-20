@@ -50,7 +50,7 @@ pub struct AdminApiService {
 }
 
 impl AdminApiService {
-    /// Create a new admin_api service instance.
+    /// Create a new control gRPC service instance.
     pub fn new(
         node_id: impl Into<String>,
         name: impl Into<String>,

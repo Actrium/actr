@@ -170,7 +170,7 @@ impl AdminClient {
         Ok(response)
     }
 
-    /// Register node information (including admin_api advertised address)
+    /// Register node information (including control gRPC advertised address)
     pub async fn register_node(&mut self) -> Result<RegisterNodeResponse> {
         let location_tag = self.config.location_tag.clone();
         let name = self.config.name.clone().unwrap_or_else(|| {
