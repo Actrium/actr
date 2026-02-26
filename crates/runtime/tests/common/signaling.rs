@@ -210,17 +210,23 @@ impl TestSignalingServer {
                 return;
             }
 
-            // Handle RoleNegotiation
+            // Handle RoleNegotiation: server decides roles and notifies BOTH parties
+            // (matching real signaling server behavior in actrix/crates/signaling/src/server.rs)
             if let Some(actr_protocol::actr_relay::Payload::RoleNegotiation(role_neg)) =
                 relay.payload.as_ref()
             {
-                let is_offerer = role_neg.to.serial_number > role_neg.from.serial_number;
-                let assignment = actr_protocol::RoleAssignment {
-                    is_offerer,
-                    remote_fixed: None,
-                };
+                // RoleAssignment semantics:
+                // - `source`: the REMOTE peer (from the receiver's perspective)
+                // - `target`: the LOCAL peer (the receiver itself)
+                // - `is_offerer`: whether the RECEIVER should act as offerer
+                //
+                // is_offerer is determined by serial_number comparison:
+                //   from.serial > to.serial → from is offerer
+                let from_is_offerer = role_neg.from.serial_number < role_neg.to.serial_number;
 
-                let response_envelope = SignalingEnvelope {
+                // Build RoleAssignment for `from` (the requester)
+                // source = to (remote), target = from (self), is_offerer = from_is_offerer
+                let envelope_for_from = SignalingEnvelope {
                     envelope_version: 1,
                     envelope_id: uuid::Uuid::new_v4().to_string(),
                     reply_for: None,
@@ -230,11 +236,14 @@ impl TestSignalingServer {
                     },
                     flow: Some(actr_protocol::signaling_envelope::Flow::ActrRelay(
                         actr_protocol::ActrRelay {
-                            source: role_neg.to.clone(),
+                            source: role_neg.to.clone(), // remote peer for `from`
                             credential: AIdCredential::default(),
-                            target: role_neg.from.clone(),
+                            target: role_neg.from.clone(), // `from` itself
                             payload: Some(actr_protocol::actr_relay::Payload::RoleAssignment(
-                                assignment,
+                                actr_protocol::RoleAssignment {
+                                    is_offerer: from_is_offerer,
+                                    remote_fixed: None,
+                                },
                             )),
                         },
                     )),
@@ -242,14 +251,46 @@ impl TestSignalingServer {
                     tracestate: None,
                 };
 
-                // Send back to requester
+                // Build RoleAssignment for `to` (the other party)
+                // source = from (remote), target = to (self), is_offerer = !from_is_offerer
+                let envelope_for_to = SignalingEnvelope {
+                    envelope_version: 1,
+                    envelope_id: uuid::Uuid::new_v4().to_string(),
+                    reply_for: None,
+                    timestamp: prost_types::Timestamp {
+                        seconds: chrono::Utc::now().timestamp(),
+                        nanos: 0,
+                    },
+                    flow: Some(actr_protocol::signaling_envelope::Flow::ActrRelay(
+                        actr_protocol::ActrRelay {
+                            source: role_neg.from.clone(), // remote peer for `to`
+                            credential: AIdCredential::default(),
+                            target: role_neg.to.clone(), // `to` itself
+                            payload: Some(actr_protocol::actr_relay::Payload::RoleAssignment(
+                                actr_protocol::RoleAssignment {
+                                    is_offerer: !from_is_offerer,
+                                    remote_fixed: None,
+                                },
+                            )),
+                        },
+                    )),
+                    traceparent: None,
+                    tracestate: None,
+                };
+
+                // Send to both parties
                 let clients_read = clients.read().await;
                 for (id, tx) in clients_read.iter() {
                     if id == sender_id {
+                        // Send to `from` (the requester)
                         let encoded =
-                            actr_protocol::prost::Message::encode_to_vec(&response_envelope);
+                            actr_protocol::prost::Message::encode_to_vec(&envelope_for_from);
                         let _ = tx.send(Message::Binary(encoded.into()));
-                        break;
+                    } else {
+                        // Send to `to` (the other party)
+                        let encoded =
+                            actr_protocol::prost::Message::encode_to_vec(&envelope_for_to);
+                        let _ = tx.send(Message::Binary(encoded.into()));
                     }
                 }
                 return;

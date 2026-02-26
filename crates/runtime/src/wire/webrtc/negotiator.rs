@@ -8,6 +8,11 @@ use actr_protocol::turn::Claims;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
+#[cfg(feature = "test-utils")]
+use std::sync::Arc;
+#[cfg(feature = "test-utils")]
+use webrtc::util::vnet::net::Net;
+
 // 从 actr-config 重新导出类型
 pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 
@@ -20,10 +25,13 @@ pub struct WebRtcNegotiator {
     realm_id: u32,
     /// Latest credential state (token and PSK refreshes update this)
     credential_state: CredentialState,
+    /// Optional virtual network for integration testing.
+    /// When set, RTCPeerConnection will use this VNet instead of real OS networking.
+    #[cfg(feature = "test-utils")]
+    vnet: Option<Arc<Net>>,
 }
 
 impl WebRtcNegotiator {
-    /// Create newnegotiator
     ///
     /// # Arguments
     /// - `config`: WebRTC configuration
@@ -32,7 +40,23 @@ impl WebRtcNegotiator {
             config,
             realm_id,
             credential_state,
+            #[cfg(feature = "test-utils")]
+            vnet: None,
         }
+    }
+
+    /// Set the virtual network for testing.
+    ///
+    /// When set, all RTCPeerConnections created by this negotiator will use
+    /// the provided VNet instead of the real OS network stack. This enables
+    /// simulating network disconnection/reconnection at the UDP transport level.
+    ///
+    /// # Arguments
+    /// - `vnet`: The virtual network instance (from `webrtc_util::vnet::net::Net`)
+    #[cfg(feature = "test-utils")]
+    pub fn set_vnet(&mut self, vnet: Arc<Net>) {
+        tracing::info!("🌐 VNet injected into WebRtcNegotiator");
+        self.vnet = Some(vnet);
     }
 
     /// Create RTCPeerConnection
@@ -173,6 +197,13 @@ impl WebRtcNegotiator {
 
         // Create SettingEngine with role-based configuration
         let mut setting_engine = webrtc::api::setting_engine::SettingEngine::default();
+
+        // Inject VNet if configured (test-utils only)
+        #[cfg(feature = "test-utils")]
+        if let Some(ref vnet) = self.vnet {
+            tracing::info!("🌐 Using VNet for RTCPeerConnection (test mode)");
+            setting_engine.set_vnet(Some(vnet.clone()));
+        }
 
         // Apply ICE candidate acceptance wait times (for both Offerer and Answerer)
         self.apply_ice_wait_times(&mut setting_engine);

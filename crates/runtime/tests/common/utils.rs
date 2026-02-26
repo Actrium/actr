@@ -86,6 +86,58 @@ pub async fn create_peer_with_websocket(
     Ok((coordinator, signaling_client_arc))
 }
 
+/// Create a WebRTC peer with WebSocket signaling and VNet
+///
+/// Same as `create_peer_with_websocket` but injects a virtual network
+/// so that all ICE/UDP traffic flows through the VNet router.
+/// This enables simulating network disconnection at the transport level.
+///
+/// **Note:** `set_vnet` must be called before `start()`, so this function
+/// creates the coordinator as mutable, sets vnet, then wraps in `Arc` and starts.
+///
+/// # Arguments
+/// - `id`: Actor ID for this peer
+/// - `server_url`: WebSocket signaling server URL
+/// - `vnet`: Virtual network instance (from `VNetPair.net_offerer` or `.net_answerer`)
+pub async fn create_peer_with_vnet(
+    id: ActrId,
+    server_url: &str,
+    vnet: Arc<webrtc_util::vnet::net::Net>,
+) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
+    let credential = dummy_credential();
+    let credential_state = create_credential_state_for_test(credential.clone());
+
+    let signaling_client = WebSocketSignalingClient::connect_to(server_url)
+        .await
+        .expect("Failed to connect to test server");
+
+    let config = WebRtcConfig::default();
+    let media_registry = Arc::new(MediaFrameRegistry::new());
+
+    let signaling_client_arc = signaling_client as Arc<dyn SignalingClient>;
+
+    // Create coordinator as mutable to inject vnet before start
+    let mut coordinator = WebRtcCoordinator::new(
+        id,
+        credential_state,
+        signaling_client_arc.clone(),
+        config,
+        1,
+        media_registry,
+    );
+
+    // Inject VNet BEFORE start
+    coordinator.set_vnet(vnet);
+
+    let coordinator = Arc::new(coordinator);
+    let c = coordinator.clone();
+    tokio::spawn(async move {
+        let _ = c.start().await;
+    });
+
+    Ok((coordinator, signaling_client_arc))
+}
+
 /// Spawn a task to receive and handle RPC responses
 ///
 /// This function starts a background task that:
