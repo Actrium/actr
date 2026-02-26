@@ -271,6 +271,22 @@ impl WebRtcCoordinator {
         self.event_broadcaster.subscribe()
     }
 
+    /// Inject a virtual network for integration testing.
+    ///
+    /// **Must be called before `start()`** — all subsequently created
+    /// RTCPeerConnections will use this VNet instead of real OS networking.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let vnet_pair = VNetPair::new().await?;
+    /// coordinator.set_vnet(vnet_pair.net_offerer.clone());
+    /// coordinator.start().await?;
+    /// ```
+    #[cfg(feature = "test-utils")]
+    pub fn set_vnet(&mut self, vnet: std::sync::Arc<webrtc::util::vnet::net::Net>) {
+        self.negotiator.set_vnet(vnet);
+    }
+
     /// Get the event sender for sharing with WebRtcConnection instances
     pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<ConnectionEvent> {
         self.event_broadcaster.sender()
