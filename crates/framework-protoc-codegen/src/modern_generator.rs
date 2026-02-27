@@ -98,8 +98,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use prost::Message as ProstMessage;
 
-use actr_framework::{{Context, MessageDispatcher, Workload}};
-use actr_protocol::{{ActorResult, RpcRequest, RpcEnvelope, PayloadType}};
+use actr_framework::{{Context, Dest, MessageDispatcher, Workload}};
+use actr_protocol::{{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}};
 
 // 导入 protobuf 消息类型（由 prost 生成）
 use super::{proto_module}::*;
@@ -350,20 +350,14 @@ impl RpcRequest for {input_type} {{
             let input_ident = format_ident!("{}", input_type);
             let output_ident = format_ident!("{}", output_type);
 
-            let route_key = format!(
-                "{}.{}.{}",
-                self.package_name,
-                self.service_name,
-                method.name()
-            );
-
             client_methods.push(quote! {
                 /// 调用远程方法：#method_name
                 pub async fn #method_ident(
                     &self,
+                    target: ActrId,
                     req: #input_ident,
                 ) -> ActorResult<#output_ident> {
-                    self.ctx.call_remote(#route_key, req).await
+                    self.ctx.call(&Dest::from(target), req).await
                 }
             });
         }
@@ -376,11 +370,11 @@ impl RpcRequest for {input_type} {{
             /// 客户端接口
             ///
             /// 提供类型安全的远程调用方法
-            pub struct #client_ident<'a> {
-                ctx: &'a Context,
+            pub struct #client_ident<'a, C: Context> {
+                ctx: &'a C,
             }
 
-            impl<'a> #client_ident<'a> {
+            impl<'a, C: Context> #client_ident<'a, C> {
                 #(#client_methods)*
             }
 
@@ -388,11 +382,11 @@ impl RpcRequest for {input_type} {{
             ///
             /// 为 Context 添加便捷的客户端方法
             pub trait ContextExt {
-                fn #extension_method_ident(&self) -> #client_ident;
+                fn #extension_method_ident(&self) -> #client_ident<'_, Self> where Self: Sized + Context;
             }
 
-            impl ContextExt for Context {
-                fn #extension_method_ident(&self) -> #client_ident {
+            impl<T: Context> ContextExt for T {
+                fn #extension_method_ident(&self) -> #client_ident<'_, Self> {
                     #client_ident { ctx: self }
                 }
             }
@@ -486,12 +480,12 @@ async fn main() -> ActorResult<()> {{
 use actr_framework::Context;
 use actr_protocol::ActorResult;
 
-async fn call_remote_service(ctx: &Context) -> ActorResult<()> {{
+async fn call_remote_service(ctx: &impl Context, target: ActrId) -> ActorResult<()> {{
     use super::ContextExt;
 
     // 类型安全的远程调用
     let response = ctx.{service_name_snake}()
-        .{method_name_snake}(request)
+        .{method_name_snake}(target, request)
         .await?;
 
     Ok(())
@@ -584,9 +578,11 @@ mod tests {
 
         // 验证导入了 PayloadType
         assert!(imports.contains("PayloadType"));
+        assert!(imports.contains(
+            "use actr_protocol::{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}"
+        ));
         assert!(
-            imports
-                .contains("use actr_protocol::{ActorResult, RpcRequest, RpcEnvelope, PayloadType}")
+            imports.contains("use actr_framework::{Context, Dest, MessageDispatcher, Workload}")
         );
     }
 

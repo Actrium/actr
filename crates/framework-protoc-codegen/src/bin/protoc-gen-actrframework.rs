@@ -23,19 +23,50 @@ pub enum ProtoSource {
 
 impl ProtoSource {
     /// 从 proto 文件推断源类型
-    /// 注意：在编译时路由架构中，这个推断主要用于向后兼容
-    /// 真正的路由决策应该基于项目配置和路由表
-    pub fn from_proto_file(file: &FileDescriptorProto) -> Self {
-        let has_services = !file.service.is_empty();
+    ///
+    /// The proper way is to use the `LocalFiles` and `RemoteFiles` parameters passed
+    /// by the CLI. If not present or ambiguous, fallback to checking whether it has services.
+    ///
+    /// A file must belong to exactly one side: either LocalFiles or RemoteFiles, never both.
+    pub fn from_proto_file(
+        file: &FileDescriptorProto,
+        params: &HashMap<String, String>,
+    ) -> Result<Self> {
+        let file_name = file.name();
+        let file_path = std::path::Path::new(file_name);
 
-        if has_services {
-            // 默认假设为本地服务
-            // 在实际编译时路由中，这会由项目扫描逻辑确定
+        let matches = |list_str: &str| {
+            list_str.split(':').filter(|p| !p.is_empty()).any(|p| {
+                p == file_name
+                    || file_path.ends_with(p)
+                    || std::path::Path::new(p).ends_with(file_name)
+            })
+        };
+
+        let in_remote = params.get("RemoteFiles").is_some_and(|s| matches(s));
+        let in_local = params.get("LocalFiles").is_some_and(|s| matches(s));
+
+        if in_remote && in_local {
+            return Err(anyhow!(
+                "{}: appears in both RemoteFiles and LocalFiles; a file must belong to exactly one side.",
+                file_name
+            ));
+        }
+
+        if in_remote {
+            return Ok(Self::Remote);
+        }
+        if in_local {
+            return Ok(Self::Local);
+        }
+
+        // Fallback: Assume Local if it has services, otherwise Remote
+        let has_services = !file.service.is_empty();
+        Ok(if has_services {
             Self::Local
         } else {
-            // 纯消息类型文件，通常是远程依赖
             Self::Remote
-        }
+        })
     }
 }
 
@@ -126,6 +157,14 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     // 为每个要生成的文件处理 services
     for file_name in &request.file_to_generate {
         if let Some(file) = request.proto_file.iter().find(|f| f.name() == file_name) {
+            if file.service.len() > 1 {
+                return Err(anyhow!(
+                    "{}: defines {} services, but only one service per .proto file is supported. \
+                     Split each service into its own .proto file.",
+                    file_name,
+                    file.service.len()
+                ));
+            }
             for service in &file.service {
                 let generated_file = generate_service_code(file, service, &message_types, &params)?;
                 response.file.push(generated_file);
@@ -161,7 +200,7 @@ fn generate_service_code(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
     _message_types: &HashMap<String, DescriptorProto>,
-    _params: &HashMap<String, String>,
+    params: &HashMap<String, String>,
 ) -> Result<File> {
     let service_name = service.name();
     let package_name = file.package();
@@ -173,8 +212,15 @@ fn generate_service_code(
     ServiceName::new(service_name.to_string())
         .map_err(|e| anyhow!("Invalid proto service name '{}': {}", service_name, e))?;
 
-    // Determine proto source based on proto file characteristics
-    let proto_source = ProtoSource::from_proto_file(file);
+    // Determine proto source based on proto file characteristics and passed params
+    let proto_source = ProtoSource::from_proto_file(file, params)?;
+
+    // Extract the proto file stem (e.g., "echo.proto" -> "echo")
+    let file_stem = std::path::Path::new(file.name())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(service_name)
+        .to_snake_case();
 
     // 🚀 使用现代化代码生成器
     let role = match proto_source {
@@ -192,11 +238,7 @@ fn generate_service_code(
     };
 
     Ok(File {
-        name: Some(format!(
-            "{}{}.rs",
-            service_name.to_snake_case(),
-            file_suffix
-        )),
+        name: Some(format!("{}{}.rs", file_stem, file_suffix)),
         content: Some(final_code),
         insertion_point: None,
         generated_code_info: None,
