@@ -24,7 +24,7 @@ pub struct BreakingChange {
 #[derive(Debug)]
 pub struct CompatibilityAnalysis {
     /// Overall compatibility assessment from proto-sign
-    pub compatibility: proto_sign::Compatibility,
+    pub compatibility: proto_fingerprint::Compatibility,
     /// All changes detected (breaking and non-breaking)
     pub changes: Vec<ProtocolChange>,
     /// Only breaking changes
@@ -59,7 +59,7 @@ impl ServiceCompatibility {
         // Perform detailed proto-sign analysis on changed files
         let mut all_changes = Vec::new();
         let mut breaking_changes = Vec::new();
-        let mut overall_compatibility = proto_sign::Compatibility::Green;
+        let mut overall_compatibility = proto_fingerprint::Compatibility::Green;
 
         // Create package content maps (using package name directly)
         let base_files: HashMap<String, String> = base_service
@@ -91,7 +91,7 @@ impl ServiceCompatibility {
                     location: file_name.clone(),
                     message: format!("Proto file '{file_name}' was removed"),
                 });
-                overall_compatibility = proto_sign::Compatibility::Red;
+                overall_compatibility = proto_fingerprint::Compatibility::Red;
             }
         }
 
@@ -110,9 +110,9 @@ impl ServiceCompatibility {
 
         // Convert proto-sign compatibility to our enum
         let level = match overall_compatibility {
-            proto_sign::Compatibility::Green => CompatibilityLevel::FullyCompatible,
-            proto_sign::Compatibility::Yellow => CompatibilityLevel::BackwardCompatible,
-            proto_sign::Compatibility::Red => CompatibilityLevel::BreakingChanges,
+            proto_fingerprint::Compatibility::Green => CompatibilityLevel::FullyCompatible,
+            proto_fingerprint::Compatibility::Yellow => CompatibilityLevel::BackwardCompatible,
+            proto_fingerprint::Compatibility::Red => CompatibilityLevel::BreakingChanges,
         };
 
         Ok(CompatibilityAnalysisResult {
@@ -132,14 +132,14 @@ impl ServiceCompatibility {
         candidate_content: &str,
     ) -> Result<CompatibilityAnalysis> {
         // Parse proto specifications using proto-sign
-        let base_spec = proto_sign::Spec::try_from(base_content).map_err(|e| {
+        let base_spec = proto_fingerprint::Spec::try_from(base_content).map_err(|e| {
             CompatibilityError::ProtoParseError {
                 file_name: file_name.to_string(),
                 source: e,
             }
         })?;
 
-        let candidate_spec = proto_sign::Spec::try_from(candidate_content).map_err(|e| {
+        let candidate_spec = proto_fingerprint::Spec::try_from(candidate_content).map_err(|e| {
             CompatibilityError::ProtoParseError {
                 file_name: file_name.to_string(),
                 source: e,
@@ -156,13 +156,13 @@ impl ServiceCompatibility {
                 file_name: file_name.to_string(),
                 location: file_name.to_string(),
                 description: format!("Proto file '{file_name}' has semantic changes"),
-                is_breaking: compatibility == proto_sign::Compatibility::Red,
+                is_breaking: compatibility == proto_fingerprint::Compatibility::Red,
             }]
         } else {
             vec![]
         };
 
-        let breaking_changes = if compatibility == proto_sign::Compatibility::Red {
+        let breaking_changes = if compatibility == proto_fingerprint::Compatibility::Red {
             vec![BreakingChange {
                 rule: "BREAKING_PROTO_CHANGE".to_string(),
                 file: file_name.to_string(),
@@ -202,17 +202,17 @@ impl ServiceCompatibility {
 
     /// Merge two compatibility levels (most restrictive wins)
     fn merge_compatibility(
-        current: proto_sign::Compatibility,
-        new: proto_sign::Compatibility,
-    ) -> proto_sign::Compatibility {
+        current: proto_fingerprint::Compatibility,
+        new: proto_fingerprint::Compatibility,
+    ) -> proto_fingerprint::Compatibility {
         match (current, new) {
-            (proto_sign::Compatibility::Red, _) | (_, proto_sign::Compatibility::Red) => {
-                proto_sign::Compatibility::Red
+            (proto_fingerprint::Compatibility::Red, _) | (_, proto_fingerprint::Compatibility::Red) => {
+                proto_fingerprint::Compatibility::Red
             }
-            (proto_sign::Compatibility::Yellow, _) | (_, proto_sign::Compatibility::Yellow) => {
-                proto_sign::Compatibility::Yellow
+            (proto_fingerprint::Compatibility::Yellow, _) | (_, proto_fingerprint::Compatibility::Yellow) => {
+                proto_fingerprint::Compatibility::Yellow
             }
-            _ => proto_sign::Compatibility::Green,
+            _ => proto_fingerprint::Compatibility::Green,
         }
     }
 

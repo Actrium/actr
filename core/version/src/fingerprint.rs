@@ -17,7 +17,7 @@ impl Fingerprint {
     /// Calculate semantic fingerprint for a single proto file
     /// This uses proto-sign analysis and ignores formatting differences
     pub fn calculate_proto_semantic_fingerprint(proto_content: &str) -> Result<String> {
-        let spec = proto_sign::Spec::try_from(proto_content)
+        let spec = proto_fingerprint::Spec::try_from(proto_content)
             .map_err(CompatibilityError::ProtoSignError)?;
 
         Ok(format!("semantic:{}", spec.fingerprint))
@@ -37,7 +37,7 @@ impl Fingerprint {
 
         let mut semantic_fingerprints = Vec::new();
         for file in &sorted_files {
-            let spec = proto_sign::Spec::try_from(file.content.as_str()).map_err(|e| {
+            let spec = proto_fingerprint::Spec::try_from(file.content.as_str()).map_err(|e| {
                 CompatibilityError::ProtoParseError {
                     file_name: file.name.clone(),
                     source: e,

@@ -21,7 +21,7 @@ workspace = true
 [dependencies]
 # Core dependencies for service compatibility analysis
 actr-protocol.workspace = true
-proto-sign = "0.1.1"
+proto-fingerprint = { path = "../../../proto-kit/proto-fingerprint" }
 
 # Serialization support
 serde = { version = "1.0", features = ["derive"] }
