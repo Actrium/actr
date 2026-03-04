@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// Must use the same package as the remote proto for route key matching
+// Server callback uses route key: data_stream_peer.StreamClient.PrepareClientStream
+package data_stream_peer;
+
+// Import the remote proto to reuse PrepareStreamResponse
+import "remote/data-stream-peer-concurrent-server/data_stream_peer.proto";
+
+// Request from server to client to prepare for receiving data stream
+// NOTE: This is only defined here (server side has its own definition that matches)
+message PrepareClientStreamRequest {
+  string stream_id = 1;
+  uint32 expected_count = 2;
+}
+
+// Request to start a stream (local only, different name to avoid conflict)
+message ClientStartStreamRequest {
+  string client_id = 1;
+  string stream_id = 2;
+  uint32 message_count = 3;
+}
+
+// Response for starting a stream (local only, different name to avoid conflict)
+message ClientStartStreamResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// StreamClient service - must match server's expectation
+// Server will callback using: data_stream_peer.StreamClient.PrepareClientStream
+service StreamClient {
+  // Called by the server to prepare the client for receiving data stream
+  rpc PrepareClientStream(PrepareClientStreamRequest) returns (PrepareStreamResponse);
+  // Called locally to start a stream transfer (uses different message names to avoid conflict)
+  rpc StartStream(ClientStartStreamRequest) returns (ClientStartStreamResponse);
+}

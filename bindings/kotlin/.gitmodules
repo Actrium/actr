@@ -1,0 +1,3 @@
+[submodule "libactr"]
+	path = libactr
+	url = https://github.com/actor-rtc/libactr.git

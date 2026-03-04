@@ -1,0 +1,30 @@
+edition = 1
+exports = ["./proto/echo-twice.proto"]
+
+[package]
+name = "echo-twice-server"
+description = "EchoTwice Server Example"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "EchoTwiceService"
+
+[system.signaling]
+url = "wss://actrix1.develenv.com/signaling/ws"
+
+[system.deployment]
+realm_id = 2368266035
+
+[system.discovery]
+visible = true
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:actrix1.develenv.com:3478"]
+turn_urls = ["turn:actrix1.develenv.com:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["acme+echo-client-app"]

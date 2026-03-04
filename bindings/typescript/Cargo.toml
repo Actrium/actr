@@ -1,0 +1,40 @@
+[package]
+name = "actr-ts"
+version = "0.1.14"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/actor-rtc/actr-ts"
+authors = ["Actor-RTC Contributors"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi-rs
+napi = { version = "3.8.2", features = ["async", "tokio_rt"] }
+napi-derive = "3.5.1"
+
+# actr dependencies (git rev)
+actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
+actr-framework = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
+actr-runtime = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
+actr-config = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+
+# Utilities
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+# lto = true
+strip = true

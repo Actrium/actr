@@ -1,0 +1,145 @@
+# Gradle
+.gradle/
+build/
+gradle.properties
+local.properties
+
+# Android
+*.apk
+*.aar
+*.ap_
+*.dex
+*.class
+
+# Native libraries - exclude demo jniLibs but include library module jniLibs
+# This ensures the native libraries are published via JitPack
+demo/src/main/jniLibs/
+!actr-kotlin/src/main/jniLibs/
+
+# Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+atlassian-ide-plugin.xml
+com_crashlytics_export_strings.xml
+crashlytics.properties
+crashlytics-build.properties
+fabric.properties
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Rust (if any)
+target/
+Cargo.lock
+.cargo/
+
+# Node.js (if any)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local configuration
+local.properties
+config.properties
+
+# Test reports
+*/build/reports/
+*/build/test-results/
+*/build/outputs/androidTest-results/
+*/build/outputs/lint-results/
+
+# Protobuf generated files (if not committed)
+# src/generated/  # Uncomment if you want to ignore generated files
+
+# IntelliJ IDEA
+out/
+.idea/
+*.iws
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Coverage reports
+*/build/reports/coverage/
+
+# Lint
+*/build/reports/lint-results-debug.html
+*/build/intermediates/lint/
+
+# Signing
+signing.properties
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services
+google-services.json
+
+# Fabric
+fabric.properties
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Version control
+.svn/
+.git/
+.hg/
+
+# Miscellaneous
+*.log
+logs/
+tmp/
+temp/

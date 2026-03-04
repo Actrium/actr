@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package data_stream_peer;
+
+message PrepareServerStreamRequest {
+  string stream_id = 1;
+  uint32 expected_count = 2;
+}
+
+message PrepareStreamResponse {
+  bool ready = 1;
+  string message = 2;
+}
+
+// Server service - client calls this to prepare the server for receiving data stream
+service StreamServer {
+  rpc PrepareStream(PrepareServerStreamRequest) returns (PrepareStreamResponse);
+}

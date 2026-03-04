@@ -58,12 +58,25 @@ members = [
     "tools/protoc-gen/rust",
     # === CLI ===
     "cli",
+    # === Language Bindings (Rust FFI) ===
+    "bindings/rust",
 ]
 
-# === Examples (示例) ===
-# Examples 已独立在 workspace 之外，模拟外部用户使用场景
-# Examples are now independent from the workspace to simulate external usage
-exclude = ["examples/*"]
+# === Excluded from Cargo workspace ===
+# - examples: independent workspaces simulating external users
+# - bindings/{python,typescript,swift,kotlin}: non-Rust build systems
+# - tools/protoc-gen/{typescript,python,swift,kotlin}: non-Rust plugins
+exclude = [
+    "examples/*",
+    "bindings/python",
+    "bindings/typescript",
+    "bindings/swift",
+    "bindings/kotlin",
+    "tools/protoc-gen/typescript",
+    "tools/protoc-gen/python",
+    "tools/protoc-gen/swift",
+    "tools/protoc-gen/kotlin",
+]
 
 [workspace.package]
 version = "0.1.4"

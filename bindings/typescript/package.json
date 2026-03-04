@@ -1,0 +1,65 @@
+{
+  "name": "@actor-rtc/actr",
+  "version": "0.1.14",
+  "description": "TypeScript/Node.js bindings for the ACTR (Actor-RTC) framework",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "napi": {
+    "binaryName": "actr",
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-gnu",
+      "aarch64-unknown-linux-musl",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release && npm run compile:ts",
+    "build:debug": "napi build --platform",
+    "codegen": "node scripts/codegen.js",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "vitest",
+    "version": "napi version",
+    "compile:ts": "tsc",
+    "strip-version-check": "node scripts/strip-napi-version-check.js"
+  },
+  "devDependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@napi-rs/cli": "^3.5.1",
+    "@types/node": "^20",
+    "protobufjs": "^8.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">= 16"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/actor-rtc/actr-ts.git"
+  },
+  "keywords": [
+    "actor",
+    "webrtc",
+    "distributed-systems",
+    "napi-rs",
+    "rust",
+    "typescript"
+  ],
+  "author": "Actor-RTC Contributors",
+  "license": "Apache-2.0",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node",
+    "dist/**/*"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
