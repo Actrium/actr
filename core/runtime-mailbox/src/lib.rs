@@ -26,6 +26,7 @@
 //!         r#type: ActrType {
 //!             manufacturer: "example".to_string(),
 //!             name: "TestActor".to_string(),
+//!             version: None,
 //!         },
 //!     };
 //!     let mut from_bytes = Vec::new();
