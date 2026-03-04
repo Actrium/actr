@@ -1,0 +1,7 @@
+target/
+*.log
+Cargo.lock
+
+# Generated code
+actr-a/src/generated/
+actr-b/src/generated/

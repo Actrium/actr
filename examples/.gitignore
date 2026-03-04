@@ -1,0 +1,37 @@
+# Build artifacts
+**/target/
+
+# Logs
+**/logs/
+*.log
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Generated protobuf outputs
+**/*_pb.rs
+*.pb.go
+
+# Generated code directories
+**/generated/
+
+# Actrix integration files
+# actrix-*.toml
+ACTRIX*.md
+
+# Misc runtime files
+.status
+.demo_logs/
+database/
+
+# Actr.toml files (use Actr.example.toml as template)
+**/Actr.toml
+
+# Actrix config file (use actrix-config.example.toml as template)
+actrix-config.toml

@@ -1,0 +1,48 @@
+edition = 1
+exports = ["../proto/echo.proto"]
+
+[package]
+name = "echo-real-server"
+description = "Echo Real Server"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "EchoService"
+
+
+[dependencies]
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 1001
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "echo-real-server"
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+# ACL configuration - allow echo client
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+# Allow clients with actr_type = "acme+echo-client-app"
+types = ["acme+echo-client-app"]
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

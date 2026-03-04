@@ -1,0 +1,35 @@
+edition = 1
+exports = ["../proto/media_relay.proto"]
+
+[package]
+name = "actr-b-receiver"
+description = "Media Relay Receiver - receives media frames via RPC"
+authors = ["Actr Dev Team"]
+
+[package.actr_type]
+manufacturer = "actr-example"
+name = "RelayService"
+
+[dependencies]
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 1001
+
+[system.discovery]
+visible = true
+
+# ACL configuration - allow actr-a relay client to communicate with us
+# This is BIDIRECTIONAL: we allow RelayClient to relay TO us
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+# Allow RelayClient to send signaling/data to us (RelayService)
+types = ["actr-example+RelayClient"]
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

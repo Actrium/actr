@@ -1,0 +1,22 @@
+[package]
+name = "echo-real-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+
+[dependencies]
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-runtime = { workspace = true, features = ["opentelemetry"] }
+actr-config = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"

@@ -1,0 +1,9 @@
+# Build artifacts
+target/
+Cargo.lock
+
+# Log files
+*.log
+
+# Generated code
+src/generated/

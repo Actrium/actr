@@ -1,0 +1,61 @@
+[workspace]
+members = [
+    "data-stream/receiver",
+    "data-stream/sender",
+    "media-relay/common",
+    "media-relay/actr-a",
+    "media-relay/actr-b",
+    "shell-actr-echo/server",
+    "shell-actr-echo/client",
+    # "mutil-actr/server",
+    # "mutil-actr/client",
+    # "acl/allowed-client",
+    # "acl/blocked-client",
+    # "acl/server",
+    # "realm-setup",
+    # "data-stream-peer-concurrent/server",
+    # "data-stream-peer-concurrent/client",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+# Actr Framework Dependencies (used by all members)
+actr-framework = { version = "0.1.5" }
+actr-protocol = { version = "0.1.6" }
+actr-runtime = { version = "0.1.7" }
+actr-config = { version = "0.1.7" }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Protobuf
+prost = "0.14"
+prost-types = "0.14"
+bytes = "1.11"
+
+# Async utilities
+async-trait = "0.1"
+
+# URL parsing
+url = "2.0"
+
+[patch.crates-io]
+# actr-framework = { path = "../actr/crates/framework" }
+# actr-protocol = { path = "../actr/crates/protocol" }
+# actr-runtime = { path = "../actr/crates/runtime" }
+# actr-config = { path = "../actr/crates/config" }
+actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-runtime = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-config = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
