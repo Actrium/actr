@@ -1,0 +1,21 @@
+# Source files
+src/
+typescript/
+examples/
+__test__/
+
+# Development files
+.github/
+*.toml
+tsconfig.json
+build.rs
+Cargo.toml
+Cargo.lock
+
+# Documentation
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/

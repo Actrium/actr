@@ -1,6 +1,6 @@
 
 # Build outputs
-/target/
+target/
 **/*.rs.bk
 
 # Logs
@@ -38,4 +38,14 @@ ACTRIX*.md
 
 # Demo logs
 .demo_logs/
-docs/
+
+# Cloned source repos (used during migration, not part of monorepo)
+actr-kotlin/
+actr-python/
+actr-swift/
+actr-ts/
+libactr/
+framework-codegen-kotlin/
+framework-codegen-python/
+framework-codegen-swift/
+framework-codegen-typescript/

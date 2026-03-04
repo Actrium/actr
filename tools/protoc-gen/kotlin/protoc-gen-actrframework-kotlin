@@ -1,0 +1,19 @@
+#!/bin/bash
+# protoc-gen-actrframework-kotlin
+# 
+# Wrapper script to run the Kotlin ACTR framework protoc plugin
+#
+# This script is meant to be used as a protoc plugin:
+#   protoc --plugin=protoc-gen-actrframework-kotlin=/path/to/this/script \
+#          --actrframework-kotlin_out=OUT_DIR input.proto
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR_PATH="$SCRIPT_DIR/build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar"
+
+if [ ! -f "$JAR_PATH" ]; then
+    echo "Error: JAR not found at $JAR_PATH" >&2
+    echo "Please run './gradlew protocPluginJar' first" >&2
+    exit 1
+fi
+
+exec java -jar "$JAR_PATH" "$@"

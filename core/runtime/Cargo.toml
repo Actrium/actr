@@ -1,0 +1,88 @@
+[package]
+name = "actr-runtime"
+version = "0.1.8"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runtime layer for Actor-RTC framework - actor system, scheduler, and orchestration"
+repository = "https://github.com/actor-rtc/actr"
+keywords = ["actor", "runtime", "scheduler", "system", "orchestration"]
+categories = ["concurrency", "asynchronous", "development-tools"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Foundation Layer (基础层) ===
+actr-protocol.workspace = true
+actr-framework.workspace = true
+actr-version.workspace = true
+actr-config.workspace = true
+
+# === Runtime 子 crate ===
+actr-runtime-mailbox.workspace = true
+
+# === 异步运行时 ===
+tokio.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { workspace = true }
+
+# === 调度和并发 ===
+tokio-util = "0.7"
+dashmap = "5.5"
+crossbeam = "0.8"
+either = "1.15"
+
+# === 工具库 ===
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+num_cpus = "1.17"
+webrtc = "0.14"
+url = "2.5"
+prost-types = "0.14"
+rand = "0.8"
+dotenvy = "0.15"
+pwrzv.workspace = true
+
+# === 序列化 ===
+serde.workspace = true
+serde_json.workspace = true
+bytes = "1.10"
+toml = "0.8"
+
+# === TURN authentication ===
+hex = "0.4"
+sha2 = "0.10"
+
+# === 日志记录 ===
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64 = "0.22.1"
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+
+[features]
+default = []
+opentelemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "actr-config/opentelemetry",
+]
+# Enable test utilities for integration tests (e.g., force ICE restart on all connections)
+test-utils = []
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.23"
+prost = "0.14"
+actr-runtime = { path = ".", features = ["test-utils"] }
+webrtc-ice = "0.14"
+webrtc-util = "0.12"

@@ -1,0 +1,24 @@
+name: CI (Swift)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'bindings/swift/**'
+      - 'tools/protoc-gen/swift/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bindings/swift/**'
+      - 'tools/protoc-gen/swift/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Swift Binding Test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build Swift package
+        working-directory: bindings/swift
+        run: swift build

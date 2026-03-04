@@ -1,0 +1,30 @@
+name: CI (Python)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'bindings/python/**'
+      - 'bindings/ffi/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bindings/python/**'
+      - 'bindings/ffi/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python Binding Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install maturin
+        run: pip install maturin
+      - name: Build Python binding
+        working-directory: bindings/python
+        run: maturin build

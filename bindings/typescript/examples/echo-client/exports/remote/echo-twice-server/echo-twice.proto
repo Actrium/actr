@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package echo_twice;
+
+// EchoTwice request message.
+message EchoTwiceRequest {
+  string message = 1;
+}
+
+// EchoTwice response message.
+message EchoTwiceResponse {
+  string reply = 1;
+  uint64 timestamp = 2;
+}
+
+// EchoTwice service definition.
+service EchoTwiceService {
+  rpc EchoTwice(EchoTwiceRequest) returns (EchoTwiceResponse);
+}

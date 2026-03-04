@@ -1,0 +1,69 @@
+# Gradle
+.gradle/
+build/
+gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.properties
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# Kotlin
+*.class
+
+# Maven/Gradle local repository
+.gradle/caches/
+.gradle/wrapper/dists/
+
+# Build outputs
+out/
+target/
+bin/
+
+# IDE specific
+*.launch
+.metadata/
+
+# Protobuf generated files (if any)
+*.pb.kt
+*.pb.java
+
+# Test reports
+test-results/
+build/reports/
+
+# Coverage reports
+coverage/
+*.exec
+
+# Local configuration
+local.properties

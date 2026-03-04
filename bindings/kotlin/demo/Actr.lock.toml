@@ -1,0 +1,23 @@
+[metadata]
+version = 1
+generated_at = "2026-01-13T09:55:31.236337+00:00"
+
+[[dependency]]
+name = "echo-real-server"
+actr_type = "acme+EchoService"
+fingerprint = "service_semantic:0d0d204d724cafc1cb8fd5d6f68ca683d9f6546c6e70deab75781a2f4230a755"
+cached_at = "2026-01-13T09:55:31.236332+00:00"
+
+[[dependency.files]]
+path = "echo-real-server/echo.proto"
+fingerprint = ""
+
+[[dependency]]
+name = "data-stream-peer-concurrent-server"
+actr_type = "acme+DataStreamConcurrentServer"
+fingerprint = "service_semantic:fa2192cdb7b39bf280de5b2f579db5b9f5b5947dbe6697136c40434942a78fd9"
+cached_at = "2026-01-13T09:55:31.236336+00:00"
+
+[[dependency.files]]
+path = "data-stream-peer-concurrent-server/data_stream_peer.proto"
+fingerprint = ""

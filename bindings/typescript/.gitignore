@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+target/
+dist/
+
+# Build outputs
+*.node
+
+# Lock files
+Actr.lock.toml
+package-lock.json
+yarn.lock
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary
+examples/echo-client/.tmp/
+examples/**/generated/
+
+# Environment
+.env
+.env.local
+.cursor/
+
+# Serena
+.serena/
