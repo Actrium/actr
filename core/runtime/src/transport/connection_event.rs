@@ -193,6 +193,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "device".to_string(),
+                version: None,
             },
         }
     }

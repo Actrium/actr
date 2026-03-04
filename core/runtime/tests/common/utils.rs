@@ -18,6 +18,7 @@ pub fn make_actor_id(serial_number: u64) -> ActrId {
         r#type: ActrType {
             manufacturer: "acme".to_string(),
             name: "node".to_string(),
+            version: None,
         },
     }
 }

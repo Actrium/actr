@@ -1069,6 +1069,7 @@ impl<W: Workload> ActrNode<W> {
             realm: self.config.realm,
             service_spec,
             acl: self.config.acl.clone(),
+            service: None,
         };
 
         tracing::info!("📤 Registering actor with signaling server (protobuf)");

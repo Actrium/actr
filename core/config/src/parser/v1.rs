@@ -2,7 +2,7 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile,
+    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile, ServiceRef,
     WebRtcAdvancedConfig, WebRtcConfig,
 };
 
@@ -106,7 +106,6 @@ impl ParserV1 {
     }
 
     fn parse_package(&self, raw: &RawPackageConfig) -> Result<PackageInfo> {
-        // Validate manufacturer name
         Name::new(raw.actr_type.manufacturer.clone()).map_err(|e| {
             ConfigError::InvalidActrType(format!(
                 "Invalid manufacturer name '{}': {}",
@@ -114,7 +113,6 @@ impl ParserV1 {
             ))
         })?;
 
-        // Validate actor type name
         Name::new(raw.actr_type.name.clone()).map_err(|e| {
             ConfigError::InvalidActrType(format!(
                 "Invalid actor type name '{}': {}",
@@ -122,9 +120,16 @@ impl ParserV1 {
             ))
         })?;
 
+        let version = if raw.actr_type.version.is_empty() {
+            None
+        } else {
+            Some(raw.actr_type.version.clone())
+        };
+
         let actr_type = ActrType {
             manufacturer: raw.actr_type.manufacturer.clone(),
             name: raw.actr_type.name.clone(),
+            version,
         };
 
         Ok(PackageInfo {
@@ -158,82 +163,84 @@ impl ParserV1 {
     ) -> Result<Vec<Dependency>> {
         deps.iter()
             .map(|(alias, raw_dep)| {
-                let (realm_id, actr_type_str, fingerprint, name) = match raw_dep {
-                    RawDependency::Empty {} => {
-                        // name is same as alias
-                        (None, None, None, alias)
-                    }
-                    RawDependency::WithFingerprint {
-                        name,
+                match raw_dep {
+                    RawDependency::Empty {} => Ok(Dependency {
+                        alias: alias.clone(),
+                        realm: self_realm.clone(),
+                        actr_type: None,
+                        service: None,
+                    }),
+                    RawDependency::Specified {
+                        actr_type: actr_type_str,
+                        service,
                         realm,
-                        actr_type,
-                        fingerprint,
                     } => {
-                        let dep_name = name.as_ref().unwrap_or(alias);
-                        (
-                            realm.to_owned(),
-                            actr_type.as_ref(),
-                            Some(fingerprint),
-                            dep_name,
-                        )
+                        let actr_type = self.parse_actr_type(actr_type_str)?;
+                        let service_ref = service
+                            .as_deref()
+                            .map(|s| self.parse_service_ref(s))
+                            .transpose()?;
+                        let realm = Realm {
+                            realm_id: realm.unwrap_or(self_realm.realm_id),
+                        };
+                        Ok(Dependency {
+                            alias: alias.clone(),
+                            realm,
+                            actr_type: Some(actr_type),
+                            service: service_ref,
+                        })
                     }
-                };
-
-                let actr_type = actr_type_str.map(|s| self.parse_actr_type(s)).transpose()?;
-                // 确定 realm
-                let realm = Realm {
-                    realm_id: realm_id.unwrap_or(self_realm.realm_id),
-                };
-
-                Ok(Dependency {
-                    alias: alias.clone(),
-                    name: name.to_string(),
-                    realm,
-                    actr_type,
-                    fingerprint: fingerprint.map(|s| s.to_string()),
-                })
+                }
             })
             .collect()
     }
 
+    /// Parse `"ServiceName:fingerprint"` into a `ServiceRef`.
+    fn parse_service_ref(&self, s: &str) -> Result<ServiceRef> {
+        let (name, fingerprint) = s.split_once(':').ok_or_else(|| {
+            ConfigError::InvalidActrType(format!(
+                "Invalid service reference '{}': expected 'ServiceName:fingerprint'",
+                s
+            ))
+        })?;
+        Ok(ServiceRef {
+            name: name.to_string(),
+            fingerprint: fingerprint.to_string(),
+        })
+    }
+
+    /// Parse an ActrType string: `"manufacturer:name"` or `"manufacturer:name:version"`.
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
-        // 支持两种格式：
-        // 1. "service-name" -> manufacturer = "", name = "service-name"
-        // 2. "manufacturer+service-name"
-        if let Some((manufacturer, name)) = s.split_once('+') {
-            // Validate manufacturer name (allow empty string for backward compatibility)
-            if !manufacturer.is_empty() {
-                Name::new(manufacturer.to_string()).map_err(|e| {
-                    ConfigError::InvalidActrType(format!(
-                        "Invalid manufacturer name '{}' in '{}': {}",
-                        manufacturer, s, e
-                    ))
-                })?;
+        let parts: Vec<&str> = s.splitn(4, ':').collect();
+        let (manufacturer, name, version) = match parts.as_slice() {
+            [m, n] => (*m, *n, None),
+            [m, n, v] => (*m, *n, Some(*v)),
+            _ => {
+                return Err(ConfigError::InvalidActrType(format!(
+                    "Invalid actor type '{}': expected 'manufacturer:name' or 'manufacturer:name:version'",
+                    s
+                )));
             }
+        };
 
-            // Validate actor type name
-            Name::new(name.to_string()).map_err(|e| {
-                ConfigError::InvalidActrType(format!(
-                    "Invalid actor type name '{}' in '{}': {}",
-                    name, s, e
-                ))
-            })?;
+        Name::new(manufacturer.to_string()).map_err(|e| {
+            ConfigError::InvalidActrType(format!(
+                "Invalid manufacturer '{}' in '{}': {}",
+                manufacturer, s, e
+            ))
+        })?;
+        Name::new(name.to_string()).map_err(|e| {
+            ConfigError::InvalidActrType(format!(
+                "Invalid type name '{}' in '{}': {}",
+                name, s, e
+            ))
+        })?;
 
-            Ok(ActrType {
-                manufacturer: manufacturer.to_string(),
-                name: name.to_string(),
-            })
-        } else {
-            // Validate actor type name (when used without manufacturer)
-            Name::new(s.to_string()).map_err(|e| {
-                ConfigError::InvalidActrType(format!("Invalid actor type name '{}': {}", s, e))
-            })?;
-
-            Ok(ActrType {
-                manufacturer: String::new(),
-                name: s.to_string(),
-            })
-        }
+        Ok(ActrType {
+            manufacturer: manufacturer.to_string(),
+            name: name.to_string(),
+            version: version.map(|v| v.to_string()),
+        })
     }
 
     fn parse_acl(&self, value: toml::Value) -> Result<Acl> {
@@ -272,9 +279,9 @@ impl ParserV1 {
                 }
             };
 
-            // Parse principals - support both old 'principals' and new 'types' format
+            // Parse principals - support both 'principals' and 'types' format
             let principals = if let Some(types_value) = rule_table.get("types") {
-                // New format: types = ["acme+allowed-client", "acme+admin"]
+                // types = ["acme:allowed-client:1.0.0", "acme:admin:2.0.0"]
                 let types_array = types_value.as_array().ok_or_else(|| {
                     ConfigError::InvalidAcl(format!("ACL rule {} 'types' must be an array", idx))
                 })?;
@@ -288,7 +295,7 @@ impl ParserV1 {
                         ))
                     })?;
 
-                    // Parse "manufacturer+name" format
+                    // Parse "manufacturer:name:version" format
                     let actr_type = self.parse_actr_type(type_str)?;
 
                     principals_list.push(Principal {
@@ -368,7 +375,7 @@ impl ParserV1 {
                                 ))
                             })?;
 
-                            Some(ActrType { manufacturer, name })
+                            Some(ActrType { manufacturer, name, version: None })
                         } else {
                             return Err(ConfigError::InvalidAcl(format!(
                                 "ACL rule {} principal {} actr_type must be a string or table",
@@ -689,9 +696,10 @@ name = "test"
 [package.actr_type]
 manufacturer = "acme"
 name = "test"
+version = "1.0.0"
 
 [dependencies]
-shared = { name = "logging-service-pkg", actr_type = "logging-service", realm = 9999, fingerprint = "service_semantic:abc123..." }
+shared = { type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 
 [system.signaling]
 url = "ws://localhost:8081"
@@ -710,9 +718,16 @@ realm_id = 1001
 
         let dep = config.get_dependency("shared").unwrap();
         assert_eq!(dep.alias, "shared");
-        assert_eq!(dep.name, "logging-service-pkg");
         assert_eq!(dep.realm.realm_id, 9999);
         assert_eq!(dep.actr_type.as_ref().unwrap().name, "logging-service");
+        assert_eq!(
+            dep.service.as_ref().unwrap().name,
+            "LoggingService"
+        );
+        assert_eq!(
+            dep.service.as_ref().unwrap().fingerprint,
+            "abc123"
+        );
         assert!(dep.is_cross_realm(&config.realm));
     }
 

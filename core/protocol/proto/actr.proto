@@ -7,7 +7,7 @@ import "google/protobuf/timestamp.proto";
 // ===========================================================================
 // Basic Components
 //   Realm (Security Realm)
-//   ActrType (manufacturer + name)
+//   ActrType (manufacturer + name + version)
 //   ActrId (Realm + serial number + type)
 //   ServiceSpec (fingerprint + proto bundle + tags)
 //   ActrNode (ActrId + ServiceSpec)
@@ -19,6 +19,9 @@ message Realm {
 message ActrType {
   required string manufacturer = 1;
   required string name = 2;
+  // Semantic version (e.g., "1.0.0"). Optional for backward compatibility;
+  // logically required for new registrations.
+  optional string version = 3;
 }
 
 message ActrId {
@@ -135,6 +138,9 @@ message RegisterRequest {
   // API / contract metadata
   optional ServiceSpec service_spec = 3;
   optional Acl acl = 4;
+  // Compact service reference: "ServiceName:fingerprint".
+  // Present when strict proto fingerprint matching is required.
+  optional string service = 5;
 }
 
 message RegisterResponse {

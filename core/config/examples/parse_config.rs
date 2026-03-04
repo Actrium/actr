@@ -42,13 +42,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  (none)");
     } else {
         for dep in &config.dependencies {
-            let fingerprint = dep.fingerprint.as_deref().unwrap_or("*");
+            let service_str = if let Some(ref s) = dep.service {
+                format!("{}:{}", s.name, s.fingerprint)
+            } else {
+                "*".to_string()
+            };
             let type_str = if let Some(ref t) = dep.actr_type {
                 t.to_string_repr()
             } else {
                 "*".to_string()
             };
-            println!("  {} ({}) @ {}", dep.alias, type_str, fingerprint);
+            println!("  {} ({}) service={}", dep.alias, type_str, service_str);
         }
     }
 

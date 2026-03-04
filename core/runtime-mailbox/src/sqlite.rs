@@ -238,6 +238,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "TestActor".to_string(),
+                version: None,
             },
         };
         let mut buf = Vec::new();

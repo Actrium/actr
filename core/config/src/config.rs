@@ -88,19 +88,27 @@ pub struct Dependency {
     /// 依赖别名（dependencies 中的 key）
     pub alias: String,
 
-    /// True name of the dependency, provided by the name field in [dependencies].
-    /// If not provided, use alias as name.
-    /// Same as the name field in LockFile.dependency.name.
-    pub name: String,
-
     /// 所属 Realm
     pub realm: Realm,
 
-    /// Actor 类型
+    /// Actor 类型（manufacturer:name:version）
     pub actr_type: Option<ActrType>,
 
-    /// 服务指纹
-    pub fingerprint: Option<String>,
+    /// Strict service reference for exact fingerprint matching.
+    /// Parsed from `service = "ServiceName:fingerprint"`.
+    pub service: Option<ServiceRef>,
+}
+
+/// Strict service reference: proto service name + semantic fingerprint.
+///
+/// When present on a dependency, the runtime only connects to service
+/// instances whose registered fingerprint exactly matches.
+#[derive(Debug, Clone)]
+pub struct ServiceRef {
+    /// Proto service name (e.g., "EchoService")
+    pub name: String,
+    /// Proto semantic fingerprint (e.g., "abc1f3d")
+    pub fingerprint: String,
 }
 
 /// ICE 传输策略
@@ -332,12 +340,20 @@ impl Dependency {
         self.realm.realm_id != self_realm.realm_id
     }
 
+    /// 检查是否要求严格指纹匹配（即 `service` 字段存在）
+    pub fn requires_exact_fingerprint(&self) -> bool {
+        self.service.is_some()
+    }
+
     /// 检查指纹是否匹配
+    ///
+    /// - 无 `service` 字段：总是匹配（松散依赖）
+    /// - 有 `service` 字段：必须精确匹配
     pub fn matches_fingerprint(&self, fingerprint: &str) -> bool {
-        self.fingerprint
+        self.service
             .as_ref()
-            .map(|fp| fp == fingerprint)
-            .unwrap_or(true) // 无指纹要求则总是匹配
+            .map(|s| s.fingerprint == fingerprint)
+            .unwrap_or(true)
     }
 }
 
@@ -369,6 +385,7 @@ mod tests {
                 actr_type: ActrType {
                     manufacturer: "acme".to_string(),
                     name: "test-service".to_string(),
+                    version: Some("1.0.0".to_string()),
                 },
                 description: None,
                 authors: vec![],
@@ -378,23 +395,26 @@ mod tests {
             dependencies: vec![
                 Dependency {
                     alias: "user-service".to_string(),
-                    name: "user-service".to_string(),
                     realm: Realm { realm_id: 1001 },
                     actr_type: Some(ActrType {
                         manufacturer: "acme".to_string(),
                         name: "user-service".to_string(),
+                        version: Some("2.1.0".to_string()),
                     }),
-                    fingerprint: Some("service_semantic:abc123...".to_string()),
+                    service: Some(ServiceRef {
+                        name: "UserService".to_string(),
+                        fingerprint: "abc123".to_string(),
+                    }),
                 },
                 Dependency {
                     alias: "shared-logger".to_string(),
-                    name: "shared-logger".to_string(),
                     realm: Realm { realm_id: 9999 },
                     actr_type: Some(ActrType {
                         manufacturer: "common".to_string(),
                         name: "logging-service".to_string(),
+                        version: None,
                     }),
-                    fingerprint: None,
+                    service: None,
                 },
             ],
             signaling_url: Url::parse("ws://localhost:8081").unwrap(),
@@ -423,9 +443,14 @@ mod tests {
         assert_eq!(cross_realm.len(), 1);
         assert_eq!(cross_realm[0].alias, "shared-logger");
 
-        // 测试指纹匹配
+        // 测试指纹匹配（有 service 字段 = 严格匹配）
         let user_dep = config.get_dependency("user-service").unwrap();
-        assert!(user_dep.matches_fingerprint("service_semantic:abc123..."));
-        assert!(!user_dep.matches_fingerprint("service_semantic:different"));
+        assert!(user_dep.matches_fingerprint("abc123"));
+        assert!(!user_dep.matches_fingerprint("different"));
+
+        // 无 service 字段 = 松散依赖，任何指纹都匹配
+        let logger_dep = config.get_dependency("shared-logger").unwrap();
+        assert!(logger_dep.matches_fingerprint("any-fingerprint"));
+        assert!(!logger_dep.requires_exact_fingerprint());
     }
 }
