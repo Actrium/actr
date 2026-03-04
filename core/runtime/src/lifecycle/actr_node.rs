@@ -6,7 +6,7 @@ use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
 use actr_framework::{Bytes, Workload};
-use actr_mailbox::{DeadLetterQueue, Mailbox};
+use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrId, ActrType, CandidateCompatibilityInfo, PayloadType,
@@ -1910,7 +1910,7 @@ impl<W: Workload> ActrNode<W> {
                                                 );
 
                                                 // Write to Dead Letter Queue
-                                                use actr_mailbox::DlqRecord;
+                                                use actr_runtime_mailbox::DlqRecord;
                                                 use chrono::Utc;
                                                 use uuid::Uuid;
 
@@ -1934,8 +1934,8 @@ impl<W: Workload> ActrNode<W> {
                                                     context: Some(format!(
                                                         r#"{{"source":"mailbox","priority":"{}"}}"#,
                                                         match msg_record.priority {
-                                                            actr_mailbox::MessagePriority::High => "high",
-                                                            actr_mailbox::MessagePriority::Normal => "normal",
+                                                            actr_runtime_mailbox::MessagePriority::High => "high",
+                                                            actr_runtime_mailbox::MessagePriority::Normal => "normal",
                                                         }
                                                     )),
                                                 };

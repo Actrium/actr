@@ -20,7 +20,7 @@ actr-version.workspace = true
 actr-config.workspace = true
 
 # === Runtime 子 crate ===
-actr-mailbox.workspace = true
+actr-runtime-mailbox.workspace = true
 
 # === 异步运行时 ===
 tokio.workspace = true

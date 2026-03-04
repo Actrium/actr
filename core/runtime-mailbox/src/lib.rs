@@ -10,7 +10,7 @@
 //! ## 快速开始
 //!
 //! ```rust,no_run
-//! use actr_mailbox::prelude::*;
+//! use actr_runtime_mailbox::prelude::*;
 //! use actr_protocol::{ActrId, Realm, ActrType};
 //! use actr_protocol::prost::Message as ProstMessage;
 //!

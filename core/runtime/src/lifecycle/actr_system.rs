@@ -12,7 +12,7 @@ use crate::context_factory::ContextFactory;
 use crate::wire::webrtc::{
     ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
 };
-use actr_mailbox::{DeadLetterQueue, Mailbox};
+use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 
 /// ActrSystem - Runtime infrastructure (generic-free)
 ///
@@ -66,7 +66,7 @@ impl ActrSystem {
         tracing::info!("📂 Mailbox database path: {}", mailbox_path);
 
         let mailbox: Arc<dyn Mailbox> = Arc::new(
-            actr_mailbox::SqliteMailbox::new(&mailbox_path)
+            actr_runtime_mailbox::SqliteMailbox::new(&mailbox_path)
                 .await
                 .map_err(|e| {
                     actr_protocol::ProtocolError::TransportError(format!(
@@ -84,7 +84,7 @@ impl ActrSystem {
         };
 
         let dlq: Arc<dyn DeadLetterQueue> = Arc::new(
-            actr_mailbox::SqliteDeadLetterQueue::new_standalone(&dlq_path)
+            actr_runtime_mailbox::SqliteDeadLetterQueue::new_standalone(&dlq_path)
                 .await
                 .map_err(|e| {
                     actr_protocol::ProtocolError::TransportError(format!("DLQ init failed: {e}"))

@@ -120,7 +120,7 @@
 //! All incoming messages go through the Mailbox (State Path):
 //!
 //! ```rust,ignore
-//! use actr_mailbox::{Mailbox, MessagePriority};
+//! use actr_runtime_mailbox::{Mailbox, MessagePriority};
 //!
 //! // Enqueue message (persisted to SQLite)
 //! let msg_id = mailbox.enqueue(from, payload, MessagePriority::Normal).await?;
@@ -233,7 +233,7 @@ pub use wire::{
 };
 
 // Mailbox
-pub use actr_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
+pub use actr_runtime_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
 
 // System interfaces
 pub use context_factory::ContextFactory;
@@ -284,7 +284,7 @@ pub mod prelude {
     };
 
     // Mailbox subsystem
-    pub use actr_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
+    pub use actr_runtime_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
 
     // Transport layer (transport management)
     pub use crate::transport::{

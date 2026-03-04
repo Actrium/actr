@@ -76,7 +76,7 @@ pub struct MailboxStats {
 /// `dequeue` 方法会自动获取下一批消息。调用者无需关心批量大小，这个细节由实现内部处理。
 ///
 /// ```rust,no_run
-/// use actr_mailbox::prelude::*;
+/// use actr_runtime_mailbox::prelude::*;
 /// use std::time::Duration;
 ///
 /// async fn message_processor(mailbox: impl Mailbox) {
