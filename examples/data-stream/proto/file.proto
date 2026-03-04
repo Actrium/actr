@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package local_file;
+
+// StartTransfer - RPC to initiate file transfer
+message SendFileRequest {
+    string filename = 1;        // File name
+}
+
+message SendFileResponse {
+    bool success = 1;           // Transfer completed successfully
+}
+
+// FileTransfer service
+service LocalFileService {
+    rpc SendFile(SendFileRequest) returns (SendFileResponse);
+}

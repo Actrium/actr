@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package file_transfer;
+
+// StartTransfer - RPC to initiate file transfer
+message StartTransferRequest {
+    string stream_id = 1;      // Stream identifier
+    string filename = 2;        // File name
+    uint64 total_size = 3;      // Total file size in bytes
+    uint32 chunk_count = 4;     // Expected number of chunks
+}
+
+message StartTransferResponse {
+    bool ready = 1;             // Server is ready to receive
+    string message = 2;         // Optional message
+}
+
+// EndTransfer - RPC to finalize file transfer
+message EndTransferRequest {
+    string stream_id = 1;       // Stream identifier
+    bool success = 2;           // Transfer completed successfully
+}
+
+message EndTransferResponse {
+    bool acknowledged = 1;      // Server acknowledged completion
+    uint64 bytes_received = 2;  // Total bytes received
+    uint32 chunks_received = 3; // Total chunks received
+}
+
+// FileTransfer service
+service FileTransferService {
+    rpc StartTransfer(StartTransferRequest) returns (StartTransferResponse);
+    rpc EndTransfer(EndTransferRequest) returns (EndTransferResponse);
+}

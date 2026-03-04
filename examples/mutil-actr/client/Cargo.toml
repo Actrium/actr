@@ -1,0 +1,22 @@
+[package]
+name = "mutil_client"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mutil_client"
+path = "src/main.rs"
+
+[dependencies]
+actr-runtime = { path = "../../../actr/crates/runtime" }
+actr-framework = { path = "../../../actr/crates/framework" }
+actr-protocol = { path = "../../../actr/crates/protocol" }
+actr-config = { path = "../../../actr/crates/config" }
+
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prost = "0.14"
+bytes = "1.5"
+async-trait = "0.1"
