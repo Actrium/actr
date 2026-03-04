@@ -1,6 +1,6 @@
 
 # Build outputs
-/target/
+target/
 **/*.rs.bk
 
 # Logs
@@ -38,4 +38,3 @@ ACTRIX*.md
 
 # Demo logs
 .demo_logs/
-docs/
