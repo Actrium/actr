@@ -59,7 +59,7 @@ members = [
     # === CLI ===
     "cli",
     # === Language Bindings (Rust FFI) ===
-    "bindings/rust",
+    "bindings/ffi",
 ]
 
 # === Excluded from Cargo workspace ===

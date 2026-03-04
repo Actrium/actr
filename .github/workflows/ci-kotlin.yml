@@ -1,0 +1,29 @@
+name: CI (Kotlin)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'bindings/kotlin/**'
+      - 'tools/protoc-gen/kotlin/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'bindings/kotlin/**'
+      - 'tools/protoc-gen/kotlin/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Kotlin Binding Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Build Kotlin binding
+        working-directory: bindings/kotlin
+        run: ./gradlew build
