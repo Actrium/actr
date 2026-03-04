@@ -56,6 +56,8 @@ members = [
     "core/runtime-mailbox",
     # === Developer Tools (开发者工具) ===
     "tools/protoc-gen/rust",
+    # === CLI ===
+    "cli",
 ]
 
 # === Examples (示例) ===
