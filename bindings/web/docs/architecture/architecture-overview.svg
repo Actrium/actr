@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .sw-box { fill: #e3f2fd; stroke: #1976d2; stroke-width: 2; }
+      .dom-box { fill: #f3e5f5; stroke: #7b1fa2; stroke-width: 2; }
+      .remote-box { fill: #fff3e0; stroke: #f57c00; stroke-width: 2; }
+      .component { fill: white; stroke: #666; stroke-width: 1.5; }
+      .websocket-arrow { stroke: #2196f3; stroke-width: 2; fill: none; marker-end: url(#arrow-blue); }
+      .webrtc-arrow { stroke: #9c27b0; stroke-width: 2; fill: none; marker-end: url(#arrow-purple); }
+      .forward-arrow { stroke: #ff9800; stroke-width: 2; fill: none; marker-end: url(#arrow-orange); stroke-dasharray: 5,5; }
+      .title-text { font-family: Arial, sans-serif; font-size: 14px; font-weight: bold; }
+      .label-text { font-family: Arial, sans-serif; font-size: 12px; }
+      .small-text { font-family: Arial, sans-serif; font-size: 10px; fill: #666; }
+    </style>
+
+    <!-- Arrow markers -->
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2196f3" />
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9c27b0" />
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#ff9800" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="600" y="30" text-anchor="middle" class="title-text" font-size="18">Actor-RTC Web 消息流架构图</text>
+
+  <!-- Remote Node -->
+  <rect x="450" y="60" width="300" height="80" rx="5" class="remote-box"/>
+  <text x="600" y="85" text-anchor="middle" class="title-text">🌍 远程节点</text>
+  <text x="520" y="105" class="label-text">WebSocket</text>
+  <text x="600" y="105" class="label-text">WebRTC DC</text>
+  <text x="680" y="105" class="label-text">WebRTC Track</text>
+  <circle cx="520" cy="120" r="8" fill="#2196f3"/>
+  <circle cx="600" cy="120" r="8" fill="#9c27b0"/>
+  <circle cx="680" cy="120" r="8" fill="#9c27b0"/>
+
+  <!-- Service Worker Layer -->
+  <rect x="50" y="200" width="700" height="300" rx="5" class="sw-box"/>
+  <text x="400" y="225" text-anchor="middle" class="title-text" font-size="16">Service Worker (SW) - 总控制器</text>
+
+  <!-- Inbound in SW -->
+  <rect x="70" y="250" width="200" height="230" rx="3" class="component"/>
+  <text x="170" y="270" text-anchor="middle" class="title-text">📥 INBOUND 入口</text>
+
+  <rect x="90" y="285" width="160" height="30" rx="3" fill="#e8f5e9" stroke="#4caf50"/>
+  <text x="170" y="305" text-anchor="middle" class="label-text">InboundDispatcher</text>
+
+  <rect x="90" y="325" width="160" height="30" rx="3" fill="#fff9c4" stroke="#fbc02d"/>
+  <text x="170" y="345" text-anchor="middle" class="label-text">Mailbox (IndexedDB)</text>
+
+  <rect x="90" y="365" width="160" height="30" rx="3" fill="#ffe0b2" stroke="#fb8c00"/>
+  <text x="170" y="385" text-anchor="middle" class="label-text">Scheduler</text>
+
+  <rect x="90" y="405" width="160" height="30" rx="3" fill="#ffccbc" stroke="#ff5722"/>
+  <text x="170" y="425" text-anchor="middle" class="label-text">Actor Logic</text>
+
+  <text x="170" y="455" text-anchor="middle" class="small-text">State Path</text>
+  <text x="170" y="468" text-anchor="middle" class="small-text">延迟 ~30-40ms</text>
+
+  <!-- Outbound in SW -->
+  <rect x="530" y="250" width="200" height="230" rx="3" class="component"/>
+  <text x="630" y="270" text-anchor="middle" class="title-text">📤 OUTBOUND 出口</text>
+
+  <rect x="550" y="285" width="160" height="30" rx="3" fill="#e8f5e9" stroke="#4caf50"/>
+  <text x="630" y="305" text-anchor="middle" class="label-text">OutGate</text>
+
+  <rect x="550" y="325" width="160" height="30" rx="3" fill="#fff9c4" stroke="#fbc02d"/>
+  <text x="630" y="345" text-anchor="middle" class="label-text">TransportManager</text>
+
+  <rect x="550" y="365" width="160" height="30" rx="3" fill="#ffe0b2" stroke="#fb8c00"/>
+  <text x="630" y="385" text-anchor="middle" class="label-text">WirePool</text>
+
+  <g>
+    <rect x="550" y="405" width="75" height="30" rx="3" fill="#bbdefb" stroke="#2196f3"/>
+    <text x="587" y="425" text-anchor="middle" class="label-text" font-size="11">WebSocket</text>
+  </g>
+
+  <g>
+    <rect x="635" y="405" width="75" height="30" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
+    <text x="672" y="425" text-anchor="middle" class="label-text" font-size="11">WebRTC</text>
+  </g>
+
+  <text x="630" y="455" text-anchor="middle" class="small-text">优先级: WebRTC &gt; WebSocket</text>
+
+  <!-- Middle connection -->
+  <rect x="300" y="350" width="200" height="60" rx="3" fill="#fff3e0" stroke="#ff9800" stroke-dasharray="5,5"/>
+  <text x="400" y="370" text-anchor="middle" class="title-text">Actor 业务逻辑</text>
+  <text x="400" y="390" text-anchor="middle" class="small-text">ctx.call() / ctx.tell()</text>
+
+  <!-- DOM Layer -->
+  <rect x="800" y="200" width="350" height="300" rx="5" class="dom-box"/>
+  <text x="975" y="225" text-anchor="middle" class="title-text" font-size="16">DOM/Window - WebRTC 专用</text>
+
+  <!-- DOM Inbound -->
+  <rect x="820" y="250" width="150" height="110" rx="3" class="component"/>
+  <text x="895" y="270" text-anchor="middle" class="title-text" font-size="13">📥 WebRTC 入口</text>
+
+  <rect x="830" y="285" width="130" height="25" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
+  <text x="895" y="302" text-anchor="middle" class="label-text" font-size="11">DataChannel</text>
+
+  <rect x="830" y="320" width="130" height="25" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
+  <text x="895" y="337" text-anchor="middle" class="label-text" font-size="11">MediaTrack</text>
+
+  <!-- DOM Fast Path -->
+  <rect x="820" y="375" width="150" height="105" rx="3" class="component"/>
+  <text x="895" y="395" text-anchor="middle" class="title-text" font-size="13">⚡ Fast Path</text>
+
+  <rect x="830" y="405" width="130" height="25" rx="3" fill="#c8e6c9" stroke="#4caf50"/>
+  <text x="895" y="422" text-anchor="middle" class="label-text" font-size="11">DomSystem</text>
+
+  <rect x="830" y="440" width="130" height="30" rx="3" fill="#fff9c4" stroke="#fbc02d"/>
+  <text x="895" y="455" text-anchor="middle" class="label-text" font-size="10">StreamRegistry</text>
+  <text x="895" y="467" text-anchor="middle" class="label-text" font-size="10">MediaRegistry</text>
+
+  <!-- DOM Outbound -->
+  <rect x="990" y="250" width="150" height="110" rx="3" class="component"/>
+  <text x="1065" y="270" text-anchor="middle" class="title-text" font-size="13">📤 WebRTC 出口</text>
+
+  <rect x="1000" y="285" width="130" height="25" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
+  <text x="1065" y="302" text-anchor="middle" class="label-text" font-size="11">MessagePort</text>
+
+  <rect x="1000" y="320" width="130" height="25" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
+  <text x="1065" y="337" text-anchor="middle" class="label-text" font-size="11">DC.send()</text>
+
+  <!-- WebRTC Coordinator -->
+  <rect x="990" y="375" width="150" height="60" rx="3" class="component"/>
+  <text x="1065" y="395" text-anchor="middle" class="title-text" font-size="13">WebRTC 管理</text>
+  <text x="1065" y="412" text-anchor="middle" class="label-text" font-size="11">PeerConnection</text>
+  <text x="1065" y="427" text-anchor="middle" class="label-text" font-size="11">Coordinator</text>
+
+  <!-- Arrows: Remote to SW (WebSocket) -->
+  <path d="M 520 128 L 520 160 L 170 160 L 170 250" class="websocket-arrow"/>
+  <text x="300" y="155" class="small-text" fill="#2196f3">WebSocket 入口</text>
+
+  <!-- Arrows: Remote to DOM (WebRTC DC) -->
+  <path d="M 600 128 L 600 170 L 895 170 L 895 250" class="webrtc-arrow"/>
+  <text x="730" y="165" class="small-text" fill="#9c27b0">WebRTC DC 入口</text>
+
+  <!-- Arrows: Remote to DOM (WebRTC Track) -->
+  <path d="M 680 128 L 680 180 L 920 180 L 920 250" class="webrtc-arrow"/>
+  <text x="800" y="175" class="small-text" fill="#9c27b0">Track 入口</text>
+
+  <!-- Arrows: DOM to SW (Forward RPC) -->
+  <path d="M 820 295 L 780 295 L 780 380 L 270 380" class="forward-arrow"/>
+  <text x="520" y="375" class="small-text" fill="#ff9800">转发 RPC 到 SW</text>
+
+  <!-- Arrows: DOM Fast Path (Stream local) -->
+  <path d="M 895 345 L 895 405" class="webrtc-arrow"/>
+  <text x="905" y="375" class="small-text" fill="#9c27b0">Stream 本地</text>
+
+  <!-- Arrows: Actor to Outbound -->
+  <path d="M 500 380 L 530 380" class="websocket-arrow"/>
+
+  <!-- Arrows: SW to Remote (WebSocket) -->
+  <path d="M 587 435 L 587 520 L 520 520 L 520 140" class="websocket-arrow"/>
+  <text x="490" y="330" class="small-text" fill="#2196f3">直接发送</text>
+
+  <!-- Arrows: SW to DOM (WebRTC forward) -->
+  <path d="M 710 420 L 780 420 L 780 295 L 990 295" class="forward-arrow"/>
+  <text x="840" y="415" class="small-text" fill="#ff9800">转发到 DOM</text>
+
+  <!-- Arrows: DOM to Remote (WebRTC) -->
+  <path d="M 1065 250 L 1065 150 L 600 150 L 600 128" class="webrtc-arrow"/>
+  <text x="880" y="145" class="small-text" fill="#9c27b0">WebRTC 发送</text>
+
+  <!-- Legend -->
+  <g transform="translate(50, 550)">
+    <text x="0" y="0" class="title-text">图例说明：</text>
+
+    <line x1="0" y1="15" x2="40" y2="15" class="websocket-arrow"/>
+    <text x="50" y="20" class="label-text">WebSocket 路径</text>
+
+    <line x1="0" y1="35" x2="40" y2="35" class="webrtc-arrow"/>
+    <text x="50" y="40" class="label-text">WebRTC 路径</text>
+
+    <line x1="0" y1="55" x2="40" y2="55" class="forward-arrow"/>
+    <text x="50" y="60" class="label-text">转发路径（SW ↔ DOM）</text>
+
+    <rect x="250" y="5" width="15" height="15" class="sw-box"/>
+    <text x="270" y="17" class="label-text">SW 层（总控）</text>
+
+    <rect x="250" y="25" width="15" height="15" class="dom-box"/>
+    <text x="270" y="37" class="label-text">DOM 层（WebRTC）</text>
+
+    <rect x="250" y="45" width="15" height="15" class="remote-box"/>
+    <text x="270" y="57" class="label-text">远程节点</text>
+  </g>
+
+  <!-- Key Points -->
+  <g transform="translate(50, 650)">
+    <text x="0" y="0" class="title-text" fill="#d32f2f">核心要点：</text>
+    <text x="0" y="20" class="label-text">1️⃣ 总控制在 SW：所有入口、出口、路由决策都在 Service Worker</text>
+    <text x="0" y="40" class="label-text">2️⃣ WebRTC 必转发 DOM：SW 无法直接访问 WebRTC API，通过 MessagePort 桥接</text>
+    <text x="0" y="60" class="label-text">3️⃣ 优先级自动切换：WebRTC (P2P) 优先级高于 WebSocket (C/S)</text>
+    <text x="0" y="80" class="label-text">4️⃣ Fast Path 在 DOM：Stream 和 Media 数据绕过 SW Mailbox，延迟 &lt; 3ms</text>
+  </g>
+
+  <!-- Performance notes -->
+  <g transform="translate(650, 650)">
+    <text x="0" y="0" class="title-text" fill="#1976d2">性能对比：</text>
+    <text x="0" y="20" class="small-text">• RPC via WebSocket: ~30-40ms (SW → SW)</text>
+    <text x="0" y="35" class="small-text">• RPC via WebRTC: ~35ms (DOM → SW → DOM)</text>
+    <text x="0" y="50" class="small-text">• Stream via WebSocket: ~4ms (SW → DOM)</text>
+    <text x="0" y="65" class="small-text">• Stream via WebRTC: ~1-2ms (DOM → DOM) ⚡</text>
+    <text x="0" y="80" class="small-text">• MediaTrack: &lt;1ms (DOM → DOM) 🚀</text>
+  </g>
+
+</svg>

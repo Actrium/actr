@@ -56,6 +56,7 @@ members = [
     "core/runtime-mailbox",
     # === Developer Tools (开发者工具) ===
     "tools/protoc-gen/rust",
+    "tools/protoc-gen/web",
     # === CLI ===
     "cli",
     # === Language Bindings (Rust FFI) ===
@@ -68,6 +69,7 @@ members = [
 # - tools/protoc-gen/{typescript,python,swift,kotlin}: non-Rust plugins
 exclude = [
     "examples/rust/*",
+    "bindings/web",
     "bindings/python",
     "bindings/typescript",
     "bindings/swift",

@@ -1,0 +1,57 @@
+{
+  "name": "actr-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Actor-RTC Web Platform - WebAssembly-based Actor framework for browsers",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:packages",
+    "build:wasm": "./scripts/build-wasm.sh",
+    "build:packages": "npm run build --workspaces --if-present",
+    "dev:wasm": "./scripts/build-wasm.sh --watch",
+    "dev:packages": "npm run dev --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "cd tests/e2e && npm test",
+    "clean": "npm run clean --workspaces --if-present && rm -rf target",
+    "gen-types": "./scripts/gen-types.sh",
+    "publish": "./scripts/publish.sh",
+    "format": "prettier --write \"packages/**/*.{ts,tsx,js,jsx,json}\"",
+    "format:check": "prettier --check \"packages/**/*.{ts,tsx,js,jsx,json}\"",
+    "lint": "eslint \"packages/**/*.{ts,tsx}\"",
+    "lint:fix": "eslint \"packages/**/*.{ts,tsx}\" --fix"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.55.0",
+    "prettier": "^3.1.0",
+    "ts-proto": "^2.11.1",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/actor-rtc/actr"
+  },
+  "keywords": [
+    "actor",
+    "webrtc",
+    "wasm",
+    "webassembly",
+    "realtime",
+    "p2p",
+    "distributed"
+  ],
+  "author": "kookyleo@gmail.com",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.11.0"
+  }
+}

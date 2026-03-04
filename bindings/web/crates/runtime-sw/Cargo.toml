@@ -1,0 +1,78 @@
+[package]
+name = "actr-runtime-sw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Actor-RTC Service Worker Runtime (WASM)"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"] # 生成 WASM + Rust 库
+
+[dependencies]
+# 共享代码
+actr-web-common = { path = "../common" }
+actr-protocol.workspace = true
+actr-framework.workspace = true
+
+# Mailbox
+actr-mailbox-web = { path = "../mailbox-web" }
+
+# WASM 绑定
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+serde-wasm-bindgen.workspace = true
+
+# Web APIs (Service Worker 环境)
+web-sys = { workspace = true, features = [
+    "console",
+    "MessageEvent",
+    "ExtendableMessageEvent",
+    "MessagePort",
+    "MessageChannel",
+    "WebSocket",
+    "BinaryType",
+    "CloseEvent",
+    "ErrorEvent",
+    "WorkerGlobalScope",
+    "ServiceWorkerGlobalScope",
+] }
+
+# IndexedDB (Mailbox 持久化)
+rexie.workspace = true
+gloo-timers.workspace = true
+
+# 异步运行时
+futures.workspace = true
+async-trait.workspace = true
+
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+
+# 工具
+log.workspace = true
+wasm-logger.workspace = true
+console_error_panic_hook.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
+
+# 数据结构
+bytes = "1.5"
+parking_lot.workspace = true
+dashmap.workspace = true
+
+
+# Tracing + OpenTelemetry (for span context propagation)
+tracing.workspace = true
+opentelemetry.workspace = true
+tracing-opentelemetry.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+uuid.workspace = true

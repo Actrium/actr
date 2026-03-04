@@ -1,0 +1,46 @@
+edition = 1
+exports = ["proto/echo.proto"]
+
+[package]
+name = "echo-server"
+description = "Echo Server - Browser-side Actor Service"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "server"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "EchoService"
+
+[dependencies]
+
+# Web 平台特定配置
+[platform.web]
+generate_types = true
+types_output = "./src/generated"
+worker_type = "service-worker"
+service_worker_path = "/actor.sw.js"
+generate_sw_entry = true
+
+[system.signaling]
+url = "wss://10.30.3.206:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 2368266035
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+
+[system.webrtc]
+stun_urls = ["stun:10.30.3.206:3478"]
+
+# ACL configuration - allow echo clients
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["acme+echo-client-app"]

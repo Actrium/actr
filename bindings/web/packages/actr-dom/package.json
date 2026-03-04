@@ -1,0 +1,26 @@
+{
+  "name": "@actr/dom",
+  "version": "0.1.0",
+  "description": "Actor-RTC DOM-side fixed forwarding layer (HAL)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "actor-rtc",
+    "webrtc",
+    "dom",
+    "forwarding-layer"
+  ],
+  "author": "Actor-RTC Team",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
