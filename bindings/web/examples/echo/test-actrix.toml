@@ -1,0 +1,27 @@
+enable = 6
+name = "actrix-dev"
+env = "dev"
+log_level = "info"
+log_output = "console"
+sqlite_path = "actrix-dev.db"
+location_tag = "local,dev,default"
+actrix_shared_key = "dev-key-32chars-please-change"
+
+[bind]
+[bind.http]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = 8081
+
+[bind.ice]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = 3478
+
+[turn]
+advertised_ip = "127.0.0.1"
+advertised_port = 3478
+relay_port_range = "49152-49252"
+realm = "localhost"

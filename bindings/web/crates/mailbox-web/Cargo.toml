@@ -1,0 +1,45 @@
+[package]
+name = "actr-mailbox-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "IndexedDB-based Mailbox implementation for Actor-RTC Web"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WASM 绑定
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+serde-wasm-bindgen.workspace = true
+
+# Web APIs
+web-sys = { workspace = true, features = ["console", "Window"] }
+
+# IndexedDB - using rexie for easier API
+rexie.workspace = true
+
+# 异步
+futures.workspace = true
+async-trait.workspace = true
+
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+
+# 工具
+log.workspace = true
+thiserror.workspace = true
+
+# UUID
+uuid.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

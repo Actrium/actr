@@ -1,0 +1,33 @@
+{
+    "compilerOptions": {
+        "target": "ES2022",
+        "useDefineForClassFields": true,
+        "module": "ESNext",
+        "lib": [
+            "ES2022",
+            "DOM",
+            "DOM.Iterable"
+        ],
+        "skipLibCheck": true,
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "noEmit": true,
+        "strict": true,
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
+        "noFallthroughCasesInSwitch": true,
+        "paths": {
+            "@actr/web": [
+                "../../../packages/web-sdk/src"
+            ],
+            "@actr/dom": [
+                "../../../packages/actr-dom/src"
+            ]
+        }
+    },
+    "include": [
+        "src"
+    ]
+}

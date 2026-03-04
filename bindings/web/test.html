@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Actor-RTC Web - Simple Test</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 2rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .status {
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+            font-weight: 500;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.info { background: #d1ecf1; color: #0c5460; }
+        .status.warning { background: #fff3cd; color: #856404; }
+        button {
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 0.5rem;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .test-results {
+            margin-top: 1rem;
+        }
+        .test-item {
+            padding: 0.5rem;
+            margin: 0.25rem 0;
+            border-left: 3px solid #ccc;
+            padding-left: 1rem;
+        }
+        .test-item.pass {
+            border-left-color: #28a745;
+            background: #f0fff4;
+        }
+        .test-item.fail {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+        pre {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        code {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🧪 Actor-RTC Web - 简单测试</h1>
+        <p>测试 WASM 加载和基础功能</p>
+    </div>
+
+    <div class="card">
+        <h2>测试状态</h2>
+        <div id="status" class="status info">准备就绪...</div>
+        <button id="runTests" onclick="runAllTests()">运行所有测试</button>
+        <button id="testWasm" onclick="testWasmLoad()">测试 WASM 加载</button>
+        <button id="testApis" onclick="testBrowserAPIs()">测试浏览器 API</button>
+    </div>
+
+    <div class="card">
+        <h2>测试结果</h2>
+        <div id="results" class="test-results"></div>
+    </div>
+
+    <div class="card">
+        <h2>WASM 信息</h2>
+        <pre id="wasmInfo">等待测试...</pre>
+    </div>
+
+    <script type="module">
+        const statusEl = document.getElementById('status');
+        const resultsEl = document.getElementById('results');
+        const wasmInfoEl = document.getElementById('wasmInfo');
+
+        // 测试结果收集
+        const testResults = [];
+
+        function addTestResult(name, passed, message = '') {
+            testResults.push({ name, passed, message });
+            updateResults();
+        }
+
+        function updateResults() {
+            resultsEl.innerHTML = testResults.map(test => `
+                <div class="test-item ${test.passed ? 'pass' : 'fail'}">
+                    ${test.passed ? '✅' : '❌'} ${test.name}
+                    ${test.message ? `<br><small>${test.message}</small>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function updateStatus(message, type = 'info') {
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        // 测试 1: 浏览器 API 支持
+        window.testBrowserAPIs = function() {
+            updateStatus('测试浏览器 API...', 'info');
+            testResults.length = 0;
+
+            const apis = {
+                'WebAssembly': typeof WebAssembly !== 'undefined',
+                'IndexedDB': typeof indexedDB !== 'undefined',
+                'WebRTC (RTCPeerConnection)': typeof RTCPeerConnection !== 'undefined',
+                'WebSocket': typeof WebSocket !== 'undefined',
+                'Service Worker': 'serviceWorker' in navigator,
+                'Crypto': typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function',
+            };
+
+            for (const [name, supported] of Object.entries(apis)) {
+                addTestResult(name, supported, supported ? '支持' : '不支持');
+            }
+
+            const allPassed = Object.values(apis).every(v => v);
+            updateStatus(
+                allPassed ? '✅ 所有浏览器 API 测试通过' : '⚠️ 部分 API 不支持',
+                allPassed ? 'success' : 'warning'
+            );
+        };
+
+        // 测试 2: WASM 加载
+        window.testWasmLoad = async function() {
+            updateStatus('加载 WASM...', 'info');
+            testResults.length = 0;
+
+            try {
+                // 检查 WASM 文件是否存在
+                const wasmUrl = './packages/web-runtime/src/actr_runtime_web_bg.wasm';
+                addTestResult('WASM 文件检查', true, `URL: ${wasmUrl}`);
+
+                // 尝试加载 WASM
+                const response = await fetch(wasmUrl);
+                addTestResult('WASM HTTP 请求', response.ok, `状态: ${response.status}`);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const buffer = await response.arrayBuffer();
+                const size = buffer.byteLength;
+                addTestResult('WASM 下载', true, `大小: ${(size / 1024).toFixed(1)} KB`);
+
+                // 验证 WASM 模块
+                const module = await WebAssembly.compile(buffer);
+                addTestResult('WASM 编译', true, 'WASM 模块编译成功');
+
+                // 显示 WASM 信息
+                const imports = WebAssembly.Module.imports(module);
+                const exports = WebAssembly.Module.exports(module);
+
+                wasmInfoEl.textContent = `
+WASM 模块信息:
+- 大小: ${(size / 1024).toFixed(1)} KB
+- 压缩预估: ~${(size / 1024 / 3).toFixed(1)} KB (gzip)
+- 导入数量: ${imports.length}
+- 导出数量: ${exports.length}
+
+导出函数 (前10个):
+${exports.slice(0, 10).map(exp => `  - ${exp.name} (${exp.kind})`).join('\n')}
+${exports.length > 10 ? `\n  ... 还有 ${exports.length - 10} 个` : ''}
+                `.trim();
+
+                updateStatus('✅ WASM 加载测试通过！', 'success');
+
+            } catch (error) {
+                addTestResult('WASM 加载', false, error.message);
+                updateStatus(`❌ WASM 加载失败: ${error.message}`, 'error');
+                wasmInfoEl.textContent = `错误: ${error.message}\n${error.stack}`;
+            }
+        };
+
+        // 测试 3: IndexedDB 操作
+        async function testIndexedDB() {
+            return new Promise((resolve) => {
+                const dbName = 'actr_test_' + Date.now();
+                const request = indexedDB.open(dbName, 1);
+
+                request.onerror = () => {
+                    addTestResult('IndexedDB 操作', false, '打开数据库失败');
+                    resolve(false);
+                };
+
+                request.onsuccess = (event) => {
+                    const db = event.target.result;
+                    db.close();
+                    indexedDB.deleteDatabase(dbName);
+                    addTestResult('IndexedDB 操作', true, '创建和删除数据库成功');
+                    resolve(true);
+                };
+
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    db.createObjectStore('test_store', { keyPath: 'id' });
+                };
+            });
+        }
+
+        // 测试 4: 性能测量
+        function testPerformance() {
+            const timing = performance.timing;
+            const loadTime = timing.loadEventEnd - timing.navigationStart;
+            const domReady = timing.domContentLoadedEventEnd - timing.navigationStart;
+
+            addTestResult('页面加载时间', loadTime < 3000, `${loadTime}ms`);
+            addTestResult('DOM 就绪时间', domReady < 2000, `${domReady}ms`);
+
+            // 内存信息 (如果可用)
+            if (performance.memory) {
+                const memMB = (performance.memory.usedJSHeapSize / 1024 / 1024).toFixed(1);
+                addTestResult('内存使用', true, `${memMB} MB`);
+            }
+        }
+
+        // 运行所有测试
+        window.runAllTests = async function() {
+            updateStatus('运行所有测试...', 'info');
+            testResults.length = 0;
+
+            try {
+                // 1. 浏览器 API
+                testBrowserAPIs();
+
+                // 2. WASM
+                await testWasmLoad();
+
+                // 3. IndexedDB
+                await testIndexedDB();
+
+                // 4. 性能
+                testPerformance();
+
+                const failedTests = testResults.filter(t => !t.passed).length;
+                if (failedTests === 0) {
+                    updateStatus(`✅ 所有测试通过！(${testResults.length} 项)`, 'success');
+                } else {
+                    updateStatus(`⚠️ ${failedTests} 项测试失败`, 'warning');
+                }
+
+            } catch (error) {
+                updateStatus(`❌ 测试执行出错: ${error.message}`, 'error');
+            }
+        };
+
+        // 页面加载时自动测试浏览器 API
+        window.addEventListener('load', () => {
+            testBrowserAPIs();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+[package]
+name = "actr-web-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Actor-RTC Web Common Library (shared between SW and DOM)"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["rlib"] # 纯 Rust 库，不生成 WASM
+
+[dependencies]
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+
+# 工具
+thiserror.workspace = true
+log.workspace = true
+
+# 数据结构
+bytes = "1.5"
+
+# WASM 相关
+wasm-bindgen.workspace = true
+js-sys = "0.3"
+
+# Actor-RTC Core
+actr-protocol.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -1,0 +1,15 @@
+# Server
+server/target/
+server/Cargo.lock
+
+# Client
+client/node_modules/
+client/dist/
+client/src/generated/
+
+# Logs
+*.log
+
+# PIDs
+.server.pid
+.client.pid

@@ -1,0 +1,45 @@
+{
+  "name": "@actr/web",
+  "version": "0.1.0",
+  "description": "High-level TypeScript SDK for Actor-RTC Web",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist/",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@actr/dom": "workspace:*",
+    "protobufjs": "^7.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "keywords": [
+    "actor",
+    "wasm",
+    "webrtc",
+    "typescript",
+    "sdk"
+  ],
+  "author": "kookyleo@gmail.com",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/actor-rtc/actr",
+    "directory": "actr-web/packages/web-sdk"
+  }
+}

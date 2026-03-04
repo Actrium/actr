@@ -1,0 +1,54 @@
+edition = 1
+exports = []
+
+[package]
+name = "echo-real-client-app"
+description = "Echo Client App"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "client"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "echo-client-app"
+
+[dependencies]
+echo-echo-server = { actr_type = "acme+EchoService" }
+
+# Web 平台特定配置
+[platform.web]
+generate_types = true
+types_output = "./src/generated/types"
+generate_react_hooks = false
+worker_type = "service-worker"
+service_worker_path = "/actor.sw.js"
+generate_sw_entry = true
+
+[system.signaling]
+url = "wss://10.30.3.206:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 2368266035
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = true
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "echo-real-client-app"
+
+[system.webrtc]
+stun_urls = ["stun:10.30.3.206:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+# Allow server with actr_type = "acme+EchoService"
+types = ["acme+EchoService"]
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

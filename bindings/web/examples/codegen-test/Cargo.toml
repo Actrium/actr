@@ -1,0 +1,13 @@
+[package]
+name = "codegen-test"
+version = "0.1.0"
+edition = "2024"
+
+# 明确表示这不是工作区成员
+[workspace]
+
+[dependencies]
+actr-web-protoc-codegen = { path = "../../crates/web-protoc-codegen" }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
