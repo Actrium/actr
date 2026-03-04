@@ -5,12 +5,21 @@
 //! - Workload trait: 业务工作负载，associates Dispatcher type
 //! - {Service}Handler trait: 用户实现的业务逻辑接口
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use heck::ToSnakeCase;
 use prost_types::MethodDescriptorProto;
 use quote::{format_ident, quote};
 
 use crate::payload_type_extractor::extract_payload_type_or_default;
+
+/// Remote service information for dispatcher generation
+#[derive(Debug, Clone)]
+pub struct RemoteServiceInfo {
+    pub package_name: String,
+    pub service_name: String,
+    pub methods: Vec<String>,
+    pub actr_type: String,
+}
 
 /// 代码生成器角色
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,13 +49,29 @@ impl ModernGenerator {
     /// 生成完整代码
     pub fn generate(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         match self.role {
-            GeneratorRole::ServerSide => self.generate_server_code(methods),
+            GeneratorRole::ServerSide => self.generate_server_code(methods, &[]),
+            GeneratorRole::ClientSide => self.generate_client_code(methods),
+        }
+    }
+
+    /// 生成包含 remote 转发的服务端代码
+    pub fn generate_with_remotes(
+        &self,
+        methods: &[MethodDescriptorProto],
+        remote_services: &[RemoteServiceInfo],
+    ) -> Result<String> {
+        match self.role {
+            GeneratorRole::ServerSide => self.generate_server_code(methods, remote_services),
             GeneratorRole::ClientSide => self.generate_client_code(methods),
         }
     }
 
     /// 生成服务端代码（exports）
-    fn generate_server_code(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
+    fn generate_server_code(
+        &self,
+        methods: &[MethodDescriptorProto],
+        remote_services: &[RemoteServiceInfo],
+    ) -> Result<String> {
         let sections = [
             // 1. 生成导入
             self.generate_imports(),
@@ -55,7 +80,7 @@ impl ModernGenerator {
             // 3. 生成 Handler trait（用户实现的接口）
             self.generate_handler_trait(methods)?,
             // 4. Generate Dispatcher implementation（zero-sized type static dispatcher）
-            self.generate_router_impl(methods)?,
+            self.generate_router_impl(methods, remote_services)?,
             // 5. 生成 Workload blanket 实现
             self.generate_workload_blanket_impl(methods)?,
             // 6. 生成使用文档
@@ -214,7 +239,11 @@ impl RpcRequest for {input_type} {{
     }
 
     /// Generate Dispatcher and Workload 包装类型
-    fn generate_router_impl(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
+    fn generate_router_impl(
+        &self,
+        methods: &[MethodDescriptorProto],
+        remote_services: &[RemoteServiceInfo],
+    ) -> Result<String> {
         let router_name = format!("{}Dispatcher", self.service_name);
         let router_ident = format_ident!("{}", router_name);
         let workload_name = format!("{}Workload", self.service_name);
@@ -222,7 +251,7 @@ impl RpcRequest for {input_type} {{
         let handler_trait = format!("{}Handler", self.service_name);
         let handler_trait_ident = format_ident!("{}", handler_trait);
 
-        // 生成 match 分支
+        // 生成 local service 的 match 分支
         let mut match_arms = Vec::new();
         for method in methods {
             let route_key = format!(
@@ -257,6 +286,55 @@ impl RpcRequest for {input_type} {{
 
                     // 序列化响应
                     Ok(resp.encode_to_vec().into())
+                }
+            });
+        }
+
+        // 生成 remote service 的转发分支
+        // Group remote services by actr_type
+        use std::collections::HashMap;
+        let mut services_by_actr_type: HashMap<String, Vec<&RemoteServiceInfo>> = HashMap::new();
+        for remote_service in remote_services {
+            services_by_actr_type
+                .entry(remote_service.actr_type.clone())
+                .or_insert_with(Vec::new)
+                .push(remote_service);
+        }
+
+        // Generate forwarding cases for each actr_type
+        for (actr_type_str, services) in services_by_actr_type {
+            let (manufacturer, name) = actr_type_str.split_once('+').ok_or_else(|| {
+                anyhow!(
+                    "Invalid remote actr_type '{}': expected <manufacturer>+<name>",
+                    actr_type_str
+                )
+            })?;
+
+            // Collect all route keys for this actr_type
+            let mut route_keys = Vec::new();
+            for service in &services {
+                for method in &service.methods {
+                    let route_key = format!(
+                        "{}.{}.{}",
+                        service.package_name, service.service_name, method
+                    );
+                    route_keys.push(route_key);
+                }
+            }
+
+            // Generate match arm for all route keys of this actr_type
+            match_arms.push(quote! {
+                #(#route_keys)|* => {
+                    let target_type = actr_protocol::ActrType {
+                        manufacturer: #manufacturer.to_string(),
+                        name: #name.to_string(),
+                    };
+                    let target_id = ctx.discover_route_candidate(&target_type).await?;
+                    ctx.call_raw(
+                        &target_id,
+                        envelope.route_key.as_str(),
+                        envelope.payload.clone().unwrap_or_default(),
+                    ).await
                 }
             });
         }
@@ -629,5 +707,43 @@ mod tests {
         assert!(code.contains("pub struct TestServiceDispatcher"));
         // 验证生成了 payload_type
         assert!(code.contains("fn payload_type() -> PayloadType"));
+    }
+
+    #[test]
+    fn test_generate_server_code_with_no_local_methods() {
+        let generator = ModernGenerator::new("test.v1", "BridgeService", GeneratorRole::ServerSide);
+
+        let code = generator.generate(&[]).unwrap();
+
+        assert!(code.contains("pub trait BridgeServiceHandler"));
+        assert!(code.contains("pub struct BridgeServiceWorkload"));
+        assert!(code.contains("pub struct BridgeServiceDispatcher"));
+        assert!(code.contains("UnknownRoute"));
+    }
+
+    #[test]
+    fn test_generate_server_code_with_remote_forwarding_and_no_local_methods() {
+        let generator =
+            ModernGenerator::new("demo.app", "DemoClientApp", GeneratorRole::ServerSide);
+        let remote_services = vec![RemoteServiceInfo {
+            package_name: "echo".to_string(),
+            service_name: "EchoService".to_string(),
+            methods: vec!["Echo".to_string()],
+            actr_type: "acme+EchoService".to_string(),
+        }];
+
+        let code = generator
+            .generate_with_remotes(&[], &remote_services)
+            .unwrap();
+
+        assert!(code.contains("pub trait DemoClientAppHandler"));
+        assert!(code.contains("pub struct DemoClientAppWorkload"));
+        assert!(code.contains("\"echo.EchoService.Echo\""));
+        assert!(code.contains("manufacturer"));
+        assert!(code.contains("\"acme\""));
+        assert!(code.contains("name"));
+        assert!(code.contains("\"EchoService\""));
+        assert!(code.contains("discover_route_candidate"));
+        assert!(code.contains("call_raw"));
     }
 }

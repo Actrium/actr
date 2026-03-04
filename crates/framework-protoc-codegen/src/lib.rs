@@ -12,7 +12,7 @@
 pub mod modern_generator;
 pub mod payload_type_extractor;
 
-pub use modern_generator::{GeneratorRole, ModernGenerator};
+pub use modern_generator::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
 pub use payload_type_extractor::{
     PayloadType, extract_payload_type, extract_payload_type_or_default,
 };

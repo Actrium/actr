@@ -9,7 +9,7 @@ use prost_types::{
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
-use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator};
+use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
 use actr_protocol::{PackageName, ServiceName};
 
 /// Proto 源类型枚举 - 简化设计，支持编译时路由
@@ -148,10 +148,58 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     // Parse parameters from --actrframework_opt
     let params = parse_parameters(request.parameter.as_deref().unwrap_or(""));
 
+    // Parse RemoteFileActrTypes parameter: file1:actr_type1,file2:actr_type2
+    let mut remote_file_to_actr_type: HashMap<String, String> = HashMap::new();
+    if let Some(remote_file_actr_types) = params.get("RemoteFileActrTypes") {
+        for mapping in remote_file_actr_types.split(',') {
+            if let Some((file, actr_type)) = mapping.split_once(':') {
+                remote_file_to_actr_type
+                    .insert(file.trim().to_string(), actr_type.trim().to_string());
+            }
+        }
+    }
+
     // 构建类型映射用于解析
     let mut message_types = HashMap::new();
     for file in &request.proto_file {
         collect_message_types(file, &mut message_types, file.package());
+    }
+
+    // Collect all remote services information
+    let mut remote_services = Vec::new();
+    for file in &request.proto_file {
+        let proto_source = ProtoSource::from_proto_file(file, &params)?;
+        if proto_source == ProtoSource::Remote {
+            for service in &file.service {
+                let package_name = file.package().to_string();
+                let service_name = service.name().to_string();
+                let methods: Vec<String> = service
+                    .method
+                    .iter()
+                    .map(|m| m.name().to_string())
+                    .collect();
+
+                // Determine actr_type: use explicit mapping or default to manufacturer+ServiceName
+                let actr_type = remote_file_to_actr_type
+                    .get(file.name())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        // Default: extract manufacturer from params or use package
+                        let manufacturer = params
+                            .get("manufacturer")
+                            .map(|s| s.as_str())
+                            .unwrap_or(&package_name);
+                        format!("{}+{}", manufacturer, service_name)
+                    });
+
+                remote_services.push(RemoteServiceInfo {
+                    package_name,
+                    service_name,
+                    methods,
+                    actr_type,
+                });
+            }
+        }
     }
 
     // 为每个要生成的文件处理 services
@@ -166,7 +214,13 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                 ));
             }
             for service in &file.service {
-                let generated_file = generate_service_code(file, service, &message_types, &params)?;
+                let generated_file = generate_service_code(
+                    file,
+                    service,
+                    &message_types,
+                    &params,
+                    &remote_services,
+                )?;
                 response.file.push(generated_file);
             }
         }
@@ -201,6 +255,7 @@ fn generate_service_code(
     service: &ServiceDescriptorProto,
     _message_types: &HashMap<String, DescriptorProto>,
     params: &HashMap<String, String>,
+    remote_services: &[RemoteServiceInfo],
 ) -> Result<File> {
     let service_name = service.name();
     let package_name = file.package();
@@ -229,7 +284,13 @@ fn generate_service_code(
     };
 
     let generator = ModernGenerator::new(package_name, service_name, role);
-    let final_code = generator.generate(&service.method)?;
+
+    // Pass remote_services only for ServerSide generation
+    let final_code = if role == GeneratorRole::ServerSide {
+        generator.generate_with_remotes(&service.method, remote_services)?
+    } else {
+        generator.generate(&service.method)?
+    };
 
     // 根据角色生成不同的文件后缀
     let file_suffix = match role {
@@ -243,4 +304,64 @@ fn generate_service_code(
         insertion_point: None,
         generated_code_info: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost_types::MethodDescriptorProto;
+
+    #[test]
+    fn generate_code_uses_remote_file_actr_types_for_local_bridge() {
+        let request = CodeGeneratorRequest {
+            file_to_generate: vec!["local.proto".to_string(), "remote/echo.proto".to_string()],
+            parameter: Some(
+                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto:custom+EchoAlias"
+                    .to_string(),
+            ),
+            proto_file: vec![
+                FileDescriptorProto {
+                    name: Some("local.proto".to_string()),
+                    package: Some("demo".to_string()),
+                    service: vec![ServiceDescriptorProto {
+                        name: Some("DemoClientApp".to_string()),
+                        method: vec![],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                FileDescriptorProto {
+                    name: Some("remote/echo.proto".to_string()),
+                    package: Some("echo".to_string()),
+                    service: vec![ServiceDescriptorProto {
+                        name: Some("EchoService".to_string()),
+                        method: vec![MethodDescriptorProto {
+                            name: Some("Echo".to_string()),
+                            input_type: Some(".echo.EchoRequest".to_string()),
+                            output_type: Some(".echo.EchoResponse".to_string()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let response = generate_code(request).unwrap();
+        let local_actor = response
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("local_actor.rs"))
+            .and_then(|file| file.content.as_ref())
+            .expect("local_actor.rs should be generated");
+
+        assert!(local_actor.contains("pub trait DemoClientAppHandler"));
+        assert!(local_actor.contains("\"echo.EchoService.Echo\""));
+        assert!(local_actor.contains("manufacturer"));
+        assert!(local_actor.contains("\"custom\""));
+        assert!(local_actor.contains("name"));
+        assert!(local_actor.contains("\"EchoAlias\""));
+    }
 }
