@@ -60,6 +60,8 @@ dependencies = [
  "prost 0.14.1",
  "prost-types",
  "quote",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

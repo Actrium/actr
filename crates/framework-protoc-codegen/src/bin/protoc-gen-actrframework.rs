@@ -6,6 +6,7 @@ use prost_types::{
     DescriptorProto, FileDescriptorProto, ServiceDescriptorProto,
     compiler::{CodeGeneratorRequest, CodeGeneratorResponse, code_generator_response::File},
 };
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
@@ -68,6 +69,44 @@ impl ProtoSource {
             Self::Remote
         })
     }
+}
+
+#[derive(Serialize)]
+struct ActrGenMetadata {
+    plugin_version: String,
+    language: &'static str,
+    local_services: Vec<LocalServiceMetadata>,
+    remote_services: Vec<RemoteServiceMetadata>,
+}
+
+#[derive(Serialize)]
+struct LocalServiceMetadata {
+    name: String,
+    package: String,
+    proto_file: String,
+    handler_interface: String,
+    workload_type: String,
+    dispatcher_type: String,
+    methods: Vec<MethodMetadata>,
+}
+
+#[derive(Serialize)]
+struct RemoteServiceMetadata {
+    name: String,
+    package: String,
+    proto_file: String,
+    actr_type: String,
+    client_type: String,
+    methods: Vec<MethodMetadata>,
+}
+
+#[derive(Serialize)]
+struct MethodMetadata {
+    name: String,
+    snake_name: String,
+    input_type: String,
+    output_type: String,
+    route_key: String,
 }
 
 fn main() -> Result<()> {
@@ -167,37 +206,47 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
 
     // Collect all remote services information
     let mut remote_services = Vec::new();
+    let mut metadata = ActrGenMetadata {
+        plugin_version: env!("CARGO_PKG_VERSION").to_string(),
+        language: "rust",
+        local_services: Vec::new(),
+        remote_services: Vec::new(),
+    };
     for file in &request.proto_file {
         let proto_source = ProtoSource::from_proto_file(file, &params)?;
-        if proto_source == ProtoSource::Remote {
-            for service in &file.service {
-                let package_name = file.package().to_string();
-                let service_name = service.name().to_string();
+        for service in &file.service {
+            let package_name = file.package().to_string();
+            let service_name = service.name().to_string();
+            let actr_type = remote_file_to_actr_type
+                .get(file.name())
+                .cloned()
+                .unwrap_or_else(|| {
+                    let manufacturer = params
+                        .get("manufacturer")
+                        .map(|s| s.as_str())
+                        .unwrap_or(&package_name);
+                    format!("{}+{}", manufacturer, service_name)
+                });
+
+            if proto_source == ProtoSource::Remote {
                 let methods: Vec<String> = service
                     .method
                     .iter()
                     .map(|m| m.name().to_string())
                     .collect();
-
-                // Determine actr_type: use explicit mapping or default to manufacturer+ServiceName
-                let actr_type = remote_file_to_actr_type
-                    .get(file.name())
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        // Default: extract manufacturer from params or use package
-                        let manufacturer = params
-                            .get("manufacturer")
-                            .map(|s| s.as_str())
-                            .unwrap_or(&package_name);
-                        format!("{}+{}", manufacturer, service_name)
-                    });
-
                 remote_services.push(RemoteServiceInfo {
-                    package_name,
-                    service_name,
+                    package_name: package_name.clone(),
+                    service_name: service_name.clone(),
                     methods,
-                    actr_type,
+                    actr_type: actr_type.clone(),
                 });
+                metadata
+                    .remote_services
+                    .push(build_remote_service_metadata(file, service, actr_type));
+            } else {
+                metadata
+                    .local_services
+                    .push(build_local_service_metadata(file, service));
             }
         }
     }
@@ -225,6 +274,12 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
             }
         }
     }
+
+    response.file.push(File {
+        name: Some("actr-gen-meta.json".to_string()),
+        content: Some(serde_json::to_string_pretty(&metadata)?),
+        ..Default::default()
+    });
 
     Ok(response)
 }
@@ -304,6 +359,73 @@ fn generate_service_code(
         insertion_point: None,
         generated_code_info: None,
     })
+}
+
+fn build_local_service_metadata(
+    file: &FileDescriptorProto,
+    service: &ServiceDescriptorProto,
+) -> LocalServiceMetadata {
+    LocalServiceMetadata {
+        name: service.name().to_string(),
+        package: file.package().to_string(),
+        proto_file: file.name().to_string(),
+        handler_interface: format!("{}Handler", service.name()),
+        workload_type: format!("{}Workload", service.name()),
+        dispatcher_type: format!("{}Dispatcher", service.name()),
+        methods: service
+            .method
+            .iter()
+            .map(|method| build_method_metadata(file, service, method))
+            .collect(),
+    }
+}
+
+fn build_remote_service_metadata(
+    file: &FileDescriptorProto,
+    service: &ServiceDescriptorProto,
+    actr_type: String,
+) -> RemoteServiceMetadata {
+    RemoteServiceMetadata {
+        name: service.name().to_string(),
+        package: file.package().to_string(),
+        proto_file: file.name().to_string(),
+        actr_type,
+        client_type: format!("{}Client", service.name()),
+        methods: service
+            .method
+            .iter()
+            .map(|method| build_method_metadata(file, service, method))
+            .collect(),
+    }
+}
+
+fn build_method_metadata(
+    file: &FileDescriptorProto,
+    service: &ServiceDescriptorProto,
+    method: &prost_types::MethodDescriptorProto,
+) -> MethodMetadata {
+    let package = file.package();
+    let route_key = if package.is_empty() {
+        format!("{}.{}", service.name(), method.name())
+    } else {
+        format!("{}.{}.{}", package, service.name(), method.name())
+    };
+
+    MethodMetadata {
+        name: method.name().to_string(),
+        snake_name: method.name().to_snake_case(),
+        input_type: short_type_name(method.input_type()),
+        output_type: short_type_name(method.output_type()),
+        route_key,
+    }
+}
+
+fn short_type_name(raw: &str) -> String {
+    raw.trim_start_matches('.')
+        .split('.')
+        .next_back()
+        .unwrap_or(raw)
+        .to_string()
 }
 
 #[cfg(test)]
