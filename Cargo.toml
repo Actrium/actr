@@ -67,7 +67,7 @@ members = [
 # - bindings/{python,typescript,swift,kotlin}: non-Rust build systems
 # - tools/protoc-gen/{typescript,python,swift,kotlin}: non-Rust plugins
 exclude = [
-    "examples/*",
+    "examples/rust/*",
     "bindings/python",
     "bindings/typescript",
     "bindings/swift",
