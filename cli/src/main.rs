@@ -17,6 +17,7 @@ use actr_cli::core::{
 use actr_cli::commands::{
     Command as LegacyCommand, DiscoveryCommand, GenCommand, InitCommand, InstallCommand,
 };
+use actr_cli::commands::dlq as dlq_cmd;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -239,6 +240,21 @@ async fn execute_command(context: &CommandContext) -> Result<actr_cli::core::Com
                 Err(e) => Err(e.into()),
             }
         }
+        "dlq" => {
+            let sub = context.args.positional.first().map(|s| s.as_str());
+            let (sub, pos) = match sub {
+                Some(s @ ("list" | "show" | "stats" | "delete")) => {
+                    (Some(s), context.args.positional[1..].to_vec())
+                }
+                _ => (sub, context.args.positional.clone()),
+            };
+            let args = dlq_cmd::DlqArgs::parse(sub, &pos, &context.args.flags)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            dlq_cmd::execute(args)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(actr_cli::core::CommandResult::Success(String::new()))
+        }
         _ => {
             print_help();
             Ok(actr_cli::core::CommandResult::Success(
@@ -281,6 +297,12 @@ Commands:
     config             Manage configuration
     doc                Generate documentation
     fingerprint        Show service fingerprints
+
+    dlq                Dead Letter Queue inspection
+        list [--limit=N] [--category=CAT] [--after=RFC3339] [--db=PATH]
+        show <ID> [--db=PATH]
+        stats [--db=PATH]
+        delete <ID> [--db=PATH]
 
     help               Show this help message
 

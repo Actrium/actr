@@ -10,6 +10,7 @@ pub mod fingerprint;
 pub mod generate;
 pub mod init;
 pub mod install;
+pub mod dlq;
 pub mod run;
 
 use crate::error::Result;

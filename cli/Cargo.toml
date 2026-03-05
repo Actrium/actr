@@ -17,6 +17,12 @@ path = "src/main.rs"
 # Actor-RTC main crate with config feature (includes protocol, config, version)
 actr = { path = "..", version = "0.1", features = ["config"] }
 
+# DLQ storage (for actr dlq subcommand)
+actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.1" }
+
+# UUID parsing for DLQ record IDs
+uuid = { version = "1", features = ["v4"] }
+
 # Version / fingerprint utilities
 actr-version = { path = "../core/version", version = "0.1" }
 
