@@ -15,7 +15,7 @@ class RemoteServiceInfo:
     """Information about a remote service for proxying."""
     service_name: str
     route_keys: List[str]
-    actr_type: str  # e.g., "acme+DataStreamConcurrentServer"
+    actr_type: str  # e.g., "acme:DataStreamConcurrentServer[:version]"
 
 
 # ============================================================================
@@ -198,16 +198,7 @@ def generate_dispatcher(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            # Parse actr_type (e.g., "acme+DataStreamConcurrentServer")
-            if "+" not in remote.actr_type:
-                raise ValueError(
-                    f"Invalid actr_type format for remote service '{remote.service_name}': '{remote.actr_type}'. "
-                    f"Expected format: 'manufacturer+name' (e.g., 'acme+ServiceName')"
-                )
-            
-            parts = remote.actr_type.split("+", 1)
-            remote_manufacturer = parts[0]
-            remote_name = parts[1]
+            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
             
             lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
@@ -293,16 +284,7 @@ def generate_empty_workload_with_proxy(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            # Parse actr_type (e.g., "acme+DataStreamConcurrentServer")
-            if "+" not in remote.actr_type:
-                raise ValueError(
-                    f"Invalid actr_type format for remote service '{remote.service_name}': '{remote.actr_type}'. "
-                    f"Expected format: 'manufacturer+name' (e.g., 'acme+ServiceName')"
-                )
-            
-            parts = remote.actr_type.split("+", 1)
-            remote_manufacturer = parts[0]
-            remote_name = parts[1]
+            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
             
             lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
@@ -364,9 +346,7 @@ def generate_client_dispatcher(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            parts = remote.actr_type.split("+", 1)
-            remote_manufacturer = parts[0]
-            remote_name = parts[1]
+            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
             
             lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
@@ -394,6 +374,17 @@ def generate_client_workload_class() -> str:
 def extract_message_type(full_type: str) -> str:
     """Extract message type name from full type path (e.g., '.echo.EchoRequest' -> 'EchoRequest')."""
     return full_type.split(".")[-1]
+
+
+def parse_actr_type(actr_type: str) -> tuple[str, str]:
+    """Parse canonical actr_type and return (manufacturer, name), ignoring optional version."""
+    parts = actr_type.split(":")
+    if len(parts) < 2 or len(parts) > 3 or not parts[0] or not parts[1]:
+        raise ValueError(
+            f"Invalid actr_type format: '{actr_type}'. "
+            "Expected format: 'manufacturer:name[:version]' (e.g., 'acme:ServiceName')."
+        )
+    return parts[0], parts[1]
 
 
 def to_snake_case(name: str) -> str:

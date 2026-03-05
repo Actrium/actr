@@ -1,0 +1,20 @@
+import OSLog
+import SwiftUI
+
+@main
+struct {{PROJECT_NAME_PASCAL}}: App {
+    private let logger = Logger(subsystem: "io.actr.{{PROJECT_NAME_PASCAL}}", category: "App")
+
+    init() {
+        logger.notice("{{PROJECT_NAME_PASCAL}} is initializing")
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .onAppear {
+                    logger.notice("{{PROJECT_NAME_PASCAL}} view appeared")
+                }
+        }
+    }
+}

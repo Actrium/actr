@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+{{> head page_title="Project Overview"}}
+<body>
+    <div class="content">
+        {{> nav is_overview=true}}
+
+        <div class="section">
+            <h2>Project Info</h2>
+            <p><strong>Name:</strong> {{project_name}}</p>
+            <p><strong>Version:</strong> {{project_version}}</p>
+            <p><strong>Description:</strong> {{project_description}}</p>
+        </div>
+
+        <div class="section">
+            <h2>Common Commands</h2>
+            <p>Run these from the project root:</p>
+            <pre><code class="language-bash"># Generate code from proto files
+{{#if is_swift}}
+actr gen --input proto --language swift
+{{else if is_kotlin}}
+actr gen --input proto --language kotlin
+{{else if is_python}}
+actr gen --input proto --language python
+{{else if is_typescript}}
+actr gen --input proto --language typescript
+{{else}}
+actr gen --input proto --output src/generated
+{{/if}}
+
+# Install dependencies from Actr.toml
+actr install
+
+# Discover services on the network
+actr discovery
+
+# Validate dependencies (currently a placeholder command)
+actr check --verbose</code></pre>
+        </div>
+
+        <div class="section">
+            <h2>Project Structure</h2>
+            <pre><code class="language-text">{{project_structure}}</code></pre>
+        </div>
+
+        <div class="section">
+            <h2>Related Links</h2>
+            <ul>
+                <li><a href="api.html">API Documentation</a> - Service interface definitions</li>
+                <li><a href="config.html">Configuration</a> - Project configuration reference</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

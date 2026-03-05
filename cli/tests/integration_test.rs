@@ -18,11 +18,9 @@ exports = []
 [package]
 name = "test-service"
 description = "A test service"
-
 [package.actr_type]
 manufacturer = "test-company"
 name = "test-service"
-version = "1.0.0"
 
 [dependencies]
 
@@ -50,7 +48,7 @@ test = "cargo test"
     assert_eq!(config.package.actr_type.manufacturer, "test-company");
     assert_eq!(config.package.actr_type.name, "test-service");
     assert_eq!(config.realm.realm_id, 1001);
-    assert_eq!(config.visible_in_discovery, true);
+    assert!(config.visible_in_discovery);
 
     // Verify scripts
     assert_eq!(config.scripts.get("dev"), Some(&"cargo run".to_string()));
@@ -62,43 +60,67 @@ fn test_template_case_conversion() {
     use actr_cli::templates::TemplateContext;
 
     // Test snake_case conversion
-    let ctx = TemplateContext::new("MyProject");
+    let ctx = TemplateContext::new(
+        "MyProject",
+        "ws://localhost:8080",
+        "acme",
+        "echo-service",
+        false,
+    );
     assert_eq!(ctx.project_name_snake, "my_project");
     assert_eq!(ctx.project_name_pascal, "MyProject");
 
     // Test kebab-case conversion
-    let ctx = TemplateContext::new("my-project");
+    let ctx = TemplateContext::new(
+        "my-project",
+        "ws://localhost:8080",
+        "acme",
+        "echo-service",
+        false,
+    );
     assert_eq!(ctx.project_name_snake, "my_project");
     assert_eq!(ctx.project_name_pascal, "MyProject");
 
     // Test already snake_case
-    let ctx = TemplateContext::new("my_project");
+    let ctx = TemplateContext::new(
+        "my_project",
+        "ws://localhost:8080",
+        "acme",
+        "echo-service",
+        false,
+    );
     assert_eq!(ctx.project_name_snake, "my_project");
     assert_eq!(ctx.project_name_pascal, "MyProject");
 }
 
 #[test]
 fn test_project_template_basic_generation() {
-    use actr_cli::templates::{ProjectTemplate, TemplateContext};
+    use actr_cli::templates::{
+        ProjectTemplate, ProjectTemplateName, SupportedLanguage, TemplateContext,
+    };
 
     let temp_dir = TempDir::new().unwrap();
 
     // Load basic template
-    let template = ProjectTemplate::load("basic").expect("Failed to load basic template");
+    let template = ProjectTemplate::new(ProjectTemplateName::Echo, SupportedLanguage::Rust);
 
     // Create template context
-    let context = TemplateContext::new("test-service");
+    let context = TemplateContext::new(
+        "test-service",
+        "ws://localhost:8080",
+        "acme",
+        "echo-service",
+        false,
+    );
 
     // Generate project files
     template
         .generate(temp_dir.path(), &context)
         .expect("Failed to generate template");
 
-    // Verify generated files exist
+    // Verify generated files exist (Rust echo template produces main.rs, not lib.rs)
     assert!(temp_dir.path().join("Cargo.toml").exists());
-    assert!(temp_dir.path().join("src/lib.rs").exists());
-    assert!(temp_dir.path().join("protos/greeter.proto").exists());
-    assert!(temp_dir.path().join("build.rs").exists());
+    assert!(temp_dir.path().join("src/main.rs").exists());
     assert!(temp_dir.path().join("README.md").exists());
 
     // Verify content contains substituted project name

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+{{> head page_title="Configuration"}}
+<body>
+    <div class="content">
+        {{> nav is_config=true}}
+
+        <div class="section">
+            <h2>Current Configuration</h2>
+            <p>Current content of <code>Actr.toml</code>:</p>
+            <pre><code class="language-toml">{{config_example}}</code></pre>
+        </div>
+
+        <div class="section">
+            <h2>Workflow Guide</h2>
+            <p>Essential commands for managing your project configuration and lifecycle.</p>
+
+            <h3>1. Service Discovery</h3>
+            <p>Find services in the network and automatically add them to your configuration:</p>
+            <pre><code class="language-bash"># Interactive discovery
+actr discovery
+
+# Filter by name
+actr discovery --filter "my-service-*"</code></pre>
+
+            <h3>2. Install Dependencies</h3>
+            <p>Download and lock proto files for dependencies listed in <code>Actr.toml</code>:</p>
+            <pre><code class="language-bash"># Install all dependencies
+actr install
+
+# Add and install a specific dependency
+actr install user-service</code></pre>
+
+            <h3>3. Generate Code</h3>
+            <p>Generate type-safe bindings from installed proto files:</p>
+            <pre><code class="language-bash">{{#if is_swift}}# Generate Swift code
+actr gen --language swift{{else if is_kotlin}}# Generate Kotlin code
+actr gen --language kotlin{{else if is_python}}# Generate Python code
+actr gen --language python{{else if is_typescript}}# Generate TypeScript code
+actr gen --language typescript{{else}}# Generate Rust code
+actr gen --output src/generated{{/if}}</code></pre>
+        </div>
+
+        <div class="section">
+            <h2>Configuration Reference</h2>
+            <p>Layout of the <code>Actr.toml</code> file:</p>
+            
+            <table class="config-table">
+                <tr>
+                    <th>Key</th>
+                    <th>Purpose</th>
+                    <th>Notes</th>
+                </tr>
+                <tr>
+                    <td><code>edition</code></td>
+                    <td>Config format version</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>inherit</code></td>
+                    <td>Parent config file path</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>exports</code></td>
+                    <td>Exported proto files for service specs</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[package]</code></td>
+                    <td>Package metadata (name, description, authors, license, tags)</td>
+                    <td>Required</td>
+                </tr>
+                <tr>
+                    <td><code>[package.actr_type]</code></td>
+                    <td>Actor type definition (manufacturer, name)</td>
+                    <td>Required</td>
+                </tr>
+                <tr>
+                    <td><code>[dependencies]</code></td>
+                    <td>Dependency map (empty or fingerprinted entries)</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.signaling]</code></td>
+                    <td>Signaling server configuration</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.deployment]</code></td>
+                    <td>Deployment configuration</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.discovery]</code></td>
+                    <td>Discovery configuration</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.storage]</code></td>
+                    <td>Storage configuration (mailbox path)</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.webrtc]</code></td>
+                    <td>WebRTC configuration (STUN/TURN/relay)</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.observability]</code></td>
+                    <td>Tracing and logging configuration</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[acl]</code> / <code>[[acl.rules]]</code></td>
+                    <td>Access control rules</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[scripts]</code></td>
+                    <td>Custom script commands</td>
+                    <td>Optional</td>
+                </tr>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2>Dependency Formats</h2>
+            <p>Define <strong>remote</strong> dependencies in <code>[dependencies]</code>.</p>
+            <p><em>Note: Your own service definitions should be placed in <code>protos/local/</code>. They are automatically detected and do not need to be configured here.</em></p>
+            
+            <pre><code class="language-toml"># Actor registry (alias = { name, actr_type, ... })
+[dependencies.payment]
+name = "payment-service"
+actr_type = "payment"
+fingerprint = "sha256:a1b2c3d4..."
+
+# Simplified format (alias = { actr_type })
+my-service = { actr_type = "my-company:MyService" }</code></pre>
+        </div>
+    </div>
+</body>
+</html>

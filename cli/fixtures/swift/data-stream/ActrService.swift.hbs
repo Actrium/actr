@@ -1,0 +1,237 @@
+import Actr
+import Foundation
+import OSLog
+import SwiftProtobuf
+import SwiftUI
+
+// ActrService is Implemented: This file contains a complete implementation.
+// This file will not be overwritten by actr gen.
+
+@MainActor
+final class ActrService: ObservableObject {
+    @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var errorMessage: String?
+    @Published var streamMessages: [String] = []
+
+    var actrSystem: ActrSystem?
+    var actrNode: ActrNode?
+    var actr: ActrRef?
+    private var workload: {{SERVICE_NAME}}Workload<{{SERVICE_NAME}}HandlerImpl>?
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "io.actr.App",
+        category: "ActrService"
+    )
+
+    /// Initialize the service and its underlying actors
+    func initialize() async throws {
+        connectionStatus = .initializing
+        errorMessage = nil
+        logger.info("Initializing ActrService...")
+
+        do {
+            let bundle = Bundle.main
+            guard let configPath = bundle.path(forResource: "Actr", ofType: "toml") else {
+                throw ActrError.StateError(msg: "Actr.toml not found in bundle")
+            }
+
+            let result = try await Task.detached(priority: .userInitiated) { () throws
+                -> (ActrSystem, ActrNode, ActrRef, {{SERVICE_NAME}}Workload<{{SERVICE_NAME}}HandlerImpl>) in
+                let system = try await ActrSystem.from(tomlConfig: configPath)
+                let handler = {{SERVICE_NAME}}HandlerImpl { [weak self] message in
+                    Task { @MainActor in
+                        self?.streamMessages.append(message)
+                    }
+                }
+                let workload = {{SERVICE_NAME}}Workload(handler: handler)
+                let node = try system.spawn(workload: workload)
+                let actr = try await node.start()
+                return (system, node, actr, workload)
+            }.value
+
+            let (system, node, actr, workload) = result
+            actrSystem = system
+            actrNode = node
+            self.actr = actr
+            self.workload = workload
+
+            connectionStatus = .connected
+            logger.info("ActrService initialized successfully")
+        } catch let actrError as ActrError {
+            errorMessage = "Actr Error: \(actrError.localizedDescription)"
+            connectionStatus = .error
+            logger.error("Failed to initialize: \(actrError.localizedDescription)")
+            throw actrError
+        } catch {
+            errorMessage = "Initialization Error: \(error.localizedDescription)"
+            connectionStatus = .error
+            logger.error("Failed to initialize: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    /// Shutdown the service and cleanup resources
+    func shutdown() async {
+        logger.info("Shutting down ActrService...")
+
+        if let actr {
+            await actr.stop()
+        }
+
+        actr = nil
+        actrNode = nil
+        actrSystem = nil
+        workload = nil
+
+        connectionStatus = .disconnected
+        errorMessage = nil
+    }
+}
+
+extension ActrService {
+    enum ConnectionStatus {
+        case disconnected
+        case initializing
+        case connected
+        case error
+
+        var description: String {
+            switch self {
+            case .disconnected: return "Disconnected"
+            case .initializing: return "Initializing..."
+            case .connected: return "Connected"
+            case .error: return "Error"
+            }
+        }
+    }
+
+    /// Prepare client-side stream handling
+    /// - Parameter expectedCount: Number of messages expected from the server
+    /// - Returns: PrepareStreamResponse containing the result
+    func prepareClientStream(expectedCount: Int32) async throws -> {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse {
+        guard connectionStatus == .connected else {
+            throw ActrError.StateError(msg: "Not connected to server")
+        }
+
+        guard let actr = actr else {
+            throw ActrError.StateError(msg: "Actor reference not available")
+        }
+
+        var request = {{PROJECT_NAME_PASCAL}}_PrepareClientStreamRequest()
+        request.streamID = "stream-\(UUID().uuidString)"
+        request.expectedCount = UInt32(clamping: expectedCount)
+
+        logger.info("Preparing client stream: stream_id=\(request.streamID), expected_count=\(request.expectedCount)")
+
+        do {
+            let response = try await actr.call(request)
+            logger.info("Prepare client stream completed: ready=\(response.ready)")
+            return response
+        } catch let actrError as ActrError {
+            logger.error("Prepare client stream error: \(actrError.localizedDescription)")
+            throw actrError
+        } catch {
+            logger.error("Prepare client stream error: \(error.localizedDescription)")
+            throw error
+        }
+    }
+}
+
+/// Simple stream handler that logs incoming chunks.
+private actor StreamPrintCallback: Actr.DataStreamCallback {
+    private let streamId: String
+    private let onMessage: (@Sendable (String) -> Void)?
+
+    init(streamId: String, onMessage: (@Sendable (String) -> Void)?) {
+        self.streamId = streamId
+        self.onMessage = onMessage
+    }
+
+    func onStream(chunk: Actr.DataStream, sender: ActrId) async throws {
+        let senderRepr = "\(sender.type.toStringRepr())#\(sender.serialNumber)"
+        let payloadText = String(data: chunk.payload, encoding: .utf8) ?? "<non-utf8 data>"
+        let message = "stream_id=\(streamId), seq=\(chunk.sequence), bytes=\(chunk.payload.count), sender=\(senderRepr), text=\"\(payloadText)\""
+        logger.info("📥 DataStream chunk: \(message)")
+        onMessage?(message)
+    }
+}
+
+/// Implementation of {{SERVICE_NAME}}Handler
+public actor {{SERVICE_NAME}}HandlerImpl: {{SERVICE_NAME}}Handler {
+    private var streamCallbacks: [String: Actr.DataStreamCallback] = [:]
+    private let onMessage: (@Sendable (String) -> Void)?
+
+    public init(onMessage: (@Sendable (String) -> Void)? = nil) {
+        self.onMessage = onMessage
+    }
+
+    /// RPC method: PrepareClientStream
+    public func prepareClientStream(
+        req: {{PROJECT_NAME_PASCAL}}_PrepareClientStreamRequest,
+        ctx: Actr.Context
+    ) async throws -> {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse {
+        logger.info("📡 Received PrepareClientStream request: stream_id=\(req.streamID), expected_count=\(req.expectedCount)")
+
+        do {
+            try await ensureStreamHandler(streamId: req.streamID, ctx: ctx)
+            let registerResponse = try await registerRemoteStream(
+                streamId: req.streamID,
+                messageCount: Int32(clamping: req.expectedCount),
+                ctx: ctx
+            )
+
+            var response = {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse()
+            response.ready = registerResponse.success
+            response.message = registerResponse.message
+            return response
+        } catch {
+            logger.error("❌ PrepareClientStream failed: \(error.localizedDescription)")
+            var response = {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse()
+            response.ready = false
+            response.message = "Prepare client stream failed: \(error.localizedDescription)"
+            return response
+        }
+    }
+
+    private func ensureStreamHandler(streamId: String, ctx: Actr.Context) async throws {
+        if streamCallbacks[streamId] != nil {
+            return
+        }
+
+        let callback = StreamPrintCallback(streamId: streamId, onMessage: onMessage)
+        streamCallbacks[streamId] = callback
+        try await ctx.registerStream(streamId: streamId, callback: callback)
+    }
+
+    private func registerRemoteStream(
+        streamId: String,
+        messageCount: Int32,
+        ctx: Actr.Context
+    ) async throws -> StreamServer_RegisterStreamResponse {
+        let targetType = try ActrType.fromStringRepr("{{MANUFACTURER}}:StreamEchoServer")
+        let targetId = try await ctx.discover(targetType: targetType)
+
+        var request = StreamServer_RegisterStreamRequest()
+        request.streamID = streamId
+        request.messageCount = messageCount
+
+        let payload = try request.serializedData()
+        let responseData = try await ctx.call(
+            target: targetId,
+            routeKey: "stream_server.StreamServer.RegisterStream",
+            payload: payload
+        )
+        return try StreamServer_RegisterStreamResponse(serializedBytes: responseData)
+    }
+}
+
+extension {{SERVICE_NAME}}Workload: Workload where T == {{SERVICE_NAME}}HandlerImpl {
+    public func onStart(ctx _: Actr.Context) async throws {}
+    public func onStop(ctx _: Actr.Context) async throws {}
+
+    public func dispatch(ctx: Actr.Context, envelope: Actr.RpcEnvelope) async throws -> Data {
+        return try await __dispatch(ctx: ctx, envelope: envelope)
+    }
+}
+
+// Global logger for the handlers to use
+private let logger = Logger(subsystem: "io.actr.App", category: "Handler")

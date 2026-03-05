@@ -5,6 +5,7 @@
 //! - Workload trait: 业务工作负载，associates Dispatcher type
 //! - {Service}Handler trait: 用户实现的业务逻辑接口
 
+use actr_protocol::{ActrType, ActrTypeExt};
 use anyhow::{Result, anyhow};
 use heck::ToSnakeCase;
 use prost_types::MethodDescriptorProto;
@@ -297,18 +298,21 @@ impl RpcRequest for {input_type} {{
         for remote_service in remote_services {
             services_by_actr_type
                 .entry(remote_service.actr_type.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(remote_service);
         }
 
         // Generate forwarding cases for each actr_type
         for (actr_type_str, services) in services_by_actr_type {
-            let (manufacturer, name) = actr_type_str.split_once('+').ok_or_else(|| {
+            let parsed = ActrType::from_string_repr(&actr_type_str).map_err(|e| {
                 anyhow!(
-                    "Invalid remote actr_type '{}': expected <manufacturer>+<name>",
-                    actr_type_str
+                    "Invalid remote actr_type '{}': expected <manufacturer>:<name>[:<version>] ({})",
+                    actr_type_str,
+                    e
                 )
             })?;
+            let manufacturer = parsed.manufacturer;
+            let name = parsed.name;
 
             // Collect all route keys for this actr_type
             let mut route_keys = Vec::new();
@@ -328,6 +332,7 @@ impl RpcRequest for {input_type} {{
                     let target_type = actr_protocol::ActrType {
                         manufacturer: #manufacturer.to_string(),
                         name: #name.to_string(),
+                        version: None,
                     };
                     let target_id = ctx.discover_route_candidate(&target_type).await?;
                     ctx.call_raw(
@@ -729,7 +734,7 @@ mod tests {
             package_name: "echo".to_string(),
             service_name: "EchoService".to_string(),
             methods: vec!["Echo".to_string()],
-            actr_type: "acme+EchoService".to_string(),
+            actr_type: "acme:EchoService".to_string(),
         }];
 
         let code = generator

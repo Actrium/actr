@@ -1,0 +1,1616 @@
+use crate::commands::SupportedLanguage;
+use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
+use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
+use crate::error::{ActrCliError, Result};
+use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
+use crate::utils::command_exists;
+use actr_config::LockFile;
+use actr_protocol::{ActrType, ActrTypeExt};
+use async_trait::async_trait;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+use tracing::{debug, info, warn};
+use walkdir::WalkDir;
+
+const PROTOC: &str = "protoc";
+const NODE: &str = "node";
+const NPX: &str = "npx";
+const PROTOC_GEN_ES: &str = "protoc-gen-es";
+const EXPECTED_PROTOC_GEN_ES_VERSION: &str = "2.11.0";
+const PLUGIN_NAME: &str = "protoc-gen-actrframework-typescript";
+const EXPECTED_PLUGIN_VERSION: &str = "0.1.11";
+const GITHUB_RELEASE_URL_TEMPLATE: &str = "https://github.com/actor-rtc/framework-codegen-typescript/releases/download/v{}/protoc-gen-actrframework-typescript.tar.gz";
+const IMPLEMENTED_MARKER: &str =
+    "// ActrService is Implemented: This file contains a complete implementation.";
+const UNIMPLEMENTED_MARKER: &str =
+    "// ActrService is not implemented: Generated quick-start scaffold.";
+const SCAFFOLD_HINT: &str = "// Replace scaffold sections with your business logic";
+
+#[derive(Debug, Clone)]
+struct ProtoModuleInfo {
+    proto_stem: String,
+    is_local: bool,
+    generated_client_path: PathBuf,
+    generated_client_import: String,
+    services: Vec<ProtoServiceInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct ProtoServiceInfo {
+    name: String,
+    methods: Vec<ProtoMethodInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct ProtoMethodInfo {
+    name: String,
+    input_type: String,
+    output_type: String,
+    input_type_short: String,
+    output_type_short: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GeneratedClientApi {
+    exported_consts: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BoundMethodInfo {
+    generated_client_import: String,
+    service_name: String,
+    method_name: String,
+    handler_name: String,
+    input_type: String,
+    output_type: String,
+    input_type_short: String,
+    output_type_short: String,
+    request_companion: Option<String>,
+    is_local: bool,
+}
+
+pub struct TypeScriptGenerator;
+
+#[async_trait]
+impl LanguageGenerator for TypeScriptGenerator {
+    async fn generate_infrastructure(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+        info!("🔧 Generating TypeScript infrastructure code...");
+        self.ensure_required_tools()?;
+
+        let es_plugin_path = self.ensure_protoc_gen_es(context)?;
+        let plugin_path = self.ensure_typescript_plugin(context)?;
+
+        std::fs::create_dir_all(&context.output).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to create output directory: {e}"))
+        })?;
+
+        let proto_root = if context.input_path.is_file() {
+            context
+                .input_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        } else {
+            context.input_path.clone()
+        };
+
+        let mut local_files = Vec::new();
+        let mut remote_files = Vec::new();
+
+        for proto_file in &context.proto_files {
+            let rel = proto_file.strip_prefix(&proto_root).unwrap_or(proto_file);
+            let rel_norm = normalize_proto_path(rel);
+            if rel_norm.starts_with("remote/") {
+                remote_files.push(rel_norm);
+            } else {
+                local_files.push(rel_norm);
+            }
+        }
+
+        let remote_mapping = self.build_remote_mapping(context, &remote_files)?;
+
+        let mut proto_inputs = Vec::new();
+        for proto_file in &context.proto_files {
+            let rel = proto_file.strip_prefix(&proto_root).unwrap_or(proto_file);
+            proto_inputs.push(normalize_proto_path(rel));
+        }
+
+        let mut es_cmd = StdCommand::new(PROTOC);
+        es_cmd
+            .arg(format!("--proto_path={}", proto_root.display()))
+            .arg(format!(
+                "--plugin=protoc-gen-es={}",
+                es_plugin_path.display()
+            ))
+            .arg("--es_opt=target=ts")
+            .arg(format!("--es_out={}", context.output.display()));
+
+        for proto_input in &proto_inputs {
+            es_cmd.arg(proto_input);
+        }
+
+        debug!("Executing protoc (es): {:?}", es_cmd);
+        let output = es_cmd.output().map_err(|e| {
+            ActrCliError::command_error(format!("Failed to execute protoc (es): {e}"))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "protoc (es) execution failed: {stderr}"
+            )));
+        }
+
+        let mut options = Vec::new();
+        options.push("target=ts".to_string());
+        if !local_files.is_empty() {
+            options.push(format!("LocalFiles={}", local_files.join(":")));
+        }
+        if !remote_files.is_empty() {
+            options.push(format!("RemoteFiles={}", remote_files.join(":")));
+        }
+        if !remote_mapping.is_empty() {
+            let mut sorted_mapping: Vec<String> = remote_mapping
+                .iter()
+                .map(|(path, actr_type)| format!("{path}={actr_type}"))
+                .collect();
+            sorted_mapping.sort();
+            options.push(format!("RemoteFileMapping={}", sorted_mapping.join(";")));
+        }
+        options.push("DistImport=@actor-rtc/actr".to_string());
+        let option_str = options.join(",");
+
+        let mut cmd = StdCommand::new(PROTOC);
+        cmd.arg(format!("--proto_path={}", proto_root.display()))
+            .arg(format!(
+                "--plugin=protoc-gen-actrframework-typescript={}",
+                plugin_path.display()
+            ))
+            .arg(format!("--actrframework-typescript_opt={option_str}"))
+            .arg(format!(
+                "--actrframework-typescript_out={}",
+                context.output.display()
+            ));
+
+        for proto_input in &proto_inputs {
+            cmd.arg(proto_input);
+        }
+
+        debug!("Executing protoc (actrframework-typescript): {:?}", cmd);
+        let output = cmd.output().map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to execute protoc (actrframework-typescript): {e}"
+            ))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "protoc (actrframework-typescript) execution failed: {stderr}"
+            )));
+        }
+
+        debug!(
+            "TypeScript protoc inputs: {}",
+            if proto_inputs.is_empty() {
+                "<none>".to_string()
+            } else {
+                proto_inputs.join(", ")
+            }
+        );
+
+        flatten_local_and_lift_remote(&context.output)?;
+
+        let generated_files = collect_ts_files(&context.output);
+        info!("✅ Generated {} TypeScript files", generated_files.len());
+        Ok(generated_files)
+    }
+
+    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+        info!("📝 Generating TypeScript user code scaffold...");
+
+        let mut scaffold_files = Vec::new();
+        let target_path = context
+            .output
+            .parent()
+            .unwrap_or(&context.output)
+            .join("actr_service.ts");
+
+        if target_path.exists() {
+            let is_scaffold = self.should_overwrite_scaffold(&target_path)?;
+            if is_scaffold {
+                info!("🔄 Overwriting scaffold file: {}", target_path.display());
+            } else if !context.overwrite_user_code {
+                info!(
+                    "⏭️  Skipping existing user code file: {}",
+                    target_path.display()
+                );
+                info!("   Use --overwrite-user-code to regenerate the scaffold.");
+                return Ok(scaffold_files);
+            } else {
+                info!(
+                    "🔄 Overwriting existing file (--overwrite-user-code): {}",
+                    target_path.display()
+                );
+            }
+        }
+
+        let modules = self.collect_proto_modules(context)?;
+        let bound_methods = self.bind_methods(&modules)?;
+        let scaffold_content = self.generate_scaffold_content(&bound_methods);
+
+        std::fs::write(&target_path, scaffold_content).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to write TypeScript scaffold: {e}"))
+        })?;
+
+        info!("📄 Generated user code scaffold: {}", target_path.display());
+        scaffold_files.push(target_path);
+        info!("✅ User code scaffold generation completed");
+        Ok(scaffold_files)
+    }
+
+    async fn format_code(&self, _context: &GenContext, files: &[PathBuf]) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        if !command_exists("prettier") {
+            info!("💡 prettier not found, skipping TypeScript formatting");
+            return Ok(());
+        }
+
+        for file in files {
+            let output = StdCommand::new("prettier")
+                .arg("--write")
+                .arg(file)
+                .output();
+            if let Err(e) = output {
+                warn!("Failed to run prettier for {}: {}", file.display(), e);
+            }
+        }
+
+        info!("✅ TypeScript formatting completed");
+        Ok(())
+    }
+
+    async fn validate_code(&self, context: &GenContext) -> Result<()> {
+        let ts_files = collect_ts_files(&context.output);
+        if ts_files.is_empty() {
+            return Err(ActrCliError::config_error(
+                "No TypeScript files were generated",
+            ));
+        }
+
+        info!(
+            "🔍 TypeScript validation: generated {} files",
+            ts_files.len()
+        );
+        Ok(())
+    }
+
+    fn print_next_steps(&self, context: &GenContext) {
+        println!("\n🎉 TypeScript code generation completed!");
+        println!(
+            "1. 📖 Review generated files in {}",
+            context.output.display()
+        );
+        println!("2. 📦 Ensure `actr install` has been executed in project root");
+        println!("3. ▶️  Run your app with `npm run dev`");
+    }
+}
+
+impl TypeScriptGenerator {
+    fn collect_proto_modules(&self, context: &GenContext) -> Result<Vec<ProtoModuleInfo>> {
+        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::TypeScript)?;
+        let mut services_by_file: HashMap<String, Vec<ProtoServiceInfo>> = HashMap::new();
+
+        for service in catalog
+            .local_services
+            .into_iter()
+            .chain(catalog.remote_services.into_iter())
+        {
+            services_by_file
+                .entry(normalize_proto_lookup_key(&service.proto_file))
+                .or_default()
+                .push(self.to_proto_service_info(service));
+        }
+
+        let mut modules = Vec::new();
+        for file in &context.proto_model.files {
+            let relative_norm = normalize_proto_lookup_key(&file.relative_path);
+            let relative_parts = file
+                .relative_path
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let is_local = !relative_norm.starts_with("remote/");
+            let proto_stem = file
+                .proto_file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("proto")
+                .to_string();
+            let (generated_client_path, generated_client_import) = self
+                .derive_generated_client_location(
+                    &context.output,
+                    &relative_parts,
+                    &proto_stem,
+                    is_local,
+                );
+
+            modules.push(ProtoModuleInfo {
+                proto_stem,
+                is_local,
+                generated_client_path,
+                generated_client_import,
+                services: services_by_file.remove(&relative_norm).unwrap_or_default(),
+            });
+        }
+
+        Ok(modules)
+    }
+
+    fn to_proto_service_info(&self, service: ScaffoldService) -> ProtoServiceInfo {
+        ProtoServiceInfo {
+            name: service.name,
+            methods: service
+                .methods
+                .into_iter()
+                .map(|method| ProtoMethodInfo {
+                    name: method.name,
+                    input_type_short: short_proto_type(&method.input_type),
+                    output_type_short: short_proto_type(&method.output_type),
+                    input_type: method.input_type,
+                    output_type: method.output_type,
+                })
+                .collect(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn parse_proto_module(
+        &self,
+        proto_path: &Path,
+        relative_path: &Path,
+        output: &Path,
+    ) -> Result<ProtoModuleInfo> {
+        let content = std::fs::read_to_string(proto_path).map_err(|e| {
+            ActrCliError::config_error(format!(
+                "Failed to read proto file {}: {e}",
+                proto_path.display()
+            ))
+        })?;
+        let relative_parts = relative_path
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let is_local = relative_parts.first().is_none_or(|part| part != "remote");
+        let proto_stem = proto_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("proto")
+            .to_string();
+        let (_package, services) = self.parse_proto_content(&content);
+        let (generated_client_path, generated_client_import) =
+            self.derive_generated_client_location(output, &relative_parts, &proto_stem, is_local);
+
+        Ok(ProtoModuleInfo {
+            proto_stem,
+            is_local,
+            generated_client_path,
+            generated_client_import,
+            services,
+        })
+    }
+
+    #[allow(dead_code)]
+    fn parse_proto_content(&self, content: &str) -> (String, Vec<ProtoServiceInfo>) {
+        let mut current_package = String::new();
+        let mut current_service: Option<ProtoServiceInfo> = None;
+        let mut services = Vec::new();
+
+        for raw_line in content.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("package ") {
+                current_package = rest
+                    .trim_end_matches(';')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("service ") {
+                let name = rest
+                    .split(|ch: char| ch.is_whitespace() || ch == '{')
+                    .find(|segment| !segment.is_empty())
+                    .unwrap_or_default()
+                    .to_string();
+                if !name.is_empty() {
+                    current_service = Some(ProtoServiceInfo {
+                        name,
+                        methods: Vec::new(),
+                    });
+                }
+                continue;
+            }
+
+            if let Some(rest) = line.strip_prefix("rpc ")
+                && let Some(service) = current_service.as_mut()
+                && let Some(input_start) = rest.find('(')
+            {
+                let method_name = rest[..input_start]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if method_name.is_empty() {
+                    continue;
+                }
+
+                let after_input_start = &rest[input_start + 1..];
+                let Some(input_end) = after_input_start.find(')') else {
+                    continue;
+                };
+                let input_type = normalize_proto_type(&after_input_start[..input_end]);
+
+                let Some(returns_pos) = after_input_start.find("returns") else {
+                    continue;
+                };
+                let after_returns = &after_input_start[returns_pos + "returns".len()..];
+                let Some(output_start) = after_returns.find('(') else {
+                    continue;
+                };
+                let Some(output_end) = after_returns[output_start + 1..].find(')') else {
+                    continue;
+                };
+                let output_type = normalize_proto_type(
+                    &after_returns[output_start + 1..output_start + 1 + output_end],
+                );
+
+                service.methods.push(ProtoMethodInfo {
+                    name: method_name,
+                    input_type_short: short_proto_type(&input_type),
+                    output_type_short: short_proto_type(&output_type),
+                    input_type,
+                    output_type,
+                });
+            }
+
+            if line.starts_with('}')
+                && let Some(service) = current_service.take()
+            {
+                services.push(service);
+            }
+        }
+
+        if let Some(service) = current_service.take() {
+            services.push(service);
+        }
+
+        (current_package, services)
+    }
+
+    fn derive_generated_client_location(
+        &self,
+        output: &Path,
+        relative_parts: &[String],
+        proto_stem: &str,
+        is_local: bool,
+    ) -> (PathBuf, String) {
+        if is_local {
+            return (
+                output.join("local_actor.ts"),
+                "./generated/local_actor".to_string(),
+            );
+        }
+
+        let mut generated_parts = relative_parts.to_vec();
+        if generated_parts
+            .first()
+            .is_some_and(|part| matches!(part.as_str(), "local" | "remote"))
+        {
+            generated_parts.remove(0);
+        }
+
+        if generated_parts.is_empty() {
+            generated_parts.push(format!("{proto_stem}.proto"));
+        }
+
+        if let Some(last) = generated_parts.last_mut() {
+            *last = format!("{proto_stem}_client.ts");
+        }
+
+        let generated_path = generated_parts
+            .iter()
+            .fold(output.to_path_buf(), |acc, part| acc.join(part));
+
+        let mut import_parts = generated_parts;
+        if let Some(last) = import_parts.last_mut() {
+            *last = last.trim_end_matches(".ts").to_string();
+        }
+        let generated_import = format!("./generated/{}", import_parts.join("/"));
+
+        (generated_path, generated_import)
+    }
+
+    fn inspect_generated_client_api(&self, path: &Path) -> Result<GeneratedClientApi> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ActrCliError::config_error(format!(
+                "Failed to read generated client helper {}: {e}",
+                path.display()
+            ))
+        })?;
+
+        let mut api = GeneratedClientApi::default();
+        for raw_line in content.lines() {
+            let line = raw_line.trim();
+            if let Some(name) = extract_exported_name(line, "export const ") {
+                api.exported_consts.insert(name);
+            }
+        }
+
+        Ok(api)
+    }
+
+    fn bind_methods(&self, modules: &[ProtoModuleInfo]) -> Result<Vec<BoundMethodInfo>> {
+        let mut bound_methods = Vec::new();
+
+        for module in modules {
+            let api = if module.generated_client_path.exists() {
+                self.inspect_generated_client_api(&module.generated_client_path)?
+            } else {
+                warn!(
+                    "Generated client helper not found for {}: {}",
+                    module.proto_stem,
+                    module.generated_client_path.display()
+                );
+                GeneratedClientApi::default()
+            };
+
+            let has_duplicate_method = self.module_has_duplicate_method_names(&module.services);
+
+            for service in &module.services {
+                for method in &service.methods {
+                    let helper_suffix =
+                        self.helper_suffix(&service.name, &method.name, has_duplicate_method);
+                    let handler_name = format!("handle{helper_suffix}");
+                    let request_companion_name = method.input_type_short.clone();
+
+                    bound_methods.push(BoundMethodInfo {
+                        generated_client_import: module.generated_client_import.clone(),
+                        service_name: service.name.clone(),
+                        method_name: method.name.clone(),
+                        handler_name,
+                        input_type: method.input_type.clone(),
+                        output_type: method.output_type.clone(),
+                        input_type_short: method.input_type_short.clone(),
+                        output_type_short: method.output_type_short.clone(),
+                        request_companion: api
+                            .exported_consts
+                            .contains(&request_companion_name)
+                            .then_some(request_companion_name),
+                        is_local: module.is_local,
+                    });
+                }
+            }
+        }
+
+        Ok(bound_methods)
+    }
+
+    fn module_has_duplicate_method_names(&self, services: &[ProtoServiceInfo]) -> bool {
+        let mut names = HashSet::new();
+        for service in services {
+            for method in &service.methods {
+                if !names.insert(method.name.as_str()) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn helper_suffix(
+        &self,
+        service_name: &str,
+        method_name: &str,
+        has_duplicate_method: bool,
+    ) -> String {
+        let base = if has_duplicate_method {
+            format!("{service_name}_{method_name}")
+        } else {
+            method_name.to_string()
+        };
+        self.to_pascal_case(&base)
+    }
+
+    fn to_pascal_case(&self, value: &str) -> String {
+        value
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                let mut output = String::new();
+                if let Some(first) = chars.next() {
+                    output.push(first.to_ascii_uppercase());
+                    for ch in chars {
+                        output.push(ch);
+                    }
+                }
+                output
+            })
+            .collect()
+    }
+
+    fn generate_scaffold_content(&self, bound_methods: &[BoundMethodInfo]) -> String {
+        let local_methods = bound_methods
+            .iter()
+            .filter(|method| method.is_local)
+            .collect::<Vec<_>>();
+        let remote_methods = bound_methods
+            .iter()
+            .filter(|method| !method.is_local)
+            .collect::<Vec<_>>();
+        let has_dispatcher = !bound_methods.is_empty();
+
+        let mut output = String::new();
+        output.push_str(UNIMPLEMENTED_MARKER);
+        output.push('\n');
+        output.push_str(SCAFFOLD_HINT);
+        output.push_str(
+            "\n\nimport {\n  ActrSystem,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actor-rtc/actr';\n",
+        );
+
+        if has_dispatcher {
+            let mut local_imports = BTreeSet::from([
+                "dispatchLocalActor".to_string(),
+                "type LocalHandlers".to_string(),
+            ]);
+            for method in &local_methods {
+                if let Some(request_companion) = &method.request_companion {
+                    local_imports.insert(request_companion.clone());
+                }
+            }
+
+            output.push_str("import {\n");
+            for name in &local_imports {
+                output.push_str("  ");
+                output.push_str(name);
+                output.push_str(",\n");
+            }
+            output.push_str("} from './generated/local_actor';\n");
+        }
+
+        if has_dispatcher {
+            output.push_str("\n\nconst handlers: LocalHandlers = ");
+            if local_methods.is_empty() {
+                output.push_str("{};\n");
+            } else {
+                output.push_str("{\n");
+                for method in &local_methods {
+                    output.push_str("  async ");
+                    output.push_str(&method.handler_name);
+                    output.push_str("(request, _ctx) {\n");
+                    output.push_str("    console.log('TODO: handle ");
+                    output.push_str(&method.service_name);
+                    output.push('.');
+                    output.push_str(&method.method_name);
+                    output.push_str("', request);\n");
+                    output.push_str("    return {\n");
+                    output.push_str("      // TODO: fill ");
+                    output.push_str(&method.output_type_short);
+                    output.push_str(" fields\n");
+                    output.push_str("    };\n");
+                    output.push_str("  },\n");
+                }
+                output.push_str("};\n");
+            }
+        }
+
+        if !local_methods.is_empty() {
+            let debug_methods = local_methods
+                .iter()
+                .filter(|method| method.request_companion.is_some())
+                .collect::<Vec<_>>();
+            output.push_str("\nconst localDebugDecoders = {\n");
+            for method in debug_methods {
+                let request_companion = method.request_companion.as_deref().unwrap_or_default();
+                output.push_str("  [");
+                output.push_str(request_companion);
+                output.push_str(".routeKey]: ");
+                output.push_str(request_companion);
+                output.push_str(".decode,\n");
+            }
+            output.push_str("} as const;\n");
+        }
+
+        output.push_str(
+            "\nclass QuickStartWorkload implements Workload {\n  async onStart(_ctx: Context): Promise<void> {\n    console.log('QuickStartWorkload started');\n",
+        );
+        if !local_methods.is_empty() {
+            output.push_str(
+                "    console.log('Local decoder helpers:', Object.keys(localDebugDecoders));\n",
+            );
+        }
+        output.push_str(
+            "  }\n\n  async onStop(_ctx: Context): Promise<void> {\n    console.log('QuickStartWorkload stopped');\n  }\n\n  async dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {\n",
+        );
+
+        if has_dispatcher {
+            output.push_str("    return dispatchLocalActor(ctx, envelope, handlers);\n");
+        } else {
+            output.push_str(
+                "    throw new Error('No RPC handlers were inferred. Add your own dispatch logic.');\n",
+            );
+        }
+        output.push_str("  }\n}\n");
+
+        output.push_str(
+            "\nasync function main(): Promise<void> {\n  const system = await ActrSystem.fromConfig('./Actr.toml');\n  const node = system.attach(new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
+        );
+        output.push_str(&local_methods.len().to_string());
+        output.push_str(");\n  console.log('Remote RPC methods:', ");
+        output.push_str(&remote_methods.len().to_string());
+        output.push_str(");\n");
+        if !remote_methods.is_empty() {
+            output.push_str(
+                "  console.log('Remote call examples are listed below. Uncomment and adapt them when you are ready.');\n",
+            );
+        }
+        output.push_str("  await actorRef.waitForShutdown();\n}\n");
+
+        output.push_str(
+            "\nmain().catch((error) => {\n  console.error(error);\n  process.exit(1);\n});\n",
+        );
+
+        if !remote_methods.is_empty() {
+            output.push_str("\n// Remote RPC quick-start examples:\n");
+            for method in &remote_methods {
+                output.push_str("//\n// ");
+                output.push_str(&method.service_name);
+                output.push('.');
+                output.push_str(&method.method_name);
+                output.push_str(" (");
+                output.push_str(&method.input_type);
+                output.push_str(" -> ");
+                output.push_str(&method.output_type);
+                output.push_str(")\n");
+                output.push_str("// Generated client: ");
+                output.push_str(&method.generated_client_import);
+                output.push('\n');
+                output.push_str("// import {\n");
+                if let Some(request_companion) = &method.request_companion {
+                    output.push_str("//   ");
+                    output.push_str(request_companion);
+                    output.push_str(",\n");
+                } else {
+                    output.push_str("//   // TODO: infer the request companion,\n");
+                }
+                output.push_str("// } from '");
+                output.push_str(&method.generated_client_import);
+                output.push_str("';\n");
+                output.push_str("// const payload = ");
+                if let Some(request_companion) = &method.request_companion {
+                    output.push_str(request_companion);
+                    output.push_str(".encode({\n");
+                } else {
+                    output.push_str("/* TODO: request encoder */({\n");
+                }
+                output.push_str("//   // TODO: fill ");
+                output.push_str(&method.input_type_short);
+                output.push_str(" fields\n// });\n");
+                if let Some(request_companion) = &method.request_companion {
+                    output.push_str("// const responseBytes = await actorRef.call(");
+                    output.push_str(request_companion);
+                    output.push_str(".routeKey, 0, payload, 15000);\n");
+                    output.push_str("// const response = ");
+                    output.push_str(request_companion);
+                    output.push_str(".response.decode(responseBytes);\n");
+                } else {
+                    output.push_str(
+                        "// const responseBytes = await actorRef.call(/* TODO: route key */, 0, payload, 15000);\n",
+                    );
+                    output.push_str(
+                        "// const response = /* TODO: response decoder */(responseBytes);\n",
+                    );
+                }
+                output.push_str("// console.log('Response (");
+                output.push_str(&method.output_type_short);
+                output.push_str("):', response);\n");
+            }
+        }
+
+        output
+    }
+
+    fn should_overwrite_scaffold(&self, path: &Path) -> Result<bool> {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return Ok(false),
+        };
+
+        if content.contains(IMPLEMENTED_MARKER) {
+            return Ok(false);
+        }
+
+        if !content.contains(UNIMPLEMENTED_MARKER) {
+            return Ok(false);
+        }
+
+        let has_quick_start_workload =
+            content.contains("class QuickStartWorkload implements Workload");
+        let has_quick_start_banner = content.contains("Quick-start scaffold is running.");
+
+        Ok(has_quick_start_workload && has_quick_start_banner)
+    }
+
+    fn ensure_required_tools(&self) -> Result<()> {
+        if !command_exists(PROTOC) {
+            return Err(ActrCliError::command_error(
+                "protoc not found. Please install protobuf compiler.".to_string(),
+            ));
+        }
+        if !command_exists(NODE) {
+            return Err(ActrCliError::command_error(
+                "node not found. Please install Node.js.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_protoc_gen_es(&self, context: &GenContext) -> Result<PathBuf> {
+        if let Some(local_path) = self.locate_project_protoc_gen_es(context) {
+            info!("✅ Using local {PROTOC_GEN_ES} at {}", local_path.display());
+            return Ok(local_path);
+        }
+
+        if let Ok(path) = self.locate_binary_in_path(PROTOC_GEN_ES) {
+            info!("✅ Using installed {PROTOC_GEN_ES} at {}", path.display());
+            return Ok(path);
+        }
+
+        self.ensure_npx_available()?;
+        let wrapper_path = self.ensure_protoc_gen_es_wrapper()?;
+        info!(
+            "✅ Using cached npx wrapper for {PROTOC_GEN_ES} at {}",
+            wrapper_path.display()
+        );
+        Ok(wrapper_path)
+    }
+
+    fn ensure_typescript_plugin(&self, context: &GenContext) -> Result<PathBuf> {
+        let min_version = resolve_plugin_min_version(&context.config_path, PLUGIN_NAME)?
+            .unwrap_or_else(|| EXPECTED_PLUGIN_VERSION.to_string());
+
+        // 检查系统安装 (Homebrew)
+        if let Some(version) = self.check_installed_plugin_version()? {
+            if version_is_at_least(&version, &min_version) {
+                info!("✅ Using installed {PLUGIN_NAME} v{version}");
+                return self.locate_installed_plugin();
+            }
+
+            // 版本过低，直接报错
+            return Err(ActrCliError::command_error(format!(
+                "Installed {PLUGIN_NAME} v{version} is lower than required v{min_version}\n\
+                 Please upgrade: brew upgrade {PLUGIN_NAME}"
+            )));
+        }
+
+        // 从 GitHub Release 下载
+        info!("📦 {PLUGIN_NAME} not found in PATH, downloading from GitHub Release...");
+        let plugin_path = self.download_plugin_from_release(&min_version)?;
+
+        // 验证版本
+        self.ensure_required_plugin_version(&plugin_path, &min_version)?;
+
+        Ok(plugin_path)
+    }
+
+    fn check_installed_plugin_version(&self) -> Result<Option<String>> {
+        let path = match self.locate_installed_plugin() {
+            Ok(path) => path,
+            Err(error) => {
+                debug!("{PLUGIN_NAME} not available: {}", error);
+                return Ok(None);
+            }
+        };
+
+        let output = StdCommand::new(&path).arg("--version").output();
+        let Ok(output) = output else {
+            debug!("Failed to execute {PLUGIN_NAME} at {}", path.display());
+            return Ok(None);
+        };
+        if !output.status.success() {
+            warn!("{PLUGIN_NAME} --version returned non-zero; treating as unavailable");
+            return Ok(None);
+        }
+
+        Ok(self.parse_plugin_version(&output.stdout))
+    }
+
+    fn parse_plugin_version(&self, stdout: &[u8]) -> Option<String> {
+        String::from_utf8_lossy(stdout)
+            .split_whitespace()
+            .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()))
+            .map(str::to_string)
+    }
+
+    fn ensure_required_plugin_version(&self, plugin_path: &Path, min_version: &str) -> Result<()> {
+        let output = StdCommand::new(plugin_path)
+            .arg("--version")
+            .output()
+            .map_err(|e| {
+                ActrCliError::command_error(format!("Failed to run {PLUGIN_NAME} --version: {e}"))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "{PLUGIN_NAME} --version failed: {stderr}"
+            )));
+        }
+
+        let Some(version) = self.parse_plugin_version(&output.stdout) else {
+            return Err(ActrCliError::command_error(format!(
+                "Failed to determine {PLUGIN_NAME} version"
+            )));
+        };
+
+        if version_is_at_least(&version, min_version) {
+            info!("✅ {PLUGIN_NAME} version {version} satisfies minimum {min_version}");
+            return Ok(());
+        }
+
+        Err(ActrCliError::command_error(format!(
+            "{PLUGIN_NAME} version {version} is lower than required {min_version}"
+        )))
+    }
+
+    fn locate_installed_plugin(&self) -> Result<PathBuf> {
+        self.locate_binary_in_path(PLUGIN_NAME)
+    }
+
+    fn locate_binary_in_path(&self, binary: &str) -> Result<PathBuf> {
+        let output = StdCommand::new("which").arg(binary).output().map_err(|e| {
+            ActrCliError::command_error(format!("Failed to locate {binary} in PATH: {e}"))
+        })?;
+
+        if !output.status.success() {
+            return Err(ActrCliError::command_error(format!(
+                "{binary} is not available in PATH"
+            )));
+        }
+
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            return Err(ActrCliError::command_error(format!(
+                "{binary} resolved to an empty path"
+            )));
+        }
+
+        Ok(PathBuf::from(path))
+    }
+
+    fn locate_project_protoc_gen_es(&self, context: &GenContext) -> Option<PathBuf> {
+        let config_dir = context
+            .config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let local_path = config_dir
+            .join("node_modules")
+            .join(".bin")
+            .join(PROTOC_GEN_ES);
+        local_path.exists().then_some(local_path)
+    }
+
+    fn ensure_npx_available(&self) -> Result<()> {
+        if command_exists(NPX) {
+            return Ok(());
+        }
+        Err(ActrCliError::command_error(
+            "npx not found. Please install npm or add protoc-gen-es to PATH.".to_string(),
+        ))
+    }
+
+    fn ensure_protoc_gen_es_wrapper(&self) -> Result<PathBuf> {
+        let wrapper_dir = std::env::temp_dir()
+            .join("actr-cli")
+            .join("protoc-gen-es")
+            .join(format!("v{EXPECTED_PROTOC_GEN_ES_VERSION}"));
+        std::fs::create_dir_all(&wrapper_dir).map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to create protoc-gen-es cache directory {}: {}",
+                wrapper_dir.display(),
+                e
+            ))
+        })?;
+
+        let wrapper_path = wrapper_dir.join(PROTOC_GEN_ES);
+        let script = format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\nexec npx --yes -p @bufbuild/protoc-gen-es@{EXPECTED_PROTOC_GEN_ES_VERSION} protoc-gen-es \"$@\"\n"
+        );
+
+        let should_write = match std::fs::read_to_string(&wrapper_path) {
+            Ok(existing) => existing != script,
+            Err(_) => true,
+        };
+
+        if should_write {
+            std::fs::write(&wrapper_path, script).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to write protoc-gen-es wrapper {}: {}",
+                    wrapper_path.display(),
+                    e
+                ))
+            })?;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&wrapper_path)
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to read protoc-gen-es wrapper metadata {}: {}",
+                        wrapper_path.display(),
+                        e
+                    ))
+                })?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&wrapper_path, perms).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to set protoc-gen-es wrapper permissions {}: {}",
+                    wrapper_path.display(),
+                    e
+                ))
+            })?;
+        }
+
+        Ok(wrapper_path)
+    }
+
+    fn download_plugin_from_release(&self, version: &str) -> Result<PathBuf> {
+        let cache_root = std::env::temp_dir()
+            .join("actr-cli")
+            .join("framework-codegen-typescript");
+
+        let version_tag = format!("v{}", version);
+        let cache_dir = cache_root.join(&version_tag);
+        let plugin_path = cache_dir.join("scripts").join(PLUGIN_NAME);
+        let bundle_path = cache_dir.join("dist").join("bundle.js");
+
+        // 检查缓存
+        if plugin_path.exists() && bundle_path.exists() {
+            info!("✅ Using cached TypeScript plugin (v{})", version);
+            return Ok(plugin_path);
+        }
+
+        // 清理不完整的缓存
+        if cache_dir.exists() {
+            std::fs::remove_dir_all(&cache_dir).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to clean cache directory {}: {}",
+                    cache_dir.display(),
+                    e
+                ))
+            })?;
+        }
+        std::fs::create_dir_all(&cache_dir).map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to create cache directory {}: {}",
+                cache_dir.display(),
+                e
+            ))
+        })?;
+
+        // 构建下载 URL
+        let release_url = GITHUB_RELEASE_URL_TEMPLATE.replace("{}", version);
+
+        info!("📦 Downloading from: {}", release_url);
+
+        // 检查 curl 是否可用
+        if !command_exists("curl") {
+            return Err(ActrCliError::command_error(
+                "curl not found. Please install curl to download the plugin.".to_string(),
+            ));
+        }
+
+        // 下载
+        let tar_path = cache_dir.join("plugin.tar.gz");
+
+        let output = StdCommand::new("curl")
+            .arg("-L") // 跟随重定向
+            .arg("-f") // 失败时返回错误码
+            .arg("--progress-bar")
+            .arg("-o")
+            .arg(&tar_path)
+            .arg(&release_url)
+            .output()
+            .map_err(|e| ActrCliError::command_error(format!("Failed to execute curl: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "Failed to download TypeScript plugin from GitHub Release\n\
+                 URL: {}\n\
+                 Error: {}",
+                release_url, stderr
+            )));
+        }
+
+        // 解压
+        info!("📦 Extracting plugin...");
+
+        let extract_dir = cache_dir.join("extracted");
+        std::fs::create_dir_all(&extract_dir).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to create extract directory: {}", e))
+        })?;
+
+        let output = StdCommand::new("tar")
+            .arg("-xzf")
+            .arg(&tar_path)
+            .arg("-C")
+            .arg(&extract_dir)
+            .output()
+            .map_err(|e| ActrCliError::command_error(format!("Failed to execute tar: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "Failed to extract plugin: {}",
+                stderr
+            )));
+        }
+
+        // 调整目录结构
+        // Release 包结构:
+        //   extracted/
+        //   ├── bundle.js
+        //   └── protoc-gen-actrframework-typescript
+        //
+        // 需要的结构 (插件脚本期望 PROJECT_DIR/../dist/bundle.js):
+        //   cache_dir/
+        //   ├── dist/
+        //   │   └── bundle.js
+        //   └── scripts/
+        //       └── protoc-gen-actrframework-typescript
+
+        let dist_dir = cache_dir.join("dist");
+        std::fs::create_dir_all(&dist_dir).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to create dist directory: {}", e))
+        })?;
+
+        let scripts_dir = cache_dir.join("scripts");
+        std::fs::create_dir_all(&scripts_dir).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to create scripts directory: {}", e))
+        })?;
+
+        // 移动 bundle.js
+        let src_bundle = extract_dir.join("bundle.js");
+        if !src_bundle.exists() {
+            return Err(ActrCliError::command_error(
+                "bundle.js not found in downloaded package".to_string(),
+            ));
+        }
+        std::fs::rename(&src_bundle, &bundle_path)
+            .map_err(|e| ActrCliError::command_error(format!("Failed to move bundle.js: {}", e)))?;
+
+        // 移动可执行脚本到 scripts/ 目录
+        let src_plugin = extract_dir.join(PLUGIN_NAME);
+        if !src_plugin.exists() {
+            return Err(ActrCliError::command_error(format!(
+                "{} not found in downloaded package",
+                PLUGIN_NAME
+            )));
+        }
+        std::fs::rename(&src_plugin, &plugin_path).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to move plugin script: {}", e))
+        })?;
+
+        // 清理临时文件
+        std::fs::remove_file(&tar_path).ok();
+        std::fs::remove_dir_all(&extract_dir).ok();
+
+        // 设置可执行权限 (Unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&plugin_path)
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Failed to read plugin metadata: {}", e))
+                })?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&plugin_path, perms).map_err(|e| {
+                ActrCliError::command_error(format!("Failed to set plugin permissions: {}", e))
+            })?;
+        }
+
+        // 最终验证
+        if !plugin_path.exists() || !bundle_path.exists() {
+            return Err(ActrCliError::command_error(
+                "Plugin installation incomplete: required files not found".to_string(),
+            ));
+        }
+
+        info!("✅ Successfully installed TypeScript plugin (v{})", version);
+
+        Ok(plugin_path)
+    }
+
+    fn build_remote_mapping(
+        &self,
+        context: &GenContext,
+        remote_files: &[String],
+    ) -> Result<HashMap<String, String>> {
+        if remote_files.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let config_dir = context
+            .config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        let lock_path = config_dir.join("Actr.lock.toml");
+        if !lock_path.exists() {
+            return Err(ActrCliError::config_error(format!(
+                "Actr.lock.toml not found at {}. Please run `actr install` first.",
+                lock_path.display()
+            )));
+        }
+
+        let lock_file = LockFile::from_file(&lock_path).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to parse {}: {e}", lock_path.display()))
+        })?;
+
+        let mut lock_mapping = HashMap::new();
+        for dep in lock_file.dependencies {
+            for file in dep.files {
+                lock_mapping.insert(file.path, dep.actr_type.clone());
+            }
+        }
+
+        let mut result = HashMap::new();
+        for remote_file in remote_files {
+            let lock_key = remote_file.trim_start_matches("remote/").to_string();
+            let actr_type = lock_mapping.get(&lock_key).ok_or_else(|| {
+                ActrCliError::config_error(format!(
+                    "Remote proto '{}' missing in Actr.lock.toml.\n\
+                     Please run `actr install` and retry.",
+                    lock_key
+                ))
+            })?;
+            result.insert(
+                remote_file.clone(),
+                normalize_actr_type_for_typescript_plugin(actr_type)?,
+            );
+        }
+
+        Ok(result)
+    }
+}
+
+fn normalize_actr_type_for_typescript_plugin(raw: &str) -> Result<String> {
+    let parsed = ActrType::from_string_repr(raw).map_err(|e| {
+        ActrCliError::config_error(format!("Invalid actr_type '{raw}' in Actr.lock.toml: {e}"))
+    })?;
+    Ok(parsed.to_string_repr())
+}
+
+/// Post-process generated directory:
+/// 1. Flatten `local/` files into the output root
+/// 2. Lift `remote/xxx/` to `xxx/` (remove the `remote` layer)
+/// 3. Rewrite import paths in generated files
+fn flatten_local_and_lift_remote(output: &Path) -> Result<()> {
+    // 1. Flatten local/
+    let local_dir = output.join("local");
+    if local_dir.exists() {
+        for entry in std::fs::read_dir(&local_dir)
+            .map_err(|e| ActrCliError::command_error(format!("Failed to read local dir: {e}")))?
+        {
+            let entry = entry.map_err(|e| {
+                ActrCliError::command_error(format!("Failed to read local dir entry: {e}"))
+            })?;
+            let dest = output.join(entry.file_name());
+            std::fs::rename(entry.path(), &dest).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to move {} to {}: {e}",
+                    entry.path().display(),
+                    dest.display()
+                ))
+            })?;
+        }
+        std::fs::remove_dir(&local_dir)
+            .map_err(|e| ActrCliError::command_error(format!("Failed to remove local dir: {e}")))?;
+    }
+
+    // 2. Lift remote/xxx/ → xxx/
+    let remote_dir = output.join("remote");
+    if remote_dir.exists() {
+        for entry in std::fs::read_dir(&remote_dir)
+            .map_err(|e| ActrCliError::command_error(format!("Failed to read remote dir: {e}")))?
+        {
+            let entry = entry.map_err(|e| {
+                ActrCliError::command_error(format!("Failed to read remote dir entry: {e}"))
+            })?;
+            let dest = output.join(entry.file_name());
+            std::fs::rename(entry.path(), &dest).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to move {} to {}: {e}",
+                    entry.path().display(),
+                    dest.display()
+                ))
+            })?;
+        }
+        std::fs::remove_dir(&remote_dir).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to remove remote dir: {e}"))
+        })?;
+    }
+
+    // 3. Rewrite import paths
+    rewrite_imports(output)?;
+
+    debug!("Post-processed generated directory: flattened local/ and lifted remote/");
+    Ok(())
+}
+
+/// Rewrite import paths in generated .js/.ts/.d.ts files:
+/// - `from "./remote/` → `from "./`
+/// - `from "./local/` → `from "./`
+fn rewrite_imports(output: &Path) -> Result<()> {
+    for entry in WalkDir::new(output).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "ts" | "js") && !path.to_string_lossy().ends_with(".d.ts") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let updated = content
+            .replace("from \"./remote/", "from \"./")
+            .replace("from './remote/", "from './")
+            .replace("from \"./local/", "from \"./")
+            .replace("from './local/", "from './");
+        if updated != content {
+            std::fs::write(path, updated).map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to rewrite imports in {}: {e}",
+                    path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_proto_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn normalize_proto_lookup_key(path: &Path) -> String {
+    let normalized = normalize_proto_path(path);
+    normalized
+        .strip_suffix(".proto")
+        .unwrap_or(&normalized)
+        .to_string()
+}
+
+fn collect_ts_files(root: &Path) -> Vec<PathBuf> {
+    WalkDir::new(root)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().to_path_buf())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "ts"))
+        .collect()
+}
+
+fn normalize_proto_type(raw: &str) -> String {
+    raw.trim().trim_start_matches('.').to_string()
+}
+
+fn short_proto_type(raw: &str) -> String {
+    normalize_proto_type(raw)
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn extract_exported_name(line: &str, prefix: &str) -> Option<String> {
+    let rest = line.strip_prefix(prefix)?.trim_start();
+    let name = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect::<String>();
+    (!name.is_empty()).then_some(name)
+}
+
+fn resolve_plugin_min_version(config_path: &Path, plugin_name: &str) -> Result<Option<String>> {
+    let config = load_protoc_plugin_config(config_path)?;
+    if let Some(config) = config
+        && let Some(min_version) = config.min_version(plugin_name)
+    {
+        return Ok(Some(min_version.to_string()));
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn parses_proto_content_from_real_service_definitions() {
+        let generator = TypeScriptGenerator;
+        let (package, services) = generator.parse_proto_content(
+            r#"
+            syntax = "proto3";
+
+            package demo.echo;
+
+            service EchoService {
+              rpc Echo(EchoRequest) returns (EchoResponse);
+              rpc Ping(demo.echo.PingRequest) returns (demo.echo.PingResponse);
+            }
+            "#,
+        );
+
+        assert_eq!(package, "demo.echo");
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "EchoService");
+        assert_eq!(services[0].methods.len(), 2);
+        assert_eq!(services[0].methods[0].name, "Echo");
+        assert_eq!(services[0].methods[0].input_type_short, "EchoRequest");
+        assert_eq!(services[0].methods[1].output_type_short, "PingResponse");
+    }
+
+    #[test]
+    fn inspects_generated_client_exports() {
+        let generator = TypeScriptGenerator;
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("echo_client.ts");
+        std::fs::write(
+            &path,
+            r#"
+            export const EchoRequest = {
+                routeKey: "demo.echo.Echo",
+            } as const;
+            "#,
+        )
+        .unwrap();
+
+        let api = generator.inspect_generated_client_api(&path).unwrap();
+        assert!(api.exported_consts.contains("EchoRequest"));
+    }
+
+    #[test]
+    fn implemented_marker_prevents_overwrite() {
+        let generator = TypeScriptGenerator;
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("actr_service.ts");
+        std::fs::write(
+            &path,
+            format!(
+                "{IMPLEMENTED_MARKER}\n{UNIMPLEMENTED_MARKER}\nclass QuickStartWorkload implements Workload {{}}\nconsole.log('Quick-start scaffold is running.');\n"
+            ),
+        )
+        .unwrap();
+        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+    }
+
+    #[test]
+    fn recognizes_minimal_unimplemented_scaffold() {
+        let generator = TypeScriptGenerator;
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("actr_service.ts");
+        std::fs::write(
+            &path,
+            format!(
+                "{UNIMPLEMENTED_MARKER}\n{SCAFFOLD_HINT}\nclass QuickStartWorkload implements Workload {{}}\nconsole.log('Quick-start scaffold is running.');\n"
+            ),
+        )
+        .unwrap();
+        assert!(generator.should_overwrite_scaffold(&path).unwrap());
+    }
+
+    #[test]
+    fn unimplemented_marker_without_minimal_scaffold_is_preserved() {
+        let generator = TypeScriptGenerator;
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("actr_service.ts");
+        std::fs::write(
+            &path,
+            format!(
+                "{UNIMPLEMENTED_MARKER}\n{SCAFFOLD_HINT}\nconsole.log('custom quick-start');\n"
+            ),
+        )
+        .unwrap();
+        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+
+        std::fs::write(&path, "console.log('user code');\n").unwrap();
+        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+    }
+
+    #[test]
+    fn does_not_treat_echo_templates_as_generated_scaffold() {
+        let generator = TypeScriptGenerator;
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("actr_service.ts");
+
+        std::fs::write(
+            &path,
+            format!(
+                "{IMPLEMENTED_MARKER}\nclass EchoServiceWorkload implements Workload {{}}\nconsole.log('template');\n"
+            ),
+        )
+        .unwrap();
+        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+
+        std::fs::write(
+            &path,
+            format!(
+                "{IMPLEMENTED_MARKER}\nclass EchoClientWorkload implements Workload {{}}\nconsole.log('template');\n"
+            ),
+        )
+        .unwrap();
+        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+    }
+
+    #[test]
+    fn generates_scaffold_with_local_and_remote_sections() {
+        let generator = TypeScriptGenerator;
+        let scaffold = generator.generate_scaffold_content(&[
+            BoundMethodInfo {
+                generated_client_import: "./generated/local_actor".to_string(),
+                service_name: "EchoService".to_string(),
+                method_name: "Echo".to_string(),
+                handler_name: "handleEcho".to_string(),
+                input_type: "EchoRequest".to_string(),
+                output_type: "EchoResponse".to_string(),
+                input_type_short: "EchoRequest".to_string(),
+                output_type_short: "EchoResponse".to_string(),
+                request_companion: Some("EchoRequest".to_string()),
+                is_local: true,
+            },
+            BoundMethodInfo {
+                generated_client_import: "./generated/demo/remote_client".to_string(),
+                service_name: "RemoteService".to_string(),
+                method_name: "Ping".to_string(),
+                handler_name: "handlePing".to_string(),
+                input_type: "PingRequest".to_string(),
+                output_type: "PingResponse".to_string(),
+                input_type_short: "PingRequest".to_string(),
+                output_type_short: "PingResponse".to_string(),
+                request_companion: Some("PingRequest".to_string()),
+                is_local: false,
+            },
+        ]);
+
+        assert!(scaffold.contains("dispatchLocalActor(ctx, envelope, handlers)"));
+        assert!(scaffold.contains("const handlers: LocalHandlers = {"));
+        assert!(scaffold.contains("async handleEcho(request, _ctx)"));
+        assert!(scaffold.contains("Remote RPC quick-start examples"));
+        assert!(scaffold.contains("PingRequest.encode"));
+        assert!(scaffold.contains("PingRequest.routeKey"));
+        assert!(scaffold.contains("PingRequest.response.decode"));
+        assert!(scaffold.contains("[EchoRequest.routeKey]: EchoRequest.decode"));
+        assert!(scaffold.contains("from './generated/local_actor'"));
+        assert!(scaffold.contains(UNIMPLEMENTED_MARKER));
+    }
+}

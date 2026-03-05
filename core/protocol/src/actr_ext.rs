@@ -28,9 +28,7 @@ pub enum ActrIdError {
     #[error("Invalid component in actor identity: {0}")]
     InvalidComponent(String),
 
-    #[error(
-        "Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]"
-    )]
+    #[error("Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]")]
     InvalidTypeFormat(String),
 }
 

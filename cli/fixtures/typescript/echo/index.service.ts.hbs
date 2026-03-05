@@ -1,0 +1,47 @@
+// ActrService is Implemented: This file contains a complete implementation.
+import {
+  ActrSystem,
+  type Context,
+  type RpcEnvelope,
+  type Workload,
+} from '@actor-rtc/actr';
+import {
+  EchoRequest,
+} from './generated/local_actor';
+
+class EchoServiceWorkload implements Workload {
+  async onStart(_ctx: Context): Promise<void> {
+    console.log('EchoService workload started');
+  }
+
+  async onStop(_ctx: Context): Promise<void> {
+    console.log('EchoService workload stopped');
+  }
+
+  async dispatch(_ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {
+    if (envelope.routeKey !== EchoRequest.routeKey) {
+      throw new Error(`Unknown route: ${envelope.routeKey}`);
+    }
+
+    const request = EchoRequest.decode(envelope.payload);
+    console.log(`Received echo request: ${request.message}`);
+
+    return EchoRequest.response.encode({
+      reply: request.message,
+      timestamp: BigInt(Date.now()),
+    });
+  }
+}
+
+async function main(): Promise<void> {
+  const system = await ActrSystem.fromConfig('./Actr.toml');
+  const node = system.attach(new EchoServiceWorkload());
+  const actorRef = await node.start();
+  console.log('EchoService registered, waiting for RPC calls...');
+  await actorRef.waitForShutdown();
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

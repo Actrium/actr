@@ -3,6 +3,7 @@
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::DataLane;
 use crate::transport::{NetworkError, NetworkResult};
+use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use bytes::Bytes;
@@ -49,6 +50,8 @@ pub struct WebRtcConnection {
     /// Event broadcaster for connection state changes
     event_tx: broadcast::Sender<ConnectionEvent>,
 
+    hook_callback: Option<HookCallback>,
+
     /// connection status
     connected: Arc<RwLock<bool>>,
 }
@@ -76,6 +79,7 @@ impl WebRtcConnection {
         peer_id: ActrId,
         peer_connection: Arc<RTCPeerConnection>,
         event_tx: broadcast::Sender<ConnectionEvent>,
+        hook_callback: Option<HookCallback>,
     ) -> Self {
         Self {
             peer_id,
@@ -86,6 +90,7 @@ impl WebRtcConnection {
             track_ssrcs: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new([None, None, None, None])),
             event_tx,
+            hook_callback,
             connected: Arc::new(RwLock::new(true)),
         }
     }
@@ -138,6 +143,48 @@ impl WebRtcConnection {
             peer_id: self.peer_id.clone(),
             state: connection_state.clone(),
         });
+
+        // Invoke hook synchronously (5s timeout to avoid blocking libwebrtc)
+        if let Some(cb) = &self.hook_callback {
+            let event = match connection_state {
+                ConnectionState::Connecting => Some(HookEvent::WebRtcConnectStart {
+                    peer_id: self.peer_id.clone(),
+                }),
+                ConnectionState::Connected => {
+                    // Detect relay via ICE selected candidate pair
+                    let sctp = self.peer_connection.sctp();
+                    let dtls = sctp.transport();
+                    let ice = dtls.ice_transport();
+                    let relayed = match ice.get_selected_candidate_pair().await {
+                        Some(pair) => pair.to_string().contains("relay"),
+                        None => false,
+                    };
+                    tracing::debug!(
+                        "WebRtcConnection peer connected: {:?}, relayed={}",
+                        self.peer_id,
+                        relayed
+                    );
+                    Some(HookEvent::WebRtcConnected {
+                        peer_id: self.peer_id.clone(),
+                        relayed,
+                    })
+                }
+                ConnectionState::Disconnected
+                | ConnectionState::Failed
+                | ConnectionState::Closed => Some(HookEvent::WebRtcDisconnected {
+                    peer_id: self.peer_id.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(event) = event {
+                if tokio::time::timeout(std::time::Duration::from_secs(5), cb(event))
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("⚠️ HookCallback timed out (5s) for peer {:?}", self.peer_id);
+                }
+            }
+        }
 
         // For Closed state, proactively close the connection and let
         // `close()` perform all resource cleanup. Only trigger when we
@@ -215,11 +262,9 @@ impl WebRtcConnection {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
         let channels = self.data_channels.read().await;
-        for channel_opt in channels.iter() {
-            if let Some(channel) = channel_opt {
-                if channel.ready_state() == RTCDataChannelState::Open {
-                    return true;
-                }
+        for channel in channels.iter().flatten() {
+            if channel.ready_state() == RTCDataChannelState::Open {
+                return true;
             }
         }
         false
@@ -288,8 +333,8 @@ impl WebRtcConnection {
     /// Close connection and broadcast ConnectionClosed event
     pub async fn close(&self) -> NetworkResult<()> {
         tracing::debug!(
-            "🔒 [close] Acquiring connected write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 1: acquiring connected write lock",
+            self.peer_id.serial_number
         );
         *self.connected.write().await = false;
 
@@ -303,55 +348,58 @@ impl WebRtcConnection {
         self.drain_data_channels().await;
 
         tracing::debug!(
-            "🔒 [close] Calling peer_connection.close() for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 2: closing peer_connection",
+            self.peer_id.serial_number
         );
         self.peer_connection.close().await?;
 
-        // clear blank DataChannel Cache
+        // Clear each cache under a dedicated lock scope to avoid lock-order inversion
+        // with callbacks like invalidate_lane() (lane_cache -> data_channels).
         tracing::debug!(
-            "🔒 [close] Acquiring data_channels write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 3: acquiring lane_cache write lock",
+            self.peer_id.serial_number
         );
-        let mut channels = self.data_channels.write().await;
-        *channels = [None, None, None, None];
-
-        // clear blank MediaTrack Cache
+        {
+            let mut cache = self.lane_cache.write().await;
+            *cache = [None, None, None, None];
+        }
         tracing::debug!(
-            "🔒 [close] Acquiring media_tracks write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 4: acquiring data_channels write lock",
+            self.peer_id.serial_number
         );
-        let mut tracks = self.media_tracks.write().await;
-        tracks.clear();
-
-        // clear blank sequence number cache
+        {
+            let mut channels = self.data_channels.write().await;
+            *channels = [None, None, None, None];
+        }
         tracing::debug!(
-            "🔒 [close] Acquiring track_sequence_numbers write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 5: acquiring media_tracks write lock",
+            self.peer_id.serial_number
         );
-        let mut seq_nums = self.track_sequence_numbers.write().await;
-        seq_nums.clear();
-
-        // clear blank SSRC cache
+        {
+            let mut tracks = self.media_tracks.write().await;
+            tracks.clear();
+        }
         tracing::debug!(
-            "🔒 [close] Acquiring track_ssrcs write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 6: acquiring track_sequence_numbers write lock",
+            self.peer_id.serial_number
         );
-        let mut ssrcs = self.track_ssrcs.write().await;
-        ssrcs.clear();
-
-        // clear blank Lane Cache
+        {
+            let mut seq_nums = self.track_sequence_numbers.write().await;
+            seq_nums.clear();
+        }
         tracing::debug!(
-            "🔒 [close] Acquiring lane_cache write lock for peer {:?}",
-            self.peer_id
+            "🔒 [close] serial={} step 7: acquiring track_ssrcs write lock",
+            self.peer_id.serial_number
         );
-        let mut cache = self.lane_cache.write().await;
-        *cache = [None, None, None, None];
+        {
+            let mut ssrcs = self.track_ssrcs.write().await;
+            ssrcs.clear();
+        }
 
         // Broadcast ConnectionClosed event
         tracing::debug!(
-            "📣 [close] Sending ConnectionClosed event for peer {:?}",
-            self.peer_id
+            "📣 [close] serial={} step 8: sending ConnectionClosed event",
+            self.peer_id.serial_number
         );
         let _ = self.event_tx.send(ConnectionEvent::ConnectionClosed {
             peer_id: self.peer_id.clone(),
@@ -485,7 +533,7 @@ impl WebRtcConnection {
         let dc_config = Self::get_data_channel_config(&payload_type);
         let data_channel = self
             .peer_connection
-            .create_data_channel(&label, Some(dc_config))
+            .create_data_channel(label, Some(dc_config))
             .await?;
 
         // Register on_open callback to send DataChannelOpened event
@@ -887,5 +935,302 @@ impl WebRtcConnection {
         });
 
         Ok(lane)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+    use webrtc::api::APIBuilder;
+    use webrtc::peer_connection::configuration::RTCConfiguration;
+    /// 辅助函数：创建一个用于测试的 WebRtcConnection
+    async fn create_test_connection() -> WebRtcConnection {
+        let api = APIBuilder::new().build();
+        let peer_connection = api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("Failed to create RTCPeerConnection");
+        let (event_tx, _) = broadcast::channel(16);
+        let peer_id = ActrId {
+            realm: actr_protocol::Realm { realm_id: 1 },
+            serial_number: 42,
+            r#type: actr_protocol::ActrType {
+                manufacturer: "test".to_string(),
+                name: "node".to_string(),
+                version: None,
+            },
+        };
+        WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx, None)
+    }
+
+    /// 测试：多个任务同时调用 close() 不会死锁
+    ///
+    /// close() 方法依次获取多个 RwLock 的写锁（connected, data_channels,
+    /// media_tracks, track_sequence_numbers, track_ssrcs, lane_cache）。
+    /// 如果两个 close() 调用以不同的顺序或在锁持有期间互等，就会死锁。
+    /// 此测试通过超时来检测死锁。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_close_no_deadlock() {
+        let conn = create_test_connection().await;
+        let num_tasks = 10;
+        let mut handles = Vec::with_capacity(num_tasks);
+
+        for i in 0..num_tasks {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                let result = conn.close().await;
+                tracing::info!("Task {} close result: {:?}", i, result.is_ok());
+                result
+            }));
+        }
+
+        // 使用超时检测死锁：如果 2 秒内所有任务都完成，就没有死锁
+        let all_tasks = futures_util::future::join_all(handles);
+        let result = tokio::time::timeout(Duration::from_secs(2), all_tasks).await;
+
+        match result {
+            Ok(results) => {
+                // 所有任务都应成功完成（第一个 close 实际关闭，后续的可能遇到已关闭的连接）
+                let completed = results.iter().filter(|r| r.is_ok()).count();
+                assert_eq!(
+                    completed, num_tasks,
+                    "所有 {} 个任务都应完成，实际完成 {}",
+                    num_tasks, completed
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "❌ 死锁检测：{} 个并发 close() 调用在 2 秒内未完成，可能存在死锁！",
+                    num_tasks
+                );
+            }
+        }
+    }
+
+    /// 测试：close() 与读操作并发不会死锁
+    ///
+    /// 场景：一些任务持续读取 is_connected() / has_open_data_channel()，
+    /// 另一些任务调用 close()。RwLock 的读写锁竞争不应导致死锁。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_close_with_concurrent_reads_no_deadlock() {
+        let conn: WebRtcConnection = create_test_connection().await;
+        let mut handles = Vec::new();
+
+        // 启动 5 个读任务，持续读取连接状态
+        for i in 0..5 {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..20 {
+                    // 使用 async read 代替 blocking_read（is_connected），避免 async 上下文问题
+                    let _ = *conn.connected.read().await;
+                    let _ = conn.has_open_data_channel().await;
+                    tokio::task::yield_now().await;
+                }
+                tracing::info!("Reader task {} done", i);
+            }));
+        }
+
+        // 启动 5 个 close 任务
+        for i in 0..5 {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                let result = conn.close().await;
+                tracing::info!("Close task {} result: {:?}", i, result.is_ok());
+            }));
+        }
+
+        let all_tasks = futures_util::future::join_all(handles);
+        let result = tokio::time::timeout(Duration::from_secs(2), all_tasks).await;
+
+        match result {
+            Ok(results) => {
+                let completed = results.iter().filter(|r| r.is_ok()).count();
+                assert_eq!(completed, 10, "所有 10 个任务都应完成");
+            }
+            Err(_) => {
+                panic!("❌ 死锁检测：close() 与并发读操作在 2 秒内未完成，可能存在死锁！");
+            }
+        }
+    }
+
+    /// 测试：close() 与 handle_state_change() 并发不会死锁
+    ///
+    /// 真实场景复现：ICE restart 失败后，cleanup_cancelled_connection 调用
+    /// peer_connection.close()，触发 state_change 回调调用 handle_state_change(Closed)，
+    /// 而 handle_state_change(Closed) 内部又调用 self.close()。
+    /// 这模拟了实际的 3-way concurrent close 竞争。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_close_with_handle_state_change_no_deadlock() {
+        let conn = create_test_connection().await;
+        let mut handles = Vec::new();
+
+        // 模拟 cleanup_cancelled_connection 路径：直接调用 close()
+        {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = conn.close().await;
+                tracing::info!("Direct close() done");
+            }));
+        }
+
+        // 模拟 state_change 回调路径：handle_state_change(Closed)
+        // handle_state_change 内部在 was_connected && Closed 时也会调用 close()
+        {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                conn.handle_state_change(
+                    webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed,
+                )
+                .await;
+                tracing::info!("handle_state_change(Closed) done");
+            }));
+        }
+
+        // 模拟 event listener 路径：收到 StateChanged(Closed) 后再调用 close()
+        {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                let _ = conn.close().await;
+                tracing::info!("Event listener close() done");
+            }));
+        }
+
+        let all_tasks = futures_util::future::join_all(handles);
+        let result = tokio::time::timeout(Duration::from_secs(2), all_tasks).await;
+
+        match result {
+            Ok(results) => {
+                let completed = results.iter().filter(|r| r.is_ok()).count();
+                assert_eq!(completed, 3, "所有 3 个任务都应完成");
+            }
+            Err(_) => {
+                panic!(
+                    "❌ 死锁检测：close() 与 handle_state_change 并发在 2 秒内未完成，\
+                     可能存在死锁！这复现了 ICE restart 失败后的 3-way close 竞争场景。"
+                );
+            }
+        }
+    }
+
+    /// 测试：大量并发 close() 调用的压力测试
+    ///
+    /// 使用更多的并发任务来增加锁竞争的概率，更容易暴露潜在的死锁问题。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_stress_concurrent_close() {
+        let conn = create_test_connection().await;
+        let num_tasks = 50;
+        let mut handles = Vec::with_capacity(num_tasks);
+
+        for i in 0..num_tasks {
+            let conn = conn.clone();
+            handles.push(tokio::spawn(async move {
+                // 混合 close 和读操作，增加锁竞争
+                if i % 3 == 0 {
+                    let _ = *conn.connected.read().await;
+                }
+                if i % 5 == 0 {
+                    let _ = conn.has_open_data_channel().await;
+                }
+                let _ = conn.close().await;
+            }));
+        }
+
+        let all_tasks = futures_util::future::join_all(handles);
+        let result = tokio::time::timeout(Duration::from_secs(3), all_tasks).await;
+
+        match result {
+            Ok(results) => {
+                let completed = results.iter().filter(|r| r.is_ok()).count();
+                assert_eq!(
+                    completed, num_tasks,
+                    "所有 {} 个压力测试任务都应完成",
+                    num_tasks
+                );
+                // 验证最终状态：连接应该已关闭
+                assert!(
+                    !*conn.connected.read().await,
+                    "close() 之后 connected 应为 false"
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "❌ 压力测试死锁检测：{} 个并发 close() 调用在 3 秒内未完成，可能存在死锁！",
+                    num_tasks
+                );
+            }
+        }
+    }
+
+    /// 回归用例：验证 close() 与 invalidate_lane() 并发时不会因为锁顺序反转而阻塞
+    ///
+    /// 该用例模拟了历史复现时序：
+    /// - close() 清理缓存；
+    /// - 并发触发 invalidate_lane()（lane_cache -> data_channels）。
+    /// 修复后应在超时窗口内完成，不再互相等待。
+    #[tokio::test]
+    async fn repro_close_blocked_by_lock_order_inversion() {
+        use tokio::time::{Duration, sleep};
+
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+
+        let conn = create_test_connection().await;
+        let payload_type = PayloadType::RpcReliable;
+
+        // 先创建一个 DataChannel lane，确保相关缓存和回调路径已建立。
+        let _ = conn
+            .get_lane(payload_type)
+            .await
+            .expect("failed to create lane for repro");
+
+        // 人为卡住 close()：先持有 media_tracks，确保 close 与 invalidate_lane
+        // 存在并发窗口（历史上这里会触发锁顺序互等）。
+        let media_tracks_guard = conn.media_tracks.write().await;
+
+        let conn_for_close = conn.clone();
+        let mut close_task = tokio::spawn(async move { conn_for_close.close().await });
+
+        // 给 close 一个短暂时间进入清理路径。
+        sleep(Duration::from_millis(50)).await;
+
+        // 并发触发 invalidate_lane（历史上会与 close 锁顺序互等）。
+        let conn_for_invalidate = conn.clone();
+        let mut invalidate_task = tokio::spawn(async move {
+            conn_for_invalidate.invalidate_lane(payload_type).await;
+        });
+
+        sleep(Duration::from_millis(50)).await;
+
+        // 释放 media_tracks，让 close 完成剩余清理。
+        drop(media_tracks_guard);
+
+        let result = tokio::time::timeout(Duration::from_millis(3000), async {
+            let close_res = (&mut close_task).await;
+            let invalidate_res = (&mut invalidate_task).await;
+            (close_res, invalidate_res)
+        })
+        .await;
+
+        match result {
+            Ok((close_res, invalidate_res)) => {
+                assert!(close_res.is_ok(), "close task panicked unexpectedly");
+                assert!(
+                    invalidate_res.is_ok(),
+                    "invalidate task panicked unexpectedly"
+                );
+            }
+            Err(_) => {
+                close_task.abort();
+                invalidate_task.abort();
+                let _ = close_task.await;
+                let _ = invalidate_task.await;
+                panic!("close()/invalidate_lane() should not block after lock-order fix");
+            }
+        }
     }
 }

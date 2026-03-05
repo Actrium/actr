@@ -109,7 +109,7 @@ impl ActrSystem {
         };
 
         let client = Arc::new(WebSocketSignalingClient::new(signaling_config));
-        client.start_auto_reconnector(); // Start if reconnect_config.enabled = true
+        client.start_reconnect_manager(); // Start if reconnect_config.enabled = true
         let signaling_client: Arc<dyn SignalingClient> = client;
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

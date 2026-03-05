@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+{{> head page_title="API Documentation"}}
+<body>
+    <div class="content">
+        {{> nav is_api=true}}
+
+        <div class="section">
+            <h2>Protocol Buffers Definitions</h2>
+            <p>Protocol Buffers files found in this project:</p>
+        </div>
+
+        {{#if proto_files}}
+            {{#each proto_files}}
+            <div class="section">
+                <h3>{{this.filename}}</h3>
+                <pre><code class="language-protobuf">{{this.content}}</code></pre>
+            </div>
+            {{/each}}
+        {{else}}
+            <div class="section">
+                <p>No Protocol Buffers files found.</p>
+            </div>
+        {{/if}}
+    </div>
+</body>
+</html>

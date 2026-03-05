@@ -35,7 +35,7 @@ include = [
   "python/actr/py.typed",
 ]
 manifest-path = "Cargo.toml"
-module-name = "actr_raw"
+module-name = "actr.actr_raw"
 python-packages = ["actr"]
 python-source = "python"
 strip = true

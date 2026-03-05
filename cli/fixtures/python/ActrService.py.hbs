@@ -1,0 +1,132 @@
+# DO NOT EDIT - Generated scaffold
+# TODO: Implement your business logic
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import sys
+from pathlib import Path
+
+from actr import ActrSystem, WorkloadBase, Context
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# 添加 generated 目录到 Python 路径
+generated_dir = Path(__file__).parent / "generated"
+if str(generated_dir) not in sys.path:
+    sys.path.insert(0, str(generated_dir))
+
+# 动态导入生成的模块
+from generated.local import {{PROTO_MODULE}}_pb2 as pb2
+from generated import {{ACTOR_MODULE}} as actor
+
+{{#if HAS_SERVICES}}
+{{#each SERVICES}}
+
+class {{../SERVICE_NAME}}Handler(actor.{{this.name}}Handler):
+    """
+    {{../SERVICE_NAME}} 业务逻辑实现
+    TODO: 在此类中实现具体的 RPC 方法
+    """
+
+    def __init__(self) -> None:
+        logger.info("{{../SERVICE_NAME}}Handler 实例已初始化")
+
+    {{#each this.methods}}
+
+    async def {{this.snake_name}}(
+        self, req: pb2.{{this.input_type}}, ctx: Context
+    ) -> pb2.{{this.output_type}}:
+        """
+        TODO: 实现 {{this.name}} RPC 方法
+
+        Args:
+            req: {{this.input_type}} 请求对象
+            ctx: Actor 上下文，用于服务发现或调用其他 Service
+
+        Returns:
+            {{this.output_type}} 响应对象
+        """
+        logger.info("📝 接收到 RPC 调用: {{this.name}}")
+
+        # 示例实现逻辑:
+        # return pb2.{{this.output_type}}(
+        #     field1="value",
+        #     field2=123,
+        # )
+
+        raise NotImplementedError("方法 {{this.name}} 尚未实现")
+
+    {{/each}}
+{{/each}}
+
+class {{WORKLOAD_NAME}}(WorkloadBase):
+    def __init__(self, handler: {{SERVICE_NAME}}Handler):
+        self.handler = handler
+        super().__init__(actor.{{DISPATCHER_NAME}}())
+
+    async def on_start(self, ctx: Context) -> None:
+        logger.info("🚀 工作负载 {{WORKLOAD_NAME}} 正在启动...")
+
+    async def on_stop(self, ctx: Context) -> None:
+        logger.info("🛑 工作负载 {{WORKLOAD_NAME}} 正在停止...")
+
+{{else}}
+
+# 客户端工作负载 (未定义本地服务)
+class {{WORKLOAD_NAME}}(WorkloadBase):
+    def __init__(self):
+        # 使用生成的 EmptyDispatcher（此客户端没有需要处理的入站 RPC）
+        super().__init__(actor.EmptyDispatcher())
+
+    async def on_start(self, ctx: Context) -> None:
+        logger.info("🚀 客户端工作负载 {{WORKLOAD_NAME}} 启动")
+        # TODO: 在这里添加你的客户端逻辑
+        # 例如: 调用远程服务
+        # dest = Dest.actor(ActrType.parse("acme:RemoteService"), "instance-id")
+        # response = await ctx.call_raw(dest, "MethodName", request_pb.SerializeToString())
+
+    async def on_stop(self, ctx: Context) -> None:
+        logger.info("🛑 客户端工作负载 {{WORKLOAD_NAME}} 停止")
+
+{{/if}}
+
+async def main() -> int:
+    ap = argparse.ArgumentParser(description="{{SERVICE_NAME}} Runner")
+    ap.add_argument("--actr-toml", required=True, help="ACTR 配置文件路径")
+    args = ap.parse_args()
+
+    logger.info("🔧 正在初始化 {{SERVICE_NAME}} 系统...")
+    system = await ActrSystem.from_toml(args.actr_toml)
+
+    {{#if HAS_SERVICES}}
+    workload = {{WORKLOAD_NAME}}({{SERVICE_NAME}}Handler())
+    {{else}}
+    workload = {{WORKLOAD_NAME}}()
+    {{/if}}
+
+    node = system.attach(workload)
+    ref = await node.start()
+
+    logger.info("✅ {{SERVICE_NAME}} 启动成功! Actor ID: %s", ref.actor_id())
+
+    # 等待中断信号并关闭
+    await ref.wait_for_ctrl_c_and_shutdown()
+    logger.info("👋 {{SERVICE_NAME}} 已关闭")
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys_exit_code = asyncio.run(main())
+        raise SystemExit(sys_exit_code)
+    except KeyboardInterrupt:
+        pass

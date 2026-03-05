@@ -34,8 +34,8 @@ use actr_framework::Bytes;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrId, ActrRelay, PayloadType, RoleAssignment, RoleNegotiation, SignalingEnvelope, actr_relay,
-    session_description::Type as SdpType, signaling_envelope,
+    ActrId, ActrRelay, IceRestartRequest, PayloadType, RoleAssignment, RoleNegotiation,
+    SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::HashMap;
 use std::{
@@ -80,86 +80,7 @@ struct PeerNegotiationState {
     remote_fixed: bool,
 }
 
-/// Simple exponential backoff iterator for retries
-#[derive(Debug)]
-struct ExponentialBackoff {
-    current_retries: u32,
-    max_retries: Option<u32>,
-    initial_delay: Duration,
-    max_delay: Duration,
-    /// Optional total duration limit (across all retries)
-    max_total_duration: Option<Duration>,
-    /// Start time for tracking total duration
-    start_time: Option<Instant>,
-}
-
-impl ExponentialBackoff {
-    pub fn new(initial_delay: Duration, max_delay: Duration, max_retries: Option<u32>) -> Self {
-        Self {
-            current_retries: 0,
-            max_retries,
-            initial_delay,
-            max_delay,
-            max_total_duration: None,
-            start_time: None,
-        }
-    }
-
-    /// Create a new ExponentialBackoff with total duration limit
-    pub fn with_total_duration(
-        initial_delay: Duration,
-        max_delay: Duration,
-        max_retries: Option<u32>,
-        max_total_duration: Duration,
-    ) -> Self {
-        Self {
-            current_retries: 0,
-            max_retries,
-            initial_delay,
-            max_delay,
-            max_total_duration: Some(max_total_duration),
-            start_time: Some(Instant::now()),
-        }
-    }
-
-    /// Check if total duration has been exceeded
-    fn is_duration_exceeded(&self) -> bool {
-        if let (Some(max_duration), Some(start)) = (self.max_total_duration, self.start_time) {
-            start.elapsed() > max_duration
-        } else {
-            false
-        }
-    }
-}
-
-impl Iterator for ExponentialBackoff {
-    type Item = Duration;
-
-    fn next(&mut self) -> Option<Duration> {
-        // Initialize start_time on first call if max_total_duration is set
-        if self.max_total_duration.is_some() && self.start_time.is_none() {
-            self.start_time = Some(Instant::now());
-        }
-
-        // Check total duration limit first
-        if self.is_duration_exceeded() {
-            return None;
-        }
-
-        let delay = self.initial_delay;
-
-        // Check max retries
-        if let Some(max_retries) = self.max_retries {
-            self.current_retries += 1;
-            if self.current_retries > max_retries {
-                return None;
-            }
-        }
-
-        self.initial_delay = (self.initial_delay * 2).min(self.max_delay);
-        Some(delay)
-    }
-}
+use actr_framework::ExponentialBackoff;
 
 /// Type alias for message receiver (from all peers)
 type MessageRx = Arc<Mutex<mpsc::UnboundedReceiver<(Vec<u8>, Bytes, PayloadType)>>>;
@@ -186,6 +107,12 @@ struct PeerState {
 
     /// In-flight ICE restart task handle (for de-duplication and lifecycle management)
     restart_task_handle: Option<JoinHandle<()>>,
+
+    /// Used to wake up the backoff sleep in `do_ice_restart_inner`
+    /// when external events (NetworkEvent::Available, IceRestartRequest) indicate
+    /// that the network may have recovered. Notify is idempotent — multiple
+    /// calls to `notify_one()` are safe and won't cause duplicate restarts.
+    restart_wake: Arc<tokio::sync::Notify>,
 
     /// Last state change timestamp (for health check)
     last_state_change: std::time::Instant,
@@ -231,6 +158,9 @@ pub struct WebRtcCoordinator {
     /// Connection event broadcaster for notifying all layers
     event_broadcaster: ConnectionEventBroadcaster,
 
+    /// Hook callback for synchronous lifecycle notification (set once, shared with connections)
+    hook_callback: std::sync::OnceLock<crate::wire::webrtc::signaling::HookCallback>,
+
     /// Root tracing contexts for connection initiation (ActrId → Context)
     #[cfg(feature = "opentelemetry")]
     root_context_map: Arc<RwLock<HashMap<ActrId, opentelemetry::Context>>>,
@@ -261,6 +191,7 @@ impl WebRtcCoordinator {
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
+            hook_callback: std::sync::OnceLock::new(),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -269,6 +200,11 @@ impl WebRtcCoordinator {
     /// Get a subscriber for connection events
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<ConnectionEvent> {
         self.event_broadcaster.subscribe()
+    }
+
+    /// Set the hook callback (once). Shared with all new connections.
+    pub fn set_hook_callback(&self, cb: crate::wire::webrtc::signaling::HookCallback) {
+        let _ = self.hook_callback.set(cb);
     }
 
     /// Inject a virtual network for integration testing.
@@ -731,16 +667,17 @@ impl WebRtcCoordinator {
                     },
                     Some(actr_relay::Payload::RoleAssignment(assign)) => {
                         tracing::info!(
-                            "🎭 Received RoleAssignment from {:?}, is_offerer={} (source peer)",
+                            "🎭 Received RoleAssignment from {:?}, is_offerer={} (source peer), local_id={}",
                             source.serial_number,
                             assign.is_offerer,
+                            self.local_id.serial_number,
                         );
                         let peer = if source == self.local_id {
                             target.clone()
                         } else {
                             source.clone()
                         };
-                        self.handle_role_assignment(assign.clone(), peer).await;
+                        self.handle_role_assignment(assign, peer).await;
                     }
                     Some(actr_relay::Payload::IceCandidate(ice)) => {
                         tracing::debug!(
@@ -755,6 +692,16 @@ impl WebRtcCoordinator {
                         tracing::trace!(
                             "📥 Received RoleNegotiation payload; ignored by WebRtcCoordinator"
                         );
+                    }
+                    Some(actr_relay::Payload::IceRestartRequest(req)) => {
+                        tracing::info!(
+                            "📥 Received IceRestartRequest from serial={}, reason={:?}",
+                            source.serial_number,
+                            req.reason
+                        );
+                        if let Err(e) = self.handle_ice_restart_request(&source, req.reason).await {
+                            tracing::error!("❌ Failed to handle IceRestartRequest: {}", e);
+                        }
                     }
                     None => {
                         tracing::warn!("⚠️ ActrRelay missing payload");
@@ -1173,6 +1120,7 @@ impl WebRtcCoordinator {
             target.clone(),
             Arc::clone(&peer_connection_arc),
             self.event_broadcaster.sender(),
+            self.hook_callback.get().cloned(),
         );
         self.install_restart_handler(
             webrtc_conn.clone(),
@@ -1195,6 +1143,7 @@ impl WebRtcCoordinator {
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
+                    restart_wake: Arc::new(tokio::sync::Notify::new()),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -1395,6 +1344,7 @@ impl WebRtcCoordinator {
             from.clone(),
             Arc::clone(&peer_connection_arc),
             self.event_broadcaster.sender(),
+            self.hook_callback.get().cloned(),
         );
 
         // CRITICAL: Insert peer state immediately as a placeholder to prevent race conditions.
@@ -1413,6 +1363,7 @@ impl WebRtcCoordinator {
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
+                    restart_wake: Arc::new(tokio::sync::Notify::new()),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -1468,7 +1419,7 @@ impl WebRtcCoordinator {
                 let label = dc.label();
                 let dc_for_registration = Arc::clone(&dc);
 
-                let payload_type = PayloadType::from_str_name(&label);
+                let payload_type = PayloadType::from_str_name(label);
 
                 if let Some(coord) = coord_weak.upgrade() {
                     let ready_tx = {
@@ -2700,10 +2651,14 @@ impl WebRtcCoordinator {
                     target.serial_number
                 );
                 if !is_finished {
-                    tracing::warn!(
-                        "🚫 ICE restart already in-flight for serial={}, skipping (task not finished)",
+                    // Instead of skipping, wake up the backoff sleep so the
+                    // in-flight restart retries immediately. This is idempotent —
+                    // multiple notify_one() calls are safe.
+                    tracing::info!(
+                        "⚡ ICE restart already in-flight for serial={}, waking up backoff",
                         target.serial_number
                     );
+                    state.restart_wake.notify_one();
                     return Ok(());
                 }
             } else {
@@ -2729,18 +2684,26 @@ impl WebRtcCoordinator {
 
             // 3. Check if we are the offerer
             if !state.is_offerer {
-                tracing::warn!(
-                    "🚫 Skip ICE restart to serial={}: we are not the offerer",
+                // 方案 A: Answerer sends IceRestartRequest to Offerer
+                // instead of silently skipping. This notifies the Offerer
+                // to immediately interrupt its backoff and retry ICE restart.
+                tracing::info!(
+                    "📤 Not offerer for serial={}, sending IceRestartRequest to notify offerer",
                     target.serial_number
                 );
-                return Ok(());
+                // Release lock before async call
+                drop(peers);
+                return self
+                    .request_ice_restart_from_peer(target, "network_recovered")
+                    .await;
             }
 
             // 4. Set flag to prevent concurrent restarts
             state.ice_restart_inflight = true;
 
-            // Clone peer_connection while we have the lock
+            // Clone peer_connection and restart_wake while we have the lock
             let peer_connection = state.peer_connection.clone();
+            let restart_wake = state.restart_wake.clone();
 
             tracing::info!(
                 "♻️ Initiating ICE restart to serial={}",
@@ -2757,6 +2720,7 @@ impl WebRtcCoordinator {
                     &local_id,
                     credential_state,
                     &signaling_client,
+                    restart_wake,
                 )
                 .await;
 
@@ -2824,6 +2788,112 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    /// Answerer notifies Offerer that its network has recovered.
+    ///
+    /// Sends an `IceRestartRequest` signaling message. This does NOT set
+    /// `ice_restart_inflight` — the Answerer is just a "notifier"; the Offerer
+    /// owns the full restart lifecycle. Even if the notification fails to send,
+    /// the Offerer's existing backoff loop will eventually retry (fallback).
+    async fn request_ice_restart_from_peer(
+        &self,
+        target: &ActrId,
+        reason: &str,
+    ) -> ActorResult<()> {
+        tracing::info!(
+            "📤 Sending IceRestartRequest to offerer serial={} (reason={})",
+            target.serial_number,
+            reason
+        );
+
+        let payload = actr_relay::Payload::IceRestartRequest(IceRestartRequest {
+            reason: Some(reason.to_string()),
+        });
+
+        if let Err(e) = self.send_actr_relay(target, payload).await {
+            // Non-fatal: Offerer's backoff loop will retry anyway
+            tracing::warn!(
+                "⚠️ Failed to send IceRestartRequest to serial={}: {}",
+                target.serial_number,
+                e
+            );
+            return Err(e);
+        }
+
+        tracing::info!(
+            "✅ IceRestartRequest sent to offerer serial={}",
+            target.serial_number
+        );
+        Ok(())
+    }
+
+    /// Handle incoming IceRestartRequest from Answerer (方案 A).
+    ///
+    /// Three scenarios:
+    /// 1. Restart already in-flight & task running → wake up backoff via `notify_one()`
+    /// 2. No restart in-flight & we are offerer → initiate new `restart_ice()`
+    /// 3. We are not the offerer → ignore (shouldn't happen in normal flow)
+    async fn handle_ice_restart_request(
+        self: &Arc<Self>,
+        from: &ActrId,
+        reason: Option<String>,
+    ) -> ActorResult<()> {
+        let (is_offerer, has_inflight_restart) = {
+            let peers = self.peers.read().await;
+            match peers.get(from) {
+                Some(state) => {
+                    let has_inflight = state
+                        .restart_task_handle
+                        .as_ref()
+                        .map(|h| !h.is_finished())
+                        .unwrap_or(false);
+                    (state.is_offerer, has_inflight)
+                }
+                None => {
+                    tracing::warn!(
+                        "⚠️ IceRestartRequest from unknown peer serial={}",
+                        from.serial_number
+                    );
+                    return Ok(());
+                }
+            }
+        };
+
+        if !is_offerer {
+            tracing::warn!(
+                "⚠️ Received IceRestartRequest but we are not offerer for serial={}",
+                from.serial_number
+            );
+            return Ok(());
+        }
+
+        if has_inflight_restart {
+            // Restart task is running — it's either in backoff sleep or waiting for answer.
+            // Either way, notify_one() is safe and idempotent:
+            //   - If in backoff sleep: wakes up immediately, retries ICE restart
+            //   - If waiting for answer: notify stored, consumed after wait_for_completion timeout
+            //   - If creating/sending offer: notify stored, consumed at next backoff
+            tracing::info!(
+                "⚡ Waking up ICE restart backoff for serial={} (peer notification, reason={:?})",
+                from.serial_number,
+                reason
+            );
+            let peers = self.peers.read().await;
+            if let Some(state) = peers.get(from) {
+                state.restart_wake.notify_one();
+            }
+        } else {
+            // No restart running — initiate one now
+            tracing::info!(
+                "♻️ Initiating ICE restart for serial={} upon peer request (reason={:?})",
+                from.serial_number,
+                reason
+            );
+            self.restart_ice(from).await?;
+        }
+
+        Ok(())
+    }
+
     /// Internal ICE restart implementation with retries
     /// Returns Ok(true) if restart succeeded, Ok(false) if all retries exhausted
     async fn do_ice_restart_inner(
@@ -2834,6 +2904,7 @@ impl WebRtcCoordinator {
         local_id: &ActrId,
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
+        restart_wake: Arc<tokio::sync::Notify>,
     ) -> ActorResult<bool> {
         // Use enhanced backoff with total duration limit
         let backoff = ExponentialBackoff::with_total_duration(
@@ -2854,7 +2925,15 @@ impl WebRtcCoordinator {
                     target.serial_number,
                     delay
                 );
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = restart_wake.notified() => {
+                        tracing::info!(
+                            "⚡ Backoff interrupted by wake notification (signaling guard), serial={}",
+                            target.serial_number
+                        );
+                    }
+                }
                 continue; // Skip this iteration, don't create offer
             }
 
@@ -2880,7 +2959,15 @@ impl WebRtcCoordinator {
                     gathering_duration,
                     delay
                 );
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = restart_wake.notified() => {
+                        tracing::info!(
+                            "⚡ Backoff interrupted by wake notification (gathering guard), serial={}",
+                            target.serial_number
+                        );
+                    }
+                }
                 continue; // Skip this iteration, wait for gathering to complete
             } else {
                 // Not gathering, reset timer
@@ -2964,7 +3051,15 @@ impl WebRtcCoordinator {
                 if let Some(state) = peers_guard.get_mut(target) {
                     state.ice_restart_inflight = false;
                 }
-                tokio::time::sleep(delay).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = restart_wake.notified() => {
+                        tracing::info!(
+                            "⚡ Backoff interrupted by wake notification (send failed), serial={}",
+                            target.serial_number
+                        );
+                    }
+                }
                 continue;
             }
 
@@ -2997,13 +3092,21 @@ impl WebRtcCoordinator {
                 }
             }
 
-            // Exponential backoff before retrying
+            // Exponential backoff before retrying (can be interrupted by restart_wake)
             tracing::info!(
                 "⏳ Waiting {:?} before next ICE restart attempt to serial={}",
                 delay,
                 target.serial_number
             );
-            tokio::time::sleep(delay).await;
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = restart_wake.notified() => {
+                    tracing::info!(
+                        "⚡ ICE restart backoff interrupted by wake notification for serial={}",
+                        target.serial_number
+                    );
+                }
+            }
         }
 
         if !restart_ok {
@@ -3280,10 +3383,28 @@ impl WebRtcCoordinator {
                 // The cleanup typically takes 20-110ms (much faster than establishing a new
                 // connection which takes 500-3000ms), so the brief delay in the signaling loop
                 // is acceptable and necessary for correctness.
+
+                // 🔧 FIX: Abort any inflight ICE restart task to prevent deadlock
+                // The restart task holds locks that cleanup needs. By aborting it, we release those locks.
+                // Since we are establishing a new connection anyway, the restart is no longer needed.
+                {
+                    let mut peers_guard = self.peers.write().await;
+                    if let Some(state) = peers_guard.get_mut(&peer) {
+                        if let Some(handle) = state.restart_task_handle.take() {
+                            tracing::info!(
+                                "🛑 Aborting inflight ICE restart task for {} to allow new connection",
+                                peer.serial_number
+                            );
+                            handle.abort();
+                        }
+                    }
+                }
+
                 let this = Arc::clone(self);
                 this.cleanup_cancelled_connection(&peer).await;
             }
         }
+        tracing::debug!("End role change check ");
         // ========== End role change check ==========
 
         // 先尝试唤醒等待的协商
@@ -3564,19 +3685,18 @@ mod tests {
     #[test]
     fn test_exponential_backoff_with_total_duration() {
         // Test that with_total_duration sets up the backoff correctly
-        // Note: We can't reliably test timing behavior in unit tests,
-        // so we just verify the structure is set up correctly
-        let backoff = ExponentialBackoff::with_total_duration(
+        // Verify behavior: backoff should produce delays until total duration is exceeded
+        let mut backoff = ExponentialBackoff::with_total_duration(
             Duration::from_millis(100), // initial
             Duration::from_millis(200), // max
             Some(5),                    // max retries
             Duration::from_secs(60),    // total duration
         );
 
-        // Verify the configuration
-        assert!(backoff.max_total_duration.is_some());
-        assert_eq!(backoff.max_total_duration.unwrap(), Duration::from_secs(60));
-        assert!(backoff.start_time.is_some()); // start_time is set in with_total_duration
+        // Should produce at least one delay since total duration is large
+        let first = backoff.next();
+        assert!(first.is_some(), "should produce at least one delay");
+        assert_eq!(first.unwrap(), Duration::from_millis(100));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
-use actr_protocol::{PackageName, ServiceName};
+use actr_protocol::{ActrType, ActrTypeExt, PackageName, ServiceName};
 
 /// Proto 源类型枚举 - 简化设计，支持编译时路由
 #[derive(Debug, Clone, PartialEq)]
@@ -187,11 +187,11 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     // Parse parameters from --actrframework_opt
     let params = parse_parameters(request.parameter.as_deref().unwrap_or(""));
 
-    // Parse RemoteFileActrTypes parameter: file1:actr_type1,file2:actr_type2
+    // Parse RemoteFileActrTypes parameter: file1=actr_type1;file2=actr_type2
     let mut remote_file_to_actr_type: HashMap<String, String> = HashMap::new();
     if let Some(remote_file_actr_types) = params.get("RemoteFileActrTypes") {
-        for mapping in remote_file_actr_types.split(',') {
-            if let Some((file, actr_type)) = mapping.split_once(':') {
+        for mapping in remote_file_actr_types.split(';') {
+            if let Some((file, actr_type)) = mapping.split_once('=') {
                 remote_file_to_actr_type
                     .insert(file.trim().to_string(), actr_type.trim().to_string());
             }
@@ -225,7 +225,12 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                         .get("manufacturer")
                         .map(|s| s.as_str())
                         .unwrap_or(&package_name);
-                    format!("{}+{}", manufacturer, service_name)
+                    ActrType {
+                        manufacturer: manufacturer.to_string(),
+                        name: service_name.clone(),
+                        version: None,
+                    }
+                    .to_string_repr()
                 });
 
             if proto_source == ProtoSource::Remote {
@@ -438,7 +443,7 @@ mod tests {
         let request = CodeGeneratorRequest {
             file_to_generate: vec!["local.proto".to_string(), "remote/echo.proto".to_string()],
             parameter: Some(
-                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto:custom+EchoAlias"
+                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias"
                     .to_string(),
             ),
             proto_file: vec![

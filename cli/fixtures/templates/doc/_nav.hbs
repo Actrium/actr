@@ -1,0 +1,11 @@
+<div class="header">
+    <h1>{{project_name}}</h1>
+    {{#if project_description}}<p>{{project_description}}</p>{{/if}}
+    {{#if project_version}}<span class="badge">v{{project_version}}</span>{{/if}}
+</div>
+
+<div class="nav">
+    <a href="index.html" class="{{#if is_overview}}active{{/if}}">Overview</a>
+    <a href="api.html" class="{{#if is_api}}active{{/if}}">API Docs</a>
+    <a href="config.html" class="{{#if is_config}}active{{/if}}">Configuration</a>
+</div>

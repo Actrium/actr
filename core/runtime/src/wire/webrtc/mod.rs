@@ -18,6 +18,6 @@ pub use coordinator::WebRtcCoordinator;
 pub use gate::WebRtcGate;
 pub use negotiator::{IceServer, IceTransportPolicy, WebRtcConfig, WebRtcNegotiator};
 pub use signaling::{
-    AuthConfig, AuthType, ConnectionState, ReconnectConfig, SignalingClient, SignalingConfig,
-    SignalingStats, WebSocketSignalingClient,
+    AuthConfig, AuthType, ConnectionState, DisconnectReason, ReconnectConfig, SignalingClient,
+    SignalingConfig, SignalingEvent, SignalingStats, WebSocketSignalingClient,
 };

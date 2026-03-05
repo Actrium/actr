@@ -6,8 +6,8 @@
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkError;
 use crate::wire::webrtc::SignalingClient;
-use actr_runtime_mailbox::Mailbox;
 use actr_protocol::{ActrId, ActrIdExt, RegisterRequest, ServiceAvailabilityState};
+use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;

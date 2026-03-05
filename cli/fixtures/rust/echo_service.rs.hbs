@@ -1,0 +1,28 @@
+use crate::generated::echo::{EchoRequest, EchoResponse};
+use crate::generated::echo_actor::EchoServiceHandler;
+
+pub struct EchoServiceImpl;
+
+#[async_trait::async_trait]
+impl EchoServiceHandler for EchoServiceImpl {
+    async fn echo<C: actr_framework::Context>(
+        &self,
+        req: EchoRequest,
+        _ctx: &C,
+    ) -> actr_protocol::ActorResult<EchoResponse> {
+        println!("Received echo request: {}", req.message);
+        Ok(EchoResponse {
+            reply: req.message,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        })
+    }
+}
+
+impl EchoServiceImpl {
+    pub fn new() -> Self {
+        Self
+    }
+}

@@ -1,0 +1,1351 @@
+use crate::commands::SupportedLanguage;
+use crate::commands::codegen::scaffold::ScaffoldCatalog;
+use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
+use crate::error::{ActrCliError, Result};
+use crate::plugin_config::{compare_versions, load_protoc_plugin_config, version_is_at_least};
+use crate::utils::{command_exists, to_pascal_case};
+use actr_config::LockFile;
+use actr_protocol::ActrTypeExt;
+use async_trait::async_trait;
+use handlebars::Handlebars;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
+use tracing::{debug, info, warn};
+use walkdir::WalkDir;
+
+const ACTR_SERVICE_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/swift/ActrService.swift.hbs"
+));
+
+// Required tools for Swift codegen
+const PROTOC: &str = "protoc";
+const PROTOC_GEN_SWIFT: &str = "protoc-gen-swift";
+const PROTOC_GEN_ACTR_FRAMEWORK_SWIFT: &str = "protoc-gen-actrframework-swift";
+
+pub struct SwiftGenerator;
+
+#[cfg(target_os = "macos")]
+fn colorize_warning_output(output: &str) -> String {
+    use owo_colors::OwoColorize;
+
+    let warning_label = format!("{}", "Warning:".yellow());
+    output.replace("Warning:", &warning_label)
+}
+
+#[async_trait]
+impl LanguageGenerator for SwiftGenerator {
+    async fn generate_infrastructure(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+        info!("🔧 Generating Swift infrastructure code...");
+        let mut generated_files = Vec::new();
+
+        self.ensure_required_tools(context)?;
+
+        // Ensure output directory exists
+        std::fs::create_dir_all(&context.output).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to create output directory: {e}"))
+        })?;
+
+        let proto_root = if context.input_path.is_file() {
+            context
+                .input_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+        } else {
+            context.input_path.as_path()
+        };
+
+        // 1. Load Actr.lock.toml if available (it always has actr_type)
+        // Try to find Actr.lock.toml by searching up from proto_root
+        let lock_file_path = proto_root
+            .ancestors()
+            .find_map(|p| {
+                let lock_path = p.join("Actr.lock.toml");
+                if lock_path.exists() {
+                    Some(lock_path)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| proto_root.join("Actr.lock.toml"));
+        let lock_file = LockFile::from_file(&lock_file_path).ok();
+        if lock_file.is_some() {
+            debug!("Loaded Actr.lock.toml from: {:?}", lock_file_path);
+        } else {
+            debug!(
+                "Actr.lock.toml not found at: {:?} (will fallback to Config only)",
+                lock_file_path
+            );
+        }
+
+        // 2. Separate local and remote files, and build relative paths
+        // Also build a mapping from proto file paths to their actr_type
+        let mut remote_paths = Vec::new();
+        let mut local_paths = Vec::new();
+        let mut remote_file_to_actr_type: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        for proto_file in &context.proto_files {
+            let is_remote = proto_file.to_string_lossy().contains("/remote/");
+            let relative_path = proto_file.strip_prefix(proto_root).unwrap_or(proto_file);
+            let path_str = relative_path.to_string_lossy().to_string();
+
+            if is_remote {
+                remote_paths.push(path_str.clone());
+                // Try to find matching dependency by proto file path
+                // Proto file path format: <dependency-alias>/<filename>.proto
+                // or remote/<dependency-alias>/<filename>.proto
+                if let Some(dep_alias) = relative_path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                {
+                    debug!(
+                        "Trying to match dependency alias: {} for proto file: {}",
+                        dep_alias, path_str
+                    );
+
+                    // First, try to get actr_type from Config
+                    let mut actr_type_str: Option<String> = None;
+
+                    if let Some(dep) = context
+                        .config
+                        .dependencies
+                        .iter()
+                        .find(|d| d.alias == dep_alias)
+                    {
+                        debug!(
+                            "Found matching dependency in Config: alias={}, actr_type={:?}",
+                            dep.alias, dep.actr_type
+                        );
+                        if let Some(ref actr_type) = dep.actr_type {
+                            // Convert ActrType to canonical string representation.
+                            actr_type_str = Some(actr_type.to_string_repr());
+                            debug!(
+                                "Got actr_type from Config: {}",
+                                actr_type_str.as_ref().unwrap()
+                            );
+                        }
+                    }
+
+                    // If not found in Config, try to get from LockFile
+                    if actr_type_str.is_none() {
+                        if let Some(ref lock) = lock_file {
+                            // LockFile uses 'name' field to match (which is the dependency name/alias)
+                            if let Some(locked_dep) = lock.get_dependency(dep_alias) {
+                                debug!(
+                                    "Found matching dependency in LockFile: name={}, actr_type={}",
+                                    locked_dep.name, locked_dep.actr_type
+                                );
+                                actr_type_str = Some(locked_dep.actr_type.clone());
+                            } else {
+                                debug!(
+                                    "No matching dependency found in LockFile for name: {} (available names: {:?})",
+                                    dep_alias,
+                                    lock.dependencies
+                                        .iter()
+                                        .map(|d| &d.name)
+                                        .collect::<Vec<_>>()
+                                );
+                            }
+                        } else {
+                            debug!(
+                                "LockFile not found or could not be loaded: {:?}",
+                                lock_file_path
+                            );
+                        }
+                    }
+
+                    // If we found an actr_type, add it to the mapping
+                    if let Some(actr_type) = actr_type_str {
+                        remote_file_to_actr_type.insert(path_str.clone(), actr_type.clone());
+                        debug!("Mapped proto file {} to actr_type {}", path_str, actr_type);
+                    } else {
+                        debug!(
+                            "Could not find actr_type for dependency alias: {}",
+                            dep_alias
+                        );
+                    }
+                } else {
+                    debug!("Could not extract dependency alias from path: {}", path_str);
+                }
+            } else {
+                local_paths.push(path_str);
+            }
+        }
+
+        // 2. Build the unified options string
+        let mut options = format!(
+            "Visibility=Public,manufacturer={}",
+            context.config.package.actr_type.manufacturer
+        );
+
+        if !remote_paths.is_empty() {
+            options.push_str(&format!(",RemoteFiles={}", remote_paths.join(":")));
+            // Add RemoteFileActrTypes mapping: file1=actr_type1;file2=actr_type2
+            if !remote_file_to_actr_type.is_empty() {
+                let actr_type_mappings: Vec<String> = remote_file_to_actr_type
+                    .iter()
+                    .map(|(file, actr_type)| format!("{}={}", file, actr_type))
+                    .collect();
+                options.push_str(&format!(
+                    ",RemoteFileActrTypes={}",
+                    actr_type_mappings.join(";")
+                ));
+            }
+        }
+
+        if !local_paths.is_empty() {
+            options.push_str(&format!(",LocalFiles={}", local_paths.join(":")));
+            // Keep LocalFile for backward compatibility with older plugin versions
+            options.push_str(&format!(",LocalFile={}", local_paths[0]));
+        }
+
+        // Step 1: Generate basic Swift protobuf types for files that contain messages, enums or extensions
+        let swift_proto_files: Vec<_> = context
+            .proto_files
+            .iter()
+            .filter(|p| self.has_messages_enums_or_extensions(p))
+            .collect();
+
+        if !swift_proto_files.is_empty() {
+            let mut cmd = StdCommand::new("protoc");
+            cmd.arg(format!("--proto_path={}", proto_root.display()))
+                .arg(format!("--swift_out={}", context.output.display()))
+                .arg("--swift_opt=Visibility=Public");
+
+            for proto_file in swift_proto_files {
+                cmd.arg(proto_file);
+            }
+
+            debug!("Executing protoc (swift): {:?}", cmd);
+            let output = cmd.output().map_err(|e| {
+                ActrCliError::command_error(format!("Failed to execute protoc (swift): {e}"))
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ActrCliError::command_error(format!(
+                    "protoc (swift) execution failed: {stderr}"
+                )));
+            }
+        }
+
+        // Step 2: Generate Actor framework code using protoc-gen-actrframework-swift
+        // We filter to files that have either services (to generate Actor/Workload)
+        // or messages (to generate RpcRequest extensions).
+        // For local files, we always include them even if empty to ensure the Workload is generated.
+        let actr_proto_files: Vec<_> = context
+            .proto_files
+            .iter()
+            .filter(|p| {
+                let is_remote = p.to_string_lossy().contains("/remote/");
+                !is_remote || self.has_messages_enums_or_extensions(p) || self.has_services(p)
+            })
+            .collect();
+
+        if !actr_proto_files.is_empty() {
+            let mut cmd = StdCommand::new("protoc");
+            cmd.arg(format!("--proto_path={}", proto_root.display()))
+                .arg(format!("--actrframework-swift_opt={}", options))
+                .arg(format!(
+                    "--actrframework-swift_out={}",
+                    context.output.display()
+                ));
+
+            for proto_file in actr_proto_files {
+                cmd.arg(proto_file);
+            }
+
+            debug!("Executing protoc (actrframework-swift): {:?}", cmd);
+            let output = cmd.output().map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to execute protoc (actrframework-swift): {e}"
+                ))
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ActrCliError::command_error(format!(
+                    "protoc (actrframework-swift) execution failed: {stderr}"
+                )));
+            }
+        }
+
+        // Flatten directory structure: move all swift files from subdirectories to output root
+        self.flatten_output_directory(&context.output)?;
+        // Collect generated files (recursively)
+        for entry in walkdir::WalkDir::new(&context.output)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "swift") {
+                generated_files.push(path.to_path_buf());
+            }
+        }
+
+        info!("✅ Infrastructure code generation completed");
+        Ok(generated_files)
+    }
+
+    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+        info!("📝 Generating Swift user code scaffold...");
+        let mut scaffold_files = Vec::new();
+
+        // 1. Parse local services to get methods for handler implementation
+        let mut services = self.parse_local_services(context)?;
+
+        if services.len() > 1 {
+            let service_names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+            return Err(ActrCliError::config_error(format!(
+                "Multiple services found in local proto files: [{}]. \
+                Each ActrNode can only attach a single Workload. \
+                Please split each service into its own proto file and project.",
+                service_names.join(", ")
+            )));
+        }
+
+        if let Some(service) = services.first_mut() {
+            service.workload_name = self
+                .extract_workload_name_for_service(&context.output, &service.name)
+                .unwrap_or_else(|| {
+                    let fallback = format!("{}Workload", service.name);
+                    warn!(
+                        "Could not find workload name for service '{}' in local.actor.swift, \
+                        falling back to '{}'. Run `actr gen` infrastructure step first.",
+                        service.name, fallback
+                    );
+                    fallback
+                });
+        }
+
+        // 2. Determine service name for scaffolding
+        let service_name = if let Some(service) = services.first() {
+            service.name.clone()
+        } else if let Some(dep) = context.config.dependencies.first() {
+            let type_name = dep
+                .actr_type
+                .as_ref()
+                .map(|t| t.name.clone())
+                .or_else(|| dep.service.as_ref().map(|service| service.name.clone()))
+                .unwrap_or_else(|| dep.alias.clone());
+
+            debug!("Using service name from dependencies: {}", type_name);
+            type_name
+        } else {
+            // Fallback to the first proto file name
+            let guessed_name = context
+                .proto_files
+                .first()
+                .and_then(|f| f.file_stem())
+                .and_then(|s| s.to_str())
+                .map(to_pascal_case)
+                .map(|s| format!("{}Service", s))
+                .unwrap_or_else(|| "UnknownService".to_string());
+
+            debug!("Fallback to guessed service name: {}", guessed_name);
+            guessed_name
+        };
+
+        // Try to read workload name from generated local.actor.swift file
+        let workload_name = if let Some(service) = services.first() {
+            service.workload_name.clone()
+        } else {
+            self.extract_first_workload_name_from_generated_file(&context.output)
+                .unwrap_or_else(|| {
+                    let fallback =
+                        format!("{}Workload", to_pascal_case(&context.config.package.name));
+                    warn!(
+                        "Could not find workload name in local.actor.swift, \
+                        falling back to '{}'. Run `actr gen` infrastructure step first.",
+                        fallback
+                    );
+                    fallback
+                })
+        };
+
+        let user_file_path = context
+            .output
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("ActrService.swift");
+
+        // Check if file exists and should be overwritten
+        if user_file_path.exists() {
+            let is_scaffold = self.should_overwrite_scaffold(&user_file_path)?;
+
+            // Always overwrite scaffold files (generated by init)
+            if is_scaffold {
+                info!("🔄 Overwriting scaffold file: {:?}", user_file_path);
+            } else if !context.overwrite_user_code {
+                // Skip non-scaffold files unless overwrite is forced
+                info!("⏭️  Skipping existing user code file: {:?}", user_file_path);
+                info!("");
+                info!("💡 ActrService.swift already exists with user code.");
+                info!("   The file was likely created during `actr init` with a template.");
+                info!(
+                    "   User code scaffold generation is skipped to preserve your implementation."
+                );
+                info!("   Use --overwrite-user-code flag if you want to regenerate the scaffold.");
+                return Ok(scaffold_files);
+            } else {
+                info!(
+                    "🔄 Overwriting existing file (--overwrite-user-code): {:?}",
+                    user_file_path
+                );
+            }
+        }
+
+        let scaffold_content = self.generate_scaffold_content(
+            &context.config.package.actr_type.manufacturer,
+            &service_name,
+            &workload_name,
+            &services,
+        )?;
+
+        std::fs::write(&user_file_path, scaffold_content).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to write user code scaffold: {e}"))
+        })?;
+
+        info!("📄 Generated user code scaffold: {:?}", user_file_path);
+        scaffold_files.push(user_file_path);
+
+        info!("✅ User code scaffold generation completed");
+        Ok(scaffold_files)
+    }
+
+    async fn format_code(&self, _context: &GenContext, _files: &[PathBuf]) -> Result<()> {
+        // Swift code formatting is usually done via Xcode or swift-format.
+        // For now, we'll skip it as we don't want to enforce a specific tool.
+        Ok(())
+    }
+
+    async fn validate_code(&self, context: &GenContext) -> Result<()> {
+        info!("🔍 Running xcodegen generate...");
+        self.ensure_xcodegen_available()?;
+        let project_root = self.find_xcodegen_root(context)?;
+        let output = StdCommand::new("xcodegen")
+            .arg("generate")
+            .current_dir(&project_root)
+            .output()
+            .map_err(|e| ActrCliError::command_error(format!("Failed to run xcodegen: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ActrCliError::command_error(format!(
+                "xcodegen generate failed: {stderr}"
+            )));
+        }
+
+        info!("✅ xcodegen generate completed");
+        Ok(())
+    }
+
+    fn print_next_steps(&self, context: &GenContext) {
+        let project_name = context
+            .output
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("YourProject");
+
+        println!("\n🎉 Swift code generation completed!");
+        println!("\n📋 Next steps:");
+        println!("1. 📖 View generated code: {:?}", context.output);
+        if !context.no_scaffold {
+            println!("2. ✏️  Implement business logic in ActrService.swift");
+            println!("3. 🏗️  xcodegen generate has been run to update your Xcode project");
+            println!("4. 🚀 Open {}.xcodeproj and build", project_name);
+        } else {
+            println!("2. 🏗️  xcodegen generate has been run to update your Xcode project");
+            println!("3. 🚀 Open {}.xcodeproj and build", project_name);
+        }
+        println!("\n💡 Tip: Check the detailed user guide in the generated user code files");
+    }
+}
+
+impl SwiftGenerator {
+    fn ensure_required_tools(&self, context: &GenContext) -> Result<()> {
+        // 1. Ensure protoc is available.
+        let mut missing_tools: Vec<(&str, &str)> = Vec::new();
+        if !command_exists(PROTOC) {
+            self.try_install_protoc()?;
+            if !command_exists(PROTOC) {
+                missing_tools.push((PROTOC, "Protocol Buffers compiler"));
+            }
+        }
+
+        // 2. Try to ensure Swift plugins are available. For these we make a
+        //    best-effort attempt to auto-install and only fail if they are
+        //    still missing afterwards.
+        if !command_exists(PROTOC_GEN_SWIFT) {
+            self.try_install_swift_protobuf()?;
+            if !command_exists(PROTOC_GEN_SWIFT) {
+                missing_tools.push((
+                    PROTOC_GEN_SWIFT,
+                    "Protocol Buffers Swift codegen plugin (usually provided by swift-protobuf)",
+                ));
+            }
+        }
+
+        if !command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
+            self.try_install_actrframework_swift_plugin()?;
+            if !command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
+                missing_tools.push((
+                    PROTOC_GEN_ACTR_FRAMEWORK_SWIFT,
+                    "ActrFramework Swift codegen plugin (protoc-gen-actrframework-swift)",
+                ));
+            }
+        }
+
+        // 3. Check version compatibility for protoc-gen-actrframework-swift
+        if command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
+            self.check_and_update_plugin_version(context)?;
+        }
+
+        if missing_tools.is_empty() {
+            return Ok(());
+        }
+
+        let mut error_msg = "Missing required tools:\n".to_string();
+        for (tool, description) in &missing_tools {
+            error_msg.push_str(&format!("  - {tool} ({description})\n"));
+        }
+
+        error_msg
+            .push_str("\nTried automatic installation for Swift-related tools where possible.\n");
+        error_msg.push_str("Please install the missing tools manually and try again.\n\n");
+        error_msg.push_str("Suggested installation commands:\n");
+        for (tool, _) in &missing_tools {
+            match *tool {
+                PROTOC => {
+                    error_msg.push_str(
+                        "  - protoc: install via your package manager, e.g. `brew install protobuf` or `brew reinstall protobuf`\n",
+                    );
+                }
+                PROTOC_GEN_SWIFT => {
+                    error_msg.push_str(
+                        "  - protoc-gen-swift: install via your package manager, e.g. `brew install swift-protobuf` or `brew reinstall swift-protobuf`; see https://github.com/apple/swift-protobuf\n",
+                    );
+                }
+                PROTOC_GEN_ACTR_FRAMEWORK_SWIFT => {
+                    error_msg.push_str(
+                        "  - protoc-gen-actrframework-swift: install via your package manager, e.g. `brew install protoc-gen-actrframework-swift` or `brew reinstall protoc-gen-actrframework-swift`\n",
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        Err(ActrCliError::command_error(error_msg))
+    }
+
+    fn should_overwrite_scaffold(&self, path: &Path) -> Result<bool> {
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(_) => return Ok(false),
+        };
+
+        // Check for "implemented" marker - if present, never overwrite
+        if content.contains("ActrService is Implemented") {
+            return Ok(false);
+        }
+
+        // Check for scaffold markers
+        let scaffold_markers = [
+            "ActrService is not implemented",
+            "ActrService is not generated",
+        ];
+        let has_scaffold_marker = scaffold_markers
+            .iter()
+            .any(|marker| content.contains(marker));
+
+        // If no scaffold marker, it's user code - don't overwrite
+        if !has_scaffold_marker {
+            return Ok(false);
+        }
+
+        // Even if it has scaffold markers, check if it contains substantial user implementation
+        // If the file has ActrService class with initialize and shutdown methods,
+        // it's likely user code that should be preserved
+        let has_actr_service_class =
+            content.contains("final class ActrService") || content.contains("class ActrService");
+        let has_initialize_method = content.contains("func initialize()");
+        let has_shutdown_method = content.contains("func shutdown()");
+
+        // If it has ActrService class with core methods, treat it as user code
+        // This covers cases where users have implemented the core functionality
+        // even if they haven't removed the scaffold markers
+        if has_actr_service_class && has_initialize_method && has_shutdown_method {
+            return Ok(false);
+        }
+
+        // Only overwrite if it has scaffold markers and appears to be a minimal scaffold
+        // (e.g., just the basic structure without substantial implementation)
+        Ok(true)
+    }
+
+    fn ensure_xcodegen_available(&self) -> Result<()> {
+        if command_exists("xcodegen") {
+            return Ok(());
+        }
+
+        Err(ActrCliError::command_error(
+            "xcodegen not found. Install via `brew install xcodegen`.".to_string(),
+        ))
+    }
+
+    /// Best-effort automatic installation for the Swift Protobuf plugin.
+    ///
+    /// On macOS with Homebrew available this will run:
+    ///   brew install swift-protobuf
+    ///
+    /// Any failure is logged as a warning and does not immediately error; the
+    /// caller is expected to re-check the tool availability and present a
+    /// helpful manual-install message if still missing.
+    fn try_install_swift_protobuf(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if !command_exists("brew") {
+                debug!("Homebrew not found; skipping automatic swift-protobuf installation");
+                return Ok(());
+            }
+
+            info!("📦 Installing swift-protobuf via Homebrew (for protoc-gen-swift)...");
+            let output = StdCommand::new("brew")
+                .arg("install")
+                .arg("swift-protobuf")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to run Homebrew for swift-protobuf installation: {e}"
+                    ))
+                })?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let combined_output = format!("{stdout}{stderr}");
+            if combined_output.contains("Warning:") {
+                let highlighted_output = colorize_warning_output(combined_output.trim());
+                eprintln!("{highlighted_output}");
+            }
+
+            if !output.status.success() {
+                warn!(
+                    "swift-protobuf installation via Homebrew failed, please install manually.\n{}",
+                    stderr
+                );
+            } else {
+                info!("✅ swift-protobuf installation completed");
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            debug!("Automatic swift-protobuf installation is only supported on macOS (Homebrew)");
+        }
+
+        Ok(())
+    }
+
+    /// Best-effort automatic installation for protoc.
+    ///
+    /// On macOS with Homebrew available this will run:
+    ///   brew install protobuf
+    fn try_install_protoc(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if !command_exists("brew") {
+                debug!("Homebrew not found; skipping automatic protoc installation");
+                return Ok(());
+            }
+
+            info!("📦 Installing protobuf via Homebrew (for protoc)...");
+            let output = StdCommand::new("brew")
+                .arg("install")
+                .arg("protobuf")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to run Homebrew for protobuf installation: {e}"
+                    ))
+                })?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let combined_output = format!("{stdout}{stderr}");
+            if combined_output.contains("Warning:") {
+                let highlighted_output = colorize_warning_output(combined_output.trim());
+                eprintln!("{highlighted_output}");
+            }
+
+            if !output.status.success() {
+                warn!(
+                    "protobuf installation via Homebrew failed, please install manually.\n{}",
+                    stderr
+                );
+            } else {
+                info!("✅ protobuf installation completed");
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            debug!("Automatic protoc installation is only supported on macOS (Homebrew)");
+        }
+
+        Ok(())
+    }
+
+    /// Best-effort automatic installation hook for protoc-gen-actrframework-swift.
+    ///
+    /// On macOS with Homebrew available this will run:
+    ///   brew install protoc-gen-actrframework-swift
+    fn try_install_actrframework_swift_plugin(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if !command_exists("brew") {
+                debug!(
+                    "Homebrew not found; skipping Homebrew installation for protoc-gen-actrframework-swift"
+                );
+                return Ok(());
+            }
+
+            info!("📦 Installing protoc-gen-actrframework-swift via Homebrew...");
+            let tap_output = StdCommand::new("brew")
+                .arg("tap")
+                .arg("actor-rtc/homebrew-tap")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to run Homebrew tap for actor-rtc/homebrew-tap: {e}"
+                    ))
+                })?;
+            if !tap_output.status.success() {
+                let stdout = String::from_utf8_lossy(&tap_output.stdout);
+                let stderr = String::from_utf8_lossy(&tap_output.stderr);
+                warn!(
+                    "Homebrew tap for actor-rtc/homebrew-tap failed, please add it manually.\n{}{}",
+                    stdout, stderr
+                );
+            }
+
+            let output = StdCommand::new("brew")
+                .arg("install")
+                .arg("protoc-gen-actrframework-swift")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to run Homebrew for protoc-gen-actrframework-swift installation: {e}"
+                    ))
+                })?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let combined_output = format!("{stdout}{stderr}");
+            if combined_output.contains("Warning:") {
+                let highlighted_output = colorize_warning_output(combined_output.trim());
+                eprintln!("{highlighted_output}");
+            }
+
+            if !output.status.success() {
+                warn!(
+                    "Homebrew installation for protoc-gen-actrframework-swift failed, please install manually.\n{}",
+                    stderr
+                );
+            } else {
+                info!("✅ protoc-gen-actrframework-swift installation completed");
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            debug!(
+                "Automatic installation for protoc-gen-actrframework-swift is only supported on macOS (Homebrew/workspace build)"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Check installed protoc-gen-actrframework-swift version and ensure it matches actr version
+    fn check_and_update_plugin_version(&self, context: &GenContext) -> Result<()> {
+        let actr_version = env!("CARGO_PKG_VERSION");
+        let min_version =
+            self.resolve_plugin_min_version(context, PROTOC_GEN_ACTR_FRAMEWORK_SWIFT)?;
+        let plugin_version = self.get_plugin_version()?;
+
+        match (min_version, plugin_version) {
+            (Some(min_version), Some(plugin_ver)) => {
+                if version_is_at_least(&plugin_ver, &min_version) {
+                    debug!(
+                        "✅ protoc-gen-actrframework-swift version {} meets minimum version {}",
+                        plugin_ver, min_version
+                    );
+                    return Ok(());
+                }
+
+                warn!(
+                    "⚠️  protoc-gen-actrframework-swift version {} is lower than minimum version {}",
+                    plugin_ver, min_version
+                );
+                self.try_update_plugin()?;
+                let updated_version = self.get_plugin_version()?;
+                if let Some(updated_ver) = updated_version {
+                    if version_is_at_least(&updated_ver, &min_version) {
+                        info!(
+                            "✅ Successfully updated protoc-gen-actrframework-swift to version {}",
+                            updated_ver
+                        );
+                        return Ok(());
+                    }
+                    return Err(ActrCliError::command_error(format!(
+                        "protoc-gen-actrframework-swift version {} is still lower than minimum version {} after update. Please manually update it.",
+                        updated_ver, min_version
+                    )));
+                }
+                return Err(ActrCliError::command_error(
+                    "Failed to get protoc-gen-actrframework-swift version after update".to_string(),
+                ));
+            }
+            (Some(min_version), None) => {
+                return Err(ActrCliError::command_error(format!(
+                    "Could not determine protoc-gen-actrframework-swift version (minimum required: {}).",
+                    min_version
+                )));
+            }
+            (None, Some(plugin_ver)) => match compare_versions(&plugin_ver, actr_version) {
+                std::cmp::Ordering::Equal => {
+                    debug!(
+                        "✅ protoc-gen-actrframework-swift version {} matches actr version {}",
+                        plugin_ver, actr_version
+                    );
+                    return Ok(());
+                }
+                std::cmp::Ordering::Less => {
+                    warn!(
+                        "⚠️  protoc-gen-actrframework-swift version {} is lower than actr version {}",
+                        plugin_ver, actr_version
+                    );
+                    self.try_update_plugin()?;
+                    let updated_version = self.get_plugin_version()?;
+                    if let Some(updated_ver) = updated_version {
+                        match compare_versions(&updated_ver, actr_version) {
+                            std::cmp::Ordering::Equal => {
+                                info!(
+                                    "✅ Successfully updated protoc-gen-actrframework-swift to version {}",
+                                    updated_ver
+                                );
+                                return Ok(());
+                            }
+                            std::cmp::Ordering::Less => {
+                                return Err(ActrCliError::command_error(format!(
+                                    "protoc-gen-actrframework-swift version {} is still lower than actr version {} after update. Please manually update it.",
+                                    updated_ver, actr_version
+                                )));
+                            }
+                            std::cmp::Ordering::Greater => {
+                                return Err(ActrCliError::command_error(format!(
+                                    "protoc-gen-actrframework-swift version {} is higher than actr version {} after update. Please downgrade actr or upgrade protoc-gen-actrframework-swift.",
+                                    updated_ver, actr_version
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(ActrCliError::command_error(
+                            "Failed to get protoc-gen-actrframework-swift version after update"
+                                .to_string(),
+                        ));
+                    }
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(ActrCliError::command_error(format!(
+                        "protoc-gen-actrframework-swift version {} is higher than actr version {}. Please downgrade protoc-gen-actrframework-swift or upgrade actr.",
+                        plugin_ver, actr_version
+                    )));
+                }
+            },
+            (None, None) => {
+                warn!(
+                    "Could not determine protoc-gen-actrframework-swift version, skipping version check"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the version of installed protoc-gen-actrframework-swift
+    fn get_plugin_version(&self) -> Result<Option<String>> {
+        let output = StdCommand::new(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT)
+            .arg("--version")
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let version_info = String::from_utf8_lossy(&output.stdout);
+                // Parse version from output, e.g., "protoc-gen-actrframework-swift 0.1.10"
+                let version = version_info.lines().next().and_then(|line| {
+                    // Try to find version number (e.g., "0.1.10")
+                    line.split_whitespace()
+                        .find(|s| s.chars().all(|c| c.is_ascii_digit() || c == '.'))
+                        .map(|v| v.to_string())
+                });
+
+                debug!(
+                    "Detected protoc-gen-actrframework-swift version: {:?}",
+                    version
+                );
+                Ok(version)
+            }
+            _ => {
+                debug!("Could not get protoc-gen-actrframework-swift version");
+                Ok(None)
+            }
+        }
+    }
+
+    fn resolve_plugin_min_version(
+        &self,
+        context: &GenContext,
+        plugin_name: &str,
+    ) -> Result<Option<String>> {
+        let config = load_protoc_plugin_config(&context.config_path)?;
+        if let Some(config) = config
+            && let Some(min_version) = config.min_version(plugin_name)
+        {
+            info!(
+                "🔧 Using minimum version for {} from {}",
+                plugin_name,
+                config.path().display()
+            );
+            return Ok(Some(min_version.to_string()));
+        }
+        Ok(None)
+    }
+
+    /// Try to update protoc-gen-actrframework-swift via Homebrew
+    fn try_update_plugin(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            if !command_exists("brew") {
+                return Err(ActrCliError::command_error(
+                    "Homebrew not found; cannot update protoc-gen-actrframework-swift".to_string(),
+                ));
+            }
+
+            info!("🔄 Updating Homebrew...");
+            let update_output = StdCommand::new("brew")
+                .arg("update")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Failed to run brew update: {e}"))
+                })?;
+
+            if !update_output.status.success() {
+                let stderr = String::from_utf8_lossy(&update_output.stderr);
+                warn!("brew update failed: {}", stderr);
+            } else {
+                info!("✅ Homebrew updated");
+            }
+
+            info!("🔄 Reinstalling protoc-gen-actrframework-swift...");
+            let reinstall_output = StdCommand::new("brew")
+                .arg("reinstall")
+                .arg("protoc-gen-actrframework-swift")
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to run brew reinstall protoc-gen-actrframework-swift: {e}"
+                    ))
+                })?;
+
+            let stdout = String::from_utf8_lossy(&reinstall_output.stdout);
+            let stderr = String::from_utf8_lossy(&reinstall_output.stderr);
+            let combined_output = format!("{stdout}{stderr}");
+            if combined_output.contains("Warning:") {
+                let highlighted_output = colorize_warning_output(combined_output.trim());
+                eprintln!("{highlighted_output}");
+            }
+
+            if !reinstall_output.status.success() {
+                return Err(ActrCliError::command_error(format!(
+                    "brew reinstall protoc-gen-actrframework-swift failed: {stderr}"
+                )));
+            }
+
+            info!("✅ protoc-gen-actrframework-swift reinstalled");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            Ok(())
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(ActrCliError::command_error(
+                "Automatic update for protoc-gen-actrframework-swift is only supported on macOS (Homebrew)".to_string(),
+            ))
+        }
+    }
+
+    fn has_messages_enums_or_extensions(&self, path: &Path) -> bool {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+            if trimmed.starts_with("message ")
+                || trimmed.starts_with("enum ")
+                || trimmed.starts_with("extend ")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn has_services(&self, path: &Path) -> bool {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+            if trimmed.starts_with("service ") {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Flattens the output directory structure by moving all swift files from
+    /// subdirectories to the root of the output directory.
+    fn flatten_output_directory(&self, output_dir: &Path) -> Result<()> {
+        let mut files_to_move = Vec::new();
+
+        // Collect all swift files from subdirectories
+        for entry in WalkDir::new(output_dir)
+            .min_depth(2) // Skip the root directory itself
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "swift") {
+                files_to_move.push(path.to_path_buf());
+            }
+        }
+
+        // Move each file to the output root, overwriting existing files
+        for src_path in files_to_move {
+            let file_name = src_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| {
+                    ActrCliError::config_error("Failed to get filename from path".to_string())
+                })?;
+
+            let mut dst_path = output_dir.to_path_buf();
+            dst_path.push(file_name);
+
+            // Overwrite existing files if they are not the same as src_path
+            if dst_path.exists() && dst_path != src_path {
+                debug!("Overwriting existing file: {:?}", dst_path);
+                std::fs::remove_file(&dst_path).map_err(|e| {
+                    ActrCliError::config_error(format!(
+                        "Failed to remove existing file {:?}: {}",
+                        dst_path, e
+                    ))
+                })?;
+            }
+
+            std::fs::rename(&src_path, &dst_path).map_err(|e| {
+                ActrCliError::config_error(format!(
+                    "Failed to move {} to {}: {}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                ))
+            })?;
+        }
+
+        // Remove empty subdirectories
+        self.remove_empty_subdirectories(output_dir)?;
+
+        Ok(())
+    }
+
+    /// Recursively removes empty subdirectories from the output directory.
+    #[allow(clippy::only_used_in_recursion)]
+    fn remove_empty_subdirectories(&self, dir: &Path) -> Result<()> {
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    self.remove_empty_subdirectories(&path)?;
+                    // Only remove if still empty after processing children
+                    if path.read_dir()?.next().is_none() {
+                        std::fs::remove_dir(&path)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn find_xcodegen_root(&self, context: &GenContext) -> Result<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd);
+        }
+
+        candidates.push(context.output.clone());
+
+        if let Some(parent) = context.output.parent() {
+            candidates.push(parent.to_path_buf());
+            if let Some(grand_parent) = parent.parent() {
+                candidates.push(grand_parent.to_path_buf());
+            }
+        }
+
+        if context.input_path.is_dir() {
+            candidates.push(context.input_path.clone());
+        } else if let Some(parent) = context.input_path.parent() {
+            candidates.push(parent.to_path_buf());
+        }
+
+        for candidate in candidates {
+            for ancestor in candidate.ancestors() {
+                if ancestor.join("project.yml").exists() {
+                    return Ok(ancestor.to_path_buf());
+                }
+            }
+        }
+
+        Err(ActrCliError::config_error(
+            "project.yml not found; cannot run xcodegen generate",
+        ))
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct ProtoService {
+    name: String,
+    package: String,
+    swift_package_prefix: String,
+    workload_name: String,
+    methods: Vec<ProtoMethod>,
+}
+
+#[derive(Serialize, Clone)]
+struct ProtoMethod {
+    name: String,
+    swift_name: String,
+    input_type: String,
+    output_type: String,
+}
+
+impl SwiftGenerator {
+    fn parse_local_services(&self, context: &GenContext) -> Result<Vec<ProtoService>> {
+        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Swift)?;
+
+        Ok(catalog
+            .local_services
+            .into_iter()
+            .map(|service| {
+                let swift_package_prefix = if service.package.is_empty() {
+                    String::new()
+                } else {
+                    service
+                        .package
+                        .split('_')
+                        .map(|segment| {
+                            let mut chars = segment.chars();
+                            match chars.next() {
+                                None => String::new(),
+                                Some(first) => {
+                                    first.to_uppercase().collect::<String>() + chars.as_str()
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                        + "_"
+                };
+
+                let methods = service
+                    .methods
+                    .into_iter()
+                    .map(|method| {
+                        let mut chars = method.name.chars();
+                        let swift_name = match chars.next() {
+                            None => String::new(),
+                            Some(first) => {
+                                first.to_lowercase().collect::<String>() + chars.as_str()
+                            }
+                        };
+
+                        ProtoMethod {
+                            name: method.name,
+                            swift_name,
+                            input_type: self
+                                .swift_type_from_proto(&method.input_type, &swift_package_prefix),
+                            output_type: self
+                                .swift_type_from_proto(&method.output_type, &swift_package_prefix),
+                        }
+                    })
+                    .collect();
+
+                ProtoService {
+                    name: service.name,
+                    package: service.package,
+                    swift_package_prefix,
+                    workload_name: service
+                        .workload_type
+                        .unwrap_or_else(|| "Workload".to_string()),
+                    methods,
+                }
+            })
+            .collect())
+    }
+
+    fn extract_actor_name_from_line(&self, line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("public actor ") || !trimmed.contains(" {") {
+            return None;
+        }
+
+        let rest = trimmed.trim_start_matches("public actor ").trim_start();
+        let actor_name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+
+        if actor_name.is_empty() {
+            None
+        } else {
+            Some(actor_name)
+        }
+    }
+
+    /// Extract the first workload name from generated local.actor.swift file
+    fn extract_first_workload_name_from_generated_file(&self, output_dir: &Path) -> Option<String> {
+        let local_actor_path = output_dir.join("local.actor.swift");
+
+        if let Ok(content) = std::fs::read_to_string(&local_actor_path) {
+            // Look for pattern: "public actor <WorkloadName> {"
+            for line in content.lines() {
+                if let Some(workload_name) = self.extract_actor_name_from_line(line) {
+                    debug!(
+                        "Extracted workload name from local.actor.swift: {}",
+                        workload_name
+                    );
+                    return Some(workload_name);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract workload name for a specific service from local.actor.swift
+    fn extract_workload_name_for_service(
+        &self,
+        output_dir: &Path,
+        service_name: &str,
+    ) -> Option<String> {
+        let local_actor_path = output_dir.join("local.actor.swift");
+        let expected = format!("{}Workload", service_name);
+
+        if let Ok(content) = std::fs::read_to_string(&local_actor_path) {
+            for line in content.lines() {
+                if let Some(actor_name) = self.extract_actor_name_from_line(line) {
+                    if actor_name == expected
+                        || actor_name
+                            .strip_suffix("Workload")
+                            .is_some_and(|name| name == service_name)
+                    {
+                        return Some(actor_name);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn swift_type_from_proto(&self, raw_type: &str, swift_package_prefix: &str) -> String {
+        let trimmed = raw_type.trim().trim_start_matches('.');
+
+        // For fully-qualified types (e.g. ".echo_app.EchoRequest" or "other.Foo"),
+        // take only the last component — matching framework-codegen-swift's behavior of
+        // `method.inputType.split(separator: ".").last!` — then apply the current
+        // service's package prefix.
+        let type_name = if trimmed.contains('.') {
+            trimmed.split('.').next_back().unwrap_or(trimmed)
+        } else {
+            trimmed
+        };
+
+        if swift_package_prefix.is_empty() {
+            type_name.to_string()
+        } else {
+            format!("{}{}", swift_package_prefix, type_name)
+        }
+    }
+
+    fn generate_scaffold_content(
+        &self,
+        manufacturer: &str,
+        service_name: &str,
+        workload_name: &str,
+        services: &[ProtoService],
+    ) -> Result<String> {
+        #[derive(Serialize)]
+        struct SwiftScaffoldContext {
+            #[serde(rename = "MANUFACTURER")]
+            manufacturer: String,
+            #[serde(rename = "SERVICE_NAME")]
+            service_name: String,
+            #[serde(rename = "WORKLOAD_NAME")]
+            workload_name: String,
+            #[serde(rename = "SERVICES")]
+            services: Vec<ProtoService>,
+            #[serde(rename = "HAS_SERVICES")]
+            has_services: bool,
+        }
+
+        let context = SwiftScaffoldContext {
+            manufacturer: manufacturer.to_string(),
+            service_name: service_name.to_string(),
+            workload_name: workload_name.to_string(),
+            services: services.to_vec(),
+            has_services: !services.is_empty(),
+        };
+
+        let mut handlebars = Handlebars::new();
+        handlebars.register_escape_fn(handlebars::no_escape);
+        Ok(handlebars.render_template(ACTR_SERVICE_TEMPLATE, &context)?)
+    }
+}

@@ -54,7 +54,7 @@
 
 use super::{DataLane, NetworkError, NetworkResult};
 use actr_framework::Bytes;
-use actr_protocol::{ActorResult, ActrError, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

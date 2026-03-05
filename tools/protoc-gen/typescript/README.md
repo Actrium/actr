@@ -27,6 +27,6 @@ protoc \
 protoc \
   --plugin=protoc-gen-actrframework-typescript=./scripts/protoc-gen-actrframework-typescript \
   --actrframework-typescript_out=generated \
-  --actrframework-typescript_opt=target=ts,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileMapping=remote/echo.proto=acme+EchoService \
+  --actrframework-typescript_opt=target=ts,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileMapping=remote/echo.proto=acme:EchoService \
   local.proto remote/echo.proto
 ```

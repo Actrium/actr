@@ -1,0 +1,38 @@
+edition = 1
+exports = ["protos/local/{{PROJECT_NAME_SNAKE}}.proto"]
+
+[package]
+name = "{{PROJECT_NAME}}-echo-server"
+description = "Shell echo server (Python demo)"
+authors = []
+license = "Apache-2.0"
+tags = ["dev", "example", "python"]
+
+[package.actr_type]
+manufacturer = "{{MANUFACTURER}}"
+name = "EchoService"
+version = "v1"
+
+[system.signaling]
+url = "{{{SIGNALING_URL}}}/signaling/ws"
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:127.0.0.1:3478"]
+turn_urls = ["turn:127.0.0.1:3478"]
+
+
+[system.deployment]
+realm_id = 0
+
+[system.discovery]
+visible = true
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "echo-client-app" } }]
+
+[scripts]
+dev = "python server.py --actr-toml Actr.toml"

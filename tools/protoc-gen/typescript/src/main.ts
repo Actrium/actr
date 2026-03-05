@@ -122,7 +122,7 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
     if (!targetType) {
       throw new Error(
         `No actr_type mapping found for remote file ${file.name}. ` +
-          "Use RemoteFileMapping=remote/path.proto=manufacturer+Service.",
+          "Use RemoteFileMapping=remote/path.proto=manufacturer:Service.",
       );
     }
 
@@ -583,7 +583,7 @@ function appendRemoteMapping(
   target: Map<string, string>,
   rawValue: string,
 ): void {
-  for (const item of rawValue.split(":")) {
+  for (const item of rawValue.split(";")) {
     const trimmed = item.trim();
     if (!trimmed) {
       continue;
@@ -687,7 +687,7 @@ function buildRemoteServiceMetadata(
       name: service.name,
       package: packageNameForService(service),
       proto_file: normalizePath(file.name),
-      actr_type: `${targetType.manufacturer}+${targetType.name}`,
+      actr_type: `${targetType.manufacturer}:${targetType.name}`,
       client_type: `${service.name}Client`,
       methods: methods.map((entry) => buildMethodMetadata(entry.method)),
     }),
@@ -767,13 +767,17 @@ function routeKeyForMethod(method: DescMethod): string {
 function parseActrType(
   value: string,
 ): { manufacturer: string; name: string } | null {
-  const idx = value.indexOf("+");
-  if (idx <= 0 || idx === value.length - 1) {
+  const parts = value.split(":");
+  if (parts.length < 2 || parts.length > 3) {
+    return null;
+  }
+  const [manufacturer, name] = parts;
+  if (!manufacturer || !name) {
     return null;
   }
   return {
-    manufacturer: value.slice(0, idx),
-    name: value.slice(idx + 1),
+    manufacturer,
+    name,
   };
 }
 

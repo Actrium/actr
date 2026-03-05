@@ -1,0 +1,31 @@
+# {{PROJECT_NAME}}
+
+An Actor-RTC EchoService provider that registers itself and handles echo RPC calls.
+
+## Quick start
+
+```bash
+# 1. Generate Actor framework code from the local proto definition
+actr gen -l rust
+
+# 2. Run the service (registers EchoService and waits for calls)
+cargo run
+```
+
+## How it works
+
+- `protos/local/local.proto` defines the `EchoService` interface.
+- `actr gen -l rust` generates `src/generated/` with protobuf types, `EchoHandler` trait, and `EchoServiceActor`.
+- `src/main.rs` implements `EchoHandler` and registers `EchoServiceActor` with the Actor-RTC runtime.
+- The service stays running until interrupted (`Ctrl+C`).
+
+## Customizing
+
+Implement your own echo logic by modifying `EchoServiceImpl::echo` in `src/main.rs`:
+
+```rust
+async fn echo(&self, request: EchoRequest) -> ActorResult<EchoResponse> {
+    // Replace with your business logic
+    Ok(EchoResponse { reply: request.message })
+}
+```

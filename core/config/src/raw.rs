@@ -77,16 +77,16 @@ pub struct RawActrType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RawDependency {
-    /// 已指定 ActrType 的依赖（必须先匹配，因为它有 required 的 `type` 字段）
+    /// 已指定 ActrType 的依赖（必须先匹配，因为它有 required 的 `actr_type` 字段）
     ///
     /// Example:
     /// ```toml
     /// [dependencies]
-    /// echo = { type = "acme:echo-service:1.0.0", service = "EchoService:abc1f3d" }
+    /// echo = { actr_type = "acme:echo-service:1.0.0", service = "EchoService:abc1f3d" }
     /// ```
     Specified {
         /// Full ActrType string: "manufacturer:name:version"
-        #[serde(rename = "type")]
+        #[serde(rename = "actr_type")]
         actr_type: String,
 
         /// Optional strict service reference: "ServiceName:fingerprint".
@@ -151,7 +151,7 @@ pub struct RawStorageConfig {
 ///
 /// 不配置端口范围时使用默认模式（随机端口）
 /// 配置 port_range_start/end 时启用固定端口模式
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawWebRtcConfig {
     /// STUN 服务器 URL 列表 (例如 ["stun:localhost:3478"])
     #[serde(default)]
@@ -192,23 +192,6 @@ pub struct RawWebRtcConfig {
     /// NAT 1:1 公网 IP 映射（可选）
     #[serde(default)]
     pub public_ips: Vec<String>,
-}
-
-impl Default for RawWebRtcConfig {
-    fn default() -> Self {
-        Self {
-            stun_urls: vec![],
-            turn_urls: vec![],
-            force_relay: false,
-            ice_host_acceptance_min_wait: None,
-            ice_srflx_acceptance_min_wait: None,
-            ice_prflx_acceptance_min_wait: None,
-            ice_relay_acceptance_min_wait: None,
-            port_range_start: None,
-            port_range_end: None,
-            public_ips: vec![],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -340,7 +323,7 @@ name = "test"
 manufacturer = "acme"
 name = "test"
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
+shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
         let config = RawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
@@ -367,7 +350,7 @@ name = "test"
 manufacturer = "acme"
 name = "test"
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0" }
+shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;
         let config = RawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();

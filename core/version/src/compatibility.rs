@@ -206,10 +206,10 @@ impl ServiceCompatibility {
         new: proto_fingerprint::Compatibility,
     ) -> proto_fingerprint::Compatibility {
         match (current, new) {
-            (proto_fingerprint::Compatibility::Red, _) | (_, proto_fingerprint::Compatibility::Red) => {
-                proto_fingerprint::Compatibility::Red
-            }
-            (proto_fingerprint::Compatibility::Yellow, _) | (_, proto_fingerprint::Compatibility::Yellow) => {
+            (proto_fingerprint::Compatibility::Red, _)
+            | (_, proto_fingerprint::Compatibility::Red) => proto_fingerprint::Compatibility::Red,
+            (proto_fingerprint::Compatibility::Yellow, _)
+            | (_, proto_fingerprint::Compatibility::Yellow) => {
                 proto_fingerprint::Compatibility::Yellow
             }
             _ => proto_fingerprint::Compatibility::Green,

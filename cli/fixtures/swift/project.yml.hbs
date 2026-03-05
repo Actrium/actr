@@ -1,0 +1,60 @@
+name: {{PROJECT_NAME_PASCAL}}
+options:
+  bundleIdPrefix: io.actr
+
+packages:
+  actr-swift:
+{{#if ACTR_LOCAL_PATH}}
+    path: {{{ACTR_LOCAL_PATH}}}
+{{else}}
+    url: https://github.com/actor-rtc/actr-swift
+    from: {{ACTR_SWIFT_VERSION}}
+{{/if}}
+  actr-protocols:
+    url: https://github.com/actor-rtc/actr-protocols-swift
+    from: {{ACTR_PROTOCOLS_VERSION}}
+  swift-protobuf:
+    url: https://github.com/apple/swift-protobuf.git
+    exactVersion: 1.32.0
+
+targets:
+  {{PROJECT_NAME_PASCAL}}:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: {{PROJECT_NAME_PASCAL}}
+      - path: Actr.toml
+        type: file
+        buildPhase: resources
+      # IMPORTANT: Actr.lock.toml must be included as a resource
+      #
+      # Why this is necessary:
+      # - The lock file contains actr_type metadata for dependencies
+      # - This metadata is needed at runtime for service discovery and type matching
+      # - Code generation reads this file to map proto files to actr_types
+      #
+      # Note: An empty lock file is generated during `actr init` to satisfy
+      # xcodegen's requirement that all referenced files must exist.
+      # The file is populated with actual dependencies by `actr install`.
+      - path: Actr.lock.toml
+        type: file
+        buildPhase: resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: io.actr.{{PROJECT_NAME_PASCAL}}
+      INFOPLIST_FILE: {{PROJECT_NAME_PASCAL}}/Info.plist
+      MARKETING_VERSION: 1.0.0
+      CURRENT_PROJECT_VERSION: 1
+      ENABLE_PREVIEWS: YES
+      SWIFT_VERSION: 6.0
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      GENERATE_INFOPLIST_FILE: NO
+      SUPPORTS_MAC_DESIGNED_FOR_IPAD: YES
+
+    dependencies:
+      - package: actr-swift
+        product: Actr
+      - package: actr-protocols
+        product: ActrProtocols
+      - package: swift-protobuf
+        product: SwiftProtobuf

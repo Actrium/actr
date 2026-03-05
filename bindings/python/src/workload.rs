@@ -1,13 +1,125 @@
 use std::any::Any;
 
 use actr_framework::{Bytes, Context as FrameworkContext, Workload};
-use actr_protocol::{ActorResult, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrId, ProtocolError, RpcEnvelope};
 use actr_runtime::context::RuntimeContext;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyString};
 
 use crate::runtime::ContextPy;
+use crate::types::ActrIdPy;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Shared helper
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Downcast generic Context to RuntimeContext.
+fn downcast_ctx<C: FrameworkContext>(ctx: &C) -> Result<&RuntimeContext, ProtocolError> {
+    (ctx as &dyn Any)
+        .downcast_ref::<RuntimeContext>()
+        .ok_or_else(|| ProtocolError::TransportError("Context is not RuntimeContext".into()))
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Macros — reduce per-hook boilerplate
+//
+// These macros generate the *body* of each hook, called
+// from within the `#[async_trait] impl Workload` block.
+//
+// All hooks use `asyncio.run_coroutine_threadsafe(coro, event_loop)`
+// because hooks may be invoked from Rust background threads (e.g.
+// WebRTC coordinator) where no Python event loop is running.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Invoke a Python hook with `(ctx,)` args. Returns `Ok(())` if method absent.
+macro_rules! py_hook_ctx {
+    ($self:ident, $method:literal, $ctx:expr) => {{
+        let runtime_ctx = downcast_ctx($ctx)?;
+        if !$self.has_method($method)? {
+            return Ok(());
+        }
+        let ctx_obj = $self.wrap_context(runtime_ctx)?;
+        let event_loop = $self.require_event_loop()?;
+
+        Python::attach(|py| -> PyResult<()> {
+            let obj = $self.py_obj.bind(py);
+            let coro = obj.call_method1($method, (ctx_obj.clone_ref(py),))?;
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio
+                .getattr("run_coroutine_threadsafe")?
+                .call1((coro, event_loop.bind(py)))?;
+            future.getattr("result")?.call0()?;
+            Ok(())
+        })
+        .map_err(|e| {
+            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+        })?;
+        Ok(())
+    }};
+}
+
+/// Invoke a Python hook with `(ctx_or_none,)` args.
+macro_rules! py_hook_optional_ctx {
+    ($self:ident, $method:literal, $ctx:expr) => {{
+        if !$self.has_method($method)? {
+            return Ok(());
+        }
+        let ctx_obj: Py<PyAny> = match $ctx {
+            Some(c) => $self.wrap_context(downcast_ctx(c)?)?,
+            None => Python::attach(|py| py.None().into()),
+        };
+        let event_loop = $self.require_event_loop()?;
+
+        Python::attach(|py| -> PyResult<()> {
+            let obj = $self.py_obj.bind(py);
+            let coro = obj.call_method1($method, (ctx_obj.clone_ref(py),))?;
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio
+                .getattr("run_coroutine_threadsafe")?
+                .call1((coro, event_loop.bind(py)))?;
+            future.getattr("result")?.call0()?;
+            Ok(())
+        })
+        .map_err(|e| {
+            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+        })?;
+        Ok(())
+    }};
+}
+
+/// Invoke a Python hook with `(ctx, peer_id)` args.
+macro_rules! py_hook_ctx_dest {
+    ($self:ident, $method:literal, $ctx:expr, $dest:expr) => {{
+        let runtime_ctx = downcast_ctx($ctx)?;
+        if !$self.has_method($method)? {
+            return Ok(());
+        }
+        let ctx_obj = $self.wrap_context(runtime_ctx)?;
+        let dest = $dest.clone();
+        let event_loop = $self.require_event_loop()?;
+
+        Python::attach(|py| -> PyResult<()> {
+            let obj = $self.py_obj.bind(py);
+            let peer_py = ActrIdPy::from_rust(dest.clone());
+            let coro = obj.call_method1($method, (ctx_obj.clone_ref(py), peer_py))?;
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio
+                .getattr("run_coroutine_threadsafe")?
+                .call1((coro, event_loop.bind(py)))?;
+            future.getattr("result")?.call0()?;
+            Ok(())
+        })
+        .map_err(|e| {
+            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+        })?;
+        Ok(())
+    }};
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PyWorkloadWrapper
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Workload wrapper that forwards lifecycle and dispatch to a Python object.
 pub struct PyWorkloadWrapper {
@@ -51,7 +163,46 @@ impl PyWorkloadWrapper {
         .ok()
         .flatten()
     }
+
+    /// Check if the Python workload object has a given method.
+    fn has_method(&self, name: &str) -> Result<bool, ProtocolError> {
+        let name = name.to_string();
+        Python::attach(|py| {
+            let obj = self.py_obj.bind(py);
+            Ok(obj.hasattr(&*name)?)
+        })
+        .map_err(|e: PyErr| ProtocolError::TransportError(format!("Python hasattr failed: {e}")))
+    }
+
+    /// Build the high-level `actr.Context` wrapper from a RuntimeContext.
+    fn wrap_context(&self, runtime_ctx: &RuntimeContext) -> Result<Py<PyAny>, ProtocolError> {
+        let ctx_py = Python::attach(|py| self.make_context_py(py, runtime_ctx)).map_err(|e| {
+            ProtocolError::TransportError(format!("Failed to create ContextPy: {e}"))
+        })?;
+
+        Python::attach(|py| -> PyResult<Py<PyAny>> {
+            let actr_module = py.import("actr")?;
+            let ctx_class = actr_module.getattr("Context")?;
+            let ctx_obj = ctx_class.call1((ctx_py.clone_ref(py),))?;
+            Ok(ctx_obj.extract::<Py<PyAny>>()?)
+        })
+        .map_err(|e| ProtocolError::TransportError(format!("Failed to wrap Context: {e}")))
+    }
+
+    /// Get the stored event loop, or return an error.
+    fn require_event_loop(&self) -> Result<&Py<PyAny>, ProtocolError> {
+        self.event_loop.as_ref().ok_or_else(|| {
+            ProtocolError::TransportError(
+                "Event loop not set. Make sure to call attach() from within an async context."
+                    .to_string(),
+            )
+        })
+    }
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PyDispatcher
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 pub struct PyDispatcher;
 
@@ -130,10 +281,7 @@ impl actr_framework::MessageDispatcher for PyDispatcher {
         envelope: RpcEnvelope,
         ctx: &C,
     ) -> ActorResult<Bytes> {
-        let any = ctx as &dyn Any;
-        let runtime_ctx = any.downcast_ref::<RuntimeContext>().ok_or_else(|| {
-            ProtocolError::TransportError("Context is not RuntimeContext".to_string())
-        })?;
+        let runtime_ctx = downcast_ctx(ctx)?;
 
         let payload = envelope
             .payload
@@ -160,91 +308,147 @@ impl actr_framework::MessageDispatcher for PyDispatcher {
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Workload trait implementation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 #[async_trait::async_trait]
 impl Workload for PyWorkloadWrapper {
     type Dispatcher = PyDispatcher;
 
+    // ── Lifecycle ────────────────────────────────────────
+
     async fn on_start<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
-        let any = ctx as &dyn Any;
-        let runtime_ctx = any.downcast_ref::<RuntimeContext>().ok_or_else(|| {
-            ProtocolError::TransportError("Context is not RuntimeContext".to_string())
-        })?;
+        py_hook_ctx!(self, "on_start", ctx)
+    }
 
-        let ctx_py = Python::attach(|py| self.make_context_py(py, runtime_ctx)).map_err(|e| {
-            ProtocolError::TransportError(format!("Failed to create ContextPy: {e}"))
-        })?;
+    async fn on_ready<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
+        py_hook_ctx!(self, "on_ready", ctx)
+    }
 
-        let ctx_obj = Python::attach(|py| -> PyResult<Py<PyAny>> {
-            let actr_module = py.import("actr")?;
-            let ctx_class = actr_module.getattr("Context")?;
-            let ctx_obj = ctx_class.call1((ctx_py.clone_ref(py),))?;
-            Ok(ctx_obj.extract::<Py<PyAny>>()?)
-        })
-        .map_err(|e| ProtocolError::TransportError(format!("Failed to wrap Context: {e}")))?;
+    async fn on_stop<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
+        py_hook_ctx!(self, "on_stop", ctx)
+    }
 
-        let maybe = Python::attach(|py| {
-            let obj = self.py_obj.bind(py);
-            Ok(obj.hasattr("on_start")?)
-        })
-        .map_err(|e: PyErr| ProtocolError::TransportError(format!("Python hasattr failed: {e}")))?;
-
-        if !maybe {
+    // Manual impl: extra `error: String` param doesn't fit py_hook_ctx! macro
+    async fn on_error<C: FrameworkContext>(&self, ctx: &C, error: String) -> ActorResult<()> {
+        let runtime_ctx = downcast_ctx(ctx)?;
+        if !self.has_method("on_error")? {
             return Ok(());
         }
+        let ctx_obj = self.wrap_context(runtime_ctx)?;
+        let event_loop = self.require_event_loop()?;
 
-        let fut = Python::attach(|py| -> PyResult<_> {
+        Python::attach(|py| -> PyResult<()> {
             let obj = self.py_obj.bind(py);
-            let ctx_obj = ctx_obj.clone_ref(py);
-            let coro = obj.call_method1("on_start", (ctx_obj,))?;
-            pyo3_async_runtimes::tokio::into_future(coro)
+            let coro = obj.call_method1("on_error", (ctx_obj.clone_ref(py), error.clone()))?;
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio
+                .getattr("run_coroutine_threadsafe")?
+                .call1((coro, event_loop.bind(py)))?;
+            future.getattr("result")?.call0()?;
+            Ok(())
         })
-        .map_err(|e| ProtocolError::TransportError(format!("Python on_start call failed: {e}")))?;
+        .map_err(|e| ProtocolError::TransportError(format!("Python on_error failed: {e}")))?;
+        Ok(())
+    }
 
-        fut.await.map_err(|e| {
-            ProtocolError::TransportError(format!("Python on_start await failed: {e}"))
+    // ── Signaling ───────────────────────────────────────
+
+    async fn on_signaling_connect_start<C: FrameworkContext>(
+        &self,
+        ctx: Option<&C>,
+    ) -> ActorResult<()> {
+        py_hook_optional_ctx!(self, "on_signaling_connect_start", ctx)
+    }
+
+    async fn on_signaling_connected<C: FrameworkContext>(
+        &self,
+        ctx: Option<&C>,
+    ) -> ActorResult<()> {
+        py_hook_optional_ctx!(self, "on_signaling_connected", ctx)
+    }
+
+    async fn on_signaling_disconnected<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
+        py_hook_ctx!(self, "on_signaling_disconnected", ctx)
+    }
+
+    // ── WebSocket ───────────────────────────────────────
+
+    async fn on_websocket_connect_start<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+    ) -> ActorResult<()> {
+        py_hook_ctx_dest!(self, "on_websocket_connect_start", ctx, dest)
+    }
+
+    async fn on_websocket_connected<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+    ) -> ActorResult<()> {
+        py_hook_ctx_dest!(self, "on_websocket_connected", ctx, dest)
+    }
+
+    async fn on_websocket_disconnected<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+    ) -> ActorResult<()> {
+        py_hook_ctx_dest!(self, "on_websocket_disconnected", ctx, dest)
+    }
+
+    // ── WebRTC ──────────────────────────────────────────
+
+    async fn on_webrtc_connect_start<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+    ) -> ActorResult<()> {
+        py_hook_ctx_dest!(self, "on_webrtc_connect_start", ctx, dest)
+    }
+
+    // Manual impl: extra `relayed: bool` param doesn't fit py_hook_ctx_dest! macro
+    async fn on_webrtc_connected<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+        relayed: bool,
+    ) -> ActorResult<()> {
+        let runtime_ctx = downcast_ctx(ctx)?;
+        if !self.has_method("on_webrtc_connected")? {
+            return Ok(());
+        }
+        let ctx_obj = self.wrap_context(runtime_ctx)?;
+        let dest = dest.clone();
+        let event_loop = self.require_event_loop()?;
+
+        Python::attach(|py| -> PyResult<()> {
+            let obj = self.py_obj.bind(py);
+            let dest_py = ActrIdPy::from_rust(dest.clone());
+            let coro = obj.call_method1(
+                "on_webrtc_connected",
+                (ctx_obj.clone_ref(py), dest_py, relayed),
+            )?;
+            let asyncio = py.import("asyncio")?;
+            let future = asyncio
+                .getattr("run_coroutine_threadsafe")?
+                .call1((coro, event_loop.bind(py)))?;
+            future.getattr("result")?.call0()?;
+            Ok(())
+        })
+        .map_err(|e| {
+            ProtocolError::TransportError(format!("Python on_webrtc_connected failed: {e}"))
         })?;
         Ok(())
     }
 
-    async fn on_stop<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
-        let any = ctx as &dyn Any;
-        let runtime_ctx = any.downcast_ref::<RuntimeContext>().ok_or_else(|| {
-            ProtocolError::TransportError("Context is not RuntimeContext".to_string())
-        })?;
-
-        let ctx_py = Python::attach(|py| self.make_context_py(py, runtime_ctx)).map_err(|e| {
-            ProtocolError::TransportError(format!("Failed to create ContextPy: {e}"))
-        })?;
-
-        let ctx_obj = Python::attach(|py| -> PyResult<Py<PyAny>> {
-            let actr_module = py.import("actr")?;
-            let ctx_class = actr_module.getattr("Context")?;
-            let ctx_obj = ctx_class.call1((ctx_py.clone_ref(py),))?;
-            Ok(ctx_obj.extract::<Py<PyAny>>()?)
-        })
-        .map_err(|e| ProtocolError::TransportError(format!("Failed to wrap Context: {e}")))?;
-
-        let maybe = Python::attach(|py| {
-            let obj = self.py_obj.bind(py);
-            Ok(obj.hasattr("on_stop")?)
-        })
-        .map_err(|e: PyErr| ProtocolError::TransportError(format!("Python hasattr failed: {e}")))?;
-
-        if !maybe {
-            return Ok(());
-        }
-
-        let fut = Python::attach(|py| -> PyResult<_> {
-            let obj = self.py_obj.bind(py);
-            let ctx_obj = ctx_obj.clone_ref(py);
-            let coro = obj.call_method1("on_stop", (ctx_obj,))?;
-            pyo3_async_runtimes::tokio::into_future(coro)
-        })
-        .map_err(|e| ProtocolError::TransportError(format!("Python on_stop call failed: {e}")))?;
-
-        fut.await.map_err(|e| {
-            ProtocolError::TransportError(format!("Python on_stop await failed: {e}"))
-        })?;
-        Ok(())
+    async fn on_webrtc_disconnected<C: FrameworkContext>(
+        &self,
+        ctx: &C,
+        dest: &ActrId,
+    ) -> ActorResult<()> {
+        py_hook_ctx_dest!(self, "on_webrtc_disconnected", ctx, dest)
     }
 }

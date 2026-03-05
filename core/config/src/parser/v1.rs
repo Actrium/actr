@@ -162,34 +162,32 @@ impl ParserV1 {
         self_realm: &Realm,
     ) -> Result<Vec<Dependency>> {
         deps.iter()
-            .map(|(alias, raw_dep)| {
-                match raw_dep {
-                    RawDependency::Empty {} => Ok(Dependency {
+            .map(|(alias, raw_dep)| match raw_dep {
+                RawDependency::Empty {} => Ok(Dependency {
+                    alias: alias.clone(),
+                    realm: *self_realm,
+                    actr_type: None,
+                    service: None,
+                }),
+                RawDependency::Specified {
+                    actr_type: actr_type_str,
+                    service,
+                    realm,
+                } => {
+                    let actr_type = self.parse_actr_type(actr_type_str)?;
+                    let service_ref = service
+                        .as_deref()
+                        .map(|s| self.parse_service_ref(s))
+                        .transpose()?;
+                    let realm = Realm {
+                        realm_id: realm.unwrap_or(self_realm.realm_id),
+                    };
+                    Ok(Dependency {
                         alias: alias.clone(),
-                        realm: self_realm.clone(),
-                        actr_type: None,
-                        service: None,
-                    }),
-                    RawDependency::Specified {
-                        actr_type: actr_type_str,
-                        service,
                         realm,
-                    } => {
-                        let actr_type = self.parse_actr_type(actr_type_str)?;
-                        let service_ref = service
-                            .as_deref()
-                            .map(|s| self.parse_service_ref(s))
-                            .transpose()?;
-                        let realm = Realm {
-                            realm_id: realm.unwrap_or(self_realm.realm_id),
-                        };
-                        Ok(Dependency {
-                            alias: alias.clone(),
-                            realm,
-                            actr_type: Some(actr_type),
-                            service: service_ref,
-                        })
-                    }
+                        actr_type: Some(actr_type),
+                        service: service_ref,
+                    })
                 }
             })
             .collect()
@@ -230,10 +228,7 @@ impl ParserV1 {
             ))
         })?;
         Name::new(name.to_string()).map_err(|e| {
-            ConfigError::InvalidActrType(format!(
-                "Invalid type name '{}' in '{}': {}",
-                name, s, e
-            ))
+            ConfigError::InvalidActrType(format!("Invalid type name '{}' in '{}': {}", name, s, e))
         })?;
 
         Ok(ActrType {
@@ -375,7 +370,11 @@ impl ParserV1 {
                                 ))
                             })?;
 
-                            Some(ActrType { manufacturer, name, version: None })
+                            Some(ActrType {
+                                manufacturer,
+                                name,
+                                version: None,
+                            })
                         } else {
                             return Err(ConfigError::InvalidAcl(format!(
                                 "ACL rule {} principal {} actr_type must be a string or table",
@@ -699,7 +698,7 @@ name = "test"
 version = "1.0.0"
 
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
+shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 
 [system.signaling]
 url = "ws://localhost:8081"
@@ -720,14 +719,8 @@ realm_id = 1001
         assert_eq!(dep.alias, "shared");
         assert_eq!(dep.realm.realm_id, 9999);
         assert_eq!(dep.actr_type.as_ref().unwrap().name, "logging-service");
-        assert_eq!(
-            dep.service.as_ref().unwrap().name,
-            "LoggingService"
-        );
-        assert_eq!(
-            dep.service.as_ref().unwrap().fingerprint,
-            "abc123"
-        );
+        assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
+        assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
         assert!(dep.is_cross_realm(&config.realm));
     }
 

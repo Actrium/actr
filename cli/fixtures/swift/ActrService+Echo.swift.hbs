@@ -1,0 +1,31 @@
+import Actr
+import Foundation
+
+extension ActrService {
+    /// Send an echo RPC request
+    func sendEcho(_ message: String) async throws -> String {
+        guard connectionStatus == .connected else {
+            let error = ActrError.StateError(msg: "Not connected to server")
+            return "Error: \(error.localizedDescription)"
+        }
+
+        guard let actr = actr else {
+            let error = ActrError.StateError(msg: "Actor reference not available")
+            return "Error: \(error.localizedDescription)"
+        }
+
+        do {
+            var request = Echo_EchoRequest()
+            request.message = message
+
+            let response = try await actr.call(request)
+
+            return response.reply
+        } catch let actrError as ActrError {
+            throw actrError
+        } catch {
+            throw error
+        }
+    }
+}
+

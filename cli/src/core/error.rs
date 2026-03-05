@@ -1,193 +1,230 @@
-//! 统一错误处理
+//! Unified Error Handling
 //!
-//! 定义了CLI工具的统一错误类型和处理策略
+//! Defines unified error types and handling strategies for the CLI tool
 
 use thiserror::Error;
 
-/// CLI 统一错误类型
+/// CLI Unified Error Type
 #[derive(Debug, Error)]
 pub enum ActrCliError {
-    #[error("配置错误: {message}")]
+    #[error("Config error: {message}")]
     Config { message: String },
 
-    #[error("无效项目: {message}")]
+    #[error("Invalid project: {message}")]
     InvalidProject { message: String },
 
-    #[error("网络错误: {message}")]
+    #[error("Invalid argument: {message}")]
+    InvalidArgument { message: String },
+
+    #[error("Network error: {message}")]
     Network { message: String },
 
-    #[error("依赖错误: {message}")]
+    #[error("Dependency error: {message}")]
     Dependency { message: String },
 
-    #[error("服务发现错误: {message}")]
+    #[error("Dependency conflict: {message}")]
+    DependencyConflict { message: String },
+
+    #[error("Service not found: {name}")]
+    ServiceNotFound { name: String },
+
+    #[error("Service discovery error: {message}")]
     ServiceDiscovery { message: String },
 
-    #[error("指纹验证错误: {message}")]
+    #[error("Fingerprint validation error: {message}")]
     FingerprintValidation { message: String },
 
-    #[error("代码生成错误: {message}")]
+    #[error("Fingerprint mismatch: expected {expected}, got {actual}")]
+    FingerprintMismatch { expected: String, actual: String },
+
+    #[error("Compatibility conflict: {message}")]
+    CompatibilityConflict { message: String },
+
+    #[error("Code generation error: {message}")]
     CodeGeneration { message: String },
 
-    #[error("缓存错误: {message}")]
+    #[error("Cache error: {message}")]
     Cache { message: String },
 
-    #[error("用户交互错误: {message}")]
+    #[error("User interface error: {message}")]
     UserInterface { message: String },
 
-    #[error("命令执行错误: {message}")]
+    #[error("Command execution error: {message}")]
     Command { message: String },
 
-    #[error("验证失败: {details}")]
+    #[error("Validation failed: {details}")]
     ValidationFailed { details: String },
 
-    #[error("安装失败: {reason}")]
+    #[error("Install failed: {reason}")]
     InstallFailed { reason: String },
 
-    #[error("组件未注册: {component}")]
+    #[error("Component not registered: {component}")]
     ComponentNotRegistered { component: String },
 
-    #[error("IO 错误")]
+    #[error("Operation cancelled")]
+    OperationCancelled,
+
+    #[error("IO error")]
     Io(#[from] std::io::Error),
 
-    #[error("序列化错误")]
+    #[error("Serialization error")]
     Serialization(#[from] toml::de::Error),
 
-    #[error("HTTP 错误")]
+    #[error("HTTP error")]
     Http(#[from] reqwest::Error),
 
-    #[error("其他错误: {0}")]
+    #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
-/// 安装错误
+/// Install Error
 #[derive(Debug, Error)]
 pub enum InstallError {
-    #[error("依赖解析失败: {dependency}")]
+    #[error("Dependency resolution failed: {dependency}")]
     DependencyResolutionFailed { dependency: String },
 
-    #[error("服务不可用: {service}")]
+    #[error("Service unavailable: {service}")]
     ServiceUnavailable { service: String },
 
-    #[error("网络连接失败: {uri}")]
-    NetworkConnectionFailed { uri: String },
+    #[error("Network connection failed")]
+    NetworkConnectionFailed,
 
-    #[error("指纹验证失败: {service} - 期望: {expected}, 实际: {actual}")]
+    #[error("Fingerprint mismatch: {service} - expected: {expected}, actual: {actual}")]
     FingerprintMismatch {
         service: String,
         expected: String,
         actual: String,
     },
 
-    #[error("版本冲突: {details}")]
+    #[error("Version conflict: {details}")]
     VersionConflict { details: String },
 
-    #[error("缓存操作失败: {operation}")]
+    #[error("Cache operation failed: {operation}")]
     CacheOperationFailed { operation: String },
 
-    #[error("配置更新失败: {reason}")]
+    #[error("Config update failed: {reason}")]
     ConfigUpdateFailed { reason: String },
 
-    #[error("前置验证失败: {failures:?}")]
+    #[error("Pre-check failed: {failures:?}")]
     PreCheckFailed { failures: Vec<String> },
 }
 
-/// 验证错误
+/// Validation Error
 #[derive(Debug, Error)]
 pub enum ValidationError {
-    #[error("配置文件语法错误: {file}")]
+    #[error("Config file syntax error: {file}")]
     ConfigSyntaxError { file: String },
 
-    #[error("依赖不存在: {dependency}")]
+    #[error("Dependency not found: {dependency}")]
     DependencyNotFound { dependency: String },
 
-    #[error("网络不可达: {uri}")]
-    NetworkUnreachable { uri: String },
+    #[error("Network unreachable")]
+    NetworkUnreachable,
 
-    #[error("指纹不匹配: {service}")]
+    #[error("Fingerprint mismatch: {service}")]
     FingerprintMismatch { service: String },
 
-    #[error("循环依赖: {cycle}")]
+    #[error("Circular dependency: {cycle}")]
     CircularDependency { cycle: String },
 
-    #[error("权限不足: {resource}")]
+    #[error("Insufficient permissions: {resource}")]
     InsufficientPermissions { resource: String },
 }
 
-/// 用户友好的错误显示
+/// User-friendly Error Display
 impl ActrCliError {
-    /// 获取用户友好的错误消息
+    /// Get user-friendly error message
     pub fn user_message(&self) -> String {
         match self {
             ActrCliError::Config { message } => {
-                format!("⚠️  配置文件错误：{message}\n💡 提示：请检查 Actr.toml 文件的语法和内容")
+                format!(
+                    "⚠️  Config file error: {message}\n💡 Hint: Check Actr.toml syntax and content"
+                )
             }
             ActrCliError::Network { message } => {
-                format!("🌐 网络连接错误：{message}\n💡 提示：请检查网络连接和服务地址")
+                format!(
+                    "🌐 Network connection error: {message}\n💡 Hint: Check network connection and service address"
+                )
             }
             ActrCliError::Dependency { message } => {
-                format!("📦 依赖错误：{message}\n💡 提示：运行 'actr check' 检查依赖状态")
+                format!(
+                    "📦 Dependency error: {message}\n💡 Hint: Run 'actr check' to check dependencies"
+                )
             }
             ActrCliError::ValidationFailed { details } => {
-                format!("❌ 验证失败：{details}\n💡 提示：请解决上述问题后重试")
+                format!(
+                    "❌ Validation failed: {details}\n💡 Hint: Fix the issues above and try again"
+                )
             }
             ActrCliError::InstallFailed { reason } => {
-                format!("📥 安装失败：{reason}\n💡 提示：运行 'actr check' 检查环境状态")
+                format!(
+                    "📥 Install failed: {reason}\n💡 Hint: Run 'actr check' to check environment"
+                )
             }
             _ => self.to_string(),
         }
     }
 
-    /// 获取可能的解决方案
+    /// Get possible solutions
     pub fn suggested_actions(&self) -> Vec<String> {
         match self {
             ActrCliError::Config { .. } => vec![
-                "检查 Actr.toml 文件语法".to_string(),
-                "运行 'actr config test' 验证配置".to_string(),
-                "参考文档中的配置示例".to_string(),
+                "Check Actr.toml file syntax".to_string(),
+                "Run 'actr config test' to validate config".to_string(),
+                "Refer to config examples in documentation".to_string(),
             ],
             ActrCliError::Network { .. } => vec![
-                "检查网络连接".to_string(),
-                "确认服务地址正确".to_string(),
-                "检查防火墙设置".to_string(),
-                "运行 'actr check --verbose' 获取详细信息".to_string(),
+                "Check network connection".to_string(),
+                "Verify service address is correct".to_string(),
+                "Check firewall settings".to_string(),
+                "Run 'actr check --verbose' for details".to_string(),
             ],
             ActrCliError::Dependency { .. } => vec![
-                "运行 'actr check' 检查依赖状态".to_string(),
-                "运行 'actr install' 安装缺失的依赖".to_string(),
-                "运行 'actr discovery' 查找可用服务".to_string(),
+                "Run 'actr check' to check dependency status".to_string(),
+                "Run 'actr install' to install missing dependencies".to_string(),
+                "Run 'actr discovery' to find available services".to_string(),
             ],
             ActrCliError::ValidationFailed { .. } => vec![
-                "检查并修复报告中的问题".to_string(),
-                "运行 'actr check --verbose' 获取详细诊断".to_string(),
-                "确保所有依赖服务可用".to_string(),
+                "Check and fix reported issues".to_string(),
+                "Run 'actr check --verbose' for detailed diagnostics".to_string(),
+                "Ensure all dependency services are available".to_string(),
             ],
             ActrCliError::InstallFailed { .. } => vec![
-                "检查磁盘空间".to_string(),
-                "检查网络连接".to_string(),
-                "运行 'actr check' 验证环境".to_string(),
-                "尝试清理缓存后重试".to_string(),
+                "Check disk space".to_string(),
+                "Check network connection".to_string(),
+                "Run 'actr check' to validate environment".to_string(),
+                "Try clearing cache and retry".to_string(),
             ],
-            _ => vec!["查看详细错误信息".to_string()],
+            _ => vec!["View detailed error information".to_string()],
         }
     }
 
-    /// 获取相关文档链接
+    /// Get related documentation links
     pub fn documentation_links(&self) -> Vec<(&str, &str)> {
         match self {
             ActrCliError::Config { .. } => vec![
-                ("配置文档", "https://docs.actor-rtc.com/config"),
-                ("Actr.toml 参考", "https://docs.actor-rtc.com/actr-toml"),
+                ("Config Docs", "https://docs.actor-rtc.com/config"),
+                (
+                    "Actr.toml Reference",
+                    "https://docs.actor-rtc.com/actr-toml",
+                ),
             ],
             ActrCliError::Dependency { .. } => vec![
-                ("依赖管理", "https://docs.actor-rtc.com/dependencies"),
-                ("故障排除", "https://docs.actor-rtc.com/troubleshooting"),
+                (
+                    "Dependency Management",
+                    "https://docs.actor-rtc.com/dependencies",
+                ),
+                (
+                    "Troubleshooting",
+                    "https://docs.actor-rtc.com/troubleshooting",
+                ),
             ],
-            _ => vec![("用户指南", "https://docs.actor-rtc.com/guide")],
+            _ => vec![("User Guide", "https://docs.actor-rtc.com/guide")],
         }
     }
 }
 
-/// 将验证报告转换为错误
+/// Convert validation report to error
 impl From<super::components::ValidationReport> for ActrCliError {
     fn from(report: super::components::ValidationReport) -> Self {
         let mut details = Vec::new();
@@ -198,16 +235,16 @@ impl From<super::components::ValidationReport> for ActrCliError {
                     .config_validation
                     .errors
                     .iter()
-                    .map(|e| format!("配置错误: {e}")),
+                    .map(|e| format!("Config error: {e}")),
             );
         }
 
         for dep in &report.dependency_validation {
             if !dep.is_available {
                 details.push(format!(
-                    "依赖不可用: {} - {}",
+                    "Dependency unavailable: {} - {}",
                     dep.dependency,
-                    dep.error.as_deref().unwrap_or("未知错误")
+                    dep.error.as_deref().unwrap_or("unknown error")
                 ));
             }
         }
@@ -215,9 +252,8 @@ impl From<super::components::ValidationReport> for ActrCliError {
         for net in &report.network_validation {
             if !net.is_reachable {
                 details.push(format!(
-                    "网络不可达: {} - {}",
-                    net.uri,
-                    net.error.as_deref().unwrap_or("连接失败")
+                    "Network unreachable: {}",
+                    net.error.as_deref().unwrap_or("connection failed")
                 ));
             }
         }
@@ -225,15 +261,15 @@ impl From<super::components::ValidationReport> for ActrCliError {
         for fp in &report.fingerprint_validation {
             if !fp.is_valid {
                 details.push(format!(
-                    "指纹验证失败: {} - {}",
+                    "Fingerprint validation failed: {} - {}",
                     fp.dependency,
-                    fp.error.as_deref().unwrap_or("指纹不匹配")
+                    fp.error.as_deref().unwrap_or("fingerprint mismatch")
                 ));
             }
         }
 
         for conflict in &report.conflicts {
-            details.push(format!("依赖冲突: {}", conflict.description));
+            details.push(format!("Dependency conflict: {}", conflict.description));
         }
 
         ActrCliError::ValidationFailed {
@@ -242,32 +278,32 @@ impl From<super::components::ValidationReport> for ActrCliError {
     }
 }
 
-/// 错误报告格式化器
+/// Error Report Formatter
 pub struct ErrorReporter;
 
 impl ErrorReporter {
-    /// 格式化错误报告
+    /// Format error report
     pub fn format_error(error: &ActrCliError) -> String {
         let mut output = Vec::new();
 
-        // 主要错误信息
+        // Main error message
         output.push(error.user_message());
         output.push(String::new());
 
-        // 建议的解决方案
+        // Suggested solutions
         let actions = error.suggested_actions();
         if !actions.is_empty() {
-            output.push("🔧 建议的解决方案：".to_string());
+            output.push("🔧 Suggested solutions:".to_string());
             for (i, action) in actions.iter().enumerate() {
                 output.push(format!("   {}. {}", i + 1, action));
             }
             output.push(String::new());
         }
 
-        // 文档链接
+        // Documentation links
         let docs = error.documentation_links();
         if !docs.is_empty() {
-            output.push("📚 相关文档：".to_string());
+            output.push("📚 Related documentation:".to_string());
             for (title, url) in docs {
                 output.push(format!("   • {title}: {url}"));
             }
@@ -277,80 +313,79 @@ impl ErrorReporter {
         output.join("\n")
     }
 
-    /// 格式化验证报告
+    /// Format validation report
     pub fn format_validation_report(report: &super::components::ValidationReport) -> String {
         let mut output = vec![
-            "🔍 依赖验证报告".to_string(),
+            "🔍 Dependency Validation Report".to_string(),
             "=".repeat(50),
             String::new(),
-            "📋 配置文件验证：".to_string(),
+            "📋 Config file validation:".to_string(),
         ];
 
-        // 配置验证
+        // Config validation
         if report.config_validation.is_valid {
-            output.push("   ✅ 通过".to_string());
+            output.push("   ✅ Passed".to_string());
         } else {
-            output.push("   ❌ 失败".to_string());
+            output.push("   ❌ Failed".to_string());
             for error in &report.config_validation.errors {
                 output.push(format!("      • {error}"));
             }
         }
         output.push(String::new());
 
-        // 依赖验证
-        output.push("📦 依赖可用性验证：".to_string());
+        // Dependency validation
+        output.push("📦 Dependency availability:".to_string());
         for dep in &report.dependency_validation {
             if dep.is_available {
-                output.push(format!("   ✅ {} - 可用", dep.dependency));
+                output.push(format!("   ✅ {} - available", dep.dependency));
             } else {
                 output.push(format!(
                     "   ❌ {} - {}",
                     dep.dependency,
-                    dep.error.as_deref().unwrap_or("不可用")
+                    dep.error.as_deref().unwrap_or("unavailable")
                 ));
             }
         }
         output.push(String::new());
 
-        // 网络验证
-        output.push("🌐 网络连通性验证：".to_string());
+        // Network validation
+        output.push("🌐 Network connectivity:".to_string());
         for net in &report.network_validation {
             if net.is_reachable {
                 let latency = net
                     .latency_ms
                     .map(|ms| format!(" ({ms}ms)"))
                     .unwrap_or_default();
-                output.push(format!("   ✅ {}{}", net.uri, latency));
+                output.push(format!("   ✅ Connected{}", latency));
             } else {
                 output.push(format!(
-                    "   ❌ {} - {}",
-                    net.uri,
-                    net.error.as_deref().unwrap_or("不可达")
+                    "   ❌ Connection failed - {}",
+                    net.error.as_deref().unwrap_or("unreachable")
                 ));
             }
         }
         output.push(String::new());
 
-        // 指纹验证
+        // Fingerprint validation
         if !report.fingerprint_validation.is_empty() {
-            output.push("🔐 指纹验证：".to_string());
+            output.push("🔐 Fingerprint validation:".to_string());
             for fp in &report.fingerprint_validation {
                 if fp.is_valid {
-                    output.push(format!("   ✅ {} - 验证通过", fp.dependency));
+                    output.push(format!("   ✅ {} - passed", fp.dependency));
                 } else {
                     output.push(format!(
                         "   ❌ {} - {}",
                         fp.dependency,
-                        fp.error.as_deref().unwrap_or("验证失败")
+                        fp.error.as_deref().unwrap_or("validation failed")
                     ));
                 }
             }
             output.push(String::new());
         }
 
-        // 冲突报告
+        // Conflict report
         if !report.conflicts.is_empty() {
-            output.push("⚠️ 依赖冲突：".to_string());
+            output.push("⚠️ Dependency conflicts:".to_string());
             for conflict in &report.conflicts {
                 output.push(format!(
                     "   • {} vs {}: {}",
@@ -360,11 +395,11 @@ impl ErrorReporter {
             output.push(String::new());
         }
 
-        // 总结
+        // Summary
         if report.is_success() {
-            output.push("✨ 总体状态：所有验证通过".to_string());
+            output.push("✨ Overall: All validations passed".to_string());
         } else {
-            output.push("❌ 总体状态：存在问题需要解决".to_string());
+            output.push("❌ Overall: Issues need to be resolved".to_string());
         }
 
         output.join("\n")

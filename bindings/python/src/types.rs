@@ -103,10 +103,14 @@ pub struct ActrTypePy {
 #[pymethods]
 impl ActrTypePy {
     #[new]
-    #[pyo3(signature = (manufacturer, name))]
-    fn new(manufacturer: String, name: String) -> PyResult<Self> {
+    #[pyo3(signature = (manufacturer, name, version=None))]
+    fn new(manufacturer: String, name: String, version: Option<String>) -> PyResult<Self> {
         Ok(ActrTypePy {
-            inner: ActrType { manufacturer, name },
+            inner: ActrType {
+                manufacturer,
+                name,
+                version,
+            },
         })
     }
 
@@ -129,11 +133,21 @@ impl ActrTypePy {
         self.inner.name.clone()
     }
 
+    fn version(&self) -> Option<String> {
+        self.inner.version.clone()
+    }
+
     fn __repr__(&self) -> String {
-        format!(
-            "ActrType(manufacturer={}, name={})",
-            self.inner.manufacturer, self.inner.name
-        )
+        match &self.inner.version {
+            Some(v) => format!(
+                "ActrType(manufacturer={}, name={}, version={})",
+                self.inner.manufacturer, self.inner.name, v
+            ),
+            None => format!(
+                "ActrType(manufacturer={}, name={})",
+                self.inner.manufacturer, self.inner.name
+            ),
+        }
     }
 }
 

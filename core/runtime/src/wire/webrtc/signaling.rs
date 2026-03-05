@@ -22,12 +22,14 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 #[cfg(feature = "opentelemetry")]
@@ -198,8 +200,8 @@ pub trait SignalingClient: Send + Sync {
 
     /// GetConnect statistics info
     fn get_stats(&self) -> SignalingStats;
-    /// Subscribe to connection state changes (Connected/Disconnected).
-    fn subscribe_state(&self) -> watch::Receiver<ConnectionState>;
+    /// Subscribe to signaling events (state transitions).
+    fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent>;
 
     /// Set actor ID and credential state for reconnect URL parameters.
     async fn set_actor_id(&self, actor_id: ActrId);
@@ -212,14 +214,78 @@ pub trait SignalingClient: Send + Sync {
     /// the connection as brand-new rather than a reconnect of the old actor.
     /// This is required before re-registration when the credential has expired.
     async fn clear_identity(&self);
+
+    /// Set a lifecycle hook callback that will be invoked (and awaited)
+    /// whenever signaling state changes (connect/disconnect).
+    /// Default implementation is a no-op for clients that don't support hooks.
+    fn set_hook_callback(&self, _cb: HookCallback) {}
 }
 
-/// High-level signaling connection state.
+/// High-level signaling connection state (kept for quick boolean checks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
     Disconnected,
     Connected,
 }
+
+/// Signaling state transition events.
+///
+/// Unlike `ConnectionState` (which is a snapshot), these represent discrete
+/// transitions and are delivered via `broadcast` so every subscriber sees
+/// every event, even if the same state occurs twice in a row.
+#[derive(Debug, Clone)]
+pub enum SignalingEvent {
+    /// About to start a connection attempt (includes retry count).
+    ConnectStart { attempt: u32 },
+    /// Connection successfully established.
+    Connected,
+    /// Connection lost.
+    Disconnected { reason: DisconnectReason },
+}
+
+/// Reason why the signaling connection was lost.
+#[derive(Debug, Clone)]
+pub enum DisconnectReason {
+    /// WebSocket stream ended (receiver task exited normally).
+    StreamEnded,
+    /// No Pong received within the timeout window.
+    PongTimeout,
+    /// Failed to send a WebSocket Ping frame.
+    PingSendFailed,
+    /// Credential expired (heartbeat 401).
+    CredentialExpired,
+    /// Explicit disconnect() call or external trigger.
+    Manual,
+    /// Connection attempt failed with an error.
+    ConnectionFailed(String),
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Hook callback for synchronous lifecycle notification
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Events that trigger workload lifecycle hooks.
+///
+/// Used by `HookCallback` to invoke workload hooks synchronously (awaited)
+/// at the point where the state change occurs.
+#[derive(Clone, Debug)]
+pub enum HookEvent {
+    // ── Signaling ──
+    SignalingConnectStart { attempt: u32 },
+    SignalingConnected,
+    SignalingDisconnected,
+    // ── WebRTC ──
+    WebRtcConnectStart { peer_id: ActrId },
+    WebRtcConnected { peer_id: ActrId, relayed: bool },
+    WebRtcDisconnected { peer_id: ActrId },
+}
+
+/// Callback closure that is awaited when a hook event occurs.
+///
+/// Set once via `set_hook_callback()`. All state-change paths invoke this
+/// closure and `.await` its result before proceeding.
+pub type HookCallback =
+    Arc<dyn Fn(HookEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
@@ -258,19 +324,23 @@ pub struct WebSocketSignalingClient {
     receiver_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Background ping task to detect half-open connections
     ping_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Connection state broadcast channel
-    state_tx: watch::Sender<ConnectionState>,
+    /// Connection state broadcast channel (event-driven)
+    event_tx: broadcast::Sender<SignalingEvent>,
     /// Last time we saw inbound traffic (pong/any message), unix epoch seconds
     last_pong: Arc<AtomicU64>,
-    /// Flag to track if auto-reconnector has been started (used with config.reconnect_config.enabled)
+    /// Flag to track if reconnect manager has been started
     reconnector_started: Arc<AtomicBool>,
+    /// Notify channel to wake up the reconnect manager
+    reconnect_notify: Arc<tokio::sync::Notify>,
+    /// Hook callback for synchronous lifecycle notification (set once, lock-free read)
+    hook_callback: OnceLock<HookCallback>,
 }
 
 impl WebSocketSignalingClient {
     /// Create new WebSocket signaling client
     pub fn new(config: SignalingConfig) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
-        let (state_tx, _state_rx) = watch::channel(ConnectionState::Disconnected);
+        let (event_tx, _event_rx) = broadcast::channel(64);
         Self {
             config,
             actor_id: tokio::sync::Mutex::new(None),
@@ -286,61 +356,114 @@ impl WebSocketSignalingClient {
             inbound_tx: tokio::sync::Mutex::new(inbound_tx),
             receiver_task: Arc::new(tokio::sync::Mutex::new(None)),
             ping_task: tokio::sync::Mutex::new(None),
-            state_tx,
+            event_tx,
             last_pong: Arc::new(AtomicU64::new(0)),
             reconnector_started: Arc::new(AtomicBool::new(false)),
+            reconnect_notify: Arc::new(tokio::sync::Notify::new()),
+            hook_callback: OnceLock::new(),
         }
     }
 
-    /// Start the auto-reconnector if enabled in config and not already started.
+    /// Start the reconnect manager if enabled in config and not already started.
     ///
-    /// This should be called after wrapping in Arc, typically right after creation or
-    /// on first connect(). It's safe to call multiple times - reconnector starts only once.
-    pub fn start_auto_reconnector(self: &Arc<Self>) {
-        // Check if auto-reconnect is enabled and not already started
-        if self.config.reconnect_config.enabled
-            && self
-                .reconnector_started
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-        {
-            tracing::info!("🔄 Starting auto-reconnector for signaling client");
+    /// The manager waits on a `Notify` and runs an exponential-backoff retry loop
+    /// each time it is woken up.
+    /// Set the hook callback (once). Subsequent calls are silently ignored.
+    pub fn set_hook_callback(&self, cb: HookCallback) {
+        let _ = self.hook_callback.set(cb);
+    }
 
-            let self_clone = self.clone();
-            let mut state_rx = self.subscribe_state();
-
-            tokio::spawn(async move {
-                loop {
-                    match state_rx.changed().await {
-                        Err(_) => {
-                            // State channel closed, client is being dropped
-                            tracing::info!("� Signaling client dropped, stopping reconnect helper");
-                            break;
-                        }
-                        Ok(_) => {
-                            if *state_rx.borrow() == ConnectionState::Disconnected {
-                                // Cleanup old WebSocket resources before reconnecting
-                                tracing::debug!(
-                                    "🧹 Cleaning up old WebSocket resources before reconnect"
-                                );
-                                if let Err(e) = self_clone.disconnect().await {
-                                    tracing::warn!("⚠️ Disconnect cleanup failed (non-fatal): {e}");
-                                }
-
-                                tracing::warn!(
-                                    "📡 Signaling state is DISCONNECTED, attempting reconnect"
-                                );
-                                if let Err(e) = self_clone.connect().await {
-                                    tracing::error!("❌ Signaling reconnect failed: {e}");
-                                } else {
-                                    tracing::info!("✅ Signaling reconnect succeeded");
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+    /// Invoke the hook callback and await its completion.
+    /// No-op if no callback has been set yet.
+    async fn invoke_hook(&self, event: HookEvent) {
+        if let Some(cb) = self.hook_callback.get() {
+            cb(event).await;
         }
+    }
+
+    pub fn start_reconnect_manager(self: &Arc<Self>) {
+        if !self.config.reconnect_config.enabled {
+            return;
+        }
+        if self
+            .reconnector_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return; // already started
+        }
+
+        tracing::info!("🔄 Starting reconnect manager for signaling client");
+
+        let client = self.clone();
+        let notify = self.reconnect_notify.clone();
+
+        tokio::spawn(async move {
+            loop {
+                // Wait until someone requests a reconnect
+                notify.notified().await;
+
+                if !client.config.reconnect_config.enabled {
+                    break;
+                }
+
+                // Run reconnect cycle with exponential backoff
+                client.run_reconnect_cycle().await;
+            }
+        });
+    }
+
+    /// Execute one full reconnect cycle with exponential backoff + jitter.
+    async fn run_reconnect_cycle(self: &Arc<Self>) {
+        use actr_framework::ExponentialBackoff;
+
+        let cfg = &self.config.reconnect_config;
+
+        // Cleanup old WebSocket resources first
+        tracing::debug!("🧹 Cleaning up old WebSocket resources before reconnect");
+        if let Err(e) = self.disconnect().await {
+            tracing::warn!("⚠️ Disconnect cleanup failed (non-fatal): {e}");
+        }
+
+        let backoff = ExponentialBackoff::builder()
+            .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
+            .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
+            .max_retries(cfg.max_attempts)
+            .with_jitter()
+            .build();
+
+        let mut attempt: u32 = 0;
+
+        for delay in backoff {
+            if self.connected.load(Ordering::Acquire) {
+                tracing::debug!("Already connected, aborting reconnect cycle");
+                return;
+            }
+
+            attempt += 1;
+            let _ = self.event_tx.send(SignalingEvent::ConnectStart { attempt });
+
+            match self.establish_connection_once().await {
+                Ok(()) => {
+                    tracing::info!("✅ Signaling reconnect succeeded on attempt {attempt}");
+                    self.start_receiver().await;
+                    self.start_ping_task().await;
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "❌ Reconnect attempt {attempt} failed: {e}, retrying in {delay:?}"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+
+        // All retries exhausted — enter cooldown, then allow future wakeups
+        tracing::error!("Reconnect failed after {attempt} attempts, entering cooldown");
+        let cooldown = std::time::Duration::from_secs(cfg.max_delay.max(1) * 2);
+        tokio::time::sleep(cooldown).await;
+        // After cooldown, the loop returns to notify.notified() and can be woken again
     }
 
     /// simple for convenience construct create Function
@@ -355,7 +478,7 @@ impl WebSocketSignalingClient {
         };
 
         let client = Arc::new(Self::new(config));
-        client.start_auto_reconnector();
+        client.start_reconnect_manager();
         client.connect().await?;
         Ok(client)
     }
@@ -452,8 +575,9 @@ impl WebSocketSignalingClient {
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
         self.last_pong.store(current_unix_secs(), Ordering::Release);
-        // Notify listeners that we are now connected
-        let _ = self.state_tx.send(ConnectionState::Connected);
+        // Invoke hook synchronously, then broadcast for other subscribers
+        self.invoke_hook(HookEvent::SignalingConnected).await;
+        let _ = self.event_tx.send(SignalingEvent::Connected);
 
         self.stats.connections.fetch_add(1, Ordering::Relaxed);
 
@@ -462,6 +586,8 @@ impl WebSocketSignalingClient {
 
     /// Connect to signaling server with retry and exponential backoff based on reconnect_config.
     async fn connect_with_retries(&self) -> NetworkResult<()> {
+        use actr_framework::ExponentialBackoff;
+
         let cfg = &self.config.reconnect_config;
 
         // If reconnect is disabled, just attempt once.
@@ -469,38 +595,42 @@ impl WebSocketSignalingClient {
             return self.establish_connection_once().await;
         }
 
-        let mut attempt: u32 = 0;
-        let mut delay_secs = cfg.initial_delay.max(1);
+        let backoff = ExponentialBackoff::builder()
+            .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
+            .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
+            .max_retries(cfg.max_attempts)
+            .with_jitter()
+            .build();
 
-        loop {
-            attempt += 1;
+        let mut last_err = None;
+
+        // 首次立即尝试（delay = 0），后续由 backoff 产生退避延迟
+        for (attempt, delay) in std::iter::once(std::time::Duration::ZERO)
+            .chain(backoff)
+            .enumerate()
+        {
+            let attempt = attempt as u32 + 1;
+            self.invoke_hook(HookEvent::SignalingConnectStart { attempt })
+                .await;
+            if delay > std::time::Duration::ZERO {
+                tracing::info!("Retry signaling connect after {delay:?} (attempt {attempt})");
+                tokio::time::sleep(delay).await;
+            }
 
             match self.establish_connection_once().await {
-                Ok(()) => {
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(e) => {
-                    tracing::warn!("Signaling connect attempt {} failed: {e:?}", attempt);
-
-                    if attempt >= cfg.max_attempts {
-                        tracing::error!(
-                            "Signaling connect failed after {} attempts, giving up",
-                            attempt
-                        );
-                        return Err(e);
-                    }
-
-                    let sleep_secs = delay_secs.min(cfg.max_delay.max(1));
-                    tracing::info!("Retry signaling connect after {}s", sleep_secs);
-                    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
-
-                    // Exponential backoff for next attempt
-                    delay_secs = ((delay_secs as f64) * cfg.backoff_multiplier)
-                        .round()
-                        .max(1.0) as u64;
+                    tracing::warn!("Signaling connect attempt {attempt} failed: {e:?}");
+                    last_err = Some(e);
                 }
             }
         }
+
+        let total = cfg.max_attempts + 1; // backoff max_retries + 首次
+        tracing::error!("Signaling connect failed after {total} attempts, giving up");
+        Err(last_err.unwrap_or_else(|| {
+            NetworkError::ConnectionError("All connection attempts failed".to_string())
+        }))
     }
 
     /// Send envelope and wait for response with timeout and error handling.
@@ -561,8 +691,10 @@ impl WebSocketSignalingClient {
         let inbound_tx = { self.inbound_tx.lock().await.clone() };
         let stats = self.stats.clone();
         let connected = self.connected.clone();
-        let state_tx = self.state_tx.clone();
+        let event_tx = self.event_tx.clone();
         let last_pong = self.last_pong.clone();
+        let reconnect_notify = self.reconnect_notify.clone();
+        let reconnect_enabled = self.config.reconnect_config.enabled;
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
@@ -618,8 +750,8 @@ impl WebSocketSignalingClient {
                         tracing::debug!("Received ping");
                         last_pong.store(current_unix_secs(), Ordering::Release);
                     }
-                    Ok(_) => {
-                        tracing::warn!("Received non-binary frame, ignoring");
+                    Ok(other) => {
+                        tracing::warn!("Received non-binary frame, ignoring: {other:?}");
                     }
                     Err(e) => {
                         stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -629,10 +761,16 @@ impl WebSocketSignalingClient {
                 }
             }
 
-            // Reaching here means the underlying WebSocket stream has terminated.
-            connected.store(false, Ordering::Release);
+            tracing::warn!("Stream terminated");
+            // Stream terminated → mark disconnected and wake reconnect manager
             stats.disconnections.fetch_add(1, Ordering::Relaxed);
-            let _ = state_tx.send(ConnectionState::Disconnected);
+            connected.store(false, Ordering::Release);
+            let _ = event_tx.send(SignalingEvent::Disconnected {
+                reason: DisconnectReason::StreamEnded,
+            });
+            if reconnect_enabled {
+                reconnect_notify.notify_one();
+            }
         });
 
         *self.receiver_task.lock().await = Some(handle);
@@ -652,9 +790,11 @@ impl WebSocketSignalingClient {
 
         let sink = self.ws_sink.clone();
         let connected = self.connected.clone();
-        let state_tx = self.state_tx.clone();
+        let event_tx = self.event_tx.clone();
         let last_pong = self.last_pong.clone();
         let receiver_task_clone = Arc::clone(&self.receiver_task);
+        let reconnect_notify = self.reconnect_notify.clone();
+        let reconnect_enabled = self.config.reconnect_config.enabled;
 
         let handle = tokio::spawn(async move {
             loop {
@@ -675,13 +815,23 @@ impl WebSocketSignalingClient {
                     {
                         tracing::warn!("Signaling ping send failed: {e}");
                         connected.store(false, Ordering::Release);
-                        let _ = state_tx.send(ConnectionState::Disconnected);
+                        let _ = event_tx.send(SignalingEvent::Disconnected {
+                            reason: DisconnectReason::PingSendFailed,
+                        });
+                        if reconnect_enabled {
+                            reconnect_notify.notify_one();
+                        }
                         break;
                     }
                 } else {
                     tracing::warn!("Signaling not connected");
                     connected.store(false, Ordering::Release);
-                    let _ = state_tx.send(ConnectionState::Disconnected);
+                    let _ = event_tx.send(SignalingEvent::Disconnected {
+                        reason: DisconnectReason::PingSendFailed,
+                    });
+                    if reconnect_enabled {
+                        reconnect_notify.notify_one();
+                    }
                     break;
                 }
                 drop(sink_guard);
@@ -694,10 +844,15 @@ impl WebSocketSignalingClient {
                         "Signaling pong timeout (last seen {}s ago), marking disconnected",
                         now.saturating_sub(last)
                     );
-                    connected.store(false, Ordering::Release);
-                    let _ = state_tx.send(ConnectionState::Disconnected);
                     if let Some(handle) = receiver_task_clone.lock().await.take() {
                         handle.abort();
+                    }
+                    connected.store(false, Ordering::Release);
+                    let _ = event_tx.send(SignalingEvent::Disconnected {
+                        reason: DisconnectReason::PongTimeout,
+                    });
+                    if reconnect_enabled {
+                        reconnect_notify.notify_one();
                     }
                     break;
                 }
@@ -709,54 +864,42 @@ impl WebSocketSignalingClient {
 
     /// Wait for ongoing connection attempt to complete (used when another task is connecting).
     ///
-    /// This uses the watch channel to efficiently wait for state changes instead of polling.
+    /// Uses the broadcast channel to wait for a Connected event without recursion.
     async fn wait_for_connection_result(&self) -> NetworkResult<()> {
-        let mut state_rx = self.subscribe_state();
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
-        tokio::pin!(timeout);
+        let mut event_rx = self.event_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 
         loop {
             tokio::select! {
-                _ = &mut timeout => {
-                    // Timeout: check final state
+                _ = tokio::time::sleep_until(deadline) => {
+                    // Final check before giving up
                     if self.connected.load(Ordering::Acquire) {
                         tracing::debug!("Connection succeeded just before timeout");
                         return Ok(());
                     }
-
-                    // Check if we can retry (connecting flag cleared)
-                    if !self.connecting.load(Ordering::Acquire) {
-                        tracing::warn!("Other connection attempt failed/timed out, will retry");
-                        // Recursively call connect() to retry
-                        return self.connect().await;
-                    }
-
                     return Err(NetworkError::ConnectionError(
                         "Timeout waiting for concurrent connection attempt".to_string(),
                     ));
                 }
-
-                result = state_rx.changed() => {
-                    if result.is_err() {
-                        return Err(NetworkError::ConnectionError(
-                            "State channel closed while waiting for connection".to_string(),
-                        ));
-                    }
-
-                    let state = *state_rx.borrow();
-                    match state {
-                        ConnectionState::Connected => {
+                result = event_rx.recv() => {
+                    match result {
+                        Ok(SignalingEvent::Connected) => {
                             tracing::debug!("Connection established by another task");
                             return Ok(());
                         }
-                        ConnectionState::Disconnected => {
-                            // Check if the connecting task gave up
-                            if !self.connecting.load(Ordering::Acquire) {
-                                tracing::warn!("Other connection attempt failed, will retry");
-                                // Recursively call connect() to retry with fresh attempt
-                                return self.connect().await;
+                        Ok(_) => continue, // ConnectStart / Disconnected — keep waiting
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Event receiver lagged by {n} events");
+                            // Check current state after lag
+                            if self.connected.load(Ordering::Acquire) {
+                                return Ok(());
                             }
-                            // Otherwise, keep waiting (might be transient state)
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(NetworkError::ConnectionError(
+                                "Event channel closed while waiting for connection".to_string(),
+                            ));
                         }
                     }
                 }
@@ -804,8 +947,9 @@ impl SignalingClient for WebSocketSignalingClient {
             }
             Err(e) => {
                 // Explicitly notify waiting tasks that connection failed
-                // This allows them to retry immediately instead of waiting for timeout
-                let _ = self.state_tx.send(ConnectionState::Disconnected);
+                let _ = self.event_tx.send(SignalingEvent::Disconnected {
+                    reason: DisconnectReason::ConnectionFailed(e.to_string()),
+                });
                 tracing::error!("Connection failed: {e}");
                 Err(e)
             }
@@ -838,6 +982,12 @@ impl SignalingClient for WebSocketSignalingClient {
 
         self.connected.store(false, Ordering::Release);
         self.stats.disconnections.fetch_add(1, Ordering::Relaxed);
+
+        // Invoke hook synchronously, then broadcast for other subscribers
+        self.invoke_hook(HookEvent::SignalingDisconnected).await;
+        let _ = self.event_tx.send(SignalingEvent::Disconnected {
+            reason: DisconnectReason::Manual,
+        });
 
         Ok(())
     }
@@ -1119,8 +1269,8 @@ impl SignalingClient for WebSocketSignalingClient {
         self.stats.snapshot()
     }
 
-    fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
-        self.state_tx.subscribe()
+    fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+        self.event_tx.subscribe()
     }
 
     async fn set_actor_id(&self, actor_id: ActrId) {
@@ -1134,6 +1284,10 @@ impl SignalingClient for WebSocketSignalingClient {
     async fn clear_identity(&self) {
         *self.actor_id.lock().await = None;
         *self.credential_state.lock().await = None;
+    }
+
+    fn set_hook_callback(&self, cb: HookCallback) {
+        let _ = self.hook_callback.set(cb);
     }
 }
 
@@ -1230,11 +1384,11 @@ fn current_unix_secs() -> u64 {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering as UsizeOrdering};
-    use tokio_util::sync::CancellationToken;
 
     /// Simple fake SignalingClient implementation for testing the reconnect helper.
     struct FakeSignalingClient {
-        state_tx: watch::Sender<ConnectionState>,
+        event_tx: broadcast::Sender<SignalingEvent>,
+        connected: AtomicBool,
         connect_calls: Arc<AtomicUsize>,
         actor_id: tokio::sync::Mutex<Option<ActrId>>,
         credential_state: tokio::sync::Mutex<Option<CredentialState>>,
@@ -1304,16 +1458,15 @@ mod tests {
         }
 
         fn is_connected(&self) -> bool {
-            // Derived from last published state; keep implementation simple for tests.
-            *self.state_tx.borrow() == ConnectionState::Connected
+            self.connected.load(Ordering::SeqCst)
         }
 
         fn get_stats(&self) -> SignalingStats {
             SignalingStats::default()
         }
 
-        fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
-            self.state_tx.subscribe()
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            self.event_tx.subscribe()
         }
 
         async fn set_actor_id(&self, actor_id: ActrId) {
@@ -1330,31 +1483,369 @@ mod tests {
         }
     }
 
-    fn make_fake_client() -> (Arc<FakeSignalingClient>, watch::Sender<ConnectionState>) {
-        let (state_tx, _rx) = watch::channel(ConnectionState::Disconnected);
+    fn make_fake_client() -> Arc<FakeSignalingClient> {
+        let (event_tx, _erx) = broadcast::channel(64);
         let client = Arc::new(FakeSignalingClient {
-            state_tx: state_tx.clone(),
+            event_tx,
+            connected: AtomicBool::new(false),
             connect_calls: Arc::new(AtomicUsize::new(0)),
             actor_id: tokio::sync::Mutex::new(None),
             credential_state: tokio::sync::Mutex::new(None),
         });
-        (client, state_tx)
+        client
     }
 
-    #[test]
-    fn test_websocket_signaling_client_initial_state_disconnected() {
-        // Build a minimal config; URL doesn't need to be reachable for this test.
-        let config = SignalingConfig {
-            server_url: Url::parse("ws://example.com/signaling/ws").unwrap(),
-            connection_timeout: 30,
+    /// Helper: create a minimal SignalingConfig with an unreachable URL.
+    fn make_config() -> SignalingConfig {
+        SignalingConfig {
+            server_url: Url::parse("ws://127.0.0.1:1/signaling/ws").unwrap(),
+            connection_timeout: 2,
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
             auth_config: None,
             webrtc_role: None,
-        };
+        }
+    }
 
+    /// Helper: create a WebSocketSignalingClient wrapped in Arc
+    fn make_ws_client(config: SignalingConfig) -> Arc<WebSocketSignalingClient> {
+        Arc::new(WebSocketSignalingClient::new(config))
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 1. 配置默认值
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn test_reconnect_config_defaults() {
+        let cfg = ReconnectConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_attempts, 10);
+        assert_eq!(cfg.initial_delay, 1);
+        assert_eq!(cfg.max_delay, 60);
+        assert!((cfg.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 2. 初始状态
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn test_websocket_signaling_client_initial_state_disconnected() {
+        let client = WebSocketSignalingClient::new(make_config());
+        assert!(!client.is_connected(), "新创建的客户端应为 Disconnected");
+        assert!(
+            !client.connecting.load(Ordering::Acquire),
+            "新创建的客户端不应处于 connecting 状态"
+        );
+        assert!(
+            !client.reconnector_started.load(Ordering::Acquire),
+            "reconnect manager 不应被自动启动"
+        );
+    }
+
+    #[test]
+    fn test_initial_stats_are_zero() {
+        let client = WebSocketSignalingClient::new(make_config());
+        let stats = client.get_stats();
+        assert_eq!(stats.connections, 0);
+        assert_eq!(stats.disconnections, 0);
+        assert_eq!(stats.messages_sent, 0);
+        assert_eq!(stats.messages_received, 0);
+        assert_eq!(stats.errors, 0);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 3. 重连管理器幂等性
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_reconnect_manager_idempotent() {
+        let client = make_ws_client(make_config());
+
+        // 第一次启动应该成功
+        client.start_reconnect_manager();
+        assert!(
+            client.reconnector_started.load(Ordering::Acquire),
+            "首次调用后 reconnector_started 应为 true"
+        );
+
+        // 第二次调用不应启动新的 manager（CAS 失败）
+        client.start_reconnect_manager();
+        // 如果出现多个 manager，后续测试会因为重复重连而 flaky，这里主要验证标志位
+        assert!(client.reconnector_started.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_manager_disabled_when_config_disabled() {
+        let mut config = make_config();
+        config.reconnect_config.enabled = false;
+        let client = make_ws_client(config);
+
+        client.start_reconnect_manager();
+        assert!(
+            !client.reconnector_started.load(Ordering::Acquire),
+            "当 reconnect 配置为 disabled 时，不应启动 reconnect manager"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 4. connect() 并发互斥
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_connect_fast_path_when_already_connected() {
+        let client = make_ws_client(make_config());
+        // 手动设置为已连接
+        client.connected.store(true, Ordering::Release);
+
+        // connect() 应该直接返回 Ok 而不建立新连接
+        let result = client.connect().await;
+        assert!(result.is_ok(), "已连接时 connect() 应返回 Ok");
+        // 不应改变 connecting 标志
+        assert!(!client.connecting.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn test_connect_sets_connecting_flag() {
+        let mut config = make_config();
+        config.reconnect_config.enabled = false; // 禁用重试，快速失败
+        config.connection_timeout = 1;
+        let client = make_ws_client(config);
+
+        // 连接会失败（不可达的地址），但应该正确清理 connecting 标志
+        let result = client.connect().await;
+        assert!(result.is_err(), "连接不可达地址应该失败");
+        assert!(
+            !client.connecting.load(Ordering::Acquire),
+            "连接失败后 connecting 标志应被清除"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 5. 事件广播
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_event_subscribe_receives_events() {
+        let client = make_ws_client(make_config());
+        let mut rx = client.subscribe_events();
+
+        // 手动发送事件
+        let _ = client.event_tx.send(SignalingEvent::Connected);
+
+        match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+            Ok(Ok(SignalingEvent::Connected)) => {} // 期望收到 Connected 事件
+            other => panic!("期望收到 Connected 事件，但得到 {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_event_on_connect_failure() {
+        let mut config = make_config();
+        config.reconnect_config.enabled = false;
+        config.connection_timeout = 1;
+        let client = make_ws_client(config);
+        let mut rx = client.subscribe_events();
+
+        // 连接失败
+        let _ = client.connect().await;
+
+        // 应该收到 Disconnected(ConnectionFailed) 事件
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+            Ok(Ok(SignalingEvent::Disconnected {
+                reason: DisconnectReason::ConnectionFailed(_),
+            })) => {} // 期望
+            other => panic!(
+                "期望收到 Disconnected(ConnectionFailed) 事件，但得到 {:?}",
+                other
+            ),
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 6. disconnect() 状态清理
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_disconnect_clears_connected_flag() {
+        let client = make_ws_client(make_config());
+        // 模拟已连接状态
+        client.connected.store(true, Ordering::Release);
+        assert!(client.is_connected());
+
+        let result = client.disconnect().await;
+        assert!(result.is_ok());
+        assert!(!client.is_connected(), "disconnect() 后应该为 Disconnected");
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_increments_disconnection_stat() {
+        let client = make_ws_client(make_config());
+        client.connected.store(true, Ordering::Release);
+
+        let stats_before = client.get_stats().disconnections;
+        let _ = client.disconnect().await;
+        let stats_after = client.get_stats().disconnections;
+        assert_eq!(
+            stats_after,
+            stats_before + 1,
+            "disconnect() 应该增加断连计数"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_idempotent() {
+        let client = make_ws_client(make_config());
+
+        // 即使在未连接状态下调用 disconnect() 也不应 panic
+        let r1 = client.disconnect().await;
+        let r2 = client.disconnect().await;
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+        assert!(!client.is_connected());
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 7. reconnect notify 机制
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_reconnect_notify_wakes_waiter() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_clone = notify.clone();
+        let woken = Arc::new(AtomicBool::new(false));
+        let woken_clone = woken.clone();
+
+        let handle = tokio::spawn(async move {
+            notify_clone.notified().await;
+            woken_clone.store(true, Ordering::Release);
+        });
+
+        // 确保 waiter 已经注册
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!woken.load(Ordering::Acquire), "尚未通知前不应被唤醒");
+
+        // 触发通知
+        notify.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(woken.load(Ordering::Acquire), "通知后应被唤醒");
+
+        handle.abort();
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 8. URL 构建测试
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_build_url_without_identity() {
+        let config = make_config();
+        let expected_base = config.server_url.to_string();
         let client = WebSocketSignalingClient::new(config);
-        let state_rx = client.subscribe_state();
-        assert_eq!(*state_rx.borrow(), ConnectionState::Disconnected);
+
+        let url = client.build_url_with_identity().await;
+        assert_eq!(
+            url.to_string(),
+            expected_base,
+            "没有设置 actor_id 时 URL 不应包含身份参数"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_url_with_webrtc_role() {
+        let mut config = make_config();
+        config.webrtc_role = Some("answer".to_string());
+        let client = WebSocketSignalingClient::new(config);
+
+        let url = client.build_url_with_identity().await;
+        assert!(
+            url.query().unwrap_or("").contains("webrtc_role=answer"),
+            "URL 应包含 webrtc_role 参数，实际 URL: {}",
+            url
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 9. inbound channel 重置
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_reset_inbound_channel_creates_fresh_channel() {
+        let client = WebSocketSignalingClient::new(make_config());
+
+        // 获取旧 tx，发送一条消息
+        {
+            let tx = client.inbound_tx.lock().await;
+            let _ = tx.send(SignalingEnvelope::default());
+        }
+
+        // 重置 channel
+        client.reset_inbound_channel().await;
+
+        // 旧消息不应在新 channel 中可见
+        let mut rx = client.inbound_rx.lock().await;
+        let result = rx.try_recv();
+        assert!(result.is_err(), "重置后旧消息不应在新 channel 中可见");
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 10. envelope ID 递增
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_envelope_id_monotonically_increasing() {
+        let client = WebSocketSignalingClient::new(make_config());
+
+        let id1 = client.next_envelope_id().await;
+        let id2 = client.next_envelope_id().await;
+        let id3 = client.next_envelope_id().await;
+
+        assert_eq!(id1, "env-1");
+        assert_eq!(id2, "env-2");
+        assert_eq!(id3, "env-3");
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 11. send_envelope 未连接时应返回错误
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_send_envelope_fails_when_not_connected() {
+        let client = WebSocketSignalingClient::new(make_config());
+        let envelope = SignalingEnvelope::default();
+
+        let result = client.send_envelope(envelope).await;
+        assert!(result.is_err(), "未连接时 send_envelope 应返回错误");
+        match result {
+            Err(NetworkError::ConnectionError(msg)) => {
+                assert!(
+                    msg.contains("not connected") || msg.contains("Not connected"),
+                    "错误信息应包含 'not connected'，实际: {}",
+                    msg
+                );
+            }
+            other => panic!("期望 ConnectionError，得到 {:?}", other),
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 12. FakeSignalingClient trait 实现验证
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn test_fake_client_tracks_connect_calls() {
+        let client = make_fake_client();
+        assert_eq!(client.connect_calls.load(UsizeOrdering::SeqCst), 0);
+
+        client.connect().await.unwrap();
+        client.connect().await.unwrap();
+        client.connect().await.unwrap();
+
+        assert_eq!(
+            client.connect_calls.load(UsizeOrdering::SeqCst),
+            3,
+            "FakeSignalingClient 应准确记录 connect 调用次数"
+        );
     }
 }

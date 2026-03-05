@@ -1,0 +1,31 @@
+[package]
+name = "{{PROJECT_NAME}}"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "{{PROJECT_NAME}}"
+path = "src/main.rs"
+
+[dependencies]
+# Actor-RTC framework
+actr-framework = "0.1.5"
+actr-protocol = "0.1.6"
+actr-runtime = "0.1.7"
+actr-config = "0.1.7"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Protobuf
+prost = "0.14"
+prost-types = "0.14"
+bytes = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
