@@ -499,6 +499,25 @@ impl<W: Workload> ActrRef<W> {
             tracing::info!("📡 Received Ctrl+C signal");
         }
 
+        // Call on_stop lifecycle hook before shutdown
+        if let (Some(factory), Some(actor_id), Some(credential_state)) = (
+            self.node.context_factory.as_ref(),
+            self.node.actor_id.as_ref(),
+            self.node.credential_state.as_ref(),
+        ) {
+            let ctx = factory.create(
+                actor_id,
+                None,
+                "shutdown",
+                &credential_state.credential().await,
+            );
+            tracing::info!("🪝 Calling lifecycle hook: on_stop");
+            if let Err(e) = self.node.workload.on_stop(&ctx).await {
+                tracing::warn!("⚠️ on_stop hook error: {}", e);
+            }
+            tracing::info!("✅ Lifecycle hook on_stop completed");
+        }
+
         self.shutdown();
         self.wait_for_shutdown().await;
 

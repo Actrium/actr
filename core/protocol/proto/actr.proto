@@ -387,6 +387,17 @@ message RoleAssignment {
 }
 
 // =========================================================================
+// ICE Restart Notification (方案 A: Answerer → Offerer)
+// =========================================================================
+
+// Answerer notifies Offerer that its network has recovered,
+// so the Offerer should immediately retry ICE restart instead of
+// waiting for its backoff timer to expire.
+message IceRestartRequest {
+  optional string reason = 1; // e.g. "network_recovered", "network_type_changed"
+}
+
+// =========================================================================
 // Credential Warning
 // =========================================================================
 

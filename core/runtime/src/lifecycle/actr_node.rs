@@ -749,6 +749,90 @@ impl<W: Workload> ActrNode<W> {
             }
         }
     }
+
+    /// Build the hook callback and inject it into the signaling client.
+    ///
+    /// `deps` starts as `None`. The caller sets it to `Some(...)` after registration.
+    /// Before that, hooks that accept `Option<&C>` will receive `None`.
+    ///
+    /// **Must be called before `connect()`** so the first connection events are
+    /// captured naturally by `invoke_hook` inside `connect_with_retries`.
+    fn build_hook_callback(
+        &self,
+        deps: Arc<std::sync::OnceLock<(ContextFactory, ActrId, CredentialState)>>,
+    ) -> crate::wire::webrtc::signaling::HookCallback {
+        use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+
+        let workload = self.workload.clone();
+
+        let hook_cb: HookCallback = Arc::new(move |event| {
+            let workload = workload.clone();
+            let deps = deps.clone();
+
+            Box::pin(async move {
+                let ctx = if let Some((factory, aid, cred)) = deps.get() {
+                    let credential = cred.credential().await;
+                    Some(factory.create(aid, None, "hook", &credential))
+                } else {
+                    None
+                };
+
+                let result = match event {
+                    HookEvent::SignalingConnectStart { .. } => {
+                        tracing::debug!("🪝 on_signaling_connect_start");
+                        workload.on_signaling_connect_start(ctx.as_ref()).await
+                    }
+                    HookEvent::SignalingConnected => {
+                        tracing::debug!("🪝 on_signaling_connected");
+                        workload.on_signaling_connected(ctx.as_ref()).await
+                    }
+                    HookEvent::SignalingDisconnected => {
+                        tracing::debug!("🪝 on_signaling_disconnected");
+                        let ctx = ctx.as_ref().expect("ctx must be available for disconnect");
+                        workload.on_signaling_disconnected(ctx).await
+                    }
+                    HookEvent::WebRtcConnectStart { ref peer_id } => {
+                        tracing::debug!("🪝 on_webrtc_connect_start({})", peer_id.serial_number);
+                        let ctx = ctx
+                            .as_ref()
+                            .expect("ctx must be available for webrtc hooks");
+                        workload.on_webrtc_connect_start(ctx, peer_id).await
+                    }
+                    HookEvent::WebRtcConnected {
+                        ref peer_id,
+                        relayed,
+                    } => {
+                        tracing::debug!(
+                            "🪝 on_webrtc_connected({}, relayed={})",
+                            peer_id.serial_number,
+                            relayed
+                        );
+                        let ctx = ctx
+                            .as_ref()
+                            .expect("ctx must be available for webrtc hooks");
+                        workload.on_webrtc_connected(ctx, peer_id, relayed).await
+                    }
+                    HookEvent::WebRtcDisconnected { ref peer_id } => {
+                        tracing::debug!("🪝 on_webrtc_disconnected({})", peer_id.serial_number);
+                        let ctx = ctx
+                            .as_ref()
+                            .expect("ctx must be available for webrtc hooks");
+                        workload.on_webrtc_disconnected(ctx, peer_id).await
+                    }
+                };
+
+                if let Err(e) = result {
+                    tracing::warn!("⚠️ Hook callback error: {}", e);
+                }
+            })
+        });
+
+        self.signaling_client.set_hook_callback(hook_cb.clone());
+        tracing::info!("✅ Hook callback injected into signaling client");
+
+        hook_cb
+    }
+
     /// 网络事件处理循环（后台任务）
     ///
     /// # 职责
@@ -996,6 +1080,10 @@ impl<W: Workload> ActrNode<W> {
                     panic_info
                 );
 
+                // Notify workload about the panic (best-effort, ignore hook errors)
+                let error_msg = format!("Handler panicked: {panic_info}");
+                let _ = self.workload.on_error(&ctx, error_msg).await;
+
                 // Return DecodeFailure error with panic info
                 // (using DecodeFailure as a proxy for "cannot process message")
                 Err(actr_protocol::ProtocolError::Actr(
@@ -1040,6 +1128,12 @@ impl<W: Workload> ActrNode<W> {
     pub async fn start(mut self) -> ActorResult<crate::actr_ref::ActrRef<W>> {
         tracing::info!("🚀 Starting ActrNode");
         println!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 0.5. Build hook callback and inject into signaling (before connect!)
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        let hook_ctx_deps = Arc::new(std::sync::OnceLock::new());
+        let hook_cb = self.build_hook_callback(hook_ctx_deps.clone());
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 1. Connect to signaling server and register
@@ -1135,6 +1229,16 @@ impl<W: Workload> ActrNode<W> {
                     .await;
                 // Store PSK and public_key for TURN authentication
                 self.psk = register_ok.psk.clone();
+
+                // Populate hook callback ctx dependencies now that we have actor_id + credential.
+                // After this, all hook invocations will receive Some(ctx) instead of None.
+                let _ = hook_ctx_deps.set((
+                    self.context_factory
+                        .clone()
+                        .expect("ContextFactory must exist"),
+                    actor_id.clone(),
+                    credential_state.clone(),
+                ));
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
@@ -1537,6 +1641,15 @@ impl<W: Workload> ActrNode<W> {
             );
         node_ref.workload.on_start(&ctx).await?;
         tracing::info!("✅ Lifecycle hook on_start completed");
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 4.5. Inject hook callback into WebRTC coordinator
+        //      Reuse the same callback built in step 0.5.
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        if let Some(coord) = &node_ref.webrtc_coordinator {
+            coord.set_hook_callback(hook_cb);
+            tracing::info!("✅ Hook callback injected into WebRTC coordinator");
+        }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 4.6. Start Inproc receive loop (Shell → Workload)
@@ -1979,6 +2092,15 @@ impl<W: Workload> ActrNode<W> {
         tracing::info!("✅ Mailbox processing loop started");
 
         tracing::info!("✅ ActrNode started successfully");
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 5.5. Call lifecycle hook on_ready
+        //      All components are up: signaling, WebRTC, heartbeat, mailbox loop.
+        //      This is the true "Actor is ready to serve" moment.
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        tracing::info!("🪝 Calling lifecycle hook: on_ready");
+        node_ref.workload.on_ready(&ctx).await?;
+        tracing::info!("✅ Lifecycle hook on_ready completed");
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 6. Create ActrRef for Shell to interact with Workload

@@ -5,7 +5,16 @@
 //! Tests focus on:
 //! - Two-peer disconnect → network event → ICE restart → reconnect
 //! - Offerer vs Answerer recovery latency comparison
-//! - Pending request cleanup on disconnect
+//!
+//! ## Recovery latency tests (Test 2 & 3)
+//!
+//! Both tests use a **short outage (8s)** so the connection stays in the
+//! peers map and `do_ice_restart_inner` is still running (in its backoff loop).
+//!
+//! The key difference (方案A implemented):
+//! - **Offerer test**: offerer calls `retry_failed()` → `restart_ice()` → already inflight → wakes backoff
+//! - **Answerer test**: answerer calls `retry_failed()` → `restart_ice()` → `!is_offerer`
+//!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 mod common;
 
@@ -100,24 +109,30 @@ async fn test_two_peer_disconnect_reconnect() {
 
 // ==================== Test 2: Offerer recovery latency ====================
 
-/// Test: offerer recovery after long network outage.
+/// Test: offerer-triggered recovery after network outage.
 ///
-/// Topology: peer 200 sends to peer 100 (offerer, echo responder)
+/// Topology: peer 200 → peer 100 (offerer, echo responder on 100)
 ///
-/// Recovery measurement (event-driven):
-/// - Timer starts at `simulate_reconnect()` (network unblock)
-/// - Send message to trigger new connection establishment
-/// - Measure time until message response (end-to-end recovery)
+/// Flow:
+/// 1. Establish connection
+/// 2. Full network outage (VNet + signaling) for 8s
+///    → ICE Disconnected → auto-restart triggered on offerer (peer 100)
+///    → First attempt fails (signaling blocked) → enters backoff
+/// 3. Unblock network
+/// 4. Offerer (peer 100) calls `retry_failed_connections()` (simulating NetworkEvent::Available)
+///    → `restart_ice()` but already inflight → no-op (dedup check)
+/// 5. Measure time from unblock to message delivery
 ///
-/// This measures the REAL recovery latency — from network restoration
-/// to successful message delivery — not the connection_factory backoff.
+/// Key observation: `retry_failed()` on offerer is a no-op because
+/// `do_ice_restart_inner` is already running. Recovery depends entirely on
+/// the existing backoff timer expiring and retrying.
 #[tokio::test]
 async fn test_offerer_recovery_latency() {
     init_tracing();
 
     let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
+    harness.add_peer(100).await; // offerer (first peer → offerer VNet)
+    harness.add_peer(200).await; // answerer
 
     tracing::info!("🔗 Step 1: Establishing connection 200 → 100...");
     tracing::info!("   Peer 100 = offerer (echo responder)");
@@ -126,26 +141,32 @@ async fn test_offerer_recovery_latency() {
 
     harness.reset_counters();
 
-    tracing::info!("🔴 Step 2: Simulating long network outage (VNet + signaling)...");
+    // === Step 2: Short outage — connection stays in peers map ===
+    tracing::info!("🔴 Step 2: Full network outage (VNet + signaling)...");
     harness.simulate_disconnect();
 
-    // Wait long enough for ICE restart retries to exhaust and peer to be dropped
-    tracing::info!("⏳ Waiting 15s for connection to fully fail...");
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    // Wait for ICE Disconnected → auto-restart → first attempt fails → enters backoff
+    tracing::info!("⏳ Waiting 8s for auto-restart to enter backoff...");
+    tokio::time::sleep(Duration::from_secs(8)).await;
 
     let outage_restart_count = harness.ice_restart_count();
     tracing::info!(
-        "📊 ICE restart attempts during outage: {} (all failed — signaling was down)",
+        "📊 ICE restart attempts during outage: {} (all failed — signaling blocked)",
         outage_restart_count
     );
 
-    // --- Recovery: start timer from network unblock ---
+    // === Step 3: Unblock network — start measuring ===
     tracing::info!("🟢 Step 3: Restoring network — timer starts NOW");
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // Send message to trigger new connection (200→100, echo responder on 100)
-    tracing::info!("📱 Step 4: Sending message 200→100 to trigger new connection...");
+    // === Step 4: Offerer calls retry_failed (simulating NetworkEvent::Available) ===
+    tracing::info!("📱 Step 4: Offerer (100) calls retry_failed_connections()...");
+    tracing::info!("   → restart_ice() will find restart already inflight → no-op");
+    harness.peer(100).retry_failed().await;
+
+    // === Step 5: Wait for recovery and send message ===
+    tracing::info!("📤 Step 5: Sending message 200→100 to verify recovery...");
     let peer_200 = harness.peer(200);
     let msg_handle = peer_200.spawn_request(100, "offerer_recovery", 30000);
 
@@ -171,33 +192,43 @@ async fn test_offerer_recovery_latency() {
         }
     }
 
-    tracing::info!("╔══════════════════════════════════════════╗");
-    tracing::info!("║   Offerer Recovery Summary               ║");
-    tracing::info!("╠══════════════════════════════════════════╣");
+    let total_restart_count = harness.ice_restart_count();
+
+    tracing::info!("╔══════════════════════════════════════════════════════╗");
+    tracing::info!("║   Offerer Recovery Summary                          ║");
+    tracing::info!("╠══════════════════════════════════════════════════════╣");
     tracing::info!("║ E2E recovery latency: {:?}", e2e_latency);
     tracing::info!("║   (from network unblock to message response)");
-    tracing::info!("║ Outage ICE restart attempts: {}", outage_restart_count);
-    tracing::info!("╚══════════════════════════════════════════╝");
+    tracing::info!(
+        "║ ICE restart attempts: {} during outage, {} total",
+        outage_restart_count,
+        total_restart_count
+    );
+    tracing::info!("║ Note: retry_failed() on offerer = no-op (restart");
+    tracing::info!("║   already inflight, dedup check blocks it)");
+    tracing::info!("╚══════════════════════════════════════════════════════╝");
 
     tracing::info!("✅ test_offerer_recovery_latency passed!");
 }
 
 // ==================== Test 3: Answerer recovery latency ====================
 
-/// Test: answerer recovery after long network outage.
+/// Test: answerer-triggered recovery after network outage (方案A).
 ///
-/// Same topology and flow as offerer test — both use the same message direction
-/// (200→100), so the difference is purely observational.
+/// Topology: peer 200 → peer 100 (offerer, echo responder on 100)
 ///
-/// After long outage, the old connection is dropped. A new message triggers
-/// a fresh RoleNegotiation. Recovery measurement starts at network unblock.
+/// Same setup as offerer test, BUT:
+/// 4. **Answerer (peer 200)** calls `retry_failed_connections()` instead
+///    → `restart_ice()` → `!is_offerer` → sends IceRestartRequest to Offerer
+/// 5. Offerer receives IceRestartRequest → `notify_one()` wakes backoff
+///    → immediate ICE restart retry → FASTER recovery
 #[tokio::test]
 async fn test_answerer_recovery_latency() {
     init_tracing();
 
     let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
+    harness.add_peer(100).await; // offerer (first peer → offerer VNet)
+    harness.add_peer(200).await; // answerer
 
     tracing::info!("🔗 Step 1: Establishing connection 200 → 100...");
     tracing::info!("   Peer 100 = offerer (echo responder)");
@@ -206,27 +237,31 @@ async fn test_answerer_recovery_latency() {
 
     harness.reset_counters();
 
-    tracing::info!("🔴 Step 2: Simulating long network outage (VNet + signaling)...");
+    // === Step 2: Short outage — connection stays in peers map ===
+    tracing::info!("🔴 Step 2: Full network outage (VNet + signaling)...");
     harness.simulate_disconnect();
 
-    tracing::info!("⏳ Waiting 15s for connection to fully fail...");
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    tracing::info!("⏳ Waiting 8s for auto-restart to enter backoff...");
+    tokio::time::sleep(Duration::from_secs(8)).await;
 
     let outage_restart_count = harness.ice_restart_count();
     tracing::info!(
-        "📊 ICE restart attempts during outage: {} (all failed — signaling was down)",
+        "📊 ICE restart attempts during outage: {} (all failed — signaling blocked)",
         outage_restart_count
     );
 
-    // --- Recovery: start timer from network unblock ---
+    // === Step 3: Unblock network — start measuring ===
     tracing::info!("🟢 Step 3: Restoring network — timer starts NOW");
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // Send message from answerer side (200→100, echo responder on 100)
-    tracing::info!(
-        "📱 Step 4: Answerer (200) sending message 200→100 to trigger new connection..."
-    );
+    // === Step 4: ANSWERER calls retry_failed (simulating NetworkEvent::Available) ===
+    tracing::info!("📱 Step 4: Answerer (200) calls retry_failed_connections()...");
+    tracing::info!("   → restart_ice() → !is_offerer → sends IceRestartRequest to Offerer");
+    harness.peer(200).retry_failed().await;
+
+    // === Step 5: Wait for recovery and send message ===
+    tracing::info!("📤 Step 5: Sending message 200→100 to verify recovery...");
     let peer_200 = harness.peer(200);
     let msg_handle = peer_200.spawn_request(100, "answerer_recovery", 30000);
 
@@ -246,7 +281,6 @@ async fn test_answerer_recovery_latency() {
                 e,
                 e2e_latency
             );
-            tracing::error!("   This may indicate role-based recovery differences");
         }
         Ok(Err(e)) => panic!("Answerer request task panicked: {}", e),
         Err(_) => {
@@ -254,17 +288,24 @@ async fn test_answerer_recovery_latency() {
                 "❌ Answerer (200) recovery TIMED OUT after {:?}",
                 e2e_latency
             );
-            tracing::error!("   This may indicate role-based recovery differences");
         }
     }
 
-    tracing::info!("╔══════════════════════════════════════════╗");
-    tracing::info!("║   Answerer Recovery Summary              ║");
-    tracing::info!("╠══════════════════════════════════════════╣");
+    let total_restart_count = harness.ice_restart_count();
+
+    tracing::info!("╔══════════════════════════════════════════════════════╗");
+    tracing::info!("║   Answerer Recovery Summary                         ║");
+    tracing::info!("╠══════════════════════════════════════════════════════╣");
     tracing::info!("║ E2E recovery latency: {:?}", e2e_latency);
     tracing::info!("║   (from network unblock to message response)");
-    tracing::info!("║ Outage ICE restart attempts: {}", outage_restart_count);
-    tracing::info!("╚══════════════════════════════════════════╝");
+    tracing::info!(
+        "║ ICE restart attempts: {} during outage, {} total",
+        outage_restart_count,
+        total_restart_count
+    );
+    tracing::info!("║ 方案A: retry_failed() on answerer → IceRestartRequest");
+    tracing::info!("║   → Offerer wakes backoff → immediate retry");
+    tracing::info!("╚══════════════════════════════════════════════════════╝");
 
     tracing::info!("✅ test_answerer_recovery_latency completed!");
 }

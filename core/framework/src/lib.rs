@@ -145,3 +145,6 @@ pub use async_trait::async_trait;
 
 // Re-export DataStream from protocol
 pub use actr_protocol::DataStream;
+
+// Re-export backoff utilities
+pub use util::backoff::{BackoffBuilder, ExponentialBackoff};

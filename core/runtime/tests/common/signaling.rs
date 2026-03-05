@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::time::sleep;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -17,7 +17,6 @@ use tokio_tungstenite::tungstenite::Message;
 /// Controllable test signaling server with real WebSocket
 pub struct TestSignalingServer {
     port: u16,
-    shutdown_tx: Option<oneshot::Sender<()>>,
     is_running: Arc<AtomicBool>,
     message_count: Arc<AtomicU32>,
     ice_restart_offer_count: Arc<AtomicU32>,
@@ -27,15 +26,25 @@ pub struct TestSignalingServer {
     disconnection_count: Arc<AtomicU32>,
     #[allow(dead_code)]
     received_messages: Arc<Mutex<Vec<SignalingEnvelope>>>,
+    /// Cancellation token: shutdown() 和 Drop 通过它关闭 accept loop 及所有 handler task
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl TestSignalingServer {
     /// Start the test server on a random available port
     pub async fn start() -> anyhow::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr()?.port();
+        Self::start_with_listener(listener).await
+    }
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    /// Start the test server on the specified port (for restart scenarios where the URL must stay fixed).
+    pub async fn start_on_port(port: u16) -> anyhow::Result<Self> {
+        let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+        Self::start_with_listener(listener).await
+    }
+
+    async fn start_with_listener(listener: TcpListener) -> anyhow::Result<Self> {
+        let port = listener.local_addr()?.port();
         let is_running = Arc::new(AtomicBool::new(true));
         let message_count = Arc::new(AtomicU32::new(0));
         let ice_restart_offer_count = Arc::new(AtomicU32::new(0));
@@ -43,6 +52,7 @@ impl TestSignalingServer {
         let disconnection_count = Arc::new(AtomicU32::new(0));
         let received_messages = Arc::new(Mutex::new(Vec::new()));
         let pause_forwarding = Arc::new(AtomicBool::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
 
         // Clone for task
         let is_running_clone = is_running.clone();
@@ -52,12 +62,12 @@ impl TestSignalingServer {
         let pause_forwarding_clone = pause_forwarding.clone();
         let connection_count_clone = connection_count.clone();
         let disconnection_count_clone = disconnection_count.clone();
+        let cancel_clone = cancel.clone();
 
         // Spawn server task
         tokio::spawn(async move {
             Self::run_server(
                 listener,
-                shutdown_rx,
                 is_running_clone,
                 message_count_clone,
                 ice_restart_offer_count_clone,
@@ -65,6 +75,7 @@ impl TestSignalingServer {
                 pause_forwarding_clone,
                 connection_count_clone,
                 disconnection_count_clone,
+                cancel_clone,
             )
             .await
         });
@@ -74,7 +85,6 @@ impl TestSignalingServer {
 
         Ok(Self {
             port,
-            shutdown_tx: Some(shutdown_tx),
             is_running,
             message_count,
             ice_restart_offer_count,
@@ -82,12 +92,12 @@ impl TestSignalingServer {
             pause_forwarding,
             connection_count,
             disconnection_count,
+            cancel,
         })
     }
 
     async fn run_server(
         listener: TcpListener,
-        mut shutdown_rx: oneshot::Receiver<()>,
         is_running: Arc<AtomicBool>,
         message_count: Arc<AtomicU32>,
         ice_restart_offer_count: Arc<AtomicU32>,
@@ -95,13 +105,14 @@ impl TestSignalingServer {
         pause_forwarding: Arc<AtomicBool>,
         connection_count: Arc<AtomicU32>,
         disconnection_count: Arc<AtomicU32>,
+        cancel: tokio_util::sync::CancellationToken,
     ) {
         let clients: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
         loop {
             tokio::select! {
-                _ = &mut shutdown_rx => {
+                _ = cancel.cancelled() => {
                     tracing::info!("🛑 Test server shutting down");
                     is_running.store(false, Ordering::Release);
                     break;
@@ -118,6 +129,7 @@ impl TestSignalingServer {
                         let received_messages_clone = received_messages.clone();
                         let pause_forwarding_clone = pause_forwarding.clone();
                         let disconnection_count_clone = disconnection_count.clone();
+                        let cancel_clone = cancel.clone();
 
                         tokio::spawn(async move {
                             if let Ok(ws_stream) = accept_async(stream).await {
@@ -131,6 +143,13 @@ impl TestSignalingServer {
                                 // Handle messages
                                 loop {
                                     tokio::select! {
+                                        // Shutdown signal: close WebSocket gracefully so client gets EOF
+                                        _ = cancel_clone.cancelled() => {
+                                            tracing::info!("🔌 Handler closing due to server shutdown");
+                                            let _ = ws_tx.send(Message::Close(None)).await;
+                                            break;
+                                        }
+
                                         // Receive from client
                                         msg = ws_rx.next() => {
                                             match msg {
@@ -312,13 +331,17 @@ impl TestSignalingServer {
         format!("ws://127.0.0.1:{}", self.port)
     }
 
+    /// Get server port
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
     /// Shutdown the server (simulates total signaling unavailability)
     pub async fn shutdown(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
+        if !self.cancel.is_cancelled() {
             tracing::warn!("🔴 Shutting down test signaling server");
-            let _ = tx.send(());
+            self.cancel.cancel();
             sleep(Duration::from_millis(100)).await;
-            self.is_running.store(false, Ordering::Release);
         }
     }
 
@@ -370,8 +393,6 @@ impl TestSignalingServer {
 
 impl Drop for TestSignalingServer {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        self.cancel.cancel();
     }
 }

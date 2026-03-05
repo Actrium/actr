@@ -10,24 +10,24 @@ use actr_runtime::lifecycle::{
     CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEventProcessor,
 };
 use actr_runtime::transport::error::{NetworkError, NetworkResult};
-use actr_runtime::wire::webrtc::{ConnectionState, SignalingClient, SignalingStats};
-use tokio::sync::watch;
+use actr_runtime::wire::webrtc::{SignalingClient, SignalingEvent, SignalingStats};
+use tokio::sync::broadcast;
 
 struct FakeSignalingClient {
     connected: AtomicBool,
     connections: AtomicU64,
     disconnections: AtomicU64,
-    state_tx: watch::Sender<ConnectionState>,
+    event_tx: broadcast::Sender<SignalingEvent>,
 }
 
 impl FakeSignalingClient {
     fn new() -> Self {
-        let (state_tx, _state_rx) = watch::channel(ConnectionState::Disconnected);
+        let (event_tx, _event_rx) = broadcast::channel(64);
         Self {
             connected: AtomicBool::new(false),
             connections: AtomicU64::new(0),
             disconnections: AtomicU64::new(0),
-            state_tx,
+            event_tx,
         }
     }
 
@@ -45,14 +45,16 @@ impl SignalingClient for FakeSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
         self.connected.store(true, Ordering::SeqCst);
         self.connections.fetch_add(1, Ordering::SeqCst);
-        let _ = self.state_tx.send(ConnectionState::Connected);
+        let _ = self.event_tx.send(SignalingEvent::Connected);
         Ok(())
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
         self.connected.store(false, Ordering::SeqCst);
         self.disconnections.fetch_add(1, Ordering::SeqCst);
-        let _ = self.state_tx.send(ConnectionState::Disconnected);
+        let _ = self.event_tx.send(SignalingEvent::Disconnected {
+            reason: actr_runtime::wire::webrtc::DisconnectReason::Manual,
+        });
         Ok(())
     }
 
@@ -130,8 +132,8 @@ impl SignalingClient for FakeSignalingClient {
         self.stats()
     }
 
-    fn subscribe_state(&self) -> watch::Receiver<ConnectionState> {
-        self.state_tx.subscribe()
+    fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+        self.event_tx.subscribe()
     }
 
     async fn set_actor_id(&self, _actor_id: ActrId) {}
