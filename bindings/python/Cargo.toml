@@ -16,11 +16,10 @@ crate-type = ["cdylib"]
 name = "actr_python"
 
 [dependencies]
-actr-config = { git = "https://github.com/actor-rtc/actr.git", rev = "04da2c4cacbfca234502afea03a61ab6f04bab61" }
-actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "04da2c4cacbfca234502afea03a61ab6f04bab61" }
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "04da2c4cacbfca234502afea03a61ab6f04bab61" }
-# TODO: Use Version instead of git
-actr-runtime = { git = "https://github.com/actor-rtc/actr.git", rev = "04da2c4cacbfca234502afea03a61ab6f04bab61" }
+actr-config = { path = "../../core/config" }
+actr-framework = { path = "../../core/framework" }
+actr-protocol = { path = "../../core/protocol" }
+actr-runtime = { path = "../../core/runtime" }
 anyhow = "1.0"
 async-trait = "0.1"
 bytes = "1.10"
