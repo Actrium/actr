@@ -447,13 +447,11 @@ impl OutprocOutGate {
         let dest = Self::actr_id_to_dest(target);
 
         // Send via transport manager
-        let result = self
-            .transport_manager
+
+        self.transport_manager
             .send(&dest, payload_type, &data)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()));
-
-        result
+            .map_err(|e| ProtocolError::TransportError(e.to_string()))
     }
 }
 

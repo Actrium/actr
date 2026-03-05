@@ -208,11 +208,9 @@ impl WebRtcConnection {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
         let channels = self.data_channels.read().await;
-        for channel_opt in channels.iter() {
-            if let Some(channel) = channel_opt {
-                if channel.ready_state() == RTCDataChannelState::Open {
-                    return true;
-                }
+        for channel in channels.iter().flatten() {
+            if channel.ready_state() == RTCDataChannelState::Open {
+                return true;
             }
         }
         false
@@ -409,7 +407,7 @@ impl WebRtcConnection {
         let dc_config = Self::get_data_channel_config(&payload_type);
         let data_channel = self
             .peer_connection
-            .create_data_channel(&label, Some(dc_config))
+            .create_data_channel(label, Some(dc_config))
             .await?;
 
         // Register on_open callback to send DataChannelOpened event

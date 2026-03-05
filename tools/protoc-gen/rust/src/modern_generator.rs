@@ -297,7 +297,7 @@ impl RpcRequest for {input_type} {{
         for remote_service in remote_services {
             services_by_actr_type
                 .entry(remote_service.actr_type.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(remote_service);
         }
 

@@ -740,7 +740,7 @@ impl WebRtcCoordinator {
                         } else {
                             source.clone()
                         };
-                        self.handle_role_assignment(assign.clone(), peer).await;
+                        self.handle_role_assignment(assign, peer).await;
                     }
                     Some(actr_relay::Payload::IceCandidate(ice)) => {
                         tracing::debug!(
@@ -1480,7 +1480,7 @@ impl WebRtcCoordinator {
                 let label = dc.label();
                 let dc_for_registration = Arc::clone(&dc);
 
-                let payload_type = PayloadType::from_str_name(&label);
+                let payload_type = PayloadType::from_str_name(label);
 
                 if let Some(coord) = coord_weak.upgrade() {
                     let ready_tx = {

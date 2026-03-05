@@ -21,7 +21,7 @@ workspace = true
 [dependencies]
 # Core dependencies for service compatibility analysis
 actr-protocol.workspace = true
-proto-fingerprint = { path = "../../../proto-kit/proto-fingerprint" }
+proto-fingerprint = { git = "https://github.com/actor-rtc/proto-kit.git", rev = "947af3c" }
 
 # Serialization support
 serde = { version = "1.0", features = ["derive"] }

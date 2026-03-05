@@ -3000,6 +3000,7 @@ dependencies = [
 [[package]]
 name = "proto-fingerprint"
 version = "0.1.0"
+source = "git+https://github.com/actor-rtc/proto-kit.git?rev=947af3c#947af3cb2ee47d897910db66c109f63b0b0e9668"
 dependencies = [
  "anyhow",
  "clap",

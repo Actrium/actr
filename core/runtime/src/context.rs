@@ -212,11 +212,8 @@ impl RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        let result = gate
-            .send_data_stream(target_id, payload_type, bytes::Bytes::from(payload).into())
-            .await;
-
-        result
+        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
+            .await
     }
 
     /// Get dependency fingerprint from Actr.lock.toml

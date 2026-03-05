@@ -233,7 +233,9 @@ pub use wire::{
 };
 
 // Mailbox
-pub use actr_runtime_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
+pub use actr_runtime_mailbox::{
+    Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+};
 
 // System interfaces
 pub use context_factory::ContextFactory;
@@ -284,7 +286,9 @@ pub mod prelude {
     };
 
     // Mailbox subsystem
-    pub use actr_runtime_mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
+    pub use actr_runtime_mailbox::{
+        Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+    };
 
     // Transport layer (transport management)
     pub use crate::transport::{

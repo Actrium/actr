@@ -25,9 +25,7 @@ pub enum ActrError {
     #[error("Invalid component in actor identity: {0}")]
     InvalidComponent(String),
 
-    #[error(
-        "Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]"
-    )]
+    #[error("Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]")]
     InvalidTypeFormat(String),
 
     /// 消息解码失败
@@ -140,9 +138,8 @@ impl ActrIdExt for ActrId {
             .split_once('/')
             .ok_or_else(|| ActrError::InvalidFormat("Missing '/' separator".to_string()))?;
 
-        let realm_id = u32::from_str(realm_part).map_err(|_| {
-            ActrError::InvalidComponent(format!("Invalid realm ID: {realm_part}"))
-        })?;
+        let realm_id = u32::from_str(realm_part)
+            .map_err(|_| ActrError::InvalidComponent(format!("Invalid realm ID: {realm_part}")))?;
 
         let actr_type = ActrType::from_string_repr(type_part)?;
 

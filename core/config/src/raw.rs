@@ -151,7 +151,7 @@ pub struct RawStorageConfig {
 ///
 /// 不配置端口范围时使用默认模式（随机端口）
 /// 配置 port_range_start/end 时启用固定端口模式
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawWebRtcConfig {
     /// STUN 服务器 URL 列表 (例如 ["stun:localhost:3478"])
     #[serde(default)]
@@ -192,23 +192,6 @@ pub struct RawWebRtcConfig {
     /// NAT 1:1 公网 IP 映射（可选）
     #[serde(default)]
     pub public_ips: Vec<String>,
-}
-
-impl Default for RawWebRtcConfig {
-    fn default() -> Self {
-        Self {
-            stun_urls: vec![],
-            turn_urls: vec![],
-            force_relay: false,
-            ice_host_acceptance_min_wait: None,
-            ice_srflx_acceptance_min_wait: None,
-            ice_prflx_acceptance_min_wait: None,
-            ice_relay_acceptance_min_wait: None,
-            port_range_start: None,
-            port_range_end: None,
-            public_ips: vec![],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -124,10 +124,8 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
 }
 
 fn write_lock_file(path: &PathBuf, lock: &ActrLockFile) -> Result<()> {
-    let content = toml::to_string_pretty(lock)
-        .context("Failed to serialize Actr.lock")?;
-    std::fs::write(path, content)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    let content = toml::to_string_pretty(lock).context("Failed to serialize Actr.lock")?;
+    std::fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 

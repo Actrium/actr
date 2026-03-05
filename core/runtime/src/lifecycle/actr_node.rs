@@ -6,13 +6,13 @@ use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
 use actr_framework::{Bytes, Workload};
-use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrId, ActrType, CandidateCompatibilityInfo, PayloadType,
     RegisterRequest, RouteCandidatesRequest, RpcEnvelope, register_response,
     route_candidates_request,
 };
+use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1199,7 +1199,7 @@ impl<W: Workload> ActrNode<W> {
                         credential_state.clone(),
                         self.signaling_client.clone(),
                         self.config.webrtc.clone(),
-                        self.config.realm.realm_id.clone(),
+                        self.config.realm.realm_id,
                         media_frame_registry,
                     ));
 

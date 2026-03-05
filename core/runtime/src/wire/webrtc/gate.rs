@@ -8,9 +8,9 @@ use crate::inbound::DataStreamRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
-use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
+use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, oneshot};
