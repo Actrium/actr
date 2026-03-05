@@ -194,8 +194,8 @@ impl RuntimeContext {
 
     /// Send DataStream with an explicit payload type (lane selection).
     ///
-    /// This is intended for language bindings; the `Context` trait method
-    /// `send_data_stream()` currently defaults to StreamReliable.
+    /// Convenience wrapper for language bindings that prefer positional `payload_type`
+    /// before `chunk`. Equivalent to calling `Context::send_data_stream` directly.
     pub async fn send_data_stream_with_type(
         &self,
         target: &Dest,
@@ -519,7 +519,7 @@ impl Context for RuntimeContext {
         Ok(())
     }
 
-    async fn send_data_stream(&self, target: &Dest, chunk: DataStream) -> ActorResult<()> {
+    async fn send_data_stream(&self, target: &Dest, chunk: DataStream, payload_type: actr_protocol::PayloadType) -> ActorResult<()> {
         use actr_protocol::prost::Message as ProstMessage;
 
         // 1. Serialize DataStream to bytes
@@ -536,12 +536,10 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 3. Send via OutGate with appropriate PayloadType
-        // Use StreamReliable for reliable ordered transmission
-        // TODO: Allow user to choose between StreamReliable and StreamLatencyFirst
+        // 3. Send via OutGate with the caller-specified PayloadType
         gate.send_data_stream(
             target_id,
-            actr_protocol::PayloadType::StreamReliable,
+            payload_type,
             bytes::Bytes::from(payload),
         )
         .await

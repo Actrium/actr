@@ -106,7 +106,7 @@ impl StreamServerHandler for StreamServerService {
 
                 tracing::info!("server sending {}/{}: {}", i, expected_count, message);
                 if let Err(err) = ctx_clone
-                    .send_data_stream(&Dest::Actor(caller_id.clone()), data_stream)
+                    .send_data_stream(&Dest::Actor(caller_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
                     .await
                 {
                     tracing::warn!("server send_data_stream failed: {}", err);

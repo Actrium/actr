@@ -88,7 +88,7 @@ impl LocalFileServiceHandler for MyFileService {
                 timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
             };
 
-            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream)
+            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
                 .await?;
 
             let progress = ((i + 1) as f64 / chunks.len() as f64 * 100.0) as u32;

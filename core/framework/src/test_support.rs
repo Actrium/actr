@@ -83,6 +83,7 @@ impl Context for DummyContext {
         &self,
         _target: &Dest,
         _chunk: actr_protocol::DataStream,
+        _payload_type: actr_protocol::PayloadType,
     ) -> ActorResult<()> {
         Err(Self::not_implemented("DummyContext::send_data_stream"))
     }
