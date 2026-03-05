@@ -33,7 +33,7 @@ pub use actr_protocol as protocol;
 
 // 重新导出常用的协议类型
 pub use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, PayloadType, ProtocolError, RpcEnvelope, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope, RpcRequest,
 };
 
 // ============================================================================
@@ -72,7 +72,7 @@ pub use actr_config as config;
 pub mod prelude {
     // 协议层 - 核心类型
     pub use crate::protocol::{
-        ActorResult, ActrError, ActrId, ActrType, PayloadType, ProtocolError, RpcEnvelope,
+        ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope,
         RpcRequest,
     };
 

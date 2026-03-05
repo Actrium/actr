@@ -7,6 +7,7 @@
 mod actr_node;
 mod actr_system;
 pub mod compat_lock;
+pub mod dedup;
 mod heartbeat;
 mod network_event;
 

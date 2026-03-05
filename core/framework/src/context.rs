@@ -1,6 +1,6 @@
 //! Context trait - Execution context interface for actors
 
-use actr_protocol::{ActorResult, ActrId, ActrType, DataStream};
+use actr_protocol::{ActorResult, ActrId, ActrType, DataStream, PayloadType};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
@@ -140,15 +140,22 @@ pub trait Context: Send + Sync + Clone + 'static {
     /// - `stream_id`: Stream identifier to unregister
     async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()>;
 
-    /// Send a DataStream to a destination
+    /// Send a DataStream to a destination with explicit lane selection.
     ///
-    /// DataStreams are sent via Fast Path with configurable QoS based on PayloadType.
+    /// Use [`PayloadType::StreamReliable`] for ordered reliable delivery (default) or
+    /// [`PayloadType::StreamLatencyFirst`] for low-latency partial-reliable delivery.
     ///
     /// # Parameters
     ///
     /// - `target`: Target destination
     /// - `chunk`: DataStream to send
-    async fn send_data_stream(&self, target: &crate::Dest, chunk: DataStream) -> ActorResult<()>;
+    /// - `payload_type`: Lane selection (`StreamReliable` or `StreamLatencyFirst`)
+    async fn send_data_stream(
+        &self,
+        target: &crate::Dest,
+        chunk: DataStream,
+        payload_type: PayloadType,
+    ) -> ActorResult<()>;
 
     /// Discover a remote Actor of the specified type via the signaling server.
     ///

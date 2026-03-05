@@ -2,7 +2,7 @@
 //!
 //! Helper functions for creating test actors, credentials, and peers
 
-use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
+use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm};
 use actr_runtime::inbound::MediaFrameRegistry;
 use actr_runtime::lifecycle::CredentialState;
 use actr_runtime::wire::webrtc::{
@@ -180,14 +180,14 @@ pub fn spawn_response_receiver(
 
                             // Convert envelope to result
                             let result = if let Some(error) = envelope.error {
-                                Err(actr_protocol::ProtocolError::TransportError(format!(
+                                Err(ActrError::Unavailable(format!(
                                     "RPC error {}: {}",
                                     error.code, error.message
                                 )))
                             } else if let Some(payload) = envelope.payload {
                                 Ok(payload)
                             } else {
-                                Err(actr_protocol::ProtocolError::DecodeError(
+                                Err(ActrError::DecodeFailure(
                                     "Invalid response: no payload or error".to_string(),
                                 ))
                             };

@@ -54,7 +54,7 @@
 
 use super::{DataLane, NetworkError, NetworkResult};
 use actr_framework::Bytes;
-use actr_protocol::{PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -330,7 +330,7 @@ impl InprocTransportManager {
             .map_err(|_| NetworkError::ConnectionError("Response channel closed".into()))?;
 
         // result is ActorResult<Bytes>, convert to NetworkError if error
-        result.map_err(|e| NetworkError::ProtocolError(e.to_string()))
+        result.map_err(|e| NetworkError::Other(anyhow::anyhow!("{e}")))
     }
 
     /// Send one-way message
@@ -417,7 +417,7 @@ impl InprocTransportManager {
     pub async fn complete_error(
         &self,
         request_id: &str,
-        error: actr_protocol::ProtocolError,
+        error: ActrError,
     ) -> NetworkResult<()> {
         let mut pending = self.pending_requests.write().await;
         if let Some(tx) = pending.remove(request_id) {
@@ -442,7 +442,7 @@ impl InprocTransportManager {
                     tracing::debug!("✅ Completed pending request: {}", envelope.request_id);
                 }
                 (None, Some(error)) => {
-                    let protocol_err = actr_protocol::ProtocolError::TransportError(format!(
+                    let protocol_err = ActrError::Unavailable(format!(
                         "RPC error {}: {}",
                         error.code, error.message
                     ));
@@ -456,7 +456,7 @@ impl InprocTransportManager {
                     tracing::error!(
                         "❌ Invalid RpcEnvelope: both payload and error present or both absent"
                     );
-                    let _ = tx.send(Err(actr_protocol::ProtocolError::DecodeError(
+                    let _ = tx.send(Err(ActrError::DecodeFailure(
                         "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
                     )));
                 }

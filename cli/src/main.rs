@@ -23,6 +23,7 @@ use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DiscoveryCommand, DocCommand,
     FingerprintCommand, GenCommand, InitCommand, InstallCommand, RunCommand,
 };
+use actr_cli::commands::dlq as dlq_cmd;
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
 #[derive(Parser)]
@@ -69,6 +70,37 @@ enum Commands {
 
     /// Run project scripts
     Run(RunCommand),
+
+    /// Dead Letter Queue inspection
+    Dlq(DlqArgs),
+}
+
+/// Arguments for `actr dlq`
+#[derive(clap::Args, Debug)]
+pub struct DlqArgs {
+    /// Subcommand: list | show | stats | delete  [default: list]
+    #[arg(value_name = "SUBCOMMAND")]
+    pub subcommand: Option<String>,
+
+    /// Record ID (required for show/delete)
+    #[arg(value_name = "ID")]
+    pub id: Option<String>,
+
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = "actr-data/dlq.db")]
+    pub db: std::path::PathBuf,
+
+    /// Max records to return for 'list'
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+
+    /// Filter by error_category
+    #[arg(long)]
+    pub category: Option<String>,
+
+    /// Filter records created after timestamp (RFC 3339)
+    #[arg(long)]
+    pub after: Option<String>,
 }
 
 #[tokio::main]
@@ -98,6 +130,19 @@ async fn main() -> Result<()> {
             env!("ACTR_GIT_DATE")
         );
         return Ok(());
+    }
+
+    // dlq 命令不需要 ServiceContainer，提前处理
+    if let Some(Commands::Dlq(args)) = &cli.command {
+        let inner_args = dlq_cmd::DlqArgs {
+            subcommand: args.subcommand.as_deref().unwrap_or("list").to_string(),
+            id: args.id.clone(),
+            db: args.db.clone(),
+            limit: args.limit,
+            category: args.category.clone(),
+            after: args.after.clone(),
+        };
+        return dlq_cmd::execute(inner_args).await;
     }
 
     // 构建服务容器并注册组件
@@ -143,7 +188,6 @@ async fn main() -> Result<()> {
                 // 统一的错误处理
                 if let Some(cli_error) = e.downcast_ref::<ActrCliError>() {
                     if matches!(cli_error, ActrCliError::OperationCancelled) {
-                        // Exit silently
                         std::process::exit(0);
                     }
                     eprintln!("{}", ErrorReporter::format_error(cli_error));
@@ -173,7 +217,6 @@ async fn build_container() -> Result<ServiceContainer> {
 
     let mut container = builder.build()?;
 
-    // Register UI component (always available)
     container = container.register_user_interface(Arc::new(ConsoleUI::new()));
 
     if config_path.exists() {
@@ -185,17 +228,10 @@ async fn build_container() -> Result<ServiceContainer> {
     let mut container =
         container.register_dependency_resolver(Arc::new(DefaultDependencyResolver::new()));
 
-    // Register network validator (stub implementation)
     container = container.register_network_validator(Arc::new(DefaultNetworkValidator::new()));
-
-    // Register fingerprint validator
     container =
         container.register_fingerprint_validator(Arc::new(DefaultFingerprintValidator::new()));
-
-    // Register proto processor
     container = container.register_proto_processor(Arc::new(DefaultProtoProcessor::new()));
-
-    // Register cache manager
     container = container.register_cache_manager(Arc::new(DefaultCacheManager::new()));
 
     if let Some(manager) = config_manager {
@@ -212,47 +248,32 @@ async fn execute_command(
     context: &CommandContext,
 ) -> Result<actr_cli::core::CommandResult> {
     match command {
-        Commands::Init(cmd) => {
-            // InitCommand 使用旧的 Command trait，直接执行
-            match cmd.execute().await {
-                Ok(_) => Ok(actr_cli::core::CommandResult::Success(
-                    "Project initialized".to_string(),
-                )),
-                Err(e) => Err(e.into()),
-            }
-        }
+        Commands::Init(cmd) => match cmd.execute().await {
+            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
+                "Project initialized".to_string(),
+            )),
+            Err(e) => Err(e.into()),
+        },
         Commands::Install(cmd) => {
             let command = InstallCommand::from_args(cmd);
-
-            // 验证所需组件
             context
                 .container
                 .lock()
                 .unwrap()
                 .validate(&command.required_components())?;
-
-            // 执行命令
             command.execute(context).await
         }
         Commands::Discovery(cmd) => {
             let command = DiscoveryCommand::from_args(cmd);
-
-            // TODO: (Option B) In the future, if a default public signaling server is available,
-            // we should allow discovery to run without a local Actr.toml by using a default config.
-            // For now (Option A), we require a project context to get the signaling URL.
             if !std::path::Path::new("Actr.toml").exists() {
                 return Err(anyhow::anyhow!(
                     "No Actr.toml found in current directory.\n💡 Hint: Run 'actr init' to initialize a new project first."
                 ));
             }
-
-            // 验证所需组件
             {
                 let container = context.container.lock().unwrap();
                 container.validate(&command.required_components())?;
             }
-
-            // 执行命令
             command.execute(context).await
         }
         Commands::Doc(cmd) => match cmd.execute().await {
@@ -266,7 +287,6 @@ async fn execute_command(
                 let container = context.container.lock().unwrap();
                 container.validate(&cmd.required_components())?;
             }
-
             cmd.execute(context).await
         }
         Commands::Fingerprint(cmd) => cmd.execute(context).await,
@@ -277,7 +297,6 @@ async fn execute_command(
             Err(e) => Err(e.into()),
         },
         Commands::Config(cmd) => {
-            // Config command uses the new Command trait from core
             use actr_cli::core::Command;
             cmd.execute(context).await
         }
@@ -287,22 +306,13 @@ async fn execute_command(
             )),
             Err(e) => Err(e.into()),
         },
+        Commands::Dlq(_) => unreachable!("dlq is handled before build_container"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_args_simple() {
-        // SAFETY: This is safe in a single-threaded test environment
-        // We're only setting an env var that won't be used by other threads
-        unsafe {
-            std::env::set_var("args", "actr install user-service");
-        }
-        // TODO: 实现参数解析测试
-    }
 
     #[tokio::test]
     async fn test_build_container() {

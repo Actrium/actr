@@ -8,7 +8,7 @@
 use crate::transport::InprocTransportManager;
 use actr_framework::Bytes;
 use actr_protocol::ActrIdExt;
-use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
 /// InprocOutGate - Inproc transport adapter (outbound)
@@ -58,7 +58,7 @@ impl InprocOutGate {
         self.transport
             .send_request(payload_type, identifier, envelope)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
+            .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
     /// Send one-way message (with specified PayloadType and identifier)
@@ -85,7 +85,7 @@ impl InprocOutGate {
         self.transport
             .send_message(payload_type, identifier, envelope)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
+            .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
     /// Send request and wait for response (defaults to Reliable)
@@ -112,7 +112,7 @@ impl InprocOutGate {
             .transport
             .send_request(PayloadType::RpcReliable, None, envelope)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()));
+            .map_err(|e| ActrError::Unavailable(e.to_string()));
 
         match &result {
             Ok(_) => tracing::info!("✅ InprocOutGate::send_request completed successfully"),
@@ -144,7 +144,7 @@ impl InprocOutGate {
         self.transport
             .send_message(PayloadType::RpcReliable, None, envelope)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
+            .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
     /// Send DataStream (Fast Path)
@@ -166,7 +166,7 @@ impl InprocOutGate {
 
         // Deserialize to get stream_id
         let stream = actr_protocol::DataStream::decode(&*data)
-            .map_err(|e| ProtocolError::DecodeError(format!("Failed to decode DataStream: {e}")))?;
+            .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode DataStream: {e}")))?;
 
         tracing::debug!(
             "📤 InprocOutGate::send_data_stream stream_id={}, sequence={}",
@@ -196,6 +196,6 @@ impl InprocOutGate {
         self.transport
             .send_message(payload_type, Some(stream.stream_id), envelope)
             .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
+            .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 }

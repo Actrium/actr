@@ -190,7 +190,7 @@ pub mod resource;
 pub use observability::{ObservabilityGuard, init_observability};
 
 // Re-export core types
-pub use actr_protocol::{ActorResult, ActrId, ActrType, ProtocolError};
+pub use actr_protocol::{ActrId, ActrType};
 
 // Runtime core structures
 pub use actr_ref::ActrRef;
@@ -241,7 +241,7 @@ pub use actr_runtime_mailbox::{
 pub use context_factory::ContextFactory;
 
 // Utility modules
-pub use error::{RuntimeError, RuntimeResult};
+pub use error::{ActrError, ActorResult, Classify, ErrorKind};
 pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
 
@@ -310,12 +310,12 @@ pub mod prelude {
     pub use crate::transport::TransportManager;
 
     // Utility modules
-    pub use crate::error::{RuntimeError, RuntimeResult};
+    pub use crate::error::{ActrError, ActorResult};
     pub use crate::monitoring::{Alert, AlertSeverity, Monitor};
     pub use crate::resource::{ResourceManager, ResourceQuota, ResourceUsage};
 
     // Base types
-    pub use actr_protocol::{ActorResult, ActrId, ActrType, ProtocolError};
+    pub use actr_protocol::{ActrId, ActrType};
 
     // Framework traits (for implementing Workload)
     pub use actr_framework::{Context, Workload};

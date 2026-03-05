@@ -17,6 +17,10 @@ path = "src/main.rs"
 # Actor-RTC main crate with config feature (includes protocol, config, version)
 actr = { path = "..", version = "0.1", features = ["config"] }
 
+# DLQ storage (for actr dlq subcommand)
+actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.1" }
+
+
 # Direct access to config/protocol for CLI-specific types
 # (These have different APIs than actr umbrella re-exports)
 actr-config = { path = "../core/config", version = "0.1" }

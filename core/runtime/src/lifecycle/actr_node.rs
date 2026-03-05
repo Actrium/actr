@@ -1,6 +1,7 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
 use crate::context_factory::ContextFactory;
+use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::lifecycle::compat_lock::{CompatLockManager, CompatibilityCheck};
 use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
@@ -8,15 +9,15 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrId, ActrType, CandidateCompatibilityInfo, PayloadType,
-    RegisterRequest, RouteCandidatesRequest, RpcEnvelope, register_response,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, CandidateCompatibilityInfo,
+    PayloadType, RegisterRequest, RouteCandidatesRequest, RpcEnvelope, register_response,
     route_candidates_request,
 };
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
@@ -121,6 +122,9 @@ pub struct ActrNode<W: Workload> {
     /// Network event debounce configuration
     pub(crate) network_event_debounce_config:
         Option<crate::lifecycle::network_event::DebounceConfig>,
+
+    /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
+    pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 }
 
 /// Credential state for shared access between tasks
@@ -183,23 +187,19 @@ impl CredentialState {
     }
 }
 
-/// Map ProtocolError to error code for ErrorResponse
-fn protocol_error_to_code(err: &actr_protocol::ProtocolError) -> u32 {
-    use actr_protocol::ProtocolError;
+/// Map ActrError to error code for ErrorResponse
+fn protocol_error_to_code(err: &ActrError) -> u32 {
     match err {
-        ProtocolError::Actr(_) => 400, // Bad Request - identity/decode error
-        ProtocolError::Uri(_) => 400,  // Bad Request - URI parsing error
-        ProtocolError::Name(_) => 400, // Bad Request - invalid name
-        ProtocolError::SerializationError(_) => 500, // Internal Server Error
-        ProtocolError::DeserializationError(_) => 400, // Bad Request - invalid payload
-        ProtocolError::DecodeError(_) => 400, // Bad Request - decode failure
-        ProtocolError::EncodeError(_) => 500, // Internal Server Error
-        ProtocolError::UnknownRoute(_) => 404, // Not Found - route not found
-        ProtocolError::TransportError(_) => 503, // Service Unavailable
-        ProtocolError::Timeout => 504, // Gateway Timeout
-        ProtocolError::TargetNotFound(_) => 404, // Not Found
-        ProtocolError::TargetUnavailable(_) => 503, // Service Unavailable
-        ProtocolError::InvalidStateTransition(_) => 500, // Internal Server Error
+        ActrError::Unavailable(_) => 503,      // Service Unavailable
+        ActrError::TimedOut => 504,             // Gateway Timeout
+        ActrError::NotFound(_) => 404,          // Not Found
+        ActrError::PermissionDenied(_) => 403,  // Forbidden
+        ActrError::InvalidArgument(_) => 400,   // Bad Request
+        ActrError::UnknownRoute(_) => 404,      // Not Found - route not found
+        ActrError::DependencyNotFound { .. } => 400, // Bad Request
+        ActrError::DecodeFailure(_) => 400,     // Bad Request - decode failure
+        ActrError::NotImplemented(_) => 501,    // Not Implemented
+        ActrError::Internal(_) => 500,          // Internal Server Error
     }
 }
 
@@ -418,14 +418,12 @@ impl<W: Workload> ActrNode<W> {
     ) -> ActorResult<DiscoveryResult> {
         // Check if node is started (has actor_id and credential)
         let actor_id = self.actor_id.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
-                "Node is not started. Call start() first.".to_string(),
-            )
+            ActrError::Internal("Node is not started. Call start() first.".to_string())
         })?;
 
         // Check if the signaling client is connected
         if !self.signaling_client.is_connected() {
-            return Err(actr_protocol::ProtocolError::TransportError(
+            return Err(ActrError::Unavailable(
                 "Signaling client is not connected.".to_string(),
             ));
         }
@@ -496,15 +494,13 @@ impl<W: Workload> ActrNode<W> {
                          Please run 'actr install' to generate the lock file with all dependencies.",
                         service_name
                     );
-                    return Err(actr_protocol::ProtocolError::Actr(
-                        actr_protocol::ActrError::DependencyNotFound {
-                            service_name: service_name.clone(),
-                            message: format!(
-                                "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
-                                service_name
-                            ),
-                        },
-                    ));
+                    return Err(ActrError::DependencyNotFound {
+                        service_name: service_name.clone(),
+                        message: format!(
+                            "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
+                            service_name
+                        ),
+                    });
                 }
             }
         };
@@ -616,9 +612,7 @@ impl<W: Workload> ActrNode<W> {
         };
 
         let credential_state = self.credential_state.clone().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
-                "Node is not started. Call start() first.".to_string(),
-            )
+            ActrError::Internal("Node is not started. Call start() first.".to_string())
         })?;
 
         let route_response = client
@@ -629,9 +623,7 @@ impl<W: Workload> ActrNode<W> {
             )
             .await
             .map_err(|e| {
-                actr_protocol::ProtocolError::TransportError(format!(
-                    "Route candidates request failed: {e}"
-                ))
+                ActrError::Unavailable(format!("Route candidates request failed: {e}"))
             })?;
 
         match route_response.result {
@@ -644,12 +636,12 @@ impl<W: Workload> ActrNode<W> {
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
-                Err(actr_protocol::ProtocolError::TransportError(format!(
+                Err(ActrError::Unavailable(format!(
                     "Route candidates error {}: {}",
                     err.code, err.message
                 )))
             }
-            None => Err(actr_protocol::ProtocolError::TransportError(
+            None => Err(ActrError::Unavailable(
                 "Invalid route candidates response: missing result".to_string(),
             )),
         }
@@ -988,7 +980,7 @@ impl<W: Workload> ActrNode<W> {
 
         // 0. Get actor_id early for ACL check
         let actor_id = self.actor_id.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
+            ActrError::Internal(
                 "Actor ID not set - node must be started before handling messages".to_string(),
             )
         })?;
@@ -996,10 +988,7 @@ impl<W: Workload> ActrNode<W> {
         // 0.1. ACL Permission Check (before processing message)
         let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
             .map_err(|err_msg| {
-                actr_protocol::ProtocolError::TransportError(format!(
-                    "ACL check failed: {}",
-                    err_msg
-                ))
+                ActrError::Internal(format!("ACL check failed: {}", err_msg))
             })?;
 
         if !acl_allowed {
@@ -1012,22 +1001,48 @@ impl<W: Workload> ActrNode<W> {
                 "🚫 ACL: Permission denied"
             );
 
-            return Err(actr_protocol::ProtocolError::Actr(
-                actr_protocol::ActrError::PermissionDenied {
-                    message: format!(
-                        "ACL denied: {} is not allowed to call {}",
-                        caller_id
-                            .map(|c| c.to_string_repr())
-                            .unwrap_or_else(|| "<unknown>".to_string()),
-                        actor_id.to_string_repr()
-                    ),
-                },
-            ));
+            return Err(ActrError::PermissionDenied(format!(
+                "ACL denied: {} is not allowed to call {}",
+                caller_id
+                    .map(|c| c.to_string_repr())
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+                actor_id.to_string_repr()
+            )));
+        }
+
+        // 0.2. Deduplication: return cached response for retried request_ids
+        {
+            let outcome = self
+                .dedup_state
+                .lock()
+                .await
+                .check_or_mark(&envelope.request_id);
+            match outcome {
+                DedupOutcome::Fresh => {} // proceed normally
+                DedupOutcome::InFlight => {
+                    tracing::warn!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "⚠️ duplicate request in-flight, dropping concurrent copy"
+                    );
+                    return Err(ActrError::InvalidArgument(
+                        "duplicate request already in-flight".to_string(),
+                    ));
+                }
+                DedupOutcome::Duplicate(cached) => {
+                    tracing::debug!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "♻️ returning cached response for duplicate request_id"
+                    );
+                    return cached;
+                }
+            }
         }
 
         // 1. Create Context with caller_id from transport layer
         let credential_state = self.credential_state.clone().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
+            ActrError::Internal(
                 "Credential not set - node must be started before handling messages".to_string(),
             )
         })?;
@@ -1081,11 +1096,7 @@ impl<W: Workload> ActrNode<W> {
 
                 // Return DecodeFailure error with panic info
                 // (using DecodeFailure as a proxy for "cannot process message")
-                Err(actr_protocol::ProtocolError::Actr(
-                    actr_protocol::ActrError::DecodeFailure {
-                        message: format!("Handler panicked: {panic_info}"),
-                    },
-                ))
+                Err(ActrError::DecodeFailure(format!("Handler panicked: {panic_info}")))
             }
         };
 
@@ -1104,6 +1115,12 @@ impl<W: Workload> ActrNode<W> {
                 "❌ Message handling failed: {:?}", e
             ),
         }
+
+        // Store completed result in dedup cache before returning
+        self.dedup_state
+            .lock()
+            .await
+            .complete(&envelope.request_id, result.clone());
 
         result
     }
@@ -1135,7 +1152,7 @@ impl<W: Workload> ActrNode<W> {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         tracing::info!("📡 Connecting to signaling server");
         self.signaling_client.connect().await.map_err(|e| {
-            actr_protocol::ProtocolError::TransportError(format!("Signaling connect failed: {e}"))
+            ActrError::Unavailable(format!("Signaling connect failed: {e}"))
         })?;
         tracing::info!("✅ Connected to signaling server");
 
@@ -1169,9 +1186,7 @@ impl<W: Workload> ActrNode<W> {
             .send_register_request(register_request.clone())
             .await
             .map_err(|e| {
-                actr_protocol::ProtocolError::TransportError(format!(
-                    "Actor registration failed: {e}"
-                ))
+                ActrError::Unavailable(format!("Actor registration failed: {e}"))
             })?;
 
         // Handle RegisterResponse oneof result
@@ -1542,7 +1557,7 @@ impl<W: Workload> ActrNode<W> {
                     error.code,
                     error.message
                 );
-                return Err(actr_protocol::ProtocolError::TransportError(format!(
+                return Err(ActrError::Unavailable(format!(
                     "Registration rejected: {} (code: {})",
                     error.message, error.code
                 )));
@@ -1553,7 +1568,7 @@ impl<W: Workload> ActrNode<W> {
                     error_category = "registration_error",
                     "❌ Registration response missing result"
                 );
-                return Err(actr_protocol::ProtocolError::TransportError(
+                return Err(ActrError::Unavailable(
                     "Invalid registration response: missing result".to_string(),
                 ));
             }
@@ -1572,14 +1587,14 @@ impl<W: Workload> ActrNode<W> {
             .actor_id
             .as_ref()
             .ok_or_else(|| {
-                actr_protocol::ProtocolError::InvalidStateTransition(
+                ActrError::Internal(
                     "Actor ID not set - registration must complete before starting node"
                         .to_string(),
                 )
             })?
             .clone();
         let credential_state = self.credential_state.clone().ok_or_else(|| {
-            actr_protocol::ProtocolError::InvalidStateTransition(
+            ActrError::Internal(
                 "Credential not set - node must be started before handling messages".to_string(),
             )
         })?;
@@ -1598,9 +1613,7 @@ impl<W: Workload> ActrNode<W> {
         // Start WebRtcCoordinator signaling loop
         if let Some(coordinator) = &node_ref.webrtc_coordinator {
             coordinator.clone().start().await.map_err(|e| {
-                actr_protocol::ProtocolError::TransportError(format!(
-                    "WebRtcCoordinator start failed: {e}"
-                ))
+                ActrError::Unavailable(format!("WebRtcCoordinator start failed: {e}"))
             })?;
             tracing::info!("✅ WebRtcCoordinator signaling loop started");
         }
@@ -1610,9 +1623,7 @@ impl<W: Workload> ActrNode<W> {
             gate.start_receive_loop(node_ref.mailbox.clone())
                 .await
                 .map_err(|e| {
-                    actr_protocol::ProtocolError::TransportError(format!(
-                        "WebRtcGate receive loop start failed: {e}"
-                    ))
+                    ActrError::Unavailable(format!("WebRtcGate receive loop start failed: {e}"))
                 })?;
             tracing::info!("✅ WebRtcGate → Mailbox routing started");
         }
@@ -1658,9 +1669,7 @@ impl<W: Workload> ActrNode<W> {
                     .get_lane(actr_protocol::PayloadType::RpcReliable, None)
                     .await
                     .map_err(|e| {
-                        actr_protocol::ProtocolError::TransportError(format!(
-                            "Failed to get Workload receive lane: {e}"
-                        ))
+                        ActrError::Unavailable(format!("Failed to get Workload receive lane: {e}"))
                     })?;
                 let response_tx = workload_to_shell.clone();
                 let shutdown = shutdown_token.clone();
@@ -1799,9 +1808,7 @@ impl<W: Workload> ActrNode<W> {
                     .get_lane(actr_protocol::PayloadType::RpcReliable, None)
                     .await
                     .map_err(|e| {
-                        actr_protocol::ProtocolError::TransportError(format!(
-                            "Failed to get Shell receive lane: {e}"
-                        ))
+                        ActrError::Unavailable(format!("Failed to get Shell receive lane: {e}"))
                     })?;
                 let request_mgr = shell_to_workload.clone();
                 let shutdown = shutdown_token.clone();
@@ -1833,11 +1840,11 @@ impl<W: Workload> ActrNode<W> {
                                                 }
                                             }
                                             (None, Some(error)) => {
-                                                // Error response - convert to ProtocolError and complete with error
-                                                let protocol_err = actr_protocol::ProtocolError::TransportError(
+                                                // Error response - convert to ActrError and complete with error
+                                                let actr_err = ActrError::Unavailable(
                                                     format!("RPC error {}: {}", error.code, error.message)
                                                 );
-                                                if let Err(e) = request_mgr.complete_error(&envelope.request_id, protocol_err).await {
+                                                if let Err(e) = request_mgr.complete_error(&envelope.request_id, actr_err).await {
                                                     tracing::warn!(
                                                         severity = 4,
                                                         error_category = "orphan_response",

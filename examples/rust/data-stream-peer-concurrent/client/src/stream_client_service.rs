@@ -119,7 +119,7 @@ impl StreamClientHandler for StreamClientService {
 
                 tracing::info!("client sending {}/{}: {}", i, message_count, message);
                 let res = ctx_clone
-                    .send_data_stream(&Dest::Actor(server_id_clone.clone()), data_stream)
+                    .send_data_stream(&Dest::Actor(server_id_clone.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
                     .await;
                 if let Err(e) = res {
                     tracing::error!("client send_data_stream error: {}", e);

@@ -69,7 +69,7 @@ impl ActrSystem {
             actr_runtime_mailbox::SqliteMailbox::new(&mailbox_path)
                 .await
                 .map_err(|e| {
-                    actr_protocol::ProtocolError::TransportError(format!(
+                    actr_protocol::ActrError::Unavailable(format!(
                         "Mailbox init failed: {e}"
                     ))
                 })?,
@@ -87,7 +87,7 @@ impl ActrSystem {
             actr_runtime_mailbox::SqliteDeadLetterQueue::new_standalone(&dlq_path)
                 .await
                 .map_err(|e| {
-                    actr_protocol::ProtocolError::TransportError(format!("DLQ init failed: {e}"))
+                    actr_protocol::ActrError::Unavailable(format!("DLQ init failed: {e}"))
                 })?,
         );
         tracing::info!("✅ Dead Letter Queue initialized");
@@ -273,6 +273,9 @@ impl ActrSystem {
             network_event_rx,
             network_event_result_tx,
             network_event_debounce_config,
+            dedup_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::lifecycle::dedup::DedupState::new(),
+            )),
         }
     }
 }

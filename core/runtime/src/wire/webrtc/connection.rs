@@ -1,18 +1,18 @@
 //! WebRTC P2P Connection implementation
 
-use crate::transport::DataLane;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
+use crate::transport::DataLane;
 use crate::transport::{NetworkError, NetworkResult};
 use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
-use tokio::sync::{RwLock, broadcast, mpsc};
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, RwLock};
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
+use webrtc::peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
@@ -250,6 +250,13 @@ impl WebRtcConnection {
         *self.connected.blocking_read()
     }
 
+    /// Return a snapshot of the current DataChannel cache.
+    ///
+    /// Used by the coordinator to query `buffered_amount` on abnormal disconnect.
+    pub async fn data_channels(&self) -> [Option<Arc<RTCDataChannel>>; 4] {
+        self.data_channels.read().await.clone()
+    }
+
     /// Check if any DataChannel is open
     pub async fn has_open_data_channel(&self) -> bool {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
@@ -263,16 +270,83 @@ impl WebRtcConnection {
         false
     }
 
+    /// Drain all open DataChannel send buffers before closing (graceful shutdown).
+    ///
+    /// Polls `buffered_amount()` up to 50 times with 100 ms intervals (max 5 s total).
+    /// Logs a warning if the buffer is still non-zero when the timeout expires.
+    async fn drain_data_channels(&self) {
+        use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+        const MAX_POLLS: u32 = 50;
+        const POLL_INTERVAL_MS: u64 = 100;
+
+        // Snapshot open channels first, then release the lock before any async waits.
+        let open_channels: Vec<(usize, Arc<RTCDataChannel>)> = {
+            let channels = self.data_channels.read().await;
+            channels
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, opt)| {
+                    opt.as_ref().and_then(|ch| {
+                        if ch.ready_state() == RTCDataChannelState::Open {
+                            Some((idx, Arc::clone(ch)))
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect()
+        };
+
+        for (idx, channel) in open_channels {
+            let label = channel.label().to_owned();
+            for attempt in 0..MAX_POLLS {
+                let buffered = channel.buffered_amount().await;
+                if buffered == 0 {
+                    if attempt > 0 {
+                        tracing::debug!(
+                            peer_id = %self.peer_id.serial_number,
+                            channel = %label,
+                            channel_idx = idx,
+                            attempts = attempt,
+                            "DataChannel send buffer drained",
+                        );
+                    }
+                    break;
+                }
+
+                if attempt == MAX_POLLS - 1 {
+                    tracing::warn!(
+                        peer_id = %self.peer_id.serial_number,
+                        channel = %label,
+                        channel_idx = idx,
+                        buffered_bytes = buffered,
+                        "DataChannel send buffer not fully drained before close; \
+                         data may be lost for the peer",
+                    );
+                } else {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+                }
+            }
+        }
+    }
+
     /// Close connection and broadcast ConnectionClosed event
     pub async fn close(&self) -> NetworkResult<()> {
         tracing::debug!(
             "🔒 [close] serial={} step 1: acquiring connected write lock",
             self.peer_id.serial_number
         );
-        {
-            let mut connected = self.connected.write().await;
-            *connected = false;
-        }
+        *self.connected.write().await = false;
+
+        // Drain DataChannel send buffers before closing (graceful shutdown).
+        // This gives in-flight application data a chance to be delivered before
+        // the underlying SCTP association is torn down.
+        tracing::debug!(
+            "[close] Draining DataChannel send buffers for peer {:?}",
+            self.peer_id
+        );
+        self.drain_data_channels().await;
+
         tracing::debug!(
             "🔒 [close] serial={} step 2: closing peer_connection",
             self.peer_id.serial_number
@@ -505,18 +579,34 @@ impl WebRtcConnection {
         let payload_type_for_close = payload_type;
         let label_for_close = label;
         let channel_id_for_close = channel_id;
+        let dc_for_close = Arc::clone(&data_channel);
         data_channel.on_close(Box::new(move || {
             let this = this_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close;
             let channel_id = channel_id_for_close;
+            let dc = dc_for_close.clone();
             Box::pin(async move {
-                tracing::warn!(
-                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?}, channel_id={})",
-                    label,
-                    payload_type,
-                    channel_id
-                );
+                // Query buffered_amount at the moment of close to surface potential data loss.
+                let buffered = dc.buffered_amount().await;
+                if buffered > 0 {
+                    tracing::warn!(
+                        peer_id = %this.peer_id.serial_number,
+                        channel = %label,
+                        channel_id = channel_id,
+                        payload_type = ?payload_type,
+                        buffered_bytes = buffered,
+                        "DataChannel closed with non-empty send buffer; \
+                         buffered data was likely not delivered to peer",
+                    );
+                } else {
+                    tracing::warn!(
+                        "DataChannel closed [{}] (payload_type={:?}, channel_id={})",
+                        label,
+                        payload_type,
+                        channel_id,
+                    );
+                }
                 // Invalidate cached lane when DataChannel closes
                 this.invalidate_lane(payload_type).await;
                 // Broadcast DataChannelClosed event (sync, no await needed)
@@ -740,18 +830,33 @@ impl WebRtcConnection {
         let this_for_close = self.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label.clone();
+        let dc_for_close = Arc::clone(&data_channel);
 
         data_channel.on_close(Box::new(move || {
             let this = this_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close.clone();
+            let dc = dc_for_close.clone();
 
             Box::pin(async move {
-                tracing::warn!(
-                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?})",
-                    label,
-                    payload_type,
-                );
+                // Query buffered_amount at the moment of close to surface potential data loss.
+                let buffered = dc.buffered_amount().await;
+                if buffered > 0 {
+                    tracing::warn!(
+                        peer_id = %this.peer_id.serial_number,
+                        channel = %label,
+                        payload_type = ?payload_type,
+                        buffered_bytes = buffered,
+                        "DataChannel (received) closed with non-empty send buffer; \
+                         buffered data was likely not delivered to peer",
+                    );
+                } else {
+                    tracing::warn!(
+                        "DataChannel (received) closed [{}] (payload_type={:?})",
+                        label,
+                        payload_type,
+                    );
+                }
                 // Invalidate cached lane when DataChannel closes
                 this.invalidate_lane(payload_type).await;
                 // Broadcast DataChannelClosed event (sync, no await needed)

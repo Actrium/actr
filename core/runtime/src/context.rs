@@ -11,7 +11,7 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, ProtocolError,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType,
     RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
@@ -103,10 +103,7 @@ impl RuntimeContext {
         match dest {
             Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
             Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
-                ProtocolError::Actr(ActrError::GateNotInitialized {
-                    message: "OutprocOutGate not initialized yet (WebRTC setup in progress)"
-                        .to_string(),
-                })
+                ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
             }),
         }
     }
@@ -197,8 +194,8 @@ impl RuntimeContext {
 
     /// Send DataStream with an explicit payload type (lane selection).
     ///
-    /// This is intended for language bindings; the `Context` trait method
-    /// `send_data_stream()` currently defaults to StreamReliable.
+    /// Convenience wrapper for language bindings that prefer positional `payload_type`
+    /// before `chunk`. Equivalent to calling `Context::send_data_stream` directly.
     pub async fn send_data_stream_with_type(
         &self,
         target: &Dest,
@@ -270,7 +267,7 @@ impl RuntimeContext {
             .send_route_candidates_request(self.self_id.clone(), self.credential.clone(), request)
             .await
             .map_err(|e| {
-                ProtocolError::TransportError(format!("Route candidates request failed: {e}"))
+                ActrError::Unavailable(format!("Route candidates request failed: {e}"))
             })?;
 
         match response.result {
@@ -283,12 +280,12 @@ impl RuntimeContext {
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
-                Err(ProtocolError::TransportError(format!(
+                Err(ActrError::Unavailable(format!(
                     "Route candidates error {}: {}",
                     err.code, err.message
                 )))
             }
-            None => Err(ProtocolError::TransportError(
+            None => Err(ActrError::Unavailable(
                 "Invalid route candidates response: missing result".to_string(),
             )),
         }
@@ -446,13 +443,11 @@ impl Context for RuntimeContext {
 
         // 6. 解码响应（类型安全：R::Response）
         R::Response::decode(&*response_bytes).map_err(|e| {
-            ProtocolError::Actr(ActrError::DecodeFailure {
-                message: format!(
+            ActrError::DecodeFailure(format!(
                     "Failed to decode {}: {}",
                     std::any::type_name::<R::Response>(),
                     e
-                ),
-            })
+                ))
         })
     }
 
@@ -516,7 +511,7 @@ impl Context for RuntimeContext {
         Ok(())
     }
 
-    async fn send_data_stream(&self, target: &Dest, chunk: DataStream) -> ActorResult<()> {
+    async fn send_data_stream(&self, target: &Dest, chunk: DataStream, payload_type: actr_protocol::PayloadType) -> ActorResult<()> {
         use actr_protocol::prost::Message as ProstMessage;
 
         // 1. Serialize DataStream to bytes
@@ -533,12 +528,10 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 3. Send via OutGate with appropriate PayloadType
-        // Use StreamReliable for reliable ordered transmission
-        // TODO: Allow user to choose between StreamReliable and StreamLatencyFirst
+        // 3. Send via OutGate with the caller-specified PayloadType
         gate.send_data_stream(
             target_id,
-            actr_protocol::PayloadType::StreamReliable,
+            payload_type,
             bytes::Bytes::from(payload),
         )
         .await
@@ -546,7 +539,7 @@ impl Context for RuntimeContext {
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
         if !self.signaling_client.is_connected() {
-            return Err(ProtocolError::TransportError(
+            return Err(ActrError::Unavailable(
                 "Signaling client is not connected.".to_string(),
             ));
         }
@@ -612,13 +605,13 @@ impl Context for RuntimeContext {
                          Please run 'actr install' to generate the lock file with all dependencies.",
                         service_name
                     );
-                    return Err(ProtocolError::Actr(ActrError::DependencyNotFound {
+                    return Err(ActrError::DependencyNotFound {
                         service_name: service_name.clone(),
                         message: format!(
                             "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
                             service_name
                         ),
-                    }));
+                    });
                 }
             }
         };
@@ -665,8 +658,8 @@ impl Context for RuntimeContext {
         );
 
         result.candidates.into_iter().next().ok_or_else(|| {
-            ProtocolError::TargetNotFound(format!(
-                "No route candidates for type {}:{}",
+            ActrError::NotFound(format!(
+                "No route candidates for type {}/{}",
                 target_type.manufacturer, target_type.name
             ))
         })
@@ -701,10 +694,7 @@ impl Context for RuntimeContext {
 
         // 2. Select outproc gate (raw calls are always remote)
         let gate = self.outproc_gate.as_ref().ok_or_else(|| {
-            ProtocolError::Actr(ActrError::GateNotInitialized {
-                message: "OutprocOutGate not initialized yet (WebRTC setup in progress)"
-                    .to_string(),
-            })
+            ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
         })?;
 
         // 3. Send request and return raw response bytes

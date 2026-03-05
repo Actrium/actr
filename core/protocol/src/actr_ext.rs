@@ -14,9 +14,12 @@ use crate::{ActrId, ActrType, Realm, name::Name};
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Errors for actor identity parsing and formatting
+/// Errors for actor identity parsing and formatting.
+///
+/// Covers only syntactic/structural validity of `ActrId` and `ActrType` strings.
+/// Runtime and RPC errors belong to `ActrIdError` in the `error` module.
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum ActrError {
+pub enum ActrIdError {
     #[error(
         "Invalid Actor ID format: '{0}'. Expected: <serial_hex>@<realm_id>/<manufacturer>:<name>[:<version>]"
     )]
@@ -27,33 +30,6 @@ pub enum ActrError {
 
     #[error("Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]")]
     InvalidTypeFormat(String),
-
-    /// 消息解码失败
-    #[error("Failed to decode protobuf message: {message}")]
-    DecodeFailure { message: String },
-
-    /// 未知的路由键
-    #[error("Unknown route key: {route_key}")]
-    UnknownRoute { route_key: String },
-
-    /// OutGate 尚未初始化
-    #[error("Gate not initialized: {message}")]
-    GateNotInitialized { message: String },
-
-    /// Feature not yet implemented
-    #[error("Feature not yet implemented: {feature}")]
-    NotImplemented { feature: String },
-
-    /// ACL 权限拒绝
-    #[error("Permission denied: {message}")]
-    PermissionDenied { message: String },
-
-    /// 依赖未找到 - Actr.lock.toml 中不存在该依赖
-    #[error("Dependency '{service_name}' not found: {message}")]
-    DependencyNotFound {
-        service_name: String,
-        message: String,
-    },
 }
 
 /// Helpers for `ActrType` string conversions.
@@ -69,7 +45,7 @@ pub trait ActrTypeExt: Sized {
     /// Accepts:
     /// - `"manufacturer:name"` — no version
     /// - `"manufacturer:name:version"` — with version
-    fn from_string_repr(s: &str) -> Result<Self, ActrError>;
+    fn from_string_repr(s: &str) -> Result<Self, ActrIdError>;
 }
 
 impl ActrTypeExt for ActrType {
@@ -80,19 +56,19 @@ impl ActrTypeExt for ActrType {
         }
     }
 
-    fn from_string_repr(s: &str) -> Result<Self, ActrError> {
+    fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
         // Allow up to 3 segments: manufacturer, name, optional version
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
             [m, n] => (*m, *n, None),
             [m, n, v] => (*m, *n, Some(*v)),
-            _ => return Err(ActrError::InvalidTypeFormat(s.to_string())),
+            _ => return Err(ActrIdError::InvalidTypeFormat(s.to_string())),
         };
 
         Name::new(manufacturer.to_string())
-            .map_err(|e| ActrError::InvalidComponent(format!("Invalid manufacturer: {e}")))?;
+            .map_err(|e| ActrIdError::InvalidComponent(format!("Invalid manufacturer: {e}")))?;
         Name::new(name.to_string())
-            .map_err(|e| ActrError::InvalidComponent(format!("Invalid type name: {e}")))?;
+            .map_err(|e| ActrIdError::InvalidComponent(format!("Invalid type name: {e}")))?;
 
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),
@@ -111,7 +87,7 @@ pub trait ActrIdExt: Sized {
     fn to_string_repr(&self) -> String;
 
     /// Parse from string representation.
-    fn from_string_repr(s: &str) -> Result<Self, ActrError>;
+    fn from_string_repr(s: &str) -> Result<Self, ActrIdError>;
 }
 
 impl ActrIdExt for ActrId {
@@ -124,22 +100,23 @@ impl ActrIdExt for ActrId {
         )
     }
 
-    fn from_string_repr(s: &str) -> Result<Self, ActrError> {
+    fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
         // Format: "<serial_hex>@<realm_id>/<actr_type>"
         let (serial_part, rest) = s
             .split_once('@')
-            .ok_or_else(|| ActrError::InvalidFormat("Missing '@' separator".to_string()))?;
+            .ok_or_else(|| ActrIdError::InvalidFormat("Missing '@' separator".to_string()))?;
 
         let serial_number = u64::from_str_radix(serial_part, 16).map_err(|_| {
-            ActrError::InvalidComponent(format!("Invalid serial number hex: {serial_part}"))
+            ActrIdError::InvalidComponent(format!("Invalid serial number hex: {serial_part}"))
         })?;
 
         let (realm_part, type_part) = rest
             .split_once('/')
-            .ok_or_else(|| ActrError::InvalidFormat("Missing '/' separator".to_string()))?;
+            .ok_or_else(|| ActrIdError::InvalidFormat("Missing '/' separator".to_string()))?;
 
-        let realm_id = u32::from_str(realm_part)
-            .map_err(|_| ActrError::InvalidComponent(format!("Invalid realm ID: {realm_part}")))?;
+        let realm_id = u32::from_str(realm_part).map_err(|_| {
+            ActrIdError::InvalidComponent(format!("Invalid realm ID: {realm_part}"))
+        })?;
 
         let actr_type = ActrType::from_string_repr(type_part)?;
 
@@ -201,17 +178,17 @@ mod tests {
     fn test_invalid_actor_id_format() {
         assert!(matches!(
             ActrId::from_string_repr("invalid-string"),
-            Err(ActrError::InvalidFormat(_))
+            Err(ActrIdError::InvalidFormat(_))
         ));
         // Missing '/' between realm and type
         assert!(matches!(
             ActrId::from_string_repr("123@101"),
-            Err(ActrError::InvalidFormat(_))
+            Err(ActrIdError::InvalidFormat(_))
         ));
         // Invalid hex serial
         assert!(matches!(
             ActrId::from_string_repr("xyz@101/acme:echo"),
-            Err(ActrError::InvalidComponent(_))
+            Err(ActrIdError::InvalidComponent(_))
         ));
     }
 
@@ -238,22 +215,22 @@ mod tests {
         // Single segment (no colon) — invalid
         assert!(matches!(
             ActrType::from_string_repr("acme-echo"),
-            Err(ActrError::InvalidTypeFormat(_))
+            Err(ActrIdError::InvalidTypeFormat(_))
         ));
         // Too many segments (4+)
         assert!(matches!(
             ActrType::from_string_repr("a:b:c:d"),
-            Err(ActrError::InvalidTypeFormat(_))
+            Err(ActrIdError::InvalidTypeFormat(_))
         ));
         // Invalid manufacturer
         assert!(matches!(
             ActrType::from_string_repr("1acme:echo"),
-            Err(ActrError::InvalidComponent(_))
+            Err(ActrIdError::InvalidComponent(_))
         ));
         // Invalid name
         assert!(matches!(
             ActrType::from_string_repr("acme:echo!"),
-            Err(ActrError::InvalidComponent(_))
+            Err(ActrIdError::InvalidComponent(_))
         ));
     }
 }

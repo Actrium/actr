@@ -1,5 +1,6 @@
 //! Network layer error definitions
 
+use actr_protocol::{ActrError, Classify, ErrorKind};
 use thiserror::Error;
 
 /// Network layer error types
@@ -146,38 +147,59 @@ pub enum NetworkError {
     Other(#[from] anyhow::Error),
 }
 
-impl NetworkError {
-    /// Check if error is retryable
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
+impl Classify for NetworkError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            // Transient: connection-level failures that may resolve on retry
             NetworkError::ConnectionError(_)
-                | NetworkError::TimeoutError(_)
-                | NetworkError::NetworkUnreachableError(_)
-                | NetworkError::ResourceExhaustedError(_)
-        )
-    }
+            | NetworkError::ConnectionClosed(_)
+            | NetworkError::ChannelClosed(_)
+            | NetworkError::SendError(_)
+            | NetworkError::NetworkUnreachableError(_)
+            | NetworkError::ResourceExhaustedError(_)
+            | NetworkError::WebSocketError(_)
+            | NetworkError::SignalingError(_)
+            | NetworkError::WebRtcError(_)
+            | NetworkError::NatTraversalError(_)
+            | NetworkError::IceError(_) => ErrorKind::Transient,
 
-    /// Check if error is temporary
-    pub fn is_temporary(&self) -> bool {
-        matches!(
-            self,
-            NetworkError::ConnectionError(_)
-                | NetworkError::TimeoutError(_)
-                | NetworkError::NetworkUnreachableError(_)
-                | NetworkError::ResourceExhaustedError(_)
-        )
-    }
+            // Transient: timeout (framework-internal; caller-set deadlines should be Client)
+            NetworkError::TimeoutError(_) | NetworkError::Timeout(_) => ErrorKind::Transient,
 
-    /// Check if error is fatal
-    pub fn is_fatal(&self) -> bool {
-        matches!(
-            self,
+            // Client: caller or config errors that won't fix themselves
+            NetworkError::ConnectionNotFound(_)
+            | NetworkError::ChannelNotFound(_)
+            | NetworkError::NoRoute(_)
+            | NetworkError::InvalidArgument(_)
+            | NetworkError::InvalidOperation(_)
+            | NetworkError::ConfigurationError(_)
+            | NetworkError::ServiceDiscoveryError(_) => ErrorKind::Client,
+
+            // Client: auth/permission
             NetworkError::AuthenticationError(_)
-                | NetworkError::PermissionError(_)
-                | NetworkError::ConfigurationError(_)
-        )
+            | NetworkError::PermissionError(_)
+            | NetworkError::CredentialExpired(_) => ErrorKind::Client,
+
+            // Corrupt: data cannot be decoded
+            NetworkError::DeserializationError(_) => ErrorKind::Corrupt,
+
+            // Internal: framework-level issues
+            NetworkError::ProtocolError(_)
+            | NetworkError::SerializationError(_)
+            | NetworkError::DataChannelError(_)
+            | NetworkError::BroadcastError(_)
+            | NetworkError::DtlsError(_)
+            | NetworkError::StunTurnError(_)
+            | NetworkError::NotImplemented(_)
+            | NetworkError::IoError(_)
+            | NetworkError::UrlParseError(_)
+            | NetworkError::JsonError(_)
+            | NetworkError::Other(_) => ErrorKind::Internal,
+        }
     }
+}
+
+impl NetworkError {
 
     /// Get error category
     pub fn category(&self) -> &'static str {
@@ -276,10 +298,24 @@ impl NetworkError {
 /// Network layer result type
 pub type NetworkResult<T> = Result<T, NetworkError>;
 
-/// Convert from actor error to network error
-impl From<actr_protocol::ActrError> for NetworkError {
-    fn from(err: actr_protocol::ActrError) -> Self {
-        NetworkError::Other(anyhow::anyhow!("Actor error: {err}"))
+/// Convert from `ActrIdError` (identity parsing) to `NetworkError`
+impl From<actr_protocol::ActrIdError> for NetworkError {
+    fn from(err: actr_protocol::ActrIdError) -> Self {
+        NetworkError::InvalidArgument(err.to_string())
+    }
+}
+
+/// Convert `NetworkError` to the public top-level `ActrError`.
+///
+/// This is the single boundary where transport failures become user-visible errors.
+impl From<NetworkError> for ActrError {
+    fn from(err: NetworkError) -> Self {
+        match err.kind() {
+            ErrorKind::Transient => ActrError::Unavailable(err.to_string()),
+            ErrorKind::Client => ActrError::NotFound(err.to_string()),
+            ErrorKind::Corrupt => ActrError::DecodeFailure(err.to_string()),
+            ErrorKind::Internal => ActrError::Internal(err.to_string()),
+        }
     }
 }
 
@@ -313,3 +349,110 @@ impl From<actr_protocol::prost::DecodeError> for NetworkError {
 
 // TODO: In future, if error statistics needed, can add ErrorStats struct
 // Recommend using arrays instead of HashMap (error categories and severities are fixed)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── NetworkError::kind() classification ──────────────────────────────────
+
+    #[test]
+    fn transient_network_errors() {
+        let cases = [
+            NetworkError::ConnectionError("x".into()),
+            NetworkError::ConnectionClosed("x".into()),
+            NetworkError::ChannelClosed("x".into()),
+            NetworkError::SendError("x".into()),
+            NetworkError::NetworkUnreachableError("x".into()),
+            NetworkError::ResourceExhaustedError("x".into()),
+            NetworkError::WebSocketError("x".into()),
+            NetworkError::SignalingError("x".into()),
+            NetworkError::WebRtcError("x".into()),
+            NetworkError::NatTraversalError("x".into()),
+            NetworkError::IceError("x".into()),
+            NetworkError::TimeoutError("x".into()),
+            NetworkError::Timeout("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Transient, "{e} should be Transient");
+            assert!(e.is_retryable(), "{e} should be retryable");
+        }
+    }
+
+    #[test]
+    fn client_network_errors() {
+        let cases = [
+            NetworkError::ConnectionNotFound("x".into()),
+            NetworkError::ChannelNotFound("x".into()),
+            NetworkError::NoRoute("x".into()),
+            NetworkError::InvalidArgument("x".into()),
+            NetworkError::InvalidOperation("x".into()),
+            NetworkError::ConfigurationError("x".into()),
+            NetworkError::ServiceDiscoveryError("x".into()),
+            NetworkError::AuthenticationError("x".into()),
+            NetworkError::PermissionError("x".into()),
+            NetworkError::CredentialExpired("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Client, "{e} should be Client");
+            assert!(!e.is_retryable(), "{e} should not be retryable");
+        }
+    }
+
+    #[test]
+    fn corrupt_network_error() {
+        let e = NetworkError::DeserializationError("bad bytes".into());
+        assert_eq!(e.kind(), ErrorKind::Corrupt);
+        assert!(e.requires_dlq());
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn internal_network_errors() {
+        let cases = [
+            NetworkError::ProtocolError("x".into()),
+            NetworkError::SerializationError("x".into()),
+            NetworkError::DataChannelError("x".into()),
+            NetworkError::BroadcastError("x".into()),
+            NetworkError::DtlsError("x".into()),
+            NetworkError::StunTurnError("x".into()),
+            NetworkError::NotImplemented("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Internal, "{e} should be Internal");
+            assert!(!e.is_retryable());
+            assert!(!e.requires_dlq());
+        }
+    }
+
+    // ── From<NetworkError> for ActrError (single boundary conversion) ─────────
+
+    #[test]
+    fn transient_network_error_becomes_unavailable() {
+        let e: ActrError = NetworkError::ConnectionError("lost".into()).into();
+        assert!(matches!(e, ActrError::Unavailable(_)));
+        assert!(e.is_retryable());
+    }
+
+    #[test]
+    fn client_network_error_becomes_not_found() {
+        let e: ActrError = NetworkError::NoRoute("dst".into()).into();
+        assert!(matches!(e, ActrError::NotFound(_)));
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn corrupt_network_error_becomes_decode_failure() {
+        let e: ActrError = NetworkError::DeserializationError("garbled".into()).into();
+        assert!(matches!(e, ActrError::DecodeFailure(_)));
+        assert!(e.requires_dlq());
+    }
+
+    #[test]
+    fn internal_network_error_becomes_internal() {
+        let e: ActrError = NetworkError::ProtocolError("bug".into()).into();
+        assert!(matches!(e, ActrError::Internal(_)));
+        assert!(!e.is_retryable());
+        assert!(!e.requires_dlq());
+    }
+}
