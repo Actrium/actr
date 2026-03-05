@@ -1,0 +1,19 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node --import tsx src/actr_service.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@actor-rtc/actr": "https://github.com/actor-rtc/actr-ts/releases/download/v0.1.14/actor-rtc-actr-0.1.14.tgz",
+    "@bufbuild/protobuf": "2.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.6.3"
+  }
+}

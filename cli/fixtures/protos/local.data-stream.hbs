@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package {{PROJECT_NAME_SNAKE}};
+
+// LocalFileService service
+service LocalFileService {
+    // Predefined RPC interfaces
+    rpc PrepareClientStream (PrepareClientStreamRequest) returns (PrepareStreamResponse);
+}
+
+message PrepareClientStreamRequest {
+    string stream_id = 1;
+    uint32 expected_count = 2;
+}
+
+message PrepareStreamResponse {
+    bool ready = 1;
+    string message = 2;
+}

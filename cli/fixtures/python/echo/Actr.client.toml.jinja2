@@ -1,0 +1,39 @@
+edition = 1
+exports = []
+
+[package]
+name = "{{PROJECT_NAME}}-echo-client"
+description = "Shell echo client (Python demo)"
+authors = []
+license = "Apache-2.0"
+tags = ["dev", "example", "python"]
+
+[package.actr_type]
+manufacturer = "{{MANUFACTURER}}"
+name = "echo-client-app"
+
+[system.signaling]
+url = "{{{SIGNALING_URL}}}/signaling/ws"
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:127.0.0.1:3478"]
+turn_urls = ["turn:127.0.0.1:3478"]
+
+[system.deployment]
+realm_id = 0
+
+[system.discovery]
+visible = true
+
+[dependencies]
+echo-echo-server = {}
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["{{MANUFACTURER}}+EchoService"]
+
+[scripts]
+dev = "python client.py --actr-toml Actr.toml client-1 \"hello\""

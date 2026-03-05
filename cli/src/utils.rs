@@ -1,10 +1,15 @@
 //! Utility functions for actr-cli
 
+use crate::assets::FixtureAssets;
 use crate::error::{ActrCliError, Result};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 use tokio::process::Command as TokioCommand;
 use tracing::{debug, info, warn};
+
+pub const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Execute a command and return the output
 #[allow(dead_code)]
@@ -125,6 +130,16 @@ pub fn get_target_dir(project_root: &Path) -> std::path::PathBuf {
     }
 }
 
+/// Convert a string to PascalCase using heck crate
+pub fn to_pascal_case(input: &str) -> String {
+    heck::AsPascalCase(input).to_string()
+}
+
+/// Convert a string to snake_case using heck crate
+pub fn to_snake_case(input: &str) -> String {
+    heck::AsSnakeCase(input).to_string()
+}
+
 /// Ensure a directory exists, creating it if necessary
 #[allow(dead_code)]
 pub fn ensure_dir_exists(path: &Path) -> Result<()> {
@@ -133,6 +148,97 @@ pub fn ensure_dir_exists(path: &Path) -> Result<()> {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+/// Read a fixture file, falling back to embedded assets when not on disk.
+pub fn read_fixture_text(fixture_path: &Path) -> Result<String> {
+    if fixture_path.exists() {
+        return std::fs::read_to_string(fixture_path).map_err(|error| {
+            ActrCliError::Io(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to read fixture {}: {}",
+                    fixture_path.display(),
+                    error
+                ),
+            ))
+        });
+    }
+
+    let fixtures_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let relative = fixture_path
+        .strip_prefix(&fixtures_root)
+        .map_err(|_| {
+            ActrCliError::Io(std::io::Error::new(
+                ErrorKind::NotFound,
+                format!("Fixture not found: {}", fixture_path.display()),
+            ))
+        })?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let file = FixtureAssets::get(&relative).ok_or_else(|| {
+        ActrCliError::Io(std::io::Error::new(
+            ErrorKind::NotFound,
+            format!("Embedded fixture not found: {}", relative),
+        ))
+    })?;
+
+    let content = std::str::from_utf8(file.data.as_ref()).map_err(|error| {
+        ActrCliError::Io(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("Invalid UTF-8 fixture {}: {}", relative, error),
+        ))
+    })?;
+
+    Ok(content.to_string())
+}
+
+/// Fetch the latest tag from a git repository with a timeout
+pub async fn fetch_latest_git_tag(url: &str, fallback: &str) -> String {
+    debug!("Fetching latest tag for {}", url);
+
+    let fetch_task = async {
+        let output = TokioCommand::new("git")
+            .args(["ls-remote", "--tags", "--sort=v:refname", url])
+            .output()
+            .await;
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Parse tags like "refs/tags/v0.1.10" and get the last one
+                stdout
+                    .lines()
+                    .filter_map(|line| {
+                        line.split("refs/tags/").nth(1).map(|tag| {
+                            let tag = tag.trim();
+                            if let Some(stripped) = tag.strip_prefix('v') {
+                                stripped.to_string()
+                            } else {
+                                tag.to_string()
+                            }
+                        })
+                    })
+                    .rfind(|tag| !tag.contains("^{}")) // Filter out dereferenced tags
+            }
+            _ => None,
+        }
+    };
+
+    match tokio::time::timeout(GIT_FETCH_TIMEOUT, fetch_task).await {
+        Ok(Some(tag)) => {
+            info!("Successfully fetched latest tag for {}: {}", url, tag);
+            tag
+        }
+        _ => {
+            warn!(
+                "Failed to fetch latest tag for {} or timed out, using fallback: {}",
+                url, fallback
+            );
+            fallback.to_string()
+        }
+    }
 }
 
 /// Copy a file, creating parent directories as needed

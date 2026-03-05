@@ -2,6 +2,7 @@
 //!
 //! 定义了三个核心操作管道，实现命令间的逻辑复用
 
+use actr_config::{LockFile, LockedDependency, ProtoFileMeta, ServiceSpecMeta};
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -34,7 +35,7 @@ impl InstallResult {
 
     pub fn summary(&self) -> String {
         format!(
-            "安装了 {} 个依赖，更新了 {} 个缓存项",
+            "Installed {} dependencies, updated {} cache entries",
             self.installed_dependencies.len(),
             self.cache_updates
         )
@@ -92,6 +93,21 @@ impl ValidationPipeline {
         }
     }
 
+    /// Get service discovery component
+    pub fn service_discovery(&self) -> &Arc<dyn ServiceDiscovery> {
+        &self.service_discovery
+    }
+
+    /// Get network validator component
+    pub fn network_validator(&self) -> &Arc<dyn NetworkValidator> {
+        &self.network_validator
+    }
+
+    /// Get config manager component
+    pub fn config_manager(&self) -> &Arc<dyn ConfigManager> {
+        &self.config_manager
+    }
+
     /// 完整的项目验证流程
     pub async fn validate_project(&self) -> Result<ValidationReport> {
         // 1. 配置文件验证
@@ -119,10 +135,21 @@ impl ValidationPipeline {
                     .as_path(),
             )
             .await?;
-        let dependency_specs = self.extract_dependency_specs(&config)?;
+        let dependency_specs = self.dependency_resolver.resolve_spec(&config).await?;
+
+        let mut service_details = Vec::new();
+        for spec in &dependency_specs {
+            match self.service_discovery.get_service_details(&spec.name).await {
+                Ok(details) => service_details.push(details),
+                Err(_) => {
+                    // Service might not be available, continue without details
+                }
+            }
+        }
+
         let resolved_dependencies = self
             .dependency_resolver
-            .resolve_dependencies(&dependency_specs)
+            .resolve_dependencies(&dependency_specs, &service_details)
             .await?;
 
         // 3. 冲突检查
@@ -131,16 +158,17 @@ impl ValidationPipeline {
             .check_conflicts(&resolved_dependencies)
             .await?;
 
-        // 4. 串行执行网络验证和指纹验证（简化版，实际可以并行）
         let dependency_validation = self.validate_dependencies(&dependency_specs).await?;
         let network_validation = self
-            .validate_network_connectivity(&resolved_dependencies)
+            .validate_network_connectivity(&resolved_dependencies, &NetworkCheckOptions::default())
             .await?;
         let fingerprint_validation = self.validate_fingerprints(&resolved_dependencies).await?;
 
         let is_valid = config_validation.is_valid
             && dependency_validation.iter().all(|d| d.is_available)
-            && network_validation.iter().all(|n| n.is_reachable)
+            && network_validation
+                .iter()
+                .all(|n| !n.is_applicable || n.is_reachable)
             && fingerprint_validation.iter().all(|f| f.is_valid)
             && conflicts.is_empty();
 
@@ -155,147 +183,161 @@ impl ValidationPipeline {
     }
 
     /// 验证特定依赖列表
+    /// Note: Multiple aliases pointing to the same service name will be deduplicated
     pub async fn validate_dependencies(
         &self,
         specs: &[DependencySpec],
     ) -> Result<Vec<DependencyValidation>> {
+        use std::collections::HashMap;
+
         let mut results = Vec::new();
+        // Cache validation results by service name to avoid duplicate checks
+        let mut validation_cache: HashMap<String, (bool, Option<String>)> = HashMap::new();
 
         for spec in specs {
-            let validation = match self
-                .service_discovery
-                .check_service_availability(&spec.uri)
-                .await
-            {
-                Ok(status) => DependencyValidation {
-                    dependency: spec.name.clone(),
-                    is_available: status.is_available,
-                    resolved_uri: Some(spec.uri.clone()),
-                    error: None,
-                },
-                Err(e) => DependencyValidation {
-                    dependency: spec.name.clone(),
-                    is_available: false,
-                    resolved_uri: None,
-                    error: Some(e.to_string()),
-                },
+            // Check cache first - if we already validated this service name, reuse the result
+            let (is_available, error) = if let Some(cached) = validation_cache.get(&spec.name) {
+                cached.clone()
+            } else {
+                // Perform validation
+                let (available, err) = match self
+                    .service_discovery
+                    .check_service_availability(&spec.name)
+                    .await
+                {
+                    Ok(status) => {
+                        if status.is_available {
+                            (true, None)
+                        } else {
+                            // Provide meaningful error when service is not found
+                            (
+                                false,
+                                Some(format!("Service '{}' not found in registry", spec.name)),
+                            )
+                        }
+                    }
+                    Err(e) => (false, Some(e.to_string())),
+                };
+
+                // Cache the result for this service name
+                validation_cache.insert(spec.name.clone(), (available, err.clone()));
+                (available, err)
             };
-            results.push(validation);
+
+            results.push(DependencyValidation {
+                dependency: spec.alias.clone(),
+                is_available,
+                error,
+            });
         }
 
         Ok(results)
     }
 
     /// 网络连通性验证
-    async fn validate_network_connectivity(
+    pub async fn validate_network_connectivity(
         &self,
         deps: &[ResolvedDependency],
+        options: &NetworkCheckOptions,
     ) -> Result<Vec<NetworkValidation>> {
-        let uris: Vec<String> = deps.iter().map(|d| d.uri.clone()).collect();
-        let network_results = self.network_validator.batch_check(&uris).await?;
+        let names = deps.iter().map(|d| d.spec.name.clone()).collect::<Vec<_>>();
+        let network_results = self.network_validator.batch_check(&names, options).await?;
 
         Ok(network_results
             .into_iter()
-            .map(|result| NetworkValidation {
-                uri: result.uri,
-                is_reachable: result.connectivity.is_reachable,
-                latency_ms: result.connectivity.response_time_ms,
-                error: result.connectivity.error,
+            .map(|result| {
+                let mut is_applicable = true;
+                let mut error = result.connectivity.error;
+                let mut health = result.health;
+                let mut latency_ms = result.connectivity.response_time_ms;
+
+                if let Some(ref message) = error
+                    && message.starts_with("Address resolution failed: Invalid address format")
+                {
+                    is_applicable = false;
+                    error =
+                        Some("Network check skipped: no endpoint address available".to_string());
+                    health = HealthStatus::Unknown;
+                    latency_ms = None;
+                }
+
+                NetworkValidation {
+                    is_reachable: result.connectivity.is_reachable,
+                    health,
+                    latency_ms,
+                    error,
+                    is_applicable,
+                }
             })
             .collect())
     }
 
     /// 指纹验证
-    async fn validate_fingerprints(
+    pub async fn validate_fingerprints(
         &self,
         deps: &[ResolvedDependency],
     ) -> Result<Vec<FingerprintValidation>> {
         let mut results = Vec::new();
 
         for dep in deps {
+            let expected_val = dep.spec.fingerprint.clone().unwrap_or_default();
             let expected = Fingerprint {
                 algorithm: "sha256".to_string(),
-                value: dep.fingerprint.clone(),
+                value: expected_val,
             };
 
-            // 计算实际指纹
-            let service_info = match self.service_discovery.get_service_details(&dep.uri).await {
-                Ok(details) => details.info,
-                Err(e) => {
-                    results.push(FingerprintValidation {
-                        dependency: dep.spec.name.clone(),
-                        expected,
-                        actual: None,
-                        is_valid: false,
-                        error: Some(e.to_string()),
-                    });
-                    continue;
+            // 计算实际指纹（如果 resolved_dependencies 中没有指纹，从远程获取）
+            let actual_fp = if dep.fingerprint.is_empty() {
+                match self
+                    .service_discovery
+                    .get_service_details(&dep.spec.name)
+                    .await
+                {
+                    Ok(details) => {
+                        let computed = self
+                            .fingerprint_validator
+                            .compute_service_fingerprint(&details.info)
+                            .await?;
+                        Some(computed)
+                    }
+                    Err(e) => {
+                        results.push(FingerprintValidation {
+                            dependency: dep.spec.alias.clone(),
+                            expected,
+                            actual: None,
+                            is_valid: false,
+                            error: Some(e.to_string()),
+                        });
+                        continue;
+                    }
                 }
+            } else {
+                // 已有指纹，无需重新计算
+                None
             };
 
-            match self
-                .fingerprint_validator
-                .compute_service_fingerprint(&service_info)
-                .await
-            {
-                Ok(actual) => {
-                    let is_valid = self
-                        .fingerprint_validator
-                        .verify_fingerprint(&expected, &actual)
-                        .await
-                        .unwrap_or(false);
-                    results.push(FingerprintValidation {
-                        dependency: dep.spec.name.clone(),
-                        expected,
-                        actual: Some(actual),
-                        is_valid,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    results.push(FingerprintValidation {
-                        dependency: dep.spec.name.clone(),
-                        expected,
-                        actual: None,
-                        is_valid: false,
-                        error: Some(e.to_string()),
-                    });
-                }
-            }
+            let is_valid = if expected.value.is_empty() {
+                true
+            } else if let Some(ref computed) = actual_fp {
+                self.fingerprint_validator
+                    .verify_fingerprint(&expected, computed)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                // 指纹已匹配（来自 resolve_dependencies）
+                true
+            };
+
+            results.push(FingerprintValidation {
+                dependency: dep.spec.alias.clone(),
+                expected,
+                actual: actual_fp,
+                is_valid,
+                error: None,
+            });
         }
 
         Ok(results)
-    }
-
-    /// 从配置中提取依赖规范
-    fn extract_dependency_specs(&self, config: &ActrConfig) -> Result<Vec<DependencySpec>> {
-        let mut specs = Vec::new();
-
-        if let Some(dependencies) = &config.dependencies {
-            for (name, dep_config) in dependencies {
-                let spec = match dep_config {
-                    DependencyConfig::Simple(uri) => DependencySpec {
-                        name: name.clone(),
-                        uri: uri.clone(),
-                        version: None,
-                        fingerprint: None,
-                    },
-                    DependencyConfig::Complex {
-                        uri,
-                        version,
-                        fingerprint,
-                    } => DependencySpec {
-                        name: name.clone(),
-                        uri: uri.clone(),
-                        version: version.clone(),
-                        fingerprint: fingerprint.clone(),
-                    },
-                };
-                specs.push(spec);
-            }
-        }
-
-        Ok(specs)
     }
 }
 
@@ -325,6 +367,16 @@ impl InstallPipeline {
             cache_manager,
             proto_processor,
         }
+    }
+
+    /// Get validation pipeline reference
+    pub fn validation_pipeline(&self) -> &ValidationPipeline {
+        &self.validation_pipeline
+    }
+
+    /// Get config manager reference
+    pub fn config_manager(&self) -> &Arc<dyn ConfigManager> {
+        &self.config_manager
     }
 
     /// Check-First 安装流程
@@ -374,38 +426,66 @@ impl InstallPipeline {
     }
 
     /// 原子性安装执行
+    /// Note: Multiple aliases pointing to the same service will be deduplicated -
+    /// only one entry per unique service name will be installed and recorded in lock file
     async fn execute_atomic_install(&self, specs: &[DependencySpec]) -> Result<InstallResult> {
+        use std::collections::HashSet;
+
         let mut result = InstallResult::success();
+        let mut installed_services: HashSet<String> = HashSet::new();
 
         for spec in specs {
-            // 1. 更新配置文件
-            self.config_manager.update_dependency(spec).await?;
-            result.updated_config = true;
+            // Skip if we already installed this service (by name)
+            if installed_services.contains(&spec.name) {
+                tracing::debug!(
+                    "Skipping duplicate service '{}' (alias: '{}')",
+                    spec.name,
+                    spec.alias
+                );
+                continue;
+            }
 
-            // 2. 获取服务详情并缓存Proto文件
+            // 1. 获取服务详情（在更新配置之前，确保我们有完整的 actr_type）
             let service_details = self
                 .validation_pipeline
                 .service_discovery
-                .get_service_details(&spec.uri)
+                .get_service_details(&spec.name)
                 .await?;
 
-            self.cache_manager
-                .cache_proto(&spec.uri, &service_details.proto_files)
+            // 2. 构建 resolved_spec，确保包含 actr_type
+            let mut resolved_spec = spec.clone();
+            // 如果 spec 中没有 actr_type，使用从服务详情中获取的
+            if resolved_spec.actr_type.is_none() {
+                resolved_spec.actr_type = Some(service_details.info.actr_type.clone());
+            }
+
+            // 3. 更新配置文件（使用包含 actr_type 的 resolved_spec）
+            self.config_manager
+                .update_dependency(&resolved_spec)
                 .await?;
+            result.updated_config = true;
+
+            // 4. 缓存Proto文件
+            self.cache_manager
+                .cache_proto(&spec.name, &service_details.proto_files)
+                .await?;
+
             result.cache_updates += 1;
 
-            // 3. 记录已安装的依赖
+            // 5. 记录已安装的依赖
+
             let resolved_dep = ResolvedDependency {
-                spec: spec.clone(),
-                uri: spec.uri.clone(),
-                resolved_version: service_details.info.version,
+                spec: resolved_spec,
                 fingerprint: service_details.info.fingerprint,
                 proto_files: service_details.proto_files,
             };
             result.installed_dependencies.push(resolved_dep);
+
+            // Mark this service as installed
+            installed_services.insert(spec.name.clone());
         }
 
-        // 4. 更新锁文件
+        // 4. 更新锁文件 (lock file also deduplicates by name)
         self.update_lock_file(&result.installed_dependencies)
             .await?;
         result.updated_lock_file = true;
@@ -413,11 +493,68 @@ impl InstallPipeline {
         Ok(result)
     }
 
-    /// 更新锁文件
+    /// Update lock file with new format (no embedded proto content)
     async fn update_lock_file(&self, dependencies: &[ResolvedDependency]) -> Result<()> {
-        // TODO: 实现锁文件更新逻辑
-        // 这里应该读取现有的锁文件，合并新的依赖信息，然后写回
-        println!("更新锁文件: {} 个依赖", dependencies.len());
+        let project_root = self.config_manager.get_project_root();
+        let lock_file_path = project_root.join("Actr.lock.toml");
+
+        // Load existing lock file or create new one
+        let mut lock_file = if lock_file_path.exists() {
+            LockFile::from_file(&lock_file_path).unwrap_or_else(|_| LockFile::new())
+        } else {
+            LockFile::new()
+        };
+
+        // Update dependencies
+        for dep in dependencies {
+            let service_name = dep.spec.name.clone();
+
+            // Create protobuf entries with relative path (no content)
+            let protobufs: Vec<ProtoFileMeta> = dep
+                .proto_files
+                .iter()
+                .map(|pf| {
+                    let file_name = if pf.name.ends_with(".proto") {
+                        pf.name.clone()
+                    } else {
+                        format!("{}.proto", pf.name)
+                    };
+                    // Path relative to proto/remote/ (e.g., "service_name/file.proto")
+                    let path = format!("{}/{}", service_name, file_name);
+
+                    ProtoFileMeta {
+                        path,
+                        fingerprint: String::new(), // TODO: compute semantic fingerprint
+                    }
+                })
+                .collect();
+
+            // Create service spec metadata
+            let spec = ServiceSpecMeta {
+                name: dep.spec.name.clone(),
+                description: None,
+                fingerprint: dep.fingerprint.clone(),
+                protobufs,
+                published_at: None,
+                tags: Vec::new(),
+            };
+
+            // Create locked dependency
+            let actr_type = dep.spec.actr_type.clone().ok_or_else(|| {
+                anyhow::anyhow!("Actr type is required for dependency: {}", service_name)
+            })?;
+            let locked_dep = LockedDependency::new(
+                format!("{}+{}", actr_type.manufacturer, actr_type.name),
+                spec,
+            );
+            lock_file.add_dependency(locked_dep);
+        }
+
+        // Update timestamp and save
+        lock_file.update_timestamp();
+        lock_file.save_to_file(&lock_file_path)?;
+
+        tracing::info!("Updated lock file: {} dependencies", dependencies.len());
         Ok(())
     }
 }
@@ -472,7 +609,7 @@ impl GenerationPipeline {
             .await?;
 
         if !validation.is_valid {
-            return Err(anyhow::anyhow!("Proto文件语法验证失败"));
+            return Err(anyhow::anyhow!("Proto file syntax validation failed"));
         }
 
         // 5. 执行代码生成
@@ -521,7 +658,10 @@ impl GenerationPipeline {
                 let output = std::process::Command::new("rustfmt").arg(file).output()?;
 
                 if !output.status.success() {
-                    eprintln!("rustfmt 警告: {}", String::from_utf8_lossy(&output.stderr));
+                    eprintln!(
+                        "rustfmt warning: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
                 }
             }
         }

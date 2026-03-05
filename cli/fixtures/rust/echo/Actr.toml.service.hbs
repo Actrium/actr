@@ -1,0 +1,43 @@
+edition = 1
+exports = ["protos/local/echo.proto"]
+
+[package]
+name = "{{PROJECT_NAME}}"
+description = "Actor-RTC EchoService provider"
+authors = []
+license = "Apache-2.0"
+tags = ["dev", "service"]
+
+[package.actr_type]
+manufacturer = "{{MANUFACTURER}}"
+name = "EchoService"
+
+[system.signaling]
+url = "{{{SIGNALING_URL}}}/signaling/ws"
+
+[system.deployment]
+realm_id = {{REALM_ID}}
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://127.0.0.1:4317"
+tracing_service_name = "{{PROJECT_NAME}}"
+
+[system.webrtc]
+force_relay = false
+stun_urls = {{{STUN_URLS}}}
+turn_urls = {{{TURN_URLS}}}
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["{{MANUFACTURER}}+echo-client-app"]

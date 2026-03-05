@@ -1,0 +1,66 @@
+// ActrService is Implemented: This file contains a complete implementation.
+import {
+  ActrSystem,
+  type Context,
+  type PayloadType,
+  type RpcEnvelope,
+  type Workload,
+} from '@actor-rtc/actr';
+{{#if IS_BOTH}}
+import {
+  EchoRequest,
+} from './generated/{{SERVICE_NAME}}/echo_client';
+{{else}}
+import {
+  EchoRequest,
+} from './generated/echo-echo-server/echo_client';
+{{/if}}
+import { dispatchLocalActor } from './generated/local_actor';
+
+const RPC_TIMEOUT_MS = 15000;
+const RPC_PAYLOAD_TYPE: PayloadType = 0;
+
+class EchoClientWorkload implements Workload {
+  async onStart(_ctx: Context): Promise<void> {
+    console.log('Echo client started');
+  }
+
+  async onStop(_ctx: Context): Promise<void> {
+    console.log('Echo client stopped');
+  }
+
+  async dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {
+    return await dispatchLocalActor(ctx, envelope);
+  }
+}
+
+async function main(): Promise<void> {
+  const system = await ActrSystem.fromConfig('./Actr.toml');
+  const node = system.attach(new EchoClientWorkload());
+  const actorRef = await node.start();
+
+  try {
+    const req = EchoRequest.encode({ message: 'hello' });
+    const responseBytes = await actorRef.call(
+      EchoRequest.routeKey,
+      RPC_PAYLOAD_TYPE,
+      req,
+      RPC_TIMEOUT_MS
+    );
+    const response = EchoRequest.response.decode(responseBytes);
+    console.log('Echo reply:', response.reply);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    actorRef.shutdown();
+    process.exit(0);
+  } catch (error) {
+    actorRef.shutdown();
+    await actorRef.waitForShutdown();
+    throw error;
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

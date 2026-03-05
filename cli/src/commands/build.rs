@@ -3,8 +3,8 @@
 //! Computes service fingerprint from exported proto files and writes Actr.lock.
 //! This is a prerequisite for consumers to reference services by exact fingerprint.
 
+use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::error::Result;
-use actr::config::ConfigParser;
 use actr_version::{Fingerprint, ProtoFile};
 use anyhow::Context;
 use chrono::Utc;
@@ -68,7 +68,7 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
     let config_path = Path::new(&args.config);
     info!("🔨 Building project from {}", args.config);
 
-    let config = ConfigParser::from_file(config_path)
+    let config = load_config_with_legacy_actr_type(config_path)
         .with_context(|| format!("Failed to load config from {}", args.config))?;
 
     let lock_path = config.config_dir.join("Actr.lock");

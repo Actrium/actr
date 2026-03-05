@@ -1,49 +1,261 @@
 //! Project template system
 
+pub mod kotlin;
+pub mod python;
+pub mod rust;
+pub mod swift;
+pub mod typescript;
+
+use self::kotlin::KotlinTemplate;
+use self::python::PythonTemplate;
+use self::rust::RustTemplate;
+use self::swift::SwiftTemplate;
+use self::typescript::TypeScriptTemplate;
+use crate::assets::FixtureAssets;
 use crate::error::{ActrCliError, Result};
+use crate::utils::{to_pascal_case, to_snake_case};
+use clap::ValueEnum;
 use handlebars::Handlebars;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+pub use crate::commands::SupportedLanguage;
+
+pub const DEFAULT_ACTR_SWIFT_VERSION: &str = "0.1.15";
+pub const DEFAULT_ACTR_PROTOCOLS_VERSION: &str = "0.1.2";
+pub const DEFAULT_MANUFACTURER: &str = "acme";
+
+/// Project template options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Serialize)]
+#[value(rename_all = "lowercase")]
+pub enum ProjectTemplateName {
+    #[default]
+    Echo,
+    #[value(name = "data-stream")]
+    DataStream,
+}
+
+impl ProjectTemplateName {
+    /// Maps template name to remote service name
+    pub fn to_service_name(self) -> &'static str {
+        match self {
+            ProjectTemplateName::Echo => "echo-service",
+            ProjectTemplateName::DataStream => "data-stream-service",
+        }
+    }
+}
+
+impl std::fmt::Display for ProjectTemplateName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pv = self
+            .to_possible_value()
+            .expect("ValueEnum variant must have a possible value");
+        write!(f, "{}", pv.get_name())
+    }
+}
+
+/// Role for the echo template: service (provides EchoService), app (calls EchoService),
+/// or both (generate app and service projects).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum, Serialize)]
+#[value(rename_all = "lowercase")]
+pub enum EchoRole {
+    /// Provides EchoService, waits for RPC calls.
+    Service,
+    /// Calls EchoService, sends echo RPC and exits.
+    #[default]
+    App,
+    /// Generates both EchoService provider and app projects.
+    Both,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TemplateContext {
+    #[serde(rename = "PROJECT_NAME")]
     pub project_name: String,
+    #[serde(rename = "PROJECT_NAME_SNAKE")]
     pub project_name_snake: String,
+    #[serde(rename = "PROJECT_NAME_PASCAL")]
     pub project_name_pascal: String,
+    #[serde(rename = "SIGNALING_URL")]
+    pub signaling_url: String,
+    #[serde(rename = "MANUFACTURER")]
+    pub manufacturer: String,
+    #[serde(rename = "SERVICE_NAME")]
+    pub service_name: String,
+    #[serde(rename = "WORKLOAD_NAME")]
+    pub workload_name: String,
+    #[serde(rename = "ACTR_SWIFT_VERSION")]
+    pub actr_swift_version: String,
+    #[serde(rename = "ACTR_PROTOCOLS_VERSION")]
+    pub actr_protocols_version: String,
+    #[serde(rename = "ACTR_LOCAL_PATH")]
+    pub actr_local_path: Option<String>,
+    #[serde(rename = "REALM_ID")]
+    pub realm_id: u64,
+    #[serde(rename = "STUN_URLS")]
+    pub stun_urls: String,
+    #[serde(rename = "TURN_URLS")]
+    pub turn_urls: String,
+    #[serde(rename = "IS_SERVICE")]
+    pub is_service: bool,
+    /// True when this project is one half of a `role=both` generation pair.
+    #[serde(rename = "IS_BOTH")]
+    pub is_both: bool,
 }
 
 impl TemplateContext {
-    pub fn new(project_name: &str) -> Self {
+    pub fn new(
+        project_name: &str,
+        signaling_url: &str,
+        manufacturer: &str,
+        service_name: &str,
+        is_service: bool,
+    ) -> Self {
+        let project_name_pascal = to_pascal_case(project_name);
         Self {
             project_name: project_name.to_string(),
             project_name_snake: to_snake_case(project_name),
-            project_name_pascal: to_pascal_case(project_name),
+            project_name_pascal: project_name_pascal.clone(),
+            signaling_url: signaling_url.to_string(),
+            manufacturer: manufacturer.to_string(),
+            service_name: service_name.to_string(),
+            workload_name: format!("{}Workload", project_name_pascal),
+            actr_swift_version: DEFAULT_ACTR_SWIFT_VERSION.to_string(),
+            actr_protocols_version: DEFAULT_ACTR_PROTOCOLS_VERSION.to_string(),
+            actr_local_path: resolve_actr_swift_local_path(),
+            realm_id: 2368266035,
+            stun_urls: r#"["stun:actrix1.develenv.com:3478"]"#.to_string(),
+            turn_urls: r#"["turn:actrix1.develenv.com:3478"]"#.to_string(),
+            is_service,
+            is_both: false,
         }
     }
+
+    pub async fn new_with_versions(
+        project_name: &str,
+        signaling_url: &str,
+        manufacturer: &str,
+        service_name: &str,
+        is_service: bool,
+    ) -> Self {
+        let mut ctx = Self::new(
+            project_name,
+            signaling_url,
+            manufacturer,
+            service_name,
+            is_service,
+        );
+
+        // Fetch latest versions in parallel with 5s timeout
+        let swift_task = crate::utils::fetch_latest_git_tag(
+            "https://github.com/actor-rtc/actr-swift",
+            &ctx.actr_swift_version,
+        );
+        let protocols_task = crate::utils::fetch_latest_git_tag(
+            "https://github.com/actor-rtc/actr-protocols-swift",
+            &ctx.actr_protocols_version,
+        );
+
+        let (swift_v, protocols_v) = tokio::join!(swift_task, protocols_task);
+
+        ctx.actr_swift_version = swift_v;
+        ctx.actr_protocols_version = protocols_v;
+
+        ctx
+    }
+}
+
+fn resolve_actr_swift_local_path() -> Option<String> {
+    let base = std::env::var("ACTR_SWIFT_LOCAL_PATH").ok()?;
+    let root = Path::new(&base);
+    let candidates: [PathBuf; 4] = [
+        root.to_path_buf(),
+        root.join("actr-swift"),
+        root.join("bindings/swift"),
+        root.join("actr/bindings/swift"),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|path| path.join("Package.swift").is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+pub trait LangTemplate: Send + Sync {
+    fn load_files(
+        &self,
+        template_name: ProjectTemplateName,
+        context: &TemplateContext,
+    ) -> Result<HashMap<String, String>>;
 }
 
 pub struct ProjectTemplate {
-    #[allow(dead_code)]
-    name: String,
-    files: HashMap<String, String>,
+    name: ProjectTemplateName,
+    lang_template: Box<dyn LangTemplate>,
 }
 
 impl ProjectTemplate {
-    pub fn load(template_name: &str) -> Result<Self> {
-        match template_name {
-            "basic" => Ok(Self::basic_template()),
-            "echo" => Ok(Self::echo_template()),
-            _ => Err(ActrCliError::InvalidProject(format!(
-                "Unknown template: {template_name}"
-            ))),
+    pub fn new(template_name: ProjectTemplateName, language: SupportedLanguage) -> Self {
+        let lang_template: Box<dyn LangTemplate> = match language {
+            SupportedLanguage::Swift => Box::new(SwiftTemplate),
+            SupportedLanguage::Kotlin => Box::new(KotlinTemplate),
+            SupportedLanguage::Python => Box::new(PythonTemplate),
+            SupportedLanguage::Rust => Box::new(RustTemplate),
+            SupportedLanguage::TypeScript => Box::new(TypeScriptTemplate),
+        };
+
+        Self {
+            name: template_name,
+            lang_template,
         }
     }
 
+    pub fn load_file(
+        fixture_path: &Path,
+        files: &mut HashMap<String, String>,
+        key: &str,
+    ) -> Result<()> {
+        let content = if fixture_path.exists() {
+            std::fs::read_to_string(fixture_path)?
+        } else {
+            // Read from embedded fixtures when running from packaged binaries.
+            let fixtures_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+            let relative = fixture_path
+                .strip_prefix(&fixtures_root)
+                .map_err(|_| {
+                    ActrCliError::Io(std::io::Error::new(
+                        ErrorKind::NotFound,
+                        format!("Fixture not found: {}", fixture_path.display()),
+                    ))
+                })?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let file = FixtureAssets::get(&relative).ok_or_else(|| {
+                ActrCliError::Io(std::io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("Embedded fixture not found: {}", relative),
+                ))
+            })?;
+            std::str::from_utf8(file.data.as_ref())
+                .map_err(|error| {
+                    ActrCliError::Io(std::io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Invalid UTF-8 fixture {}: {}", relative, error),
+                    ))
+                })?
+                .to_string()
+        };
+        files.insert(key.to_string(), content);
+        Ok(())
+    }
+
     pub fn generate(&self, project_path: &Path, context: &TemplateContext) -> Result<()> {
+        let files = self.lang_template.load_files(self.name, context)?;
         let handlebars = Handlebars::new();
 
-        for (file_path, content) in &self.files {
+        for (file_path, content) in &files {
             let rendered_path = handlebars.render_template(file_path, context)?;
             let rendered_content = handlebars.render_template(content, context)?;
 
@@ -59,272 +271,83 @@ impl ProjectTemplate {
 
         Ok(())
     }
-
-    fn basic_template() -> Self {
-        let mut files = HashMap::new();
-
-        // Cargo.toml
-        files.insert(
-            "Cargo.toml".to_string(),
-            r#"[package]
-name = "{{project_name}}"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-# Actor-RTC framework
-actor-rtc-framework = { path = "../../actor-rtc-framework" }  # Adjust path as needed
-
-# Async runtime
-tokio = { version = "1.0", features = ["full"] }
-async-trait = "0.1"
-
-# Protocol definitions
-tonic = "0.10"
-prost = "0.12"
-
-# Logging
-tracing = "0.1"
-tracing-subscriber = "0.3"
-
-# Error handling
-anyhow = "1.0"
-
-[build-dependencies]
-tonic-build = "0.10"
-"#
-            .to_string(),
-        );
-
-        // src/lib.rs for auto-runner mode
-        files.insert(
-            "src/lib.rs".to_string(),
-            r#"//! {{project_name}} - Actor-RTC service implementation
-
-use actor_rtc_framework::prelude::*;
-use async_trait::async_trait;
-use std::sync::Arc;
-use tracing::info;
-
-// Include generated proto code
-pub mod greeter {
-    tonic::include_proto!("greeter");
-}
-
-// Include generated actor code
-include!(concat!(env!("OUT_DIR"), "/greeter_service_actor.rs"));
-
-use greeter::{GreetRequest, GreetResponse};
-
-/// Main actor implementation
-#[derive(Default)]
-pub struct {{project_name_pascal}}Actor {
-    greeting_count: std::sync::atomic::AtomicU64,
-}
-
-#[async_trait]
-impl IGreeterService for {{project_name_pascal}}Actor {
-    async fn greet(
-        &self, 
-        request: GreetRequest,
-        _context: Arc<Context>
-    ) -> Result<GreetResponse, tonic::Status> {
-        let count = self.greeting_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        
-        info!("Received greeting request #{}: Hello {}", count, request.name);
-        
-        let message = format!("Hello, {}! This is greeting #{}", request.name, count);
-        
-        Ok(GreetResponse { message })
-    }
-}
-
-#[async_trait]
-impl ILifecycle for {{project_name_pascal}}Actor {
-    async fn on_start(&self, _ctx: Arc<Context>) {
-        info!("{{project_name_pascal}}Actor started successfully");
-    }
-
-    async fn on_stop(&self, _ctx: Arc<Context>) {
-        info!("{{project_name_pascal}}Actor shutting down");
-    }
-
-    async fn on_actor_discovered(&self, _ctx: Arc<Context>, _actor_id: &ActorId) -> bool {
-        // Accept connections from any actor
-        true
-    }
-}
-"#
-            .to_string(),
-        );
-
-        // proto/greeter.proto
-        files.insert(
-            "protos/greeter.proto".to_string(),
-            r#"syntax = "proto3";
-
-package greeter;
-
-// Greeting request message
-message GreetRequest {
-    string name = 1;
-}
-
-// Greeting response message
-message GreetResponse {
-    string message = 1;
-}
-
-// Greeter service definition
-service GreeterService {
-    rpc Greet(GreetRequest) returns (GreetResponse);
-}
-"#
-            .to_string(),
-        );
-
-        // build.rs
-        files.insert(
-            "build.rs".to_string(),
-            r#"fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_files = ["protos/greeter.proto"];
-
-    // Build with protoc-gen-actrframework plugin if available
-    let plugin_path = std::env::current_dir()?
-        .parent()
-        .unwrap()
-        .join("target/debug/protoc-gen-actrframework");
-    
-    let mut config = tonic_build::configure()
-        .build_server(false)  // We generate our own server-side traits
-        .build_client(true);
-
-    if plugin_path.exists() {
-        config = config
-            .protoc_arg(format!("--plugin=protoc-gen-actrframework={}", plugin_path.display()))
-            .protoc_arg("--actrframework_out=.");
-        println!("Using protoc-gen-actrframework plugin");
-    } else {
-        println!("Warning: protoc-gen-actrframework plugin not found, using standard tonic generation only");
-    }
-
-    config.compile(&proto_files, &["protos/"])?;
-
-    // Re-run if proto files change
-    for proto_file in &proto_files {
-        println!("cargo:rerun-if-changed={}", proto_file);
-    }
-
-    Ok(())
-}
-"#.to_string(),
-        );
-
-        // README.md
-        files.insert(
-            "README.md".to_string(),
-            r#"# {{project_name}}
-
-An Actor-RTC service implementation.
-
-## Building
-
-```bash
-actr gen --input proto --output src/generated
-```
-
-## Running
-
-```bash
-actr run
-```
-
-## Development
-
-This project uses the Actor-RTC framework's auto-runner mode. The main logic is implemented in `src/lib.rs`, and the framework automatically generates the necessary startup code.
-
-The service definition is in `protos/greeter.proto`, and the implementation is in the `{{project_name_pascal}}Actor` struct.
-"#.to_string(),
-        );
-
-        Self {
-            name: "basic".to_string(),
-            files,
-        }
-    }
-
-    fn echo_template() -> Self {
-        // Similar to basic but with echo-specific content
-        // For now, just return the basic template
-        Self::basic_template()
-    }
-}
-
-fn to_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    let chars = s.chars().peekable();
-
-    for c in chars {
-        if c.is_uppercase() {
-            if !result.is_empty() {
-                result.push('_');
-            }
-            result.push(c.to_lowercase().next().unwrap());
-        } else if c.is_alphanumeric() {
-            result.push(c);
-        } else {
-            result.push('_');
-        }
-    }
-
-    result
-}
-
-fn to_pascal_case(s: &str) -> String {
-    // Handle already PascalCase or camelCase strings by detecting uppercase transitions
-    let mut result = String::new();
-    let chars = s.chars().peekable();
-    let mut start_of_word = true;
-
-    for c in chars {
-        if !c.is_alphanumeric() {
-            // Separator - next char starts a new word
-            start_of_word = true;
-            continue;
-        }
-
-        if c.is_uppercase() {
-            // Uppercase marks start of a word
-            result.push(c);
-            start_of_word = false;
-        } else if start_of_word {
-            // First char of a word - capitalize it
-            result.push(c.to_uppercase().next().unwrap());
-            start_of_word = false;
-        } else {
-            // Middle of a word - keep as lowercase
-            result.push(c.to_lowercase().next().unwrap());
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
-    fn test_to_snake_case() {
-        assert_eq!(to_snake_case("MyProject"), "my_project");
-        assert_eq!(to_snake_case("my-project"), "my_project");
-        assert_eq!(to_snake_case("my_project"), "my_project");
+    fn test_template_context() {
+        let ctx = TemplateContext::new(
+            "my-chat-service",
+            "ws://localhost:8080",
+            DEFAULT_MANUFACTURER,
+            "echo-service",
+            false,
+        );
+        assert_eq!(ctx.project_name, "my-chat-service");
+        assert_eq!(ctx.project_name_snake, "my_chat_service");
+        assert_eq!(ctx.project_name_pascal, "MyChatService");
+        assert_eq!(ctx.workload_name, "MyChatServiceWorkload");
+        assert_eq!(ctx.signaling_url, "ws://localhost:8080");
+        assert_eq!(ctx.actr_swift_version, DEFAULT_ACTR_SWIFT_VERSION);
+        assert_eq!(ctx.actr_protocols_version, DEFAULT_ACTR_PROTOCOLS_VERSION);
     }
 
     #[test]
-    fn test_to_pascal_case() {
-        assert_eq!(to_pascal_case("my-project"), "MyProject");
-        assert_eq!(to_pascal_case("my_project"), "MyProject");
-        assert_eq!(to_pascal_case("MyProject"), "MyProject");
+    fn test_project_template_new() {
+        let template = ProjectTemplate::new(ProjectTemplateName::Echo, SupportedLanguage::Swift);
+        assert_eq!(template.name, ProjectTemplateName::Echo);
+    }
+
+    #[test]
+    fn test_project_template_generation() {
+        let temp_dir = TempDir::new().unwrap();
+        let template = ProjectTemplate::new(ProjectTemplateName::Echo, SupportedLanguage::Swift);
+        let context = TemplateContext::new(
+            "test-app",
+            "ws://localhost:8080",
+            DEFAULT_MANUFACTURER,
+            "echo-service",
+            false,
+        );
+
+        template
+            .generate(temp_dir.path(), &context)
+            .expect("Failed to generate");
+
+        // Verify project.yml exists
+        assert!(temp_dir.path().join("project.yml").exists());
+        // Verify Actr.toml exists
+        assert!(temp_dir.path().join("Actr.toml").exists());
+        // Verify .gitignore exists
+        assert!(temp_dir.path().join(".gitignore").exists());
+        // Note: proto files are no longer created during init, they will be pulled via actr install
+        // Verify app directory exists
+        assert!(
+            temp_dir
+                .path()
+                .join("TestApp")
+                .join("TestApp.swift")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn test_project_template_load_files() {
+        let template = ProjectTemplate::new(ProjectTemplateName::Echo, SupportedLanguage::Swift);
+        let context = TemplateContext::new(
+            "test-app",
+            "ws://localhost:8080",
+            DEFAULT_MANUFACTURER,
+            "echo-service",
+            false,
+        );
+        let result = template
+            .lang_template
+            .load_files(ProjectTemplateName::Echo, &context);
+        assert!(result.is_ok());
     }
 }

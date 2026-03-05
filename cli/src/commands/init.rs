@@ -1,7 +1,9 @@
 //! Project initialization command
 
-use crate::commands::Command;
+use crate::commands::initialize::{self, InitContext};
+use crate::commands::{Command, SupportedLanguage};
 use crate::error::{ActrCliError, Result};
+use crate::template::{DEFAULT_MANUFACTURER, EchoRole, ProjectTemplateName};
 use async_trait::async_trait;
 use clap::Args;
 use std::io::{self, Write};
@@ -13,9 +15,9 @@ pub struct InitCommand {
     /// Name of the project to create (use '.' for current directory)
     pub name: Option<String>,
 
-    /// Project template to use (echo, chat-room, etc.)
-    #[arg(long)]
-    pub template: Option<String>,
+    /// Project template to use (echo, data-stream)
+    #[arg(long, default_value_t = ProjectTemplateName::Echo)]
+    pub template: ProjectTemplateName,
 
     /// Project name when initializing in current directory
     #[arg(long)]
@@ -24,6 +26,19 @@ pub struct InitCommand {
     /// Signaling server URL
     #[arg(long)]
     pub signaling: Option<String>,
+
+    /// Target language for project initialization
+    #[arg(short, long, default_value = "rust")]
+    pub language: SupportedLanguage,
+
+    /// Role for echo template: service (provides EchoService), app (calls EchoService),
+    /// or both (generate app and service projects)
+    #[arg(long)]
+    pub role: Option<EchoRole>,
+
+    /// Manufacturer for generated actor types (default: acme)
+    #[arg(long, default_value = DEFAULT_MANUFACTURER)]
+    pub manufacturer: String,
 }
 
 #[async_trait]
@@ -37,6 +52,44 @@ impl Command for InitCommand {
         let name = self.prompt_if_missing("project name", self.name.as_ref())?;
         let signaling_url =
             self.prompt_if_missing("signaling server URL", self.signaling.as_ref())?;
+
+        let echo_role = if self.template == ProjectTemplateName::Echo {
+            Some(self.prompt_echo_role(self.role.as_ref())?)
+        } else {
+            None
+        };
+        let manufacturer = self.manufacturer.trim();
+        if manufacturer.is_empty() {
+            return Err(ActrCliError::InvalidProject(
+                "Manufacturer cannot be empty".to_string(),
+            ));
+        }
+
+        // role=both requires custom manufacturer to avoid conflicts with public 'acme' services
+        if matches!(echo_role, Some(EchoRole::Both)) && manufacturer == DEFAULT_MANUFACTURER {
+            return Err(ActrCliError::InvalidProject(
+                "role=both requires a custom manufacturer to avoid conflicts with public 'acme' services.\n\
+                 Use: --manufacturer <your-org-name>".to_string(),
+            ));
+        }
+
+        // role=service with default manufacturer will register as 'acme+EchoService', which
+        // conflicts with the public echo service on the same signaling server.
+        if matches!(echo_role, Some(EchoRole::Service)) && manufacturer == DEFAULT_MANUFACTURER {
+            println!(
+                "⚠️  Warning: using default manufacturer 'acme' with role=service will register\n\
+                 this service as 'acme+EchoService', which conflicts with the public echo service\n\
+                 on the same signaling server and may cause interference.\n\
+                 Consider using a custom manufacturer: --manufacturer <your-org-name>"
+            );
+        }
+
+        // When role=both, generate both echo-app and echo-service projects
+        if matches!(echo_role, Some(EchoRole::Both)) {
+            self.execute_both(&name, &signaling_url, manufacturer)
+                .await?;
+            return Ok(());
+        }
 
         let (project_dir, project_name) = self.resolve_project_info(&name)?;
 
@@ -63,29 +116,27 @@ impl Command for InitCommand {
             std::fs::create_dir_all(&project_dir)?;
         }
 
-        // Generate project structure
-        self.generate_project_structure(&project_dir, &project_name, &signaling_url)?;
+        // Normalize the signaling URL: strip trailing "/signaling/ws" (and optional "/")
+        // so that each language template can append its own path suffix without duplication.
+        let normalized_signaling_url = signaling_url
+            .strip_suffix("/signaling/ws/")
+            .or_else(|| signaling_url.strip_suffix("/signaling/ws"))
+            .unwrap_or(&signaling_url[..])
+            .trim_end_matches('/')
+            .to_string();
 
-        info!(
-            "✅ Successfully created Actor-RTC project '{}'",
-            project_name
-        );
-        if project_dir != Path::new(".") {
-            info!("📁 Project created in: {}", project_dir.display());
-            info!("");
-            info!("Next steps:");
-            info!("  cd {}", project_dir.display());
-            info!("  actr install actr://{{some-service}}/  # Add service dependencies");
-            info!("  actr gen                             # Generate Actor code");
-            info!("  cargo run                            # Start your work");
-        } else {
-            info!("📁 Project initialized in current directory");
-            info!("");
-            info!("Next steps:");
-            info!("  actr install actr://{{some-service}}/  # Add service dependencies");
-            info!("  actr gen                             # Generate Actor code");
-            info!("  cargo run                            # Start your work");
-        }
+        let context = InitContext {
+            project_dir: project_dir.clone(),
+            project_name: project_name.clone(),
+            signaling_url: normalized_signaling_url,
+            template: self.template,
+            is_current_dir: project_dir == Path::new("."),
+            echo_role,
+            manufacturer: manufacturer.to_string(),
+            is_both: false,
+        };
+
+        initialize::execute_initialize(self.language, &context).await?;
 
         Ok(())
     }
@@ -94,99 +145,164 @@ impl Command for InitCommand {
 impl InitCommand {
     fn resolve_project_info(&self, name: &str) -> Result<(PathBuf, String)> {
         if name == "." {
-            // Initialize in current directory - cargo will determine the name
+            // Initialize in current directory - name will be inferred
             let project_name = if let Some(name) = &self.project_name {
                 name.clone()
             } else {
-                // Let cargo determine the project name from directory
-                "current-dir".to_string() // Placeholder - cargo will override
+                let current_dir = std::env::current_dir().map_err(|e| {
+                    ActrCliError::InvalidProject(format!(
+                        "Failed to resolve current directory: {e}"
+                    ))
+                })?;
+                current_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        ActrCliError::InvalidProject(
+                            "Failed to infer project name from current directory".to_string(),
+                        )
+                    })?
             };
             Ok((PathBuf::from("."), project_name))
         } else {
-            // Create new directory
-            Ok((PathBuf::from(name), name.to_string()))
+            // Create new directory - extract project name from path
+            let path = PathBuf::from(name);
+            let project_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(name)
+                .to_string();
+            Ok((path, project_name))
         }
     }
 
-    fn generate_project_structure(
-        &self,
-        project_dir: &Path,
-        project_name: &str,
-        signaling_url: &str,
-    ) -> Result<()> {
-        // Always use cargo init for all scenarios
-        if project_dir == Path::new(".") {
-            // Current directory init - let cargo handle naming
-            self.init_with_cargo(project_dir, None, signaling_url)?;
+    /// Prompt for echo template role when not specified. Returns the role (never prompts if --role was given).
+    fn prompt_echo_role(&self, current_value: Option<&EchoRole>) -> Result<EchoRole> {
+        if let Some(role) = current_value {
+            return Ok(*role);
+        }
+
+        println!("┌──────────────────────────────────────────────────────────┐");
+        println!("│ 🎭  Echo Template Role                                   │");
+        println!("├──────────────────────────────────────────────────────────┤");
+        println!("│                                                          │");
+        println!("│  service  Provides EchoService, waits for RPC calls      │");
+        println!("│  app      Calls EchoService, sends echo RPC and exits    │");
+        println!("│  both     Generates both app and service projects        │");
+        println!("│                                                          │");
+        println!("└──────────────────────────────────────────────────────────┘");
+        print!("🎯 Enter role [app]: ");
+
+        io::stdout().flush().map_err(ActrCliError::Io)?;
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(ActrCliError::Io)?;
+
+        println!();
+
+        let trimmed = input.trim().to_lowercase();
+        if trimmed.is_empty() || trimmed == "app" {
+            Ok(EchoRole::App)
+        } else if trimmed == "service" {
+            Ok(EchoRole::Service)
+        } else if trimmed == "both" {
+            Ok(EchoRole::Both)
         } else {
-            // New directory - create it and use cargo init with explicit name
-            std::fs::create_dir_all(project_dir)?;
-            self.init_with_cargo(project_dir, Some(project_name), signaling_url)?;
+            Err(ActrCliError::InvalidProject(format!(
+                "Invalid role '{trimmed}'. Use 'service', 'app' or 'both'."
+            )))
         }
-
-        Ok(())
     }
 
-    fn create_actr_config(
+    /// Execute initialization when role=both: generate echo-app and echo-service projects.
+    async fn execute_both(
         &self,
-        project_dir: &Path,
-        project_name: &str,
+        name: &str,
         signaling_url: &str,
+        manufacturer: &str,
     ) -> Result<()> {
-        let _template_name = self.template.as_deref().unwrap_or("minimal");
-        let service_type = format!("{project_name}-service");
+        let (parent_dir, _ignored_project_name) = self.resolve_project_info(name)?;
 
-        // Create Actr.toml directly as string (Config doesn't have default_template or save_to_file)
-        let actr_toml_content = format!(
-            r#"edition = 1
-exports = []
+        // Determine concrete subdirectories for app and service.
+        let app_dir = if parent_dir == Path::new(".") {
+            PathBuf::from("echo-app")
+        } else {
+            parent_dir.join("echo-app")
+        };
+        let service_dir = if parent_dir == Path::new(".") {
+            PathBuf::from("echo-service")
+        } else {
+            parent_dir.join("echo-service")
+        };
 
-[package]
-name = "{project_name}"
-description = "An Actor-RTC service"
-authors = []
-
-[package.actr_type]
-manufacturer = "my-company"
-name = "{service_type}"
-version = "0.1.0"
-
-[dependencies]
-
-[system.signaling]
-url = "{signaling_url}"
-
-[system.deployment]
-realm_id = 1001
-
-[system.discovery]
-visible = true
-
-[scripts]
-dev = "cargo run"
-test = "cargo test"
-"#
+        info!(
+            "🚀 Initializing Actor-RTC echo projects: {} and {}",
+            app_dir.display(),
+            service_dir.display()
         );
 
-        std::fs::write(project_dir.join("Actr.toml"), actr_toml_content)?;
+        // Prevent overwriting existing directories.
+        if app_dir.exists() || service_dir.exists() {
+            return Err(ActrCliError::InvalidProject(format!(
+                "Target directories '{}' or '{}' already exist. Remove them or choose a different project name.",
+                app_dir.display(),
+                service_dir.display()
+            )));
+        }
 
-        info!("📄 Created Actr.toml configuration");
-        Ok(())
-    }
+        // Check if current directory already has Actr.toml when using "."
+        if parent_dir == Path::new(".") && Path::new("Actr.toml").exists() {
+            return Err(ActrCliError::InvalidProject(
+                "Current directory already contains an Actor-RTC project (Actr.toml exists)"
+                    .to_string(),
+            ));
+        }
 
-    fn create_gitignore(&self, project_dir: &Path) -> Result<()> {
-        let gitignore_content = r#"/target
-/Cargo.lock
-.env
-.env.local
-*.log
-.DS_Store
-/src/generated/
-"#;
+        // Create parent directory if needed (for non-current-dir case).
+        if parent_dir != Path::new(".") {
+            std::fs::create_dir_all(&parent_dir)?;
+        }
 
-        std::fs::write(project_dir.join(".gitignore"), gitignore_content)?;
+        // Normalize the signaling URL: strip trailing "/signaling/ws" (and optional "/")
+        // so that each language template can append its own path suffix without duplication.
+        let normalized_signaling_url = signaling_url
+            .strip_suffix("/signaling/ws/")
+            .or_else(|| signaling_url.strip_suffix("/signaling/ws"))
+            .unwrap_or(signaling_url)
+            .trim_end_matches('/')
+            .to_string();
 
-        info!("📄 Created .gitignore");
+        // Build InitContext for echo-app (role=app).
+        let app_context = InitContext {
+            project_dir: app_dir.clone(),
+            project_name: "echo-app".to_string(),
+            signaling_url: normalized_signaling_url.clone(),
+            template: self.template,
+            is_current_dir: false,
+            echo_role: Some(EchoRole::App),
+            manufacturer: manufacturer.to_string(),
+            is_both: true,
+        };
+
+        // Build InitContext for echo-service (role=service).
+        let service_context = InitContext {
+            project_dir: service_dir.clone(),
+            project_name: "echo-service".to_string(),
+            signaling_url: normalized_signaling_url,
+            template: self.template,
+            is_current_dir: false,
+            echo_role: Some(EchoRole::Service),
+            manufacturer: manufacturer.to_string(),
+            is_both: true,
+        };
+
+        // Generate service first, then app.
+        initialize::execute_initialize(self.language, &service_context).await?;
+        initialize::execute_initialize(self.language, &app_context).await?;
+
         Ok(())
     }
 
@@ -226,10 +342,10 @@ test = "cargo test"
                 println!("│  💡 Examples:                                            │");
                 println!("│     ws://localhost:8080/                (development)    │");
                 println!("│     wss://example.com                   (production      │");
-                println!("│     wss://example.com/?token=${{TOKEN}}   (with auth)      │");
+                println!("│     wss://example.com/?token=${{TOKEN}}   (with auth)    │");
                 println!("│                                                          │");
                 println!("└──────────────────────────────────────────────────────────┘");
-                print!("🎯 Enter signaling server URL [ws://localhost:8080/]: ");
+                print!("🎯 Enter signaling server URL [wss://actrix1.develenv.com]: ");
             }
             _ => {
                 print!("🎯 Enter {field_name}: ");
@@ -250,7 +366,7 @@ test = "cargo test"
             // Provide sensible defaults
             let default = match field_name {
                 "project name" => "my-actor-project",
-                "signaling server URL" => "ws://localhost:8080/",
+                "signaling server URL" => "wss://actrix1.develenv.com/signaling/ws",
                 _ => {
                     return Err(ActrCliError::InvalidProject(format!(
                         "{field_name} cannot be empty"
@@ -297,114 +413,6 @@ test = "cargo test"
             return Err(ActrCliError::InvalidProject(
                 "Project name cannot start or end with an underscore".to_string(),
             ));
-        }
-
-        Ok(())
-    }
-
-    /// Initialize using cargo init, then enhance for Actor-RTC
-    fn init_with_cargo(
-        &self,
-        project_dir: &Path,
-        explicit_name: Option<&str>,
-        signaling_url: &str,
-    ) -> Result<()> {
-        info!("🚀 Initializing Rust project with cargo...");
-
-        // Step 1: Run cargo init - let it handle all validation
-        let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("init").arg("--quiet").current_dir(project_dir);
-
-        // Add explicit name if provided (for new directories)
-        if let Some(name) = explicit_name {
-            cmd.arg("--name").arg(name);
-        }
-
-        let cargo_result = cmd
-            .output()
-            .map_err(|e| ActrCliError::Command(format!("Failed to run cargo init: {e}")))?;
-
-        if !cargo_result.status.success() {
-            let error_msg = String::from_utf8_lossy(&cargo_result.stderr);
-            return Err(ActrCliError::Command(format!(
-                "cargo init failed: {error_msg}"
-            )));
-        }
-
-        // Step 2: Read the project name that cargo determined
-        let project_name = self.extract_project_name_from_cargo_toml(project_dir)?;
-        info!("📦 Rust project initialized: '{}'", project_name);
-
-        // Step 3: Enhance with Actor-RTC specific files
-        self.enhance_cargo_project_for_actr(project_dir, &project_name, signaling_url)?;
-
-        Ok(())
-    }
-
-    /// Extract project name from Cargo.toml generated by cargo init
-    fn extract_project_name_from_cargo_toml(&self, project_dir: &Path) -> Result<String> {
-        let cargo_toml_path = project_dir.join("Cargo.toml");
-        let cargo_content = std::fs::read_to_string(&cargo_toml_path).map_err(ActrCliError::Io)?;
-
-        // Parse TOML to extract project name
-        for line in cargo_content.lines() {
-            if line.trim().starts_with("name = ") {
-                if let Some(name_part) = line.split('=').nth(1) {
-                    let name = name_part.trim().trim_matches('"').trim_matches('\'');
-                    return Ok(name.to_string());
-                }
-            }
-        }
-
-        // Fallback to directory name if parsing fails
-        Ok("actor-service".to_string())
-    }
-
-    /// Enhance cargo-generated project with Actor-RTC specific features
-    fn enhance_cargo_project_for_actr(
-        &self,
-        project_dir: &Path,
-        project_name: &str,
-        signaling_url: &str,
-    ) -> Result<()> {
-        info!("⚡ Enhancing with Actor-RTC features...");
-
-        // Create proto directory
-        let proto_dir = project_dir.join("proto");
-        std::fs::create_dir_all(&proto_dir)?;
-        info!("📁 Created proto/ directory");
-
-        // Generate Actr.toml
-        self.create_actr_config(project_dir, project_name, signaling_url)?;
-        info!("📄 Created Actr.toml configuration");
-
-        // Enhance Cargo.toml with Actor-RTC dependencies
-        self.enhance_cargo_toml_with_actr_deps(project_dir)?;
-        info!("📦 Enhanced Cargo.toml with Actor-RTC dependencies");
-
-        // Create .gitignore if it doesn't exist
-        let gitignore_path = project_dir.join(".gitignore");
-        if !gitignore_path.exists() {
-            self.create_gitignore(project_dir)?;
-            info!("📄 Created .gitignore");
-        }
-
-        Ok(())
-    }
-
-    /// Add Actor-RTC dependencies to existing Cargo.toml
-    fn enhance_cargo_toml_with_actr_deps(&self, project_dir: &Path) -> Result<()> {
-        let cargo_toml_path = project_dir.join("Cargo.toml");
-        let mut cargo_content =
-            std::fs::read_to_string(&cargo_toml_path).map_err(ActrCliError::Io)?;
-
-        // Add Actor-RTC dependencies if not already present
-        if !cargo_content.contains("actr-core") {
-            cargo_content.push_str("\n# Actor-RTC Framework Dependencies\n");
-            cargo_content.push_str("actr-core = { path = \"../actr-core\" }\n");
-            cargo_content.push_str("tokio = { version = \"1.0\", features = [\"full\"] }\n");
-
-            std::fs::write(&cargo_toml_path, cargo_content).map_err(ActrCliError::Io)?;
         }
 
         Ok(())

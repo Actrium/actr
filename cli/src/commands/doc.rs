@@ -1,24 +1,89 @@
 //! Doc command implementation - generate project documentation
+//!
+//! Now uses Handlebars templates and embedded assets for maintainability and portability.
 
+use crate::assets::FixtureAssets;
 use crate::commands::Command;
-use crate::error::Result;
-use actr::config::{Config, ConfigParser};
+use crate::config_compat::load_config_with_legacy_actr_type;
+use crate::error::{ActrCliError, Result};
+use crate::project_language::DetectedProjectLanguage;
+use actr_config::Config;
 use async_trait::async_trait;
 use clap::Args;
-use std::path::Path;
-use tracing::{debug, info};
+use handlebars::Handlebars;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
+use walkdir::WalkDir;
 
 #[derive(Args)]
+#[command(
+    about = "Generate project documentation",
+    long_about = "Generate static HTML documentation for the project, including project overview, API (Proto) reference, and configuration guide."
+)]
 pub struct DocCommand {
     /// Output directory for documentation (defaults to "./docs")
     #[arg(short = 'o', long = "output")]
     pub output_dir: Option<String>,
 }
 
+#[derive(Serialize)]
+struct BaseContext {
+    project_name: String,
+    project_version: String,
+    project_description: String,
+    page_title: String,
+    is_overview: bool,
+    is_api: bool,
+    is_config: bool,
+    // Project type flags
+    is_rust: bool,
+    is_swift: bool,
+    is_kotlin: bool,
+    is_python: bool,
+    is_typescript: bool,
+}
+
+#[derive(Serialize)]
+struct IndexContext {
+    #[serde(flatten)]
+    base: BaseContext,
+    project_structure: String,
+}
+
+#[derive(Serialize)]
+struct ApiContext {
+    #[serde(flatten)]
+    base: BaseContext,
+    proto_files: Vec<ProtoFile>,
+}
+
+#[derive(Serialize)]
+struct ProtoFile {
+    filename: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ConfigContext {
+    #[serde(flatten)]
+    base: BaseContext,
+    config_example: String,
+}
+
 #[async_trait]
 impl Command for DocCommand {
     async fn execute(&self) -> Result<()> {
         let output_dir = self.output_dir.as_deref().unwrap_or("docs");
+
+        if !Path::new("Actr.toml").exists()
+            && let Some(root) = Self::find_project_root()
+        {
+            return Err(ActrCliError::InvalidProject(format!(
+                "Actr.toml found at '{}'. Please run 'actr doc' from the project root.",
+                root.display()
+            )));
+        }
 
         info!("📚 Generating project documentation to: {}", output_dir);
 
@@ -27,15 +92,18 @@ impl Command for DocCommand {
 
         // Load project configuration
         let config = if Path::new("Actr.toml").exists() {
-            Some(ConfigParser::from_file("Actr.toml")?)
+            Some(load_config_with_legacy_actr_type("Actr.toml")?)
         } else {
             None
         };
 
+        // Initialize Handlebars
+        let hb = self.init_handlebars()?;
+
         // Generate documentation files
-        self.generate_index_html(output_dir, &config).await?;
-        self.generate_api_html(output_dir, &config).await?;
-        self.generate_config_html(output_dir, &config).await?;
+        self.generate_index_html(output_dir, &config, &hb).await?;
+        self.generate_api_html(output_dir, &config, &hb).await?;
+        self.generate_config_html(output_dir, &config, &hb).await?;
 
         info!("✅ Documentation generated successfully");
         info!("📄 Generated files:");
@@ -46,381 +114,401 @@ impl Command for DocCommand {
             output_dir
         );
 
+        println!();
+        println!("🚀 To preview the documentation locally:");
+        println!("   python3 -m http.server --directory {} 8080", output_dir);
+        println!("   # or");
+        println!("   npx http-server {} -p 8080", output_dir);
+        println!();
+
         Ok(())
     }
 }
 
 impl DocCommand {
-    /// Generate project overview documentation
-    async fn generate_index_html(&self, output_dir: &str, config: &Option<Config>) -> Result<()> {
-        debug!("Generating index.html...");
+    fn detect_project_type() -> DetectedProjectLanguage {
+        match DetectedProjectLanguage::detect(Path::new(".")) {
+            DetectedProjectLanguage::Unknown | DetectedProjectLanguage::Ambiguous => {
+                DetectedProjectLanguage::Rust
+            }
+            project_type => project_type,
+        }
+    }
 
+    fn init_handlebars(&self) -> Result<Handlebars<'static>> {
+        let mut hb = Handlebars::new();
+
+        // Helper to load template from assets
+        let load_template = |name: &str| -> Result<String> {
+            let path = format!("templates/doc/{}.hbs", name);
+            let file = FixtureAssets::get(&path).ok_or_else(|| {
+                ActrCliError::Internal(anyhow::anyhow!("Template not found: {}", path))
+            })?;
+            let content = std::str::from_utf8(file.data.as_ref())
+                .map_err(|e| ActrCliError::Internal(anyhow::anyhow!("Invalid UTF-8: {}", e)))?
+                .to_string();
+            Ok(content)
+        };
+
+        // Register partials
+        hb.register_partial("head", load_template("_head")?)
+            .map_err(|e| ActrCliError::Internal(anyhow::anyhow!(e)))?;
+        hb.register_partial("nav", load_template("_nav")?)
+            .map_err(|e| ActrCliError::Internal(anyhow::anyhow!(e)))?;
+
+        // Register templates
+        hb.register_template_string("index", load_template("index")?)
+            .map_err(|e| ActrCliError::Internal(anyhow::anyhow!(e)))?;
+        hb.register_template_string("api", load_template("api")?)
+            .map_err(|e| ActrCliError::Internal(anyhow::anyhow!(e)))?;
+        hb.register_template_string("config", load_template("config")?)
+            .map_err(|e| ActrCliError::Internal(anyhow::anyhow!(e)))?;
+
+        Ok(hb)
+    }
+
+    fn create_base_context(
+        &self,
+        config: &Option<Config>,
+        title: &str,
+        active_nav: &str,
+    ) -> BaseContext {
         let project_name = config
             .as_ref()
-            .map(|c| c.package.name.as_str())
-            .unwrap_or("Actor-RTC Project");
-        // Note: package.version doesn't exist in new API, use default or read from Cargo.toml
-        let project_version = "0.1.0";
+            .map(|c| c.package.name.clone())
+            .unwrap_or_else(|| "Actor-RTC Project".to_string());
+        let project_version = Self::read_project_version().unwrap_or_else(|| "unknown".to_string());
+
         let project_description = config
             .as_ref()
-            .and_then(|c| c.package.description.as_ref())
-            .map(|s| s.as_str())
-            .unwrap_or("An Actor-RTC project");
+            .and_then(|c| c.package.description.clone())
+            .unwrap_or_else(|| "An Actor-RTC project".to_string());
 
-        let html_content = format!(
-            r#"<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{project_name} - 项目概览</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; line-height: 1.6; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-        .content {{ max-width: 800px; margin: 0 auto; }}
-        .section {{ background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        .nav {{ display: flex; gap: 10px; margin: 20px 0; }}
-        .nav a {{ padding: 10px 20px; background: #f0f0f0; text-decoration: none; color: #333; border-radius: 4px; }}
-        .nav a:hover {{ background: #667eea; color: white; }}
-        h1, h2 {{ margin-top: 0; }}
-        .badge {{ background: #667eea; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; }}
-    </style>
-</head>
-<body>
-    <div class="content">
-        <div class="header">
-            <h1>{project_name}</h1>
-            <p>{project_description}</p>
-            <span class="badge">v{project_version}</span>
-        </div>
-        
-        <div class="nav">
-            <a href="index.html">项目概览</a>
-            <a href="api.html">API 文档</a>
-            <a href="config.html">配置说明</a>
-        </div>
-        
-        <div class="section">
-            <h2>📋 项目信息</h2>
-            <p><strong>名称:</strong> {project_name}</p>
-            <p><strong>版本:</strong> {project_version}</p>
-            <p><strong>描述:</strong> {project_description}</p>
-        </div>
-        
-        <div class="section">
-            <h2>🚀 快速开始</h2>
-            <p>这是一个基于 Actor-RTC 框架的项目。以下是一些常用的开发命令：</p>
-            <pre><code># 生成代码
-actr gen --input proto --output src/generated
+        let project_type = Self::detect_project_type();
 
-# 运行项目
-actr run
+        BaseContext {
+            project_name,
+            project_version,
+            project_description,
+            page_title: title.to_string(),
+            is_overview: active_nav == "overview",
+            is_api: active_nav == "api",
+            is_config: active_nav == "config",
+            is_rust: project_type == DetectedProjectLanguage::Rust,
+            is_swift: project_type == DetectedProjectLanguage::Swift,
+            is_kotlin: project_type == DetectedProjectLanguage::Kotlin,
+            is_python: project_type == DetectedProjectLanguage::Python,
+            is_typescript: project_type == DetectedProjectLanguage::TypeScript,
+        }
+    }
 
-# 安装依赖
-actr install
+    /// Generate project overview documentation
+    async fn generate_index_html(
+        &self,
+        output_dir: &str,
+        config: &Option<Config>,
+        hb: &Handlebars<'_>,
+    ) -> Result<()> {
+        debug!("Generating index.html...");
 
-# 检查配置
-actr check</code></pre>
-        </div>
-        
-        <div class="section">
-            <h2>📁 项目结构</h2>
-            <pre><code>{project_name}/ 
-├── Actr.toml          # 项目配置文件
-├── src/               # 源代码目录
-│   ├── main.rs        # 程序入口点
-│   └── generated/     # 自动生成的代码
-├── proto/             # Protocol Buffers 定义
-└── docs/              # 项目文档</code></pre>
-        </div>
-        
-        <div class="section">
-            <h2>🔗 相关链接</h2>
-            <ul>
-                <li><a href="api.html">API 接口文档</a> - 查看服务接口定义</li>
-                <li><a href="config.html">配置说明</a> - 了解项目配置选项</li>
-            </ul>
-        </div>
-    </div>
-</body>
-</html>"#
-        );
+        let base_context = self.create_base_context(config, "Project Overview", "overview");
+        let project_name = &base_context.project_name;
+        // Re-detect or use flags? I'll re-use the detection logic via flags for structure
+        let project_type = if base_context.is_swift {
+            DetectedProjectLanguage::Swift
+        } else if base_context.is_kotlin {
+            DetectedProjectLanguage::Kotlin
+        } else if base_context.is_python {
+            DetectedProjectLanguage::Python
+        } else if base_context.is_typescript {
+            DetectedProjectLanguage::TypeScript
+        } else {
+            DetectedProjectLanguage::Rust
+        };
 
+        let project_structure = self.detect_project_structure(project_name, project_type);
+
+        let context = IndexContext {
+            base: base_context,
+            project_structure,
+        };
+
+        let content = hb.render("index", &context)?;
         let index_path = Path::new(output_dir).join("index.html");
-        std::fs::write(index_path, html_content)?;
+        std::fs::write(index_path, content)?;
 
         Ok(())
     }
 
+    fn detect_project_structure(
+        &self,
+        project_name: &str,
+        project_type: DetectedProjectLanguage,
+    ) -> String {
+        let mut tree = format!(
+            "{}/\n├── Actr.toml          # Project configuration\n",
+            project_name
+        );
+
+        match project_type {
+            DetectedProjectLanguage::Swift => {
+                tree.push_str("├── project.yml        # XcodeGen configuration\n");
+                tree.push_str(&format!("├── {}/          # Source code\n", project_name));
+                tree.push_str("│   ├── App.swift      # Entrypoint\n");
+                tree.push_str("│   └── Generated/     # Generated code\n");
+            }
+            DetectedProjectLanguage::Kotlin => {
+                tree.push_str("├── build.gradle.kts   # Gradle configuration\n");
+                tree.push_str("├── app/               # App module\n");
+                tree.push_str("│   └── src/           # Source code\n");
+                tree.push_str("│       └── main/java/ # Java/Kotlin source\n");
+            }
+            DetectedProjectLanguage::Python => {
+                tree.push_str("├── main.py            # Entrypoint\n");
+                tree.push_str("└── generated/         # Generated code\n");
+            }
+            DetectedProjectLanguage::TypeScript => {
+                tree.push_str("├── package.json       # Node.js package manifest\n");
+                tree.push_str("├── tsconfig.json      # TypeScript compiler config\n");
+                tree.push_str("├── src/               # Source code\n");
+                tree.push_str("│   ├── actr_service.ts # Entrypoint\n");
+                tree.push_str("│   └── generated/     # Generated code\n");
+            }
+            DetectedProjectLanguage::Rust
+            | DetectedProjectLanguage::Unknown
+            | DetectedProjectLanguage::Ambiguous => {
+                if Path::new("Cargo.toml").exists() {
+                    tree.push_str("├── Cargo.toml         # Rust manifest\n");
+                }
+                tree.push_str("├── src/               # Source code\n");
+                tree.push_str("│   ├── main.rs        # Entrypoint\n");
+                tree.push_str("│   └── generated/     # Generated code\n");
+            }
+        }
+
+        tree.push_str("├── protos/\n");
+        tree.push_str("│   ├── local/         # Your service definitions\n");
+        tree.push_str("│   └── remote/        # Installed dependencies\n");
+        tree.push_str("└── docs/              # Project documentation");
+        tree
+    }
+
     /// Generate API documentation
-    async fn generate_api_html(&self, output_dir: &str, config: &Option<Config>) -> Result<()> {
+    async fn generate_api_html(
+        &self,
+        output_dir: &str,
+        config: &Option<Config>,
+        hb: &Handlebars<'_>,
+    ) -> Result<()> {
         debug!("Generating api.html...");
 
-        let project_name = config
-            .as_ref()
-            .map(|c| c.package.name.as_str())
-            .unwrap_or("Actor-RTC Project");
-
         // Collect proto files information
-        let mut proto_info = Vec::new();
-        let proto_dir = Path::new("proto");
+        let mut proto_files = Vec::new();
+        let proto_dir = Path::new("protos");
 
         if proto_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(proto_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("proto") {
-                        let filename = path.file_name().unwrap().to_string_lossy();
-                        let content = std::fs::read_to_string(&path).unwrap_or_default();
-                        proto_info.push((filename.to_string(), content));
-                    }
+            for entry in WalkDir::new(proto_dir).into_iter().flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("proto") {
+                    // Use relative path for better context (e.g., "local/local.proto")
+                    let relative_path = path.strip_prefix(proto_dir).unwrap_or(path);
+                    let filename = relative_path.to_string_lossy().to_string();
+
+                    let content = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                        warn!("Failed to read proto file {:?}: {}", path, e);
+                        String::new()
+                    });
+                    proto_files.push(ProtoFile { filename, content });
                 }
             }
         }
+        proto_files.sort_by(|a, b| a.filename.cmp(&b.filename));
 
-        let mut proto_sections = String::new();
-        if proto_info.is_empty() {
-            proto_sections.push_str(
-                r#"<div class="section">
-                <p>暂无 Protocol Buffers 定义文件。</p>
-            </div>"#,
-            );
-        } else {
-            for (filename, content) in proto_info {
-                proto_sections.push_str(&format!(
-                    r#"<div class="section">
-                    <h3>📄 {}</h3>
-                    <pre><code>{}</code></pre>
-                </div>"#,
-                    filename,
-                    Self::html_escape(&content)
-                ));
-            }
-        }
+        let context = ApiContext {
+            base: self.create_base_context(config, "API Documentation", "api"),
+            proto_files,
+        };
 
-        let html_content = format!(
-            r#"<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{project_name} - API 文档</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; line-height: 1.6; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-        .content {{ max-width: 1000px; margin: 0 auto; }}
-        .section {{ background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        .nav {{ display: flex; gap: 10px; margin: 20px 0; }}
-        .nav a {{ padding: 10px 20px; background: #f0f0f0; text-decoration: none; color: #333; border-radius: 4px; }}
-        .nav a:hover {{ background: #667eea; color: white; }}
-        .nav a.active {{ background: #667eea; color: white; }}
-        h1, h2, h3 {{ margin-top: 0; }}
-        pre {{ background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; }}
-        code {{ font-family: 'Monaco', 'Consolas', monospace; }}
-    </style>
-</head>
-<body>
-    <div class="content">
-        <div class="header">
-            <h1>{project_name} - API 接口文档</h1>
-            <p>服务接口定义和协议规范</p>
-        </div>
-        
-        <div class="nav">
-            <a href="index.html">项目概览</a>
-            <a href="api.html" class="active">API 文档</a>
-            <a href="config.html">配置说明</a>
-        </div>
-        
-        <div class="section">
-            <h2>📋 Protocol Buffers 定义</h2>
-            <p>以下是项目中定义的 Protocol Buffers 文件：</p>
-        </div>
-        
-        {proto_sections}
-    </div>
-</body>
-</html>"#
-        );
-
+        let content = hb.render("api", &context)?;
         let api_path = Path::new(output_dir).join("api.html");
-        std::fs::write(api_path, html_content)?;
+        std::fs::write(api_path, content)?;
 
         Ok(())
     }
 
     /// Generate configuration documentation
-    async fn generate_config_html(&self, output_dir: &str, config: &Option<Config>) -> Result<()> {
+    async fn generate_config_html(
+        &self,
+        output_dir: &str,
+        config: &Option<Config>,
+        hb: &Handlebars<'_>,
+    ) -> Result<()> {
         debug!("Generating config.html...");
 
-        let project_name = config
-            .as_ref()
-            .map(|c| c.package.name.as_str())
-            .unwrap_or("Actor-RTC Project");
-
         // Generate configuration example
-        // Note: Config doesn't implement Serialize, read raw Actr.toml instead
         let config_example = if Path::new("Actr.toml").exists() {
             std::fs::read_to_string("Actr.toml").unwrap_or_default()
         } else {
-            r#"[project]
-name = "my-actor-service"
-version = "0.1.0"
-description = "An example Actor-RTC service"
+            r#"edition = 1
+exports = []
 
-[build]
-output_dir = "generated"
+[package]
+name = "my-actor-service"
+description = "An Actor-RTC service"
+authors = []
+license = "Apache-2.0"
+tags = ["latest"]
+
+[package.actr_type]
+manufacturer = "my-company"
+name = "my-actor-service"
 
 [dependencies]
-# Add your proto dependencies here
 
 [system.signaling]
-url = "ws://localhost:8081"
+url = "ws://127.0.0.1:8080"
+
+[system.deployment]
+realm_id = 1001
+
+[system.discovery]
+visible = true
 
 [scripts]
-run = "cargo run"
-build = "cargo build"
+dev = "cargo run"
 test = "cargo test""#
                 .to_string()
         };
 
-        let html_content = format!(
-            r#"<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{} - 配置说明</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; line-height: 1.6; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-        .content {{ max-width: 1000px; margin: 0 auto; }}
-        .section {{ background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        .nav {{ display: flex; gap: 10px; margin: 20px 0; }}
-        .nav a {{ padding: 10px 20px; background: #f0f0f0; text-decoration: none; color: #333; border-radius: 4px; }}
-        .nav a:hover {{ background: #667eea; color: white; }}
-        .nav a.active {{ background: #667eea; color: white; }}
-        h1, h2, h3 {{ margin-top: 0; }}
-        pre {{ background: #f5f5f5; padding: 15px; border-radius: 4px; overflow-x: auto; }}
-        code {{ font-family: 'Monaco', 'Consolas', monospace; background: #f0f0f0; padding: 2px 4px; border-radius: 2px; }}
-        .config-table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
-        .config-table th, .config-table td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-        .config-table th {{ background: #f5f5f5; font-weight: bold; }}
-    </style>
-</head>
-<body>
-    <div class="content">
-        <div class="header">
-            <h1>{} - 配置说明</h1>
-            <p>项目配置选项和使用说明</p>
-        </div>
-        
-        <div class="nav">
-            <a href="index.html">项目概览</a>
-            <a href="api.html">API 文档</a>
-            <a href="config.html" class="active">配置说明</a>
-        </div>
-        
-        <div class="section">
-            <h2>📋 配置文件结构</h2>
-            <p><code>Actr.toml</code> 是项目的核心配置文件，包含以下主要部分：</p>
-            
-            <table class="config-table">
-                <tr>
-                    <th>配置段</th>
-                    <th>作用</th>
-                    <th>必需</th>
-                </tr>
-                <tr>
-                    <td><code>[project]</code></td>
-                    <td>项目基本信息（名称、版本、描述等）</td>
-                    <td>是</td>
-                </tr>
-                <tr>
-                    <td><code>[build]</code></td>
-                    <td>构建配置（输出目录等）</td>
-                    <td>是</td>
-                </tr>
-                <tr>
-                    <td><code>[dependencies]</code></td>
-                    <td>Protocol Buffers 依赖定义</td>
-                    <td>否</td>
-                </tr>
-                <tr>
-                    <td><code>[system.signaling]</code></td>
-                    <td>信令服务器配置</td>
-                    <td>否</td>
-                </tr>
-                <tr>
-                    <td><code>[system.routing]</code></td>
-                    <td>高级路由规则配置</td>
-                    <td>否</td>
-                </tr>
-                <tr>
-                    <td><code>[scripts]</code></td>
-                    <td>自定义脚本命令</td>
-                    <td>否</td>
-                </tr>
-            </table>
-        </div>
-        
-        <div class="section">
-            <h2>⚙️ 配置示例</h2>
-            <pre><code>{}</code></pre>
-        </div>
-        
-        <div class="section">
-            <h2>🔧 配置管理命令</h2>
-            <p>使用 <code>actr config</code> 命令可以方便地管理项目配置：</p>
-            <pre><code># 设置配置值
-actr config set project.description "我的Actor服务"
-actr config set system.signaling.url "wss://signal.example.com"
+        let context = ConfigContext {
+            base: self.create_base_context(config, "Configuration", "config"),
+            config_example,
+        };
 
-# 查看配置值
-actr config get project.name
-actr config list
-
-# 查看完整配置
-actr config show
-
-# 删除配置项
-actr config unset system.signaling.url</code></pre>
-        </div>
-        
-        <div class="section">
-            <h2>📝 依赖配置</h2>
-            <p>在 <code>[dependencies]</code> 段中配置 Protocol Buffers 依赖：</p>
-            <pre><code># 本地文件路径
-user_service = "proto/user.proto"
-
-# HTTP URL
-api_service = "https://example.com/api/service.proto"
-
-# Actor 注册表 
-[dependencies.payment]
-uri = "actr://payment-service/payment.proto"
-fingerprint = "sha256:a1b2c3d4..."</code></pre>
-        </div>
-    </div>
-</body>
-</html>"#,
-            project_name,
-            project_name,
-            Self::html_escape(&config_example)
-        );
-
+        let content = hb.render("config", &context)?;
         let config_path = Path::new(output_dir).join("config.html");
-        std::fs::write(config_path, html_content)?;
+        std::fs::write(config_path, content)?;
 
         Ok(())
     }
 
-    /// Simple HTML escape function
-    fn html_escape(text: &str) -> String {
-        text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&#x27;")
+    fn read_project_version() -> Option<String> {
+        // 1. Try Cargo.toml
+        if let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
+            && let Ok(value) = cargo_toml.parse::<toml::Value>()
+            && let Some(version) = value
+                .get("package")
+                .and_then(|package| package.get("version"))
+                .and_then(|version| version.as_str())
+        {
+            return Some(version.to_string());
+        }
+
+        // 2. Try package.json
+        if let Ok(package_json) = std::fs::read_to_string("package.json")
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&package_json)
+            && let Some(version) = value.get("version").and_then(|version| version.as_str())
+        {
+            return Some(version.to_string());
+        }
+
+        // 3. Try project.yml (XcodeGen)
+        if let Ok(project_yml) = std::fs::read_to_string("project.yml")
+            && let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&project_yml)
+            && let Some(targets) = value.get("targets").and_then(|t| t.as_mapping())
+        {
+            for (_target_name, target_config) in targets {
+                // Check settings.MARKETING_VERSION
+                if let Some(version) = target_config
+                    .get("settings")
+                    .and_then(|s| s.get("MARKETING_VERSION"))
+                {
+                    if let Some(s) = version.as_str() {
+                        return Some(s.to_string());
+                    }
+                    // Handle numbers (e.g. 1.0)
+                    if let Some(f) = version.as_f64() {
+                        return Some(f.to_string());
+                    }
+                    if let Some(i) = version.as_i64() {
+                        return Some(i.to_string());
+                    }
+                }
+            }
+        }
+
+        // 4. Try Gradle (Kotlin/Groovy)
+        if let Some(version) = Self::read_gradle_version("build.gradle.kts")
+            .or_else(|| Self::read_gradle_version("build.gradle"))
+        {
+            return Some(version);
+        }
+
+        // 5. Try pyproject.toml (PEP 621 / Poetry)
+        if let Ok(pyproject) = std::fs::read_to_string("pyproject.toml")
+            && let Ok(value) = pyproject.parse::<toml::Value>()
+        {
+            if let Some(version) = value
+                .get("project")
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+            {
+                return Some(version.to_string());
+            }
+            if let Some(version) = value
+                .get("tool")
+                .and_then(|t| t.get("poetry"))
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+            {
+                return Some(version.to_string());
+            }
+        }
+
+        None
+    }
+
+    fn read_gradle_version(path: &str) -> Option<String> {
+        let content = std::fs::read_to_string(path).ok()?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+
+            let rest = match trimmed.strip_prefix("version") {
+                Some(rest) => rest.trim_start(),
+                None => continue,
+            };
+            let rest = rest.strip_prefix('=').unwrap_or(rest).trim_start();
+
+            if let Some(rest) = rest.strip_prefix('"')
+                && let Some(end) = rest.find('"')
+            {
+                return Some(rest[..end].to_string());
+            }
+            if let Some(rest) = rest.strip_prefix('\'')
+                && let Some(end) = rest.find('\'')
+            {
+                return Some(rest[..end].to_string());
+            }
+        }
+
+        None
+    }
+
+    fn find_project_root() -> Option<PathBuf> {
+        let cwd = std::env::current_dir().ok()?;
+        for ancestor in cwd.ancestors() {
+            if ancestor.join("Actr.toml").exists() {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+        None
     }
 }

@@ -1,0 +1,182 @@
+import Actr
+import Foundation
+import OSLog
+import SwiftProtobuf
+import SwiftUI
+
+@MainActor
+final class ActrService: ObservableObject {
+    @Published var connectionStatus: ConnectionStatus = .disconnected
+    @Published var errorMessage: String?
+
+    var actrSystem: ActrSystem?
+    var actrNode: ActrNode?
+    var actr: ActrRef?
+{{#if HAS_SERVICES}}
+    private var workload: {{WORKLOAD_NAME}}<{{SERVICE_NAME}}HandlerImpl>?
+{{else}}
+    private var workload: {{WORKLOAD_NAME}}?
+{{/if}}
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "io.actr.App",
+        category: "ActrService"
+    )
+
+    /// Initialize the service and its underlying actors
+    func initialize() async throws {
+        connectionStatus = .initializing
+        errorMessage = nil
+        logger.info("Initializing ActrService...")
+
+        do {
+            let bundle = Bundle.main
+            guard let configPath = bundle.path(forResource: "Actr", ofType: "toml") else {
+                throw ActrError.StateError(msg: "Actr.toml not found in bundle")
+            }
+
+            let result = try await Task.detached(priority: .userInitiated) { () throws
+{{#if HAS_SERVICES}}
+                -> (ActrSystem, ActrNode, ActrRef, {{WORKLOAD_NAME}}<{{SERVICE_NAME}}HandlerImpl>) in
+                let system = try await ActrSystem.from(tomlConfig: configPath)
+                let handler = {{SERVICE_NAME}}HandlerImpl()
+                let workload = {{WORKLOAD_NAME}}(handler: handler)
+{{else}}
+                -> (ActrSystem, ActrNode, ActrRef, {{WORKLOAD_NAME}}) in
+                let system = try await ActrSystem.from(tomlConfig: configPath)
+                let workload = {{WORKLOAD_NAME}}()
+{{/if}}
+                let node = try system.spawn(workload: workload)
+                let actr = try await node.start()
+                return (system, node, actr, workload)
+            }.value
+
+            let (system, node, actr, workload) = result
+            actrSystem = system
+            actrNode = node
+            self.actr = actr
+            self.workload = workload
+
+            connectionStatus = .connected
+            logger.info("ActrService initialized successfully")
+        } catch let actrError as ActrError {
+            errorMessage = "Actr Error: \(actrError.localizedDescription)"
+            connectionStatus = .error
+            logger.error("Failed to initialize: \(actrError.localizedDescription)")
+            throw actrError
+        } catch {
+            errorMessage = "Initialization Error: \(error.localizedDescription)"
+            connectionStatus = .error
+            logger.error("Failed to initialize: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    /// Shutdown the service and cleanup resources
+    func shutdown() async {
+        logger.info("Shutting down ActrService...")
+
+        if let actr {
+            await actr.stop()
+        }
+
+        actr = nil
+        actrNode = nil
+        actrSystem = nil
+        workload = nil
+
+        connectionStatus = .disconnected
+        errorMessage = nil
+    }
+}
+
+extension ActrService {
+    enum ConnectionStatus {
+        case disconnected
+        case initializing
+        case connected
+        case error
+
+        var description: String {
+            switch self {
+            case .disconnected: return "Disconnected"
+            case .initializing: return "Initializing..."
+            case .connected: return "Connected"
+            case .error: return "Error"
+            }
+        }
+    }
+}
+
+{{#if HAS_SERVICES}}
+{{#each SERVICES}}
+/// Implementation of {{name}}Handler
+/// TODO: Implement the business logic for each RPC method
+public final class {{name}}HandlerImpl: {{name}}Handler {
+    public init() {}
+
+{{#each methods}}
+    /// RPC method: {{name}}
+    public func {{swift_name}}(
+        req: {{input_type}},
+        ctx: Context
+    ) async throws -> {{output_type}} {
+        // TODO: Implement {{name}}
+        logger.info("Received {{name}} request")
+        throw ActrError.WorkloadError(msg: "{{name}} not implemented")
+    }
+
+{{/each}}
+}
+
+extension {{../WORKLOAD_NAME}}: Workload where T == {{name}}HandlerImpl {
+    public func onStart(ctx _: Context) async throws {}
+    public func onStop(ctx _: Context) async throws {}
+
+    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+        return try await __dispatch(ctx: ctx, envelope: envelope)
+    }
+}
+{{/each}}
+{{else}}
+extension {{WORKLOAD_NAME}}: Workload {
+    public func onStart(ctx _: Context) async throws {}
+    public func onStop(ctx _: Context) async throws {}
+
+    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+        return try await __dispatch(ctx: ctx, envelope: envelope)
+    }
+}
+{{/if}}
+
+// Global logger for the handlers to use
+private let logger = Logger(subsystem: "io.actr.App", category: "Handler")
+
+// Echo RPC helper method is included directly in ActrService
+extension ActrService {
+    /// Send an echo RPC request
+    func sendEcho(_ message: String) async throws -> String {
+        guard connectionStatus == .connected else {
+            let error = ActrError.StateError(msg: "Not connected to server")
+            return "Error: \(error.localizedDescription)"
+        }
+
+        guard let actr = actr else {
+            let error = ActrError.StateError(msg: "Actor reference not available")
+            return "Error: \(error.localizedDescription)"
+        }
+
+        do {
+            var request = Echo_EchoRequest()
+            request.message = message
+
+            let response = try await actr.call(request)
+
+            return response.reply
+        } catch let actrError as ActrError {
+            throw actrError
+        } catch {
+            throw error
+        }
+    }
+}
+

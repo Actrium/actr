@@ -1,9 +1,9 @@
 //! Run command implementation
 
 use crate::commands::Command;
+use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::error::{ActrCliError, Result};
 use crate::utils::{execute_command_streaming, is_actr_project, warn_if_not_actr_project};
-use actr::config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
 use tracing::info;
@@ -26,26 +26,39 @@ impl Command for RunCommand {
 
         // Load configuration if available
         let config = if is_actr_project() {
-            Some(ConfigParser::from_file("Actr.toml")?)
+            Some(load_config_with_legacy_actr_type("Actr.toml")?)
         } else {
             None
         };
 
         // Get script command from configuration
         let script_name = self.script_name.as_deref().unwrap_or("run");
-        let script_command = if let Some(ref config) = config {
-            config.get_script(script_name).map(|s| s.to_string())
-        } else {
-            None
+
+        let Some(ref config) = config else {
+            return Err(ActrCliError::command_error(
+                "No Actr.toml found. Run 'actr init' to create a project.".to_string(),
+            ));
         };
 
-        // Use script command or fall back to default
-        let command = script_command.unwrap_or_else(|| "cargo run".to_string());
+        let available_scripts = config.list_scripts();
+
+        let Some(command) = config.get_script(script_name) else {
+            if available_scripts.is_empty() {
+                return Err(ActrCliError::command_error(
+                    "No scripts defined in Actr.toml. Add a [scripts] section.".to_string(),
+                ));
+            }
+            return Err(ActrCliError::command_error(format!(
+                "Script '{}' not found. Available scripts: {}",
+                script_name,
+                available_scripts.join(", ")
+            )));
+        };
 
         info!("📜 Executing script '{}': {}", script_name, command);
 
         // Execute the script command
-        self.run_script_command(&command).await?;
+        self.run_script_command(command).await?;
 
         Ok(())
     }

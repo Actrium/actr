@@ -47,19 +47,22 @@ pub enum ActrCliError {
     #[error("Template rendering failed: {0}")]
     Template(#[from] handlebars::RenderError),
 
+    #[error("Unsupported feature: {0}")]
+    Unsupported(String),
+
     // === 命令执行错误 ===
     #[error("Command execution failed: {0}")]
     Command(String),
 
     // === 底层库错误的包装 ===
     #[error("Actor framework error: {0}")]
-    Actor(#[from] actr::protocol::ActrError),
+    Actor(#[from] actr_protocol::ActrError),
 
     #[error("URI parsing error: {0}")]
-    UriParsing(#[from] actr::protocol::uri::ActrUriError),
+    UriParsing(#[from] actr_protocol::uri::ActrUriError),
 
     #[error("Configuration parsing error: {0}")]
-    ConfigParsing(#[from] actr::config::ConfigError),
+    ConfigParsing(#[from] actr_config::ConfigError),
 
     // === 通用错误包装器 ===
     #[error("Internal error: {0}")]
@@ -110,6 +113,7 @@ impl ActrCliError {
             Self::Dependency(_) => Some("💡 Try 'actr install --force' to refresh dependencies"),
             Self::Build(_) => Some("💡 Check proto files and dependencies"),
             Self::Network(_) => Some("💡 Check your network connection and proxy settings"),
+            Self::Unsupported(_) => Some("💡 This feature is not implemented yet"),
             _ => None,
         }
     }

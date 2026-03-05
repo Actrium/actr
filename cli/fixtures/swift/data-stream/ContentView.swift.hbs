@@ -1,0 +1,132 @@
+import SwiftUI
+
+struct ContentView: View {
+    @StateObject private var actrService = ActrService()
+    @State private var responseText = ""
+    @State private var isInitialized = false
+    @State private var messageCountText = ""
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                Text("{{PROJECT_NAME_PASCAL}}")
+                    .font(.largeTitle.weight(.bold))
+
+                Text("Status: \(actrService.connectionStatus.description)")
+                    .font(.subheadline)
+                    .foregroundColor(statusColor)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Message count", text: $messageCountText)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.numberPad)
+
+                    Button(action: sendRegisterStream) {
+                        HStack {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                            Text("Register Stream")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(actrService.connectionStatus == .connected ? Color.blue : Color.gray)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                    }
+                    .disabled(actrService.connectionStatus != .connected)
+                }
+
+                if !responseText.isEmpty {
+                    Text(responseText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(Color.gray.opacity(0.15))
+                        .cornerRadius(8)
+                }
+
+                if !actrService.streamMessages.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(actrService.streamMessages.indices, id: \.self) { index in
+                                Text(actrService.streamMessages[index])
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding()
+                    }
+                    .frame(maxHeight: 220)
+                    .background(Color.gray.opacity(0.08))
+                    .cornerRadius(8)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .onAppear {
+            guard !isInitialized else { return }
+            initializeActrService()
+        }
+        .alert("Error", isPresented: Binding(
+            get: { actrService.errorMessage != nil },
+            set: { if !$0 { actrService.errorMessage = nil } }
+        )) {
+            Button("OK") {
+                actrService.errorMessage = nil
+            }
+        } message: {
+            Text(actrService.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private var statusColor: Color {
+        switch actrService.connectionStatus {
+        case .disconnected:
+            return Color.gray
+        case .initializing:
+            return Color.orange
+        case .connected:
+            return Color.green
+        case .error:
+            return Color.red
+        }
+    }
+
+    private func initializeActrService() {
+        Task {
+            do {
+                try await actrService.initialize()
+                isInitialized = true
+            } catch {
+                responseText = "Initialization failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func sendRegisterStream() {
+        guard let messageCount = Int32(messageCountText), messageCount > 0 else {
+            responseText = "Please enter a valid positive number for message count."
+            return
+        }
+
+        responseText = "Preparing client stream..."
+
+        Task {
+            do {
+                let response = try await actrService.prepareClientStream(expectedCount: messageCount)
+                if response.ready {
+                    responseText = "Client stream prepared: \(response.message)"
+                    messageCountText = ""
+                } else {
+                    responseText = "Prepare client stream failed: \(response.message)"
+                }
+            } catch {
+                responseText = "Prepare client stream failed: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+#Preview {
+    ContentView()
+}
