@@ -3,7 +3,7 @@
 //! Uses WebRtcCoordinator to send/receive messages, implementing cross-process RPC communication
 
 use super::coordinator::WebRtcCoordinator;
-use crate::error::{RuntimeError, RuntimeResult};
+use actr_protocol::{ActrError, ActorResult};
 use crate::inbound::DataStreamRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
@@ -123,11 +123,11 @@ impl WebRtcGate {
             // Convert envelope to result
             let result = match (envelope.payload, envelope.error) {
                 (Some(payload), None) => Ok(payload),
-                (None, Some(error)) => Err(actr_protocol::ProtocolError::TransportError(format!(
+                (None, Some(error)) => Err(ActrError::Unavailable(format!(
                     "RPC error {}: {}",
                     error.code, error.message
                 ))),
-                _ => Err(actr_protocol::ProtocolError::DecodeError(
+                _ => Err(ActrError::DecodeFailure(
                     "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
                 )),
             };
@@ -176,7 +176,7 @@ impl WebRtcGate {
     /// - Route based on PayloadType:
     ///   - RpcReliable/RpcSignal: Deserialize RpcEnvelope, check pending_requests, enqueue to Mailbox
     ///   - StreamReliable/StreamLatencyFirst: Deserialize DataStream, dispatch to DataStreamRegistry
-    pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> RuntimeResult<()> {
+    pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> ActorResult<()> {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
@@ -296,12 +296,12 @@ impl WebRtcGate {
         &self,
         target: &ActrId,
         response_envelope: RpcEnvelope,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope
             .encode(&mut buf)
-            .map_err(|e| RuntimeError::Other(anyhow::anyhow!("Failed to encode response: {e}")))?;
+            .map_err(|e| ActrError::Internal(format!("Failed to encode response: {e}")))?;
 
         // Send
         self.coordinator.send_message(target, &buf).await?;

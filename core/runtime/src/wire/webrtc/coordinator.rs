@@ -26,7 +26,7 @@ use super::negotiator::WebRtcNegotiator;
 use super::trace;
 use super::{SignalingClient, WebRtcConfig};
 use crate::INITIAL_CONNECTION_TIMEOUT;
-use crate::error::{RuntimeError, RuntimeResult};
+use actr_protocol::{ActrError, ActorResult};
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
@@ -631,7 +631,7 @@ impl WebRtcCoordinator {
     ///
     /// This method starts a background task that continuously listens for messages from SignalingClient
     /// and handles WebRTC-related signaling (Offer/Answer/ICE)
-    pub async fn start(self: Arc<Self>) -> RuntimeResult<()> {
+    pub async fn start(self: Arc<Self>) -> ActorResult<()> {
         tracing::info!("🚀 WebRtcCoordinator starting signaling loop");
 
         // Start internal event listener for connection close handling
@@ -775,7 +775,7 @@ impl WebRtcCoordinator {
     /// This is typically called during shutdown to ensure that all
     /// RTCPeerConnection instances are closed and associated state
     /// (pending ICE candidates, WebRtcConnection state) is dropped.
-    pub async fn close_all_peers(&self) -> RuntimeResult<()> {
+    pub async fn close_all_peers(&self) -> ActorResult<()> {
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
         // Take snapshot of peers (with peer_id) and clear map
@@ -829,7 +829,7 @@ impl WebRtcCoordinator {
         &self,
         target: &ActrId,
         payload: actr_relay::Payload,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         let credential = self.credential_state.credential().await;
         let relay = ActrRelay {
             source: self.local_id.clone(),
@@ -856,10 +856,7 @@ impl WebRtcCoordinator {
         self.signaling_client
             .send_envelope(envelope)
             .await
-            .map_err(|e| RuntimeError::Unavailable {
-                message: format!("Signaling server unavailable: {e}"),
-                target: None,
-            })?;
+            .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")))?;
 
         Ok(())
     }
@@ -874,7 +871,7 @@ impl WebRtcCoordinator {
     pub async fn initiate_connection(
         self: &Arc<Self>,
         target: &ActrId,
-    ) -> RuntimeResult<oneshot::Receiver<()>> {
+    ) -> ActorResult<oneshot::Receiver<()>> {
         tracing::info!(
             "🚀 Initiating P2P connection to {}",
             target.to_string_repr()
@@ -892,10 +889,7 @@ impl WebRtcCoordinator {
             }
             Err(_) => {
                 self.peer_negotiation.lock().await.remove(target);
-                return Err(RuntimeError::DeadlineExceeded {
-                    message: "Role negotiation timeout".to_string(),
-                    timeout_ms: 5000,
-                });
+                return Err(ActrError::TimedOut);
             }
         };
         tracing::debug!(
@@ -927,7 +921,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
         skip_negotiation: bool,
-    ) -> RuntimeResult<oneshot::Receiver<()>> {
+    ) -> ActorResult<oneshot::Receiver<()>> {
         if !skip_negotiation {
             let role_result =
                 tokio::time::timeout(Duration::from_secs(15), self.negotiate_role(target)).await;
@@ -940,10 +934,7 @@ impl WebRtcCoordinator {
                 }
                 Err(_) => {
                     self.peer_negotiation.lock().await.remove(target);
-                    return Err(RuntimeError::DeadlineExceeded {
-                        message: "Role negotiation timeout".to_string(),
-                        timeout_ms: 5000,
-                    });
+                    return Err(ActrError::TimedOut);
                 }
             };
 
@@ -987,7 +978,7 @@ impl WebRtcCoordinator {
                         );
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
-                        return Err(RuntimeError::Other(anyhow::anyhow!(
+                        return Err(ActrError::Internal(format!(
                             "Connection ready channel closed"
                         )));
                     }
@@ -998,10 +989,7 @@ impl WebRtcCoordinator {
                         );
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
-                        return Err(RuntimeError::DeadlineExceeded {
-                            message: "Initial connection timeout".to_string(),
-                            timeout_ms: INITIAL_CONNECTION_TIMEOUT.as_millis() as u64,
-                        });
+                        return Err(ActrError::TimedOut);
                     }
                 }
             }
@@ -1165,7 +1153,7 @@ impl WebRtcCoordinator {
     async fn do_single_offer_connection(
         self: &Arc<Self>,
         target: &ActrId,
-    ) -> RuntimeResult<(oneshot::Receiver<()>, WebRtcConnection)> {
+    ) -> ActorResult<(oneshot::Receiver<()>, WebRtcConnection)> {
         // Retrieve remote_fixed from peer negotiation state
         let remote_fixed = {
             let neg = self.peer_negotiation.lock().await;
@@ -1369,7 +1357,7 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(level = "info", skip_all, fields(remote_id = %from.to_string_repr()))
     )]
-    async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> RuntimeResult<()> {
+    async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> ActorResult<()> {
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
         let existing_peer = {
             let peers = self.peers.read().await;
@@ -1700,7 +1688,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         from: &ActrId,
         answer_sdp: String,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Get corresponding PeerConnection and ready_tx
         let (peer_connection, ready_tx, webrtc_conn, is_renegotiation) = {
             let mut peers = self.peers.write().await;
@@ -1713,7 +1701,7 @@ impl WebRtcCoordinator {
                 tracing::info!("   📌 [LOOKUP] Stored: id={}", k.to_string_repr());
             }
             let state = peers.get_mut(from).ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!("Peer not found: {}", from.to_string_repr()))
+                ActrError::Internal(format!("Peer not found: {}", from.to_string_repr()))
             })?;
 
             let pc = state.peer_connection.clone();
@@ -1793,7 +1781,7 @@ impl WebRtcCoordinator {
         &self,
         peer_id: &ActrId,
         peer_connection: &RTCPeerConnection,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Extract buffered candidates for this peer
         let candidates = {
             let mut pending = self.pending_candidates.write().await;
@@ -1837,7 +1825,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         from: &ActrId,
         candidate: String,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         tracing::trace!("📥 Received ICE Candidate from {}", from.to_string_repr());
 
         // DEBUG: Temporarily disable candidate filtering for local testing
@@ -1993,7 +1981,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
         data: &[u8],
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         const MAX_RETRIES: u32 = 3;
         const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -2015,13 +2003,7 @@ impl WebRtcCoordinator {
                     target.to_string_repr()
                 );
                 self.cleanup_cancelled_connection(target).await;
-                Err(RuntimeError::DeadlineExceeded {
-                    message: format!(
-                        "send_message overall timeout ({}s)",
-                        OVERALL_TIMEOUT.as_secs()
-                    ),
-                    timeout_ms: OVERALL_TIMEOUT.as_millis() as u64,
-                })
+                Err(ActrError::TimedOut)
             }
         }
     }
@@ -2032,7 +2014,7 @@ impl WebRtcCoordinator {
         target: &ActrId,
         data: &[u8],
         max_retries: u32,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         let mut backoff = ExponentialBackoff::new(
             Duration::from_millis(1), // initial delay
             Duration::from_secs(10),  // max delay
@@ -2061,7 +2043,7 @@ impl WebRtcCoordinator {
                     // Only retry on transient errors
                     let should_retry = matches!(
                         &e,
-                        RuntimeError::DeadlineExceeded { .. } | RuntimeError::Other(_)
+                        ActrError::TimedOut | ActrError::Internal(_)
                     );
 
                     if !should_retry {
@@ -2084,7 +2066,7 @@ impl WebRtcCoordinator {
 
         // All retries exhausted
         Err(last_error.unwrap_or_else(|| {
-            RuntimeError::Other(anyhow::anyhow!("send_message failed after all retries"))
+            ActrError::Internal("send_message failed after all retries".to_string())
         }))
     }
 
@@ -2093,7 +2075,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
         data: &[u8],
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Check if connection exists or is being established
         let has_connection = loop {
             let state = {
@@ -2165,15 +2147,12 @@ impl WebRtcCoordinator {
                     tracing::info!("✅ WebRTC connection ready: {}", target.to_string_repr());
                 }
                 Ok(Err(_)) => {
-                    return Err(RuntimeError::Other(anyhow::anyhow!(
+                    return Err(ActrError::Internal(format!(
                         "Connection establishment failed (channel closed)"
                     )));
                 }
                 Err(_) => {
-                    return Err(RuntimeError::DeadlineExceeded {
-                        message: "Connection establishment timeout".to_string(),
-                        timeout_ms: 10000,
-                    });
+                    return Err(ActrError::TimedOut);
                 }
             }
         }
@@ -2185,7 +2164,7 @@ impl WebRtcCoordinator {
                 .get(target)
                 .map(|state| state.webrtc_conn.clone())
                 .ok_or_else(|| {
-                    RuntimeError::Other(anyhow::anyhow!("Peer connection not found: {target:?}"))
+                    ActrError::Internal(format!("Peer connection not found: {target:?}"))
                 })?
         };
 
@@ -2193,12 +2172,12 @@ impl WebRtcCoordinator {
         let lane = webrtc_conn
             .get_lane(PayloadType::RpcReliable)
             .await
-            .map_err(|e| RuntimeError::Other(anyhow::anyhow!("Failed to get Lane: {e}")))?;
+            .map_err(|e| ActrError::Internal(format!("Failed to get Lane: {e}")))?;
 
         // Send message (convert to Bytes)
         lane.send(Bytes::copy_from_slice(data))
             .await
-            .map_err(|e| RuntimeError::Other(anyhow::anyhow!("Failed to send message: {e}")))?;
+            .map_err(|e| ActrError::Internal(format!("Failed to send message: {e}")))?;
 
         Ok(())
     }
@@ -2207,7 +2186,7 @@ impl WebRtcCoordinator {
     /// Receive message with PayloadType information
     ///
     /// Returns: Option<(sender_id_bytes, message_data, payload_type)>
-    pub async fn receive_message(&self) -> RuntimeResult<Option<(Vec<u8>, Bytes, PayloadType)>> {
+    pub async fn receive_message(&self) -> ActorResult<Option<(Vec<u8>, Bytes, PayloadType)>> {
         let mut rx = self.message_rx.lock().await;
         Ok(rx.recv().await)
     }
@@ -2234,13 +2213,13 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         dest: &crate::transport::Dest,
         cancel_token: Option<CancellationToken>,
-    ) -> RuntimeResult<WebRtcConnection> {
+    ) -> ActorResult<WebRtcConnection> {
         // Overall timeout for the entire create_connection operation
         const OVERALL_TIMEOUT: Duration = Duration::from_secs(30);
 
         // Extract target_id first (before timeout wrapper) for cleanup
         let target_id = dest.as_actor_id().ok_or_else(|| {
-            RuntimeError::ConfigurationError(
+            ActrError::InvalidArgument(
                 "WebRTC only supports Actor targets, not Shell".to_string(),
             )
         })?;
@@ -2262,13 +2241,7 @@ impl WebRtcCoordinator {
                     target_id.to_string_repr()
                 );
                 self.cleanup_cancelled_connection(target_id).await;
-                Err(RuntimeError::DeadlineExceeded {
-                    message: format!(
-                        "WebRTC connection creation overall timeout ({}s)",
-                        OVERALL_TIMEOUT.as_secs()
-                    ),
-                    timeout_ms: OVERALL_TIMEOUT.as_millis() as u64,
-                })
+                Err(ActrError::TimedOut)
             }
         }
     }
@@ -2278,11 +2251,11 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         dest: &crate::transport::Dest,
         cancel_token: Option<CancellationToken>,
-    ) -> RuntimeResult<WebRtcConnection> {
+    ) -> ActorResult<WebRtcConnection> {
         // Check cancellation at entry
         if let Some(ref token) = cancel_token {
             if token.is_cancelled() {
-                return Err(RuntimeError::Other(anyhow::anyhow!(
+                return Err(ActrError::Internal(format!(
                     "Connection creation cancelled before starting"
                 )));
             }
@@ -2290,7 +2263,7 @@ impl WebRtcCoordinator {
 
         // 1. Check if dest is Actor
         let target_id = dest.as_actor_id().ok_or_else(|| {
-            RuntimeError::ConfigurationError(
+            ActrError::InvalidArgument(
                 "WebRTC only supports Actor targets, not Shell".to_string(),
             )
         })?;
@@ -2326,7 +2299,7 @@ impl WebRtcCoordinator {
             // Check cancellation before each attempt
             if let Some(ref token) = cancel_token {
                 if token.is_cancelled() {
-                    return Err(RuntimeError::Other(anyhow::anyhow!(
+                    return Err(ActrError::Internal(format!(
                         "Connection creation cancelled"
                     )));
                 }
@@ -2349,7 +2322,7 @@ impl WebRtcCoordinator {
                         biased;
                         _ = token.cancelled() => {
                             self.cleanup_cancelled_connection(target_id).await;
-                            return Err(RuntimeError::Other(anyhow::anyhow!(
+                            return Err(ActrError::Internal(format!(
                                 "Connection creation cancelled during retry wait"
                             )));
                         }
@@ -2382,7 +2355,7 @@ impl WebRtcCoordinator {
                     // Only retry on timeout or transient errors
                     let should_retry = matches!(
                         &e,
-                        RuntimeError::DeadlineExceeded { .. } | RuntimeError::Other(_)
+                        ActrError::TimedOut | ActrError::Internal(_)
                     );
 
                     if !should_retry {
@@ -2405,7 +2378,7 @@ impl WebRtcCoordinator {
 
         // All retries exhausted
         Err(last_error.unwrap_or_else(|| {
-            RuntimeError::Other(anyhow::anyhow!("Connection failed after all retries"))
+            ActrError::Internal("Connection failed after all retries".to_string())
         }))
     }
 
@@ -2414,7 +2387,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target_id: &ActrId,
         cancel_token: Option<&CancellationToken>,
-    ) -> RuntimeResult<WebRtcConnection> {
+    ) -> ActorResult<WebRtcConnection> {
         #[cfg(feature = "opentelemetry")]
         self.root_context_map
             .write()
@@ -2427,7 +2400,7 @@ impl WebRtcCoordinator {
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
                 self.cleanup_cancelled_connection(target_id).await;
-                return Err(RuntimeError::Other(anyhow::anyhow!(
+                return Err(ActrError::Internal(format!(
                     "Connection creation cancelled after initiation"
                 )));
             }
@@ -2441,18 +2414,15 @@ impl WebRtcCoordinator {
                 biased;
                 _ = token.cancelled() => {
                     self.cleanup_cancelled_connection(target_id).await;
-                    return Err(RuntimeError::Other(anyhow::anyhow!(
+                    return Err(ActrError::Internal(format!(
                         "Connection creation cancelled while waiting"
                     )));
                 }
                 _ = tokio::time::sleep(timeout_duration) => {
-                    Err(RuntimeError::DeadlineExceeded {
-                        message: "WebRTC connection establishment timeout".to_string(),
-                        timeout_ms: 10000,
-                    })
+                    Err(ActrError::TimedOut)
                 }
                 result = ready_rx => {
-                    result.map_err(|_| RuntimeError::Other(anyhow::anyhow!(
+                    result.map_err(|_| ActrError::Internal(format!(
                         "Connection establishment failed (channel closed)"
                     )))
                 }
@@ -2460,12 +2430,9 @@ impl WebRtcCoordinator {
         } else {
             tokio::time::timeout(timeout_duration, ready_rx)
                 .await
-                .map_err(|_| RuntimeError::DeadlineExceeded {
-                    message: "WebRTC connection establishment timeout".to_string(),
-                    timeout_ms: 10000,
-                })?
+                .map_err(|_| ActrError::TimedOut)?
                 .map_err(|_| {
-                    RuntimeError::Other(anyhow::anyhow!(
+                    ActrError::Internal(format!(
                         "Connection establishment failed (channel closed)"
                     ))
                 })
@@ -2482,7 +2449,7 @@ impl WebRtcCoordinator {
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
                 self.cleanup_cancelled_connection(target_id).await;
-                return Err(RuntimeError::Other(anyhow::anyhow!(
+                return Err(ActrError::Internal(format!(
                     "Connection creation cancelled after ready"
                 )));
             }
@@ -2494,7 +2461,7 @@ impl WebRtcCoordinator {
             .get(target_id)
             .map(|state| state.webrtc_conn.clone())
             .ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!(
+                ActrError::Internal(format!(
                     "Peer not found after connection establishment"
                 ))
             })
@@ -2514,14 +2481,14 @@ impl WebRtcCoordinator {
         target: &actr_protocol::ActrId,
         track_id: &str,
         sample: actr_framework::MediaSample,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         use webrtc::rtp::header::Header as RtpHeader;
         use webrtc::rtp::packet::Packet as RtpPacket;
 
         // 1. Get PeerState for target
         let peers = self.peers.read().await;
         let peer_state = peers.get(target).ok_or_else(|| {
-            RuntimeError::Other(anyhow::anyhow!(
+            ActrError::Internal(format!(
                 "No connection to target: {}",
                 target.to_string_repr()
             ))
@@ -2532,7 +2499,7 @@ impl WebRtcCoordinator {
             .webrtc_conn
             .get_media_track(track_id)
             .await
-            .ok_or_else(|| RuntimeError::Other(anyhow::anyhow!("Track not found: {track_id}")))?;
+            .ok_or_else(|| ActrError::Internal(format!("Track not found: {track_id}")))?;
 
         // 3. Get next sequence number for this track
         let sequence_number = peer_state
@@ -2540,7 +2507,7 @@ impl WebRtcCoordinator {
             .next_sequence_number(track_id)
             .await
             .ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!(
+                ActrError::Internal(format!(
                     "Sequence number not found for track: {track_id}"
                 ))
             })?;
@@ -2551,7 +2518,7 @@ impl WebRtcCoordinator {
             .get_ssrc(track_id)
             .await
             .ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!("SSRC not found for track: {track_id}"))
+                ActrError::Internal(format!("SSRC not found for track: {track_id}"))
             })?;
 
         // 5. Construct RTP packet from MediaSample
@@ -2574,7 +2541,7 @@ impl WebRtcCoordinator {
         track
             .write_rtp(&rtp_packet)
             .await
-            .map_err(|e| RuntimeError::Other(anyhow::anyhow!("Failed to write RTP: {e}")))?;
+            .map_err(|e| ActrError::Internal(format!("Failed to write RTP: {e}")))?;
 
         tracing::debug!(
             "📤 Sent MediaSample: track_id={}, seq={}, ssrc=0x{:08x}, timestamp={}, size={}",
@@ -2608,7 +2575,7 @@ impl WebRtcCoordinator {
         track_id: String,
         codec: &str,
         media_type: &str,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         tracing::info!(
             "🎬 Adding dynamic track: track_id={}, codec={}, type={}, target={}",
             track_id,
@@ -2621,7 +2588,7 @@ impl WebRtcCoordinator {
         let (webrtc_conn, peer_connection) = {
             let peers = self.peers.read().await;
             let state = peers.get(target).ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!(
+                ActrError::Internal(format!(
                     "No connection to target: {}",
                     target.to_string_repr()
                 ))
@@ -2661,7 +2628,7 @@ impl WebRtcCoordinator {
         &self,
         target: &actr_protocol::ActrId,
         peer_connection: &Arc<RTCPeerConnection>,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         tracing::info!(
             "🔄 Starting SDP renegotiation with {}",
             target.to_string_repr()
@@ -2669,7 +2636,7 @@ impl WebRtcCoordinator {
 
         // 1. Create new Offer (includes all tracks: old + new)
         let offer = peer_connection.create_offer(None).await.map_err(|e| {
-            RuntimeError::Other(anyhow::anyhow!("Failed to create renegotiation offer: {e}"))
+            ActrError::Internal(format!("Failed to create renegotiation offer: {e}"))
         })?;
         let offer_sdp = offer.sdp.clone();
 
@@ -2678,7 +2645,7 @@ impl WebRtcCoordinator {
             .set_local_description(offer)
             .await
             .map_err(|e| {
-                RuntimeError::Other(anyhow::anyhow!("Failed to set local description: {e}"))
+                ActrError::Internal(format!("Failed to set local description: {e}"))
             })?;
 
         tracing::debug!(
@@ -2709,7 +2676,7 @@ impl WebRtcCoordinator {
     pub async fn restart_ice(
         self: &Arc<Self>,
         target: &actr_protocol::ActrId,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Prepare all clones needed for the spawned task
         let target_clone = target.clone();
         let peers_arc = Arc::clone(&self.peers);
@@ -2867,7 +2834,7 @@ impl WebRtcCoordinator {
         local_id: &ActrId,
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
-    ) -> RuntimeResult<bool> {
+    ) -> ActorResult<bool> {
         // Use enhanced backoff with total duration limit
         let backoff = ExponentialBackoff::with_total_duration(
             Duration::from_millis(ICE_RESTART_INITIAL_BACKOFF_MS),
@@ -3146,7 +3113,7 @@ impl WebRtcCoordinator {
         &self,
         from: &ActrId,
         offer_sdp: String,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         tracing::info!(
             "🔄 Processing renegotiation Offer from {}",
             from.to_string_repr()
@@ -3156,7 +3123,7 @@ impl WebRtcCoordinator {
         let peer_connection = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!("Peer state not found for renegotiation"))
+                ActrError::Internal("Peer state not found for renegotiation".to_string())
             })?;
             state.peer_connection.clone()
         };
@@ -3167,20 +3134,20 @@ impl WebRtcCoordinator {
                 offer_sdp,
             )
             .map_err(|e| {
-                RuntimeError::Other(anyhow::anyhow!("Failed to parse renegotiation offer: {e}"))
+                ActrError::Internal(format!("Failed to parse renegotiation offer: {e}"))
             })?;
         peer_connection
             .set_remote_description(offer)
             .await
             .map_err(|e| {
-                RuntimeError::Other(anyhow::anyhow!("Failed to set remote description: {e}"))
+                ActrError::Internal(format!("Failed to set remote description: {e}"))
             })?;
 
         tracing::debug!("✅ Set remote description (renegotiation Offer)");
 
         // 3. Create Answer
         let answer = peer_connection.create_answer(None).await.map_err(|e| {
-            RuntimeError::Other(anyhow::anyhow!(
+            ActrError::Internal(format!(
                 "Failed to create renegotiation answer: {e}"
             ))
         })?;
@@ -3191,7 +3158,7 @@ impl WebRtcCoordinator {
             .set_local_description(answer)
             .await
             .map_err(|e| {
-                RuntimeError::Other(anyhow::anyhow!("Failed to set local description: {e}"))
+                ActrError::Internal(format!("Failed to set local description: {e}"))
             })?;
 
         tracing::debug!(
@@ -3221,12 +3188,12 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         from: &ActrId,
         offer_sdp: String,
-    ) -> RuntimeResult<()> {
+    ) -> ActorResult<()> {
         // Locate peer state and ensure we are not the offerer
         let (peer_connection, is_offerer) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
-                RuntimeError::Other(anyhow::anyhow!(
+                ActrError::Internal(format!(
                     "ICE restart offer received for unknown peer"
                 ))
             })?;
@@ -3443,7 +3410,7 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(skip_all, fields(target_id = ?target.to_string_repr()))
     )]
-    async fn negotiate_role(&self, target: &ActrId) -> RuntimeResult<bool> {
+    async fn negotiate_role(&self, target: &ActrId) -> ActorResult<bool> {
         let (tx, rx) = oneshot::channel();
         // 按目标 ActorId 记录等待的角色分配
         self.peer_negotiation
@@ -3466,7 +3433,7 @@ impl WebRtcCoordinator {
         self.send_actr_relay(target, payload).await?;
 
         rx.await.map_err(|_| {
-            RuntimeError::Other(anyhow::anyhow!(
+            ActrError::Internal(format!(
                 "Role negotiation channel closed before assignment"
             ))
         })
@@ -3509,6 +3476,29 @@ impl WebRtcCoordinator {
                         state,
                         RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
                     ) {
+                        // Log buffered_amount for all open DataChannels so callers can assess
+                        // how much data may not have been delivered due to the abrupt disconnect.
+                        {
+                            use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+                            let channels = webrtc_conn.data_channels().await;
+                            for (idx, channel_opt) in channels.iter().enumerate() {
+                                if let Some(channel) = channel_opt {
+                                    if channel.ready_state() == RTCDataChannelState::Open {
+                                        let buffered = channel.buffered_amount().await;
+                                        tracing::warn!(
+                                            peer_id = %target.serial_number,
+                                            channel = %channel.label(),
+                                            channel_idx = idx,
+                                            connection_state = ?state,
+                                            buffered_bytes = buffered,
+                                            "Abnormal disconnect detected; \
+                                             buffered data may not have been delivered to peer",
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         if let Some(c) = coord.upgrade() {
                             if let Err(e) = c.restart_ice(&target).await {
                                 tracing::warn!(
