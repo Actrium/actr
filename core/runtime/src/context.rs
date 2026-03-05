@@ -11,7 +11,7 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, ProtocolError,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType,
     RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
@@ -103,10 +103,7 @@ impl RuntimeContext {
         match dest {
             Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
             Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
-                ProtocolError::Actr(ActrError::GateNotInitialized {
-                    message: "OutprocOutGate not initialized yet (WebRTC setup in progress)"
-                        .to_string(),
-                })
+                ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
             }),
         }
     }
@@ -278,7 +275,7 @@ impl RuntimeContext {
             .send_route_candidates_request(self.self_id.clone(), self.credential.clone(), request)
             .await
             .map_err(|e| {
-                ProtocolError::TransportError(format!("Route candidates request failed: {e}"))
+                ActrError::Unavailable(format!("Route candidates request failed: {e}"))
             })?;
 
         match response.result {
@@ -291,12 +288,12 @@ impl RuntimeContext {
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
-                Err(ProtocolError::TransportError(format!(
+                Err(ActrError::Unavailable(format!(
                     "Route candidates error {}: {}",
                     err.code, err.message
                 )))
             }
-            None => Err(ProtocolError::TransportError(
+            None => Err(ActrError::Unavailable(
                 "Invalid route candidates response: missing result".to_string(),
             )),
         }
@@ -454,13 +451,11 @@ impl Context for RuntimeContext {
 
         // 6. 解码响应（类型安全：R::Response）
         R::Response::decode(&*response_bytes).map_err(|e| {
-            ProtocolError::Actr(ActrError::DecodeFailure {
-                message: format!(
+            ActrError::DecodeFailure(format!(
                     "Failed to decode {}: {}",
                     std::any::type_name::<R::Response>(),
                     e
-                ),
-            })
+                ))
         })
     }
 
@@ -554,7 +549,7 @@ impl Context for RuntimeContext {
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
         if !self.signaling_client.is_connected() {
-            return Err(ProtocolError::TransportError(
+            return Err(ActrError::Unavailable(
                 "Signaling client is not connected.".to_string(),
             ));
         }
@@ -620,13 +615,13 @@ impl Context for RuntimeContext {
                          Please run 'actr install' to generate the lock file with all dependencies.",
                         service_name
                     );
-                    return Err(ProtocolError::Actr(ActrError::DependencyNotFound {
+                    return Err(ActrError::DependencyNotFound {
                         service_name: service_name.clone(),
                         message: format!(
                             "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
                             service_name
                         ),
-                    }));
+                    });
                 }
             }
         };
@@ -673,7 +668,7 @@ impl Context for RuntimeContext {
         );
 
         result.candidates.into_iter().next().ok_or_else(|| {
-            ProtocolError::TargetNotFound(format!(
+            ActrError::NotFound(format!(
                 "No route candidates for type {}/{}",
                 target_type.manufacturer, target_type.name
             ))
@@ -709,10 +704,7 @@ impl Context for RuntimeContext {
 
         // 2. Select outproc gate (raw calls are always remote)
         let gate = self.outproc_gate.as_ref().ok_or_else(|| {
-            ProtocolError::Actr(ActrError::GateNotInitialized {
-                message: "OutprocOutGate not initialized yet (WebRTC setup in progress)"
-                    .to_string(),
-            })
+            ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
         })?;
 
         // 3. Send request and return raw response bytes

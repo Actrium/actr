@@ -1,5 +1,6 @@
 //! Network layer error definitions
 
+use actr_protocol::{ActrError, Classify, ErrorKind};
 use thiserror::Error;
 
 /// Network layer error types
@@ -146,38 +147,59 @@ pub enum NetworkError {
     Other(#[from] anyhow::Error),
 }
 
-impl NetworkError {
-    /// Check if error is retryable
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
+impl Classify for NetworkError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            // Transient: connection-level failures that may resolve on retry
             NetworkError::ConnectionError(_)
-                | NetworkError::TimeoutError(_)
-                | NetworkError::NetworkUnreachableError(_)
-                | NetworkError::ResourceExhaustedError(_)
-        )
-    }
+            | NetworkError::ConnectionClosed(_)
+            | NetworkError::ChannelClosed(_)
+            | NetworkError::SendError(_)
+            | NetworkError::NetworkUnreachableError(_)
+            | NetworkError::ResourceExhaustedError(_)
+            | NetworkError::WebSocketError(_)
+            | NetworkError::SignalingError(_)
+            | NetworkError::WebRtcError(_)
+            | NetworkError::NatTraversalError(_)
+            | NetworkError::IceError(_) => ErrorKind::Transient,
 
-    /// Check if error is temporary
-    pub fn is_temporary(&self) -> bool {
-        matches!(
-            self,
-            NetworkError::ConnectionError(_)
-                | NetworkError::TimeoutError(_)
-                | NetworkError::NetworkUnreachableError(_)
-                | NetworkError::ResourceExhaustedError(_)
-        )
-    }
+            // Transient: timeout (framework-internal; caller-set deadlines should be Client)
+            NetworkError::TimeoutError(_) | NetworkError::Timeout(_) => ErrorKind::Transient,
 
-    /// Check if error is fatal
-    pub fn is_fatal(&self) -> bool {
-        matches!(
-            self,
+            // Client: caller or config errors that won't fix themselves
+            NetworkError::ConnectionNotFound(_)
+            | NetworkError::ChannelNotFound(_)
+            | NetworkError::NoRoute(_)
+            | NetworkError::InvalidArgument(_)
+            | NetworkError::InvalidOperation(_)
+            | NetworkError::ConfigurationError(_)
+            | NetworkError::ServiceDiscoveryError(_) => ErrorKind::Client,
+
+            // Client: auth/permission
             NetworkError::AuthenticationError(_)
-                | NetworkError::PermissionError(_)
-                | NetworkError::ConfigurationError(_)
-        )
+            | NetworkError::PermissionError(_)
+            | NetworkError::CredentialExpired(_) => ErrorKind::Client,
+
+            // Corrupt: data cannot be decoded
+            NetworkError::DeserializationError(_) => ErrorKind::Corrupt,
+
+            // Internal: framework-level issues
+            NetworkError::ProtocolError(_)
+            | NetworkError::SerializationError(_)
+            | NetworkError::DataChannelError(_)
+            | NetworkError::BroadcastError(_)
+            | NetworkError::DtlsError(_)
+            | NetworkError::StunTurnError(_)
+            | NetworkError::NotImplemented(_)
+            | NetworkError::IoError(_)
+            | NetworkError::UrlParseError(_)
+            | NetworkError::JsonError(_)
+            | NetworkError::Other(_) => ErrorKind::Internal,
+        }
     }
+}
+
+impl NetworkError {
 
     /// Get error category
     pub fn category(&self) -> &'static str {
@@ -276,10 +298,24 @@ impl NetworkError {
 /// Network layer result type
 pub type NetworkResult<T> = Result<T, NetworkError>;
 
-/// Convert from actor error to network error
-impl From<actr_protocol::ActrError> for NetworkError {
-    fn from(err: actr_protocol::ActrError) -> Self {
-        NetworkError::Other(anyhow::anyhow!("Actor error: {err}"))
+/// Convert from `ActrIdError` (identity parsing) to `NetworkError`
+impl From<actr_protocol::ActrIdError> for NetworkError {
+    fn from(err: actr_protocol::ActrIdError) -> Self {
+        NetworkError::InvalidArgument(err.to_string())
+    }
+}
+
+/// Convert `NetworkError` to the public top-level `ActrError`.
+///
+/// This is the single boundary where transport failures become user-visible errors.
+impl From<NetworkError> for ActrError {
+    fn from(err: NetworkError) -> Self {
+        match err.kind() {
+            ErrorKind::Transient => ActrError::Unavailable(err.to_string()),
+            ErrorKind::Client => ActrError::NotFound(err.to_string()),
+            ErrorKind::Corrupt => ActrError::DecodeFailure(err.to_string()),
+            ErrorKind::Internal => ActrError::Internal(err.to_string()),
+        }
     }
 }
 

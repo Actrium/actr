@@ -42,7 +42,7 @@ use crate::lifecycle::ActrNode;
 use crate::outbound::InprocOutGate;
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -253,9 +253,7 @@ impl<W: Workload> ActrRef<W> {
 
         // Decode response
         R::Response::decode(&*response_bytes).map_err(|e| {
-            ProtocolError::Actr(ActrError::DecodeFailure {
-                message: format!("Failed to decode response: {e}"),
-            })
+            ActrError::DecodeFailure(format!("Failed to decode response: {e}"),)
         })
     }
 
@@ -474,10 +472,10 @@ impl<W: Workload> ActrRef<W> {
             use tokio::signal::unix::{SignalKind, signal};
 
             let mut sigint = signal(SignalKind::interrupt()).map_err(|e| {
-                ProtocolError::TransportError(format!("Signal handler error (SIGINT): {e}"))
+                ActrError::Unavailable(format!("Signal handler error (SIGINT): {e}"))
             })?;
             let mut sigterm = signal(SignalKind::terminate()).map_err(|e| {
-                ProtocolError::TransportError(format!("Signal handler error (SIGTERM): {e}"))
+                ActrError::Unavailable(format!("Signal handler error (SIGTERM): {e}"))
             })?;
 
             tokio::select! {
@@ -494,7 +492,7 @@ impl<W: Workload> ActrRef<W> {
         {
             tokio::signal::ctrl_c()
                 .await
-                .map_err(|e| ProtocolError::TransportError(format!("Ctrl+C signal error: {e}")))?;
+                .map_err(|e| ActrError::Unavailable(format!("Ctrl+C signal error: {e}")))?;
 
             tracing::info!("📡 Received Ctrl+C signal");
         }

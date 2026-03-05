@@ -1,54 +1,172 @@
-#![allow(deprecated)]
-//! Error types for Actor-RTC protocol
+//! Top-level error types for the Actor-RTC framework.
+//!
+//! ## Design
+//!
+//! Two layers only:
+//!
+//! ```text
+//! NetworkError   (transport-internal, never exposed to users)
+//!      ↓  From
+//! ActrError      (public, flat enum — what callers see)
+//! ```
+//!
+//! `RuntimeError` and `ProtocolError` have been removed.
+//!
+//! ## Error classification
+//!
+//! Every error belongs to one fault domain (`ErrorKind`):
+//!
+//! | Kind      | Meaning                        | Retry? | DLQ? |
+//! |-----------|--------------------------------|--------|------|
+//! | Transient | Environmental fluctuation      | yes    | no   |
+//! | Client    | Caller error (bad request)     | no     | no   |
+//! | Internal  | Framework bug / panic          | no     | no   |
+//! | Corrupt   | Data corruption                | no     | yes  |
+//!
+//! Use the `Classify` trait to query classification from any error type.
 
-use crate::actr_ext::ActrError;
-use crate::name::NameError;
+use thiserror::Error;
 
-/// Protocol-level errors primarily related to data structure and format validity.
-#[derive(Debug, thiserror::Error)]
-pub enum ProtocolError {
-    #[error("Actor identity error: {0}")]
-    Actr(#[from] ActrError),
+// ── ActrError ────────────────────────────────────────────────────────────────
 
-    #[error("URI parsing error: {0}")]
-    Uri(#[from] crate::uri::ActrUriError),
+/// Top-level framework error, returned to all callers.
+///
+/// Flat enum — no nested error wrapping. Each variant is self-describing.
+#[derive(Error, Debug)]
+pub enum ActrError {
+    // ── Transient ──────────────────────────────────────────────────────────
 
-    #[error("Invalid name: {0}")]
-    Name(#[from] NameError),
+    /// Peer temporarily unavailable: connection lost, overloaded, or reconnecting.
+    ///
+    /// `ErrorKind::Transient` — retry with backoff.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
 
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    /// Request deadline exceeded.
+    ///
+    /// `ErrorKind::Transient` — may retry with a fresh deadline.
+    #[error("timed out")]
+    TimedOut,
 
-    #[error("Deserialization error: {0}")]
-    DeserializationError(String),
+    // ── Client ─────────────────────────────────────────────────────────────
 
-    #[error("Decode error: {0}")]
-    DecodeError(String),
+    /// Target actor not found.
+    ///
+    /// `ErrorKind::Client` — do not retry; check service discovery first.
+    #[error("not found: {0}")]
+    NotFound(String),
 
-    #[error("Encode error: {0}")]
-    EncodeError(String),
+    /// Permission denied by ACL.
+    ///
+    /// `ErrorKind::Client` — do not retry; fix authorization.
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
 
-    #[error("Unknown route: {0}")]
+    /// Invalid argument or malformed request.
+    ///
+    /// `ErrorKind::Client` — do not retry; fix the request.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
+    /// No handler registered for the given route key.
+    ///
+    /// `ErrorKind::Client` — do not retry; check service definition.
+    #[error("unknown route: {0}")]
     UnknownRoute(String),
 
-    #[error("Transport error: {0}")]
-    TransportError(String),
+    /// Required dependency not found in the lock file.
+    ///
+    /// `ErrorKind::Client` — do not retry; fix the manifest.
+    #[error("dependency '{service_name}' not found: {message}")]
+    DependencyNotFound {
+        service_name: String,
+        message: String,
+    },
 
-    #[error("Timeout")]
-    Timeout,
+    // ── Corrupt ────────────────────────────────────────────────────────────
 
-    #[error("Target not found: {0}")]
-    TargetNotFound(String),
+    /// Protobuf decode failure — message data is corrupted.
+    ///
+    /// `ErrorKind::Corrupt` — route to Dead Letter Queue; do not retry.
+    #[error("decode failure: {0}")]
+    DecodeFailure(String),
 
-    #[error("Target unavailable: {0}")]
-    TargetUnavailable(String),
+    // ── Internal ───────────────────────────────────────────────────────────
 
-    #[error("Invalid state transition: {0}")]
-    InvalidStateTransition(String),
+    /// Feature not yet implemented.
+    ///
+    /// `ErrorKind::Internal` — do not retry.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+
+    /// Internal framework error: bug, panic, or unrecoverable state.
+    ///
+    /// `ErrorKind::Internal` — do not retry; investigate logs.
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
-/// Convenient result type for protocol operations
-pub type ProtocolResult<T> = Result<T, ProtocolError>;
+// ── ErrorKind ────────────────────────────────────────────────────────────────
 
-/// Actor result type - commonly used in framework and runtime
-pub type ActorResult<T> = Result<T, ProtocolError>;
+/// Fault domain classification for any framework error.
+///
+/// All error types implement [`Classify`] to expose their `ErrorKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Environmental fluctuation — retry with exponential backoff.
+    Transient,
+    /// Caller error — bad request or system state; do not retry.
+    Client,
+    /// Framework bug or panic — do not retry; alert.
+    Internal,
+    /// Data corruption — route to Dead Letter Queue; manual intervention required.
+    Corrupt,
+}
+
+// ── Classify trait ───────────────────────────────────────────────────────────
+
+/// Fault-domain classification for error types.
+///
+/// Implement `kind()` only; `is_retryable()` and `requires_dlq()` have
+/// correct default implementations derived from `kind()`.
+pub trait Classify {
+    /// Returns the fault domain this error belongs to.
+    fn kind(&self) -> ErrorKind;
+
+    /// Returns `true` if the operation may be retried.
+    ///
+    /// Only `ErrorKind::Transient` errors are retryable.
+    fn is_retryable(&self) -> bool {
+        matches!(self.kind(), ErrorKind::Transient)
+    }
+
+    /// Returns `true` if the message should be routed to the Dead Letter Queue.
+    ///
+    /// Only `ErrorKind::Corrupt` errors require DLQ routing.
+    fn requires_dlq(&self) -> bool {
+        matches!(self.kind(), ErrorKind::Corrupt)
+    }
+}
+
+impl Classify for ActrError {
+    fn kind(&self) -> ErrorKind {
+        match self {
+            ActrError::Unavailable(_) | ActrError::TimedOut => ErrorKind::Transient,
+
+            ActrError::NotFound(_)
+            | ActrError::PermissionDenied(_)
+            | ActrError::InvalidArgument(_)
+            | ActrError::UnknownRoute(_)
+            | ActrError::DependencyNotFound { .. } => ErrorKind::Client,
+
+            ActrError::DecodeFailure(_) => ErrorKind::Corrupt,
+
+            ActrError::NotImplemented(_) | ActrError::Internal(_) => ErrorKind::Internal,
+        }
+    }
+}
+
+// ── Convenience type aliases ──────────────────────────────────────────────────
+
+/// Result type for actor RPC calls.
+pub type ActorResult<T> = Result<T, ActrError>;

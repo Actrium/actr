@@ -4,7 +4,7 @@
 //! for unit tests that need a context but do not exercise transport logic.
 
 use crate::{Context, Dest, MediaSample};
-use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, ProtocolError, RpcRequest};
+use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
@@ -38,10 +38,8 @@ impl DummyContext {
         self
     }
 
-    fn not_implemented(feature: &str) -> ProtocolError {
-        ProtocolError::Actr(ActrError::NotImplemented {
-            feature: feature.to_string(),
-        })
+    fn not_implemented(feature: &str) -> ActrError {
+        ActrError::NotImplemented(feature.to_string())
     }
 }
 

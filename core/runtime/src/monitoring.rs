@@ -1,6 +1,6 @@
 //! monitoringandalert
 
-use crate::error::{RuntimeError, RuntimeResult};
+use actr_protocol::{ActrError, ActorResult};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -203,22 +203,22 @@ pub struct Metric {
 /// Monitor interface
 pub trait Monitor: Send + Sync {
     /// record metrics
-    fn record_metric(&mut self, metric: Metric) -> RuntimeResult<()>;
+    fn record_metric(&mut self, metric: Metric) -> ActorResult<()>;
 
     /// Getmetrics
-    fn get_metrics(&self, name: &str, duration_seconds: u64) -> RuntimeResult<Vec<Metric>>;
+    fn get_metrics(&self, name: &str, duration_seconds: u64) -> ActorResult<Vec<Metric>>;
 
     /// Checkalert conditions
-    fn check_alerts(&mut self) -> RuntimeResult<Vec<Alert>>;
+    fn check_alerts(&mut self) -> ActorResult<Vec<Alert>>;
 
     /// Getactive alerts
     fn get_active_alerts(&self) -> Vec<&Alert>;
 
     /// acknowledge alert
-    fn acknowledge_alert(&mut self, alert_id: Uuid) -> RuntimeResult<()>;
+    fn acknowledge_alert(&mut self, alert_id: Uuid) -> ActorResult<()>;
 
     /// resolve alert
-    fn resolve_alert(&mut self, alert_id: Uuid) -> RuntimeResult<()>;
+    fn resolve_alert(&mut self, alert_id: Uuid) -> ActorResult<()>;
 }
 
 /// Basic monitor implementation
@@ -239,7 +239,7 @@ impl BasicMonitor {
     }
 
     /// Check CPU usage ratealert
-    fn check_cpu_alerts(&mut self, cpu_usage: f64) -> RuntimeResult<Option<Alert>> {
+    fn check_cpu_alerts(&mut self, cpu_usage: f64) -> ActorResult<Option<Alert>> {
         if !self.config.alert_config.enabled {
             return Ok(None);
         }
@@ -271,7 +271,7 @@ impl BasicMonitor {
 }
 
 impl Monitor for BasicMonitor {
-    fn record_metric(&mut self, metric: Metric) -> RuntimeResult<()> {
+    fn record_metric(&mut self, metric: Metric) -> ActorResult<()> {
         if !self.config.enabled {
             return Ok(());
         }
@@ -286,7 +286,7 @@ impl Monitor for BasicMonitor {
         Ok(())
     }
 
-    fn get_metrics(&self, name: &str, duration_seconds: u64) -> RuntimeResult<Vec<Metric>> {
+    fn get_metrics(&self, name: &str, duration_seconds: u64) -> ActorResult<Vec<Metric>> {
         let cutoff = Utc::now() - chrono::Duration::seconds(duration_seconds as i64);
 
         let metrics: Vec<Metric> = self
@@ -299,7 +299,7 @@ impl Monitor for BasicMonitor {
         Ok(metrics)
     }
 
-    fn check_alerts(&mut self) -> RuntimeResult<Vec<Alert>> {
+    fn check_alerts(&mut self) -> ActorResult<Vec<Alert>> {
         if !self.config.alert_config.enabled {
             return Ok(Vec::new());
         }
@@ -327,21 +327,21 @@ impl Monitor for BasicMonitor {
         self.alerts.iter().filter(|alert| !alert.resolved).collect()
     }
 
-    fn acknowledge_alert(&mut self, alert_id: Uuid) -> RuntimeResult<()> {
+    fn acknowledge_alert(&mut self, alert_id: Uuid) -> ActorResult<()> {
         if let Some(alert) = self.alerts.iter_mut().find(|a| a.id == alert_id) {
             alert.acknowledge();
             Ok(())
         } else {
-            Err(RuntimeError::Other(anyhow::anyhow!("Alert not found")))
+            Err(ActrError::NotFound("Alert not found".to_string()))
         }
     }
 
-    fn resolve_alert(&mut self, alert_id: Uuid) -> RuntimeResult<()> {
+    fn resolve_alert(&mut self, alert_id: Uuid) -> ActorResult<()> {
         if let Some(alert) = self.alerts.iter_mut().find(|a| a.id == alert_id) {
             alert.resolve();
             Ok(())
         } else {
-            Err(RuntimeError::Other(anyhow::anyhow!("Alert not found")))
+            Err(ActrError::NotFound("Alert not found".to_string()))
         }
     }
 }

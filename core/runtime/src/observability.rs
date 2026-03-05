@@ -5,7 +5,7 @@
 //! custom platform-specific layers (e.g., Android Logcat, iOS os_log) while
 //! providing a sensible default (stdout fmt layer) when none is provided.
 
-use crate::error::RuntimeResult;
+use actr_protocol::ActorResult;
 use actr_config::ObservabilityConfig;
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::{KeyValue, trace::TracerProvider as _};
@@ -54,7 +54,7 @@ impl Drop for ObservabilityGuard {
 /// - Invalid endpoints fail fast; runtime delivery errors log but do not abort.
 pub fn init_observability(
     cfg: &actr_config::ObservabilityConfig,
-) -> RuntimeResult<ObservabilityGuard> {
+) -> ActorResult<ObservabilityGuard> {
     init_observability_with_layer(cfg, None::<BoxedLayer<tracing_subscriber::Registry>>)
 }
 
@@ -80,7 +80,7 @@ pub fn init_observability(
 pub fn init_observability_with_layer<L>(
     cfg: &ObservabilityConfig,
     platform_layer: Option<L>,
-) -> RuntimeResult<ObservabilityGuard>
+) -> ActorResult<ObservabilityGuard>
 where
     L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {
@@ -103,7 +103,7 @@ fn init_subscriber_internal<L>(
     _cfg: &ObservabilityConfig,
     env_filter: EnvFilter,
     platform_layer: Option<L>,
-) -> RuntimeResult<ObservabilityGuard>
+) -> ActorResult<ObservabilityGuard>
 where
     L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {
@@ -127,7 +127,7 @@ fn init_subscriber_internal<L>(
     cfg: &ObservabilityConfig,
     env_filter: EnvFilter,
     platform_layer: Option<L>,
-) -> RuntimeResult<ObservabilityGuard>
+) -> ActorResult<ObservabilityGuard>
 where
     L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
 {
@@ -183,13 +183,13 @@ where
 }
 
 #[cfg(feature = "opentelemetry")]
-fn build_otel_provider(config: &ObservabilityConfig) -> RuntimeResult<SdkTracerProvider> {
+fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerProvider> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(config.tracing_endpoint.clone())
         .build()
         .map_err(|e| {
-            crate::error::RuntimeError::InitializationError(format!(
+            crate::error::ActrError::InitializationError(format!(
                 "OTLP exporter build failed: {e}"
             ))
         })?;

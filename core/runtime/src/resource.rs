@@ -1,6 +1,6 @@
 //! Resource management
 
-use crate::error::{RuntimeError, RuntimeResult};
+use actr_protocol::{ActrError, ActorResult};
 use serde::{Deserialize, Serialize};
 
 /// Resource quota
@@ -91,7 +91,7 @@ impl ResourceManager {
     }
 
     /// Checkresourcewhetheravailable
-    pub fn check_resource_availability(&self, required: &ResourceUsage) -> RuntimeResult<bool> {
+    pub fn check_resource_availability(&self, required: &ResourceUsage) -> ActorResult<bool> {
         if !self.config.enable_limits {
             return Ok(true);
         }
@@ -113,12 +113,9 @@ impl ResourceManager {
     }
 
     /// Allocateresource
-    pub fn allocate_resources(&mut self, usage: &ResourceUsage) -> RuntimeResult<()> {
+    pub fn allocate_resources(&mut self, usage: &ResourceUsage) -> ActorResult<()> {
         if !self.check_resource_availability(usage)? {
-            return Err(RuntimeError::Unavailable {
-                message: "Insufficient resources available".to_string(),
-                target: None,
-            });
+            return Err(ActrError::Unavailable("Insufficient resources available".to_string()));
         }
 
         self.current_usage.cpu_usage += usage.cpu_usage;
@@ -130,7 +127,7 @@ impl ResourceManager {
     }
 
     /// Releaseresource
-    pub fn release_resources(&mut self, usage: &ResourceUsage) -> RuntimeResult<()> {
+    pub fn release_resources(&mut self, usage: &ResourceUsage) -> ActorResult<()> {
         self.current_usage.cpu_usage = (self.current_usage.cpu_usage - usage.cpu_usage).max(0.0);
         self.current_usage.memory_used_bytes = self
             .current_usage
