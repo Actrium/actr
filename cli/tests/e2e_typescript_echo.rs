@@ -1,19 +1,21 @@
 //! End-to-end tests for TypeScript echo template.
 //!
-//! These tests build and run real service + app communication over the signaling server.
-//! They require git, network access, and Node.js.
-//!
-//! Run with:
-//! `cargo test --test e2e_typescript_echo -- --test-threads=1`
+//! These tests run against local Actrix and local echo services only.
+//! Run with: `cargo test --test e2e_typescript_echo -- --test-threads=1`
 
+mod e2e_support;
+
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
-use tempfile::TempDir;
+use std::time::{Duration, Instant};
 
-fn actr_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_actr"))
-}
+use e2e_support::{
+    LocalActrix, LocalRustEchoService, LoggedProcess, align_project_with_local_actrix,
+    assert_success, random_manufacturer,
+};
+use tempfile::TempDir;
 
 const EXPECTED_ACTR_TS_TARBALL_URL: &str =
     "https://github.com/actor-rtc/actr-ts/releases/download/v0.1.14/actor-rtc-actr-0.1.14.tgz";
@@ -29,7 +31,6 @@ fn prepare_typescript_codegen_tools() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         let dir = framework_codegen_typescript_dir();
-
         assert_success(
             &run_npm(&["install"], &dir),
             "npm install (tools/protoc-gen/typescript)",
@@ -38,7 +39,6 @@ fn prepare_typescript_codegen_tools() -> &'static Path {
             &run_npm(&["run", "bundle"], &dir),
             "npm run bundle (tools/protoc-gen/typescript)",
         );
-
         dir
     })
 }
@@ -51,7 +51,7 @@ fn run_actr(args: &[&str], cwd: &Path) -> Output {
     }
     let path = std::env::join_paths(path_entries).expect("failed to construct PATH");
 
-    Command::new(actr_bin())
+    Command::new(e2e_support::actr_bin())
         .args(args)
         .current_dir(cwd)
         .env("PATH", path)
@@ -67,68 +67,13 @@ fn run_npm(args: &[&str], cwd: &Path) -> Output {
         .expect("failed to run npm")
 }
 
-fn assert_success(out: &Output, context: &str) {
-    assert!(
-        out.status.success(),
-        "{context} failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn random_manufacturer() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    format!("test{nanos:08x}")
-}
-
-/// Wait until child output contains `needle` or timeout expires.
-fn wait_for_output(
-    child: &mut std::process::Child,
-    needle: &str,
-    timeout: std::time::Duration,
-) -> (bool, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-    use std::io::BufRead;
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    let found = Arc::new(AtomicBool::new(false));
-    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
-
-    macro_rules! drain {
-        ($stream:expr) => {
-            if let Some(s) = $stream {
-                let f = Arc::clone(&found);
-                let l = Arc::clone(&lines);
-                let n = needle.to_string();
-                std::thread::spawn(move || {
-                    for line in std::io::BufReader::new(s).lines().flatten() {
-                        if line.contains(&n) {
-                            f.store(true, Ordering::SeqCst);
-                        }
-                        l.lock().unwrap().push(line);
-                    }
-                });
-            }
-        };
-    }
-
-    drain!(child.stdout.take());
-    drain!(child.stderr.take());
-
-    let deadline = std::time::Instant::now() + timeout;
-    while !found.load(std::sync::atomic::Ordering::SeqCst) {
-        if std::time::Instant::now() > deadline {
-            return (false, lines);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    (true, lines)
+fn run_npm_with_path(args: &[&str], cwd: &Path, path: &OsString) -> Output {
+    Command::new("npm")
+        .args(args)
+        .current_dir(cwd)
+        .env("PATH", path)
+        .output()
+        .expect("failed to run npm")
 }
 
 fn e2e_lock() -> &'static Mutex<()> {
@@ -156,16 +101,25 @@ fn assert_generated_actr_dependency(project_dir: &Path) {
     );
 }
 
+fn dev_path_env() -> OsString {
+    let tool_dir = prepare_typescript_codegen_tools();
+    let mut path_entries = vec![tool_dir.join("scripts"), tool_dir.join("node_modules/.bin")];
+    if let Some(existing) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(path_entries).expect("failed to construct PATH")
+}
+
 #[test]
 fn typescript_echo_e2e_service_and_app() {
     let _guard = e2e_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
+    let actrix = LocalActrix::start().expect("failed to start local actrix");
     let tmp = TempDir::new().unwrap();
     let mfr = random_manufacturer();
 
-    // 1. init two projects via role=both
     let out = run_actr(
         &[
             "init",
@@ -176,7 +130,7 @@ fn typescript_echo_e2e_service_and_app() {
             "--role",
             "both",
             "--signaling",
-            "wss://actrix1.develenv.com",
+            &actrix.signaling_ws_url,
             "--manufacturer",
             &mfr,
             "e2e-ts",
@@ -189,87 +143,71 @@ fn typescript_echo_e2e_service_and_app() {
     let app_dir = tmp.path().join("e2e-ts/echo-app");
     assert!(svc_dir.exists(), "echo-service dir should exist");
     assert!(app_dir.exists(), "echo-app dir should exist");
+    align_project_with_local_actrix(&svc_dir).expect("failed to set local realm for service");
+    align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
     assert_generated_actr_dependency(&svc_dir);
     assert_generated_actr_dependency(&app_dir);
 
-    // 2. Service workflow: actr install -> actr gen
     assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
     assert_success(
         &run_actr(&["gen", "-l", "typescript"], &svc_dir),
         "actr gen -l typescript (svc)",
     );
 
-    // 3. Start service and wait for registration log.
-    let mut svc = Command::new("npm")
+    let path = dev_path_env();
+    let mut svc_cmd = Command::new("npm");
+    svc_cmd
         .args(["run", "dev"])
         .current_dir(&svc_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start service");
-
-    let (ready, svc_log) = wait_for_output(
-        &mut svc,
-        "EchoService registered",
-        std::time::Duration::from_secs(120),
+        .env("PATH", &path);
+    let mut svc = LoggedProcess::spawn(svc_cmd, "ts-e2e-service").expect("failed to start service");
+    assert!(
+        svc.wait_for_log("EchoService registered", Duration::from_secs(180)),
+        "service not ready within timeout:\n{}",
+        svc.logs()
     );
-    if !ready {
-        let svc_output = svc_log.lock().unwrap().join("\n");
-        svc.kill().ok();
-        svc.wait().ok();
-        panic!("service not ready within 120s (manufacturer={mfr}):\n{svc_output}");
-    }
 
-    // 4. App workflow: actr install -> actr gen -> typecheck
     assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
     assert_success(
         &run_actr(&["gen", "-l", "typescript"], &app_dir),
         "actr gen -l typescript (app)",
     );
     assert_success(
-        &run_npm(&["run", "typecheck"], &app_dir),
+        &run_npm_with_path(&["run", "typecheck"], &app_dir, &path),
         "npm run typecheck (app)",
     );
+    std::fs::remove_file(app_dir.join("Actr.lock.toml")).expect("failed to remove app lock file");
 
-    // 5. Run app against the live service and wait for it to exit.
     let mut app = Command::new("npm")
         .args(["run", "dev"])
         .current_dir(&app_dir)
+        .env("PATH", &path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start app");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match app.try_wait().unwrap() {
             Some(_) => break,
-            None if std::time::Instant::now() > deadline => {
+            None if Instant::now() > deadline => {
                 app.kill().ok();
                 let app_out = app.wait_with_output().unwrap();
-                let app_stdout = String::from_utf8_lossy(&app_out.stdout);
-                let app_stderr = String::from_utf8_lossy(&app_out.stderr);
-                let svc_output = svc_log.lock().unwrap().join("\n");
-                svc.kill().ok();
-                svc.wait().ok();
                 panic!(
-                    "app did not exit within 90s:\nstdout: {app_stdout}\nstderr: {app_stderr}\nservice:\n{svc_output}"
+                    "app did not exit within 90s:\nstdout: {}\nstderr: {}\nservice:\n{}",
+                    String::from_utf8_lossy(&app_out.stdout),
+                    String::from_utf8_lossy(&app_out.stderr),
+                    svc.logs()
                 );
             }
-            None => std::thread::sleep(std::time::Duration::from_millis(500)),
+            None => std::thread::sleep(Duration::from_millis(500)),
         }
     }
 
     let app_out = app.wait_with_output().unwrap();
-
-    // 6. Confirm the round-trip completed and service remained healthy, then clean up.
-    std::thread::sleep(std::time::Duration::from_millis(500));
     let app_stdout = String::from_utf8_lossy(&app_out.stdout);
     let app_stderr = String::from_utf8_lossy(&app_out.stderr);
-    let svc_output = svc_log.lock().unwrap().join("\n");
-    svc.kill().ok();
-    svc.wait().ok();
-
     assert!(
         app_out.status.success(),
         "app failed:\nstdout: {app_stdout}\nstderr: {app_stderr}"
@@ -279,28 +217,23 @@ fn typescript_echo_e2e_service_and_app() {
         "missing echo reply in app output:\nstdout: {app_stdout}\nstderr: {app_stderr}"
     );
     assert!(
-        svc_output.contains("Received echo request: hello"),
-        "service missing request log in:\n{svc_output}"
-    );
-    assert!(
-        svc_output.contains("EchoService registered"),
-        "missing register log in service output:\n{svc_output}"
-    );
-    assert!(
-        svc_output.contains("EchoService workload started"),
-        "service missing startup log in:\n{svc_output}"
+        svc.logs().contains("Received echo request: hello"),
+        "service missing request log:\n{}",
+        svc.logs()
     );
 }
 
 #[test]
-fn typescript_echo_e2e_app_with_public_registry() {
+fn typescript_echo_e2e_app_with_local_registry() {
     let _guard = e2e_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
+    let actrix = LocalActrix::start().expect("failed to start local actrix");
+    let registry = LocalRustEchoService::start(&actrix.signaling_ws_url)
+        .expect("failed to start local rust echo service");
     let tmp = TempDir::new().unwrap();
 
-    // 1. actr init --role app (uses default manufacturer 'acme')
     let out = run_actr(
         &[
             "init",
@@ -311,7 +244,7 @@ fn typescript_echo_e2e_app_with_public_registry() {
             "--role",
             "app",
             "--signaling",
-            "wss://actrix1.develenv.com",
+            &actrix.signaling_ws_url,
             "echo-app-test",
         ],
         tmp.path(),
@@ -320,35 +253,30 @@ fn typescript_echo_e2e_app_with_public_registry() {
 
     let app_dir = tmp.path().join("echo-app-test");
     assert!(app_dir.exists(), "echo-app-test dir should exist");
+    align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
     assert_generated_actr_dependency(&app_dir);
 
-    // 2. Verify Actr.toml declares dependency on public acme+EchoService
     let actr_toml = std::fs::read_to_string(app_dir.join("Actr.toml")).unwrap();
     assert!(
-        actr_toml.contains("acme+EchoService"),
-        "Actr.toml should reference acme+EchoService"
+        actr_toml.contains("acme:EchoService"),
+        "Actr.toml should reference acme:EchoService"
     );
 
-    // 3. actr install: pull remote proto from public registry and install npm deps
     assert_success(
         &run_actr(&["install"], &app_dir),
-        "actr install (app with public registry)",
+        "actr install (app with local registry)",
     );
-
-    // 4. Verify remote proto was downloaded
     let remote_proto = app_dir.join("protos/remote/echo-echo-server/echo.proto");
     assert!(
         remote_proto.exists(),
         "Remote proto should be downloaded to protos/remote/echo-echo-server/echo.proto"
     );
 
-    // 5. actr gen -l typescript: generate client code
     assert_success(
         &run_actr(&["gen", "-l", "typescript"], &app_dir),
         "actr gen (app)",
     );
 
-    // 6. Verify generated files
     let gen_dir = app_dir.join("src/generated");
     assert!(
         gen_dir.join("echo-echo-server/echo_pb.ts").exists(),
@@ -363,11 +291,48 @@ fn typescript_echo_e2e_app_with_public_registry() {
         "src/generated/local_actor.ts (local actor dispatcher)"
     );
 
-    // 7. npm run typecheck: verify TypeScript compiles
+    let path = dev_path_env();
     assert_success(
-        &run_npm(&["run", "typecheck"], &app_dir),
+        &run_npm_with_path(&["run", "typecheck"], &app_dir, &path),
         "npm run typecheck (app)",
     );
+    std::fs::remove_file(app_dir.join("Actr.lock.toml")).expect("failed to remove app lock file");
 
-    println!("✅ App-only project with public registry dependency works correctly");
+    let mut app = Command::new("npm")
+        .args(["run", "dev"])
+        .current_dir(&app_dir)
+        .env("PATH", &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start app");
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        match app.try_wait().unwrap() {
+            Some(_) => break,
+            None if Instant::now() > deadline => {
+                app.kill().ok();
+                panic!("app did not exit within 90s");
+            }
+            None => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+
+    let out = app.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "app failed:\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Echo reply:"),
+        "missing echo reply in app output:\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        registry.logs().contains("Received echo request: hello"),
+        "local registry rust service did not receive request:\n{}",
+        registry.logs()
+    );
 }

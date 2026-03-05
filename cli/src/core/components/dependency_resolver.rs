@@ -1,4 +1,5 @@
 use actr_config::Config;
+use actr_protocol::ActrTypeExt;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -33,7 +34,6 @@ impl DependencyResolver for DefaultDependencyResolver {
                     .service
                     .as_ref()
                     .map(|service| service.name.clone())
-                    .or_else(|| dependency.actr_type.as_ref().map(|ty| ty.name.clone()))
                     .unwrap_or_else(|| dependency.alias.clone()),
                 actr_type: dependency.actr_type.clone(),
                 fingerprint: dependency
@@ -55,9 +55,14 @@ impl DependencyResolver for DefaultDependencyResolver {
 
         for spec in specs {
             // Find matching service details
-            let matching_details = service_details
-                .iter()
-                .find(|details| details.info.name == spec.name);
+            let matching_details = service_details.iter().find(|details| {
+                details.info.name == spec.name
+                    || details.info.actr_type.to_string_repr() == spec.name
+                    || spec
+                        .actr_type
+                        .as_ref()
+                        .is_some_and(|ty| details.info.actr_type == *ty)
+            });
 
             let (fingerprint, proto_files) = match matching_details {
                 Some(details) => (

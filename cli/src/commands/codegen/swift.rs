@@ -5,6 +5,7 @@ use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{compare_versions, load_protoc_plugin_config, version_is_at_least};
 use crate::utils::{command_exists, to_pascal_case};
 use actr_config::LockFile;
+use actr_protocol::ActrTypeExt;
 use async_trait::async_trait;
 use handlebars::Handlebars;
 use serde::Serialize;
@@ -119,9 +120,8 @@ impl LanguageGenerator for SwiftGenerator {
                             dep.alias, dep.actr_type
                         );
                         if let Some(ref actr_type) = dep.actr_type {
-                            // Convert ActrType to string representation (manufacturer+name)
-                            actr_type_str =
-                                Some(format!("{}+{}", actr_type.manufacturer, actr_type.name));
+                            // Convert ActrType to canonical string representation.
+                            actr_type_str = Some(actr_type.to_string_repr());
                             debug!(
                                 "Got actr_type from Config: {}",
                                 actr_type_str.as_ref().unwrap()
@@ -183,15 +183,15 @@ impl LanguageGenerator for SwiftGenerator {
 
         if !remote_paths.is_empty() {
             options.push_str(&format!(",RemoteFiles={}", remote_paths.join(":")));
-            // Add RemoteFileActrTypes mapping: file1:actr_type1,file2:actr_type2
+            // Add RemoteFileActrTypes mapping: file1=actr_type1;file2=actr_type2
             if !remote_file_to_actr_type.is_empty() {
                 let actr_type_mappings: Vec<String> = remote_file_to_actr_type
                     .iter()
-                    .map(|(file, actr_type)| format!("{}:{}", file, actr_type))
+                    .map(|(file, actr_type)| format!("{}={}", file, actr_type))
                     .collect();
                 options.push_str(&format!(
                     ",RemoteFileActrTypes={}",
-                    actr_type_mappings.join(",")
+                    actr_type_mappings.join(";")
                 ));
             }
         }

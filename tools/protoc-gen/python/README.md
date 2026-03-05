@@ -193,7 +193,7 @@ protoc -I protos \
   --python_out=generated \
   --plugin=protoc-gen-actrpython=$(which framework_codegen_python) \
   --actrpython_out=generated \
-  --actrpython_opt=LocalFiles=local/client.proto,RemoteFileMapping=remote/server/server.proto=acme+ServerService \
+  --actrpython_opt=LocalFiles=local/client.proto,RemoteFileMapping=remote/server/server.proto=acme:ServerService \
   protos/local/client.proto protos/remote/server/server.proto
 ```
 

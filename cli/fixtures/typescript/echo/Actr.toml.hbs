@@ -16,7 +16,7 @@ name = "echo-client-app"
 {{#if IS_BOTH}}
 echo-service = {}
 {{else}}
-echo-echo-server = { actr_type = "acme+EchoService" }
+echo-echo-server = { actr_type = "acme:EchoService" }
 {{/if}}
 
 [system.signaling]
@@ -46,4 +46,4 @@ dev = "npm run dev"
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+EchoService"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService" } }]

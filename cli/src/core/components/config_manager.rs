@@ -7,8 +7,8 @@ use std::time::SystemTime;
 use tokio::fs;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::core::{ConfigBackup, ConfigManager, ConfigValidation, DependencySpec};
+use actr_config::ConfigParser;
 
 pub struct TomlConfigManager {
     config_path: PathBuf,
@@ -60,7 +60,7 @@ impl TomlConfigManager {
 #[async_trait]
 impl ConfigManager for TomlConfigManager {
     async fn load_config(&self, path: &Path) -> Result<Config> {
-        load_config_with_legacy_actr_type(path)
+        ConfigParser::from_file(path)
             .with_context(|| format!("Failed to parse config: {}", path.display()))
     }
 
@@ -129,7 +129,7 @@ impl ConfigManager for TomlConfigManager {
         let mut errors = Vec::new();
         let warnings = Vec::new();
 
-        let config = match load_config_with_legacy_actr_type(&self.config_path) {
+        let config = match ConfigParser::from_file(&self.config_path) {
             Ok(config) => config,
             Err(e) => {
                 errors.push(format!("Failed to parse config: {e}"));

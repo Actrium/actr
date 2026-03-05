@@ -197,7 +197,7 @@ impl LanguageGenerator for PythonGenerator {
 
         // 3. Build the unified options string using key=value format for better reliability
 
-        // Build RemoteFileMapping in format: path1=actr_type1:path2=actr_type2
+        // Build RemoteFileMapping in format: path1=actr_type1;path2=actr_type2
         let remote_file_mappings: Vec<String> = remote_files
             .iter()
             .filter_map(|f| {
@@ -225,7 +225,7 @@ impl LanguageGenerator for PythonGenerator {
             }
             options.push_str(&format!(
                 "RemoteFileMapping={}",
-                remote_file_mappings.join(":")
+                remote_file_mappings.join(";")
             ));
         }
 
@@ -831,49 +831,54 @@ mod tests {
         // Simulate adding entries from lock file
         remote_services_map.insert(
             "server/service.proto".to_string(),
-            "acme+TestServer".to_string(),
+            "acme:TestServer".to_string(),
         );
         remote_services_map.insert(
             "api/v1/api.proto".to_string(),
-            "custom+ApiService".to_string(),
+            "custom:ApiService".to_string(),
         );
 
         // Verify the mapping
         assert_eq!(remote_services_map.len(), 2);
         assert_eq!(
             remote_services_map.get("server/service.proto"),
-            Some(&"acme+TestServer".to_string())
+            Some(&"acme:TestServer".to_string())
         );
         assert_eq!(
             remote_services_map.get("api/v1/api.proto"),
-            Some(&"custom+ApiService".to_string())
+            Some(&"custom:ApiService".to_string())
         );
     }
 
     #[test]
     fn test_options_string_building() {
-        let manufacturer = "testco";
-        let remote_paths = ["remote/s1.proto".to_string(), "remote/s2.proto".to_string()];
-        let remote_actr_types = ["testco+S1".to_string(), "other+S2".to_string()];
+        let remote_file_mappings = [
+            "remote/s1.proto=testco:S1".to_string(),
+            "remote/s2.proto=other:S2".to_string(),
+        ];
         let local_paths = ["local.proto".to_string()];
 
-        let mut options = format!("manufacturer={}", manufacturer);
+        let mut options = String::new();
 
-        if !remote_paths.is_empty() {
-            options.push_str(&format!(",RemoteFiles={}", remote_paths.join(":")));
-            options.push_str(&format!(",RemoteActrTypes={}", remote_actr_types.join(":")));
+        if !remote_file_mappings.is_empty() {
+            options.push_str(&format!(
+                "RemoteFileMapping={}",
+                remote_file_mappings.join(";")
+            ));
         }
 
         if !local_paths.is_empty() {
-            options.push_str(&format!(",LocalFiles={}", local_paths.join(":")));
-            options.push_str(&format!(",LocalFile={}", local_paths[0]));
+            if !options.is_empty() {
+                options.push(',');
+            }
+            options.push_str(&format!("LocalFiles={}", local_paths.join(":")));
         }
 
-        assert!(options.contains("manufacturer=testco"));
-        assert!(options.contains("RemoteFiles=remote/s1.proto:remote/s2.proto"));
-        assert!(options.contains("RemoteActrTypes=testco+S1:other+S2"));
+        assert!(
+            options
+                .contains("RemoteFileMapping=remote/s1.proto=testco:S1;remote/s2.proto=other:S2")
+        );
         assert!(options.contains("LocalFiles=local.proto"));
-        assert!(options.contains("LocalFile=local.proto"));
     }
 
     #[test]
@@ -881,11 +886,11 @@ mod tests {
         let remote_services_map: HashMap<String, String> = [
             (
                 "service1/api.proto".to_string(),
-                "mfg1+Service1".to_string(),
+                "mfg1:Service1".to_string(),
             ),
             (
                 "service2/api.proto".to_string(),
-                "mfg2+Service2".to_string(),
+                "mfg2:Service2".to_string(),
             ),
         ]
         .iter()
@@ -896,7 +901,7 @@ mod tests {
         let path1 = "service1/api.proto";
         assert_eq!(
             remote_services_map.get(path1),
-            Some(&"mfg1+Service1".to_string())
+            Some(&"mfg1:Service1".to_string())
         );
 
         // Test unmatched path (should return None)

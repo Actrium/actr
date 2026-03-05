@@ -77,16 +77,16 @@ pub struct RawActrType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RawDependency {
-    /// 已指定 ActrType 的依赖（必须先匹配，因为它有 required 的 `type` 字段）
+    /// 已指定 ActrType 的依赖（必须先匹配，因为它有 required 的 `actr_type` 字段）
     ///
     /// Example:
     /// ```toml
     /// [dependencies]
-    /// echo = { type = "acme:echo-service:1.0.0", service = "EchoService:abc1f3d" }
+    /// echo = { actr_type = "acme:echo-service:1.0.0", service = "EchoService:abc1f3d" }
     /// ```
     Specified {
         /// Full ActrType string: "manufacturer:name:version"
-        #[serde(rename = "type")]
+        #[serde(rename = "actr_type")]
         actr_type: String,
 
         /// Optional strict service reference: "ServiceName:fingerprint".
@@ -323,7 +323,7 @@ name = "test"
 manufacturer = "acme"
 name = "test"
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
+shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
         let config = RawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
@@ -350,7 +350,7 @@ name = "test"
 manufacturer = "acme"
 name = "test"
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0" }
+shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;
         let config = RawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();

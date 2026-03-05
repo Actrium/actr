@@ -1,9 +1,9 @@
 //! Run command implementation
 
 use crate::commands::Command;
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::error::{ActrCliError, Result};
 use crate::utils::{execute_command_streaming, is_actr_project, warn_if_not_actr_project};
+use actr_config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
 use tracing::info;
@@ -26,7 +26,7 @@ impl Command for RunCommand {
 
         // Load configuration if available
         let config = if is_actr_project() {
-            Some(load_config_with_legacy_actr_type("Actr.toml")?)
+            Some(ConfigParser::from_file("Actr.toml")?)
         } else {
             None
         };

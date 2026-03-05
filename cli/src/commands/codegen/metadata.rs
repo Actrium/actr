@@ -1,6 +1,7 @@
 use crate::commands::SupportedLanguage;
 use crate::commands::codegen::proto_model::{MethodModel, ProtoModel, ServiceModel};
 use crate::error::{ActrCliError, Result};
+use actr_protocol::{ActrType, ActrTypeExt};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -128,10 +129,14 @@ fn build_remote_service_metadata(service: &ServiceModel) -> RemoteServiceMetadat
         name: service.name.clone(),
         package: service.package.clone(),
         proto_file: service.relative_path.to_string_lossy().to_string(),
-        actr_type: service
-            .actr_type
-            .clone()
-            .unwrap_or_else(|| format!("acme+{}", service.name)),
+        actr_type: service.actr_type.clone().unwrap_or_else(|| {
+            ActrType {
+                manufacturer: "acme".to_string(),
+                name: service.name.clone(),
+                version: None,
+            }
+            .to_string_repr()
+        }),
         client_type: format!("{}Client", service.name),
         methods: service.methods.iter().map(build_method_metadata).collect(),
     }

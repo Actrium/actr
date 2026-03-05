@@ -13,7 +13,7 @@ manufacturer = "{{MANUFACTURER}}"
 name = "echo-client-app"
 
 [dependencies]
-echo-echo-server = { actr_type = "{{MANUFACTURER}}+EchoService" }
+echo-echo-server = { actr_type = "{{MANUFACTURER}}:EchoService" }
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
@@ -43,4 +43,4 @@ test = "xcodebuild test"
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+EchoService"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService" } }]

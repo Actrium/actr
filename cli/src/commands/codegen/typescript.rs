@@ -5,6 +5,7 @@ use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::command_exists;
 use actr_config::LockFile;
+use actr_protocol::{ActrType, ActrTypeExt};
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -155,7 +156,7 @@ impl LanguageGenerator for TypeScriptGenerator {
                 .map(|(path, actr_type)| format!("{path}={actr_type}"))
                 .collect();
             sorted_mapping.sort();
-            options.push(format!("RemoteFileMapping={}", sorted_mapping.join(":")));
+            options.push(format!("RemoteFileMapping={}", sorted_mapping.join(";")));
         }
         options.push("DistImport=@actor-rtc/actr".to_string());
         let option_str = options.join(",");
@@ -1291,7 +1292,7 @@ impl TypeScriptGenerator {
             })?;
             result.insert(
                 remote_file.clone(),
-                normalize_actr_type_for_typescript_plugin(actr_type),
+                normalize_actr_type_for_typescript_plugin(actr_type)?,
             );
         }
 
@@ -1299,20 +1300,11 @@ impl TypeScriptGenerator {
     }
 }
 
-fn normalize_actr_type_for_typescript_plugin(raw: &str) -> String {
-    if let Some((manufacturer, rest)) = raw.split_once('+') {
-        let service_name = rest.split(':').next().unwrap_or(rest);
-        return format!("{manufacturer}+{service_name}");
-    }
-
-    let mut parts = raw.splitn(3, ':');
-    let manufacturer = parts.next().unwrap_or(raw);
-    let service_name = parts.next().unwrap_or("");
-    if service_name.is_empty() {
-        raw.to_string()
-    } else {
-        format!("{manufacturer}+{service_name}")
-    }
+fn normalize_actr_type_for_typescript_plugin(raw: &str) -> Result<String> {
+    let parsed = ActrType::from_string_repr(raw).map_err(|e| {
+        ActrCliError::config_error(format!("Invalid actr_type '{raw}' in Actr.lock.toml: {e}"))
+    })?;
+    Ok(parsed.to_string_repr())
 }
 
 /// Post-process generated directory:

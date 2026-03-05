@@ -366,7 +366,9 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
     // TODO: improve the performance of this method
     async fn check_service_availability(&self, name: &str) -> Result<AvailabilityStatus> {
         let entries = self.discover_entries(None).await?;
-        let available = entries.iter().any(|entry| entry.name == name);
+        let available = entries
+            .iter()
+            .any(|entry| entry.name == name || Self::format_actr_type(&entry.actr_type) == name);
 
         Ok(AvailabilityStatus {
             is_available: available,

@@ -1,6 +1,7 @@
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use actr_config::Config;
+use actr_protocol::{ActrType, ActrTypeExt};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -59,12 +60,10 @@ impl ProtoModel {
             .dependencies
             .iter()
             .filter_map(|dependency| {
-                dependency.actr_type.as_ref().map(|actr_type| {
-                    (
-                        dependency.alias.clone(),
-                        format!("{}+{}", actr_type.manufacturer, actr_type.name),
-                    )
-                })
+                dependency
+                    .actr_type
+                    .as_ref()
+                    .map(|actr_type| (dependency.alias.clone(), actr_type.to_string_repr()))
             })
             .collect();
 
@@ -178,7 +177,14 @@ fn infer_remote_actr_type(
         return Some(actr_type.clone());
     }
 
-    service_name.map(|service_name| format!("{default_manufacturer}+{service_name}"))
+    service_name.map(|service_name| {
+        ActrType {
+            manufacturer: default_manufacturer.to_string(),
+            name: service_name.to_string(),
+            version: None,
+        }
+        .to_string_repr()
+    })
 }
 
 fn parse_proto_file(proto_file: &Path) -> Result<ParsedProtoFile> {

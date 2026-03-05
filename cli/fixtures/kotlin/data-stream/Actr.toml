@@ -11,7 +11,7 @@ name = "StreamEchoClient"
 authors = []
 
 [dependencies]
-stream-echo-server-python = { actr_type = "{{MANUFACTURER}}+StreamEchoServer" }
+stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer" }
 
 [system.signaling]
 url = "{{SIGNALING_URL}}"
@@ -32,7 +32,7 @@ visible = false
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+StreamEchoServer"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer" } }]
 
 [scripts]
 dev = "./gradlew assembleDebug"

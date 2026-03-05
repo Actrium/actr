@@ -698,7 +698,7 @@ name = "test"
 version = "1.0.0"
 
 [dependencies]
-shared = { type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
+shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 
 [system.signaling]
 url = "ws://localhost:8081"

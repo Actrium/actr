@@ -158,7 +158,7 @@ name = "remote-only"
 manufacturer = "acme"
 name = "RemoteApp"
 [dependencies]
-echo-service = { actr_type = "acme+EchoService" }
+echo-service = { actr_type = "acme:EchoService" }
 
 [system.signaling]
 url = "wss://localhost:8080"
@@ -180,7 +180,7 @@ name = "both"
 manufacturer = "acme"
 name = "BothService"
 [dependencies]
-echo-service = { actr_type = "acme+EchoService" }
+echo-service = { actr_type = "acme:EchoService" }
 
 [system.signaling]
 url = "wss://localhost:8080"
@@ -202,8 +202,8 @@ name = "both-two-remotes"
 manufacturer = "acme"
 name = "BothTwoRemotesService"
 [dependencies]
-echo-service = { actr_type = "acme+EchoService" }
-profile-service = { actr_type = "acme+ProfileService" }
+echo-service = { actr_type = "acme:EchoService" }
+profile-service = { actr_type = "acme:ProfileService" }
 
 [system.signaling]
 url = "wss://localhost:8080"
@@ -235,7 +235,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme+EchoService"
+actr_type = "acme:EchoService"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -255,7 +255,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme+EchoService"
+actr_type = "acme:EchoService"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -264,7 +264,7 @@ files = [
 
 [[dependency]]
 name = "profile-service"
-actr_type = "acme+ProfileService"
+actr_type = "acme:ProfileService"
 fingerprint = "service_semantic:789"
 cached_at = "2026-03-03T00:00:00Z"
 files = [

@@ -90,7 +90,7 @@ class {{WORKLOAD_NAME}}(WorkloadBase):
         logger.info("🚀 客户端工作负载 {{WORKLOAD_NAME}} 启动")
         # TODO: 在这里添加你的客户端逻辑
         # 例如: 调用远程服务
-        # dest = Dest.actor(ActrType.parse("acme+RemoteService"), "instance-id")
+        # dest = Dest.actor(ActrType.parse("acme:RemoteService"), "instance-id")
         # response = await ctx.call_raw(dest, "MethodName", request_pb.SerializeToString())
 
     async def on_stop(self, ctx: Context) -> None:

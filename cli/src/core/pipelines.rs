@@ -3,6 +3,7 @@
 //! 定义了三个核心操作管道，实现命令间的逻辑复用
 
 use actr_config::{LockFile, LockedDependency, ProtoFileMeta, ServiceSpecMeta};
+use actr_protocol::ActrTypeExt;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -108,6 +109,13 @@ impl ValidationPipeline {
         &self.config_manager
     }
 
+    fn dependency_lookup_key(spec: &DependencySpec) -> String {
+        spec.actr_type
+            .as_ref()
+            .map(|actr_type| actr_type.to_string_repr())
+            .unwrap_or_else(|| spec.name.clone())
+    }
+
     /// 完整的项目验证流程
     pub async fn validate_project(&self) -> Result<ValidationReport> {
         // 1. 配置文件验证
@@ -139,7 +147,12 @@ impl ValidationPipeline {
 
         let mut service_details = Vec::new();
         for spec in &dependency_specs {
-            match self.service_discovery.get_service_details(&spec.name).await {
+            let lookup_key = Self::dependency_lookup_key(spec);
+            match self
+                .service_discovery
+                .get_service_details(&lookup_key)
+                .await
+            {
                 Ok(details) => service_details.push(details),
                 Err(_) => {
                     // Service might not be available, continue without details
@@ -195,14 +208,15 @@ impl ValidationPipeline {
         let mut validation_cache: HashMap<String, (bool, Option<String>)> = HashMap::new();
 
         for spec in specs {
+            let lookup_key = Self::dependency_lookup_key(spec);
             // Check cache first - if we already validated this service name, reuse the result
-            let (is_available, error) = if let Some(cached) = validation_cache.get(&spec.name) {
+            let (is_available, error) = if let Some(cached) = validation_cache.get(&lookup_key) {
                 cached.clone()
             } else {
                 // Perform validation
                 let (available, err) = match self
                     .service_discovery
-                    .check_service_availability(&spec.name)
+                    .check_service_availability(&lookup_key)
                     .await
                 {
                     Ok(status) => {
@@ -212,7 +226,7 @@ impl ValidationPipeline {
                             // Provide meaningful error when service is not found
                             (
                                 false,
-                                Some(format!("Service '{}' not found in registry", spec.name)),
+                                Some(format!("Service '{}' not found in registry", lookup_key)),
                             )
                         }
                     }
@@ -220,7 +234,7 @@ impl ValidationPipeline {
                 };
 
                 // Cache the result for this service name
-                validation_cache.insert(spec.name.clone(), (available, err.clone()));
+                validation_cache.insert(lookup_key, (available, err.clone()));
                 (available, err)
             };
 
@@ -288,9 +302,10 @@ impl ValidationPipeline {
 
             // 计算实际指纹（如果 resolved_dependencies 中没有指纹，从远程获取）
             let actual_fp = if dep.fingerprint.is_empty() {
+                let lookup_key = Self::dependency_lookup_key(&dep.spec);
                 match self
                     .service_discovery
-                    .get_service_details(&dep.spec.name)
+                    .get_service_details(&lookup_key)
                     .await
                 {
                     Ok(details) => {
@@ -435,11 +450,12 @@ impl InstallPipeline {
         let mut installed_services: HashSet<String> = HashSet::new();
 
         for spec in specs {
+            let lookup_key = ValidationPipeline::dependency_lookup_key(spec);
             // Skip if we already installed this service (by name)
-            if installed_services.contains(&spec.name) {
+            if installed_services.contains(&lookup_key) {
                 tracing::debug!(
                     "Skipping duplicate service '{}' (alias: '{}')",
-                    spec.name,
+                    lookup_key,
                     spec.alias
                 );
                 continue;
@@ -449,7 +465,7 @@ impl InstallPipeline {
             let service_details = self
                 .validation_pipeline
                 .service_discovery
-                .get_service_details(&spec.name)
+                .get_service_details(&lookup_key)
                 .await?;
 
             // 2. 构建 resolved_spec，确保包含 actr_type
@@ -482,7 +498,7 @@ impl InstallPipeline {
             result.installed_dependencies.push(resolved_dep);
 
             // Mark this service as installed
-            installed_services.insert(spec.name.clone());
+            installed_services.insert(lookup_key);
         }
 
         // 4. 更新锁文件 (lock file also deduplicates by name)
@@ -543,10 +559,7 @@ impl InstallPipeline {
             let actr_type = dep.spec.actr_type.clone().ok_or_else(|| {
                 anyhow::anyhow!("Actr type is required for dependency: {}", service_name)
             })?;
-            let locked_dep = LockedDependency::new(
-                format!("{}+{}", actr_type.manufacturer, actr_type.name),
-                spec,
-            );
+            let locked_dep = LockedDependency::new(actr_type.to_string_repr(), spec);
             lock_file.add_dependency(locked_dep);
         }
 

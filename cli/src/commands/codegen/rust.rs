@@ -195,7 +195,7 @@ impl RustGenerator {
             opt_str.push_str(&format!(",RemoteFiles={}", remote_paths.join(":")));
         }
 
-        // Build RemoteFileActrTypes mapping: file1:actr_type1,file2:actr_type2
+        // Build RemoteFileActrTypes mapping: file1=actr_type1;file2=actr_type2
         if !remote_paths.is_empty() {
             let remote_file_actr_types = self.build_remote_file_actr_types(context)?;
             if !remote_file_actr_types.is_empty() {
@@ -399,7 +399,7 @@ impl RustGenerator {
     }
 
     /// Build RemoteFileActrTypes parameter for protoc plugin
-    /// Format: file1:actr_type1,file2:actr_type2
+    /// Format: file1=actr_type1;file2=actr_type2
     fn build_remote_file_actr_types(&self, context: &GenContext) -> Result<String> {
         let mut mappings = Vec::new();
 
@@ -408,7 +408,7 @@ impl RustGenerator {
                 && let Some(actr_type) = &service.actr_type
             {
                 mappings.push(format!(
-                    "{}:{}",
+                    "{}={}",
                     file.proto_file.to_string_lossy(),
                     actr_type
                 ));
@@ -416,7 +416,7 @@ impl RustGenerator {
         }
 
         mappings.sort();
-        Ok(mappings.join(","))
+        Ok(mappings.join(";"))
     }
 
     async fn generate_service_scaffold(
@@ -752,7 +752,7 @@ mod tests {{
         let current_dir = std::env::current_dir()?;
         let workspace_root = current_dir.ancestors().find(|p| {
             let is_workspace =
-                p.join("Cargo.toml").exists() && p.join("crates/framework-protoc-codegen").exists();
+                p.join("Cargo.toml").exists() && p.join("tools/protoc-gen/rust").exists();
             if is_workspace {
                 debug!("Found workspace root: {:?}", p);
             }
@@ -768,11 +768,16 @@ mod tests {{
         }
 
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(parent_workspace) = manifest_dir.parent()
+            && parent_workspace.join("Cargo.toml").exists()
+            && parent_workspace.join("tools/protoc-gen/rust").exists()
+        {
+            return Ok(Some(parent_workspace.to_path_buf()));
+        }
+
         let sibling_workspace = manifest_dir.join("../actr");
         if sibling_workspace.join("Cargo.toml").exists()
-            && sibling_workspace
-                .join("crates/framework-protoc-codegen")
-                .exists()
+            && sibling_workspace.join("tools/protoc-gen/rust").exists()
         {
             return Ok(Some(sibling_workspace));
         }
@@ -786,7 +791,7 @@ mod tests {{
         install_cmd
             .arg("install")
             .arg("--path")
-            .arg(workspace_root.join("crates/framework-protoc-codegen"))
+            .arg(workspace_root.join("tools/protoc-gen/rust"))
             .arg("--bin")
             .arg("protoc-gen-actrframework")
             .arg("--force");
@@ -993,7 +998,7 @@ mod tests {{
 mod tests {
     use super::RustGenerator;
     use crate::commands::codegen::{GenContext, ProtoModel};
-    use crate::config_compat::load_config_with_legacy_actr_type;
+    use actr_config::ConfigParser;
     use tempfile::TempDir;
 
     #[test]
@@ -1034,7 +1039,7 @@ manufacturer = "acme"
 name = "Demo"
 
 [dependencies]
-echo = { actr_type = "remote+EchoService" }
+echo = { actr_type = "remote:EchoService" }
 
 [system.signaling]
 url = "ws://127.0.0.1:8080"
@@ -1045,7 +1050,7 @@ realm_id = 1001
         )
         .unwrap();
 
-        let config = load_config_with_legacy_actr_type(&config_path).unwrap();
+        let config = ConfigParser::from_file(&config_path).unwrap();
         let proto_files = vec![local_proto, remote_proto];
         let proto_model = ProtoModel::parse(&proto_files, &proto_root, &config).unwrap();
 
@@ -1066,7 +1071,7 @@ realm_id = 1001
         let mappings = RustGenerator
             .build_remote_file_actr_types(&context)
             .unwrap();
-        assert!(mappings.contains("echo.proto:"));
+        assert!(mappings.contains("echo.proto="));
         assert!(mappings.contains("EchoService"));
     }
 }

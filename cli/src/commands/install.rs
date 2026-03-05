@@ -20,14 +20,14 @@ use std::process::Command as StdCommand;
 #[derive(Args, Debug)]
 #[command(
     about = "Install service dependencies",
-    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in Actr.toml.\n\nExamples:\n  actr install                          # Install all dependencies from Actr.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme+EchoService  # Install with alias and explicit actr_type"
+    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in Actr.toml.\n\nExamples:\n  actr install                          # Install all dependencies from Actr.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
 )]
 pub struct InstallCommand {
     /// Package name or alias (when used with --actr-type, this becomes the alias)
     #[arg(value_name = "PACKAGE")]
     pub packages: Vec<String>,
 
-    /// Actor type for the dependency (format: manufacturer+name, e.g., acme+EchoService).
+    /// Actor type for the dependency (format: manufacturer:name[:version], e.g., acme:EchoService).
     /// When specified, the PACKAGE argument is treated as an alias.
     #[arg(long, value_name = "TYPE")]
     pub actr_type: Option<String>,
@@ -102,7 +102,7 @@ impl Command for InstallCommand {
             let actr_type = ActrType::from_string_repr(actr_type_str).map_err(|_| {
                 ActrCliError::InvalidArgument {
                     message: format!(
-                        "Invalid actr_type format '{}'. Expected format: manufacturer+name (e.g., acme+EchoService)",
+                        "Invalid actr_type format '{}'. Expected format: manufacturer:name[:version] (e.g., acme:EchoService)",
                         actr_type_str
                     ),
                 }
@@ -216,6 +216,13 @@ impl InstallCommand {
     /// Check if in Actor-RTC project
     fn is_actr_project(&self) -> bool {
         std::path::Path::new("Actr.toml").exists()
+    }
+
+    fn dependency_lookup_key(spec: &DependencySpec) -> String {
+        spec.actr_type
+            .as_ref()
+            .map(|actr_type| actr_type.to_string_repr())
+            .unwrap_or_else(|| spec.name.clone())
     }
 
     /// Execute Mode 1: Add new package (actr install <package>)
@@ -741,7 +748,6 @@ impl InstallCommand {
                     .service
                     .as_ref()
                     .map(|service| service.name.clone())
-                    .or_else(|| dependency.actr_type.as_ref().map(|ty| ty.name.clone()))
                     .unwrap_or_else(|| dependency.alias.clone()),
                 fingerprint: dependency
                     .service
@@ -797,7 +803,8 @@ impl InstallCommand {
             };
 
             // Get current service details
-            let current_service = match service_discovery.get_service_details(&spec.name).await {
+            let lookup_key = Self::dependency_lookup_key(spec);
+            let current_service = match service_discovery.get_service_details(&lookup_key).await {
                 Ok(s) => s,
                 Err(e) => {
                     mismatches.push(format!(
@@ -839,7 +846,8 @@ impl InstallCommand {
             }
 
             // Get current service fingerprint
-            let current_service = match service_discovery.get_service_details(&spec.name).await {
+            let lookup_key = Self::dependency_lookup_key(spec);
+            let current_service = match service_discovery.get_service_details(&lookup_key).await {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -912,7 +920,8 @@ impl InstallCommand {
 
             // Get current service details from the registry
             let service_discovery = install_pipeline.validation_pipeline().service_discovery();
-            let current_service = match service_discovery.get_service_details(&spec.name).await {
+            let lookup_key = Self::dependency_lookup_key(spec);
+            let current_service = match service_discovery.get_service_details(&lookup_key).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("Failed to get service details for '{}': {}", spec.name, e);

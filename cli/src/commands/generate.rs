@@ -6,10 +6,10 @@
 use crate::commands::Command;
 use crate::commands::SupportedLanguage;
 use crate::commands::codegen::{GenContext, ProtoModel, execute_codegen};
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::error::{ActrCliError, Result};
 use crate::project_language::DetectedProjectLanguage;
 use crate::utils::to_pascal_case;
+use actr_config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -78,7 +78,7 @@ impl Command for GenCommand {
             "🚀 Start code generation (language: {:?})...",
             self.language
         );
-        let config = load_config_with_legacy_actr_type(&self.config)
+        let config = ConfigParser::from_file(&self.config)
             .map_err(|e| ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}")))?;
 
         let proto_files = self.preprocess()?;
@@ -169,7 +169,7 @@ impl GenCommand {
 
         match self.language {
             SupportedLanguage::Swift => {
-                let config = load_config_with_legacy_actr_type(&self.config).map_err(|e| {
+                let config = ConfigParser::from_file(&self.config).map_err(|e| {
                     ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}"))
                 })?;
                 let project_name = &config.package.name;
@@ -177,7 +177,7 @@ impl GenCommand {
                 Ok(PathBuf::from(format!("{}/Generated", pascal_name)))
             }
             SupportedLanguage::Kotlin => {
-                let config = load_config_with_legacy_actr_type(&self.config).map_err(|e| {
+                let config = ConfigParser::from_file(&self.config).map_err(|e| {
                     ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}"))
                 })?;
                 let clean_name: String = config

@@ -4,7 +4,6 @@
 
 pub mod assets;
 pub mod commands;
-pub(crate) mod config_compat;
 pub mod core;
 pub mod error;
 pub mod plugin_config;

@@ -11,6 +11,7 @@ tags = ["dev", "service"]
 [package.actr_type]
 manufacturer = "{{MANUFACTURER}}"
 name = "EchoService"
+version = "v1"
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
@@ -39,4 +40,4 @@ dev = "npm run dev"
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+echo-client-app"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "echo-client-app" } }]

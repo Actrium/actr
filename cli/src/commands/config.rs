@@ -8,9 +8,10 @@
 //! - `actr config unset <key>` - Remove a configuration value
 //! - `actr config test` - Test configuration file syntax
 
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use actr_config::ConfigParser;
 use actr_config::RawConfig;
+use actr_protocol::ActrTypeExt;
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use clap::{Args, Subcommand};
@@ -296,7 +297,7 @@ impl ConfigCommand {
         };
 
         // Test 2: Full parsing and validation
-        match load_config_with_legacy_actr_type(config_path) {
+        match ConfigParser::from_file(config_path) {
             Ok(config) => {
                 output.push_str(&format!(
                     "{} Configuration validation passed\n",
@@ -307,9 +308,8 @@ impl ConfigCommand {
                 output.push_str(&format!("\n{} Configuration Summary:\n", "📋".cyan()));
                 output.push_str(&format!("  Package: {}\n", config.package.name.yellow()));
                 output.push_str(&format!(
-                    "  ActrType: {}+{}\n",
-                    config.package.actr_type.manufacturer.cyan(),
-                    config.package.actr_type.name.cyan()
+                    "  ActrType: {}\n",
+                    config.package.actr_type.to_string_repr().cyan()
                 ));
 
                 if let Some(desc) = &config.package.description {

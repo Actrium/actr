@@ -13,7 +13,7 @@ manufacturer = "{{MANUFACTURER}}"
 name = "StreamEchoClient"
 
 [dependencies]
-stream-echo-server-python = { actr_type = "{{MANUFACTURER}}+StreamEchoServer" }
+stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer" }
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}"
@@ -43,4 +43,4 @@ test = "xcodebuild test"
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+StreamEchoServer"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer" } }]

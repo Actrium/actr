@@ -33,7 +33,7 @@ echo-echo-server = {}
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+EchoService"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService" } }]
 
 [scripts]
 dev = "python client.py --actr-toml Actr.toml client-1 \"hello\""

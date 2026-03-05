@@ -73,12 +73,12 @@ impl Command for InitCommand {
             ));
         }
 
-        // role=service with default manufacturer will register as 'acme+EchoService', which
+        // role=service with default manufacturer will register as 'acme:EchoService', which
         // conflicts with the public echo service on the same signaling server.
         if matches!(echo_role, Some(EchoRole::Service)) && manufacturer == DEFAULT_MANUFACTURER {
             println!(
                 "⚠️  Warning: using default manufacturer 'acme' with role=service will register\n\
-                 this service as 'acme+EchoService', which conflicts with the public echo service\n\
+                 this service as 'acme:EchoService', which conflicts with the public echo service\n\
                  on the same signaling server and may cause interference.\n\
                  Consider using a custom manufacturer: --manufacturer <your-org-name>"
             );

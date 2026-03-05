@@ -23,12 +23,12 @@ def main() -> int:
     local_files_str = parameters.get("LocalFiles", "")
     local_files_set = set(f for f in local_files_str.split(":") if f)
     
-    # Parse RemoteFileMapping in format: path1=actr_type1:path2=actr_type2
+    # Parse RemoteFileMapping in format: path1=actr_type1;path2=actr_type2
     remote_mapping_str = parameters.get("RemoteFileMapping", "")
     remote_file_to_actr_type: Dict[str, str] = {}
     
     if remote_mapping_str:
-        for pair in remote_mapping_str.split(":"):
+        for pair in remote_mapping_str.split(";"):
             if "=" in pair:
                 file_path, actr_type = pair.split("=", 1)
                 if file_path and actr_type:

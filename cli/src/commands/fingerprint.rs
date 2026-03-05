@@ -2,8 +2,8 @@
 //!
 //! Computes and displays semantic fingerprints for proto files
 
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use actr_config::ConfigParser;
 use actr_version::{Fingerprint, ProtoFile};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -118,7 +118,7 @@ async fn execute_proto_fingerprint(args: &FingerprintCommand, proto_path: &str) 
 async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
     // Load configuration
     let config_path = Path::new(&args.config);
-    let config = load_config_with_legacy_actr_type(config_path)
+    let config = ConfigParser::from_file(config_path)
         .with_context(|| format!("Failed to load config from {}", args.config))?;
 
     // Convert actr_config::ProtoFile to actr_version::ProtoFile

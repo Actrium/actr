@@ -3,10 +3,10 @@
 //! The check command validates that services are available in the registry
 //! and optionally verifies they match the configured dependencies.
 
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::core::{
     Command, CommandContext, CommandResult, ComponentType, DependencySpec, NetworkCheckOptions,
 };
+use actr_config::ConfigParser;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use clap::Args;
@@ -68,7 +68,7 @@ impl Command for CheckCommand {
             return Ok(CommandResult::Error(msg));
         }
 
-        let config = load_config_with_legacy_actr_type(config_path)
+        let config = ConfigParser::from_file(config_path)
             .with_context(|| format!("Failed to load config: {}", config_path))?;
 
         println!(

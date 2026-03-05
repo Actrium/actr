@@ -207,7 +207,7 @@ public actor {{SERVICE_NAME}}HandlerImpl: {{SERVICE_NAME}}Handler {
         messageCount: Int32,
         ctx: Actr.Context
     ) async throws -> StreamServer_RegisterStreamResponse {
-        let targetType = try ActrType.fromStringRepr("{{MANUFACTURER}}+StreamEchoServer")
+        let targetType = try ActrType.fromStringRepr("{{MANUFACTURER}}:StreamEchoServer")
         let targetId = try await ctx.discover(targetType: targetType)
 
         var request = StreamServer_RegisterStreamRequest()

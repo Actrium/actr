@@ -4,10 +4,10 @@
 
 use crate::assets::FixtureAssets;
 use crate::commands::Command;
-use crate::config_compat::load_config_with_legacy_actr_type;
 use crate::error::{ActrCliError, Result};
 use crate::project_language::DetectedProjectLanguage;
 use actr_config::Config;
+use actr_config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
 use handlebars::Handlebars;
@@ -92,7 +92,7 @@ impl Command for DocCommand {
 
         // Load project configuration
         let config = if Path::new("Actr.toml").exists() {
-            Some(load_config_with_legacy_actr_type("Actr.toml")?)
+            Some(ConfigParser::from_file("Actr.toml")?)
         } else {
             None
         };

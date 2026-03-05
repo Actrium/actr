@@ -2,6 +2,7 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use actr_config::LockFile;
+use actr_protocol::{ActrType, ActrTypeExt};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -327,9 +328,9 @@ impl KotlinGenerator {
         })
     }
 
-    /// Load Actr.lock.toml and build a mapping from dependency name to actr_type
+    /// Load Actr.lock.toml and build a mapping from dependency name to canonical actr_type.
     /// Returns a HashMap where key is the dependency name (e.g., "echo-real-server")
-    /// and value is the actr_type (e.g., "EchoService")
+    /// and value is the actr_type (e.g., "acme:EchoService")
     #[allow(dead_code)]
     fn load_actr_type_map(&self, context: &GenContext) -> Result<HashMap<String, String>> {
         // Find project root by looking for Actr.lock.toml relative to input path
@@ -358,22 +359,11 @@ impl KotlinGenerator {
             ))
         })?;
 
-        // Build the mapping: dependency name -> actr_type (converted to service name format)
+        // Build the mapping: dependency name -> canonical actr_type
         let mut map = HashMap::new();
         for dep in &lock_file.dependencies {
-            // actr_type is in format "acme+EchoService", extract the service name part
-            let actr_type = &dep.actr_type;
-            let service_name = if let Some(pos) = actr_type.find('+') {
-                actr_type[pos + 1..].to_string()
-            } else {
-                actr_type.clone()
-            };
-
-            debug!(
-                "load_actr_type_map: {} -> {} (from actr_type: {})",
-                dep.name, service_name, dep.actr_type
-            );
-            map.insert(dep.name.clone(), service_name);
+            debug!("load_actr_type_map: {} -> {}", dep.name, dep.actr_type);
+            map.insert(dep.name.clone(), dep.actr_type.clone());
         }
 
         info!("📦 Loaded {} dependencies from Actr.lock.toml", map.len());
@@ -407,12 +397,7 @@ impl KotlinGenerator {
                         .unwrap_or("unknown.proto")
                         .to_string(),
                     is_local: service.side == crate::commands::codegen::ProtoSide::Local,
-                    remote_target_type: service.actr_type.as_ref().map(|actr_type| {
-                        actr_type
-                            .split_once('+')
-                            .map(|(_, name)| name.to_string())
-                            .unwrap_or_else(|| actr_type.clone())
-                    }),
+                    remote_target_type: service.actr_type.clone(),
                     methods: service
                         .methods
                         .iter()
@@ -433,7 +418,7 @@ impl KotlinGenerator {
         &self,
         services: &[ServiceInfo],
         kotlin_package: &str,
-    ) -> String {
+    ) -> Result<String> {
         let local_services: Vec<_> = services.iter().filter(|s| s.is_local).collect();
         let remote_services: Vec<_> = services.iter().filter(|s| !s.is_local).collect();
 
@@ -503,14 +488,14 @@ import io.actor_rtc.actr.RpcEnvelopeBridge
 
         // Generate RemoteServiceRegistry for remote service discovery
         if !remote_services.is_empty() {
-            code.push_str(&self.generate_remote_service_registry(&remote_services));
+            code.push_str(&self.generate_remote_service_registry(&remote_services)?);
             code.push('\n');
         }
 
         // Generate UnifiedDispatcher
         code.push_str(&self.generate_unified_dispatcher(&local_services, &remote_services));
 
-        code
+        Ok(code)
     }
 
     /// Generate UnifiedHandler interface
@@ -535,7 +520,7 @@ interface UnifiedHandler : {} {{
     }
 
     /// Generate RemoteServiceRegistry for managing remote service discovery
-    fn generate_remote_service_registry(&self, remote_services: &[&ServiceInfo]) -> String {
+    fn generate_remote_service_registry(&self, remote_services: &[&ServiceInfo]) -> Result<String> {
         let mut code = String::new();
 
         code.push_str(
@@ -553,15 +538,23 @@ object RemoteServiceRegistry {
         );
 
         for service in remote_services {
-            let actor_type = service
-                .remote_target_type
-                .as_ref()
-                .unwrap_or(&service.service_name);
+            let actor_type_raw = service.remote_target_type.as_ref().ok_or_else(|| {
+                ActrCliError::config_error(format!(
+                    "Missing actr_type for remote service '{}'",
+                    service.service_name
+                ))
+            })?;
+            let actor_type = ActrType::from_string_repr(actor_type_raw).map_err(|e| {
+                ActrCliError::config_error(format!(
+                    "Invalid remote actr_type '{}' for service '{}': {}",
+                    actor_type_raw, service.service_name, e
+                ))
+            })?;
             // Extract service base name without "Service" suffix for route key
             let service_base = service.service_name.replace("Service", "");
             code.push_str(&format!(
-                "        \"{}.{}\" to ActrType(manufacturer = \"acme\", name = \"{}\"),\n",
-                service.proto_package, service_base, actor_type
+                "        \"{}.{}\" to ActrType(manufacturer = \"{}\", name = \"{}\"),\n",
+                service.proto_package, service_base, actor_type.manufacturer, actor_type.name
             ));
         }
 
@@ -585,7 +578,7 @@ object RemoteServiceRegistry {
 "#,
         );
 
-        code
+        Ok(code)
     }
 
     /// Generate UnifiedDispatcher
@@ -787,7 +780,7 @@ impl LanguageGenerator for KotlinGenerator {
         );
 
         // Generate unified infrastructure file
-        let unified_code = self.generate_unified_infrastructure(&services, &kotlin_package);
+        let unified_code = self.generate_unified_infrastructure(&services, &kotlin_package)?;
         let unified_file = context.output.join("unified_actor.kt");
         std::fs::write(&unified_file, &unified_code).map_err(|e| {
             ActrCliError::config_error(format!("Failed to write unified_actor.kt: {e}"))

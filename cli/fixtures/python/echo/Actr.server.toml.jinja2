@@ -11,6 +11,7 @@ tags = ["dev", "example", "python"]
 [package.actr_type]
 manufacturer = "{{MANUFACTURER}}"
 name = "EchoService"
+version = "v1"
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
@@ -31,7 +32,7 @@ visible = true
 
 [[acl.rules]]
 permission = "allow"
-types = ["{{MANUFACTURER}}+echo-client-app"]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "echo-client-app" } }]
 
 [scripts]
 dev = "python server.py --actr-toml Actr.toml"

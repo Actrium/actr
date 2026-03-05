@@ -430,7 +430,7 @@ impl<W: Workload> ActrNode<W> {
             ));
         }
 
-        let service_name = format!("{}/{}", target_type.manufacturer, target_type.name);
+        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Step 0: Fast Path - Check compat.lock.toml for cached negotiation
@@ -567,17 +567,12 @@ impl<W: Workload> ActrNode<W> {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Try different name formats to find the dependency
-        let service_name = format!("{}/{}", target_type.manufacturer, target_type.name);
-        let actr_type_name = format!("{}+{}", target_type.manufacturer, target_type.name);
+        // Canonical dependency lookup key: manufacturer:name
+        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
+        let actr_type_name = service_name.clone();
 
         // First try by service name
         if let Some(dep) = actr_lock.get_dependency(&service_name) {
-            return Some(dep.fingerprint.clone());
-        }
-
-        // Try by actr_type format
-        if let Some(dep) = actr_lock.get_dependency(&actr_type_name) {
             return Some(dep.fingerprint.clone());
         }
 
@@ -669,7 +664,7 @@ impl<W: Workload> ActrNode<W> {
         has_exact_match: bool,
         is_sub_healthy: bool,
     ) {
-        let service_name = format!("{}/{}", target_type.manufacturer, target_type.name);
+        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
 
         // Log detailed compatibility info
         tracing::info!(
