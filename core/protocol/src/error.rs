@@ -32,7 +32,7 @@ use thiserror::Error;
 /// Top-level framework error, returned to all callers.
 ///
 /// Flat enum — no nested error wrapping. Each variant is self-describing.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum ActrError {
     // ── Transient ──────────────────────────────────────────────────────────
 

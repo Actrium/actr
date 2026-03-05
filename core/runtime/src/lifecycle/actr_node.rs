@@ -1,6 +1,7 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
 use crate::context_factory::ContextFactory;
+use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::lifecycle::compat_lock::{CompatLockManager, CompatibilityCheck};
 use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
@@ -16,7 +17,7 @@ use actr_protocol::{
 use futures_util::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
@@ -121,6 +122,9 @@ pub struct ActrNode<W: Workload> {
     /// Network event debounce configuration
     pub(crate) network_event_debounce_config:
         Option<crate::lifecycle::network_event::DebounceConfig>,
+
+    /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
+    pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 }
 
 /// Credential state for shared access between tasks
@@ -927,6 +931,36 @@ impl<W: Workload> ActrNode<W> {
             )));
         }
 
+        // 0.2. Deduplication: return cached response for retried request_ids
+        {
+            let outcome = self
+                .dedup_state
+                .lock()
+                .await
+                .check_or_mark(&envelope.request_id);
+            match outcome {
+                DedupOutcome::Fresh => {} // proceed normally
+                DedupOutcome::InFlight => {
+                    tracing::warn!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "⚠️ duplicate request in-flight, dropping concurrent copy"
+                    );
+                    return Err(ActrError::InvalidArgument(
+                        "duplicate request already in-flight".to_string(),
+                    ));
+                }
+                DedupOutcome::Duplicate(cached) => {
+                    tracing::debug!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "♻️ returning cached response for duplicate request_id"
+                    );
+                    return cached;
+                }
+            }
+        }
+
         // 1. Create Context with caller_id from transport layer
         let credential_state = self.credential_state.clone().ok_or_else(|| {
             ActrError::Internal(
@@ -998,6 +1032,12 @@ impl<W: Workload> ActrNode<W> {
                 "❌ Message handling failed: {:?}", e
             ),
         }
+
+        // Store completed result in dedup cache before returning
+        self.dedup_state
+            .lock()
+            .await
+            .complete(&envelope.request_id, result.clone());
 
         result
     }

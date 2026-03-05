@@ -273,6 +273,9 @@ impl ActrSystem {
             network_event_rx,
             network_event_result_tx,
             network_event_debounce_config,
+            dedup_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::lifecycle::dedup::DedupState::new(),
+            )),
         }
     }
 }
