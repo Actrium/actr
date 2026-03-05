@@ -170,3 +170,74 @@ impl Classify for ActrError {
 
 /// Result type for actor RPC calls.
 pub type ActorResult<T> = Result<T, ActrError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ActrError::kind() classification ─────────────────────────────────────
+
+    #[test]
+    fn transient_variants_classify_correctly() {
+        assert_eq!(ActrError::Unavailable("x".into()).kind(), ErrorKind::Transient);
+        assert_eq!(ActrError::TimedOut.kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn client_variants_classify_correctly() {
+        assert_eq!(ActrError::NotFound("x".into()).kind(), ErrorKind::Client);
+        assert_eq!(ActrError::PermissionDenied("x".into()).kind(), ErrorKind::Client);
+        assert_eq!(ActrError::InvalidArgument("x".into()).kind(), ErrorKind::Client);
+        assert_eq!(ActrError::UnknownRoute("x".into()).kind(), ErrorKind::Client);
+        assert_eq!(
+            ActrError::DependencyNotFound {
+                service_name: "svc".into(),
+                message: "not found".into(),
+            }
+            .kind(),
+            ErrorKind::Client
+        );
+    }
+
+    #[test]
+    fn corrupt_variant_classifies_correctly() {
+        assert_eq!(ActrError::DecodeFailure("x".into()).kind(), ErrorKind::Corrupt);
+    }
+
+    #[test]
+    fn internal_variants_classify_correctly() {
+        assert_eq!(ActrError::NotImplemented("x".into()).kind(), ErrorKind::Internal);
+        assert_eq!(ActrError::Internal("x".into()).kind(), ErrorKind::Internal);
+    }
+
+    // ── Classify default impls ────────────────────────────────────────────────
+
+    #[test]
+    fn only_transient_is_retryable() {
+        assert!(ActrError::Unavailable("x".into()).is_retryable());
+        assert!(ActrError::TimedOut.is_retryable());
+
+        assert!(!ActrError::NotFound("x".into()).is_retryable());
+        assert!(!ActrError::DecodeFailure("x".into()).is_retryable());
+        assert!(!ActrError::Internal("x".into()).is_retryable());
+    }
+
+    #[test]
+    fn only_corrupt_requires_dlq() {
+        assert!(ActrError::DecodeFailure("x".into()).requires_dlq());
+
+        assert!(!ActrError::Unavailable("x".into()).requires_dlq());
+        assert!(!ActrError::TimedOut.requires_dlq());
+        assert!(!ActrError::NotFound("x".into()).requires_dlq());
+        assert!(!ActrError::Internal("x".into()).requires_dlq());
+    }
+
+    // ── Clone ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn actr_error_is_clone() {
+        let e = ActrError::InvalidArgument("bad".into());
+        let cloned = e.clone();
+        assert_eq!(format!("{cloned}"), "invalid argument: bad");
+    }
+}

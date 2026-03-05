@@ -7,7 +7,6 @@
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::error::NetworkError;
 use crate::transport::{Dest, OutprocTransportManager, PayloadTypeExt};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;

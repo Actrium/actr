@@ -349,3 +349,110 @@ impl From<actr_protocol::prost::DecodeError> for NetworkError {
 
 // TODO: In future, if error statistics needed, can add ErrorStats struct
 // Recommend using arrays instead of HashMap (error categories and severities are fixed)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── NetworkError::kind() classification ──────────────────────────────────
+
+    #[test]
+    fn transient_network_errors() {
+        let cases = [
+            NetworkError::ConnectionError("x".into()),
+            NetworkError::ConnectionClosed("x".into()),
+            NetworkError::ChannelClosed("x".into()),
+            NetworkError::SendError("x".into()),
+            NetworkError::NetworkUnreachableError("x".into()),
+            NetworkError::ResourceExhaustedError("x".into()),
+            NetworkError::WebSocketError("x".into()),
+            NetworkError::SignalingError("x".into()),
+            NetworkError::WebRtcError("x".into()),
+            NetworkError::NatTraversalError("x".into()),
+            NetworkError::IceError("x".into()),
+            NetworkError::TimeoutError("x".into()),
+            NetworkError::Timeout("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Transient, "{e} should be Transient");
+            assert!(e.is_retryable(), "{e} should be retryable");
+        }
+    }
+
+    #[test]
+    fn client_network_errors() {
+        let cases = [
+            NetworkError::ConnectionNotFound("x".into()),
+            NetworkError::ChannelNotFound("x".into()),
+            NetworkError::NoRoute("x".into()),
+            NetworkError::InvalidArgument("x".into()),
+            NetworkError::InvalidOperation("x".into()),
+            NetworkError::ConfigurationError("x".into()),
+            NetworkError::ServiceDiscoveryError("x".into()),
+            NetworkError::AuthenticationError("x".into()),
+            NetworkError::PermissionError("x".into()),
+            NetworkError::CredentialExpired("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Client, "{e} should be Client");
+            assert!(!e.is_retryable(), "{e} should not be retryable");
+        }
+    }
+
+    #[test]
+    fn corrupt_network_error() {
+        let e = NetworkError::DeserializationError("bad bytes".into());
+        assert_eq!(e.kind(), ErrorKind::Corrupt);
+        assert!(e.requires_dlq());
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn internal_network_errors() {
+        let cases = [
+            NetworkError::ProtocolError("x".into()),
+            NetworkError::SerializationError("x".into()),
+            NetworkError::DataChannelError("x".into()),
+            NetworkError::BroadcastError("x".into()),
+            NetworkError::DtlsError("x".into()),
+            NetworkError::StunTurnError("x".into()),
+            NetworkError::NotImplemented("x".into()),
+        ];
+        for e in &cases {
+            assert_eq!(e.kind(), ErrorKind::Internal, "{e} should be Internal");
+            assert!(!e.is_retryable());
+            assert!(!e.requires_dlq());
+        }
+    }
+
+    // ── From<NetworkError> for ActrError (single boundary conversion) ─────────
+
+    #[test]
+    fn transient_network_error_becomes_unavailable() {
+        let e: ActrError = NetworkError::ConnectionError("lost".into()).into();
+        assert!(matches!(e, ActrError::Unavailable(_)));
+        assert!(e.is_retryable());
+    }
+
+    #[test]
+    fn client_network_error_becomes_not_found() {
+        let e: ActrError = NetworkError::NoRoute("dst".into()).into();
+        assert!(matches!(e, ActrError::NotFound(_)));
+        assert!(!e.is_retryable());
+    }
+
+    #[test]
+    fn corrupt_network_error_becomes_decode_failure() {
+        let e: ActrError = NetworkError::DeserializationError("garbled".into()).into();
+        assert!(matches!(e, ActrError::DecodeFailure(_)));
+        assert!(e.requires_dlq());
+    }
+
+    #[test]
+    fn internal_network_error_becomes_internal() {
+        let e: ActrError = NetworkError::ProtocolError("bug".into()).into();
+        assert!(matches!(e, ActrError::Internal(_)));
+        assert!(!e.is_retryable());
+        assert!(!e.requires_dlq());
+    }
+}
