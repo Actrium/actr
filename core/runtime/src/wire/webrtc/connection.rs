@@ -855,6 +855,7 @@ mod tests {
             r#type: actr_protocol::ActrType {
                 manufacturer: "test".to_string(),
                 name: "node".to_string(),
+                version: None,
             },
         };
         WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx, None)
