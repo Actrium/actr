@@ -170,8 +170,10 @@ async fn test_end_to_end_credential_flow() {
         actr_type: ActrType {
             manufacturer: "test-manufacturer".to_string(),
             name: "test-device".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -226,8 +228,10 @@ async fn test_end_to_end_credential_flow() {
             actr_type: ActrType {
                 manufacturer: format!("test-manufacturer-{idx}"),
                 name: format!("test-device-{idx}"),
+                version: None,
             },
             realm: Realm { realm_id: 1001 },
+            service: None,
             service_spec: None,
             acl: None,
         };

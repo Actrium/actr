@@ -28,7 +28,7 @@ pub struct CompatibilityReportData {
     pub from_fingerprint: String,
     /// 目标指纹（服务端提供的版本）
     pub to_fingerprint: String,
-    /// 服务类型
+    /// 服务类型键（manufacturer:name[:version]）
     pub service_type: String,
     /// 兼容性分析结果
     pub analysis_result: CompatibilityAnalysisResult,

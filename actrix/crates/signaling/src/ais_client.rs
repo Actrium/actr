@@ -72,6 +72,7 @@ impl AisClient {
         let request = RegisterRequest {
             realm: Realm { realm_id },
             actr_type: actr_type.clone(),
+            service: None,
             service_spec: None,
             acl: None,
         };

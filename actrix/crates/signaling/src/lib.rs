@@ -14,6 +14,7 @@
 //! - [`load_balancer`] - 负载均衡算法
 //! - [`geo`] - 地理位置和距离计算
 
+pub mod actr_type_utils;
 pub mod ais_client;
 pub mod compatibility_cache;
 pub mod geo;

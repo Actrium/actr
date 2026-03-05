@@ -12,11 +12,13 @@ use actr_protocol::{ActrId, ActrType};
 use actrix_common::RealmError;
 use actrix_common::realm::acl::ActorAcl;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
+use crate::actr_type_utils::{cmp_version_desc, normalize_version, type_key};
 use crate::service_registry_storage::ServiceRegistryStorage;
 
 /// 服务过期阈值（秒）- 超过此时间未收到心跳则认为服务过期
@@ -251,8 +253,9 @@ impl ServiceRegistry {
                         error!("保存 Proto spec 到缓存失败: {}", e);
                     } else {
                         info!(
-                            "✅ Proto spec 已保存: {}/{} fingerprint={}",
-                            actr_type.manufacturer, actr_type.name, spec.fingerprint
+                            "✅ Proto spec 已保存: {} fingerprint={}",
+                            type_key(&actr_type),
+                            spec.fingerprint
                         );
                     }
                 }
@@ -805,9 +808,11 @@ impl ServiceRegistry {
     /// - `target_type`: 目标 Actor 类型
     ///
     /// # 返回
-    /// 所有匹配该类型的可用服务实例（克隆）
+    /// - 请求带 version：返回精确版本匹配实例
+    /// - 请求不带 version：返回字典序最新版本的实例集合
     pub fn find_by_actr_type(&self, target_type: &ActrType) -> Vec<ServiceInfo> {
-        let mut results = Vec::new();
+        let target_version = normalize_version(target_type.version.clone());
+        let mut candidates = Vec::new();
 
         for services in self.services.values() {
             for service in services {
@@ -820,12 +825,41 @@ impl ServiceRegistry {
                 if service.actor_id.r#type.manufacturer == target_type.manufacturer
                     && service.actor_id.r#type.name == target_type.name
                 {
-                    results.push(service.clone());
+                    candidates.push(service.clone());
                 }
             }
         }
 
-        results
+        if let Some(version) = target_version {
+            return candidates
+                .into_iter()
+                .filter(|service| {
+                    normalize_version(service.actor_id.r#type.version.clone()).as_deref()
+                        == Some(version.as_str())
+                })
+                .collect();
+        }
+
+        let latest_version = candidates
+            .iter()
+            .map(|service| normalize_version(service.actor_id.r#type.version.clone()))
+            .fold(None, |latest: Option<String>, current| match latest {
+                Some(ref latest_value)
+                    if cmp_version_desc(current.as_deref(), Some(latest_value.as_str()))
+                        == Ordering::Less =>
+                {
+                    current
+                }
+                None => current,
+                _ => latest,
+            });
+
+        candidates
+            .into_iter()
+            .filter(|service| {
+                normalize_version(service.actor_id.r#type.version.clone()) == latest_version
+            })
+            .collect()
     }
 
     /// Discover services by ActrType with ACL filtering
@@ -910,10 +944,10 @@ impl ServiceRegistry {
             return Ok(false);
         }
 
-        let from_type = &from_actor.r#type.name;
-        let to_type = &to_actor.r#type.name;
+        let from_type = type_key(&from_actor.r#type);
+        let to_type = type_key(&to_actor.r#type);
 
-        ActorAcl::can_discover(from_realm, from_type, to_type).await
+        ActorAcl::can_discover(from_realm, &from_type, &to_type).await
     }
 }
 
@@ -936,6 +970,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test".to_string(),
+                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         }
@@ -1353,6 +1388,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
+                version: Some("1".to_string()),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1362,6 +1398,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
+                version: Some("2".to_string()),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1369,8 +1406,9 @@ mod tests {
         let actor_id3 = ActrId {
             serial_number: 3,
             r#type: ActrType {
-                manufacturer: "other".to_string(),
-                name: "service".to_string(),
+                manufacturer: "acme".to_string(),
+                name: "worker".to_string(),
+                version: Some("alpha".to_string()),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1396,8 +1434,8 @@ mod tests {
         registry
             .register_service(
                 actor_id3,
-                "other_service".to_string(),
-                vec!["Other".to_string()],
+                "worker3".to_string(),
+                vec!["Work".to_string()],
                 None,
             )
             .unwrap();
@@ -1405,13 +1443,62 @@ mod tests {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "worker".to_string(),
+            version: None,
+        };
+
+        let results = registry.find_by_actr_type(&target_type);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].actor_id.serial_number, 3);
+
+        let target_type_v2 = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "worker".to_string(),
+            version: Some("2".to_string()),
+        };
+        let results_v2 = registry.find_by_actr_type(&target_type_v2);
+        assert_eq!(results_v2.len(), 1);
+        assert_eq!(results_v2[0].actor_id.serial_number, 2);
+    }
+
+    #[test]
+    fn test_find_by_actr_type_no_version_only_returns_none_version_group() {
+        let mut registry = ServiceRegistry::new();
+
+        let actor_id1 = ActrId {
+            serial_number: 11,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "processor".to_string(),
+                version: None,
+            },
+            realm: actr_protocol::Realm { realm_id: 0 },
+        };
+
+        let actor_id2 = ActrId {
+            serial_number: 12,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "processor".to_string(),
+                version: Some(String::new()),
+            },
+            realm: actr_protocol::Realm { realm_id: 0 },
+        };
+
+        registry
+            .register_service(actor_id1, "p1".to_string(), vec!["Work".to_string()], None)
+            .unwrap();
+        registry
+            .register_service(actor_id2, "p2".to_string(), vec!["Work".to_string()], None)
+            .unwrap();
+
+        let target_type = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "processor".to_string(),
+            version: None,
         };
 
         let results = registry.find_by_actr_type(&target_type);
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(
-            |s| s.actor_id.r#type.manufacturer == "acme" && s.actor_id.r#type.name == "worker"
-        ));
     }
 
     #[test]
@@ -1423,6 +1510,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "service1".to_string(),
+                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1432,6 +1520,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "vendor".to_string(),
                 name: "service2".to_string(),
+                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };

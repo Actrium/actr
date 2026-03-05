@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "actr-protocol"
 version = "0.1.7"
-source = "git+https://github.com/actor-rtc/actr.git?rev=a4fd088b3b774a32aff438fc5d7625af9ae3aa02#a4fd088b3b774a32aff438fc5d7625af9ae3aa02"
+source = "git+https://github.com/actor-rtc/actr.git?rev=b3d7edcd1f2bb668d9d7e39314f52c8f86804425#b3d7edcd1f2bb668d9d7e39314f52c8f86804425"
 dependencies = [
  "anyhow",
  "base122-rs",
@@ -26,12 +26,12 @@ dependencies = [
 [[package]]
 name = "actr-version"
 version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr.git?rev=a4fd088b3b774a32aff438fc5d7625af9ae3aa02#a4fd088b3b774a32aff438fc5d7625af9ae3aa02"
+source = "git+https://github.com/actor-rtc/actr.git?rev=b3d7edcd1f2bb668d9d7e39314f52c8f86804425#b3d7edcd1f2bb668d9d7e39314f52c8f86804425"
 dependencies = [
  "actr-protocol",
  "anyhow",
  "chrono",
- "proto-sign",
+ "proto-fingerprint",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -2998,10 +2998,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "proto-sign"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cf45daf5c0c3525013f93bd52fbe7cd5c96c1f463fabaac08e4ba3752882f91"
+name = "proto-fingerprint"
+version = "0.1.0"
+source = "git+https://github.com/actor-rtc/proto-kit.git?rev=947af3c#947af3cb2ee47d897910db66c109f63b0b0e9668"
 dependencies = [
  "anyhow",
  "clap",

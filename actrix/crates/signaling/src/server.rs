@@ -50,6 +50,7 @@ use uuid::Uuid;
 // Axum WebSocket
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 
+use crate::actr_type_utils::type_key;
 use crate::load_balancer::LoadBalancer;
 use crate::presence::PresenceManager;
 use crate::service_registry::ServiceRegistry;
@@ -580,11 +581,7 @@ async fn handle_register_request(
         use actrix_common::realm::acl::ActorAcl;
 
         let realm_id = register_ok.actr_id.realm.realm_id;
-        // 使用完整的 manufacturer:type 格式
-        let my_type = format!(
-            "{}:{}",
-            register_ok.actr_id.r#type.manufacturer, register_ok.actr_id.r#type.name
-        );
+        let my_type = type_key(&register_ok.actr_id.r#type);
 
         for rule in &acl.rules {
             // actr_protocol::Acl 是反向设计：principals 可以访问"我"
@@ -594,10 +591,7 @@ async fn handle_register_request(
             for principal in &rule.principals {
                 // 提取 principal 的类型（如果没有则跳过）
                 let from_type = match &principal.actr_type {
-                    Some(actr_type) => {
-                        // 使用完整的 manufacturer:type 格式
-                        format!("{}:{}", actr_type.manufacturer, actr_type.name)
-                    }
+                    Some(actr_type) => type_key(actr_type),
                     None => {
                         warn!("⚠️  ACL principal 缺少 actr_type，跳过");
                         continue;
@@ -740,6 +734,7 @@ async fn send_register_error(
         r#type: ActrType {
             manufacturer: "temp".to_string(),
             name: "temp".to_string(),
+            version: None,
         },
     };
 
@@ -1114,9 +1109,8 @@ async fn handle_actr_relay(
     }
 
     // Same realm: check ACL rules (always enforced)
-    // 使用完整的 manufacturer:type 格式
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
-    let target_type = format!("{}:{}", target.r#type.manufacturer, target.r#type.name);
+    let source_type = type_key(&source.r#type);
+    let target_type = type_key(&target.r#type);
 
     let can_relay = ActorAcl::can_discover(source_realm, &source_type, &target_type)
         .await
@@ -1597,19 +1591,14 @@ async fn handle_discovery_request(
     // Apply ACL filtering (if ACL is enabled)
     use actrix_common::realm::acl::ActorAcl;
     let source_realm = source.realm.realm_id;
-    // 使用完整的 manufacturer:type 格式
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
+    let source_type = type_key(&source.r#type);
 
     let mut acl_filtered_services = Vec::new();
 
     // ACL always enabled: filter services based on ACL rules
     for service in services {
         let target_realm = service.actor_id.realm.realm_id;
-        // 使用完整的 manufacturer:type 格式
-        let target_type = format!(
-            "{}:{}",
-            service.actor_id.r#type.manufacturer, service.actor_id.r#type.name
-        );
+        let target_type = type_key(&service.actor_id.r#type);
 
         // Only check ACL if in same realm
         if source_realm == target_realm {
@@ -1648,10 +1637,7 @@ async fn handle_discovery_request(
         HashMap::new();
 
     for service in acl_filtered_services {
-        let type_key = format!(
-            "{}/{}",
-            service.actor_id.r#type.manufacturer, service.actor_id.r#type.name
-        );
+        let type_key = type_key(&service.actor_id.r#type);
 
         // 如果该类型还未添加，创建新条目
         type_map.entry(type_key).or_insert_with(|| {
@@ -1751,15 +1737,15 @@ async fn handle_route_candidates_request(
     // Apply ACL filtering
     use actrix_common::realm::acl::ActorAcl;
     let source_realm = source.realm.realm_id;
-    let source_type = format!("{}:{}", source.r#type.manufacturer, source.r#type.name);
-    let target_type = format!("{}:{}", req.target_type.manufacturer, req.target_type.name);
+    let source_type = type_key(&source.r#type);
 
     let mut acl_filtered_candidates = Vec::new();
     for candidate in candidates {
         let target_realm = candidate.actor_id.realm.realm_id;
+        let candidate_type_key = type_key(&candidate.actor_id.r#type);
 
         if source_realm == target_realm {
-            match ActorAcl::can_discover(source_realm, &source_type, &target_type).await {
+            match ActorAcl::can_discover(source_realm, &source_type, &candidate_type_key).await {
                 Ok(true) => acl_filtered_candidates.push(candidate),
                 Ok(false) => {
                     debug!(
@@ -1926,6 +1912,7 @@ async fn perform_compatibility_negotiation(
             .as_ref()
             .map(|s| s.fingerprint.clone())
             .unwrap_or_default();
+        let candidate_type_key = type_key(&candidate.actor_id.r#type);
 
         // 第一步：精确匹配检查（快速路径）
         if candidate_fingerprint == client_fingerprint {
@@ -1945,7 +1932,7 @@ async fn perform_compatibility_negotiation(
 
         // 第二步：检查全局兼容性缓存
         let cache_key = crate::compatibility_cache::GlobalCompatibilityCache::build_cache_key(
-            &format!("{}/{}", target_type.manufacturer, target_type.name),
+            &candidate_type_key,
             client_fingerprint,
             &candidate_fingerprint,
         );
@@ -2046,7 +2033,7 @@ async fn perform_compatibility_negotiation(
                     cache_guard.store(CompatibilityReportData {
                         from_fingerprint: client_fingerprint.to_string(),
                         to_fingerprint: candidate_fingerprint.clone(),
-                        service_type: format!("{}/{}", target_type.manufacturer, target_type.name),
+                        service_type: candidate_type_key.clone(),
                         analysis_result: analysis_result.clone(),
                     });
                 }
@@ -2344,6 +2331,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "device".to_string(),
+                version: None,
             },
         }
     }

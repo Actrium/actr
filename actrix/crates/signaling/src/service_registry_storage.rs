@@ -26,6 +26,8 @@ use std::{
 };
 use tracing::{debug, error, info};
 
+use crate::actr_type_utils::{normalize_version, type_key};
+
 /// ServiceRegistry 持久化存储
 #[derive(Debug)]
 pub struct ServiceRegistryStorage {
@@ -85,6 +87,7 @@ impl ServiceRegistryStorage {
                 actor_realm_id INTEGER NOT NULL,
                 actor_manufacturer TEXT NOT NULL,
                 actor_device_name TEXT NOT NULL,
+                actor_type_version TEXT NOT NULL,
 
                 -- 服务基本信息
                 service_name TEXT NOT NULL,
@@ -137,11 +140,12 @@ impl ServiceRegistryStorage {
             CREATE TABLE IF NOT EXISTS service_specs (
                 actr_type_manufacturer TEXT NOT NULL,
                 actr_type_name TEXT NOT NULL,
+                actr_type_version TEXT NOT NULL,
                 service_fingerprint TEXT NOT NULL,
                 proto_content BLOB NOT NULL,
                 last_accessed INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
-                PRIMARY KEY (actr_type_manufacturer, actr_type_name, service_fingerprint)
+                PRIMARY KEY (actr_type_manufacturer, actr_type_name, actr_type_version, service_fingerprint)
             );
 
             CREATE INDEX IF NOT EXISTS idx_service_specs_expires_at ON service_specs(expires_at);
@@ -187,11 +191,12 @@ impl ServiceRegistryStorage {
         // 提取 ActorId 字段
         let actor_type = &service.actor_id.r#type;
         let actor_realm = &service.actor_id.realm;
+        let actor_type_version = version_to_storage(actor_type.version.clone());
 
         sqlx::query(
             r#"
             INSERT INTO service_registry (
-                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name, actor_type_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -200,17 +205,18 @@ impl ServiceRegistryStorage {
                 sticky_client_ids,
                 registered_at, last_heartbeat_at, expires_at
             ) VALUES (
-                ?1, ?2, ?3, ?4,
-                ?5, ?6, ?7, ?8,
-                ?9, ?10,
-                ?11, ?12, ?13,
-                ?14, ?15,
-                ?16, ?17, ?18,
-                ?19,
-                ?20, ?21, ?22
+                ?1, ?2, ?3, ?4, ?5,
+                ?6, ?7, ?8, ?9,
+                ?10, ?11,
+                ?12, ?13, ?14,
+                ?15, ?16,
+                ?17, ?18, ?19,
+                ?20,
+                ?21, ?22, ?23
             )
             ON CONFLICT(actor_serial_number, actor_realm_id, service_name)
             DO UPDATE SET
+                actor_type_version = excluded.actor_type_version,
                 message_types = excluded.message_types,
                 capabilities_json = excluded.capabilities_json,
                 status = excluded.status,
@@ -233,6 +239,7 @@ impl ServiceRegistryStorage {
         .bind(actor_realm.realm_id as i64)
         .bind(&actor_type.manufacturer)
         .bind(&actor_type.name)
+        .bind(&actor_type_version)
         .bind(&service.service_name)
         .bind(&message_types_json)
         .bind(capabilities_json.as_deref())
@@ -322,7 +329,7 @@ impl ServiceRegistryStorage {
         let rows = sqlx::query(
             r#"
             SELECT
-                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name, actor_type_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -372,7 +379,7 @@ impl ServiceRegistryStorage {
         let rows = sqlx::query(
             r#"
             SELECT
-                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
+                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name, actor_type_version,
                 service_name, message_types, capabilities_json, status,
                 service_spec_blob, acl_blob,
                 service_availability_state, power_reserve, mailbox_backlog,
@@ -452,6 +459,7 @@ impl ServiceRegistryStorage {
             r#type: actr_protocol::ActrType {
                 manufacturer: row.get("actor_manufacturer"),
                 name: row.get("actor_device_name"),
+                version: storage_to_version(row.get::<String, _>("actor_type_version")),
             },
         };
 
@@ -557,6 +565,7 @@ impl ServiceRegistryStorage {
     ) -> Result<()> {
         let now = current_timestamp();
         let expires_at = now + self.proto_ttl_secs;
+        let actr_type_version = version_to_storage(actr_type.version.clone());
 
         // 序列化 ServiceSpec 为 protobuf bytes（包含完整的 proto 内容）
         let mut proto_content = Vec::new();
@@ -566,25 +575,28 @@ impl ServiceRegistryStorage {
 
         sqlx::query(
             r#"
-            INSERT INTO service_specs (actr_type_manufacturer, actr_type_name, service_fingerprint, proto_content, last_accessed, expires_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(actr_type_manufacturer, actr_type_name, service_fingerprint)
+            INSERT INTO service_specs (actr_type_manufacturer, actr_type_name, actr_type_version, service_fingerprint, proto_content, last_accessed, expires_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(actr_type_manufacturer, actr_type_name, actr_type_version, service_fingerprint)
             DO UPDATE SET proto_content = excluded.proto_content, last_accessed = excluded.last_accessed, expires_at = excluded.expires_at
             "#,
         )
         .bind(&actr_type.manufacturer)
         .bind(&actr_type.name)
+        .bind(&actr_type_version)
         .bind(&service_spec.fingerprint)
         .bind(&proto_content)
         .bind(now as i64)
         .bind(expires_at as i64)
         .execute(&self.pool)
         .await
-        .with_context(|| format!("Failed to save proto spec for {}/{}", actr_type.manufacturer, actr_type.name))?;
+        .with_context(|| format!("Failed to save proto spec for {}", type_key(actr_type)))?;
 
         debug!(
-            "Saved proto spec: {}/{} fingerprint={} (expires in {}s)",
-            actr_type.manufacturer, actr_type.name, service_spec.fingerprint, self.proto_ttl_secs
+            "Saved proto spec: {} fingerprint={} (expires in {}s)",
+            type_key(actr_type),
+            service_spec.fingerprint,
+            self.proto_ttl_secs
         );
 
         Ok(())
@@ -599,17 +611,20 @@ impl ServiceRegistryStorage {
         fingerprint: &str,
     ) -> Result<Option<ServiceSpec>> {
         let now = current_timestamp();
+        let actr_type_version = version_to_storage(actr_type.version.clone());
 
         // 查询
         let row = sqlx::query(
             r#"SELECT proto_content FROM service_specs 
                WHERE actr_type_manufacturer = ?1 
-               AND actr_type_name = ?2 
-               AND service_fingerprint = ?3
-               AND expires_at > ?4"#,
+               AND actr_type_name = ?2
+               AND actr_type_version = ?3
+               AND service_fingerprint = ?4
+               AND expires_at > ?5"#,
         )
         .bind(&actr_type.manufacturer)
         .bind(&actr_type.name)
+        .bind(&actr_type_version)
         .bind(fingerprint)
         .bind(now as i64)
         .fetch_optional(&self.pool)
@@ -625,32 +640,36 @@ impl ServiceRegistryStorage {
             let pool_clone = self.pool.clone();
             let manufacturer = actr_type.manufacturer.clone();
             let name = actr_type.name.clone();
+            let version = actr_type_version.clone();
             let fingerprint_clone = fingerprint.to_string();
             let ttl = self.proto_ttl_secs;
             tokio::spawn(async move {
                 let new_expires_at = now + ttl;
                 let _ = sqlx::query(
                     r#"UPDATE service_specs SET last_accessed = ?1, expires_at = ?2 
-                       WHERE actr_type_manufacturer = ?3 AND actr_type_name = ?4 AND service_fingerprint = ?5"#,
+                       WHERE actr_type_manufacturer = ?3 AND actr_type_name = ?4 AND actr_type_version = ?5 AND service_fingerprint = ?6"#,
                 )
                 .bind(now as i64)
                 .bind(new_expires_at as i64)
                 .bind(&manufacturer)
                 .bind(&name)
+                .bind(&version)
                 .bind(&fingerprint_clone)
                 .execute(&pool_clone)
                 .await;
             });
 
             debug!(
-                "Found proto spec: {}/{} fingerprint={}",
-                actr_type.manufacturer, actr_type.name, fingerprint
+                "Found proto spec: {} fingerprint={}",
+                type_key(actr_type),
+                fingerprint
             );
             Ok(Some(service_spec))
         } else {
             debug!(
-                "Proto spec not found: {}/{} fingerprint={}",
-                actr_type.manufacturer, actr_type.name, fingerprint
+                "Proto spec not found: {} fingerprint={}",
+                type_key(actr_type),
+                fingerprint
             );
             Ok(None)
         }
@@ -683,6 +702,14 @@ pub struct CacheStats {
     pub total_services: u64,
     pub expired_services: u64,
     pub valid_services: u64,
+}
+
+fn version_to_storage(version: Option<String>) -> String {
+    normalize_version(version).unwrap_or_default()
+}
+
+fn storage_to_version(version: String) -> Option<String> {
+    normalize_version(Some(version))
 }
 
 /// ServiceStatus 转字符串
@@ -726,6 +753,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test-mfg".to_string(),
                 name: "test-device".to_string(),
+                version: None,
             },
         }
     }
@@ -825,5 +853,63 @@ mod tests {
         // 验证更新成功
         let loaded = storage.load_all_services().await.unwrap();
         assert_eq!(loaded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_service_specs_can_coexist_with_different_versions() {
+        let storage = ServiceRegistryStorage::new(":memory:", Some(3600))
+            .await
+            .unwrap();
+
+        let actr_type_v1 = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "worker".to_string(),
+            version: Some("1".to_string()),
+        };
+        let actr_type_v2 = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "worker".to_string(),
+            version: Some("2".to_string()),
+        };
+
+        let spec_v1 = ServiceSpec {
+            name: "worker".to_string(),
+            fingerprint: "fp-same".to_string(),
+            description: Some("v1".to_string()),
+            protobufs: vec![],
+            published_at: None,
+            tags: vec![],
+        };
+        let spec_v2 = ServiceSpec {
+            name: "worker".to_string(),
+            fingerprint: "fp-same".to_string(),
+            description: Some("v2".to_string()),
+            protobufs: vec![],
+            published_at: None,
+            tags: vec![],
+        };
+
+        storage
+            .save_proto_spec(&actr_type_v1, &spec_v1)
+            .await
+            .unwrap();
+        storage
+            .save_proto_spec(&actr_type_v2, &spec_v2)
+            .await
+            .unwrap();
+
+        let loaded_v1 = storage
+            .get_proto_by_fingerprint(&actr_type_v1, "fp-same")
+            .await
+            .unwrap()
+            .unwrap();
+        let loaded_v2 = storage
+            .get_proto_by_fingerprint(&actr_type_v2, "fp-same")
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded_v1.description.as_deref(), Some("v1"));
+        assert_eq!(loaded_v2.description.as_deref(), Some("v2"));
     }
 }

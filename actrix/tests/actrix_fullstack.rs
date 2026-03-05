@@ -474,8 +474,10 @@ async fn ws_register_in_realm_with_spec(
         actr_type: ActrType {
             manufacturer: manufacturer.to_string(),
             name: name.to_string(),
+            version: None,
         },
         realm: Realm { realm_id },
+        service: None,
         service_spec,
         acl,
     };
@@ -535,6 +537,7 @@ async fn query_route_candidates(
                     target_type: ActrType {
                         manufacturer: target_manufacturer.into(),
                         name: target_name.into(),
+                        version: None,
                     },
                     client_fingerprint: "".into(),
                     criteria: Some(
@@ -680,8 +683,10 @@ async fn actrix_end_to_end_register_and_health() {
         actr_type: ActrType {
             manufacturer: "test-mfg".to_string(),
             name: "device".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -947,8 +952,10 @@ async fn ais_register_accepts_non_preprovisioned_realm() {
         actr_type: ActrType {
             manufacturer: "realm-mfg".to_string(),
             name: "realm-device".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 9999 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -1068,8 +1075,10 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
         actr_type: ActrType {
             manufacturer: "mfg".to_string(),
             name: "svc".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -1129,8 +1138,10 @@ async fn signaling_register_returns_error_when_ais_endpoint_is_unreachable() {
         actr_type: ActrType {
             manufacturer: "mfg".to_string(),
             name: "no-ais".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -1286,8 +1297,10 @@ async fn signaling_peer_payload_none_is_ignored_and_connection_remains_usable() 
         actr_type: ActrType {
             manufacturer: "mfg".to_string(),
             name: "peer-none".to_string(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -1534,6 +1547,7 @@ async fn signaling_register_and_discovery_acl_allow() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -1650,6 +1664,7 @@ async fn signaling_discovery_cross_realm_isolated() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -1718,6 +1733,7 @@ async fn signaling_route_candidates_cross_realm_isolated() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -1969,6 +1985,7 @@ async fn signaling_route_candidates_with_acl() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-sdp".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -1989,6 +2006,7 @@ async fn signaling_route_candidates_with_acl() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-rtp".into(),
+                        version: None,
                     },
                     client_fingerprint: "".into(),
                     criteria: Some(
@@ -2062,6 +2080,7 @@ async fn signaling_route_candidates_acl_denied() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-deny-route".into(),
+                        version: None,
                     },
                     client_fingerprint: "".into(),
                     criteria: Some(
@@ -2116,6 +2135,7 @@ async fn signaling_route_candidates_respects_limit_and_sorting() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-route".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2170,6 +2190,7 @@ async fn signaling_route_candidates_respects_limit_and_sorting() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-route".into(),
+                    version: None,
                     },
                     client_fingerprint: "".into(),
                     criteria: Some(
@@ -2242,6 +2263,7 @@ async fn signaling_route_candidates_prefers_exact_fingerprint() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-fp".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2297,6 +2319,7 @@ async fn signaling_route_candidates_prefers_exact_fingerprint() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-fp-exact".into(),
+                    version: None,
                     },
                     client_fingerprint: spec_exact.fingerprint.clone(),
                     criteria: Some(
@@ -2473,6 +2496,7 @@ async fn signaling_subscribe_and_unsubscribe_actr_up() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-subject".into(),
+                        version: None,
                     },
                 },
             ),
@@ -2505,6 +2529,7 @@ async fn signaling_subscribe_and_unsubscribe_actr_up() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-subject".into(),
+                        version: None,
                     },
                 },
             ),
@@ -2543,6 +2568,7 @@ async fn signaling_subscribe_receives_actr_up_and_unsubscribe_stops() {
     let target_type = ActrType {
         manufacturer: "mfg".into(),
         name: "svc-presence".into(),
+        version: None,
     };
     let subscribe = actr_protocol::ActrToSignaling {
         source: sub_ok.actr_id.clone(),
@@ -2574,6 +2600,7 @@ async fn signaling_subscribe_receives_actr_up_and_unsubscribe_stops() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "subscriber".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2652,6 +2679,7 @@ async fn signaling_route_candidates_compatibility_cache_hit() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-fp-cache".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2709,6 +2737,7 @@ async fn signaling_route_candidates_compatibility_cache_hit() {
                 target_type: ActrType {
                     manufacturer: "mfg".into(),
                     name: "svc-compat".into(),
+                version: None,
                 },
                 client_fingerprint: spec_base.fingerprint.clone(),
                 criteria: Some(
@@ -2759,6 +2788,7 @@ async fn signaling_route_candidates_compatibility_cache_hit() {
                 target_type: ActrType {
                     manufacturer: "mfg".into(),
                     name: "svc-compat".into(),
+                version: None,
                 },
                 client_fingerprint: spec_base.fingerprint.clone(),
                 criteria: Some(
@@ -2817,6 +2847,7 @@ async fn signaling_concurrent_registration_keeps_unique_route_candidates() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-concurrent".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2855,6 +2886,7 @@ async fn signaling_concurrent_registration_keeps_unique_route_candidates() {
                     target_type: ActrType {
                         manufacturer: "mfg".into(),
                         name: "svc-concurrent".into(),
+                        version: None,
                     },
                     client_fingerprint: "".into(),
                     criteria: Some(
@@ -2931,6 +2963,7 @@ async fn signaling_actr_relay_role_assignment() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-offer".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -2998,8 +3031,10 @@ async fn signaling_rejects_duplicate_register_on_same_connection() {
         actr_type: ActrType {
             manufacturer: "mfg".into(),
             name: "dup-client".into(),
+            version: None,
         },
         realm: Realm { realm_id: 1001 },
+        service: None,
         service_spec: None,
         acl: None,
     };
@@ -3042,6 +3077,7 @@ async fn signaling_unregister_removes_actor_from_route_candidates() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-unreg".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3061,6 +3097,7 @@ async fn signaling_unregister_removes_actor_from_route_candidates() {
                         target_type: ActrType {
                             manufacturer: "mfg".into(),
                             name: "svc-unreg".into(),
+                            version: None,
                         },
                         client_fingerprint: "".into(),
                         criteria: Some(
@@ -3219,6 +3256,7 @@ async fn signaling_relay_rejects_invalid_credential() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "relay-src-auth".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3278,6 +3316,7 @@ async fn signaling_relay_acl_denied_in_same_realm() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "relay-src-deny".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Deny as i32,
@@ -3331,6 +3370,7 @@ async fn signaling_relay_forwards_ice_candidate_payload() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "relay-src-forward".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3398,6 +3438,7 @@ async fn signaling_relay_to_missing_target_is_ignored_and_source_stays_usable() 
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "relay-src-missing-target".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3483,6 +3524,7 @@ async fn signaling_disconnect_removes_actor_from_route_candidates() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-disconnect".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3537,6 +3579,7 @@ async fn signaling_malformed_binary_removes_actor_from_route_candidates() {
                 actr_type: Some(ActrType {
                     manufacturer: "mfg".into(),
                     name: "client-malformed".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,
@@ -3606,6 +3649,7 @@ async fn service_registry_persists_across_restart() {
                 actr_type: Some(ActrType {
                     manufacturer: "persist".into(),
                     name: "client".into(),
+                    version: None,
                 }),
             }],
             permission: Permission::Allow as i32,

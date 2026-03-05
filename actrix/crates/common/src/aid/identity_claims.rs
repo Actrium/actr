@@ -13,8 +13,8 @@ pub struct IdentityClaims {
     pub realm_id: u32,
 
     /// Actor ID 字符串表示
-    /// 格式: {manufacturer}:{name}@{serial_number_hex}:{realm_id}
-    /// 示例: "apple:user@fed02d3f000000:12345"
+    /// 格式: {serial_number_hex}@{realm_id}/{manufacturer}:{name}[:{version}]
+    /// 示例: "fed02d3f000000@12345/apple:user:1"
     pub actor_id: String,
 
     /// Token 过期时间 (Unix timestamp, seconds)
@@ -68,13 +68,13 @@ mod tests {
         let psk = vec![0u8; 32];
         let claims = IdentityClaims::new(
             12345,
-            "apple:user@1a2b3c:12345".to_string(),
+            "1a2b3c@12345/apple:user:1".to_string(),
             1730614800,
             psk.clone(),
         );
 
         assert_eq!(claims.realm_id, 12345);
-        assert_eq!(claims.actor_id, "apple:user@1a2b3c:12345");
+        assert_eq!(claims.actor_id, "1a2b3c@12345/apple:user:1");
         assert_eq!(claims.expr_time, 1730614800);
         assert_eq!(claims.psk, psk);
     }
@@ -90,11 +90,11 @@ mod tests {
 
         // 未过期
         let valid_claims =
-            IdentityClaims::new(1, "test@123:1".to_string(), now + 3600, psk.clone());
+            IdentityClaims::new(1, "123@1/acme:test:1".to_string(), now + 3600, psk.clone());
         assert!(!valid_claims.is_expired());
 
         // 已过期
-        let expired_claims = IdentityClaims::new(1, "test@123:1".to_string(), now - 1, psk);
+        let expired_claims = IdentityClaims::new(1, "123@1/acme:test:1".to_string(), now - 1, psk);
         assert!(expired_claims.is_expired());
     }
 }

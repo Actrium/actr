@@ -477,6 +477,7 @@ mod tests {
                 r#type: ActrType {
                     manufacturer: "test".to_string(),
                     name: name.to_string(),
+                    version: None,
                 },
                 realm: Realm { realm_id: 0 },
             },
