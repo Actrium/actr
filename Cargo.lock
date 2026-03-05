@@ -19,6 +19,7 @@ version = "0.1.0"
 dependencies = [
  "actr",
  "actr-framework-protoc-codegen",
+ "actr-runtime-mailbox",
  "actr-version",
  "anyhow",
  "async-trait",
@@ -49,6 +50,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
