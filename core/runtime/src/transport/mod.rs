@@ -25,7 +25,7 @@ pub use actr_framework::Dest;
 
 // DataLane core abstraction
 pub use lane::DataLane;
-pub use route_table::{DataChannelQoS, DataLaneType, PayloadTypeExt};
+pub use route_table::{DataChannelQoS, DataLaneType, PayloadTypeExt, RetryPolicy};
 
 // Transport management
 pub use inproc_manager::InprocTransportManager;

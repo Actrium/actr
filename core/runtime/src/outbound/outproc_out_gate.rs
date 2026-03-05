@@ -7,10 +7,11 @@
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::{Dest, OutprocTransportManager};
+use crate::transport::error::NetworkError;
+use crate::transport::{Dest, OutprocTransportManager, PayloadTypeExt};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, ActrIdExt, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, ActrIdExt, Classify, PayloadType, RpcEnvelope};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
@@ -244,6 +245,55 @@ impl OutprocOutGate {
 }
 
 impl OutprocOutGate {
+    /// Send data via transport with per-PayloadType retry on transient failures.
+    ///
+    /// Retry is applied only when `NetworkError::kind()` is `Transient`.
+    /// Non-transient errors are returned immediately without retry.
+    async fn send_with_retry(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> ActorResult<()> {
+        let policy = payload_type.retry_policy();
+        let mut delay = policy.initial_delay;
+        let mut attempt = 0u32;
+
+        loop {
+            match self.transport_manager.send(dest, payload_type, data).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    attempt += 1;
+                    let retryable = e.is_retryable();
+                    let remaining = policy.max_attempts.saturating_sub(attempt);
+                    if retryable && remaining > 0 {
+                        tracing::warn!(
+                            attempt,
+                            remaining,
+                            error = %e,
+                            "transient send failure, retrying after {:?}",
+                            delay,
+                        );
+                        tokio::time::sleep(delay).await;
+                        // exponential backoff capped at max_delay
+                        delay = (delay * 2).min(policy.max_delay);
+                    } else {
+                        if attempt > 1 {
+                            tracing::warn!(
+                                attempt,
+                                error = %e,
+                                retryable,
+                                "send failed after {} attempt(s)",
+                                attempt,
+                            );
+                        }
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+    }
+
     /// Send request and wait for response (with specified PayloadType).
     ///
     /// This is primarily used by language bindings / non-generic RPC paths.
@@ -275,24 +325,16 @@ impl OutprocOutGate {
         // 4. Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);
 
-        // 5. Send message using the specified payload_type
-        match self
-            .transport_manager
-            .send(&dest, payload_type, &data)
-            .await
-        {
-            Ok(_) => {
-                tracing::debug!("✅ Sent request to {:?}", target);
-            }
-            Err(e) => {
-                // Send failed, remove pending request
-                self.pending_requests
-                    .write()
-                    .await
-                    .remove(&envelope.request_id);
-                return Err(ActrError::Unavailable(e.to_string()));
-            }
+        // 5. Send message with per-PayloadType retry on transient failures
+        if let Err(e) = self.send_with_retry(&dest, payload_type, &data).await {
+            // Send failed after all retries — remove pending request
+            self.pending_requests
+                .write()
+                .await
+                .remove(&envelope.request_id);
+            return Err(e);
         }
+        tracing::debug!("✅ Sent request to {:?}", target);
 
         // 6. Wait for response (timeout from envelope.timeout_ms)
         let timeout = std::time::Duration::from_millis(envelope.timeout_ms as u64);
@@ -368,11 +410,7 @@ impl OutprocOutGate {
 
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
-        self.transport_manager
-            .send(&dest, payload_type, &data)
-            .await
-            .map_err(|e| ActrError::Unavailable(e.to_string()))?;
-        Ok(())
+        self.send_with_retry(&dest, payload_type, &data).await
     }
 
     /// Send media sample via WebRTC native track
