@@ -60,7 +60,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMinor(from: "1.32.0")),
-        .package(url: "https://github.com/actor-rtc/actr-protocols-swift.git", from: "0.1.2"),
     ],
     targets: [
         actrBinaryTarget,
@@ -83,7 +82,6 @@ let package = Package(
                 "ActrBindings",
                 "ActrFFILib",
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
-                .product(name: "ActrProtocols", package: "actr-protocols-swift"),
             ]
         ),
     ]

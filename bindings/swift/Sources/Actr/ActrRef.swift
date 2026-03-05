@@ -5,7 +5,6 @@
 //! by the high-level Swift API are re-exported here.
 
 import ActrBindings
-import ActrProtocols
 import Foundation
 import SwiftProtobuf
 

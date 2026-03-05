@@ -371,7 +371,7 @@ The following types are available in the `Actr` module:
 - `Context` (alias of `ContextBridge`)
 - `RpcEnvelope` (alias of `RpcEnvelopeBridge`)
 - `Workload` (alias of `WorkloadBridge`)
-- `RpcRequest` (from `ActrProtocols`)
+- `RpcRequest` (built into `Actr`)
 
 ## API Comparison
 
