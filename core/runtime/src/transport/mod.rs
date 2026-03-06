@@ -49,3 +49,7 @@ pub use backoff::ExponentialBackoff;
 
 // Connection events
 pub use connection_event::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
+
+// Connection session
+pub mod session;
+pub use session::ConnectionSession;

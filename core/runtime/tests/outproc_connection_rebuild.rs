@@ -98,11 +98,13 @@ async fn test_connection_rebuild_after_failure() {
 
     tracing::info!("💥 Step 2: Simulating connection failure...");
 
-    // Simulate failure
+    // Simulate failure with real session_id
+    let sid = coord_a.get_peer_session_id(&id_b).await.unwrap_or(0);
     coord_a
         .event_sender()
         .send(ConnectionEvent::StateChanged {
             peer_id: id_b.clone(),
+            session_id: sid,
             state: TransportConnectionState::Failed,
         })
         .ok();
@@ -200,11 +202,13 @@ async fn test_pending_requests_cleanup_on_close() {
 
     tracing::info!("💥 Closing connection...");
 
-    // Simulate connection close
+    // Simulate connection close with real session_id
+    let sid = coord_a.get_peer_session_id(&id_b).await.unwrap_or(0);
     coord_a
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
+            session_id: sid,
         })
         .ok();
 
@@ -299,11 +303,13 @@ async fn test_reconnect_and_send_after_close() {
 
     tracing::info!("💥 Step 3: Closing connection...");
 
-    // Close the connection from peer A's side
+    // Close the connection from peer A's side with real session_id
+    let sid = coord_a.get_peer_session_id(&id_b).await.unwrap_or(0);
     coord_a
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
+            session_id: sid,
         })
         .ok();
 
