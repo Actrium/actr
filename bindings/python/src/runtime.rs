@@ -1,6 +1,6 @@
 use actr_config::ConfigParser;
 use actr_framework::{Bytes, Context};
-use actr_protocol::{PayloadType as RpPayloadType, ProtocolError};
+use actr_protocol::{ActrError, PayloadType as RpPayloadType};
 use actr_runtime::context::RuntimeContext;
 use actr_runtime::prelude::{ActrNode, ActrRef, ActrSystem};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -336,20 +336,18 @@ impl ContextPy {
                         sender_id
                     );
 
-                    let (py_ds, py_sender_id) = Python::attach(|py| -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-                        let ds: Py<PyAny> = Py::new(py, DataStreamPy::from_rust(chunk.clone()))?.into();
+                    let (py_ds, py_sender_id) = Python::attach(|py| -> PyResult<(Py<DataStreamPy>, Py<ActrIdPy>)> {
+                        let ds = Py::new(py, DataStreamPy::from_rust(chunk.clone()))?;
                         let sender_id_rust = sender_id.clone();
-                        let sid: Py<PyAny> = Py::new(py, ActrIdPy::from_rust(sender_id_rust))?.into();
+                        let sid = Py::new(py, ActrIdPy::from_rust(sender_id_rust))?;
                         Ok((ds, sid))
                     })
-                    .map_err(|e| ProtocolError::TransportError(format!("Failed to convert to Python objects: {e}")))?;
+                    .map_err(|e| ActrError::Internal(format!("Failed to convert to Python objects: {e}")))?;
 
                     let result = tokio::task::spawn_blocking(move || {
                         Python::attach(|py| -> PyResult<Py<PyAny>> {
                             let callback_obj = callback_clone.bind(py);
-                            let py_ds_obj = py_ds.bind(py);
-                            let py_sender_id_obj = py_sender_id.bind(py);
-                            let coro = callback_obj.call1((py_ds_obj, py_sender_id_obj))?;
+                            let coro = callback_obj.call1((py_ds, py_sender_id))?;
                             let asyncio = py.import("asyncio")?;
                             let run_func = asyncio.getattr("run")?;
                             let result = run_func.call1((coro,))?;
@@ -357,7 +355,7 @@ impl ContextPy {
                         })
                     })
                     .await
-                    .map_err(|e| ProtocolError::TransportError(format!("Task join failed: {e}")))?;
+                    .map_err(|e| ActrError::Internal(format!("Task join failed: {e}")))?;
 
                     match result {
                         Ok(_) => {
@@ -366,7 +364,7 @@ impl ContextPy {
                         }
                         Err(e) => {
                             tracing::error!("[py] Stream callback error: stream_id={}, error={:?}", stream_id_debug, e);
-                            Err(ProtocolError::TransportError(format!("Python callback error: {e}")))
+                            Err(ActrError::Internal(format!("Python callback error: {e}")))
                         }
                     }
                 })

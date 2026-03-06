@@ -164,7 +164,10 @@ mod tests {
 
         let outcome = d.check_or_mark("req-err");
         assert!(
-            matches!(outcome, DedupOutcome::Duplicate(Err(ActrError::InvalidArgument(_)))),
+            matches!(
+                outcome,
+                DedupOutcome::Duplicate(Err(ActrError::InvalidArgument(_)))
+            ),
             "expected cached Err"
         );
     }
@@ -192,6 +195,9 @@ mod tests {
         d.complete("req-a", ok_bytes("a"));
 
         assert!(matches!(d.check_or_mark("req-b"), DedupOutcome::Fresh));
-        assert!(matches!(d.check_or_mark("req-a"), DedupOutcome::Duplicate(_)));
+        assert!(matches!(
+            d.check_or_mark("req-a"),
+            DedupOutcome::Duplicate(_)
+        ));
     }
 }

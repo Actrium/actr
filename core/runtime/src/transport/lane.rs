@@ -63,7 +63,7 @@ struct FragmentEntry {
 }
 
 /// Accumulates in-flight fragmented messages keyed by `msg_id`.
-struct ReassemblyBuffer {
+pub struct ReassemblyBuffer {
     pending: HashMap<u32, FragmentEntry>,
 }
 

@@ -26,13 +26,13 @@ use super::negotiator::WebRtcNegotiator;
 use super::trace;
 use super::{SignalingClient, WebRtcConfig};
 use crate::INITIAL_CONNECTION_TIMEOUT;
-use actr_protocol::{ActrError, ActorResult};
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
 use actr_framework::Bytes;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::{
     ActrId, ActrRelay, IceRestartRequest, PayloadType, RoleAssignment, RoleNegotiation,
     SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
@@ -1635,11 +1635,7 @@ impl WebRtcCoordinator {
             )
         )
     )]
-    async fn handle_answer(
-        self: &Arc<Self>,
-        from: &ActrId,
-        answer_sdp: String,
-    ) -> ActorResult<()> {
+    async fn handle_answer(self: &Arc<Self>, from: &ActrId, answer_sdp: String) -> ActorResult<()> {
         // Get corresponding PeerConnection and ready_tx
         let (peer_connection, ready_tx, webrtc_conn, is_renegotiation) = {
             let mut peers = self.peers.write().await;
@@ -1992,10 +1988,7 @@ impl WebRtcCoordinator {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     // Only retry on transient errors
-                    let should_retry = matches!(
-                        &e,
-                        ActrError::TimedOut | ActrError::Internal(_)
-                    );
+                    let should_retry = matches!(&e, ActrError::TimedOut | ActrError::Internal(_));
 
                     if !should_retry {
                         return Err(e);
@@ -2170,9 +2163,7 @@ impl WebRtcCoordinator {
 
         // Extract target_id first (before timeout wrapper) for cleanup
         let target_id = dest.as_actor_id().ok_or_else(|| {
-            ActrError::InvalidArgument(
-                "WebRTC only supports Actor targets, not Shell".to_string(),
-            )
+            ActrError::InvalidArgument("WebRTC only supports Actor targets, not Shell".to_string())
         })?;
 
         // Wrap the entire operation with overall timeout
@@ -2214,9 +2205,7 @@ impl WebRtcCoordinator {
 
         // 1. Check if dest is Actor
         let target_id = dest.as_actor_id().ok_or_else(|| {
-            ActrError::InvalidArgument(
-                "WebRTC only supports Actor targets, not Shell".to_string(),
-            )
+            ActrError::InvalidArgument("WebRTC only supports Actor targets, not Shell".to_string())
         })?;
 
         tracing::debug!(
@@ -2304,10 +2293,7 @@ impl WebRtcCoordinator {
                     }
 
                     // Only retry on timeout or transient errors
-                    let should_retry = matches!(
-                        &e,
-                        ActrError::TimedOut | ActrError::Internal(_)
-                    );
+                    let should_retry = matches!(&e, ActrError::TimedOut | ActrError::Internal(_));
 
                     if !should_retry {
                         return Err(e);
@@ -2383,9 +2369,7 @@ impl WebRtcCoordinator {
                 .await
                 .map_err(|_| ActrError::TimedOut)?
                 .map_err(|_| {
-                    ActrError::Internal(format!(
-                        "Connection establishment failed (channel closed)"
-                    ))
+                    ActrError::Internal(format!("Connection establishment failed (channel closed)"))
                 })
         };
 
@@ -2412,9 +2396,7 @@ impl WebRtcCoordinator {
             .get(target_id)
             .map(|state| state.webrtc_conn.clone())
             .ok_or_else(|| {
-                ActrError::Internal(format!(
-                    "Peer not found after connection establishment"
-                ))
+                ActrError::Internal(format!("Peer not found after connection establishment"))
             })
     }
 
@@ -2458,9 +2440,7 @@ impl WebRtcCoordinator {
             .next_sequence_number(track_id)
             .await
             .ok_or_else(|| {
-                ActrError::Internal(format!(
-                    "Sequence number not found for track: {track_id}"
-                ))
+                ActrError::Internal(format!("Sequence number not found for track: {track_id}"))
             })?;
 
         // 4. Get SSRC for this track
@@ -2468,9 +2448,7 @@ impl WebRtcCoordinator {
             .webrtc_conn
             .get_ssrc(track_id)
             .await
-            .ok_or_else(|| {
-                ActrError::Internal(format!("SSRC not found for track: {track_id}"))
-            })?;
+            .ok_or_else(|| ActrError::Internal(format!("SSRC not found for track: {track_id}")))?;
 
         // 5. Construct RTP packet from MediaSample
         let rtp_packet = RtpPacket {
@@ -2595,9 +2573,7 @@ impl WebRtcCoordinator {
         peer_connection
             .set_local_description(offer)
             .await
-            .map_err(|e| {
-                ActrError::Internal(format!("Failed to set local description: {e}"))
-            })?;
+            .map_err(|e| ActrError::Internal(format!("Failed to set local description: {e}")))?;
 
         tracing::debug!(
             "📝 Created renegotiation Offer (SDP length: {})",
@@ -2624,10 +2600,7 @@ impl WebRtcCoordinator {
     /// Initiate ICE restart on an existing connection (offerer side).
     /// Uses atomic state management within peers lock for complete de-duplication.
     /// If ICE restart fails after all retries, attempts to establish a new connection.
-    pub async fn restart_ice(
-        self: &Arc<Self>,
-        target: &actr_protocol::ActrId,
-    ) -> ActorResult<()> {
+    pub async fn restart_ice(self: &Arc<Self>, target: &actr_protocol::ActrId) -> ActorResult<()> {
         // Prepare all clones needed for the spawned task
         let target_clone = target.clone();
         let peers_arc = Arc::clone(&self.peers);
@@ -3242,17 +3215,13 @@ impl WebRtcCoordinator {
         peer_connection
             .set_remote_description(offer)
             .await
-            .map_err(|e| {
-                ActrError::Internal(format!("Failed to set remote description: {e}"))
-            })?;
+            .map_err(|e| ActrError::Internal(format!("Failed to set remote description: {e}")))?;
 
         tracing::debug!("✅ Set remote description (renegotiation Offer)");
 
         // 3. Create Answer
         let answer = peer_connection.create_answer(None).await.map_err(|e| {
-            ActrError::Internal(format!(
-                "Failed to create renegotiation answer: {e}"
-            ))
+            ActrError::Internal(format!("Failed to create renegotiation answer: {e}"))
         })?;
         let answer_sdp = answer.sdp.clone();
 
@@ -3260,9 +3229,7 @@ impl WebRtcCoordinator {
         peer_connection
             .set_local_description(answer)
             .await
-            .map_err(|e| {
-                ActrError::Internal(format!("Failed to set local description: {e}"))
-            })?;
+            .map_err(|e| ActrError::Internal(format!("Failed to set local description: {e}")))?;
 
         tracing::debug!(
             "✅ Created renegotiation Answer (SDP length: {})",
@@ -3296,9 +3263,7 @@ impl WebRtcCoordinator {
         let (peer_connection, is_offerer) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
-                ActrError::Internal(format!(
-                    "ICE restart offer received for unknown peer"
-                ))
+                ActrError::Internal(format!("ICE restart offer received for unknown peer"))
             })?;
             (state.peer_connection.clone(), state.is_offerer)
         };
@@ -3554,9 +3519,7 @@ impl WebRtcCoordinator {
         self.send_actr_relay(target, payload).await?;
 
         rx.await.map_err(|_| {
-            ActrError::Internal(format!(
-                "Role negotiation channel closed before assignment"
-            ))
+            ActrError::Internal(format!("Role negotiation channel closed before assignment"))
         })
     }
 

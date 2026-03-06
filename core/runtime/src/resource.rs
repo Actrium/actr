@@ -1,6 +1,6 @@
 //! Resource management
 
-use actr_protocol::{ActrError, ActorResult};
+use actr_protocol::{ActorResult, ActrError};
 use serde::{Deserialize, Serialize};
 
 /// Resource quota
@@ -115,7 +115,9 @@ impl ResourceManager {
     /// Allocateresource
     pub fn allocate_resources(&mut self, usage: &ResourceUsage) -> ActorResult<()> {
         if !self.check_resource_availability(usage)? {
-            return Err(ActrError::Unavailable("Insufficient resources available".to_string()));
+            return Err(ActrError::Unavailable(
+                "Insufficient resources available".to_string(),
+            ));
         }
 
         self.current_usage.cpu_usage += usage.cpu_usage;

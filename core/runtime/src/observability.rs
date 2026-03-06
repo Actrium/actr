@@ -5,8 +5,8 @@
 //! custom platform-specific layers (e.g., Android Logcat, iOS os_log) while
 //! providing a sensible default (stdout fmt layer) when none is provided.
 
-use actr_protocol::ActorResult;
 use actr_config::ObservabilityConfig;
+use actr_protocol::ActorResult;
 #[cfg(feature = "opentelemetry")]
 use opentelemetry::{KeyValue, trace::TracerProvider as _};
 #[cfg(feature = "opentelemetry")]
@@ -189,9 +189,7 @@ fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerPro
         .with_endpoint(config.tracing_endpoint.clone())
         .build()
         .map_err(|e| {
-            crate::error::ActrError::InitializationError(format!(
-                "OTLP exporter build failed: {e}"
-            ))
+            crate::error::ActrError::Internal(format!("OTLP exporter build failed: {e}"))
         })?;
 
     let resource = Resource::builder()

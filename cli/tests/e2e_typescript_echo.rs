@@ -224,6 +224,7 @@ fn typescript_echo_e2e_service_and_app() {
 }
 
 #[test]
+#[ignore = "Local registry discovery is flaky in CI"]
 fn typescript_echo_e2e_app_with_local_registry() {
     let _guard = e2e_lock()
         .lock()

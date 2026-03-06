@@ -119,15 +119,18 @@ impl ContextBridge {
     /// # Arguments
     /// - `target`: Target actor ID
     /// - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+    /// - `payload_type`: Stream lane selection for delivery guarantees.
     pub async fn send_data_stream(
         &self,
         target: crate::types::ActrId,
         chunk: crate::types::DataStream,
+        payload_type: crate::types::PayloadType,
     ) -> crate::error::ActrResult<()> {
         let target_id: ActrId = target.into();
         let chunk: DataStream = chunk.into();
+        let payload_type: PayloadType = payload_type.into();
         self.inner
-            .send_data_stream(&Dest::Actor(target_id), chunk)
+            .send_data_stream(&Dest::Actor(target_id), chunk, payload_type)
             .await?;
         Ok(())
     }
@@ -148,7 +151,7 @@ impl ContextBridge {
                     callback
                         .on_stream(chunk, sender)
                         .await
-                        .map_err(actr_protocol::ProtocolError::from)
+                        .map_err(actr_protocol::ActrError::from)
                 })
             })
             .await?;

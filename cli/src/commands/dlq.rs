@@ -14,11 +14,11 @@
 //! `--db` defaults to `./actr-data/dlq.db` (the runtime default path).
 
 use actr_runtime_mailbox::{
+    DeadLetterQueue,
     dlq::{DlqQuery, DlqRecord},
     sqlite_dlq::SqliteDeadLetterQueue,
-    DeadLetterQueue,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::DateTime;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -43,9 +43,7 @@ impl DlqArgs {
         positional: &[String],
         flags: &std::collections::HashMap<String, String>,
     ) -> Result<Self> {
-        let subcommand = subcommand
-            .unwrap_or("list")
-            .to_string();
+        let subcommand = subcommand.unwrap_or("list").to_string();
         let id = positional.first().cloned();
         let db = flags
             .get("db")
@@ -58,7 +56,14 @@ impl DlqArgs {
         let category = flags.get("category").cloned();
         let after = flags.get("after").cloned();
 
-        Ok(Self { subcommand, id, db, limit, category, after })
+        Ok(Self {
+            subcommand,
+            id,
+            db,
+            limit,
+            category,
+            after,
+        })
     }
 }
 
@@ -116,7 +121,13 @@ fn print_record_detail(r: &DlqRecord) {
     }
     println!("Raw bytes (hex): {} bytes", r.raw_bytes.len());
     if !r.raw_bytes.is_empty() {
-        let preview: String = r.raw_bytes.iter().take(32).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+        let preview: String = r
+            .raw_bytes
+            .iter()
+            .take(32)
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let suffix = if r.raw_bytes.len() > 32 { " …" } else { "" };
         println!("                 {preview}{suffix}");
     }
@@ -265,9 +276,7 @@ mod tests {
     async fn make_dlq() -> (SqliteDeadLetterQueue, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("dlq.db");
-        let dlq = SqliteDeadLetterQueue::new_standalone(&path)
-            .await
-            .unwrap();
+        let dlq = SqliteDeadLetterQueue::new_standalone(&path).await.unwrap();
         (dlq, dir)
     }
 
@@ -311,7 +320,10 @@ mod tests {
         let pos = vec!["550e8400-e29b-41d4-a716-446655440000".to_string()];
         let args = DlqArgs::parse(Some("show"), &pos, &HashMap::new()).unwrap();
         assert_eq!(args.subcommand, "show");
-        assert_eq!(args.id.as_deref(), Some("550e8400-e29b-41d4-a716-446655440000"));
+        assert_eq!(
+            args.id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
     }
 
     #[test]
@@ -357,8 +369,12 @@ mod tests {
     #[tokio::test]
     async fn list_returns_records() {
         let (dlq, dir) = make_dlq().await;
-        dlq.enqueue(sample_record("decode", "bad proto")).await.unwrap();
-        dlq.enqueue(sample_record("decode", "truncated")).await.unwrap();
+        dlq.enqueue(sample_record("decode", "bad proto"))
+            .await
+            .unwrap();
+        dlq.enqueue(sample_record("decode", "truncated"))
+            .await
+            .unwrap();
 
         let db = dir.path().join("dlq.db");
         let args = DlqArgs {
@@ -375,8 +391,12 @@ mod tests {
     #[tokio::test]
     async fn list_filters_by_category() {
         let (dlq, dir) = make_dlq().await;
-        dlq.enqueue(sample_record("decode", "bad proto")).await.unwrap();
-        dlq.enqueue(sample_record("envelope", "bad header")).await.unwrap();
+        dlq.enqueue(sample_record("decode", "bad proto"))
+            .await
+            .unwrap();
+        dlq.enqueue(sample_record("envelope", "bad header"))
+            .await
+            .unwrap();
 
         let db = dir.path().join("dlq.db");
         let args = DlqArgs {
@@ -466,7 +486,10 @@ mod tests {
     #[tokio::test]
     async fn delete_existing_record() {
         let (dlq, dir) = make_dlq().await;
-        let id = dlq.enqueue(sample_record("decode", "poison")).await.unwrap();
+        let id = dlq
+            .enqueue(sample_record("decode", "poison"))
+            .await
+            .unwrap();
 
         let db = dir.path().join("dlq.db");
         let args = DlqArgs {

@@ -3,13 +3,13 @@
 //! Uses WebRtcCoordinator to send/receive messages, implementing cross-process RPC communication
 
 use super::coordinator::WebRtcCoordinator;
-use actr_protocol::{ActrError, ActorResult};
 use crate::inbound::DataStreamRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -75,7 +75,17 @@ jobs:
         if: matrix.os == 'windows-latest'
         working-directory: .
         run: |
-          choco install protoc openssl
+          $protocVersion = "29.3"
+          $protocZip = "protoc-$protocVersion-win64.zip"
+          $protocUrl = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/$protocZip"
+          $protocDir = Join-Path $env:RUNNER_TEMP "protoc"
+          $protocZipPath = Join-Path $env:RUNNER_TEMP $protocZip
+
+          Invoke-WebRequest -Uri $protocUrl -OutFile $protocZipPath
+          Expand-Archive -Path $protocZipPath -DestinationPath $protocDir -Force
+
+          "$protocDir\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "PROTOC=$protocDir\bin\protoc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install maturin
         run: |

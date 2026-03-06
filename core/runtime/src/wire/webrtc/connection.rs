@@ -1,18 +1,18 @@
 //! WebRTC P2P Connection implementation
 
-use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::DataLane;
+use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{NetworkError, NetworkResult};
 use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use std::sync::atomic::{AtomicU16, Ordering};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection};
+use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
 use webrtc::rtp_transceiver::rtp_sender::RTCRtpSender;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 

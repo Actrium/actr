@@ -27,30 +27,40 @@ pub enum ActrError {
 
 pub type ActrResult<T> = Result<T, ActrError>;
 
-impl From<actr_protocol::ProtocolError> for ActrError {
-    fn from(e: actr_protocol::ProtocolError) -> Self {
-        ActrError::RpcError { msg: e.to_string() }
+impl From<actr_protocol::ActrError> for ActrError {
+    fn from(e: actr_protocol::ActrError) -> Self {
+        match e {
+            actr_protocol::ActrError::Unavailable(msg) => ActrError::ConnectionError { msg },
+            actr_protocol::ActrError::TimedOut => ActrError::TimeoutError {
+                msg: "operation timed out".to_string(),
+            },
+            actr_protocol::ActrError::NotFound(msg)
+            | actr_protocol::ActrError::PermissionDenied(msg)
+            | actr_protocol::ActrError::InvalidArgument(msg)
+            | actr_protocol::ActrError::UnknownRoute(msg)
+            | actr_protocol::ActrError::DecodeFailure(msg)
+            | actr_protocol::ActrError::NotImplemented(msg)
+            | actr_protocol::ActrError::Internal(msg) => ActrError::RpcError { msg },
+            actr_protocol::ActrError::DependencyNotFound {
+                service_name,
+                message,
+            } => ActrError::RpcError {
+                msg: format!("dependency '{service_name}' not found: {message}"),
+            },
+        }
     }
 }
 
-impl From<ActrError> for actr_protocol::ProtocolError {
+impl From<ActrError> for actr_protocol::ActrError {
     fn from(e: ActrError) -> Self {
         match e {
-            ActrError::ConfigError { msg } => {
-                actr_protocol::ProtocolError::InvalidStateTransition(msg)
-            }
-            ActrError::ConnectionError { msg } => actr_protocol::ProtocolError::TransportError(msg),
-            ActrError::RpcError { msg } => actr_protocol::ProtocolError::TransportError(msg),
-            ActrError::StateError { msg } => {
-                actr_protocol::ProtocolError::InvalidStateTransition(msg)
-            }
-            ActrError::InternalError { msg } => {
-                actr_protocol::ProtocolError::InvalidStateTransition(msg)
-            }
-            ActrError::TimeoutError { .. } => actr_protocol::ProtocolError::Timeout,
-            ActrError::WorkloadError { msg } => {
-                actr_protocol::ProtocolError::InvalidStateTransition(msg)
-            }
+            ActrError::ConfigError { msg } => actr_protocol::ActrError::InvalidArgument(msg),
+            ActrError::ConnectionError { msg } => actr_protocol::ActrError::Unavailable(msg),
+            ActrError::RpcError { msg }
+            | ActrError::StateError { msg }
+            | ActrError::InternalError { msg }
+            | ActrError::WorkloadError { msg } => actr_protocol::ActrError::Internal(msg),
+            ActrError::TimeoutError { .. } => actr_protocol::ActrError::TimedOut,
         }
     }
 }

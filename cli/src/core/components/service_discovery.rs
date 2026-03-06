@@ -16,7 +16,10 @@ use futures_util::{SinkExt, StreamExt};
 use prost::Message;
 use std::path::PathBuf;
 use std::time::SystemTime;
-use tokio::sync::Mutex;
+use tokio::{
+    sync::Mutex,
+    time::{Duration, sleep},
+};
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 type SignalingSocket =
@@ -34,6 +37,9 @@ pub struct NetworkServiceDiscovery {
 }
 
 impl NetworkServiceDiscovery {
+    const LOOKUP_RETRY_ATTEMPTS: usize = 45;
+    const LOOKUP_RETRY_DELAY: Duration = Duration::from_secs(2);
+
     pub fn new(config: Config) -> Self {
         Self {
             config,
@@ -180,6 +186,28 @@ impl NetworkServiceDiscovery {
         anyhow!("{context}: {} ({})", error.message, error.code)
     }
 
+    async fn retry_lookup<T, F, Fut>(&self, context: &str, mut lookup: F) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<Option<T>>>,
+    {
+        let mut last_error = None;
+
+        for attempt in 0..Self::LOOKUP_RETRY_ATTEMPTS {
+            match lookup().await {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => last_error = Some(anyhow!("{context}")),
+                Err(err) => last_error = Some(err),
+            }
+
+            if attempt + 1 < Self::LOOKUP_RETRY_ATTEMPTS {
+                sleep(Self::LOOKUP_RETRY_DELAY).await;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow!("{context}")))
+    }
+
     async fn send_envelope(
         socket: &mut SignalingSocket,
         envelope: SignalingEnvelope,
@@ -321,6 +349,23 @@ impl NetworkServiceDiscovery {
 
         true
     }
+
+    fn matches_lookup_name(entry: &discovery_response::TypeEntry, name: &str) -> bool {
+        if entry.name == name || Self::format_actr_type(&entry.actr_type) == name {
+            return true;
+        }
+
+        let Ok(lookup_type) = ActrType::from_string_repr(name) else {
+            return false;
+        };
+
+        entry.actr_type.manufacturer == lookup_type.manufacturer
+            && entry.actr_type.name == lookup_type.name
+            && lookup_type
+                .version
+                .as_ref()
+                .is_none_or(|version| entry.actr_type.version.as_ref() == Some(version))
+    }
 }
 
 #[async_trait]
@@ -339,12 +384,14 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
     }
 
     async fn get_service_details(&self, name: &str) -> Result<ServiceDetails> {
-        let entries = self.discover_entries(None).await?;
-        let entry = entries
-            .into_iter()
-            .find(|entry| entry.name == name || Self::format_actr_type(&entry.actr_type) == name);
-
-        let entry = entry.ok_or_else(|| anyhow!("Service not found: {name}"))?;
+        let entry = self
+            .retry_lookup(&format!("Service not found: {name}"), || async {
+                let entries = self.discover_entries(None).await?;
+                Ok(entries
+                    .into_iter()
+                    .find(|entry| Self::matches_lookup_name(entry, name)))
+            })
+            .await?;
         let info = ServiceInfo::from(entry.clone());
 
         // Try to get ServiceSpec with proto files
@@ -365,10 +412,16 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
 
     // TODO: improve the performance of this method
     async fn check_service_availability(&self, name: &str) -> Result<AvailabilityStatus> {
-        let entries = self.discover_entries(None).await?;
-        let available = entries
-            .iter()
-            .any(|entry| entry.name == name || Self::format_actr_type(&entry.actr_type) == name);
+        let available = self
+            .retry_lookup(&format!("Service not found: {name}"), || async {
+                let entries = self.discover_entries(None).await?;
+                Ok(entries
+                    .into_iter()
+                    .any(|entry| Self::matches_lookup_name(&entry, name))
+                    .then_some(true))
+            })
+            .await
+            .unwrap_or(false);
 
         Ok(AvailabilityStatus {
             is_available: available,
@@ -382,71 +435,81 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
     }
 
     async fn get_service_proto(&self, name: &str) -> Result<Vec<ProtoFile>> {
-        self.ensure_connected().await?;
-        let mut state_guard = self.state.lock().await;
-        let state = state_guard
-            .as_mut()
-            .context("Signaling state not initialized")?;
+        self.retry_lookup(&format!("Get service spec failed: {name}"), || async {
+            self.ensure_connected().await?;
+            let mut state_guard = self.state.lock().await;
+            let state = state_guard
+                .as_mut()
+                .context("Signaling state not initialized")?;
 
-        let request = GetServiceSpecRequest {
-            name: name.to_string(),
-        };
-        let payload = actr_to_signaling::Payload::GetServiceSpecRequest(request);
-        let envelope =
-            Self::build_envelope(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
-                source: state.actr_id.clone(),
-                credential: state.credential.clone(),
-                payload: Some(payload),
-            }))?;
+            let request = GetServiceSpecRequest {
+                name: name.to_string(),
+            };
+            let payload = actr_to_signaling::Payload::GetServiceSpecRequest(request);
+            let envelope =
+                Self::build_envelope(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
+                    source: state.actr_id.clone(),
+                    credential: state.credential.clone(),
+                    payload: Some(payload),
+                }))?;
 
-        let result = match Self::send_envelope(&mut state.socket, envelope).await {
-            Ok(()) => loop {
-                let envelope = Self::read_envelope(&mut state.socket).await?;
-                match envelope.flow {
-                    Some(signaling_envelope::Flow::ServerToActr(server)) => match server.payload {
-                        Some(signaling_to_actr::Payload::GetServiceSpecResponse(response)) => {
-                            let proto_files = match response.result {
-                                Some(get_service_spec_response::Result::Success(success)) => {
-                                    success
-                                        .protobufs
-                                        .into_iter()
-                                        .map(|p| ProtoFile {
-                                            name: format!("{}.proto", p.package),
-                                            path: PathBuf::new(),
-                                            content: p.content,
-                                            services: Vec::new(),
-                                        })
-                                        .collect()
+            let result = match Self::send_envelope(&mut state.socket, envelope).await {
+                Ok(()) => loop {
+                    let envelope = Self::read_envelope(&mut state.socket).await?;
+                    match envelope.flow {
+                        Some(signaling_envelope::Flow::ServerToActr(server)) => {
+                            match server.payload {
+                                Some(signaling_to_actr::Payload::GetServiceSpecResponse(
+                                    response,
+                                )) => {
+                                    let proto_files = match response.result {
+                                        Some(get_service_spec_response::Result::Success(
+                                            success,
+                                        )) => success
+                                            .protobufs
+                                            .into_iter()
+                                            .map(|p| ProtoFile {
+                                                name: format!("{}.proto", p.package),
+                                                path: PathBuf::new(),
+                                                content: p.content,
+                                                services: Vec::new(),
+                                            })
+                                            .collect::<Vec<_>>(),
+                                        Some(get_service_spec_response::Result::Error(error)) => {
+                                            break Err(Self::as_error(
+                                                "Get service spec failed",
+                                                &error,
+                                            ));
+                                        }
+                                        None => {
+                                            break Err(anyhow!(
+                                                "Get service spec response is missing result"
+                                            ));
+                                        }
+                                    };
+                                    break Ok(Some(proto_files));
                                 }
-                                Some(get_service_spec_response::Result::Error(error)) => {
+                                Some(signaling_to_actr::Payload::Error(error)) => {
                                     break Err(Self::as_error("Get service spec failed", &error));
                                 }
-                                None => {
-                                    break Err(anyhow!(
-                                        "Get service spec response is missing result"
-                                    ));
-                                }
-                            };
-                            break Ok(proto_files);
+                                _ => {}
+                            }
                         }
-                        Some(signaling_to_actr::Payload::Error(error)) => {
+                        Some(signaling_envelope::Flow::EnvelopeError(error)) => {
                             break Err(Self::as_error("Get service spec failed", &error));
                         }
                         _ => {}
-                    },
-                    Some(signaling_envelope::Flow::EnvelopeError(error)) => {
-                        break Err(Self::as_error("Get service spec failed", &error));
                     }
-                    _ => {}
-                }
-            },
-            Err(err) => Err(err),
-        };
+                },
+                Err(err) => Err(err),
+            };
 
-        if result.is_err() {
-            *state_guard = None;
-        }
+            if result.is_err() {
+                *state_guard = None;
+            }
 
-        result
+            result
+        })
+        .await
     }
 }

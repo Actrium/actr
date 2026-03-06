@@ -72,8 +72,7 @@ pub use actr_config as config;
 pub mod prelude {
     // 协议层 - 核心类型
     pub use crate::protocol::{
-        ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope,
-        RpcRequest,
+        ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope, RpcRequest,
     };
 
     // 框架层 - 核心 trait 和类型

@@ -35,7 +35,6 @@ use thiserror::Error;
 #[derive(Error, Debug, Clone)]
 pub enum ActrError {
     // ── Transient ──────────────────────────────────────────────────────────
-
     /// Peer temporarily unavailable: connection lost, overloaded, or reconnecting.
     ///
     /// `ErrorKind::Transient` — retry with backoff.
@@ -49,7 +48,6 @@ pub enum ActrError {
     TimedOut,
 
     // ── Client ─────────────────────────────────────────────────────────────
-
     /// Target actor not found.
     ///
     /// `ErrorKind::Client` — do not retry; check service discovery first.
@@ -84,7 +82,6 @@ pub enum ActrError {
     },
 
     // ── Corrupt ────────────────────────────────────────────────────────────
-
     /// Protobuf decode failure — message data is corrupted.
     ///
     /// `ErrorKind::Corrupt` — route to Dead Letter Queue; do not retry.
@@ -92,7 +89,6 @@ pub enum ActrError {
     DecodeFailure(String),
 
     // ── Internal ───────────────────────────────────────────────────────────
-
     /// Feature not yet implemented.
     ///
     /// `ErrorKind::Internal` — do not retry.
@@ -179,16 +175,28 @@ mod tests {
 
     #[test]
     fn transient_variants_classify_correctly() {
-        assert_eq!(ActrError::Unavailable("x".into()).kind(), ErrorKind::Transient);
+        assert_eq!(
+            ActrError::Unavailable("x".into()).kind(),
+            ErrorKind::Transient
+        );
         assert_eq!(ActrError::TimedOut.kind(), ErrorKind::Transient);
     }
 
     #[test]
     fn client_variants_classify_correctly() {
         assert_eq!(ActrError::NotFound("x".into()).kind(), ErrorKind::Client);
-        assert_eq!(ActrError::PermissionDenied("x".into()).kind(), ErrorKind::Client);
-        assert_eq!(ActrError::InvalidArgument("x".into()).kind(), ErrorKind::Client);
-        assert_eq!(ActrError::UnknownRoute("x".into()).kind(), ErrorKind::Client);
+        assert_eq!(
+            ActrError::PermissionDenied("x".into()).kind(),
+            ErrorKind::Client
+        );
+        assert_eq!(
+            ActrError::InvalidArgument("x".into()).kind(),
+            ErrorKind::Client
+        );
+        assert_eq!(
+            ActrError::UnknownRoute("x".into()).kind(),
+            ErrorKind::Client
+        );
         assert_eq!(
             ActrError::DependencyNotFound {
                 service_name: "svc".into(),
@@ -201,12 +209,18 @@ mod tests {
 
     #[test]
     fn corrupt_variant_classifies_correctly() {
-        assert_eq!(ActrError::DecodeFailure("x".into()).kind(), ErrorKind::Corrupt);
+        assert_eq!(
+            ActrError::DecodeFailure("x".into()).kind(),
+            ErrorKind::Corrupt
+        );
     }
 
     #[test]
     fn internal_variants_classify_correctly() {
-        assert_eq!(ActrError::NotImplemented("x".into()).kind(), ErrorKind::Internal);
+        assert_eq!(
+            ActrError::NotImplemented("x".into()).kind(),
+            ErrorKind::Internal
+        );
         assert_eq!(ActrError::Internal("x".into()).kind(), ErrorKind::Internal);
     }
 

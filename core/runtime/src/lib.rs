@@ -241,7 +241,7 @@ pub use actr_runtime_mailbox::{
 pub use context_factory::ContextFactory;
 
 // Utility modules
-pub use error::{ActrError, ActorResult, Classify, ErrorKind};
+pub use error::{ActorResult, ActrError, Classify, ErrorKind};
 pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
 
@@ -310,7 +310,7 @@ pub mod prelude {
     pub use crate::transport::TransportManager;
 
     // Utility modules
-    pub use crate::error::{ActrError, ActorResult};
+    pub use crate::error::{ActorResult, ActrError};
     pub use crate::monitoring::{Alert, AlertSeverity, Monitor};
     pub use crate::resource::{ResourceManager, ResourceQuota, ResourceUsage};
 

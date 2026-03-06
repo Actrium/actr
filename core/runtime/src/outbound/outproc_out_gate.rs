@@ -10,7 +10,9 @@ use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{Dest, OutprocTransportManager, PayloadTypeExt};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, ActrIdExt, Classify, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    ActorResult, ActrError, ActrId, ActrIdExt, Classify, PayloadType, RpcEnvelope,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
@@ -435,7 +437,7 @@ impl OutprocOutGate {
 
         // Check if WebRTC coordinator is available
         let coordinator = self.webrtc_coordinator.as_ref().ok_or_else(|| {
-            ActrError::NotImplemented("MediaTrack requires WebRTC coordinator".to_string(),)
+            ActrError::NotImplemented("MediaTrack requires WebRTC coordinator".to_string())
         })?;
 
         // Delegate to WebRtcCoordinator

@@ -108,7 +108,6 @@ impl GeoIpService {
     /// 自动下载 GeoLite2-City 数据库
     fn download_database(db_path: &Path, license_key: &str) -> Result<()> {
         use reqwest::blocking::Client;
-        use std::io::Read;
 
         info!("📥 Downloading GeoLite2-City database (~70MB)...");
 

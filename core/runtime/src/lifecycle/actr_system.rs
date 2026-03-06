@@ -69,9 +69,7 @@ impl ActrSystem {
             actr_runtime_mailbox::SqliteMailbox::new(&mailbox_path)
                 .await
                 .map_err(|e| {
-                    actr_protocol::ActrError::Unavailable(format!(
-                        "Mailbox init failed: {e}"
-                    ))
+                    actr_protocol::ActrError::Unavailable(format!("Mailbox init failed: {e}"))
                 })?,
         );
 

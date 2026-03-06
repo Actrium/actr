@@ -4,4 +4,4 @@
 //! or `NetworkError` (transport-internal). See `actr_protocol::error` for the
 //! full error design.
 
-pub use actr_protocol::{ActrError, ActorResult, Classify, ErrorKind};
+pub use actr_protocol::{ActorResult, ActrError, Classify, ErrorKind};

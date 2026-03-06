@@ -414,11 +414,7 @@ impl InprocTransportManager {
     /// # Returns
     /// - `Ok(())`: Successfully sent error to waiting sender
     /// - `Err(NetworkError)`: No pending request found with this ID
-    pub async fn complete_error(
-        &self,
-        request_id: &str,
-        error: ActrError,
-    ) -> NetworkResult<()> {
+    pub async fn complete_error(&self, request_id: &str, error: ActrError) -> NetworkResult<()> {
         let mut pending = self.pending_requests.write().await;
         if let Some(tx) = pending.remove(request_id) {
             let _ = tx.send(Err(error));

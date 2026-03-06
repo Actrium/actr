@@ -1,8 +1,8 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
 use crate::context_factory::ContextFactory;
-use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::lifecycle::compat_lock::{CompatLockManager, CompatibilityCheck};
+use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
@@ -190,16 +190,16 @@ impl CredentialState {
 /// Map ActrError to error code for ErrorResponse
 fn protocol_error_to_code(err: &ActrError) -> u32 {
     match err {
-        ActrError::Unavailable(_) => 503,      // Service Unavailable
-        ActrError::TimedOut => 504,             // Gateway Timeout
-        ActrError::NotFound(_) => 404,          // Not Found
-        ActrError::PermissionDenied(_) => 403,  // Forbidden
-        ActrError::InvalidArgument(_) => 400,   // Bad Request
-        ActrError::UnknownRoute(_) => 404,      // Not Found - route not found
+        ActrError::Unavailable(_) => 503,            // Service Unavailable
+        ActrError::TimedOut => 504,                  // Gateway Timeout
+        ActrError::NotFound(_) => 404,               // Not Found
+        ActrError::PermissionDenied(_) => 403,       // Forbidden
+        ActrError::InvalidArgument(_) => 400,        // Bad Request
+        ActrError::UnknownRoute(_) => 404,           // Not Found - route not found
         ActrError::DependencyNotFound { .. } => 400, // Bad Request
-        ActrError::DecodeFailure(_) => 400,     // Bad Request - decode failure
-        ActrError::NotImplemented(_) => 501,    // Not Implemented
-        ActrError::Internal(_) => 500,          // Internal Server Error
+        ActrError::DecodeFailure(_) => 400,          // Bad Request - decode failure
+        ActrError::NotImplemented(_) => 501,         // Not Implemented
+        ActrError::Internal(_) => 500,               // Internal Server Error
     }
 }
 
@@ -622,9 +622,7 @@ impl<W: Workload> ActrNode<W> {
                 route_request,
             )
             .await
-            .map_err(|e| {
-                ActrError::Unavailable(format!("Route candidates request failed: {e}"))
-            })?;
+            .map_err(|e| ActrError::Unavailable(format!("Route candidates request failed: {e}")))?;
 
         match route_response.result {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
@@ -987,9 +985,7 @@ impl<W: Workload> ActrNode<W> {
 
         // 0.1. ACL Permission Check (before processing message)
         let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
-            .map_err(|err_msg| {
-                ActrError::Internal(format!("ACL check failed: {}", err_msg))
-            })?;
+            .map_err(|err_msg| ActrError::Internal(format!("ACL check failed: {}", err_msg)))?;
 
         if !acl_allowed {
             tracing::warn!(
@@ -1096,7 +1092,9 @@ impl<W: Workload> ActrNode<W> {
 
                 // Return DecodeFailure error with panic info
                 // (using DecodeFailure as a proxy for "cannot process message")
-                Err(ActrError::DecodeFailure(format!("Handler panicked: {panic_info}")))
+                Err(ActrError::DecodeFailure(format!(
+                    "Handler panicked: {panic_info}"
+                )))
             }
         };
 
@@ -1151,9 +1149,10 @@ impl<W: Workload> ActrNode<W> {
         // 1. Connect to signaling server and register
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         tracing::info!("📡 Connecting to signaling server");
-        self.signaling_client.connect().await.map_err(|e| {
-            ActrError::Unavailable(format!("Signaling connect failed: {e}"))
-        })?;
+        self.signaling_client
+            .connect()
+            .await
+            .map_err(|e| ActrError::Unavailable(format!("Signaling connect failed: {e}")))?;
         tracing::info!("✅ Connected to signaling server");
 
         // Get ActrType from configuration
@@ -1185,9 +1184,7 @@ impl<W: Workload> ActrNode<W> {
             .signaling_client
             .send_register_request(register_request.clone())
             .await
-            .map_err(|e| {
-                ActrError::Unavailable(format!("Actor registration failed: {e}"))
-            })?;
+            .map_err(|e| ActrError::Unavailable(format!("Actor registration failed: {e}")))?;
 
         // Handle RegisterResponse oneof result
         //

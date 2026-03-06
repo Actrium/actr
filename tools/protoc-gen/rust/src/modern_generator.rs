@@ -270,16 +270,14 @@ impl RpcRequest for {input_type} {{
                 #route_key => {
                     // Extract payload from envelope
                     let payload = envelope.payload.as_ref()
-                        .ok_or_else(|| actr_protocol::ProtocolError::DecodeError(
+                        .ok_or_else(|| actr_protocol::ActrError::DecodeFailure(
                             "Missing payload in RpcEnvelope".to_string()
                         ))?;
 
                     // Deserialize request
                     let req = #input_ident::decode(&**payload)
-                        .map_err(|e| actr_protocol::ProtocolError::Actr(
-                            actr_protocol::ActrError::DecodeFailure {
-                                message: format!("Failed to decode {}: {}", stringify!(#input_ident), e)
-                            }
+                        .map_err(|e| actr_protocol::ActrError::DecodeFailure(
+                            format!("Failed to decode {}: {}", stringify!(#input_ident), e)
                         ))?;
 
                     // 调用业务逻辑
@@ -383,10 +381,8 @@ impl RpcRequest for {input_type} {{
                 ) -> ActorResult<Bytes> {
                     match envelope.route_key.as_str() {
                         #(#match_arms,)*
-                        _ => Err(actr_protocol::ProtocolError::Actr(
-                            actr_protocol::ActrError::UnknownRoute {
-                                route_key: envelope.route_key.to_string()
-                            }
+                        _ => Err(actr_protocol::ActrError::UnknownRoute(
+                            envelope.route_key.to_string()
                         ))
                     }
                 }

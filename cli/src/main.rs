@@ -19,11 +19,11 @@ use actr_cli::core::{
 };
 
 // 导入命令实现
+use actr_cli::commands::dlq as dlq_cmd;
 use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DiscoveryCommand, DocCommand,
     FingerprintCommand, GenCommand, InitCommand, InstallCommand, RunCommand,
 };
-use actr_cli::commands::dlq as dlq_cmd;
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
 #[derive(Parser)]

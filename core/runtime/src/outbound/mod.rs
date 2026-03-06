@@ -15,7 +15,7 @@ pub use inproc_out_gate::InprocOutGate;
 pub use outproc_out_gate::OutprocOutGate;
 
 use actr_framework::{Bytes, MediaSample};
-use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope, ActrError};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
 /// OutGate - 出站消息门枚举
@@ -158,7 +158,9 @@ impl OutGate {
         match self {
             OutGate::InprocOut(_gate) => {
                 // InprocOut does not support MediaTrack (WebRTC-specific feature)
-                Err(ActrError::NotImplemented("MediaTrack is only supported for remote actors via WebRTC".to_string()))
+                Err(ActrError::NotImplemented(
+                    "MediaTrack is only supported for remote actors via WebRTC".to_string(),
+                ))
             }
             OutGate::OutprocOut(gate) => gate.send_media_sample(target, track_id, sample).await,
         }

@@ -5,13 +5,13 @@ pub mod check;
 pub mod codegen;
 pub mod config;
 pub mod discovery;
+pub mod dlq;
 pub mod doc;
 pub mod fingerprint;
 pub mod generate;
 pub mod init;
 pub mod initialize;
 pub mod install;
-pub mod dlq;
 pub mod run;
 
 use crate::error::Result;

@@ -351,6 +351,7 @@ impl LocalRustEchoService {
 
         let service_dir = workspace.path().join(project_name);
         align_project_with_local_actrix(&service_dir)?;
+        disable_acl(&service_dir)?;
         align_rust_project_with_workspace(&service_dir)?;
         let install_out = run_actr(&["install"], &service_dir);
         ensure_success(&install_out, "actr install rust service")?;
@@ -408,6 +409,24 @@ fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
     if !content.ends_with('\n') {
         rewritten.pop();
     }
+
+    fs::write(&actr_toml_path, rewritten)
+        .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
+    Ok(())
+}
+
+fn disable_acl(project_dir: &Path) -> Result<()> {
+    let actr_toml_path = project_dir.join("Actr.toml");
+    let content = fs::read_to_string(&actr_toml_path)
+        .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
+
+    let acl_start = content.find("[acl]").with_context(|| {
+        format!(
+            "failed to find [acl] section in {}",
+            actr_toml_path.display()
+        )
+    })?;
+    let rewritten = content[..acl_start].trim_end().to_string() + "\n";
 
     fs::write(&actr_toml_path, rewritten)
         .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;

@@ -11,8 +11,8 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType,
-    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RouteCandidatesRequest,
+    RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -103,7 +103,9 @@ impl RuntimeContext {
         match dest {
             Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
             Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
-                ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
+                ActrError::Internal(
+                    "OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string(),
+                )
             }),
         }
     }
@@ -266,9 +268,7 @@ impl RuntimeContext {
             .signaling_client
             .send_route_candidates_request(self.self_id.clone(), self.credential.clone(), request)
             .await
-            .map_err(|e| {
-                ActrError::Unavailable(format!("Route candidates request failed: {e}"))
-            })?;
+            .map_err(|e| ActrError::Unavailable(format!("Route candidates request failed: {e}")))?;
 
         match response.result {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
@@ -444,10 +444,10 @@ impl Context for RuntimeContext {
         // 6. 解码响应（类型安全：R::Response）
         R::Response::decode(&*response_bytes).map_err(|e| {
             ActrError::DecodeFailure(format!(
-                    "Failed to decode {}: {}",
-                    std::any::type_name::<R::Response>(),
-                    e
-                ))
+                "Failed to decode {}: {}",
+                std::any::type_name::<R::Response>(),
+                e
+            ))
         })
     }
 
@@ -511,7 +511,12 @@ impl Context for RuntimeContext {
         Ok(())
     }
 
-    async fn send_data_stream(&self, target: &Dest, chunk: DataStream, payload_type: actr_protocol::PayloadType) -> ActorResult<()> {
+    async fn send_data_stream(
+        &self,
+        target: &Dest,
+        chunk: DataStream,
+        payload_type: actr_protocol::PayloadType,
+    ) -> ActorResult<()> {
         use actr_protocol::prost::Message as ProstMessage;
 
         // 1. Serialize DataStream to bytes
@@ -529,12 +534,8 @@ impl Context for RuntimeContext {
         let target_id = self.extract_target_id(target);
 
         // 3. Send via OutGate with the caller-specified PayloadType
-        gate.send_data_stream(
-            target_id,
-            payload_type,
-            bytes::Bytes::from(payload),
-        )
-        .await
+        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
+            .await
     }
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
@@ -694,7 +695,9 @@ impl Context for RuntimeContext {
 
         // 2. Select outproc gate (raw calls are always remote)
         let gate = self.outproc_gate.as_ref().ok_or_else(|| {
-            ActrError::Internal("OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string())
+            ActrError::Internal(
+                "OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string(),
+            )
         })?;
 
         // 3. Send request and return raw response bytes

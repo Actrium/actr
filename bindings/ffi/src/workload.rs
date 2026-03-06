@@ -81,20 +81,20 @@ impl Workload for DynamicWorkload {
 
     async fn on_start<C: Context>(&self, ctx: &C) -> ActorResult<()> {
         let ctx_bridge =
-            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ProtocolError::from)?;
+            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ActrError::from)?;
         self.bridge
             .on_start(ctx_bridge)
             .await
-            .map_err(actr_protocol::ProtocolError::from)
+            .map_err(actr_protocol::ActrError::from)
     }
 
     async fn on_stop<C: Context>(&self, ctx: &C) -> ActorResult<()> {
         let ctx_bridge =
-            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ProtocolError::from)?;
+            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ActrError::from)?;
         self.bridge
             .on_stop(ctx_bridge)
             .await
-            .map_err(actr_protocol::ProtocolError::from)
+            .map_err(actr_protocol::ActrError::from)
     }
 }
 
@@ -116,7 +116,7 @@ impl MessageDispatcher for DynamicDispatcher {
     ) -> ActorResult<Bytes> {
         // Create context bridge for the callback
         let ctx_bridge =
-            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ProtocolError::from)?;
+            ContextBridge::try_from_context(ctx).map_err(actr_protocol::ActrError::from)?;
 
         // Convert envelope to bridge type
         let envelope_bridge: RpcEnvelopeBridge = envelope.into();
@@ -126,7 +126,7 @@ impl MessageDispatcher for DynamicDispatcher {
             .bridge
             .dispatch(ctx_bridge, envelope_bridge)
             .await
-            .map_err(actr_protocol::ProtocolError::from)?;
+            .map_err(actr_protocol::ActrError::from)?;
 
         Ok(Bytes::from(response))
     }

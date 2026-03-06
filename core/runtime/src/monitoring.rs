@@ -1,6 +1,6 @@
 //! monitoringandalert
 
-use actr_protocol::{ActrError, ActorResult};
+use actr_protocol::{ActorResult, ActrError};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

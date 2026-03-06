@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use actr_framework::{Bytes, Context as FrameworkContext, Workload};
-use actr_protocol::{ActorResult, ActrId, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, RpcEnvelope};
 use actr_runtime::context::RuntimeContext;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -15,10 +15,10 @@ use crate::types::ActrIdPy;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /// Downcast generic Context to RuntimeContext.
-fn downcast_ctx<C: FrameworkContext>(ctx: &C) -> Result<&RuntimeContext, ProtocolError> {
+fn downcast_ctx<C: FrameworkContext>(ctx: &C) -> Result<&RuntimeContext, ActrError> {
     (ctx as &dyn Any)
         .downcast_ref::<RuntimeContext>()
-        .ok_or_else(|| ProtocolError::TransportError("Context is not RuntimeContext".into()))
+        .ok_or_else(|| ActrError::Internal("Context is not RuntimeContext".into()))
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -53,7 +53,7 @@ macro_rules! py_hook_ctx {
             Ok(())
         })
         .map_err(|e| {
-            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+            ActrError::Internal(format!(concat!("Python ", $method, " failed: {}"), e))
         })?;
         Ok(())
     }};
@@ -82,7 +82,7 @@ macro_rules! py_hook_optional_ctx {
             Ok(())
         })
         .map_err(|e| {
-            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+            ActrError::Internal(format!(concat!("Python ", $method, " failed: {}"), e))
         })?;
         Ok(())
     }};
@@ -111,7 +111,7 @@ macro_rules! py_hook_ctx_dest {
             Ok(())
         })
         .map_err(|e| {
-            ProtocolError::TransportError(format!(concat!("Python ", $method, " failed: {}"), e))
+            ActrError::Internal(format!(concat!("Python ", $method, " failed: {}"), e))
         })?;
         Ok(())
     }};
@@ -165,20 +165,19 @@ impl PyWorkloadWrapper {
     }
 
     /// Check if the Python workload object has a given method.
-    fn has_method(&self, name: &str) -> Result<bool, ProtocolError> {
+    fn has_method(&self, name: &str) -> Result<bool, ActrError> {
         let name = name.to_string();
         Python::attach(|py| {
             let obj = self.py_obj.bind(py);
             Ok(obj.hasattr(&*name)?)
         })
-        .map_err(|e: PyErr| ProtocolError::TransportError(format!("Python hasattr failed: {e}")))
+        .map_err(|e: PyErr| ActrError::Internal(format!("Python hasattr failed: {e}")))
     }
 
     /// Build the high-level `actr.Context` wrapper from a RuntimeContext.
-    fn wrap_context(&self, runtime_ctx: &RuntimeContext) -> Result<Py<PyAny>, ProtocolError> {
-        let ctx_py = Python::attach(|py| self.make_context_py(py, runtime_ctx)).map_err(|e| {
-            ProtocolError::TransportError(format!("Failed to create ContextPy: {e}"))
-        })?;
+    fn wrap_context(&self, runtime_ctx: &RuntimeContext) -> Result<Py<PyAny>, ActrError> {
+        let ctx_py = Python::attach(|py| self.make_context_py(py, runtime_ctx))
+            .map_err(|e| ActrError::Internal(format!("Failed to create ContextPy: {e}")))?;
 
         Python::attach(|py| -> PyResult<Py<PyAny>> {
             let actr_module = py.import("actr")?;
@@ -186,13 +185,13 @@ impl PyWorkloadWrapper {
             let ctx_obj = ctx_class.call1((ctx_py.clone_ref(py),))?;
             Ok(ctx_obj.extract::<Py<PyAny>>()?)
         })
-        .map_err(|e| ProtocolError::TransportError(format!("Failed to wrap Context: {e}")))
+        .map_err(|e| ActrError::Internal(format!("Failed to wrap Context: {e}")))
     }
 
     /// Get the stored event loop, or return an error.
-    fn require_event_loop(&self) -> Result<&Py<PyAny>, ProtocolError> {
+    fn require_event_loop(&self) -> Result<&Py<PyAny>, ActrError> {
         self.event_loop.as_ref().ok_or_else(|| {
-            ProtocolError::TransportError(
+            ActrError::Internal(
                 "Event loop not set. Make sure to call attach() from within an async context."
                     .to_string(),
             )
@@ -224,7 +223,7 @@ impl PyDispatcher {
         }
 
         let event_loop = workload.event_loop.as_ref().ok_or_else(|| {
-            ProtocolError::TransportError(
+            ActrError::Internal(
                 "Event loop not set. Make sure to call attach() from within an async context."
                     .to_string(),
             )
@@ -254,17 +253,15 @@ impl PyDispatcher {
             Ok(result.into_any().into())
         })
         .map_err(|e| {
-            ProtocolError::TransportError(format!("Python dispatcher.dispatch call failed: {e}"))
+            ActrError::Internal(format!("Python dispatcher.dispatch call failed: {e}"))
         })?;
 
         Python::attach(|py| {
             let bound = result_obj.bind(py);
-            if let Ok(b) = bound.cast::<PyBytes>() {
-                Ok(Bytes::from(b.as_bytes().to_vec()))
-            } else if let Ok(v) = bound.extract::<Vec<u8>>() {
+            if let Ok(v) = bound.extract::<Vec<u8>>() {
                 Ok(Bytes::from(v))
             } else {
-                Err(ProtocolError::EncodeError(
+                Err(ActrError::Internal(
                     "Python dispatcher.dispatch must return bytes".to_string(),
                 ))
             }
@@ -291,7 +288,7 @@ impl actr_framework::MessageDispatcher for PyDispatcher {
         let route_key = envelope.route_key.clone();
 
         let dispatcher_obj = workload.get_dispatcher().ok_or_else(|| {
-            ProtocolError::TransportError(format!(
+            ActrError::Internal(format!(
                 "Workload does not provide a dispatcher. Please implement get_dispatcher() method. route_key: {}",
                 route_key
             ))
@@ -349,7 +346,7 @@ impl Workload for PyWorkloadWrapper {
             future.getattr("result")?.call0()?;
             Ok(())
         })
-        .map_err(|e| ProtocolError::TransportError(format!("Python on_error failed: {e}")))?;
+        .map_err(|e| ActrError::Internal(format!("Python on_error failed: {e}")))?;
         Ok(())
     }
 
@@ -439,7 +436,7 @@ impl Workload for PyWorkloadWrapper {
             Ok(())
         })
         .map_err(|e| {
-            ProtocolError::TransportError(format!("Python on_webrtc_connected failed: {e}"))
+            ActrError::Internal(format!("Python on_webrtc_connected failed: {e}"))
         })?;
         Ok(())
     }

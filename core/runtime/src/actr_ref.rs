@@ -252,9 +252,8 @@ impl<W: Workload> ActrRef<W> {
             .await?;
 
         // Decode response
-        R::Response::decode(&*response_bytes).map_err(|e| {
-            ActrError::DecodeFailure(format!("Failed to decode response: {e}"),)
-        })
+        R::Response::decode(&*response_bytes)
+            .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode response: {e}")))
     }
 
     /// Call Actor method using route_key and request bytes (for language bindings)

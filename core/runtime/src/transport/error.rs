@@ -200,7 +200,6 @@ impl Classify for NetworkError {
 }
 
 impl NetworkError {
-
     /// Get error category
     pub fn category(&self) -> &'static str {
         match self {
