@@ -11,8 +11,8 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RouteCandidatesRequest,
-    RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ActrTypeExt, PayloadType,
+    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -219,26 +219,41 @@ impl RuntimeContext {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Version is always present; use full "manufacturer:name:version" as the lookup key
-        let version = target_type.version.as_deref().unwrap_or("");
-        let key = format!(
-            "{}:{}:{}",
-            target_type.manufacturer, target_type.name, version
-        );
+        // Canonical dependency lookup key: manufacturer:name
+        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
 
-        // Try by full key
-        if let Some(dep) = actr_lock.get_dependency(&key) {
+        if let Some(dep) = actr_lock.get_dependency(&service_name) {
+            return Some(dep.fingerprint.clone());
+        }
+
+        if let Some(dep) = actr_lock.get_dependency(&target_type.name) {
             return Some(dep.fingerprint.clone());
         }
 
         // Search through all dependencies by actr_type field
         for dep in &actr_lock.dependencies {
-            if dep.actr_type == key {
+            if dep.actr_type == service_name
+                || dep.actr_type == target_type.name
+                || Self::matches_dependency_actr_type(&dep.actr_type, target_type)
+            {
                 return Some(dep.fingerprint.clone());
             }
         }
 
         None
+    }
+
+    fn matches_dependency_actr_type(raw: &str, target_type: &ActrType) -> bool {
+        let Ok(dep_type) = ActrType::from_string_repr(raw) else {
+            return raw == format!("{}:{}", target_type.manufacturer, target_type.name);
+        };
+
+        dep_type.manufacturer == target_type.manufacturer
+            && dep_type.name == target_type.name
+            && target_type
+                .version
+                .as_ref()
+                .is_none_or(|version| dep_type.version.as_ref() == Some(version))
     }
 
     /// Internal: Send discovery request to signaling server

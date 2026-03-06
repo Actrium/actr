@@ -646,7 +646,7 @@ mod tests {{
             return Ok(None);
         };
 
-        let plugin_path = workspace_root.join("target/debug/protoc-gen-actrframework");
+        let plugin_path = self.local_workspace_plugin_path(&workspace_root);
 
         info!(
             "🧪 Building local workspace plugin in debug build: {}",
@@ -783,6 +783,24 @@ mod tests {{
         }
 
         Ok(None)
+    }
+
+    fn local_workspace_plugin_path(&self, workspace_root: &Path) -> PathBuf {
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    workspace_root.join(path)
+                }
+            })
+            .unwrap_or_else(|| workspace_root.join("target"));
+
+        target_dir.join("debug").join(format!(
+            "protoc-gen-actrframework{}",
+            std::env::consts::EXE_SUFFIX
+        ))
     }
 
     fn install_plugin_from_local_path(&self, workspace_root: &Path) -> Result<PathBuf> {

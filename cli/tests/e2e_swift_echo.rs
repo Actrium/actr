@@ -89,6 +89,8 @@ struct EchoCLI {
 #[test]
 #[ignore] // Requires Xcode and xcodegen
 fn swift_echo_e2e_app_with_local_registry() {
+    let local_xcframework =
+        ensure_local_swift_xcframework().expect("failed to prepare local swift xcframework");
     let actrix = LocalActrix::start().expect("failed to start local actrix");
     let registry = LocalRustEchoService::start(&actrix.signaling_ws_url)
         .expect("failed to start local rust echo service");
@@ -147,9 +149,6 @@ fn swift_echo_e2e_app_with_local_registry() {
 
     inject_cli_target(&project_dir, project_name);
 
-    let local_xcframework =
-        ensure_local_swift_xcframework().expect("failed to prepare local swift xcframework");
-
     let out = Command::new("xcodegen")
         .args(["generate"])
         .current_dir(&project_dir)
@@ -191,7 +190,9 @@ fn swift_echo_e2e_app_with_local_registry() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "EchoCLI failed:\nstdout: {stdout}\nstderr: {stderr}"
+        "EchoCLI failed:\nstdout: {stdout}\nstderr: {stderr}\nservice logs:\n{}\nactrix logs:\n{}",
+        registry.logs(),
+        actrix.logs()
     );
     assert!(
         stdout.contains("Echo reply:"),

@@ -337,7 +337,7 @@ impl ParserV1 {
                         if let Some(type_str) = type_value.as_str() {
                             Some(self.parse_actr_type(type_str)?)
                         } else if let Some(type_table) = type_value.as_table() {
-                            // Support inline table: { manufacturer = "acme", name = "service" }
+                            // Support inline table: { manufacturer = "acme", name = "service", version = "v1" }
                             let manufacturer = type_table
                                 .get("manufacturer")
                                 .and_then(|v| v.as_str())
@@ -372,10 +372,17 @@ impl ParserV1 {
                                 ))
                             })?;
 
+                            let version = type_table
+                                .get("version")
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|version| !version.is_empty())
+                                .map(str::to_string);
+
                             Some(ActrType {
                                 manufacturer,
                                 name,
-                                version: None,
+                                version,
                             })
                         } else {
                             return Err(ConfigError::InvalidAcl(format!(

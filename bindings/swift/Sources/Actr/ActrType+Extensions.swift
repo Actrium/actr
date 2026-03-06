@@ -1,32 +1,47 @@
 import Foundation
 
 public extension ActrType {
-    /// Returns a string representation of the actor type in the format "manufacturer+name".
+    /// Returns a string representation of the actor type in the format "manufacturer+name[:version]".
     ///
-    /// Example: `ActrType(manufacturer: "acme", name: "EchoService").toStringRepr()` returns `"acme+EchoService"`
+    /// Example: `ActrType(manufacturer: "acme", name: "EchoService", version: "v1").toStringRepr()` returns `"acme+EchoService:v1"`
     func toStringRepr() -> String {
+        if let version, !version.isEmpty {
+            return "\(manufacturer)+\(name):\(version)"
+        }
         return "\(manufacturer)+\(name)"
     }
 
-    /// Creates an `ActrType` from a string representation in the format "manufacturer+name".
+    /// Creates an `ActrType` from a string representation in the format "manufacturer+name[:version]".
     ///
-    /// - Parameter stringRepr: String representation in the format "manufacturer+name" (e.g., "acme+EchoService")
+    /// - Parameter stringRepr: String representation in the format "manufacturer+name[:version]" (e.g., "acme+EchoService:v1")
     /// - Returns: An `ActrType` instance
     /// - Throws: `ActrError.ConfigError` if the string format is invalid or contains invalid characters
     ///
     /// Example:
     /// ```swift
-    /// let type = try ActrType.fromStringRepr("acme+EchoService")
+    /// let type = try ActrType.fromStringRepr("acme+EchoService:v1")
     /// // type.manufacturer == "acme"
     /// // type.name == "EchoService"
+    /// // type.version == "v1"
     /// ```
     static func fromStringRepr(_ stringRepr: String) throws -> ActrType {
         guard let plusIndex = stringRepr.firstIndex(of: "+") else {
-            throw ActrError.ConfigError(msg: "Invalid ActrType format: '\(stringRepr)'. Expected format: manufacturer+name (e.g., acme+EchoService)")
+            throw ActrError.ConfigError(msg: "Invalid ActrType format: '\(stringRepr)'. Expected format: manufacturer+name[:version] (e.g., acme+EchoService:v1)")
         }
 
         let manufacturer = String(stringRepr[..<plusIndex])
-        let name = String(stringRepr[stringRepr.index(after: plusIndex)...])
+        let remainder = String(stringRepr[stringRepr.index(after: plusIndex)...])
+        let name: String
+        let version: String?
+
+        if let colonIndex = remainder.lastIndex(of: ":") {
+            name = String(remainder[..<colonIndex])
+            let parsedVersion = String(remainder[remainder.index(after: colonIndex)...])
+            version = parsedVersion.isEmpty ? nil : parsedVersion
+        } else {
+            name = remainder
+            version = nil
+        }
 
         // Validate that manufacturer and name are not empty
         guard !manufacturer.isEmpty else {
@@ -49,6 +64,6 @@ public extension ActrType {
             throw ActrError.ConfigError(msg: "Invalid type name: '\(name)' contains invalid characters")
         }
 
-        return ActrType(manufacturer: manufacturer, name: name)
+        return ActrType(manufacturer: manufacturer, name: name, version: version)
     }
 }

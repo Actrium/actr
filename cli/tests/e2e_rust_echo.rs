@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use e2e_support::{
     LocalActrix, LocalRustEchoService, LoggedProcess, align_project_with_local_actrix,
     align_rust_project_with_workspace, assert_success, cargo_build, random_manufacturer, run_actr,
+    rust_e2e_target_dir,
 };
 use tempfile::TempDir;
 
@@ -57,7 +58,10 @@ fn rust_echo_e2e_service_and_app() {
     cargo_build(&svc_dir);
 
     let mut svc_cmd = Command::new("cargo");
-    svc_cmd.args(["run"]).current_dir(&svc_dir);
+    svc_cmd
+        .args(["run"])
+        .current_dir(&svc_dir)
+        .env("CARGO_TARGET_DIR", rust_e2e_target_dir());
     let mut svc = LoggedProcess::spawn(svc_cmd, "rust-e2e-service").expect("start rust service");
     assert!(
         svc.wait_for_log("EchoService registered", Duration::from_secs(180)),
@@ -75,6 +79,7 @@ fn rust_echo_e2e_service_and_app() {
     let mut app = Command::new("cargo")
         .args(["run"])
         .current_dir(&app_dir)
+        .env("CARGO_TARGET_DIR", rust_e2e_target_dir())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -97,7 +102,9 @@ fn rust_echo_e2e_service_and_app() {
     let stderr = String::from_utf8_lossy(&app_out.stderr);
     assert!(
         app_out.status.success(),
-        "app failed:\nstdout: {stdout}\nstderr: {stderr}"
+        "app failed:\nstdout: {stdout}\nstderr: {stderr}\nservice logs:\n{}\nactrix logs:\n{}",
+        svc.logs(),
+        actrix.logs()
     );
     assert!(
         stdout.contains("Echo reply:"),
@@ -165,6 +172,7 @@ fn rust_echo_e2e_app_with_local_registry() {
     let mut app = Command::new("cargo")
         .args(["run"])
         .current_dir(&app_dir)
+        .env("CARGO_TARGET_DIR", rust_e2e_target_dir())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -187,7 +195,9 @@ fn rust_echo_e2e_app_with_local_registry() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
-        "app failed:\nstdout: {stdout}\nstderr: {stderr}"
+        "app failed:\nstdout: {stdout}\nstderr: {stderr}\nservice logs:\n{}\nactrix logs:\n{}",
+        registry.logs(),
+        actrix.logs()
     );
     assert!(
         stdout.contains("Echo reply:"),

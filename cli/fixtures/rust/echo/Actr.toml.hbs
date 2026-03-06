@@ -13,11 +13,7 @@ manufacturer = "{{MANUFACTURER}}"
 name = "echo-client-app"
 
 [dependencies]
-{{#if IS_BOTH}}
-echo-service = {}
-{{else}}
-echo-echo-server = { actr_type = "acme:EchoService" }
-{{/if}}
+echo-echo-server = { actr_type = "{{MANUFACTURER}}:EchoService" }
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
@@ -47,4 +43,4 @@ test = "cargo test"
 
 [[acl.rules]]
 permission = "allow"
-principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService" } }]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService", version = "v1" } }]

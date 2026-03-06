@@ -1184,8 +1184,9 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * # Arguments
      * - `target`: Target actor ID
      * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-    func sendDataStream(target: ActrId, chunk: DataStream) async throws 
+    func sendDataStream(target: ActrId, chunk: DataStream, payloadType: PayloadType) async throws 
     
     /**
      * Send a one-way message to an actor (fire-and-forget)
@@ -1337,14 +1338,15 @@ open func registerStream(streamId: String, callback: DataStreamCallback)async th
      * # Arguments
      * - `target`: Target actor ID
      * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-open func sendDataStream(target: ActrId, chunk: DataStream)async throws   {
+open func sendDataStream(target: ActrId, chunk: DataStream, payloadType: PayloadType)async throws   {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_actr_fn_method_contextbridge_send_data_stream(
                     self.uniffiCloneHandle(),
-                    FfiConverterTypeActrId_lower(target),FfiConverterTypeDataStream_lower(chunk)
+                    FfiConverterTypeActrId_lower(target),FfiConverterTypeDataStream_lower(chunk),FfiConverterTypePayloadType_lower(payloadType)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_void,
@@ -1823,17 +1825,19 @@ public func FfiConverterTypeActrId_lower(_ value: ActrId) -> RustBuffer {
 
 
 /**
- * Actor type (manufacturer + name)
+ * Actor type (manufacturer + name + optional version)
  */
 public struct ActrType: Equatable, Hashable {
     public var manufacturer: String
     public var name: String
+    public var version: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(manufacturer: String, name: String) {
+    public init(manufacturer: String, name: String, version: String?) {
         self.manufacturer = manufacturer
         self.name = name
+        self.version = version
     }
 
     
@@ -1851,13 +1855,15 @@ public struct FfiConverterTypeActrType: FfiConverterRustBuffer {
         return
             try ActrType(
                 manufacturer: FfiConverterString.read(from: &buf), 
-                name: FfiConverterString.read(from: &buf)
+                name: FfiConverterString.read(from: &buf), 
+                version: FfiConverterOptionString.read(from: &buf)
         )
     }
 
     public static func write(_ value: ActrType, into buf: inout [UInt8]) {
         FfiConverterString.write(value.manufacturer, into: &buf)
         FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.version, into: &buf)
     }
 }
 
@@ -3244,7 +3250,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_register_stream() != 17477) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_send_data_stream() != 62584) {
+    if (uniffi_actr_checksum_method_contextbridge_send_data_stream() != 17067) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_tell_raw() != 35223) {

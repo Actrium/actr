@@ -28,11 +28,12 @@ impl From<Realm> for actr_protocol::Realm {
     }
 }
 
-/// Actor type (manufacturer + name)
+/// Actor type (manufacturer + name + optional version)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct ActrType {
     pub manufacturer: String,
     pub name: String,
+    pub version: Option<String>,
 }
 
 impl From<actr_protocol::ActrType> for ActrType {
@@ -40,6 +41,7 @@ impl From<actr_protocol::ActrType> for ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
+            version: t.version,
         }
     }
 }
@@ -49,7 +51,7 @@ impl From<ActrType> for actr_protocol::ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
-            version: None,
+            version: t.version,
         }
     }
 }

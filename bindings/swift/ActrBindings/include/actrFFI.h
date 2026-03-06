@@ -399,7 +399,7 @@ uint64_t uniffi_actr_fn_method_contextbridge_register_stream(uint64_t ptr, RustB
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_SEND_DATA_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_SEND_DATA_STREAM
-uint64_t uniffi_actr_fn_method_contextbridge_send_data_stream(uint64_t ptr, RustBuffer target, RustBuffer chunk
+uint64_t uniffi_actr_fn_method_contextbridge_send_data_stream(uint64_t ptr, RustBuffer target, RustBuffer chunk, RustBuffer payload_type
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_TELL_RAW

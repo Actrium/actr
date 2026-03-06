@@ -20,12 +20,28 @@ pub fn actr_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_actr"))
 }
 
+pub fn rust_e2e_target_dir() -> PathBuf {
+    workspace_root().join("target/e2e-cache/rust-target")
+}
+
+fn local_swift_package_dir() -> PathBuf {
+    workspace_root().join("bindings/swift/.e2e/package")
+}
+
 pub fn run_actr(args: &[&str], cwd: &Path) -> Output {
     let mut cmd = Command::new(actr_bin());
     cmd.args(args).current_dir(cwd);
+    cmd.env("CARGO_TARGET_DIR", rust_e2e_target_dir());
 
     // Make Swift template/e2e use workspace-local bindings first to avoid stale remote package behavior.
-    let local_swift = workspace_root().join("bindings/swift");
+    let local_swift = {
+        let e2e_package = local_swift_package_dir();
+        if e2e_package.join("Package.swift").is_file() {
+            e2e_package
+        } else {
+            workspace_root().join("bindings/swift")
+        }
+    };
     if local_swift.join("Package.swift").is_file() {
         cmd.env("ACTR_SWIFT_LOCAL_PATH", local_swift);
     }
@@ -57,6 +73,7 @@ pub fn cargo_build(dir: &Path) {
     let out = Command::new("cargo")
         .args(["build"])
         .current_dir(dir)
+        .env("CARGO_TARGET_DIR", rust_e2e_target_dir())
         .output()
         .expect("cargo build failed");
     assert_success(&out, &format!("cargo build in {}", dir.display()));
@@ -118,11 +135,8 @@ pub fn ensure_local_swift_xcframework() -> Result<PathBuf> {
     }
 
     let workspace = workspace_root();
-    let output_path = workspace.join("bindings/swift/.e2e/ActrFFI.xcframework");
-    if output_path.exists() {
-        let _ = SWIFT_XCFRAMEWORK.set(output_path.clone());
-        return Ok(output_path);
-    }
+    let package_dir = local_swift_package_dir();
+    let output_path = package_dir.join("ActrFFI.xcframework");
 
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
@@ -136,58 +150,214 @@ pub fn ensure_local_swift_xcframework() -> Result<PathBuf> {
         Duration::from_secs(900),
     )?;
 
-    if !output_path.exists() {
-        run_checked(
-            {
-                let mut cmd = Command::new("cargo");
-                cmd.args([
-                    "build",
-                    "-p",
-                    "libactr",
-                    "--release",
-                    "--target",
-                    "aarch64-apple-darwin",
-                    "--features",
-                    "macos-oslog",
-                ])
-                .current_dir(&workspace);
-                cmd
-            },
-            "cargo build local swift ffi",
-        )?;
-
-        let static_lib = workspace.join("target/aarch64-apple-darwin/release/libactr.a");
-        if !static_lib.exists() {
-            bail!(
-                "local swift ffi static library not found at {}",
-                static_lib.display()
-            );
-        }
-
-        let headers = workspace.join("bindings/swift/ActrBindings/include");
-        if !headers.join("actrFFI.h").exists() {
-            bail!(
-                "swift ffi headers not found at {}",
-                headers.join("actrFFI.h").display()
-            );
-        }
-
-        run_checked(
-            {
-                let mut cmd = Command::new("xcodebuild");
-                cmd.arg("-create-xcframework")
-                    .arg("-library")
-                    .arg(&static_lib)
-                    .arg("-headers")
-                    .arg(&headers)
-                    .arg("-output")
-                    .arg(&output_path)
-                    .current_dir(&workspace);
-                cmd
-            },
-            "xcodebuild create local swift ffi xcframework",
-        )?;
+    if package_dir.exists() {
+        fs::remove_dir_all(&package_dir)
+            .with_context(|| format!("failed to remove {}", package_dir.display()))?;
     }
+    if output_path.exists() {
+        fs::remove_dir_all(&output_path)
+            .with_context(|| format!("failed to remove {}", output_path.display()))?;
+    }
+
+    fs::create_dir_all(&package_dir)
+        .with_context(|| format!("failed to create {}", package_dir.display()))?;
+    fs::copy(
+        workspace.join("bindings/swift/Package.swift"),
+        package_dir.join("Package.swift"),
+    )
+    .context("failed to copy swift Package.swift")?;
+    copy_dir_all(
+        &workspace.join("bindings/swift/Sources"),
+        &package_dir.join("Sources"),
+    )?;
+
+    let bindings_dir = package_dir.join("ActrBindings");
+    let headers_dir = bindings_dir.join("include");
+    fs::create_dir_all(&headers_dir)
+        .with_context(|| format!("failed to create {}", headers_dir.display()))?;
+
+    let c_shim = bindings_dir.join("actrFFI.c");
+    if !c_shim.exists() {
+        fs::write(&c_shim, "").with_context(|| format!("failed to create {}", c_shim.display()))?;
+    }
+
+    for path in [
+        bindings_dir.join("Actr.swift"),
+        bindings_dir.join("actrFFI.h"),
+        bindings_dir.join("ActrFFI.h"),
+        bindings_dir.join("actrFFI.modulemap"),
+        bindings_dir.join("ActrFFI.modulemap"),
+        headers_dir.join("actrFFI.h"),
+    ] {
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+
+    run_checked(
+        {
+            let mut cmd = Command::new("cargo");
+            cmd.args([
+                "build",
+                "-p",
+                "libactr",
+                "--release",
+                "--target",
+                "aarch64-apple-darwin",
+                "--features",
+                "macos-oslog",
+            ])
+            .current_dir(&workspace);
+            cmd
+        },
+        "cargo build local swift ffi",
+    )?;
+
+    let dylib_path = workspace.join("target/aarch64-apple-darwin/release/libactr.dylib");
+    let static_lib = workspace.join("target/aarch64-apple-darwin/release/libactr.a");
+    if !dylib_path.exists() {
+        bail!(
+            "local swift ffi dylib not found at {}",
+            dylib_path.display()
+        );
+    }
+    if !static_lib.exists() {
+        bail!(
+            "local swift ffi static library not found at {}",
+            static_lib.display()
+        );
+    }
+
+    run_checked(
+        {
+            let mut cmd = Command::new("uniffi-bindgen");
+            cmd.args([
+                "generate",
+                "--library",
+                dylib_path.to_string_lossy().as_ref(),
+                "--language",
+                "swift",
+                "--out-dir",
+                bindings_dir.to_string_lossy().as_ref(),
+            ])
+            .current_dir(workspace.join("bindings/ffi"));
+            cmd
+        },
+        "generate local swift bindings",
+    )?;
+
+    let actr_swift = bindings_dir.join("Actr.swift");
+    let modulemap_path = if bindings_dir.join("actrFFI.modulemap").exists() {
+        bindings_dir.join("actrFFI.modulemap")
+    } else {
+        bindings_dir.join("ActrFFI.modulemap")
+    };
+
+    run_checked(
+        {
+            let mut cmd = Command::new("perl");
+            cmd.args([
+                "-0777pi",
+                "-e",
+                "s|(#if canImport\\(ActrFFI\\)\\nimport ActrFFI\\n#endif)|#if canImport(actrFFI)\\n    import actrFFI\\n#endif\\n$1|",
+                actr_swift.to_string_lossy().as_ref(),
+            ]);
+            cmd
+        },
+        "patch swift bindings import",
+    )?;
+
+    run_checked(
+        {
+            let mut cmd = Command::new("perl");
+            cmd.args([
+                "-0777pi",
+                "-e",
+                "s|(private func uniffiTraitInterfaceCallAsync<T>\\()|private struct UniffiUnsafeSendable<T>: \\@unchecked Sendable {\\n    let value: T\\n\\n    init(_ value: T) {\\n        self.value = value\\n    }\\n}\\n\\n$1|",
+                actr_swift.to_string_lossy().as_ref(),
+            ]);
+            cmd
+        },
+        "inject swift sendable helper",
+    )?;
+
+    run_checked(
+        {
+            let mut cmd = Command::new("perl");
+            cmd.args([
+                "-0777pi",
+                "-e",
+                "s|private func uniffiTraitInterfaceCallAsync<T>\\(\\n\\s*makeCall: \\@escaping \\(\\) async throws -> T,\\n\\s*handleSuccess: \\@escaping \\(T\\) -> \\(\\),\\n\\s*handleError: \\@escaping \\(Int8, RustBuffer\\) -> \\(\\),\\n\\s*droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>\\n\\) \\{\\n\\s*let task = Task \\{\\n\\s*do \\{\\n\\s*handleSuccess\\(try await makeCall\\(\\)\\)\\n\\s*\\} catch \\{\\n\\s*handleError\\(CALL_UNEXPECTED_ERROR, FfiConverterString\\.lower\\(String\\(describing: error\\)\\)\\)\\n\\s*\\}\\n\\s*\\}|private func uniffiTraitInterfaceCallAsync<T>(\\n    makeCall: \\@escaping () async throws -> T,\\n    handleSuccess: \\@escaping (T) -> (),\\n    handleError: \\@escaping (Int8, RustBuffer) -> (),\\n    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>\\n) {\\n    let makeCallSendable = UniffiUnsafeSendable(makeCall)\\n    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)\\n    let handleErrorSendable = UniffiUnsafeSendable(handleError)\\n\\n    let task = Task {\\n        do {\\n            handleSuccessSendable.value(try await makeCallSendable.value())\\n        } catch {\\n            handleErrorSendable.value(\\n                CALL_UNEXPECTED_ERROR,\\n                FfiConverterString.lower(String(describing: error))\\n            )\\n        }\\n    }|sg",
+                actr_swift.to_string_lossy().as_ref(),
+            ]);
+            cmd
+        },
+        "patch swift async callback helper",
+    )?;
+
+    run_checked(
+        {
+            let mut cmd = Command::new("perl");
+            cmd.args([
+                "-0777pi",
+                "-e",
+                "s|private func uniffiTraitInterfaceCallAsyncWithError<T, E>\\(\\n\\s*makeCall: \\@escaping \\(\\) async throws -> T,\\n\\s*handleSuccess: \\@escaping \\(T\\) -> \\(\\),\\n\\s*handleError: \\@escaping \\(Int8, RustBuffer\\) -> \\(\\),\\n\\s*lowerError: \\@escaping \\(E\\) -> RustBuffer,\\n\\s*droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>\\n\\) \\{\\n\\s*let task = Task \\{\\n\\s*do \\{\\n\\s*handleSuccess\\(try await makeCall\\(\\)\\)\\n\\s*\\} catch let error as E \\{\\n\\s*handleError\\(CALL_ERROR, lowerError\\(error\\)\\)\\n\\s*\\} catch \\{\\n\\s*handleError\\(CALL_UNEXPECTED_ERROR, FfiConverterString\\.lower\\(String\\(describing: error\\)\\)\\)\\n\\s*\\}\\n\\s*\\}|private func uniffiTraitInterfaceCallAsyncWithError<T, E>(\\n    makeCall: \\@escaping () async throws -> T,\\n    handleSuccess: \\@escaping (T) -> (),\\n    handleError: \\@escaping (Int8, RustBuffer) -> (),\\n    lowerError: \\@escaping (E) -> RustBuffer,\\n    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>\\n) {\\n    let makeCallSendable = UniffiUnsafeSendable(makeCall)\\n    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)\\n    let handleErrorSendable = UniffiUnsafeSendable(handleError)\\n    let lowerErrorSendable = UniffiUnsafeSendable(lowerError)\\n\\n    let task = Task {\\n        do {\\n            handleSuccessSendable.value(try await makeCallSendable.value())\\n        } catch let error as E {\\n            handleErrorSendable.value(CALL_ERROR, lowerErrorSendable.value(error))\\n        } catch {\\n            handleErrorSendable.value(\\n                CALL_UNEXPECTED_ERROR,\\n                FfiConverterString.lower(String(describing: error))\\n            )\\n        }\\n    }|sg",
+                actr_swift.to_string_lossy().as_ref(),
+            ]);
+            cmd
+        },
+        "patch swift async error callback helper",
+    )?;
+
+    let header_path = if bindings_dir.join("actrFFI.h").exists() {
+        bindings_dir.join("actrFFI.h")
+    } else {
+        bindings_dir.join("ActrFFI.h")
+    };
+    if !header_path.exists() {
+        bail!(
+            "generated swift ffi header not found at {}",
+            header_path.display()
+        );
+    }
+    fs::rename(&header_path, headers_dir.join("actrFFI.h")).with_context(|| {
+        format!(
+            "failed to move {} -> {}",
+            header_path.display(),
+            headers_dir.join("actrFFI.h").display()
+        )
+    })?;
+
+    run_checked(
+        {
+            let mut cmd = Command::new("perl");
+            cmd.args([
+                "-0pi",
+                "-e",
+                "s|header \".*\"|header \"include/actrFFI.h\"|g",
+                modulemap_path.to_string_lossy().as_ref(),
+            ]);
+            cmd
+        },
+        "patch swift modulemap header path",
+    )?;
+
+    run_checked(
+        {
+            let mut cmd = Command::new("xcodebuild");
+            cmd.arg("-create-xcframework")
+                .arg("-library")
+                .arg(&static_lib)
+                .arg("-headers")
+                .arg(&headers_dir)
+                .arg("-output")
+                .arg(&output_path)
+                .current_dir(&workspace);
+            cmd
+        },
+        "xcodebuild create local swift ffi xcframework",
+    )?;
 
     if !output_path.exists() {
         bail!(
@@ -351,7 +521,6 @@ impl LocalRustEchoService {
 
         let service_dir = workspace.path().join(project_name);
         align_project_with_local_actrix(&service_dir)?;
-        disable_acl(&service_dir)?;
         align_rust_project_with_workspace(&service_dir)?;
         let install_out = run_actr(&["install"], &service_dir);
         ensure_success(&install_out, "actr install rust service")?;
@@ -360,7 +529,9 @@ impl LocalRustEchoService {
         cargo_build(&service_dir);
 
         let mut cmd = Command::new("cargo");
-        cmd.args(["run"]).current_dir(&service_dir);
+        cmd.args(["run"])
+            .current_dir(&service_dir)
+            .env("CARGO_TARGET_DIR", rust_e2e_target_dir());
         let mut process = LoggedProcess::spawn(cmd, "rust-echo-service")?;
         if !process.wait_for_log("EchoService registered", Duration::from_secs(180)) {
             let logs = process.logs();
@@ -409,24 +580,6 @@ fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
     if !content.ends_with('\n') {
         rewritten.pop();
     }
-
-    fs::write(&actr_toml_path, rewritten)
-        .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
-    Ok(())
-}
-
-fn disable_acl(project_dir: &Path) -> Result<()> {
-    let actr_toml_path = project_dir.join("Actr.toml");
-    let content = fs::read_to_string(&actr_toml_path)
-        .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
-
-    let acl_start = content.find("[acl]").with_context(|| {
-        format!(
-            "failed to find [acl] section in {}",
-            actr_toml_path.display()
-        )
-    })?;
-    let rewritten = content[..acl_start].trim_end().to_string() + "\n";
 
     fs::write(&actr_toml_path, rewritten)
         .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
@@ -735,6 +888,36 @@ ws_path = "/signaling"
 
 fn normalize_path_for_toml(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
+
+    for entry in
+        fs::read_dir(src).with_context(|| format!("failed to read directory {}", src.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if entry
+            .file_type()
+            .with_context(|| format!("failed to read file type for {}", src_path.display()))?
+            .is_dir()
+        {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} -> {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn workspace_root() -> PathBuf {

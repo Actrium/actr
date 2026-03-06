@@ -1,0 +1,86 @@
+name: CI (E2E)
+
+on:
+  push:
+    branches:
+      - codex/harry-e2e-nightly
+    paths:
+      - ".github/workflows/ci-e2e.yml"
+  schedule:
+    # GitHub Actions cron uses UTC. 18:00 UTC = 02:00 UTC+8 next day.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-e2e:
+    name: Rust E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Rust echo e2e
+        run: cargo test -p actr-cli --test e2e_rust_echo -- --ignored --test-threads=1
+
+  typescript-e2e:
+    name: TypeScript E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run TypeScript echo e2e
+        run: cargo test -p actr-cli --test e2e_typescript_echo typescript_echo_e2e_service_and_app -- --test-threads=1
+
+  swift-e2e:
+    name: Swift E2E
+    runs-on: macos-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        run: brew install protobuf xcodegen
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Swift echo e2e
+        run: cargo test -p actr-cli --test e2e_swift_echo -- --ignored --test-threads=1

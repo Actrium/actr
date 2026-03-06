@@ -468,12 +468,9 @@ impl InstallPipeline {
                 .get_service_details(&lookup_key)
                 .await?;
 
-            // 2. 构建 resolved_spec，确保包含 actr_type
+            // 2. 构建 resolved_spec，使用发现结果中的 canonical actr_type
             let mut resolved_spec = spec.clone();
-            // 如果 spec 中没有 actr_type，使用从服务详情中获取的
-            if resolved_spec.actr_type.is_none() {
-                resolved_spec.actr_type = Some(service_details.info.actr_type.clone());
-            }
+            resolved_spec.actr_type = Some(service_details.info.actr_type.clone());
 
             // 3. 更新配置文件（使用包含 actr_type 的 resolved_spec）
             self.config_manager
