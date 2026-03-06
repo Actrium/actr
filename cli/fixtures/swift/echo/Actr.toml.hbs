@@ -13,7 +13,11 @@ manufacturer = "{{MANUFACTURER}}"
 name = "echo-client-app"
 
 [dependencies]
+{{#if IS_BOTH}}
+echo-service = {}
+{{else}}
 echo-echo-server = { actr_type = "{{MANUFACTURER}}:EchoService" }
+{{/if}}
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"

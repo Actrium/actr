@@ -74,6 +74,28 @@ fn init_rust_echo_service(parent: &std::path::Path, name: &str) -> std::path::Pa
     parent.join(name)
 }
 
+fn init_rust_echo_both(parent: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let out = run_actr(
+        &[
+            "init",
+            "-l",
+            "rust",
+            "--template",
+            "echo",
+            "--role",
+            "both",
+            "--signaling",
+            "wss://actrix1.develenv.com",
+            "--manufacturer",
+            "example",
+            name,
+        ],
+        parent,
+    );
+    assert_actr_success(&out, "actr init (both)");
+    parent.join(name)
+}
+
 // ---------------------------------------------------------------------------
 // App role: scaffold validation
 // ---------------------------------------------------------------------------
@@ -219,6 +241,22 @@ fn rust_echo_service_scaffold() {
         "should define EchoService"
     );
     assert!(proto.contains("rpc Echo"), "should declare Echo rpc");
+}
+
+#[test]
+fn rust_echo_both_app_uses_local_service_dependency() {
+    let tmp = TempDir::new().unwrap();
+    let dir = init_rust_echo_both(tmp.path(), "echo-pair");
+
+    let app_actr = std::fs::read_to_string(dir.join("echo-app/Actr.toml")).unwrap();
+    assert!(
+        app_actr.contains("echo-service = {}"),
+        "role=both app should depend on local echo-service, got:\n{app_actr}"
+    );
+    assert!(
+        !app_actr.contains("echo-echo-server"),
+        "role=both app should not depend on remote echo-echo-server"
+    );
 }
 
 // ---------------------------------------------------------------------------

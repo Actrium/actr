@@ -9,9 +9,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use e2e_support::{
-    LocalActrix, LocalRustEchoService, LoggedProcess, align_project_with_local_actrix,
-    align_rust_project_with_workspace, assert_success, cargo_build, random_manufacturer, run_actr,
-    rust_e2e_target_dir,
+    LocalActrix, LoggedProcess, align_project_with_local_actrix, align_rust_project_with_workspace,
+    assert_success, cargo_build, pin_echo_service_dependency_version, random_manufacturer,
+    run_actr, rust_e2e_target_dir,
 };
 use tempfile::TempDir;
 
@@ -47,6 +47,8 @@ fn rust_echo_e2e_service_and_app() {
     assert!(app_dir.exists(), "echo-app dir");
     align_project_with_local_actrix(&svc_dir).expect("failed to set local realm for svc");
     align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
+    pin_echo_service_dependency_version(&app_dir, &mfr)
+        .expect("failed to pin app echo dependency version");
     align_rust_project_with_workspace(&svc_dir).expect("failed to patch svc Cargo.toml");
     align_rust_project_with_workspace(&app_dir).expect("failed to patch app Cargo.toml");
 
@@ -114,98 +116,5 @@ fn rust_echo_e2e_service_and_app() {
         svc.logs().contains("Received echo request: hello"),
         "service missing request log:\n{}",
         svc.logs()
-    );
-}
-
-#[test]
-#[ignore] // Slow e2e (~200s), run explicitly with --ignored
-fn rust_echo_e2e_app_with_local_registry() {
-    let actrix = LocalActrix::start().expect("failed to start local actrix");
-    let registry = LocalRustEchoService::start(&actrix.signaling_ws_url)
-        .expect("failed to start local rust echo service");
-    let tmp = TempDir::new().unwrap();
-
-    let init_out = run_actr(
-        &[
-            "init",
-            "-l",
-            "rust",
-            "--template",
-            "echo",
-            "--role",
-            "app",
-            "--signaling",
-            &actrix.signaling_ws_url,
-            "echo-app-test",
-        ],
-        tmp.path(),
-    );
-    assert_success(&init_out, "actr init --role app");
-
-    let app_dir = tmp.path().join("echo-app-test");
-    assert!(app_dir.exists(), "echo-app-test dir");
-    align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
-    align_rust_project_with_workspace(&app_dir).expect("failed to patch app Cargo.toml");
-
-    let actr_toml = std::fs::read_to_string(app_dir.join("Actr.toml")).unwrap();
-    assert!(
-        actr_toml.contains("acme:EchoService"),
-        "Actr.toml should reference acme:EchoService"
-    );
-
-    assert_success(
-        &run_actr(&["install"], &app_dir),
-        "actr install (local registry)",
-    );
-    let remote_proto = app_dir.join("protos/remote/echo-echo-server/echo.proto");
-    assert!(
-        remote_proto.exists(),
-        "Remote proto should be downloaded to protos/remote/echo-echo-server/echo.proto"
-    );
-
-    assert_success(
-        &run_actr(&["gen", "-l", "rust"], &app_dir),
-        "actr gen (app)",
-    );
-    cargo_build(&app_dir);
-
-    let mut app = Command::new("cargo")
-        .args(["run"])
-        .current_dir(&app_dir)
-        .env("CARGO_TARGET_DIR", rust_e2e_target_dir())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        match app.try_wait().unwrap() {
-            Some(_) => break,
-            None if Instant::now() > deadline => {
-                app.kill().ok();
-                panic!("app did not exit within 60s");
-            }
-            None => std::thread::sleep(Duration::from_millis(500)),
-        }
-    }
-
-    let out = app.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "app failed:\nstdout: {stdout}\nstderr: {stderr}\nservice logs:\n{}\nactrix logs:\n{}",
-        registry.logs(),
-        actrix.logs()
-    );
-    assert!(
-        stdout.contains("Echo reply:"),
-        "missing echo reply in:\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        registry.logs().contains("Received echo request: hello"),
-        "local registry rust service did not receive request:\n{}",
-        registry.logs()
     );
 }

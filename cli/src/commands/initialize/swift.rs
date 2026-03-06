@@ -3,7 +3,7 @@ use super::{
 };
 use crate::commands::SupportedLanguage;
 use crate::error::{ActrCliError, Result};
-use crate::template::{ProjectTemplate, TemplateContext};
+use crate::template::{EchoRole, ProjectTemplate, TemplateContext};
 use async_trait::async_trait;
 use std::path::Path;
 use std::process::Command;
@@ -14,38 +14,32 @@ pub struct SwiftInitializer;
 #[async_trait]
 impl ProjectInitializer for SwiftInitializer {
     async fn generate_project_structure(&self, context: &InitContext) -> Result<()> {
+        let is_service = context.echo_role == Some(EchoRole::Service);
         let template = ProjectTemplate::new(context.template, SupportedLanguage::Swift);
-        // For data-stream template, use "LocalFileService" as the service name
-        // For other templates, use the template's service name
         let service_name = match context.template {
             crate::template::ProjectTemplateName::DataStream => "LocalFileService",
             _ => context.template.to_service_name(),
         };
 
-        // Fetch versions asynchronously (Swift echo does not use echo_role yet)
-        let template_context = TemplateContext::new_with_versions(
+        let mut template_context = TemplateContext::new_with_versions(
             &context.project_name,
             &context.signaling_url,
             &context.manufacturer,
             service_name,
-            false,
+            is_service,
         )
         .await;
+        template_context.is_both = context.is_both;
 
-        // template.generate() writes all scaffold files including an empty Actr.lock.toml.
-        // The lock file must exist before xcodegen runs because project.yml references it
-        // as a resource; xcodegen validates file existence upfront and will fail otherwise.
-        // Workflow: actr init (empty lock) -> actr install (populate) -> actr gen (read).
         template.generate(&context.project_dir, &template_context)?;
         create_protoc_plugin_config(&context.project_dir)?;
 
-        // Create local.proto file
         create_local_proto(
             &context.project_dir,
             &context.project_name,
             "protos/local",
             context.template,
-            None,
+            context.echo_role,
         )?;
 
         ensure_xcodegen_available()?;
@@ -66,18 +60,26 @@ impl ProjectInitializer for SwiftInitializer {
             &context.signaling_url,
             &context.manufacturer,
             context.template.to_service_name(),
-            false,
+            context.echo_role == Some(EchoRole::Service),
         );
         info!("");
         info!("Next steps:");
         if !context.is_current_dir {
             info!("  cd {}", context.project_dir.display());
         }
-        info!("  actr install  # Install remote protobuf dependencies from Actr.toml");
-        info!(
-            "  actr gen -l swift  # Use default input (protos) and Swift output ({}/Generated)",
-            template_context.project_name_pascal
-        );
+        if context.echo_role == Some(EchoRole::Service) {
+            info!("  actr install  # Create Actr.lock.toml for the local service project");
+            info!(
+                "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
+                template_context.project_name_pascal
+            );
+        } else {
+            info!("  actr install  # Install project dependencies from Actr.toml");
+            info!(
+                "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
+                template_context.project_name_pascal
+            );
+        }
         info!("  xcodegen generate");
         info!("  open {}.xcodeproj", template_context.project_name_pascal);
         info!("  # If you update project.yml, rerun: xcodegen generate");

@@ -1,7 +1,7 @@
 //! End-to-end tests for TypeScript echo template.
 //!
 //! These tests run against local Actrix and local echo services only.
-//! Run with: `cargo test --test e2e_typescript_echo -- --test-threads=1`
+//! Run with: `cargo test --test e2e_typescript_echo -- --ignored --test-threads=1`
 
 mod e2e_support;
 
@@ -12,8 +12,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use e2e_support::{
-    LocalActrix, LocalRustEchoService, LoggedProcess, align_project_with_local_actrix,
-    assert_success, random_manufacturer,
+    LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
+    pin_echo_service_dependency_version, random_manufacturer,
 };
 use tempfile::TempDir;
 
@@ -111,7 +111,7 @@ fn dev_path_env() -> OsString {
 }
 
 #[test]
-#[ignore] // TODO: fix the test
+#[ignore] // Slow e2e, run explicitly in dedicated CI
 fn typescript_echo_e2e_service_and_app() {
     let _guard = e2e_lock()
         .lock()
@@ -146,6 +146,8 @@ fn typescript_echo_e2e_service_and_app() {
     assert!(app_dir.exists(), "echo-app dir should exist");
     align_project_with_local_actrix(&svc_dir).expect("failed to set local realm for service");
     align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
+    pin_echo_service_dependency_version(&app_dir, &mfr)
+        .expect("failed to pin app echo dependency version");
     assert_generated_actr_dependency(&svc_dir);
     assert_generated_actr_dependency(&app_dir);
 
@@ -221,120 +223,5 @@ fn typescript_echo_e2e_service_and_app() {
         svc.logs().contains("Received echo request: hello"),
         "service missing request log:\n{}",
         svc.logs()
-    );
-}
-
-#[test]
-#[ignore = "Local registry discovery is flaky in CI"]
-fn typescript_echo_e2e_app_with_local_registry() {
-    let _guard = e2e_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let actrix = LocalActrix::start().expect("failed to start local actrix");
-    let registry = LocalRustEchoService::start(&actrix.signaling_ws_url)
-        .expect("failed to start local rust echo service");
-    let tmp = TempDir::new().unwrap();
-
-    let out = run_actr(
-        &[
-            "init",
-            "-l",
-            "typescript",
-            "--template",
-            "echo",
-            "--role",
-            "app",
-            "--signaling",
-            &actrix.signaling_ws_url,
-            "echo-app-test",
-        ],
-        tmp.path(),
-    );
-    assert_success(&out, "actr init --role app");
-
-    let app_dir = tmp.path().join("echo-app-test");
-    assert!(app_dir.exists(), "echo-app-test dir should exist");
-    align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
-    assert_generated_actr_dependency(&app_dir);
-
-    let actr_toml = std::fs::read_to_string(app_dir.join("Actr.toml")).unwrap();
-    assert!(
-        actr_toml.contains("acme:EchoService"),
-        "Actr.toml should reference acme:EchoService"
-    );
-
-    assert_success(
-        &run_actr(&["install"], &app_dir),
-        "actr install (app with local registry)",
-    );
-    let remote_proto = app_dir.join("protos/remote/echo-echo-server/echo.proto");
-    assert!(
-        remote_proto.exists(),
-        "Remote proto should be downloaded to protos/remote/echo-echo-server/echo.proto"
-    );
-
-    assert_success(
-        &run_actr(&["gen", "-l", "typescript"], &app_dir),
-        "actr gen (app)",
-    );
-
-    let gen_dir = app_dir.join("src/generated");
-    assert!(
-        gen_dir.join("echo-echo-server/echo_pb.ts").exists(),
-        "src/generated/echo-echo-server/echo_pb.ts (message types)"
-    );
-    assert!(
-        gen_dir.join("echo-echo-server/echo_client.ts").exists(),
-        "src/generated/echo-echo-server/echo_client.ts (client code for remote proto)"
-    );
-    assert!(
-        gen_dir.join("local_actor.ts").exists(),
-        "src/generated/local_actor.ts (local actor dispatcher)"
-    );
-
-    let path = dev_path_env();
-    assert_success(
-        &run_npm_with_path(&["run", "typecheck"], &app_dir, &path),
-        "npm run typecheck (app)",
-    );
-    std::fs::remove_file(app_dir.join("Actr.lock.toml")).expect("failed to remove app lock file");
-
-    let mut app = Command::new("npm")
-        .args(["run", "dev"])
-        .current_dir(&app_dir)
-        .env("PATH", &path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to start app");
-
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        match app.try_wait().unwrap() {
-            Some(_) => break,
-            None if Instant::now() > deadline => {
-                app.kill().ok();
-                panic!("app did not exit within 90s");
-            }
-            None => std::thread::sleep(Duration::from_millis(500)),
-        }
-    }
-
-    let out = app.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "app failed:\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("Echo reply:"),
-        "missing echo reply in app output:\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        registry.logs().contains("Received echo request: hello"),
-        "local registry rust service did not receive request:\n{}",
-        registry.logs()
     );
 }

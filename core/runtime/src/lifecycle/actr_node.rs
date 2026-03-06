@@ -605,21 +605,16 @@ impl<W: Workload> ActrNode<W> {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Version is always present; use full "manufacturer:name:version" as the lookup key
-        let version = target_type.version.as_deref().unwrap_or("");
-        let key = format!(
-            "{}:{}:{}",
-            target_type.manufacturer, target_type.name, version
-        );
+        let key = target_type.to_string_repr();
 
         // Try by full key
         if let Some(dep) = actr_lock.get_dependency(&key) {
             return Some(dep.fingerprint.clone());
         }
 
-        // Search through all dependencies by actr_type field
+        // Allow lookups without version to match lock entries that include one.
         for dep in &actr_lock.dependencies {
-            if dep.actr_type == key {
+            if Self::matches_dependency_actr_type(&dep.actr_type, target_type) {
                 return Some(dep.fingerprint.clone());
             }
         }

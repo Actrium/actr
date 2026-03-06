@@ -9,10 +9,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
+use serde_json::Value;
 use tempfile::TempDir;
 
 pub const DEFAULT_ACTRIX_REPO: &str = "https://github.com/actor-rtc/actrix.git";
-pub const DEFAULT_ACTRIX_REV: &str = "28bf45d0566d7f73a5bd99802c6c36524acea57e";
+pub const DEFAULT_ACTRIX_ARTIFACT_REPO: &str = "actor-rtc/actrix";
+pub const DEFAULT_ACTRIX_ARTIFACT_WORKFLOW: &str = "205176739";
+pub const DEFAULT_ACTRIX_ARTIFACT_BRANCH: &str = "main";
 pub const LOCAL_E2E_REALM_ID: u32 = 1001;
 const KS_GRPC_PORT: u16 = 50052;
 
@@ -89,6 +92,26 @@ pub fn random_manufacturer() -> String {
 
 pub fn align_project_with_local_actrix(project_dir: &Path) -> Result<()> {
     rewrite_project_realm_id(project_dir, LOCAL_E2E_REALM_ID)
+}
+
+pub fn pin_echo_service_dependency_version(project_dir: &Path, manufacturer: &str) -> Result<()> {
+    let actr_toml_path = project_dir.join("Actr.toml");
+    let content = fs::read_to_string(&actr_toml_path)
+        .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
+    let target = "echo-service = {}";
+    let replacement = format!("echo-service = {{ actr_type = \"{manufacturer}:EchoService:v1\" }}");
+
+    if !content.contains(target) {
+        bail!(
+            "failed to pin echo dependency version in {}: '{target}' not found",
+            actr_toml_path.display()
+        );
+    }
+
+    let rewritten = content.replacen(target, &replacement, 1);
+    fs::write(&actr_toml_path, rewritten)
+        .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
+    Ok(())
 }
 
 pub fn align_rust_project_with_workspace(project_dir: &Path) -> Result<()> {
@@ -696,10 +719,20 @@ fn ensure_actrix_binary() -> Result<PathBuf> {
         return Ok(path.clone());
     }
 
+    if let Ok(path) = std::env::var("ACTR_E2E_ACTRIX_BIN") {
+        let binary_path = PathBuf::from(path);
+        if binary_path.is_file() {
+            let _ = ACTRIX_BIN.set(binary_path.clone());
+            return Ok(binary_path);
+        }
+        bail!(
+            "ACTR_E2E_ACTRIX_BIN points to a missing file: {}",
+            binary_path.display()
+        );
+    }
+
     let repo =
         std::env::var("ACTR_E2E_ACTRIX_REPO").unwrap_or_else(|_| DEFAULT_ACTRIX_REPO.to_string());
-    let rev =
-        std::env::var("ACTR_E2E_ACTRIX_REV").unwrap_or_else(|_| DEFAULT_ACTRIX_REV.to_string());
     let cache_root = workspace_root().join("target/e2e-cache");
     fs::create_dir_all(&cache_root).context("failed to create e2e cache root")?;
     let _lock = DirLock::acquire(
@@ -707,6 +740,23 @@ fn ensure_actrix_binary() -> Result<PathBuf> {
         Duration::from_secs(600),
     )?;
 
+    let latest_run = if std::env::var("ACTR_E2E_ACTRIX_REV").is_err() && artifact_download_enabled()
+    {
+        Some(latest_successful_actrix_run()?)
+    } else {
+        None
+    };
+
+    if artifact_download_enabled() {
+        if let Some(binary_path) =
+            try_ensure_actrix_artifact_binary(&cache_root, latest_run.as_ref())?
+        {
+            let _ = ACTRIX_BIN.set(binary_path.clone());
+            return Ok(binary_path);
+        }
+    }
+
+    let rev = resolve_actrix_source_rev(&repo, latest_run.as_ref())?;
     let checkout_dir = cache_root.join("actrix-checkout");
     ensure_actrix_checkout(&checkout_dir, &repo, &rev)?;
 
@@ -728,6 +778,185 @@ fn ensure_actrix_binary() -> Result<PathBuf> {
 
     let _ = ACTRIX_BIN.set(binary_path.clone());
     Ok(binary_path)
+}
+
+#[derive(Clone, Debug)]
+struct ActrixRunInfo {
+    run_id: String,
+    head_sha: String,
+}
+
+fn artifact_download_enabled() -> bool {
+    std::env::var("ACTR_E2E_ACTRIX_ARTIFACT")
+        .map(|value| value != "0" && value.to_ascii_lowercase() != "false")
+        .unwrap_or(true)
+}
+
+fn try_ensure_actrix_artifact_binary(
+    cache_root: &Path,
+    latest_run: Option<&ActrixRunInfo>,
+) -> Result<Option<PathBuf>> {
+    let Some(artifact_name) = current_actrix_artifact_name() else {
+        return Ok(None);
+    };
+    let Some(latest_run) = latest_run else {
+        return Ok(None);
+    };
+
+    let artifact_repo = std::env::var("ACTR_E2E_ACTRIX_ARTIFACT_REPO")
+        .unwrap_or_else(|_| DEFAULT_ACTRIX_ARTIFACT_REPO.to_string());
+
+    let artifact_dir = cache_root
+        .join("actrix-artifacts")
+        .join(&latest_run.run_id)
+        .join(artifact_name);
+    let binary_path = artifact_dir.join("actrix");
+    if binary_path.is_file() {
+        ensure_executable(&binary_path)?;
+        return Ok(Some(binary_path));
+    }
+
+    fs::create_dir_all(&artifact_dir)
+        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
+
+    let download_output = Command::new("gh")
+        .args([
+            "run",
+            "download",
+            &latest_run.run_id,
+            "-R",
+            &artifact_repo,
+            "-n",
+            artifact_name,
+        ])
+        .current_dir(&artifact_dir)
+        .output()
+        .context("failed to invoke gh run download for actrix artifact")?;
+
+    if !download_output.status.success() {
+        eprintln!(
+            "actrix artifact download failed, falling back to source build:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&download_output.stdout),
+            String::from_utf8_lossy(&download_output.stderr)
+        );
+        return Ok(None);
+    }
+
+    if !binary_path.is_file() {
+        eprintln!(
+            "actrix artifact downloaded but binary missing at {}, falling back to source build",
+            binary_path.display()
+        );
+        return Ok(None);
+    }
+
+    ensure_executable(&binary_path)?;
+    Ok(Some(binary_path))
+}
+
+fn current_actrix_artifact_name() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some("actrix-linux-x86_64"),
+        ("macos", "aarch64") => Some("actrix-macos-arm64"),
+        _ => None,
+    }
+}
+
+fn latest_successful_actrix_run() -> Result<ActrixRunInfo> {
+    let artifact_repo = std::env::var("ACTR_E2E_ACTRIX_ARTIFACT_REPO")
+        .unwrap_or_else(|_| DEFAULT_ACTRIX_ARTIFACT_REPO.to_string());
+    let workflow = std::env::var("ACTR_E2E_ACTRIX_ARTIFACT_WORKFLOW")
+        .unwrap_or_else(|_| DEFAULT_ACTRIX_ARTIFACT_WORKFLOW.to_string());
+    let branch = std::env::var("ACTR_E2E_ACTRIX_ARTIFACT_BRANCH")
+        .unwrap_or_else(|_| DEFAULT_ACTRIX_ARTIFACT_BRANCH.to_string());
+    let route = format!(
+        "repos/{artifact_repo}/actions/workflows/{workflow}/runs?branch={branch}&status=success&per_page=1"
+    );
+    let output = Command::new("gh")
+        .args(["api", &route])
+        .output()
+        .context("failed to invoke gh api for latest actrix workflow run")?;
+
+    if !output.status.success() {
+        bail!(
+            "failed to resolve latest actrix workflow run from GitHub:\nstdout: {}\nstderr: {}\nset ACTR_E2E_ACTRIX_REV or ACTR_E2E_ACTRIX_BIN to override",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let payload: Value = serde_json::from_slice(&output.stdout)
+        .context("failed to parse latest actrix workflow run payload")?;
+    let run = payload
+        .get("workflow_runs")
+        .and_then(Value::as_array)
+        .and_then(|runs| runs.first())
+        .context("latest actrix workflow run payload did not include a successful run")?;
+    let run_id = run
+        .get("id")
+        .and_then(Value::as_u64)
+        .context("latest actrix workflow run payload did not include a successful run id")?;
+    let head_sha = run
+        .get("head_sha")
+        .and_then(Value::as_str)
+        .context("latest actrix workflow run payload did not include head_sha")?;
+
+    Ok(ActrixRunInfo {
+        run_id: run_id.to_string(),
+        head_sha: head_sha.to_string(),
+    })
+}
+
+fn resolve_actrix_source_rev(repo: &str, latest_run: Option<&ActrixRunInfo>) -> Result<String> {
+    if let Ok(rev) = std::env::var("ACTR_E2E_ACTRIX_REV") {
+        return Ok(rev);
+    }
+
+    if let Some(latest_run) = latest_run {
+        return Ok(latest_run.head_sha.clone());
+    }
+
+    let route = format!(
+        "refs/heads/{}",
+        std::env::var("ACTR_E2E_ACTRIX_ARTIFACT_BRANCH")
+            .unwrap_or_else(|_| DEFAULT_ACTRIX_ARTIFACT_BRANCH.to_string())
+    );
+    let output = Command::new("git")
+        .args(["ls-remote", repo, &route])
+        .output()
+        .context("failed to invoke git ls-remote for actrix revision")?;
+
+    if !output.status.success() {
+        bail!(
+            "failed to resolve latest actrix revision:\nstdout: {}\nstderr: {}\nset ACTR_E2E_ACTRIX_REV or ACTR_E2E_ACTRIX_BIN to override",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let rev = stdout
+        .split_whitespace()
+        .next()
+        .context("git ls-remote did not return a revision for actrix")?;
+
+    Ok(rev.to_string())
+}
+
+fn ensure_executable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = fs::metadata(path)
+            .with_context(|| format!("failed to read metadata for {}", path.display()))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)
+            .with_context(|| format!("failed to mark {} executable", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn ensure_actrix_checkout(checkout_dir: &Path, repo: &str, rev: &str) -> Result<()> {

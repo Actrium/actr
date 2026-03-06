@@ -1,31 +1,30 @@
 //! End-to-end tests for Swift echo template.
 //!
-//! These tests run against local Actrix and local Rust echo service only.
+//! These tests run against a local Actrix instance and local Swift projects only.
 //! Run with: `cargo test --test e2e_swift_echo -- --ignored --test-threads=1`
 
 mod e2e_support;
 
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use e2e_support::{
-    LocalActrix, LocalRustEchoService, align_project_with_local_actrix, assert_success,
-    ensure_local_swift_xcframework, run_actr,
+    LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
+    ensure_local_swift_xcframework, pin_echo_service_dependency_version, run_actr,
 };
 use tempfile::TempDir;
 
-/// Inject a macOS CLI target into project.yml so we can run a command-line binary.
-fn inject_cli_target(project_dir: &std::path::Path, project_name: &str) {
+fn append_cli_target(project_dir: &std::path::Path, project_name: &str, target_name: &str) {
     let project_yml = project_dir.join("project.yml");
     let mut yml = std::fs::read_to_string(&project_yml).expect("read project.yml");
-
     let cli_target = format!(
         r#"
-  EchoCLI:
+  {target_name}:
     type: tool
     platform: macOS
     deploymentTarget: "13.0"
     sources:
-      - path: EchoCLI
+      - path: {target_name}
       - path: {project_name}/Generated
     settings:
       SWIFT_VERSION: "6.0"
@@ -40,11 +39,61 @@ fn inject_cli_target(project_dir: &std::path::Path, project_name: &str) {
     );
     yml.push_str(&cli_target);
     std::fs::write(&project_yml, yml).expect("write project.yml");
+    std::fs::create_dir_all(project_dir.join(target_name)).expect("create CLI target dir");
+}
 
-    let cli_dir = project_dir.join("EchoCLI");
-    std::fs::create_dir_all(&cli_dir).expect("create EchoCLI dir");
+fn write_service_cli(project_dir: &std::path::Path) {
+    let source = r#"import Actr
+import Foundation
+import SwiftProtobuf
 
-    let main_swift = r#"import Actr
+public final class EchoServiceHandlerImpl: EchoServiceHandler {
+    public init() {}
+
+    public func echo(req: Echo_EchoRequest, ctx _: Context) async throws -> Echo_EchoResponse {
+        print("Received echo request: \(req.message)")
+        var response = Echo_EchoResponse()
+        response.reply = req.message
+        return response
+    }
+}
+
+extension EchoServiceWorkload: Workload where T == EchoServiceHandlerImpl {
+    public func onStart(ctx _: Context) async throws {}
+    public func onStop(ctx _: Context) async throws {}
+
+    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+        return try await __dispatch(ctx: ctx, envelope: envelope)
+    }
+}
+
+@main
+struct EchoServiceCLI {
+    static func main() async throws {
+        let cwd = FileManager.default.currentDirectoryPath
+        let configPath = (cwd as NSString).appendingPathComponent("Actr.toml")
+
+        let system = try await ActrSystem.from(tomlConfig: configPath)
+        let workload = EchoServiceWorkload(handler: EchoServiceHandlerImpl())
+        let node = try system.spawn(workload: workload)
+        let _ = try await node.start()
+        print("EchoService registered")
+
+        while true {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+}
+"#;
+    std::fs::write(
+        project_dir.join("EchoServiceCLI/EchoServiceCLI.swift"),
+        source,
+    )
+    .expect("write EchoServiceCLI.swift");
+}
+
+fn write_app_cli(project_dir: &std::path::Path) {
+    let source = r#"import Actr
 import Foundation
 import SwiftProtobuf
 
@@ -58,15 +107,10 @@ extension EchoAppWorkload: Workload {
 }
 
 @main
-struct EchoCLI {
+struct EchoAppCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let configPath = (cwd as NSString).appendingPathComponent("Actr.toml")
-
-        guard FileManager.default.fileExists(atPath: configPath) else {
-            fputs("Error: Actr.toml not found at \(configPath)\n", stderr)
-            exit(1)
-        }
 
         let system = try await ActrSystem.from(tomlConfig: configPath)
         let workload = EchoAppWorkload()
@@ -83,21 +127,63 @@ struct EchoCLI {
     }
 }
 "#;
-    std::fs::write(cli_dir.join("EchoCLI.swift"), main_swift).expect("write EchoCLI.swift");
+    std::fs::write(project_dir.join("EchoAppCLI/EchoAppCLI.swift"), source)
+        .expect("write EchoAppCLI.swift");
+}
+
+fn generate_xcode_project(project_dir: &std::path::Path) {
+    let out = Command::new("xcodegen")
+        .args(["generate"])
+        .current_dir(project_dir)
+        .output()
+        .expect("xcodegen not found");
+    assert_success(&out, "xcodegen generate");
+}
+
+fn build_cli_binary(
+    project_dir: &std::path::Path,
+    project_name: &str,
+    scheme: &str,
+    local_xcframework: &std::path::Path,
+) -> std::path::PathBuf {
+    let out = Command::new("xcodebuild")
+        .env("ACTR_BINARY_PATH", local_xcframework)
+        .args([
+            "build",
+            "-project",
+            &format!("{project_name}.xcodeproj"),
+            "-scheme",
+            scheme,
+            "-configuration",
+            "Debug",
+            "-derivedDataPath",
+            "build",
+            "ONLY_ACTIVE_ARCH=YES",
+            "CODE_SIGNING_ALLOWED=NO",
+        ])
+        .current_dir(project_dir)
+        .output()
+        .expect("xcodebuild not found");
+    assert_success(&out, &format!("xcodebuild build ({scheme})"));
+
+    let binary = project_dir.join(format!("build/Build/Products/Debug/{scheme}"));
+    assert!(
+        binary.exists(),
+        "{scheme} binary should exist at {}",
+        binary.display()
+    );
+    binary
 }
 
 #[test]
-#[ignore] // Requires Xcode and xcodegen
-fn swift_echo_e2e_app_with_local_registry() {
+#[ignore] // Requires macOS, Xcode, xcodegen, and local Swift bindings
+fn swift_echo_e2e_service_and_app() {
     let local_xcframework =
         ensure_local_swift_xcframework().expect("failed to prepare local swift xcframework");
     let actrix = LocalActrix::start().expect("failed to start local actrix");
-    let registry = LocalRustEchoService::start(&actrix.signaling_ws_url)
-        .expect("failed to start local rust echo service");
     let tmp = TempDir::new().unwrap();
-    let project_name = "EchoApp";
 
-    let out = run_actr(
+    let init_out = run_actr(
         &[
             "init",
             "-l",
@@ -105,102 +191,105 @@ fn swift_echo_e2e_app_with_local_registry() {
             "--template",
             "echo",
             "--role",
-            "app",
+            "both",
             "--signaling",
             &actrix.signaling_ws_url,
-            project_name,
+            "--manufacturer",
+            "swift-e2e",
+            "e2e-swift",
         ],
         tmp.path(),
     );
-    assert_success(&out, "actr init");
+    assert_success(&init_out, "actr init -l swift --role both");
 
-    let project_dir = tmp.path().join(project_name);
-    assert!(project_dir.exists(), "project dir should exist");
-    align_project_with_local_actrix(&project_dir).expect("failed to set local realm for app");
+    let svc_dir = tmp.path().join("e2e-swift/echo-service");
+    let app_dir = tmp.path().join("e2e-swift/echo-app");
+    assert!(svc_dir.exists(), "echo-service dir should exist");
+    assert!(app_dir.exists(), "echo-app dir should exist");
+    align_project_with_local_actrix(&svc_dir).expect("failed to set local realm for service");
+    align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
+    pin_echo_service_dependency_version(&app_dir, "swift-e2e")
+        .expect("failed to pin app echo dependency version");
 
-    let actr_toml = std::fs::read_to_string(project_dir.join("Actr.toml")).unwrap();
-    assert!(
-        actr_toml.contains("acme:EchoService"),
-        "Actr.toml should reference acme:EchoService, got:\n{actr_toml}"
+    assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
+    assert_success(
+        &run_actr(&["gen", "-l", "swift"], &svc_dir),
+        "actr gen -l swift (svc)",
+    );
+    append_cli_target(&svc_dir, "EchoService", "EchoServiceCLI");
+    write_service_cli(&svc_dir);
+    generate_xcode_project(&svc_dir);
+    let svc_binary = build_cli_binary(
+        &svc_dir,
+        "EchoService",
+        "EchoServiceCLI",
+        &local_xcframework,
     );
 
-    let out = run_actr(&["install"], &project_dir);
-    assert_success(&out, "actr install");
+    let mut svc_cmd = Command::new(&svc_binary);
+    svc_cmd
+        .current_dir(&svc_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut svc =
+        LoggedProcess::spawn(svc_cmd, "swift-e2e-service").expect("failed to start service");
     assert!(
-        project_dir
-            .join("protos/remote/echo-echo-server/echo.proto")
-            .exists(),
-        "echo.proto should be downloaded"
+        svc.wait_for_log("EchoService registered", Duration::from_secs(180)),
+        "service not ready within timeout:\n{}",
+        svc.logs()
     );
 
-    let out = run_actr(&["gen", "-l", "swift"], &project_dir);
-    assert_success(&out, "actr gen");
-
-    let gen_dir = project_dir.join(project_name).join("Generated");
-    assert!(gen_dir.join("echo.pb.swift").exists(), "echo.pb.swift");
-    assert!(
-        gen_dir.join("echo.client.swift").exists(),
-        "echo.client.swift"
+    assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
+    assert_success(
+        &run_actr(&["gen", "-l", "swift"], &app_dir),
+        "actr gen -l swift (app)",
     );
+    append_cli_target(&app_dir, "EchoApp", "EchoAppCLI");
+    write_app_cli(&app_dir);
+    generate_xcode_project(&app_dir);
+    let app_binary = build_cli_binary(&app_dir, "EchoApp", "EchoAppCLI", &local_xcframework);
+
+    let mut app = Command::new(&app_binary)
+        .current_dir(&app_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start app");
+
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        match app.try_wait().unwrap() {
+            Some(_) => break,
+            None if Instant::now() > deadline => {
+                app.kill().ok();
+                let app_out = app.wait_with_output().unwrap();
+                panic!(
+                    "app did not exit within 120s:\nstdout: {}\nstderr: {}\nservice:\n{}",
+                    String::from_utf8_lossy(&app_out.stdout),
+                    String::from_utf8_lossy(&app_out.stderr),
+                    svc.logs()
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(500)),
+        }
+    }
+
+    let app_out = app.wait_with_output().unwrap();
+    let app_stdout = String::from_utf8_lossy(&app_out.stdout);
+    let app_stderr = String::from_utf8_lossy(&app_out.stderr);
     assert!(
-        gen_dir.join("local.actor.swift").exists(),
-        "local.actor.swift"
-    );
-
-    inject_cli_target(&project_dir, project_name);
-
-    let out = Command::new("xcodegen")
-        .args(["generate"])
-        .current_dir(&project_dir)
-        .output()
-        .expect("xcodegen not found");
-    assert_success(&out, "xcodegen generate");
-
-    let out = Command::new("xcodebuild")
-        .env("ACTR_BINARY_PATH", &local_xcframework)
-        .args([
-            "build",
-            "-project",
-            &format!("{project_name}.xcodeproj"),
-            "-scheme",
-            "EchoCLI",
-            "-configuration",
-            "Debug",
-            "-derivedDataPath",
-            "build",
-            "ONLY_ACTIVE_ARCH=YES",
-        ])
-        .current_dir(&project_dir)
-        .output()
-        .expect("xcodebuild not found");
-    assert_success(&out, "xcodebuild build");
-
-    let cli_binary = project_dir.join("build/Build/Products/Debug/EchoCLI");
-    assert!(
-        cli_binary.exists(),
-        "EchoCLI binary should exist at {}",
-        cli_binary.display()
-    );
-
-    let out = Command::new(&cli_binary)
-        .current_dir(&project_dir)
-        .output()
-        .expect("failed to run EchoCLI");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "EchoCLI failed:\nstdout: {stdout}\nstderr: {stderr}\nservice logs:\n{}\nactrix logs:\n{}",
-        registry.logs(),
+        app_out.status.success(),
+        "app failed:\nstdout: {app_stdout}\nstderr: {app_stderr}\nservice logs:\n{}\nactrix logs:\n{}",
+        svc.logs(),
         actrix.logs()
     );
     assert!(
-        stdout.contains("Echo reply:"),
-        "Expected 'Echo reply:' in stdout, got:\nstdout: {stdout}\nstderr: {stderr}"
+        app_stdout.contains("Echo reply: hello"),
+        "missing echo reply in app output:\nstdout: {app_stdout}\nstderr: {app_stderr}"
     );
     assert!(
-        registry.logs().contains("Received echo request: hello"),
-        "local registry rust service did not receive request:\n{}",
-        registry.logs()
+        svc.logs().contains("Received echo request: hello"),
+        "service missing request log:\n{}",
+        svc.logs()
     );
 }

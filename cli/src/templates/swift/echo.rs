@@ -3,26 +3,27 @@ use crate::templates::ProjectTemplate;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
+pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()> {
     let fixtures_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
 
-    // Load template files from disk with placeholders in path
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/project.yml.hbs"),
         files,
         "project.yml",
     )?;
-    ProjectTemplate::load_file(
-        &fixtures_root.join("swift/echo/Actr.toml.hbs"),
-        files,
-        "Actr.toml",
-    )?;
-    // Load empty Actr.lock.toml template
-    // This is REQUIRED for Swift projects because:
-    // 1. project.yml references it as a resource file
-    // 2. xcodegen requires all referenced files to exist during project generation
-    // 3. The lock file will be populated later by `actr install`
-    // See: fixtures/swift/project.yml.hbs:30-32 for the resource reference
+    if is_service {
+        ProjectTemplate::load_file(
+            &fixtures_root.join("swift/echo/Actr.toml.service.hbs"),
+            files,
+            "Actr.toml",
+        )?;
+    } else {
+        ProjectTemplate::load_file(
+            &fixtures_root.join("swift/echo/Actr.toml.hbs"),
+            files,
+            "Actr.toml",
+        )?;
+    }
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/Actr.lock.toml.hbs"),
         files,
@@ -63,8 +64,6 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         files,
         "{{PROJECT_NAME_PASCAL}}/ActrService.swift",
     )?;
-    // Load fixture files (no placeholders, fixed paths)
-    // Note: proto files are no longer created during init, they will be pulled via actr install
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/Assets.xcassets/Contents.json"),
         files,

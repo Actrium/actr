@@ -11,13 +11,13 @@ impl LangTemplate for SwiftTemplate {
     fn load_files(
         &self,
         template_name: ProjectTemplateName,
-        _context: &TemplateContext,
+        context: &TemplateContext,
     ) -> Result<HashMap<String, String>> {
         let mut files = HashMap::new();
 
         match template_name {
             ProjectTemplateName::Echo => {
-                echo::load(&mut files)?;
+                echo::load(&mut files, context.is_service)?;
             }
             ProjectTemplateName::DataStream => {
                 data_stream::load(&mut files)?;
