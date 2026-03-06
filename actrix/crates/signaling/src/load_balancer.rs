@@ -495,6 +495,7 @@ mod tests {
             protocol_compatibility_score: None,
             geo_location: None,
             sticky_client_ids: Vec::new(),
+            ws_address: None,
         }
     }
 

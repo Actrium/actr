@@ -526,6 +526,7 @@ impl ServiceRegistryStorage {
                 .map(|v| v as f32),
             geo_location,
             sticky_client_ids,
+            ws_address: None, // Not persisted in SQLite cache; populated from live RegisterRequest
         })
     }
 
@@ -775,6 +776,7 @@ mod tests {
             protocol_compatibility_score: None,
             geo_location: None,
             sticky_client_ids: vec![],
+            ws_address: None,
         }
     }
 

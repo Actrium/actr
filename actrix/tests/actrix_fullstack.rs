@@ -480,6 +480,7 @@ async fn ws_register_in_realm_with_spec(
         service: None,
         service_spec,
         acl,
+        ws_address: None,
     };
 
     let env = make_envelope(signaling_envelope::Flow::PeerToServer(
@@ -689,6 +690,7 @@ async fn actrix_end_to_end_register_and_health() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
     let body = register_req.encode_to_vec();
     let register_url = format!("{base}/ais/register");
@@ -958,6 +960,7 @@ async fn ais_register_accepts_non_preprovisioned_realm() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
 
     let rsp_bytes = client
@@ -1081,6 +1084,7 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
     let register_resp = client
         .post(format!("{base}/ais/register"))
@@ -1144,6 +1148,7 @@ async fn signaling_register_returns_error_when_ais_endpoint_is_unreachable() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
 
     send_envelope(
@@ -1303,6 +1308,7 @@ async fn signaling_peer_payload_none_is_ignored_and_connection_remains_usable() 
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
     send_envelope(
         &mut write,
@@ -3037,6 +3043,7 @@ async fn signaling_rejects_duplicate_register_on_same_connection() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
     let env = make_envelope(signaling_envelope::Flow::PeerToServer(
         actr_protocol::PeerToSignaling {

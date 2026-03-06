@@ -5,11 +5,11 @@ resolver = "2"
 
 [patch.crates-io]
 # Use local protocol/framework definitions for development
-# actr-protocol = { path = "../actr/crates/protocol" }
-# actr-version = { path = "../actr/crates/version" }
+# actr-protocol = { path = "../actr/core/protocol" }
+# actr-version = { path = "../actr/core/version" }
 # Use remote protocol/framework definitions that include tracing headers
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "b3d7edcd1f2bb668d9d7e39314f52c8f86804425" }
-actr-version = { git = "https://github.com/actor-rtc/actr.git", rev = "b3d7edcd1f2bb668d9d7e39314f52c8f86804425" }
+actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "17688176e610ccc20747aabd4f6dfc1afe201f05" }
+actr-version = { git = "https://github.com/actor-rtc/actr.git", rev = "17688176e610ccc20747aabd4f6dfc1afe201f05" }
 
 [workspace.package]
 version = "0.1.1"

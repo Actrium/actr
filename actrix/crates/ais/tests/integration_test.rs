@@ -176,6 +176,7 @@ async fn test_end_to_end_credential_flow() {
         service: None,
         service_spec: None,
         acl: None,
+        ws_address: None,
     };
 
     let response = issuer
@@ -234,6 +235,7 @@ async fn test_end_to_end_credential_flow() {
             service: None,
             service_spec: None,
             acl: None,
+            ws_address: None,
         };
 
         let rsp = issuer

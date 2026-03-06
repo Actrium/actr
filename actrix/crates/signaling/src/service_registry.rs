@@ -90,6 +90,13 @@ pub struct ServiceInfo {
     pub geo_location: Option<ServiceLocation>,
     /// 粘滞客户端 ID 列表（会话保持，从 Ping 消息获取）
     pub sticky_client_ids: Vec<String>,
+
+    // WebSocket 直连地址
+    /// 该服务当前开启的 WebSocket 服务端地址（如 "ws://192.168.1.10:9100"）。
+    /// 来自注册时的 `RegisterRequest::ws_address` 字段。
+    /// `None` 表示该服务不支持 WebSocket 直连。
+    #[serde(default)]
+    pub ws_address: Option<String>,
 }
 
 /// 服务地理位置信息
@@ -201,6 +208,7 @@ impl ServiceRegistry {
     }
 
     /// 注册服务（完整版本，支持 ServiceSpec 和 ACL）
+    #[allow(clippy::too_many_arguments)]
     pub fn register_service_full(
         &mut self,
         actor_id: ActrId,
@@ -209,13 +217,15 @@ impl ServiceRegistry {
         capabilities: Option<ServiceCapabilities>,
         service_spec: Option<actr_protocol::ServiceSpec>,
         acl: Option<actr_protocol::Acl>,
+        ws_address: Option<String>,
     ) -> Result<(), String> {
         info!(
-            "注册服务: {} (Actor {}), has_spec={}, has_acl={}",
+            "注册服务: {} (Actor {}), has_spec={}, has_acl={}, ws_address={:?}",
             service_name,
             actor_id.serial_number,
             service_spec.is_some(),
-            acl.is_some()
+            acl.is_some(),
+            ws_address
         );
 
         let service_info = ServiceInfo {
@@ -234,6 +244,7 @@ impl ServiceRegistry {
             protocol_compatibility_score: None,
             geo_location: None,
             sticky_client_ids: Vec::new(),
+            ws_address,
         };
 
         // 异步写入 SQLite 缓存（后台任务，不阻塞）
@@ -298,6 +309,7 @@ impl ServiceRegistry {
             service_name,
             message_types,
             capabilities,
+            None,
             None,
             None,
         )
@@ -1364,6 +1376,7 @@ mod tests {
             None,
             Some(service_spec.clone()),
             Some(acl),
+            None,
         );
 
         assert!(result.is_ok());

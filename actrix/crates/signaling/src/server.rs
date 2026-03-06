@@ -565,6 +565,7 @@ async fn handle_register_request(
             None, // capabilities 当前不使用
             request.service_spec.clone(),
             request.acl.clone(),
+            request.ws_address.clone(),
         ) {
             warn!("⚠️  注册服务到 ServiceRegistry 失败: {}", e);
         } else {
@@ -1786,7 +1787,7 @@ async fn handle_route_candidates_request(
     });
 
     // 兼容性协商逻辑
-    let (ranked_actor_ids, compatibility_info, has_exact_match, is_sub_healthy) =
+    let (ranked_actor_ids, compatibility_info, has_exact_match, is_sub_healthy, ws_address_map) =
         if !client_fingerprint.is_empty() {
             // 有 client_fingerprint 就启用协商模式
             perform_compatibility_negotiation(
@@ -1804,6 +1805,12 @@ async fn handle_route_candidates_request(
             let cache_guard = server.compatibility_cache.read().await;
             let compatibility_cache = Some(&*cache_guard);
 
+            // 先提取 ws_address 信息（rank_candidates 会 move acl_filtered_candidates）
+            let ws_info: Vec<(ActrId, Option<String>)> = acl_filtered_candidates
+                .iter()
+                .map(|c| (c.actor_id.clone(), c.ws_address.clone()))
+                .collect();
+
             let ranked = LoadBalancer::rank_candidates(
                 acl_filtered_candidates,
                 req.criteria.as_ref(),
@@ -1813,7 +1820,8 @@ async fn handle_route_candidates_request(
                 None,
             );
 
-            (ranked, vec![], None, None)
+            // ws_address 通过专用参数返回，compat_info 保持为空
+            (ranked, vec![], None, None, ws_info)
         };
 
     info!(
@@ -1824,6 +1832,14 @@ async fn handle_route_candidates_request(
         is_sub_healthy
     );
 
+    let ws_address_map_proto: Vec<actr_protocol::WsAddressEntry> = ws_address_map
+        .into_iter()
+        .map(|(id, ws)| actr_protocol::WsAddressEntry {
+            candidate_id: id,
+            ws_address: ws,
+        })
+        .collect();
+
     let response = actr_protocol::RouteCandidatesResponse {
         result: Some(actr_protocol::route_candidates_response::Result::Success(
             actr_protocol::route_candidates_response::RouteCandidatesOk {
@@ -1831,6 +1847,7 @@ async fn handle_route_candidates_request(
                 compatibility_info,
                 has_exact_match,
                 is_sub_healthy,
+                ws_address_map: ws_address_map_proto,
             },
         )),
     };
@@ -1864,6 +1881,7 @@ async fn perform_compatibility_negotiation(
     Vec<actr_protocol::CandidateCompatibilityInfo>,
     Option<bool>,
     Option<bool>,
+    Vec<(ActrId, Option<String>)>,
 ) {
     use crate::compatibility_cache::CompatibilityReportData;
     use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel, ServiceCompatibility};
@@ -1926,6 +1944,7 @@ async fn perform_compatibility_negotiation(
                 candidate_fingerprint: candidate_fingerprint.clone(),
                 analysis_result: None, // 精确匹配无需分析
                 is_exact_match: Some(true),
+                ws_address: candidate.ws_address.clone(),
             });
             continue;
         }
@@ -1973,6 +1992,7 @@ async fn perform_compatibility_negotiation(
                     candidate_fingerprint: candidate_fingerprint.clone(),
                     analysis_result: Some(proto_result),
                     is_exact_match: Some(false),
+                    ws_address: candidate.ws_address.clone(),
                 });
 
                 info!(
@@ -1991,6 +2011,7 @@ async fn perform_compatibility_negotiation(
                 candidate_fingerprint: candidate_fingerprint.clone(),
                 analysis_result: None,
                 is_exact_match: Some(false),
+                ws_address: candidate.ws_address.clone(),
             });
             continue;
         }
@@ -2003,6 +2024,7 @@ async fn perform_compatibility_negotiation(
                     candidate_fingerprint: candidate_fingerprint.clone(),
                     analysis_result: None,
                     is_exact_match: Some(false),
+                    ws_address: candidate.ws_address.clone(),
                 });
                 continue;
             }
@@ -2053,6 +2075,7 @@ async fn perform_compatibility_negotiation(
                     candidate_fingerprint: candidate_fingerprint.clone(),
                     analysis_result: Some(proto_result),
                     is_exact_match: Some(false),
+                    ws_address: candidate.ws_address.clone(),
                 });
 
                 info!(
@@ -2070,6 +2093,7 @@ async fn perform_compatibility_negotiation(
                     candidate_fingerprint: candidate_fingerprint.clone(),
                     analysis_result: None,
                     is_exact_match: Some(false),
+                    ws_address: candidate.ws_address.clone(),
                 });
             }
         }
@@ -2099,11 +2123,20 @@ async fn perform_compatibility_negotiation(
         .unwrap_or(usize::MAX);
     let limited_candidates: Vec<ActrId> = final_candidates.into_iter().take(limit).collect();
 
+    // Build ws_address_map from all candidates (same as non-negotiation path).
+    // The actr client reads ws_address exclusively from ws_address_map,
+    // so we must populate it here too.
+    let ws_address_map: Vec<(ActrId, Option<String>)> = candidates
+        .iter()
+        .map(|c| (c.actor_id.clone(), c.ws_address.clone()))
+        .collect();
+
     (
         limited_candidates,
         compatibility_info,
         Some(has_exact_match),
         Some(is_sub_healthy),
+        ws_address_map,
     )
 }
 

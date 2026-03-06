@@ -255,6 +255,7 @@ mod tests {
             service: None,
             service_spec: None,
             acl: None,
+            ws_address: None,
         };
 
         // 编码
@@ -281,6 +282,7 @@ mod tests {
             service: None,
             service_spec: None,
             acl: None,
+            ws_address: None,
         };
 
         // 编码解码循环

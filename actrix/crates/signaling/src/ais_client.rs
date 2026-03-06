@@ -75,6 +75,7 @@ impl AisClient {
             service: None,
             service_spec: None,
             acl: None,
+            ws_address: None,
         };
 
         debug!(
