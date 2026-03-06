@@ -32,6 +32,7 @@ impl MyFileService {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "FileTransferService".to_string(),
+            version: None,
         };
         info!(
             "🌐 Discovering receiver via signaling for type: {}",

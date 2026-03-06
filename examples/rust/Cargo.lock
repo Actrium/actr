@@ -40,8 +40,7 @@ dependencies = [
 
 [[package]]
 name = "actr-config"
-version = "0.1.7"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
+version = "0.1.8"
 dependencies = [
  "actr-protocol",
  "actr-version",
@@ -55,40 +54,19 @@ dependencies = [
 [[package]]
 name = "actr-framework"
 version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
 dependencies = [
  "actr-protocol",
  "anyhow",
  "async-trait",
  "bytes",
  "futures-util",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "actr-mailbox"
-version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
-dependencies = [
- "actr-protocol",
- "anyhow",
- "async-trait",
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "actr-protocol"
-version = "0.1.6"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "base122-rs",
@@ -108,13 +86,12 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.7"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
+version = "0.1.8"
 dependencies = [
  "actr-config",
  "actr-framework",
- "actr-mailbox",
  "actr-protocol",
+ "actr-runtime-mailbox",
  "actr-version",
  "anyhow",
  "async-trait",
@@ -152,14 +129,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-runtime-mailbox"
+version = "0.1.5"
+dependencies = [
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "actr-version"
-version = "0.1.4"
-source = "git+https://github.com/actor-rtc/actr.git?rev=09757bb556045d2b85edf4812c12db2afd3d2dd5#09757bb556045d2b85edf4812c12db2afd3d2dd5"
+version = "0.1.5"
 dependencies = [
  "actr-protocol",
  "anyhow",
  "chrono",
- "proto-sign",
+ "proto-fingerprint",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -677,6 +670,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1116,6 +1119,21 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "foreign-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
+dependencies = [
+ "foreign-types-shared",
+]
+
+[[package]]
+name = "foreign-types-shared"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
@@ -1823,6 +1841,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "native-tls"
+version = "0.2.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "465500e14ea162429d264d44189adc38b199b62b1c21eea9f69e4b73cb03bbf2"
+dependencies = [
+ "libc",
+ "log",
+ "openssl",
+ "openssl-probe",
+ "openssl-sys",
+ "schannel",
+ "security-framework",
+ "security-framework-sys",
+ "tempfile",
+]
+
+[[package]]
 name = "nix"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1924,6 +1959,50 @@ name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
+name = "openssl"
+version = "0.10.75"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08838db121398ad17ab8531ce9de97b244589089e290a384c900cb9ff7434328"
+dependencies = [
+ "bitflags 2.10.0",
+ "cfg-if",
+ "foreign-types",
+ "libc",
+ "once_cell",
+ "openssl-macros",
+ "openssl-sys",
+]
+
+[[package]]
+name = "openssl-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "openssl-probe"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "openssl-sys"
+version = "0.9.111"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82cab2d520aa75e3c58898289429321eb788c3106963d0dc886ec7a5f4adc321"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "opentelemetry"
@@ -2294,10 +2373,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "proto-sign"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cf45daf5c0c3525013f93bd52fbe7cd5c96c1f463fabaac08e4ba3752882f91"
+name = "proto-fingerprint"
+version = "0.1.0"
+source = "git+https://github.com/actor-rtc/proto-kit.git?rev=947af3c#947af3cb2ee47d897910db66c109f63b0b0e9668"
 dependencies = [
  "anyhow",
  "clap",
@@ -2684,6 +2762,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
+name = "schannel"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2733,6 +2820,29 @@ dependencies = [
  "pkcs8",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d17b898a6d6948c3a8ee4372c17cb384f90d2e6e912ef00895b14fd7ab54ec38"
+dependencies = [
+ "bitflags 2.10.0",
+ "core-foundation",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework-sys"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]
@@ -3165,6 +3275,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-native-tls"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
+dependencies = [
+ "native-tls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-stream"
 version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3184,7 +3304,9 @@ checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
 dependencies = [
  "futures-util",
  "log",
+ "native-tls",
  "tokio",
+ "tokio-native-tls",
  "tungstenite",
 ]
 
@@ -3413,6 +3535,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
+ "native-tls",
  "rand 0.9.2",
  "sha1",
  "thiserror 2.0.17",
@@ -4232,6 +4355,40 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "ws-echo-client-app"
+version = "0.1.0"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-protocol",
+ "actr-runtime",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ws-echo-server"
+version = "0.1.0"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-protocol",
+ "actr-runtime",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "x25519-dalek"

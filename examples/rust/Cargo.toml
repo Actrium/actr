@@ -7,6 +7,8 @@ members = [
     "media-relay/actr-b",
     "shell-actr-echo/server",
     "shell-actr-echo/client",
+    "ws-actr-echo/server",
+    "ws-actr-echo/client",
     # "mutil-actr/server",
     # "mutil-actr/client",
     # "acl/allowed-client",
@@ -51,11 +53,7 @@ async-trait = "0.1"
 url = "2.0"
 
 [patch.crates-io]
-# actr-framework = { path = "../actr/crates/framework" }
-# actr-protocol = { path = "../actr/crates/protocol" }
-# actr-runtime = { path = "../actr/crates/runtime" }
-# actr-config = { path = "../actr/crates/config" }
-actr-framework = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
-actr-protocol = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
-actr-runtime = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
-actr-config = { git = "https://github.com/actor-rtc/actr.git", rev = "09757bb556045d2b85edf4812c12db2afd3d2dd5" }
+actr-framework = { path = "../../core/framework" }
+actr-protocol = { path = "../../core/protocol" }
+actr-runtime = { path = "../../core/runtime" }
+actr-config = { path = "../../core/config" }

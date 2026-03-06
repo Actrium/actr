@@ -47,6 +47,10 @@ pub struct DiscoveryResult {
     pub is_sub_healthy: bool,
     /// Detailed compatibility info for each candidate (when fingerprint was provided)
     pub compatibility_info: Vec<CandidateCompatibilityInfo>,
+    /// WebSocket direct-connect addresses discovered from signaling server.
+    /// Maps each candidate ActrId to its ws:// URL if the server has one.
+    /// Clients should use this URL to bypass relay (WebRTC) and connect directly.
+    pub ws_addresses: std::collections::HashMap<ActrId, String>,
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -96,6 +100,9 @@ pub struct ActrNode<W: Workload> {
     /// WebRTC Gate (created after startup)
     pub(crate) webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
 
+    /// WebSocket Gate（直连模式入站，可选）
+    pub(crate) websocket_gate: Option<Arc<crate::wire::websocket::WebSocketGate>>,
+
     /// Shell → Workload Transport Manager
     ///
     /// Workload receives REQUEST from Shell (zero serialization, direct RpcEnvelope passing)
@@ -125,6 +132,14 @@ pub struct ActrNode<W: Workload> {
 
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
+
+    /// Shared WebSocket direct-connect address map populated by `discover_route_candidates`.
+    ///
+    /// This Arc is shared with `DefaultWireBuilder` so that when a connection to a discovered
+    /// actor is established, the wire builder can look up the ws:// URL directly instead of
+    /// relying on a static url_template.  The map is keyed by `ActrId`.
+    pub(crate) discovered_ws_addresses:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
 }
 
 /// Credential state for shared access between tasks
@@ -459,11 +474,24 @@ impl<W: Workload> ActrNode<W> {
                         service_name,
                         result.candidates.len()
                     );
+                    // Populate the shared ws_addresses map for wire builder
+                    if !result.ws_addresses.is_empty() {
+                        let mut map = self.discovered_ws_addresses.write().await;
+                        for (id, url) in &result.ws_addresses {
+                            tracing::info!(
+                                "📡 Caching WS address (fast path) for {}: {}",
+                                id.serial_number,
+                                url
+                            );
+                            map.insert(id.clone(), url.clone());
+                        }
+                    }
                     return Ok(DiscoveryResult {
                         candidates: result.candidates,
                         has_exact_match: false, // Cached negotiation means not exact
                         is_sub_healthy: true,   // Using compat.lock means sub-healthy
                         compatibility_info: result.compatibility_info,
+                        ws_addresses: result.ws_addresses,
                     });
                 }
                 // If fast path fails, fall through to normal discovery
@@ -551,11 +579,25 @@ impl<W: Workload> ActrNode<W> {
             is_sub_healthy
         );
 
+        // Populate the shared ws_addresses map so the wire builder can use discovered URLs
+        if !result.ws_addresses.is_empty() {
+            let mut map = self.discovered_ws_addresses.write().await;
+            for (id, url) in &result.ws_addresses {
+                tracing::info!(
+                    "📡 Caching discovered WS address for {}: {}",
+                    id.serial_number,
+                    url
+                );
+                map.insert(id.clone(), url.clone());
+            }
+        }
+
         Ok(DiscoveryResult {
             candidates: result.candidates,
             has_exact_match,
             is_sub_healthy,
             compatibility_info: result.compatibility_info,
+            ws_addresses: result.ws_addresses,
         })
     }
 
@@ -563,23 +605,21 @@ impl<W: Workload> ActrNode<W> {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Canonical dependency lookup key: manufacturer:name
-        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
-        let actr_type_name = service_name.clone();
+        // Version is always present; use full "manufacturer:name:version" as the lookup key
+        let version = target_type.version.as_deref().unwrap_or("");
+        let key = format!(
+            "{}:{}:{}",
+            target_type.manufacturer, target_type.name, version
+        );
 
-        // First try by service name
-        if let Some(dep) = actr_lock.get_dependency(&service_name) {
-            return Some(dep.fingerprint.clone());
-        }
-
-        // Try by just the name part
-        if let Some(dep) = actr_lock.get_dependency(&target_type.name) {
+        // Try by full key
+        if let Some(dep) = actr_lock.get_dependency(&key) {
             return Some(dep.fingerprint.clone());
         }
 
         // Search through all dependencies by actr_type field
         for dep in &actr_lock.dependencies {
-            if dep.actr_type == actr_type_name || dep.actr_type == target_type.name {
+            if dep.actr_type == key {
                 return Some(dep.fingerprint.clone());
             }
         }
@@ -626,11 +666,23 @@ impl<W: Workload> ActrNode<W> {
 
         match route_response.result {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
+                // Extract ws_address for each candidate from CandidateCompatibilityInfo
+                let ws_addresses: std::collections::HashMap<ActrId, String> = success
+                    .compatibility_info
+                    .iter()
+                    .filter_map(|info| {
+                        info.ws_address
+                            .as_ref()
+                            .map(|url| (info.candidate_id.clone(), url.clone()))
+                    })
+                    .collect();
+
                 Ok(DiscoveryResult {
                     candidates: success.candidates,
                     has_exact_match: success.has_exact_match.unwrap_or(false),
                     is_sub_healthy: success.is_sub_healthy.unwrap_or(false),
                     compatibility_info: success.compatibility_info,
+                    ws_addresses,
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
@@ -1169,12 +1221,33 @@ impl<W: Workload> ActrNode<W> {
         }
 
         // Construct protobuf RegisterRequest
+        // If a WebSocket listen port is configured, build the advertised ws:// address
+        // to register with the signaling server so clients can discover it.
+        let ws_address = if let Some(port) = self.config.websocket_listen_port {
+            let host = self
+                .config
+                .websocket_advertised_host
+                .as_deref()
+                .unwrap_or("127.0.0.1");
+            Some(format!("ws://{}:{}", host, port))
+        } else {
+            None
+        };
+
+        if let Some(ref addr) = ws_address {
+            tracing::info!(
+                "📡 Advertising WebSocket address to signaling server: {}",
+                addr
+            );
+        }
+
         let register_request = RegisterRequest {
             actr_type: actr_type.clone(),
             realm: self.config.realm,
             service_spec,
             acl: self.config.acl.clone(),
             service: None,
+            ws_address,
         };
 
         tracing::info!("📤 Registering actor with signaling server (protobuf)");
@@ -1321,10 +1394,16 @@ impl<W: Workload> ActrNode<W> {
 
                 // Create DefaultWireBuilder with WebRTC coordinator
                 use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
+                // WebSocket 通道始终启用：连接目标的 ws:// 地址完全由服务发现
+                // 直连模式：将本地节点 ActrId 编码为 hex，在 WS 握手请求中作为 X-Actr-Source-ID 发送
+                let local_id_hex = hex::encode(actor_id.encode_to_vec());
                 let wire_builder_config = DefaultWireBuilderConfig {
-                    websocket_url_template: None, // WebSocket disabled for now
+                    local_id_hex,
                     enable_webrtc: true,
-                    enable_websocket: false,
+                    enable_websocket: true,
+                    // Share the discovered_ws_addresses map so that post-discovery connections
+                    // can use the signaling-provided ws:// URL for this actor node.
+                    discovered_ws_addresses: self.discovered_ws_addresses.clone(),
                 };
                 let wire_builder = Arc::new(DefaultWireBuilder::new(
                     Some(coordinator.clone()),
@@ -1359,7 +1438,7 @@ impl<W: Workload> ActrNode<W> {
                 let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
                     coordinator.clone(),
                     pending_requests,
-                    data_stream_registry,
+                    data_stream_registry.clone(),
                 ));
 
                 // Set local_id
@@ -1387,6 +1466,36 @@ impl<W: Workload> ActrNode<W> {
                 self.webrtc_gate = Some(gate.clone());
 
                 tracing::info!("✅ WebRTC infrastructure initialized");
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // 1.7.6. WebSocket Server（直连模式，可选）
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                if let Some(listen_port) = self.config.websocket_listen_port {
+                    tracing::info!(
+                        "🔌 WebSocket direct-connect mode enabled, binding port {}",
+                        listen_port
+                    );
+                    use crate::wire::websocket::{WebSocketGate, WebSocketServer};
+                    match WebSocketServer::bind(listen_port).await {
+                        Ok((ws_server, conn_rx)) => {
+                            ws_server.start(self.shutdown_token.clone());
+                            let ws_gate = Arc::new(WebSocketGate::new(
+                                conn_rx,
+                                outproc_gate.get_pending_requests(),
+                                data_stream_registry.clone(),
+                            ));
+                            self.websocket_gate = Some(ws_gate);
+                            tracing::info!("✅ WebSocketServer + WebSocketGate initialized");
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "❌ Failed to bind WebSocket server on port {}: {:?}",
+                                listen_port,
+                                e
+                            );
+                        }
+                    }
+                }
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.7.5. Create shared state for credential management
@@ -1623,6 +1732,17 @@ impl<W: Workload> ActrNode<W> {
                     ActrError::Unavailable(format!("WebRtcGate receive loop start failed: {e}"))
                 })?;
             tracing::info!("✅ WebRtcGate → Mailbox routing started");
+        }
+
+        // Start WebSocketGate message receive loop (route to Mailbox，直连模式)
+        if let Some(ws_gate) = &node_ref.websocket_gate {
+            ws_gate
+                .start_receive_loop(node_ref.mailbox.clone())
+                .await
+                .map_err(|e| {
+                    ActrError::Unavailable(format!("WebSocketGate receive loop start failed: {e}"))
+                })?;
+            tracing::info!("✅ WebSocketGate → Mailbox routing started");
         }
 
         tracing::info!("✅ WebRTC background loops started");

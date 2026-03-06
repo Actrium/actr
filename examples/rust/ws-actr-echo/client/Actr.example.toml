@@ -1,0 +1,46 @@
+edition = 1
+exports = []
+
+[package]
+name = "ws-echo-client-app"
+description = "WebSocket Echo Client App"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "client", "websocket"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "ws-echo-client-app"
+version = "1.0.0"
+
+[dependencies]
+ws-echo-server = { actr_type = "acme:WsEchoService:1.0.0" }
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 1001
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "ws-echo-client-app"
+
+# 客户端不需要配置 websocket listen_port（不作为服务端）
+# 服务端的 ws_address 会通过信令服务发现，客户端自动使用 WebSocket 直连
+
+# ACL 配置 - 允许 WsEchoService 服务器响应
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["acme:WsEchoService:1.0.0"]
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

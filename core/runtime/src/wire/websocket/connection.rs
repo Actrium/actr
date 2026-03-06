@@ -9,6 +9,9 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+use tokio_tungstenite::tungstenite::http::Request as WsRequest;
+use tokio_tungstenite::tungstenite::http::Uri as WsUri;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 /// WebSocket transmitting messagesprotocol
@@ -77,6 +80,8 @@ type WsSink = Arc<Mutex<Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStrea
 pub struct WebSocketConnection {
     /// URL
     url: String,
+    /// 本地节点身份（hex-encoded protobuf ActrId bytes），直连模式下在握手请求中发送为 X-Actr-Source-ID
+    local_id_hex: Option<String>,
     /// Write end (Sink) - using Option to avoid initialization issues
     sink: WsSink,
 
@@ -105,6 +110,7 @@ impl WebSocketConnection {
     pub fn new(url: String) -> Self {
         Self {
             url: url.clone(),
+            local_id_hex: None,
             sink: Arc::new(Mutex::new(None)), // initial begin as None
             router: Arc::new(RwLock::new([None, None, None, None, None])),
             lane_cache: Arc::new(RwLock::new([None, None, None, None, None])),
@@ -112,10 +118,74 @@ impl WebSocketConnection {
         }
     }
 
+    /// 设置本地节点身份，握手时自动附加 X-Actr-Source-ID 请求头（直连模式使用）
+    pub fn with_local_id(mut self, id_hex: String) -> Self {
+        self.local_id_hex = Some(id_hex);
+        self
+    }
+
+    /// 从服务端已完成握手的 WebSocket 流创建连接（直连模式入站使用）
+    ///
+    /// 与 `new()` + `connect()` 不同，此方法用于已接受的服务端连接，
+    /// 握手已由 `WebSocketServer` 完成，直接进入 Ready 状态。
+    ///
+    /// `server.rs` 通过 `accept_hdr_async(MaybeTlsStream::Plain(stream), ...)` 生成
+    /// `WebSocketStream<MaybeTlsStream<TcpStream>>`，与客户端类型完全一致，无需转换。
+    pub fn from_server_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
+        let (sink, stream) = ws_stream.split();
+
+        let router: Arc<RwLock<[Option<mpsc::Sender<bytes::Bytes>>; 5]>> =
+            Arc::new(RwLock::new([None, None, None, None, None]));
+        let connected = Arc::new(RwLock::new(true));
+
+        Self::spawn_dispatcher(stream, router.clone(), connected.clone());
+
+        tracing::info!("✅ WebSocketConnection created from server stream (already connected)");
+
+        Self {
+            url: String::from("<inbound>"),
+            local_id_hex: None,
+            sink: Arc::new(Mutex::new(Some(sink))),
+            router,
+            lane_cache: Arc::new(RwLock::new([None, None, None, None, None])),
+            connected,
+        }
+    }
+
     /// establish Connect
     pub async fn connect(&self) -> NetworkResult<()> {
-        // 1. establish WebSocket Connect
-        let (ws_stream, _) = connect_async(&self.url).await?;
+        // 1. establish WebSocket Connect（直连模式携带 X-Actr-Source-ID 请求头）
+        let (ws_stream, _) = if let Some(ref hex_id) = self.local_id_hex {
+            // tungstenite 不会自动补全 WebSocket 升级头，必须全部手动填写。
+            // 缺少任何一个（Host/Connection/Upgrade/Sec-WebSocket-Version/Sec-WebSocket-Key）
+            // 都会导致握手失败。
+            let uri: WsUri = self
+                .url
+                .parse()
+                .map_err(|e| NetworkError::ConnectionError(format!("Invalid WS URI: {e}")))?;
+            let host = uri
+                .host()
+                .ok_or_else(|| NetworkError::ConnectionError("WS URL missing host".to_string()))?;
+            let host_header = match uri.port_u16() {
+                Some(port) => format!("{host}:{port}"),
+                None => host.to_string(),
+            };
+            let request = WsRequest::builder()
+                .uri(self.url.as_str())
+                .header("Host", host_header)
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", generate_key())
+                .header("X-Actr-Source-ID", hex_id)
+                .body(())
+                .map_err(|e| {
+                    NetworkError::ConnectionError(format!("WS request build failed: {e}"))
+                })?;
+            connect_async(request).await?
+        } else {
+            connect_async(&self.url).await?
+        };
         let (sink, stream) = ws_stream.split();
 
         // 2. update new sink

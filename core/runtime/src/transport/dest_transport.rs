@@ -100,10 +100,11 @@ impl DestTransport {
                     // Use original payload_type to create DataLane
                     match conn.get_lane(payload_type).await {
                         Ok(lane) => {
-                            tracing::debug!(
-                                "✅ Using DataLane: {:?} (type={:?})",
-                                lane_type,
-                                payload_type
+                            tracing::info!(
+                                "📡 [channel={:?}] {:?} ({} bytes)",
+                                conn_type,
+                                payload_type,
+                                data.len()
                             );
                             // Convert to Bytes (zero-copy)
                             let payload = bytes::Bytes::copy_from_slice(data);

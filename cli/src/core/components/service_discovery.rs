@@ -137,6 +137,7 @@ impl NetworkServiceDiscovery {
             service_spec: None,
             service: None,
             acl: None,
+            ws_address: None,
         };
 
         let envelope =

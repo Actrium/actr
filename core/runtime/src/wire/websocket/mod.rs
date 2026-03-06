@@ -3,5 +3,9 @@
 //! WebSocket Connection implementation
 
 pub mod connection;
+pub mod gate;
+pub mod server;
 
 pub use connection::WebSocketConnection;
+pub use gate::WebSocketGate;
+pub use server::WebSocketServer;

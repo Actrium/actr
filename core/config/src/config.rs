@@ -45,6 +45,18 @@ pub struct Config {
     /// WebRTC 配置
     pub webrtc: WebRtcConfig,
 
+    /// 本节点监听入站 WebSocket 连接的端口（直连模式，可选）
+    ///
+    /// 配置后节点启动时会在此端口开启 WebSocket 服务端。
+    /// 对等节点可直接连接 `ws://<本机IP>:<port>/` 而无需中继。
+    pub websocket_listen_port: Option<u16>,
+
+    /// 向信令服务器广播的 WebSocket 主机名或 IP（直连模式，可选）
+    ///
+    /// 与 `websocket_listen_port` 配合使用。注册时上报到信令服务器，
+    /// 使对等节点知道如何直连本节点。默认为 `"127.0.0.1"`（仅适用于本地测试）。
+    pub websocket_advertised_host: Option<String>,
+
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 
@@ -425,6 +437,8 @@ mod tests {
             tags: vec![],
             scripts: HashMap::new(),
             webrtc: WebRtcConfig::default(),
+            websocket_listen_port: None,
+            websocket_advertised_host: None,
             observability: ObservabilityConfig {
                 filter_level: "info".to_string(),
                 tracing_enabled: false,

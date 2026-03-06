@@ -120,7 +120,35 @@ pub struct RawSystemConfig {
     #[serde(default)]
     pub webrtc: RawWebRtcConfig,
     #[serde(default)]
+    pub websocket: RawWebSocketConfig,
+    #[serde(default)]
     pub observability: RawObservabilityConfig,
+}
+
+/// WebSocket 数据传输配置
+///
+/// 配置示例（Actr.toml）：
+/// ```toml
+/// [system.websocket]
+/// listen_port = 9001
+/// advertised_host = "192.168.1.10"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawWebSocketConfig {
+    /// 本节点监听入站 WebSocket 连接的端口（用于直连模式）
+    ///
+    /// 配置后本节点会在此端口启动 WebSocket 服务端，接受对等节点的直接连接。
+    /// 不配置时本节点不监听任何端口（仅支持中继模式）。
+    #[serde(default)]
+    pub listen_port: Option<u16>,
+
+    /// 对外广播的 WebSocket 主机名或 IP（用于信令注册）
+    ///
+    /// 当节点配置了 `listen_port` 时，信令服务器需要一个可被对等节点访问的地址。
+    /// 此字段指定注册到信令服务器的主机名或 IP，例如 `"192.168.1.10"` 或
+    /// `"mynode.example.com"`。若不配置，默认使用 `"127.0.0.1"`（仅适用于本地测试）。
+    #[serde(default)]
+    pub advertised_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

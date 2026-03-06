@@ -100,6 +100,8 @@ impl ParserV1 {
             tags: raw.package.tags,
             scripts: raw.scripts,
             webrtc: self.parse_webrtc(&raw.system.webrtc)?,
+            websocket_listen_port: raw.system.websocket.listen_port,
+            websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
             config_dir,
         })
@@ -614,6 +616,13 @@ impl ParserV1 {
                     .observability
                     .tracing_service_name
                     .or(parent.observability.tracing_service_name),
+            },
+            websocket: crate::raw::RawWebSocketConfig {
+                listen_port: child.websocket.listen_port.or(parent.websocket.listen_port),
+                advertised_host: child
+                    .websocket
+                    .advertised_host
+                    .or(parent.websocket.advertised_host),
             },
         }
     }

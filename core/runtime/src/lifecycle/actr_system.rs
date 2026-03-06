@@ -264,6 +264,7 @@ impl ActrSystem {
             psk: None,                   // Obtained after startup (for TURN auth)
             webrtc_coordinator: None,    // Pass shared coordinator
             webrtc_gate: None,           // Created after startup
+            websocket_gate: None,        // Created after startup (if websocket_listen_port is set)
             inproc_mgr: None,            // Set after startup
             workload_to_shell_mgr: None, // Set after startup
             shutdown_token: tokio_util::sync::CancellationToken::new(),
@@ -273,6 +274,9 @@ impl ActrSystem {
             network_event_debounce_config,
             dedup_state: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::lifecycle::dedup::DedupState::new(),
+            )),
+            discovered_ws_addresses: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
             )),
         }
     }

@@ -219,23 +219,21 @@ impl RuntimeContext {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Canonical dependency lookup key: manufacturer:name
-        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
-        let actr_type_name = service_name.clone();
+        // Version is always present; use full "manufacturer:name:version" as the lookup key
+        let version = target_type.version.as_deref().unwrap_or("");
+        let key = format!(
+            "{}:{}:{}",
+            target_type.manufacturer, target_type.name, version
+        );
 
-        // First try by service name
-        if let Some(dep) = actr_lock.get_dependency(&service_name) {
-            return Some(dep.fingerprint.clone());
-        }
-
-        // Try by just the name part
-        if let Some(dep) = actr_lock.get_dependency(&target_type.name) {
+        // Try by full key
+        if let Some(dep) = actr_lock.get_dependency(&key) {
             return Some(dep.fingerprint.clone());
         }
 
         // Search through all dependencies by actr_type field
         for dep in &actr_lock.dependencies {
-            if dep.actr_type == actr_type_name || dep.actr_type == target_type.name {
+            if dep.actr_type == key {
                 return Some(dep.fingerprint.clone());
             }
         }

@@ -11,28 +11,39 @@ use super::manager::WireBuilder;
 use super::wire_handle::WireHandle;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
+use actr_protocol::ActrId;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Default Wire builder configuration
 pub struct DefaultWireBuilderConfig {
-    /// WebSocket server URL template (can contain {actor_id} placeholder for dynamic substitution)
-    pub websocket_url_template: Option<String>,
+    /// 本地节点身份（hex-encoded protobuf ActrId bytes），出站 WebSocket 握手时随 X-Actr-Source-ID 头发送
+    pub local_id_hex: String,
 
     /// Enable WebRTC
     pub enable_webrtc: bool,
 
     /// Enable WebSocket
     pub enable_websocket: bool,
+
+    /// Shared map of discovered WebSocket direct-connect URLs, keyed by ActrId.
+    ///
+    /// Populated by `ActrNode::discover_route_candidates` after receiving ws_address info
+    /// from the signaling server.  When a connection to an ActrId is needed and this map
+    /// contains an entry for it, the stored URL is used instead of the url_template.
+    pub discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 }
 
 impl Default for DefaultWireBuilderConfig {
     fn default() -> Self {
         Self {
-            websocket_url_template: None,
+            local_id_hex: String::new(),
             enable_webrtc: true,
-            enable_websocket: false, // WebSocket disabled by default (requires URL configuration)
+            enable_websocket: true,
+            discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -45,8 +56,11 @@ pub struct DefaultWireBuilder {
     /// WebRTC coordinator（optional）
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
 
-    /// WebSocket URL vague template
-    websocket_url_template: Option<String>,
+    /// 本地节点身份 hex（出站 WS 握手时作为 X-Actr-Source-ID 发送）
+    local_id_hex: String,
+
+    /// Shared map of discovered WebSocket URLs (from signaling discovery)
+    discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 
     /// configuration
     config: DefaultWireBuilderConfig,
@@ -64,27 +78,26 @@ impl DefaultWireBuilder {
     ) -> Self {
         Self {
             webrtc_coordinator,
-            websocket_url_template: config.websocket_url_template.clone(),
+            local_id_hex: config.local_id_hex.clone(),
+            discovered_ws_addresses: config.discovered_ws_addresses.clone(),
             config,
         }
     }
 
-    /// Build WebSocket URL from template
-    fn build_websocket_url(&self, dest: &Dest) -> Option<String> {
-        let template = self.websocket_url_template.as_ref()?;
-
-        match dest {
-            Dest::Actor(actor_id) => {
-                // Replace {actor_id} placeholder with serial_number
-                let url = template.replace("{actor_id}", &actor_id.serial_number.to_string());
-                Some(url)
-            }
-            Dest::Shell | Dest::Local => {
-                // Local/Shell calls don't need network connections (should be short-circuited at upper layer)
-                // Return None for type completeness
-                None
+    /// 查询目标节点的 WebSocket 直连 URL（仅来自服务发现）
+    async fn resolve_websocket_url(&self, dest: &Dest) -> Option<String> {
+        if let Dest::Actor(actor_id) = dest {
+            let map = self.discovered_ws_addresses.read().await;
+            if let Some(url) = map.get(actor_id) {
+                tracing::debug!(
+                    "🔎 [Factory] Using discovered WebSocket URL for {}: {}",
+                    actor_id.serial_number,
+                    url
+                );
+                return Some(url.clone());
             }
         }
+        None
     }
 }
 
@@ -119,17 +132,19 @@ impl WireBuilder for DefaultWireBuilder {
         // 1. Check if already cancelled
         check_cancelled(&cancel_token)?;
 
-        // 2. attempt try Create WebSocket Connect
+        // 2. 尝试建立 WebSocket 连接
+        // URL 来自服务发现（discovered_ws_addresses）。若未发现，则本次跳过 WebSocket 连接。
         if self.config.enable_websocket {
             check_cancelled(&cancel_token)?;
 
-            if let Some(url) = self.build_websocket_url(dest) {
+            if let Some(url) = self.resolve_websocket_url(dest).await {
                 tracing::debug!("🏭 [Factory] Create WebSocket Connect: {}", url);
-                let ws_conn = WebSocketConnection::new(url);
+                let ws_conn =
+                    WebSocketConnection::new(url).with_local_id(self.local_id_hex.clone());
                 connections.push(WireHandle::WebSocket(ws_conn));
             } else {
-                tracing::warn!(
-                    "⚠️ [Factory] WebSocket enabled but no method construct build URL: {:?}",
+                tracing::debug!(
+                    "🔎 [Factory] No WebSocket URL available for {:?}, skipping WS connection",
                     dest
                 );
             }
@@ -200,46 +215,40 @@ mod tests {
     use super::*;
     use actr_protocol::ActrId;
 
-    #[test]
-    fn test_build_websocket_url() {
+    #[tokio::test]
+    async fn test_no_ws_connection_without_discovery() {
+        // WebSocket URL 仅来自服务发现；无发现记录时不应建立 WS 连接
         let config = DefaultWireBuilderConfig {
-            websocket_url_template: Some("ws://server:8080/actor/{actor_id}".to_string()),
             enable_websocket: true,
             enable_webrtc: false,
+            local_id_hex: "deadbeef".to_string(),
+            discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
         };
-
         let factory = DefaultWireBuilder::new(None, config);
-
-        let mut actor_id = ActrId::default();
-        actor_id.serial_number = 12345;
-        let dest = Dest::Actor(actor_id);
-
-        let url = factory.build_websocket_url(&dest);
-        assert_eq!(url, Some("ws://server:8080/actor/12345".to_string()));
+        let dest = Dest::actor(ActrId::default());
+        let connections = factory.create_connections(&dest).await.unwrap();
+        assert!(connections.is_empty());
     }
 
     #[tokio::test]
-    async fn test_create_websocket_connection() {
-        use actr_protocol::ActrId;
+    async fn test_ws_connection_from_discovery() {
+        // 服务发现写入地址后，应能建立 WS 连接
+        let map = Arc::new(RwLock::new(HashMap::new()));
+        let actor_id = ActrId::default();
+        map.write()
+            .await
+            .insert(actor_id.clone(), "ws://localhost:9001".to_string());
 
         let config = DefaultWireBuilderConfig {
-            websocket_url_template: Some("ws://localhost:8080".to_string()),
             enable_websocket: true,
             enable_webrtc: false,
+            local_id_hex: "deadbeef".to_string(),
+            discovered_ws_addresses: map,
         };
-
         let factory = DefaultWireBuilder::new(None, config);
-        // Use Actor dest instead of Shell (Shell doesn't create network connections)
-        let actor_id = ActrId::default();
         let dest = Dest::actor(actor_id);
-
         let connections = factory.create_connections(&dest).await.unwrap();
         assert_eq!(connections.len(), 1);
-
-        if let WireHandle::WebSocket(_ws_conn) = &connections[0] {
-            // WebSocket ConnectCreatesuccess
-        } else {
-            panic!("Expected WebSocket connection");
-        }
+        assert!(matches!(connections[0], WireHandle::WebSocket(_)));
     }
 }

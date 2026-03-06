@@ -39,8 +39,8 @@ message ServiceSpec {
   repeated string tags = 6; // Tags like "latest", "stable"
 
   message Protobuf {
-    required string package = 1;   // Package name (e.g., "user.v1", "acme.payment.v2")
-    required string content = 2;   // Merged and normalized content for this package
+    required string package = 1; // Package name (e.g., "user.v1", "acme.payment.v2")
+    required string content = 2; // Merged and normalized content for this package
     required string fingerprint = 3; // Semantic fingerprint of merged package content
   }
 }
@@ -141,6 +141,11 @@ message RegisterRequest {
   // Compact service reference: "ServiceName:fingerprint".
   // Present when strict proto fingerprint matching is required.
   optional string service = 5;
+  // WebSocket direct-connect address (e.g., "ws://192.168.1.10:9100").
+  // Set when the registering node has a WebSocket server listening for inbound
+  // direct connections. The signaling server stores this and returns it to
+  // clients via RouteCandidatesResponse so they can connect without a relay.
+  optional string ws_address = 6;
 }
 
 message RegisterResponse {
@@ -241,28 +246,28 @@ message RouteCandidatesRequest {
 
 // Compatibility level between two protocol versions
 enum CompatibilityLevel {
-  FULLY_COMPATIBLE = 0;      // No changes detected (semantic fingerprints match)
-  BACKWARD_COMPATIBLE = 1;   // Changes present but backward compatible
-  BREAKING_CHANGES = 2;      // Breaking changes detected
+  FULLY_COMPATIBLE = 0; // No changes detected (semantic fingerprints match)
+  BACKWARD_COMPATIBLE = 1; // Changes present but backward compatible
+  BREAKING_CHANGES = 2; // Breaking changes detected
 }
 
 // Individual protocol change detected during compatibility analysis
 message ProtocolChange {
-  required string change_type = 1;   // Type of change (e.g., "FIELD_REMOVED", "TYPE_CHANGED")
-  required string file_name = 2;     // File where change occurred
-  required string location = 3;      // Location within the file
-  required string description = 4;   // Human-readable description
-  required bool is_breaking = 5;     // Whether this change breaks compatibility
+  required string change_type = 1; // Type of change (e.g., "FIELD_REMOVED", "TYPE_CHANGED")
+  required string file_name = 2; // File where change occurred
+  required string location = 3; // Location within the file
+  required string description = 4; // Human-readable description
+  required bool is_breaking = 5; // Whether this change breaks compatibility
 }
 
 // Compatibility analysis result (mirrors actr-version CompatibilityAnalysisResult)
 message CompatibilityAnalysisResult {
   required CompatibilityLevel level = 1;
-  repeated ProtocolChange changes = 2;         // Detailed list of changes detected
+  repeated ProtocolChange changes = 2; // Detailed list of changes detected
   repeated ProtocolChange breaking_changes = 3; // Breaking changes (subset of changes)
-  required string base_fingerprint = 4;        // Semantic fingerprint of base (client) version
-  required string candidate_fingerprint = 5;   // Semantic fingerprint of candidate version
-  required int64 analyzed_at = 6;              // Analysis timestamp (Unix epoch seconds)
+  required string base_fingerprint = 4; // Semantic fingerprint of base (client) version
+  required string candidate_fingerprint = 5; // Semantic fingerprint of candidate version
+  required int64 analyzed_at = 6; // Analysis timestamp (Unix epoch seconds)
 }
 
 // Compatibility information for a single route candidate
@@ -273,6 +278,10 @@ message CandidateCompatibilityInfo {
   optional CompatibilityAnalysisResult analysis_result = 3;
   // True if fingerprints match exactly (fast path - no analysis needed)
   optional bool is_exact_match = 4 [default = false];
+  // WebSocket direct-connect address for this candidate (if available).
+  // Clients should use this URL to establish a direct WebSocket connection
+  // instead of going through a relay (e.g., WebRTC).
+  optional string ws_address = 5;
 }
 
 message RouteCandidatesResponse {
@@ -404,7 +413,7 @@ message IceRestartRequest {
 // 凭证警告信息（用于通知客户端凭证状态异常）
 message CredentialWarning {
   enum WarningType {
-    KEY_IN_TOLERANCE_PERIOD = 0;  // 密钥在容忍期内（已过期但仍可用）
+    KEY_IN_TOLERANCE_PERIOD = 0; // 密钥在容忍期内（已过期但仍可用）
   }
   required WarningType type = 1;
   required string message = 2;
