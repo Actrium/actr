@@ -8,6 +8,35 @@
 export type WorkerType = 'service-worker' | 'web-worker';
 
 /**
+ * Service Worker runtime configuration
+ *
+ * Passed from main thread to Service Worker via DOM_PORT_INIT,
+ * then forwarded to WASM register_client().
+ */
+export interface SwRuntimeConfig {
+  /** Signaling WebSocket URL (e.g. wss://host:port/signaling/ws) */
+  signaling_url: string;
+
+  /** Deployment realm ID */
+  realm_id: number;
+
+  /** This actor's type (manufacturer:name) */
+  client_actr_type: string;
+
+  /** Target actor type for peer discovery (manufacturer:name) */
+  target_actr_type: string;
+
+  /** Service fingerprint for exact matching (optional) */
+  service_fingerprint: string;
+
+  /** ACL allow-list of actor types */
+  acl_allow_types: string[];
+
+  /** Whether this actor is a server (registers and waits) or client (discovers) */
+  is_server: boolean;
+}
+
+/**
  * Actor System configuration
  */
 export interface ActorSystemConfig {
@@ -34,6 +63,9 @@ export interface ActorSystemConfig {
 
   /** STUN/TURN server configuration */
   iceServers?: RTCIceServer[];
+
+  /** Runtime config for the Service Worker WASM layer */
+  runtimeConfig?: SwRuntimeConfig;
 }
 
 /**

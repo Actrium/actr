@@ -109,6 +109,7 @@ fn language_key(language: SupportedLanguage) -> &'static str {
         SupportedLanguage::Swift => "swift",
         SupportedLanguage::Kotlin => "kotlin",
         SupportedLanguage::TypeScript => "typescript",
+        SupportedLanguage::Web => "web",
     }
 }
 

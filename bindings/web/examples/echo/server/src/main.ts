@@ -17,7 +17,7 @@
  */
 
 import { createActor, type Actor } from '@actr/web';
-import { actrConfig } from './generated';
+import { actrConfig, actorType, system } from './generated';
 
 // ── DOM Elements ──
 const statusEl = document.getElementById('status')!;
@@ -78,10 +78,10 @@ function updateStatsUI(): void {
  * 更新服务器信息显示
  */
 function updateServerInfo(): void {
-    serviceNameEl.textContent = 'echo.EchoService';
-    signalingUrlEl.textContent = actrConfig.signalingUrl || '-';
-    realmIdEl.textContent = String(actrConfig.realm || '-');
-    actorTypeEl.textContent = 'acme+EchoService';
+    serviceNameEl.textContent = `echo.${actorType.name}`;
+    signalingUrlEl.textContent = system.signaling.url;
+    realmIdEl.textContent = String(system.deployment.realm_id);
+    actorTypeEl.textContent = actorType.fullType;
 }
 
 /**

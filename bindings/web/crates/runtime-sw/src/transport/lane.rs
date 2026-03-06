@@ -177,8 +177,9 @@ impl DataLane {
                             WebError::Transport(format!("Failed to get postMessage: {:?}", e))
                         })?;
 
+                let func: &js_sys::Function = post_message_fn.unchecked_ref();
                 let result = js_sys::Reflect::apply(
-                    post_message_fn.unchecked_ref(),
+                    func,
                     port.as_ref(),
                     &js_sys::Array::of2(&js_view.into(), &transfer_list),
                 );

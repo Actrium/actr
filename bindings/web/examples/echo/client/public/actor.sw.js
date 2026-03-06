@@ -70,17 +70,8 @@
   };
 })();
 
-const RUNTIME_CONFIG = {
-  signaling_url: 'wss://10.30.3.206:8081/signaling/ws',
-  realm_id: 2368266035,
-  client_actr_type: 'acme+echo-client-app',
-  target_actr_type: 'acme+EchoService',
-  service_fingerprint: '',
-  // ACL: allow EchoService to send responses back to this client
-  acl_allow_types: ['acme+EchoService'],
-  // Client mode (default): will discover server target
-  is_server: false,
-};
+/** @type {import('@actr/web').SwRuntimeConfig | null} */
+let RUNTIME_CONFIG = null;
 
 let wasmReady = false;
 let wsProbeDone = false;
@@ -241,6 +232,11 @@ self.addEventListener('message', (event) => {
   const clientId = event.data.clientId;
   if (!port || !clientId) return;
 
+  // Receive runtime config from main thread (sourced from actr-config.ts)
+  if (event.data.runtimeConfig && !RUNTIME_CONFIG) {
+    RUNTIME_CONFIG = event.data.runtimeConfig;
+  }
+
   // Track this client's port and browser → SW mapping
   clientPorts.set(clientId, port);
   const browserId = event.source && event.source.id;
@@ -320,6 +316,10 @@ self.addEventListener('message', (event) => {
   // Register this client with its own independent runtime
   ensureWasmReady().then(async () => {
     try {
+      if (!RUNTIME_CONFIG) {
+        console.error('[SW] RUNTIME_CONFIG not received from main thread');
+        return;
+      }
       await wasm_bindgen.register_client(clientId, RUNTIME_CONFIG, port);
       emitSwLog('info', 'client_registered', { clientId });
     } catch (error) {

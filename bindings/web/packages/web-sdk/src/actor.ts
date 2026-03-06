@@ -91,6 +91,7 @@ export class Actor {
                 webrtcConfig: {
                     iceServers: this.config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
                 },
+                runtimeConfig: this.config.runtimeConfig as unknown as Record<string, unknown> | undefined,
             });
 
             this.actorRef = new ActorRef(this.domRuntime);

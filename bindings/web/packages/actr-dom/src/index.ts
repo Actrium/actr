@@ -40,6 +40,8 @@ export interface ActrDomConfig {
     iceServers?: RTCIceServer[];
     iceTransportPolicy?: RTCIceTransportPolicy;
   };
+  /** Runtime config forwarded to Service Worker WASM layer */
+  runtimeConfig?: Record<string, unknown>;
 }
 
 /**
@@ -116,7 +118,7 @@ export async function initActrDom(config: ActrDomConfig): Promise<ActrDomRuntime
 
   // 1. 创建 Service Worker 桥接
   const swBridge = new ServiceWorkerBridge();
-  await swBridge.initialize(config.serviceWorkerUrl);
+  await swBridge.initialize(config.serviceWorkerUrl, config.runtimeConfig);
 
   // 2. 创建 Fast Path 转发器
   const forwarder = new FastPathForwarder(swBridge);

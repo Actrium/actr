@@ -117,7 +117,7 @@ export class ServiceWorkerBridge {
   /**
    * 初始化与 Service Worker 的通信
    */
-  async initialize(serviceWorkerUrl: string): Promise<void> {
+  async initialize(serviceWorkerUrl: string, runtimeConfig?: Record<string, unknown>): Promise<void> {
     // 注册 Service Worker
     if ('serviceWorker' in navigator) {
       const registration = await navigator.serviceWorker.register(serviceWorkerUrl, {
@@ -166,6 +166,7 @@ export class ServiceWorkerBridge {
           type: 'DOM_PORT_INIT',
           port: channel.port2,
           clientId: this.clientId,
+          runtimeConfig: runtimeConfig ?? undefined,
         },
         [channel.port2]
       );

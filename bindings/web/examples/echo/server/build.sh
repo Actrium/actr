@@ -2,13 +2,13 @@
 set -e
 
 echo "🔨 Building Echo Server WASM..."
-echo "   Using server-wasm crate (User Workload + SW Runtime)"
+echo "   Using wasm crate (User Workload + SW Runtime)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVER_WASM_DIR="$(cd "$SCRIPT_DIR/../server-wasm" && pwd)"
+WASM_DIR="$SCRIPT_DIR/wasm"
 
 (
-  cd "$SERVER_WASM_DIR"
+  cd "$WASM_DIR"
   ./build.sh
 )
 

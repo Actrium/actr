@@ -1,11 +1,12 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "paths": {}
   },
   "include": [
-    "src/**/*",
-    "../../packages/actr-dom/src/**/*"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules",

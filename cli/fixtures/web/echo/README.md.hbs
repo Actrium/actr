@@ -1,0 +1,46 @@
+# {{PROJECT_NAME}}
+
+Actor-RTC Web project using Service Worker + WASM architecture.
+
+## Quick Start
+
+```bash
+# Install dependencies
+npm install
+
+# Generate code from proto definitions
+actr gen -l web
+
+# Build WASM
+cd wasm && bash build.sh && cd ..
+
+# Start dev server
+npm run dev
+```
+
+## Architecture
+
+```
+{{PROJECT_NAME}}/
+├── Actr.toml              # Actor configuration
+├── package.json           # Node.js dependencies
+├── vite.config.ts         # Vite dev server config
+├── index.html             # Entry HTML page
+├── protos/                # Protocol buffer definitions
+│   ├── local/             # Local service definitions
+│   └── remote/            # Remote service definitions
+├── src/
+│   ├── main.ts            # Application entry point
+│   └── generated/         # Auto-generated code (actr gen)
+│       ├── actr-config.ts # Configuration from Actr.toml
+│       ├── index.ts       # Re-exports
+│       └── *.actorref.ts  # Typed RPC wrappers
+├── wasm/                  # Rust WASM crate
+│   ├── Cargo.toml
+│   ├── build.sh
+│   └── src/
+│       ├── lib.rs         # WASM entry + service handler registration
+│       └── generated/     # Proto-generated Rust types
+└── public/
+    └── actor.sw.js        # Service Worker entry (generated)
+```

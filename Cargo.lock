@@ -23,6 +23,7 @@ dependencies = [
  "actr-protocol",
  "actr-runtime-mailbox",
  "actr-version",
+ "actr-web-protoc-codegen",
  "anyhow",
  "async-trait",
  "bytes",
@@ -238,6 +239,7 @@ dependencies = [
  "syn",
  "tempfile",
  "thiserror 1.0.69",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
 ]

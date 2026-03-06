@@ -43,4 +43,4 @@ stun_urls = ["stun:10.30.3.206:3478"]
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme+echo-client-app"]
+types = ["acme:echo-client-app"]

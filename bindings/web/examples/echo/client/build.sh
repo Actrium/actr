@@ -2,11 +2,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLIENT_WASM_DIR="$(cd "$SCRIPT_DIR/../client-wasm" && pwd)"
+WASM_DIR="$SCRIPT_DIR/wasm"
 
-echo "Building echo-client-wasm (Local Handler + SW Runtime)..."
+echo "Building client wasm (Local Handler + SW Runtime)..."
 (
-  cd "$CLIENT_WASM_DIR"
+  cd "$WASM_DIR"
   ./build.sh
 )
 

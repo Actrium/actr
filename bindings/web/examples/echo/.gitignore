@@ -1,11 +1,15 @@
 # Server
 server/target/
 server/Cargo.lock
+server/wasm/target/
+server/wasm/Cargo.lock
 
 # Client
 client/node_modules/
 client/dist/
 client/src/generated/
+client/wasm/target/
+client/wasm/Cargo.lock
 
 # Logs
 *.log

@@ -1,0 +1,74 @@
+/**
+ * {{PROJECT_NAME}} - Actor-RTC Web Echo Client
+ *
+ * Uses @actr/web unified Actor API + Local Handler to call remote Echo service:
+ * 1. Create Actor (loads WASM with Local Handler in Service Worker)
+ * 2. DOM sends requests via callRaw through ActorRef
+ * 3. Local Handler discovers remote Echo Server and forwards request
+ */
+
+import { createActor, Actor } from '@actr/web';
+import { actrConfig, SendEchoActorRef } from './generated';
+
+const statusEl = document.getElementById('status')!;
+const sendBtn = document.getElementById('sendBtn') as HTMLButtonElement;
+const msgInput = document.getElementById('msgInput') as HTMLInputElement;
+const resultEl = document.getElementById('result')!;
+
+let actor: Actor | null = null;
+let sendEcho: SendEchoActorRef | null = null;
+
+function log(message: string): void {
+  const time = new Date().toLocaleTimeString();
+  const entry = document.createElement('div');
+  entry.textContent = `[${time}] ${message}`;
+  resultEl.appendChild(entry);
+  resultEl.scrollTop = resultEl.scrollHeight;
+}
+
+async function init(): Promise<void> {
+  statusEl.textContent = 'Connecting...';
+  statusEl.className = 'status connecting';
+
+  try {
+    actor = await createActor(actrConfig);
+    sendEcho = new SendEchoActorRef(actor);
+
+    statusEl.textContent = 'Connected';
+    statusEl.className = 'status connected';
+    sendBtn.disabled = false;
+    log('Actor connected successfully');
+  } catch (error) {
+    statusEl.textContent = `Error: ${error}`;
+    statusEl.className = 'status error';
+    log(`Connection failed: ${error}`);
+  }
+}
+
+sendBtn.addEventListener('click', async () => {
+  if (!sendEcho) return;
+  const message = msgInput.value.trim();
+  if (!message) return;
+
+  sendBtn.disabled = true;
+  log(`Sending: ${message}`);
+
+  try {
+    const response = await sendEcho.sendEcho({ message });
+    log(`Reply: ${response.reply}`);
+  } catch (error) {
+    log(`Error: ${error}`);
+  } finally {
+    sendBtn.disabled = false;
+    msgInput.value = '';
+    msgInput.focus();
+  }
+});
+
+msgInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !sendBtn.disabled) {
+    sendBtn.click();
+  }
+});
+
+init();

@@ -10,7 +10,7 @@ export TMPDIR
 mkdir -p "$TMPDIR"
 
 # 输出目录 (输出到 server/public)
-OUT_DIR="../server/public"
+OUT_DIR="../public"
 
 # 清理旧的构建
 rm -f "$OUT_DIR"/echo_server*.wasm "$OUT_DIR"/echo_server*.js "$OUT_DIR"/echo_server*.d.ts
@@ -42,4 +42,4 @@ ls -la "$OUT_DIR"/echo_server*
 
 echo ""
 echo "💡 下一步:"
-echo "   1. 启动开发服务器: cd ../server && pnpm dev"
+echo "   1. 启动开发服务器: cd .. && pnpm dev"

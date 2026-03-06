@@ -1,0 +1,1377 @@
+//! Web code generator — produces all build artifacts from a `WebCodegenRequest`.
+//!
+//! Generated artifacts:
+//! - `src/generated/actr-config.ts`  — Configuration from Actr.toml
+//! - `src/generated/*.actorref.ts`   — Typed ActorRef wrappers
+//! - `src/generated/index.ts`        — Re-exports
+//! - `wasm/`                         — Rust WASM crate (Cargo.toml, build.sh, src/lib.rs, handlers)
+//! - `public/actor.sw.js`            — Service Worker entry (config from DOM_PORT_INIT)
+//! - `build.sh`                      — Root build script
+
+use crate::request::{FileInfo, ServiceInfo, WebCodegenRequest, WebCodegenResponse};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tracing::info;
+
+/// Run the full code generation pipeline.
+pub fn generate(request: &WebCodegenRequest) -> WebCodegenResponse {
+    match generate_inner(request) {
+        Ok(files) => WebCodegenResponse {
+            success: true,
+            generated_files: files,
+            errors: Vec::new(),
+        },
+        Err(e) => WebCodegenResponse {
+            success: false,
+            generated_files: Vec::new(),
+            errors: vec![e],
+        },
+    }
+}
+
+fn generate_inner(req: &WebCodegenRequest) -> Result<Vec<PathBuf>, String> {
+    let mut generated = Vec::new();
+
+    // 1. actr-config.ts
+    let config_path = req.output_dir.join("actr-config.ts");
+    let config_content = gen_actr_config(req)?;
+    write_file(&config_path, &config_content)?;
+    generated.push(config_path);
+
+    // 2. ActorRef wrappers for local services
+    for svc in &req.local_services {
+        let file_name = format!("{}.actorref.ts", to_kebab_case(&svc.name));
+        let ref_path = req.output_dir.join(&file_name);
+        let ref_content = gen_actor_ref(svc, req)?;
+        write_file(&ref_path, &ref_content)?;
+        generated.push(ref_path);
+    }
+
+    // 3. index.ts
+    let index_path = req.output_dir.join("index.ts");
+    let index_content = gen_index(req)?;
+    write_file(&index_path, &index_content)?;
+    generated.push(index_path);
+
+    // 4. wasm/ scaffold
+    let wasm_files = gen_wasm_scaffold(req)?;
+    generated.extend(wasm_files);
+
+    // 5. public/actor.sw.js
+    let sw_path = req.project_root.join("public/actor.sw.js");
+    let sw_content = gen_service_worker(req)?;
+    write_file(&sw_path, &sw_content)?;
+    generated.push(sw_path);
+
+    // 6. Root build.sh (only if not already present)
+    let build_sh = req.project_root.join("build.sh");
+    if !build_sh.exists() {
+        let build_content = gen_root_build_sh();
+        write_file(&build_sh, &build_content)?;
+        make_executable(&build_sh)?;
+        generated.push(build_sh);
+    }
+
+    Ok(generated)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// actr-config.ts
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
+    let manufacturer = &req.manufacturer;
+    let actr_name = &req.actr_name;
+    let signaling_url = &req.signaling_url;
+    let realm_id = req.realm_id;
+    let is_server = req.is_server();
+
+    let edition = req.edition();
+    let exports = req.exports_list();
+    let platform_web = req.platform_web();
+    let raw_acl = req.raw_acl();
+
+    // Dependencies
+    let mut dep_entries = Vec::new();
+    for dep in &req.dependencies {
+        if let Some(ref at) = dep.actr_type {
+            dep_entries.push(format!(
+                "  '{}': {{ actr_type: '{}:{}' }},",
+                dep.alias, at.manufacturer, at.name
+            ));
+        } else {
+            dep_entries.push(format!("  '{}': {{}},", dep.alias));
+        }
+    }
+
+    let type_export_name = if is_server { "actorType" } else { "actrType" };
+
+    let mut out = String::new();
+    out.push_str(
+        "/**\n * 自动生成的 Actr 配置\n * 来源: Actr.toml\n *\n * ⚠️  请勿手动编辑此文件\n */\n\n",
+    );
+    out.push_str("import type { ActorClientConfig, SwRuntimeConfig } from '@actr/web';\n\n");
+
+    // Edition
+    out.push_str("// ── Actr.toml 完整信息 ──\n\n");
+    out.push_str(&format!(
+        "/** Actr.toml edition */\nexport const edition = {edition};\n\n"
+    ));
+
+    // Exports
+    out.push_str("/** 导出的 proto 文件 */\n");
+    if exports.is_empty() {
+        out.push_str("export const exports: string[] = [];\n\n");
+    } else {
+        out.push_str(&format!(
+            "export const exports = [{}];\n\n",
+            exports
+                .iter()
+                .map(|e| format!("'{e}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    // Package info
+    let authors_js: Vec<String> = req.authors.iter().map(|a| format!("'{a}'")).collect();
+    let tags_js: Vec<String> = req.tags.iter().map(|t| format!("'{t}'")).collect();
+    out.push_str("/** 包信息 */\n");
+    out.push_str("export const packageInfo = {\n");
+    out.push_str(&format!("  name: '{}',\n", req.package_name));
+    out.push_str(&format!("  description: '{}',\n", req.description));
+    out.push_str(&format!("  authors: [{}],\n", authors_js.join(", ")));
+    out.push_str(&format!("  license: '{}',\n", req.license));
+    out.push_str(&format!("  tags: [{}],\n", tags_js.join(", ")));
+    out.push_str("} as const;\n\n");
+
+    // ActrType
+    out.push_str("/** ActrType */\n");
+    out.push_str(&format!("export const {type_export_name} = {{\n"));
+    out.push_str(&format!("  manufacturer: '{manufacturer}',\n"));
+    out.push_str(&format!("  name: '{actr_name}',\n"));
+    out.push_str(&format!("  fullType: '{manufacturer}:{actr_name}',\n"));
+    out.push_str("} as const;\n\n");
+
+    // Dependencies
+    out.push_str("/** 依赖 */\n");
+    if dep_entries.is_empty() {
+        out.push_str("export const dependencies = {} as const;\n\n");
+    } else {
+        out.push_str("export const dependencies = {\n");
+        for entry in &dep_entries {
+            out.push_str(entry);
+            out.push('\n');
+        }
+        out.push_str("} as const;\n\n");
+    }
+
+    // Platform.web
+    if let Some(pw) = &platform_web {
+        out.push_str("/** Web 平台配置 */\n");
+        out.push_str("export const platform = {\n  web: ");
+        out.push_str(&format_toml_as_ts(pw, 2));
+        out.push_str(",\n} as const;\n\n");
+    }
+
+    // System config
+    out.push_str("/** 系统配置 */\n");
+    out.push_str("export const system = {\n");
+    out.push_str("  signaling: {\n");
+    out.push_str(&format!(
+        "    url: '{}',\n",
+        signaling_url.trim_end_matches('/')
+    ));
+    out.push_str("  },\n");
+    out.push_str("  deployment: {\n");
+    out.push_str(&format!("    realm_id: {realm_id},\n"));
+    out.push_str("  },\n");
+    out.push_str("  discovery: {\n");
+    out.push_str(&format!("    visible: {},\n", req.visible_in_discovery));
+    out.push_str("  },\n");
+    out.push_str("  observability: {\n");
+    out.push_str(&format!(
+        "    filter_level: '{}',\n",
+        req.observability.filter_level
+    ));
+    out.push_str(&format!(
+        "    tracing_enabled: {},\n",
+        req.observability.tracing_enabled
+    ));
+    if req.observability.tracing_enabled {
+        out.push_str(&format!(
+            "    tracing_endpoint: '{}',\n",
+            req.observability.tracing_endpoint
+        ));
+        out.push_str(&format!(
+            "    tracing_service_name: '{}',\n",
+            req.observability.tracing_service_name
+        ));
+    }
+    out.push_str("  },\n");
+    out.push_str("  webrtc: {\n");
+    if !req.stun_urls.is_empty() {
+        out.push_str(&format!(
+            "    stun_urls: [{}],\n",
+            req.stun_urls
+                .iter()
+                .map(|u| format!("'{u}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !req.turn_urls.is_empty() {
+        out.push_str(&format!(
+            "    turn_urls: [{}],\n",
+            req.turn_urls
+                .iter()
+                .map(|u| format!("'{u}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    out.push_str("  },\n");
+    out.push_str("} as const;\n\n");
+
+    // ACL
+    if let Some(acl_val) = &raw_acl {
+        out.push_str("/** ACL 配置 */\n");
+        out.push_str("export const acl = ");
+        out.push_str(&format_toml_as_ts(acl_val, 0));
+        out.push_str(" as const;\n\n");
+    } else {
+        out.push_str("/** ACL 配置 */\n");
+        out.push_str("export const acl = {} as const;\n\n");
+    }
+
+    // runtimeConfig
+    let client_actr_type = req.client_actr_type();
+    let target_actr_type = req.target_actr_type();
+    let acl_allow = req.get_acl_allow_types();
+    let acl_allow_js: Vec<String> = acl_allow.iter().map(|t| format!("'{t}'")).collect();
+
+    out.push_str("// ── runtimeConfig (传给 Service Worker WASM 注册) ──\n\n");
+    out.push_str("/**\n * Service Worker 运行时配置\n * 由主线程通过 DOM_PORT_INIT 传递给 Service Worker\n */\n");
+    out.push_str("export const runtimeConfig: SwRuntimeConfig = {\n");
+    out.push_str("  signaling_url: system.signaling.url,\n");
+    out.push_str("  realm_id: system.deployment.realm_id,\n");
+    out.push_str(&format!("  client_actr_type: '{client_actr_type}',\n"));
+    out.push_str(&format!("  target_actr_type: '{target_actr_type}',\n"));
+    out.push_str("  service_fingerprint: '',\n");
+    out.push_str(&format!(
+        "  acl_allow_types: [{}],\n",
+        acl_allow_js.join(", ")
+    ));
+    out.push_str(&format!("  is_server: {},\n", is_server));
+    out.push_str("};\n\n");
+
+    // ActorClientConfig
+    out.push_str("// ── ActorClientConfig (传给 createActor) ──\n\n");
+    out.push_str("/**\n * Actor 客户端配置\n * 从 Actr.toml 的 system 配置中提取\n */\n");
+    out.push_str("export const actrConfig: ActorClientConfig = {\n");
+    out.push_str("  signalingUrl: system.signaling.url,\n");
+    out.push_str("  realm: String(system.deployment.realm_id),\n");
+    out.push_str("  iceServers: [\n");
+    if !req.stun_urls.is_empty() {
+        out.push_str("    ...system.webrtc.stun_urls.map((url) => ({ urls: url })),\n");
+    }
+    // NOTE: TURN URLs are intentionally excluded from static iceServers.
+    // TURN credentials (username + credential) are managed dynamically
+    // by the signaling server and injected at runtime.
+    out.push_str("  ],\n");
+    out.push_str("  serviceWorkerPath: '/actor.sw.js',\n");
+    out.push_str("  autoReconnect: true,\n");
+    out.push_str("  debug: false,\n");
+    out.push_str("  runtimeConfig,\n");
+    out.push_str("};\n");
+
+    Ok(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ActorRef generation
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_actor_ref(service: &ServiceInfo, req: &WebCodegenRequest) -> Result<String, String> {
+    let service_name = &service.name;
+
+    let mut out = String::new();
+    out.push_str("/**\n");
+    out.push_str(" * 自动生成的 ActorRef\n");
+    out.push_str(&format!(" * 本地服务: {service_name}\n"));
+    out.push_str(" *\n * ⚠️  请勿手动编辑此文件\n */\n\n");
+
+    // Collect imports from remote proto types
+    let mut remote_imports: HashMap<String, Vec<String>> = HashMap::new();
+    for method in &service.methods {
+        for remote in &req.remote_services {
+            for rm in &remote.methods {
+                if rm.input_type == method.input_type || rm.output_type == method.output_type {
+                    let import_path = format!(
+                        "./{}",
+                        to_kebab_case(
+                            &remote
+                                .relative_path
+                                .parent()
+                                .unwrap_or(Path::new(""))
+                                .to_string_lossy()
+                                .replace(std::path::MAIN_SEPARATOR, "/")
+                        )
+                    );
+                    let types = remote_imports.entry(import_path).or_default();
+                    if !types.contains(&method.input_type) {
+                        types.push(method.input_type.clone());
+                    }
+                    if !types.contains(&method.output_type) {
+                        types.push(method.output_type.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    for (path, types) in &remote_imports {
+        let unique_types: Vec<&str> = types.iter().map(|t| t.as_str()).collect();
+        out.push_str(&format!(
+            "import {{ {} }} from '{}';\n",
+            unique_types.join(", "),
+            path
+        ));
+    }
+    if !remote_imports.is_empty() {
+        out.push('\n');
+    }
+
+    out.push_str("/**\n * callRaw 兼容接口\n */\n");
+    out.push_str("interface CallRawCapable {\n");
+    out.push_str("  callRaw(routeKey: string, payload: Uint8Array, timeout?: number): Promise<Uint8Array>;\n");
+    out.push_str("}\n\n");
+
+    // ActrType
+    let actr_type = service.actr_type.as_deref().unwrap_or("");
+    if !actr_type.is_empty() {
+        let parts: Vec<&str> = actr_type.splitn(2, ':').collect();
+        let (mfr, name) = if parts.len() == 2 {
+            (parts[0], parts[1])
+        } else {
+            ("", actr_type)
+        };
+        out.push_str("/**\n * ActrType 定义\n */\n");
+        out.push_str(&format!("export const {service_name}ActrType = {{\n"));
+        out.push_str(&format!("  manufacturer: '{mfr}',\n"));
+        out.push_str(&format!("  name: '{name}',\n"));
+        out.push_str("};\n\n");
+    }
+
+    // Class
+    out.push_str(&format!(
+        "/**\n * {service_name} 的 ActorRef 包装\n * 提供类型安全的 RPC 调用方法\n */\n"
+    ));
+    out.push_str(&format!("export class {service_name}ActorRef {{\n"));
+    out.push_str("  private actor: CallRawCapable;\n\n");
+    out.push_str("  constructor(actor: CallRawCapable) {\n");
+    out.push_str("    this.actor = actor;\n");
+    out.push_str("  }\n");
+
+    for method in &service.methods {
+        let camel = to_camel_case(&method.name);
+        let input = &method.input_type;
+        let output = &method.output_type;
+        let route = &method.route_key;
+
+        out.push_str(&format!(
+            "\n  /**\n   * 调用 {} RPC 方法\n   */\n",
+            method.name
+        ));
+        out.push_str(&format!(
+            "  async {camel}(request: {input}): Promise<{output}> {{\n"
+        ));
+        out.push_str(&format!(
+            "    const encoded = {input}.encode(request).finish();\n"
+        ));
+        out.push_str(&format!(
+            "    const responseData = await this.actor.callRaw('{route}', encoded);\n"
+        ));
+        out.push_str(&format!("    return {output}.decode(responseData);\n"));
+        out.push_str("  }\n");
+    }
+
+    out.push_str("}\n");
+    Ok(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// index.ts
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_index(req: &WebCodegenRequest) -> Result<String, String> {
+    let is_server = req.is_server();
+    let type_export_name = if is_server { "actorType" } else { "actrType" };
+
+    let mut out = String::new();
+    out.push_str("/**\n * 自动生成的 Actr 代码入口\n *\n * ⚠️  请勿手动编辑此文件\n */\n\n");
+    out.push_str("export {\n");
+    out.push_str("    actrConfig,\n");
+    out.push_str("    runtimeConfig,\n");
+    out.push_str(&format!("    {type_export_name},\n"));
+    out.push_str("    edition,\n");
+    out.push_str("    exports,\n");
+    out.push_str("    packageInfo,\n");
+    out.push_str("    dependencies,\n");
+    out.push_str("    system,\n");
+    out.push_str("    acl,\n");
+    out.push_str("} from './actr-config';\n");
+
+    for svc in &req.local_services {
+        let file_name = to_kebab_case(&svc.name);
+        out.push_str(&format!("export * from './{file_name}.actorref';\n"));
+    }
+
+    Ok(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Service Worker
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_service_worker(req: &WebCodegenRequest) -> Result<String, String> {
+    let is_server = req.is_server();
+    let wasm_name = req.wasm_module_name();
+
+    let register_fn = if is_server {
+        let sn = req
+            .local_services
+            .first()
+            .map(|s| to_snake_case(&s.name))
+            .unwrap_or_else(|| "service".to_string());
+        format!("register_{sn}")
+    } else {
+        let hn = req
+            .local_services
+            .first()
+            .map(|s| to_snake_case(&s.name))
+            .unwrap_or_else(|| "handler".to_string());
+        format!("register_{hn}_handler")
+    };
+
+    let comment_type = if is_server { "server" } else { "client" };
+    let comment_desc = if is_server {
+        "用户 Workload + SW Runtime"
+    } else {
+        "Local Handler + SW Runtime"
+    };
+
+    let mut out = String::new();
+
+    // Header
+    out.push_str(&format!(
+        "/* Actor-RTC Service Worker entry for {comment_type}.\n"
+    ));
+    out.push_str(&format!(" *\n * WASM 包含: {comment_desc}\n"));
+    out.push_str(" *\n * ⚠️  此文件由 actr gen 自动生成，请勿手动编辑\n */\n\n");
+    out.push_str("/* global wasm_bindgen */\n\n");
+
+    // Console interception
+    out.push_str(CONSOLE_INTERCEPTION);
+    out.push('\n');
+
+    // RUNTIME_CONFIG — received from main thread via DOM_PORT_INIT
+    out.push_str("/** @type {import('@actr/web').SwRuntimeConfig | null} */\n");
+    out.push_str("let RUNTIME_CONFIG = null;\n\n");
+
+    // State variables
+    out.push_str("let wasmReady = false;\n");
+    out.push_str("let wsProbeDone = false;\n");
+    out.push_str("const clientPorts = new Map();\n");
+    out.push_str("const browserToSwClient = new Map();\n\n");
+
+    out.push_str(CLEANUP_STALE_CLIENTS);
+    out.push('\n');
+    out.push_str(EMIT_SW_LOG);
+    out.push('\n');
+
+    // ensureWasmReady
+    out.push_str("async function ensureWasmReady() {\n");
+    out.push_str("  if (wasmReady) return;\n\n");
+    out.push_str("  let runtimeUrl;\n  let wasmUrl;\n  try {\n");
+    out.push_str(&format!(
+        "    runtimeUrl = new URL('{wasm_name}.js', self.location).toString();\n"
+    ));
+    out.push_str(&format!(
+        "    wasmUrl = new URL('{wasm_name}_bg.wasm', self.location).toString();\n"
+    ));
+    out.push_str("    emitSwLog('info', 'runtime_url', runtimeUrl);\n\n");
+
+    // WS probe
+    out.push_str("    if (!wsProbeDone && RUNTIME_CONFIG) {\n");
+    out.push_str("      wsProbeDone = true;\n");
+    out.push_str("      try {\n");
+    out.push_str("        const probe = new WebSocket(RUNTIME_CONFIG.signaling_url);\n");
+    out.push_str("        probe.binaryType = 'arraybuffer';\n");
+    out.push_str("        probe.onopen = () => { emitSwLog('info', 'ws_probe_open', null); probe.close(); };\n");
+    out.push_str(
+        "        probe.onerror = () => { emitSwLog('error', 'ws_probe_error', null); };\n",
+    );
+    out.push_str(
+        "      } catch (error) { emitSwLog('error', 'ws_probe_throw', String(error)); }\n",
+    );
+    out.push_str("    }\n\n");
+
+    // Fetch and load WASM
+    out.push_str("    const runtimeRes = await fetch(runtimeUrl, { cache: 'no-store' });\n");
+    out.push_str("    const wasmRes = await fetch(wasmUrl, { cache: 'no-store' });\n\n");
+    out.push_str("    try {\n");
+    out.push_str("      const runtimeText = await runtimeRes.text();\n");
+    out.push_str("      const patchedText = runtimeText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');\n");
+    out.push_str("      (0, eval)(patchedText);\n");
+    out.push_str("    } catch (error) {\n");
+    out.push_str("      emitSwLog('error', 'eval_failed', String(error));\n");
+    out.push_str("      throw error;\n");
+    out.push_str("    }\n\n");
+    out.push_str("    await wasm_bindgen({ module_or_path: wasmUrl });\n");
+    out.push_str("    wasm_bindgen.init_global();\n\n");
+
+    // Register handler
+    out.push_str(&format!(
+        "    if (typeof wasm_bindgen.{register_fn} === 'function') {{\n"
+    ));
+    out.push_str(&format!("      wasm_bindgen.{register_fn}();\n"));
+    out.push_str("    }\n\n");
+
+    out.push_str("    wasmReady = true;\n");
+    out.push_str("    emitSwLog('info', 'wasm_ready', null);\n");
+    out.push_str("  } catch (error) {\n");
+    out.push_str("    console.error('[SW] WASM init failed:', error);\n");
+    out.push_str("    emitSwLog('error', 'wasm_init_failed', { error: String(error) });\n");
+    out.push_str("    throw error;\n");
+    out.push_str("  }\n}\n\n");
+
+    // Event listeners
+    out.push_str(SW_EVENT_LISTENERS);
+
+    Ok(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WASM scaffold
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_wasm_scaffold(req: &WebCodegenRequest) -> Result<Vec<PathBuf>, String> {
+    let wasm_dir = req.project_root.join("wasm");
+    let wasm_src = wasm_dir.join("src");
+    let wasm_generated = wasm_src.join("generated");
+
+    let mut files = Vec::new();
+    let is_server = req.is_server();
+    let crate_name = req.wasm_module_name();
+    let pkg_name = format!("{}-wasm", req.package_name);
+
+    // 1. Cargo.toml
+    let cargo_path = wasm_dir.join("Cargo.toml");
+    if !cargo_path.exists() {
+        write_file(&cargo_path, &gen_wasm_cargo_toml(&pkg_name))?;
+        files.push(cargo_path);
+    }
+
+    // 2. build.sh
+    let build_sh = wasm_dir.join("build.sh");
+    if !build_sh.exists() {
+        write_file(&build_sh, &gen_wasm_build_sh(&crate_name))?;
+        make_executable(&build_sh)?;
+        files.push(build_sh);
+    }
+
+    // 3. Generated proto types
+    std::fs::create_dir_all(&wasm_generated)
+        .map_err(|e| format!("Failed to create wasm generated dir: {e}"))?;
+
+    let mut generated_modules = Vec::new();
+    for file_info in &req.files {
+        if !file_info.package.is_empty() {
+            let mod_name = to_snake_case(&file_info.package);
+            if !generated_modules.contains(&mod_name) {
+                generated_modules.push(mod_name.clone());
+                let rs_path = wasm_generated.join(format!("{mod_name}.rs"));
+                let rs_content = gen_proto_rs_types(file_info);
+                write_file(&rs_path, &rs_content)?;
+                files.push(rs_path);
+            }
+        }
+    }
+
+    // generated/mod.rs
+    let mod_rs = wasm_generated.join("mod.rs");
+    let mut mod_content = String::from("//! Auto-generated proto type modules\n\n");
+    for m in &generated_modules {
+        mod_content.push_str(&format!("pub mod {m};\n"));
+    }
+    write_file(&mod_rs, &mod_content)?;
+    files.push(mod_rs);
+
+    // 4. Handler files + lib.rs
+    if is_server {
+        for svc in &req.local_services {
+            let handler_name = to_snake_case(&svc.name);
+            let handler_path = wasm_src.join(format!("{handler_name}.rs"));
+            if !handler_path.exists() {
+                write_file(&handler_path, &gen_server_handler(svc))?;
+                files.push(handler_path);
+            }
+        }
+        let lib_path = wasm_src.join("lib.rs");
+        if !lib_path.exists() {
+            write_file(&lib_path, &gen_server_lib_rs(req))?;
+            files.push(lib_path);
+        }
+    } else {
+        for svc in &req.local_services {
+            let handler_name = to_snake_case(&svc.name);
+            let handler_path = wasm_src.join(format!("{handler_name}_handler.rs"));
+            if !handler_path.exists() {
+                write_file(&handler_path, &gen_client_handler(svc, req))?;
+                files.push(handler_path);
+            }
+        }
+        let lib_path = wasm_src.join("lib.rs");
+        if !lib_path.exists() {
+            write_file(&lib_path, &gen_client_lib_rs(req))?;
+            files.push(lib_path);
+        }
+    }
+
+    Ok(files)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WASM templates
+// ═══════════════════════════════════════════════════════════════════
+
+fn gen_wasm_cargo_toml(pkg_name: &str) -> String {
+    format!(
+        r#"[package]
+name = "{pkg_name}"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+actr-runtime-sw = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
+actr-web-common = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+web-sys = {{ version = "0.3", features = ["console"] }}
+futures = "0.3"
+async-trait = "0.1"
+serde = {{ version = "1.0", features = ["derive"] }}
+serde_json = "1.0"
+prost = "0.14"
+bytes = "1.0"
+log = "0.4"
+wasm-logger = "0.2"
+console_error_panic_hook = "0.1"
+"#
+    )
+}
+
+fn gen_wasm_build_sh(crate_name: &str) -> String {
+    format!(
+        r#"#!/bin/bash
+set -e
+
+echo "🔨 Building WASM..."
+
+TMPDIR="${{TMPDIR:-$(pwd)/.tmp}}"
+export TMPDIR
+mkdir -p "$TMPDIR"
+
+OUT_DIR="../public"
+
+rm -f "$OUT_DIR"/{crate_name}*.wasm "$OUT_DIR"/{crate_name}*.js "$OUT_DIR"/{crate_name}*.d.ts
+
+wasm-pack build \
+  --target no-modules \
+  --out-dir "$OUT_DIR" \
+  --out-name {crate_name} \
+  --release
+
+rm -f "$OUT_DIR/package.json" "$OUT_DIR/.gitignore"
+
+echo ""
+echo "✅ WASM built successfully!"
+echo "📁 Output: $OUT_DIR"
+echo ""
+ls -la "$OUT_DIR"/{crate_name}*
+"#
+    )
+}
+
+fn gen_proto_rs_types(file_info: &FileInfo) -> String {
+    let mut out = String::from(
+        "//! Auto-generated protobuf types\n\nuse prost::Message;\nuse serde::{Deserialize, Serialize};\n\n",
+    );
+
+    let proto_content = std::fs::read_to_string(&file_info.proto_file).unwrap_or_default();
+    for type_name in &file_info.declared_type_names {
+        // Skip service names
+        let is_service = file_info
+            .declared_type_names
+            .iter()
+            .any(|n| n == type_name && proto_content.contains(&format!("service {type_name}")));
+        if is_service && proto_content.contains(&format!("service {type_name}")) {
+            continue;
+        }
+
+        let fields = extract_message_fields(&proto_content, type_name);
+        out.push_str("#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]\n");
+        out.push_str(&format!("pub struct {type_name} {{\n"));
+        for (i, (field_name, field_type)) in fields.iter().enumerate() {
+            let tag = i + 1;
+            let rust_type = proto_type_to_rust(field_type);
+            let prost_attr = proto_type_to_prost_attr(field_type, tag);
+            out.push_str(&format!("    {prost_attr}\n"));
+            out.push_str(&format!("    pub {field_name}: {rust_type},\n"));
+        }
+        out.push_str("}\n\n");
+    }
+
+    out
+}
+
+fn gen_server_handler(service: &ServiceInfo) -> String {
+    let sn = &service.name;
+    let mut out = String::new();
+    out.push_str(&format!("//! {sn} implementation\n\n"));
+    out.push_str("use std::rc::Rc;\nuse actr_runtime_sw::RuntimeContext;\nuse prost::Message;\n\n");
+
+    let pkg = to_snake_case(&service.package);
+    for m in &service.methods {
+        out.push_str(&format!(
+            "use crate::generated::{pkg}::{{{}, {}}};\n",
+            m.input_type, m.output_type
+        ));
+    }
+    out.push('\n');
+
+    out.push_str(&format!("pub struct {sn};\n\n"));
+    out.push_str(&format!("impl {sn} {{\n"));
+    out.push_str("    pub fn new() -> Self { Self }\n\n");
+
+    for m in &service.methods {
+        out.push_str(&format!(
+            "    pub async fn {}(&self, request: {}, _ctx: Rc<RuntimeContext>) -> Result<{}, String> {{\n",
+            m.snake_name, m.input_type, m.output_type
+        ));
+        out.push_str(&format!(
+            "        log::info!(\"Received {sn} {{}} request\", \"{}\");\n",
+            m.name
+        ));
+        out.push_str("        // TODO: Implement business logic\n");
+        out.push_str(&format!("        Ok({}::default())\n", m.output_type));
+        out.push_str("    }\n\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str(&format!(
+        "static SERVICE: std::sync::OnceLock<{sn}> = std::sync::OnceLock::new();\n\n"
+    ));
+    out.push_str(&format!("fn get_service() -> &'static {sn} {{\n"));
+    out.push_str(&format!("    SERVICE.get_or_init({sn}::new)\n}}\n\n"));
+
+    out.push_str("pub async fn handle_request(method: &str, request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<Vec<u8>, String> {\n");
+    out.push_str("    match method {\n");
+    for m in &service.methods {
+        out.push_str(&format!(
+            "        \"{}\" | \"{}\" => {{\n",
+            m.name, m.snake_name
+        ));
+        out.push_str(&format!(
+            "            let request = {}::decode(request_bytes).map_err(|e| format!(\"Decode failed: {{}}\", e))?;\n",
+            m.input_type
+        ));
+        out.push_str(&format!(
+            "            let response = get_service().{}(request, ctx).await?;\n",
+            m.snake_name
+        ));
+        out.push_str("            let mut buf = Vec::with_capacity(response.encoded_len());\n");
+        out.push_str("            response.encode(&mut buf).map_err(|e| format!(\"Encode failed: {}\", e))?;\n");
+        out.push_str("            Ok(buf)\n");
+        out.push_str("        }\n");
+    }
+    out.push_str("        _ => Err(format!(\"Unknown method: {}\", method)),\n");
+    out.push_str("    }\n}\n");
+
+    out
+}
+
+fn gen_client_handler(service: &ServiceInfo, req: &WebCodegenRequest) -> String {
+    let sn = &service.name;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "//! {sn} local handler — forwards requests to remote service\n\n"
+    ));
+    out.push_str("use std::rc::Rc;\nuse std::sync::OnceLock;\n");
+    out.push_str("use actr_runtime_sw::RuntimeContext;\nuse actr_runtime_sw::WebContext;\n\n");
+
+    let remote_target = req.dependencies.first().and_then(|d| d.actr_type.as_ref());
+
+    if let Some(target) = remote_target {
+        out.push_str("static TARGET_TYPE: OnceLock<actr_runtime_sw::actr_protocol::ActrType> = OnceLock::new();\n\n");
+        out.push_str("fn target_type() -> &'static actr_runtime_sw::actr_protocol::ActrType {\n");
+        out.push_str("    TARGET_TYPE.get_or_init(|| actr_runtime_sw::actr_protocol::ActrType {\n");
+        out.push_str(&format!(
+            "        manufacturer: \"{}\".to_string(),\n",
+            target.manufacturer
+        ));
+        out.push_str(&format!("        name: \"{}\".to_string(),\n", target.name));
+        out.push_str("        version: None,\n    })\n}\n\n");
+    }
+
+    let remote_route_key = req
+        .remote_services
+        .first()
+        .and_then(|s| s.methods.first())
+        .map(|m| m.route_key.as_str())
+        .unwrap_or("unknown.Unknown.Unknown");
+
+    out.push_str("pub async fn handle_request(method: &str, request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<Vec<u8>, String> {\n");
+    out.push_str("    match method {\n");
+    for m in &service.methods {
+        out.push_str(&format!("        \"{}\" => {{\n", m.name));
+        out.push_str(&format!(
+            "            log::info!(\"[{}] Forwarding to remote...\");\n",
+            sn
+        ));
+        if remote_target.is_some() {
+            out.push_str("            let target = ctx.discover(target_type()).await.map_err(|e| format!(\"Discover failed: {}\", e))?;\n");
+            out.push_str(&format!(
+                "            let response = ctx.call_raw(&target, \"{remote_route_key}\", request_bytes, 30000).await.map_err(|e| format!(\"call_raw failed: {{}}\", e))?;\n"
+            ));
+            out.push_str("            Ok(response)\n");
+        } else {
+            out.push_str("            Err(\"No remote target configured\".to_string())\n");
+        }
+        out.push_str("        }\n");
+    }
+    out.push_str("        _ => Err(format!(\"Unknown method: {}\", method)),\n");
+    out.push_str("    }\n}\n");
+
+    out
+}
+
+fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
+    let mut handler_mods = Vec::new();
+    let mut register_calls = Vec::new();
+
+    for svc in &req.local_services {
+        let hn = to_snake_case(&svc.name);
+        handler_mods.push(hn.clone());
+        let register_fn = format!("register_{hn}");
+        let service_match = if svc.package.is_empty() {
+            svc.name.clone()
+        } else {
+            format!("{}.{}", svc.package, svc.name)
+        };
+        register_calls.push((register_fn, hn, service_match));
+    }
+
+    let mut out = String::from(
+        "//! WASM entry — Service Worker Runtime + Service Handler\n\nmod generated;\n",
+    );
+    for m in &handler_mods {
+        out.push_str(&format!("mod {m};\n"));
+    }
+    out.push_str(
+        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
+    );
+    out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
+
+    for (rf, hn, sm) in &register_calls {
+        out.push_str("#[wasm_bindgen]\n");
+        out.push_str(&format!("pub fn {rf}() {{\n"));
+        out.push_str(&format!("    log::info!(\"Registering {hn}...\");\n\n"));
+        out.push_str(
+            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+        );
+        out.push_str(
+            "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",
+        );
+        out.push_str("        Box::pin(async move {\n");
+        out.push_str(
+            "            let (service, method) = if let Some(last_dot) = route_key.rfind('.') {\n",
+        );
+        out.push_str("                (&route_key[..last_dot], &route_key[last_dot + 1..])\n");
+        out.push_str(
+            "            } else {\n                (route_key.as_str(), \"\")\n            };\n",
+        );
+        out.push_str("            match service {\n");
+        out.push_str(&format!(
+            "                \"{sm}\" => {hn}::handle_request(method, &bytes, ctx).await,\n"
+        ));
+        out.push_str("                _ => Err(format!(\"Unknown service: {}\", service)),\n");
+        out.push_str("            }\n        })\n    }));\n\n");
+        out.push_str(&format!("    log::info!(\"{hn} registered\");\n}}\n\n"));
+    }
+
+    out
+}
+
+fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
+    let mut handler_mods = Vec::new();
+    let mut register_calls = Vec::new();
+
+    for svc in &req.local_services {
+        let hn = to_snake_case(&svc.name);
+        let mn = format!("{hn}_handler");
+        handler_mods.push(mn.clone());
+        let rf = format!("register_{hn}_handler");
+        let sm = if svc.package.is_empty() {
+            svc.name.clone()
+        } else {
+            format!("{}.{}", svc.package, svc.name)
+        };
+        register_calls.push((rf, mn, sm));
+    }
+
+    let mut out =
+        String::from("//! WASM entry — Service Worker Runtime + Local Handler\n\nmod generated;\n");
+    for m in &handler_mods {
+        out.push_str(&format!("mod {m};\n"));
+    }
+    out.push_str(
+        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
+    );
+    out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
+
+    for (rf, mn, sm) in &register_calls {
+        out.push_str("#[wasm_bindgen]\n");
+        out.push_str(&format!("pub fn {rf}() {{\n"));
+        out.push_str("    log::info!(\"Registering handler...\");\n\n");
+        out.push_str(
+            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+        );
+        out.push_str(
+            "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",
+        );
+        out.push_str("        Box::pin(async move {\n");
+        out.push_str(
+            "            let (service, method) = if let Some(last_dot) = route_key.rfind('.') {\n",
+        );
+        out.push_str("                (&route_key[..last_dot], &route_key[last_dot + 1..])\n");
+        out.push_str(
+            "            } else {\n                (route_key.as_str(), \"\")\n            };\n",
+        );
+        out.push_str("            match service {\n");
+        out.push_str(&format!(
+            "                \"{sm}\" => {mn}::handle_request(method, &bytes, ctx).await,\n"
+        ));
+        out.push_str("                _ => Err(format!(\"Unknown service: {}\", service)),\n");
+        out.push_str("            }\n        })\n    }));\n\n");
+        out.push_str("    log::info!(\"Handler registered\");\n}\n\n");
+    }
+
+    out
+}
+
+fn gen_root_build_sh() -> String {
+    r#"#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WASM_DIR="$SCRIPT_DIR/wasm"
+
+echo "Building WASM..."
+(
+  cd "$WASM_DIR"
+  ./build.sh
+)
+
+echo "WASM artifacts ready in public/"
+"#
+    .to_string()
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════
+
+fn write_file(path: &Path, content: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, content)
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    info!("  📄 {}", path.display());
+    Ok(())
+}
+
+fn make_executable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map_err(|e| format!("Failed to read metadata: {e}"))?
+            .permissions();
+        perms.set_mode(perms.mode() | 0o755);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| format!("Failed to set permissions: {e}"))?;
+    }
+    Ok(())
+}
+
+fn to_kebab_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            result.push('-');
+        }
+        result.push(ch.to_ascii_lowercase());
+    }
+    result
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            result.push('_');
+        }
+        if ch == '-' {
+            result.push('_');
+        } else {
+            result.push(ch.to_ascii_lowercase());
+        }
+    }
+    result
+}
+
+fn to_camel_case(name: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for (i, ch) in name.chars().enumerate() {
+        if ch == '_' || ch == '-' {
+            capitalize_next = true;
+        } else if i == 0 {
+            result.push(ch.to_ascii_lowercase());
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn extract_message_fields(proto_content: &str, message_name: &str) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    let mut in_message = false;
+    let mut brace_depth = 0;
+    for line in proto_content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("message {message_name}")) && trimmed.contains('{') {
+            in_message = true;
+            brace_depth = 1;
+            continue;
+        }
+        if in_message {
+            brace_depth += trimmed.matches('{').count();
+            brace_depth -= trimmed.matches('}').count();
+            if brace_depth == 0 {
+                break;
+            }
+            if let Some((ft, fn_)) = parse_proto_field(trimmed) {
+                fields.push((fn_, ft));
+            }
+        }
+    }
+    fields
+}
+
+fn parse_proto_field(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+    if line.is_empty()
+        || line.starts_with("//")
+        || line.starts_with("reserved")
+        || line.starts_with("option")
+        || line.starts_with("oneof")
+        || line.starts_with("message")
+        || line.starts_with("enum")
+    {
+        return None;
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() >= 3 && parts.iter().any(|p| p.contains('=')) {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+}
+
+fn proto_type_to_rust(proto_type: &str) -> String {
+    match proto_type {
+        "string" => "String".to_string(),
+        "bytes" => "Vec<u8>".to_string(),
+        "bool" => "bool".to_string(),
+        "int32" | "sint32" | "sfixed32" => "i32".to_string(),
+        "int64" | "sint64" | "sfixed64" => "i64".to_string(),
+        "uint32" | "fixed32" => "u32".to_string(),
+        "uint64" | "fixed64" => "u64".to_string(),
+        "float" => "f32".to_string(),
+        "double" => "f64".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn proto_type_to_prost_attr(proto_type: &str, tag: usize) -> String {
+    match proto_type {
+        "string" => format!("#[prost(string, tag = \"{tag}\")]"),
+        "bytes" => format!("#[prost(bytes, tag = \"{tag}\")]"),
+        "bool" => format!("#[prost(bool, tag = \"{tag}\")]"),
+        "int32" | "sint32" | "sfixed32" => format!("#[prost(int32, tag = \"{tag}\")]"),
+        "int64" | "sint64" | "sfixed64" => format!("#[prost(int64, tag = \"{tag}\")]"),
+        "uint32" | "fixed32" => format!("#[prost(uint32, tag = \"{tag}\")]"),
+        "uint64" | "fixed64" => format!("#[prost(uint64, tag = \"{tag}\")]"),
+        "float" => format!("#[prost(float, tag = \"{tag}\")]"),
+        "double" => format!("#[prost(double, tag = \"{tag}\")]"),
+        _ => format!("#[prost(message, tag = \"{tag}\")]"),
+    }
+}
+
+/// Format a TOML value as a TypeScript object literal
+fn format_toml_as_ts(value: &toml::Value, indent: usize) -> String {
+    let pad = "  ".repeat(indent);
+    let inner_pad = "  ".repeat(indent + 1);
+    match value {
+        toml::Value::Table(table) => {
+            if table.is_empty() {
+                return "{}".to_string();
+            }
+            let mut out = "{\n".to_string();
+            for (key, val) in table {
+                let ts_key = if key.contains('-') || key.contains('.') {
+                    format!("'{key}'")
+                } else {
+                    key.clone()
+                };
+                out.push_str(&format!(
+                    "{inner_pad}{ts_key}: {},\n",
+                    format_toml_as_ts(val, indent + 1)
+                ));
+            }
+            out.push_str(&format!("{pad}}}"));
+            out
+        }
+        toml::Value::Array(arr) => {
+            if arr.is_empty() {
+                return "[]".to_string();
+            }
+            let items: Vec<String> = arr
+                .iter()
+                .map(|v| format_toml_as_ts(v, indent + 1))
+                .collect();
+            if arr.iter().all(|v| !v.is_table()) {
+                format!("[{}]", items.join(", "))
+            } else {
+                let mut out = "[\n".to_string();
+                for item in &items {
+                    out.push_str(&format!("{inner_pad}{item},\n"));
+                }
+                out.push_str(&format!("{pad}]"));
+                out
+            }
+        }
+        toml::Value::String(s) => format!("'{}'", s.replace('\'', "\\'")),
+        toml::Value::Integer(n) => n.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Datetime(dt) => format!("'{dt}'"),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Inlined JS constants
+// ═══════════════════════════════════════════════════════════════════
+
+const CONSOLE_INTERCEPTION: &str = r#"(function () {
+  const _origInfo = console.info;
+  const _origWarn = console.warn;
+  const _origError = console.error;
+  const _origLog = console.log;
+
+  function extractMessage(args) {
+    return Array.from(args)
+      .filter(a => typeof a === 'string' && !/^\s*(color|background|font-weight|padding)\s*:/.test(a))
+      .join(' ')
+      .replace(/%c/g, '')
+      .trim();
+  }
+
+  function broadcast(data) {
+    self.clients.matchAll({ type: 'window' }).then(clients => {
+      for (const client of clients) {
+        client.postMessage(data);
+      }
+    }).catch(() => {});
+  }
+
+  console.info = function (...args) {
+    _origInfo.apply(console, args);
+    const msg = extractMessage(args);
+    if (msg.includes('[SW]') || msg.includes('Echo') || msg.includes('Registering')
+      || msg.includes('Scheduler') || msg.includes('Dispatcher')) {
+      broadcast({ type: 'sw_log', level: 'info', message: msg, ts: Date.now() });
+    }
+  };
+
+  console.warn = function (...args) {
+    _origWarn.apply(console, args);
+    const msg = extractMessage(args);
+    broadcast({ type: 'sw_log', level: 'warn', message: msg, ts: Date.now() });
+  };
+
+  console.error = function (...args) {
+    _origError.apply(console, args);
+    const msg = extractMessage(args);
+    broadcast({ type: 'sw_log', level: 'error', message: msg, ts: Date.now() });
+  };
+
+  console.log = function (...args) {
+    _origLog.apply(console, args);
+    const msg = extractMessage(args);
+    if (msg.includes('[SW]') || msg.includes('[WebRTC]')) {
+      broadcast({ type: 'sw_log', level: 'info', message: msg, ts: Date.now() });
+    }
+  };
+})();
+"#;
+
+const CLEANUP_STALE_CLIENTS: &str = r#"async function cleanupStaleClients() {
+  if (!wasmReady) return;
+  try {
+    const activeWindows = await self.clients.matchAll({ type: 'window' });
+    const activeIds = new Set(activeWindows.map(c => c.id));
+    for (const [browserId, swClientId] of browserToSwClient.entries()) {
+      if (!activeIds.has(browserId)) {
+        browserToSwClient.delete(browserId);
+        clientPorts.delete(swClientId);
+        try { await wasm_bindgen.unregister_client(swClientId); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+}
+"#;
+
+const EMIT_SW_LOG: &str = r#"function emitSwLog(level, message, detail) {
+  for (const port of clientPorts.values()) {
+    try {
+      port.postMessage({
+        type: 'webrtc_event',
+        payload: { eventType: 'sw_log', data: { level, message, detail } },
+      });
+    } catch (_) {}
+  }
+}
+"#;
+
+const SW_EVENT_LISTENERS: &str = r#"self.addEventListener('install', (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'PING') {
+    if (event.source && event.source.postMessage) {
+      event.source.postMessage({ type: 'PONG' });
+    }
+    return;
+  }
+  if (!event.data || event.data.type !== 'DOM_PORT_INIT') return;
+
+  const port = event.data.port;
+  const clientId = event.data.clientId;
+  if (!port || !clientId) return;
+
+  // Receive runtime config from main thread (sourced from actr-config.ts)
+  if (event.data.runtimeConfig && !RUNTIME_CONFIG) {
+    RUNTIME_CONFIG = event.data.runtimeConfig;
+  }
+
+  clientPorts.set(clientId, port);
+  const browserId = event.source && event.source.id;
+  if (browserId) browserToSwClient.set(browserId, clientId);
+
+  cleanupStaleClients();
+
+  if (event.source && event.source.postMessage) {
+    event.source.postMessage({ type: 'sw_ack', message: 'port_ready' });
+  }
+
+  emitSwLog('info', 'sw_env', {
+    clientId,
+    location: self.location ? self.location.href : null,
+    totalClients: clientPorts.size,
+  });
+
+  port.onmessage = async (portEvent) => {
+    try { await ensureWasmReady(); } catch (_) { return; }
+    const message = portEvent.data;
+    if (!message || !message.type) return;
+
+    switch (message.type) {
+      case 'control':
+        try { await wasm_bindgen.handle_dom_control(clientId, message.payload); } catch (e) {
+          console.error('[SW] handle_dom_control failed:', e);
+        }
+        break;
+      case 'webrtc_event':
+        try { await wasm_bindgen.handle_dom_webrtc_event(clientId, message.payload); } catch (e) {
+          console.error('[SW] handle_dom_webrtc_event failed:', e);
+        }
+        break;
+      case 'fast_path_data':
+        try { await wasm_bindgen.handle_dom_fast_path(clientId, message.payload); } catch (e) {
+          console.error('[SW] handle_dom_fast_path failed:', e);
+        }
+        break;
+      case 'register_datachannel_port':
+        try {
+          const dcPort = message.payload.port;
+          const dcPeerId = message.payload.peerId;
+          if (dcPort && dcPeerId) {
+            await wasm_bindgen.register_datachannel_port(clientId, dcPeerId, dcPort);
+          }
+        } catch (e) {
+          console.error('[SW] register_datachannel_port failed:', e);
+        }
+        break;
+    }
+  };
+
+  port.start();
+
+  ensureWasmReady().then(async () => {
+    try {
+      if (!RUNTIME_CONFIG) {
+        console.error('[SW] RUNTIME_CONFIG not received from main thread');
+        return;
+      }
+      await wasm_bindgen.register_client(clientId, RUNTIME_CONFIG, port);
+      emitSwLog('info', 'client_registered', { clientId });
+    } catch (error) {
+      console.error('[SW] register_client failed:', error);
+    }
+  });
+});
+"#;

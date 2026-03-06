@@ -43,15 +43,22 @@
 
 use std::path::PathBuf;
 
+pub mod codegen;
 mod config;
 mod error;
 mod generator;
+pub mod request;
 mod templates;
 mod typescript;
 
+pub use codegen::generate;
 pub use config::*;
 pub use error::*;
 pub use generator::*;
+pub use request::{
+    ActrTypeInfo, DependencyInfo, FileInfo, MethodInfo, ObservabilityInfo, ServiceInfo,
+    WebCodegenRequest, WebCodegenResponse,
+};
 
 /// Web 平台代码生成器
 pub struct WebCodegen {

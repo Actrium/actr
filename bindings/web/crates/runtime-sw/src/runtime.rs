@@ -387,7 +387,7 @@ struct SwConfig {
     client_actr_type: String,
     target_actr_type: String,
     service_fingerprint: String,
-    /// ACL: list of actr_types (e.g. "acme+echo-client-app") that are allowed
+    /// ACL: list of actr_types (e.g. "acme:echo-client-app") that are allowed
     /// to discover and communicate with this actor. Sent in RegisterRequest.
     #[serde(default)]
     acl_allow_types: Vec<String>,
@@ -593,6 +593,7 @@ impl SwRuntime {
             },
             service_spec: None,
             acl: self.acl.clone(),
+            service: None,
         };
         let envelope = SignalingEnvelope {
             envelope_version: 1,
@@ -820,7 +821,10 @@ impl SwRuntime {
     /// 使用指定的 ActrType 发现目标 Actor
     ///
     /// 与 `discover_target` 类似，但允许指定目标类型而非使用配置中的默认类型
-    async fn discover_target_for_type(&mut self, target_type: &ActrType) -> Result<ActrId, JsValue> {
+    async fn discover_target_for_type(
+        &mut self,
+        target_type: &ActrType,
+    ) -> Result<ActrId, JsValue> {
         let actor_id = self
             .actor_id
             .clone()
@@ -895,12 +899,9 @@ impl SwRuntime {
                 );
                 Ok(target)
             }
-            Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
-                Err(JsValue::from_str(&format!(
-                    "Route candidates error: {}",
-                    err.message
-                )))
-            }
+            Some(actr_protocol::route_candidates_response::Result::Error(err)) => Err(
+                JsValue::from_str(&format!("Route candidates error: {}", err.message)),
+            ),
             None => Err(JsValue::from_str("Route candidates missing result")),
         }
     }
@@ -1109,7 +1110,11 @@ impl SwRuntime {
             return Ok(());
         };
 
-        log::info!("[SW] handle_rpc_response: request_id={} target={:?}", request_id, rpc_target);
+        log::info!(
+            "[SW] handle_rpc_response: request_id={} target={:?}",
+            request_id,
+            rpc_target
+        );
 
         // 提取 payload 用于后续处理
         let payload_bytes = envelope
@@ -1153,14 +1158,18 @@ impl SwRuntime {
                     },
                 };
 
-                let msg_js_value = serde_wasm_bindgen::to_value(&response)
-                    .map_err(|e| JsValue::from_str(&format!("Failed to serialize RPC response: {}", e)))?;
+                let msg_js_value = serde_wasm_bindgen::to_value(&response).map_err(|e| {
+                    JsValue::from_str(&format!("Failed to serialize RPC response: {}", e))
+                })?;
 
                 self.send_dom_message(&msg_js_value)?;
             }
             PendingRpcTarget::Internal => {
                 // Internal (handler-initiated) RPCs: response handled via System/InprocOutGate only
-                log::debug!("[SW] Internal RPC response handled: request_id={}", request_id);
+                log::debug!(
+                    "[SW] Internal RPC response handled: request_id={}",
+                    request_id
+                );
             }
         }
 
@@ -1734,10 +1743,7 @@ impl SwRuntime {
     /// outstanding promises instead of waiting for the 30s timeout.
     fn notify_connection_failure(&mut self, peer_id: &str) -> Result<(), JsValue> {
         // 1. Fail all pending RPCs with a connection error
-        let pending_entries: Vec<(String, PendingRpcTarget)> = self
-            .pending_rpcs
-            .drain()
-            .collect();
+        let pending_entries: Vec<(String, PendingRpcTarget)> = self.pending_rpcs.drain().collect();
         let count = pending_entries.len();
         for (request_id, target) in &pending_entries {
             match target {
@@ -1765,10 +1771,7 @@ impl SwRuntime {
                     // Internal RPCs: resolved via System/InprocOutGate error handling
                     CLIENTS.with(|cell| {
                         if let Some(ctx) = cell.borrow().get(&self.client_id) {
-                            ctx.system.handle_remote_response(
-                                request_id,
-                                Bytes::new(),
-                            );
+                            ctx.system.handle_remote_response(request_id, Bytes::new());
                         }
                     });
                 }
@@ -1977,10 +1980,7 @@ impl RuntimeBridge for SwRuntimeBridge {
     async fn ensure_connection(&self, target_id: &ActrId) -> actr_protocol::ActorResult<()> {
         let mut rt = self.runtime.lock().await;
         let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
-            actr_protocol::ProtocolError::TransportError(format!(
-                "Failed to ensure peer: {:?}",
-                e
-            ))
+            actr_protocol::ProtocolError::TransportError(format!("Failed to ensure peer: {:?}", e))
         })?;
         self.outproc_gate
             .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));

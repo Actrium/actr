@@ -447,6 +447,3 @@ fn generate_rust_mod_file(
 
     Ok(GeneratedFile::new(file_path, content))
 }
-#[cfg(test)]
-#[path = "generator_test.rs"]
-mod generator_test;

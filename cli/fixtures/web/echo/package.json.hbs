@@ -1,0 +1,35 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build-wasm": "cd wasm && bash build.sh",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+{{#if ACTR_WEB_LOCAL_PATH}}
+    "@actr/dom": "file:{{{ACTR_WEB_LOCAL_PATH}}}/../actr-dom",
+    "@actr/web": "file:{{{ACTR_WEB_LOCAL_PATH}}}"
+{{else}}
+    "@actr/web": "^0.1.0"
+{{/if}}
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0",
+    "vite-plugin-top-level-await": "^1.4.1",
+    "vite-plugin-wasm": "^3.3.0"
+{{#if ACTR_WEB_LOCAL_PATH}}
+  },
+  "pnpm": {
+    "overrides": {
+      "@actr/dom": "file:{{{ACTR_WEB_LOCAL_PATH}}}/../actr-dom"
+    }
+  }
+{{else}}
+  }
+{{/if}}
+}

@@ -13,7 +13,7 @@ manufacturer = "acme"
 name = "echo-client-app"
 
 [dependencies]
-echo-echo-server = { actr_type = "acme+EchoService" }
+echo-server = { actr_type = "acme:EchoService" }
 
 # Web 平台特定配置
 [platform.web]
@@ -21,7 +21,7 @@ generate_types = true
 types_output = "./src/generated/types"
 generate_react_hooks = false
 worker_type = "service-worker"
-service_worker_path = "/actor.sw.js"
+service_worker_path = "./public/actor.sw.js"
 generate_sw_entry = true
 
 [system.signaling]
@@ -41,10 +41,11 @@ tracing_service_name = "echo-real-client-app"
 
 [system.webrtc]
 stun_urls = ["stun:10.30.3.206:3478"]
+turn_urls = ["turn:10.30.3.206:3478"]
 
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-# Allow server with actr_type = "acme+EchoService"
-types = ["acme+EchoService"]
+# Allow server with actr_type = "acme:EchoService"
+types = ["acme:EchoService"]

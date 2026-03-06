@@ -4,4 +4,15 @@
  * ⚠️  请勿手动编辑此文件
  */
 
-export * from './actr-config';
+export {
+    actrConfig,
+    runtimeConfig,
+    actorType,
+    edition,
+    exports,
+    packageInfo,
+    dependencies,
+    platform,
+    system,
+    acl,
+} from './actr-config';

@@ -23,7 +23,8 @@ use tracing::{info, warn};
   - swift:  {PascalName}/Generated (e.g., EchoApp/Generated)
   - kotlin: app/src/main/java/{package}/generated
   - python: generated
-  - typescript: src/generated"
+  - typescript: src/generated
+  - web:    src/generated"
 )]
 pub struct GenCommand {
     /// Input proto file or directory
@@ -127,6 +128,21 @@ impl GenCommand {
             return Ok(());
         }
 
+        // Web projects share TypeScript markers (package.json, tsconfig.json),
+        // so allow `actr gen -l web` in TypeScript-detected projects and vice-versa.
+        if matches!(
+            (detected, requested),
+            (
+                DetectedProjectLanguage::TypeScript,
+                DetectedProjectLanguage::Web
+            ) | (
+                DetectedProjectLanguage::Web,
+                DetectedProjectLanguage::TypeScript
+            )
+        ) {
+            return Ok(());
+        }
+
         Err(ActrCliError::config_error(format!(
             "Refusing to generate '{requested}' code in a '{detected}' project.\n\n\
              Run:\n  actr gen -l {detected}"
@@ -140,6 +156,8 @@ impl GenCommand {
             SupportedLanguage::Swift => DetectedProjectLanguage::Swift,
             SupportedLanguage::Kotlin => DetectedProjectLanguage::Kotlin,
             SupportedLanguage::TypeScript => DetectedProjectLanguage::TypeScript,
+            // Web projects share the same file markers as TypeScript (package.json, tsconfig.json)
+            SupportedLanguage::Web => DetectedProjectLanguage::Web,
         }
     }
 
@@ -194,7 +212,9 @@ impl GenCommand {
                 )))
             }
             SupportedLanguage::Python => Ok(PathBuf::from("generated")),
-            SupportedLanguage::TypeScript => Ok(PathBuf::from("src/generated")),
+            SupportedLanguage::TypeScript | SupportedLanguage::Web => {
+                Ok(PathBuf::from("src/generated"))
+            }
             SupportedLanguage::Rust => Ok(PathBuf::from("src/generated")),
         }
     }

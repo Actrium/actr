@@ -9,7 +9,7 @@
  */
 
 import { createActor, Actor } from '@actr/web';
-import { actrConfig, EchoServiceActorRef } from './generated';
+import { actrConfig, SendEchoActorRef } from './generated';
 
 // ── DOM Elements ──
 const statusEl = document.getElementById('status')!;
@@ -19,7 +19,7 @@ const resultEl = document.getElementById('result')!;
 const swLogEl = document.getElementById('swLog')!;
 
 let actor: Actor | null = null;
-let echoService: EchoServiceActorRef | null = null;
+let sendEcho: SendEchoActorRef | null = null;
 
 /**
  * 在 Echo 结果区显示日志
@@ -89,8 +89,8 @@ async function init(): Promise<void> {
             debug: true,
         });
 
-        // 创建类型安全的 Echo 服务引用
-        echoService = new EchoServiceActorRef(actor);
+        // 创建类型安全的 SendEcho 服务引用
+        sendEcho = new SendEchoActorRef(actor);
 
         statusEl.textContent = '✅ 已连接';
         statusEl.className = 'status connected';
@@ -107,7 +107,7 @@ async function init(): Promise<void> {
         // 自动测试
         setTimeout(async () => {
             log('info', '🚀 自动发送 Echo 测试消息...');
-            await sendEcho();
+            await doSendEcho();
         }, 5000);
     } catch (error) {
         console.error('Failed to initialize client:', error);
@@ -120,8 +120,8 @@ async function init(): Promise<void> {
 /**
  * 发送 Echo 消息
  */
-async function sendEcho(): Promise<void> {
-    if (!actor || !echoService) {
+async function doSendEcho(): Promise<void> {
+    if (!actor || !sendEcho) {
         log('err', '❌ 客户端未初始化');
         return;
     }
@@ -132,7 +132,7 @@ async function sendEcho(): Promise<void> {
         sendBtn.disabled = true;
         log('info', `📤 发送: "${message}"`);
 
-        const response = await echoService.echo({ message });
+        const response = await sendEcho.sendEcho({ message });
 
         log('ok', `📥 回复: "${response.reply}"`);
         log('info', `⏱️ 时间戳: ${new Date(Number(response.timestamp) * 1000).toLocaleString()}`);
@@ -145,9 +145,9 @@ async function sendEcho(): Promise<void> {
 }
 
 // ── Event Listeners ──
-sendBtn.addEventListener('click', sendEcho);
+sendBtn.addEventListener('click', doSendEcho);
 msgInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !sendBtn.disabled) sendEcho();
+    if (e.key === 'Enter' && !sendBtn.disabled) doSendEcho();
 });
 
 // Keep Service Worker alive

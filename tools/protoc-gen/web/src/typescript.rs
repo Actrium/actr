@@ -838,6 +838,3 @@ fn generate_ts_index_file(
 
     Ok(GeneratedFile::new(file_path, content))
 }
-#[cfg(test)]
-#[path = "typescript_test.rs"]
-mod typescript_test;

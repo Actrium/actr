@@ -9,7 +9,7 @@ const RUNTIME_CONFIG = {
   target_actr_type: 'acme+EchoService',
   service_fingerprint: '',
   // ACL: allow EchoService to send responses back to this client
-  acl_allow_types: ['acme+EchoService'],
+  acl_allow_types: ['acme:EchoService'],
   // Client mode (default): will discover server target
   is_server: false,
 };

@@ -80,7 +80,7 @@ export class ActorRef {
           break;
 
         default:
-          console.warn(`[ActorRef] Unknown message type: ${message.type}`);
+          console.warn(`[ActorRef] Unknown message type: ${(message as any).type}`);
       }
     });
   }

@@ -1,9 +1,9 @@
 [package]
-name = "echo-client-wasm"
+name = "echo-server-wasm"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Echo Client WASM - Local Handler + SW Runtime 打包成一个 WASM"
+description = "Echo Server WASM - 用户 Workload + SW Runtime 打包成一个 WASM"
 
 # 独立项目，不属于父 workspace
 [workspace]
@@ -13,8 +13,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Actor-RTC Service Worker Runtime (包含框架代码)
-actr-runtime-sw = { path = "../../../crates/runtime-sw" }
-actr-web-common = { path = "../../../crates/common" }
+actr-runtime-sw = { path = "../../../../crates/runtime-sw" }
+actr-web-common = { path = "../../../../crates/common" }
 
 # WASM 绑定
 wasm-bindgen = "0.2"

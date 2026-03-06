@@ -1,8 +1,13 @@
-//! protoc-gen-actr-web - Protoc plugin for TypeScript code generation
+//! protoc-gen-actr-web — dual-mode binary
 //!
-//! This binary is called by protoc to generate TypeScript code from proto files.
+//! Mode 1 (default): protoc plugin protocol — reads `CodeGeneratorRequest` from
+//! stdin (binary protobuf), writes `CodeGeneratorResponse` to stdout.
+//!
+//! Mode 2 (`--generate`): CLI code-generation mode — reads a JSON
+//! `WebCodegenRequest` from stdin, writes a JSON `WebCodegenResponse`
+//! to stdout; used by `actr gen -l web`.
 
-use actr_web_protoc_codegen::{WebCodegen, WebCodegenConfig};
+use actr_web_protoc_codegen::{WebCodegen, WebCodegenConfig, WebCodegenRequest};
 use prost::Message;
 use prost_types::compiler::CodeGeneratorRequest;
 use std::fs;
@@ -10,6 +15,33 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--generate") {
+        return run_codegen_mode();
+    }
+
+    // Default: protoc plugin mode
+    run_protoc_mode()
+}
+
+/// Mode 2: full code generation from a JSON request on stdin.
+fn run_codegen_mode() -> anyhow::Result<()> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    let request: WebCodegenRequest = serde_json::from_str(&input)
+        .map_err(|e| anyhow::anyhow!("Failed to parse WebCodegenRequest: {e}"))?;
+
+    let response = actr_web_protoc_codegen::codegen::generate(&request);
+
+    let json = serde_json::to_string(&response)?;
+    io::stdout().write_all(json.as_bytes())?;
+    Ok(())
+}
+
+/// Mode 1: standard protoc plugin binary protocol.
+fn run_protoc_mode() -> anyhow::Result<()> {
     // Read CodeGeneratorRequest from stdin (protoc sends this)
     let mut input = Vec::new();
     io::stdin().read_to_end(&mut input)?;
