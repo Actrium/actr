@@ -605,23 +605,21 @@ impl<W: Workload> ActrNode<W> {
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
-        // Canonical dependency lookup key: manufacturer:name
-        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
+        // Version is always present; use full "manufacturer:name:version" as the lookup key
+        let version = target_type.version.as_deref().unwrap_or("");
+        let key = format!(
+            "{}:{}:{}",
+            target_type.manufacturer, target_type.name, version
+        );
 
-        if let Some(dep) = actr_lock.get_dependency(&service_name) {
-            return Some(dep.fingerprint.clone());
-        }
-
-        if let Some(dep) = actr_lock.get_dependency(&target_type.name) {
+        // Try by full key
+        if let Some(dep) = actr_lock.get_dependency(&key) {
             return Some(dep.fingerprint.clone());
         }
 
         // Search through all dependencies by actr_type field
         for dep in &actr_lock.dependencies {
-            if dep.actr_type == service_name
-                || dep.actr_type == target_type.name
-                || Self::matches_dependency_actr_type(&dep.actr_type, target_type)
-            {
+            if dep.actr_type == key {
                 return Some(dep.fingerprint.clone());
             }
         }
@@ -681,14 +679,16 @@ impl<W: Workload> ActrNode<W> {
 
         match route_response.result {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
-                // Extract ws_address for each candidate from CandidateCompatibilityInfo
+                // Extract ws_address exclusively from ws_address_map (WsAddressEntry).
+                // ws_address is no longer carried in CandidateCompatibilityInfo.
                 let ws_addresses: std::collections::HashMap<ActrId, String> = success
-                    .compatibility_info
+                    .ws_address_map
                     .iter()
-                    .filter_map(|info| {
-                        info.ws_address
+                    .filter_map(|entry| {
+                        entry
+                            .ws_address
                             .as_ref()
-                            .map(|url| (info.candidate_id.clone(), url.clone()))
+                            .map(|url| (entry.candidate_id.clone(), url.clone()))
                     })
                     .collect();
 

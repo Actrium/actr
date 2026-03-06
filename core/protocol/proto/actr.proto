@@ -284,6 +284,12 @@ message CandidateCompatibilityInfo {
   optional string ws_address = 5;
 }
 
+// WebSocket address entry for a single route candidate (used in non-negotiation mode)
+message WsAddressEntry {
+  required ActrId candidate_id = 1;
+  optional string ws_address = 2;
+}
+
 message RouteCandidatesResponse {
   message RouteCandidatesOk {
     repeated ActrId candidates = 1;
@@ -293,6 +299,8 @@ message RouteCandidatesResponse {
     optional bool has_exact_match = 3;
     // Indicates if system is in sub-healthy state (using compatible but not exact match)
     optional bool is_sub_healthy = 4;
+    // WebSocket addresses for candidates (used in non-negotiation mode, i.e. no client_fingerprint)
+    repeated WsAddressEntry ws_address_map = 5;
   }
   oneof result {
     RouteCandidatesOk success = 1;
