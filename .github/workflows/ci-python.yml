@@ -5,13 +5,11 @@ on:
     branches: [main, develop]
     paths:
       - 'bindings/python/**'
-      - 'core/**'
       - '.github/workflows/ci-python.yml'
   pull_request:
     branches: [main]
     paths:
       - 'bindings/python/**'
-      - 'core/**'
       - '.github/workflows/ci-python.yml'
   workflow_dispatch:
 
