@@ -49,3 +49,12 @@ framework-codegen-kotlin/
 framework-codegen-python/
 framework-codegen-swift/
 framework-codegen-typescript/
+
+# Python ignore
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env/

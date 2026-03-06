@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import sys
+from pathlib import Path
+
+from actr import ActrSystem
+
+APP_NAME = "EchoClient"
+PROJECT_NAME = "echo"
+PROJECT_NAME_SNAKE = "echo"
+SIGNALING_URL = "ws://localhost:8080"
+
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+# Import generated code
+# Note: Run 'actr gen' to generate the workload and remote service stubs
+from generated.echo_workload import EchoWorkload
+from generated.remote.echo_echo_server import echo_pb2 as pb2
+
+
+async def _run_app(ref) -> None:
+    logger.info("[%s] %s app started", PROJECT_NAME_SNAKE, APP_NAME)
+    print(f"===== {APP_NAME} =====")
+    print("Type messages to send to server (type 'quit' to exit):")
+
+    loop = asyncio.get_running_loop()
+    while True:
+        line = await loop.run_in_executor(None, lambda: input("> "))
+        line = line.strip()
+        if line in {"quit", "exit"}:
+            break
+        if not line:
+            continue
+
+        request = pb2.EchoRequest(message=line)
+        try:
+            response_bytes = await ref.call(f"echo.EchoService.Echo", request)
+            response = pb2.EchoResponse.FromString(response_bytes)
+            print(f"[Received reply] {response.reply}")
+        except Exception as e:
+            logger.error("app call failed: %s", e)
+            print(f"[Error] {e}")
+
+
+async def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--actr-toml", required=True)
+    args = ap.parse_args()
+
+    system = await ActrSystem.from_toml(args.actr_toml)
+    workload = EchoWorkload()
+    node = system.attach(workload)
+    ref = await node.start()
+    logger.info("✅ %s started! Actor ID: %s", APP_NAME, ref.actor_id())
+    logger.info("signaling: %s", SIGNALING_URL)
+
+    await _run_app(ref)
+    ref.shutdown()
+    await ref.wait_for_shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))

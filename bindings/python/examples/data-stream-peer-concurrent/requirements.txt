@@ -1,3 +1,0 @@
-protobuf>=5.0.0
-maturin>=1.7.0
-
