@@ -33,7 +33,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, RpcEnvelope};
 use bytes::Bytes;
 
 use crate::outbound::InprocOutGate;
@@ -159,11 +159,8 @@ impl<W: Workload> ActrRef<W> {
             .await?;
 
         // 解码响应
-        R::Response::decode(&*response_bytes).map_err(|e| {
-            ProtocolError::Actr(ActrError::DecodeFailure {
-                message: format!("Failed to decode response: {e}"),
-            })
-        })
+        R::Response::decode(&*response_bytes)
+            .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode response: {e}")))
     }
 
     /// Send one-way message to Actor (DOM → SW, fire-and-forget)

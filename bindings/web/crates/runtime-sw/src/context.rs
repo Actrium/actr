@@ -5,7 +5,9 @@
 use std::rc::Rc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, ActrType, RpcEnvelope, RpcRequest};
+use actr_protocol::{
+    ActorResult, ActrId, ActrIdExt, ActrType, MetadataEntry, RpcEnvelope, RpcRequest,
+};
 use bytes::Bytes;
 
 use crate::WebContext;
@@ -99,7 +101,13 @@ impl WebContext for RuntimeContext {
         if let Some(bridge) = &self.bridge {
             bridge.register_pending_rpc(request_id.clone());
             // 确保与目标的 WebRTC 连接已就绪
-            bridge.ensure_connection(target).await?;
+            if let Err(error) = bridge.ensure_connection(target).await {
+                log::warn!(
+                    "[Context] ensure_connection skipped for {}: {}",
+                    target.to_string_repr(),
+                    error
+                );
+            }
         }
 
         let envelope = RpcEnvelope {
@@ -109,7 +117,10 @@ impl WebContext for RuntimeContext {
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id,
-            metadata: vec![],
+            metadata: vec![MetadataEntry {
+                key: "sender_actr_id".to_string(),
+                value: self.self_id.to_string_repr(),
+            }],
             timeout_ms,
         };
 
@@ -120,7 +131,7 @@ impl WebContext for RuntimeContext {
     async fn discover(&self, target_type: &ActrType) -> ActorResult<ActrId> {
         match &self.bridge {
             Some(bridge) => bridge.discover_target(target_type).await,
-            None => Err(actr_protocol::ProtocolError::TransportError(
+            None => Err(actr_protocol::ActrError::Unavailable(
                 "RuntimeBridge not available for discover".to_string(),
             )),
         }
@@ -129,6 +140,19 @@ impl WebContext for RuntimeContext {
     // ========== 类型安全通信方法 ==========
 
     async fn call<R: RpcRequest>(&self, target: &ActrId, request: R) -> ActorResult<R::Response> {
+        let request_id = js_sys::Math::random().to_string();
+
+        if let Some(bridge) = &self.bridge {
+            bridge.register_pending_rpc(request_id.clone());
+            if let Err(error) = bridge.ensure_connection(target).await {
+                log::warn!(
+                    "[Context] ensure_connection skipped for {}: {}",
+                    target.to_string_repr(),
+                    error
+                );
+            }
+        }
+
         // 1. 编码请求为 protobuf bytes
         let payload: Bytes = request.encode_to_vec().into();
 
@@ -142,8 +166,11 @@ impl WebContext for RuntimeContext {
             error: None,
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
-            request_id: js_sys::Math::random().to_string(), // 简化 ID 生成
-            metadata: vec![],
+            request_id,
+            metadata: vec![MetadataEntry {
+                key: "sender_actr_id".to_string(),
+                value: self.self_id.to_string_repr(),
+            }],
             timeout_ms: 30000,
         };
 
@@ -152,17 +179,25 @@ impl WebContext for RuntimeContext {
 
         // 5. 解码响应
         R::Response::decode(&*response_bytes).map_err(|e| {
-            actr_protocol::ProtocolError::Actr(actr_protocol::ActrError::DecodeFailure {
-                message: format!(
-                    "Failed to decode {}: {}",
-                    std::any::type_name::<R::Response>(),
-                    e
-                ),
-            })
+            actr_protocol::ActrError::DecodeFailure(format!(
+                "Failed to decode {}: {}",
+                std::any::type_name::<R::Response>(),
+                e
+            ))
         })
     }
 
     async fn tell<R: RpcRequest>(&self, target: &ActrId, message: R) -> ActorResult<()> {
+        if let Some(bridge) = &self.bridge {
+            if let Err(error) = bridge.ensure_connection(target).await {
+                log::warn!(
+                    "[Context] ensure_connection skipped for {}: {}",
+                    target.to_string_repr(),
+                    error
+                );
+            }
+        }
+
         // 1. 编码消息
         let payload: Bytes = message.encode_to_vec().into();
 
@@ -177,7 +212,10 @@ impl WebContext for RuntimeContext {
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id: js_sys::Math::random().to_string(), // 简化 ID 生成
-            metadata: vec![],
+            metadata: vec![MetadataEntry {
+                key: "sender_actr_id".to_string(),
+                value: self.self_id.to_string_repr(),
+            }],
             timeout_ms: 0, // 0 表示不等待响应
         };
 
@@ -193,27 +231,27 @@ impl WebContext for RuntimeContext {
     async fn register_stream(
         &self,
         stream_id: String,
-        _callback: Box<dyn FnMut(Bytes) + 'static>,
+        callback: Box<dyn FnMut(Bytes) + 'static>,
     ) -> ActorResult<()> {
-        // TODO: 通过 PostMessage 将注册请求发送到 DOM 端
-        // DOM 端的 StreamHandlerRegistry 会管理实际的回调
-        log::info!(
-            "[Context] register_stream: {} (forwarding to DOM)",
-            stream_id
-        );
+        log::info!("[Context] register_stream: {}", stream_id);
 
-        // 暂时只记录，完整实现需要 SW ↔ DOM 通信管道
-        // 当前阶段返回成功，让调用者知道接口存在
-        Ok(())
+        match &self.bridge {
+            Some(bridge) => bridge.register_stream_handler(stream_id, callback),
+            None => Err(actr_protocol::ActrError::Unavailable(
+                "RuntimeBridge not available for register_stream".to_string(),
+            )),
+        }
     }
 
     async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
-        // TODO: 通过 PostMessage 将注销请求发送到 DOM 端
-        log::info!(
-            "[Context] unregister_stream: {} (forwarding to DOM)",
-            stream_id
-        );
-        Ok(())
+        log::info!("[Context] unregister_stream: {}", stream_id);
+
+        match &self.bridge {
+            Some(bridge) => bridge.unregister_stream_handler(stream_id),
+            None => Err(actr_protocol::ActrError::Unavailable(
+                "RuntimeBridge not available for unregister_stream".to_string(),
+            )),
+        }
     }
 
     async fn register_media_track(

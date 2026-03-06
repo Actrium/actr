@@ -30,6 +30,16 @@ pub trait RuntimeBridge {
 
     /// 确保与目标 Actor 的 WebRTC 连接已就绪并注册 ActrId → Dest 映射
     async fn ensure_connection(&self, target_id: &ActrId) -> ActorResult<()>;
+
+    /// 注册流回调处理器
+    fn register_stream_handler(
+        &self,
+        stream_id: String,
+        callback: Box<dyn FnMut(Bytes) + 'static>,
+    ) -> ActorResult<()>;
+
+    /// 注销流回调处理器
+    fn unregister_stream_handler(&self, stream_id: &str) -> ActorResult<()>;
 }
 
 /// Web 环境的 Actor 执行上下文

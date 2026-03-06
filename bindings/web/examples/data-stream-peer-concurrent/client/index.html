@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Data Stream Peer Concurrent - Client</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+
+        main {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        input,
+        button {
+            border-radius: 10px;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 10px 12px;
+            font-size: 14px;
+        }
+
+        button {
+            background: #2563eb;
+            border-color: #2563eb;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #status.ok {
+            color: #22c55e;
+        }
+
+        #status.err {
+            color: #ef4444;
+        }
+
+        #log {
+            min-height: 320px;
+            max-height: 520px;
+            overflow: auto;
+            white-space: pre-wrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            line-height: 1.5;
+        }
+
+        .muted {
+            color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <div class="card">
+            <h1>Data Stream Peer Concurrent - Client</h1>
+            <p class="muted">浏览器 Actor 作为 data-stream 客户端，发起 Prepare/Start 并接收服务端回流数据。</p>
+            <div id="status">初始化中...</div>
+        </div>
+        <div class="card row">
+            <label>Client ID <input id="clientId" value="client-1" /></label>
+            <label>消息数 <input id="messageCount" type="number" value="3" min="1" max="20" /></label>
+            <button id="startBtn" disabled>开始数据流测试</button>
+        </div>
+        <div class="card">
+            <div id="log"></div>
+        </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

@@ -2,7 +2,7 @@
 //!
 //! Web 版本的 InprocOutGate，用于 SW 内部 Actor 之间的通信
 
-use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
@@ -104,7 +104,7 @@ impl InprocOutGate {
                     drop(guard); // 释放锁
                     self.pending_requests.lock().remove(&envelope.request_id);
 
-                    return Err(ProtocolError::TransportError(
+                    return Err(ActrError::Unavailable(
                         "InprocOutGate message_handler not set".to_string(),
                     ));
                 }
@@ -114,7 +114,7 @@ impl InprocOutGate {
         // 4. 等待响应
         let response = rx
             .await
-            .map_err(|_| ProtocolError::TransportError("Response channel closed".to_string()))?;
+            .map_err(|_| ActrError::Unavailable("Response channel closed".to_string()))?;
 
         Ok(response)
     }
@@ -134,7 +134,7 @@ impl InprocOutGate {
                 handler(target.clone(), envelope);
                 Ok(())
             }
-            None => Err(ProtocolError::TransportError(
+            None => Err(ActrError::Unavailable(
                 "InprocOutGate message_handler not set".to_string(),
             )),
         }
@@ -191,7 +191,7 @@ impl InprocOutGate {
             track_id
         );
 
-        Err(ProtocolError::TransportError(
+        Err(ActrError::NotImplemented(
             "send_media_sample not yet implemented for Web InprocOutGate".to_string(),
         ))
     }

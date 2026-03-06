@@ -1,0 +1,32 @@
+[package]
+name = "data-stream-peer-concurrent-client-wasm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Data stream peer concurrent client WASM"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+actr-runtime-sw = { path = "../../../../crates/runtime-sw" }
+actr-web-common = { path = "../../../../crates/common" }
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = ["console"] }
+
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.0"
+gloo-timers = { version = "0.3", features = ["futures"] }
+
+log = "0.4"
+wasm-logger = "0.2"
+console_error_panic_hook = "0.1"

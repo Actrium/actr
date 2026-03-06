@@ -4,7 +4,7 @@
 
 use crate::transport::OutprocTransportManager;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use actr_web_common::Dest;
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -52,9 +52,9 @@ impl OutprocOutGate {
     /// 获取 ActrId 对应的 Dest
     fn get_dest(&self, actor_id: &ActrId) -> ActorResult<Dest> {
         let map = self.actor_dest_map.lock();
-        map.get(actor_id).cloned().ok_or_else(|| {
-            ProtocolError::TransportError(format!("Actor not found: {:?}", actor_id))
-        })
+        map.get(actor_id)
+            .cloned()
+            .ok_or_else(|| ActrError::NotFound(format!("Actor not found: {:?}", actor_id)))
     }
 
     /// 发送请求并等待响应
@@ -82,12 +82,12 @@ impl OutprocOutGate {
         self.transport
             .send(&dest, PayloadType::RpcReliable, &payload)
             .await
-            .map_err(|e| ProtocolError::TransportError(format!("Send failed: {}", e)))?;
+            .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
 
         // 5. 等待响应
         let response = rx
             .await
-            .map_err(|_| ProtocolError::TransportError("Response channel closed".to_string()))?;
+            .map_err(|_| ActrError::Unavailable("Response channel closed".to_string()))?;
 
         Ok(response)
     }
@@ -108,7 +108,7 @@ impl OutprocOutGate {
         self.transport
             .send(&dest, PayloadType::RpcSignal, &payload)
             .await
-            .map_err(|e| ProtocolError::TransportError(format!("Send failed: {}", e)))?;
+            .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
 
         Ok(())
     }
@@ -133,7 +133,7 @@ impl OutprocOutGate {
         self.transport
             .send(&dest, payload_type, &data)
             .await
-            .map_err(|e| ProtocolError::TransportError(format!("Send failed: {}", e)))?;
+            .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
 
         Ok(())
     }

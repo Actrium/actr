@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Data Stream Peer Concurrent - Server</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            background: #020617;
+            color: #e2e8f0;
+        }
+
+        main {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        #log {
+            min-height: 420px;
+            max-height: 620px;
+            overflow: auto;
+            white-space: pre-wrap;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            line-height: 1.5;
+        }
+
+        .ok {
+            color: #22c55e;
+        }
+
+        .err {
+            color: #ef4444;
+        }
+
+        .muted {
+            color: #94a3b8;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <div class="card">
+            <h1>Data Stream Peer Concurrent - Server</h1>
+            <p class="muted">浏览器 Actor 作为 data-stream 服务端，同时接收客户端流并回流服务端数据。</p>
+            <div id="status">初始化中...</div>
+        </div>
+        <div class="card">
+            <div id="log"></div>
+        </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

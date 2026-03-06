@@ -1,0 +1,12 @@
+node_modules/
+client/node_modules/
+server/node_modules/
+client/public/data_stream_client*.js
+client/public/data_stream_client*.wasm
+client/public/data_stream_client*.d.ts
+server/public/data_stream_server*.js
+server/public/data_stream_server*.wasm
+server/public/data_stream_server*.d.ts
+client/wasm/target/
+server/wasm/target/
+*.log

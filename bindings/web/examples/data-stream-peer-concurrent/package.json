@@ -1,0 +1,12 @@
+{
+    "name": "@actr/example-data-stream-peer-concurrent",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "test:auto": "node test-auto.js"
+    },
+    "devDependencies": {
+        "puppeteer": "^24.6.1"
+    }
+}

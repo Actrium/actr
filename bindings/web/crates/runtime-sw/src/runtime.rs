@@ -53,6 +53,8 @@ use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
 use crate::outbound::OutGate;
 use crate::web_context::RuntimeBridge;
 
+type StreamHandler = Rc<RefCell<Box<dyn FnMut(Bytes)>>>;
+
 #[derive(Serialize)]
 struct RpcError {
     code: i32,
@@ -1630,6 +1632,12 @@ impl SwRuntime {
     /// - RPC 响应（有 pending request）→ 直接处理（Fast Path ~1-3ms）
     /// - RPC 请求（入站请求）→ Mailbox → MailboxProcessor（State Path ~30-40ms）
     fn handle_fast_path(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
+        let (_, channel_id) = parse_peer_and_channel(&payload.stream_id);
+
+        if matches!(channel_id, 2 | 3) {
+            return self.handle_data_stream(payload);
+        }
+
         let envelope = RpcEnvelope::decode(&payload.data[..])
             .map_err(|e| JsValue::from_str(&format!("Failed to decode RpcEnvelope: {e}")))?;
 
@@ -1674,6 +1682,36 @@ impl SwRuntime {
 
             Ok(())
         }
+    }
+
+    fn handle_data_stream(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
+        let (logical_stream_id, data) = decode_stream_payload(&payload.data)?;
+
+        let handler = CLIENTS.with(|cell| {
+            cell.borrow().get(&self.client_id).and_then(|ctx| {
+                ctx.stream_handlers
+                    .borrow()
+                    .get(&logical_stream_id)
+                    .cloned()
+            })
+        });
+
+        if let Some(handler) = handler {
+            log::info!(
+                "[SW] Fast Path stream dispatch: stream_id={} bytes={}",
+                logical_stream_id,
+                data.len()
+            );
+            (handler.borrow_mut())(data);
+        } else {
+            log::warn!(
+                "[SW] No stream handler registered: stream_id={} peer_stream={}",
+                logical_stream_id,
+                payload.stream_id
+            );
+        }
+
+        Ok(())
     }
 
     fn is_channel_open(&self, peer_id: &str, channel_id: u32) -> bool {
@@ -1947,6 +1985,8 @@ struct ClientContext {
     outproc_gate: Arc<crate::outbound::OutprocOutGate>,
     /// OutprocTransportManager — 管理每个 Dest 的 DestTransport
     transport_manager: Arc<crate::transport::OutprocTransportManager>,
+    /// DataStream 回调注册表（每个浏览器 tab 独立）
+    stream_handlers: Rc<RefCell<HashMap<String, StreamHandler>>>,
 }
 
 /// SwRuntimeBridge - RuntimeBridge 的实现
@@ -1956,6 +1996,7 @@ struct ClientContext {
 struct SwRuntimeBridge {
     runtime: Rc<Mutex<SwRuntime>>,
     outproc_gate: Arc<crate::outbound::OutprocOutGate>,
+    client_id: String,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -1972,20 +2013,100 @@ impl RuntimeBridge for SwRuntimeBridge {
 
     async fn discover_target(&self, target_type: &ActrType) -> actr_protocol::ActorResult<ActrId> {
         let mut rt = self.runtime.lock().await;
-        rt.discover_target_for_type(target_type).await.map_err(|e| {
-            actr_protocol::ProtocolError::TransportError(format!("Discover failed: {:?}", e))
-        })
+        rt.discover_target_for_type(target_type)
+            .await
+            .map_err(|e| actr_protocol::ActrError::Unavailable(format!("Discover failed: {:?}", e)))
     }
 
     async fn ensure_connection(&self, target_id: &ActrId) -> actr_protocol::ActorResult<()> {
         let mut rt = self.runtime.lock().await;
         let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
-            actr_protocol::ProtocolError::TransportError(format!("Failed to ensure peer: {:?}", e))
+            actr_protocol::ActrError::Unavailable(format!("Failed to ensure peer: {:?}", e))
         })?;
         self.outproc_gate
             .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));
         Ok(())
     }
+
+    fn register_stream_handler(
+        &self,
+        stream_id: String,
+        callback: Box<dyn FnMut(Bytes) + 'static>,
+    ) -> actr_protocol::ActorResult<()> {
+        CLIENTS.with(|cell| {
+            let map = cell.borrow();
+            let Some(ctx) = map.get(&self.client_id) else {
+                return Err(actr_protocol::ActrError::Unavailable(format!(
+                    "Client context not found: {}",
+                    self.client_id
+                )));
+            };
+
+            ctx.stream_handlers
+                .borrow_mut()
+                .insert(stream_id.clone(), Rc::new(RefCell::new(callback)));
+
+            log::info!(
+                "[SW] Stream handler registered: client_id={} stream_id={}",
+                self.client_id,
+                stream_id
+            );
+            Ok(())
+        })
+    }
+
+    fn unregister_stream_handler(&self, stream_id: &str) -> actr_protocol::ActorResult<()> {
+        CLIENTS.with(|cell| {
+            let map = cell.borrow();
+            let Some(ctx) = map.get(&self.client_id) else {
+                return Err(actr_protocol::ActrError::Unavailable(format!(
+                    "Client context not found: {}",
+                    self.client_id
+                )));
+            };
+
+            ctx.stream_handlers.borrow_mut().remove(stream_id);
+            log::info!(
+                "[SW] Stream handler unregistered: client_id={} stream_id={}",
+                self.client_id,
+                stream_id
+            );
+            Ok(())
+        })
+    }
+}
+
+fn parse_peer_and_channel(stream_id: &str) -> (String, u32) {
+    if let Some(last_colon) = stream_id.rfind(':') {
+        let peer = &stream_id[..last_colon];
+        let channel = stream_id[last_colon + 1..].parse::<u32>().unwrap_or(0);
+        (peer.to_string(), channel)
+    } else {
+        (stream_id.to_string(), 0)
+    }
+}
+
+fn decode_stream_payload(data: &[u8]) -> Result<(String, Bytes), JsValue> {
+    if data.len() < 4 {
+        return Err(JsValue::from_str(
+            "Invalid DataStream payload: missing stream_id length",
+        ));
+    }
+
+    let stream_id_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if data.len() < 4 + stream_id_len {
+        return Err(JsValue::from_str(
+            "Invalid DataStream payload: truncated stream_id",
+        ));
+    }
+
+    let logical_stream_id = String::from_utf8(data[4..4 + stream_id_len].to_vec())
+        .map_err(|e| JsValue::from_str(&format!("Invalid DataStream stream_id: {}", e)))?;
+
+    Ok((
+        logical_stream_id,
+        Bytes::copy_from_slice(&data[4 + stream_id_len..]),
+    ))
 }
 
 thread_local! {
@@ -2140,6 +2261,12 @@ pub async fn register_client(
                     .map(|p| p.to_vec())
                     .unwrap_or_default();
                 let stream_id = String::from_utf8(record.from.clone()).unwrap_or_default();
+                let caller_id = envelope
+                    .metadata
+                    .iter()
+                    .find(|entry| entry.key == "sender_actr_id")
+                    .and_then(|entry| ActrId::from_string_repr(&entry.value).ok());
+                let (peer_id, _channel_id) = parse_peer_and_channel(&stream_id);
 
                 log::info!(
                     "[Scheduler] Dispatching to handler: route_key={} request_id={} is_tell={}",
@@ -2153,12 +2280,19 @@ pub async fn register_client(
                 let (outgate, bridge) = CLIENTS.with(|cell| {
                     let map = cell.borrow();
                     if let Some(ctx) = map.get(&client_id) {
+                        if let Some(caller_id) = caller_id.clone() {
+                            ctx.outproc_gate.register_actor(
+                                caller_id,
+                                actr_web_common::Dest::Peer(peer_id.clone()),
+                            );
+                        }
                         let outgate = ctx.system.outgate().unwrap_or_else(|| {
                             OutGate::inproc(Arc::clone(ctx.system.inproc_gate()))
                         });
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
                             outproc_gate: Arc::clone(&ctx.outproc_gate),
+                            client_id: client_id.clone(),
                         });
                         (outgate, bridge)
                     } else {
@@ -2173,6 +2307,7 @@ pub async fn register_client(
                                     Arc::new(crate::transport::WebWireBuilder::new()),
                                 )),
                             )),
+                            client_id: client_id.clone(),
                         });
                         (gate, bridge)
                     }
@@ -2184,7 +2319,7 @@ pub async fn register_client(
                 let handler_ctx: Rc<RuntimeContext> = Rc::new(
                     RuntimeContext::new(
                         actor_id,
-                        None, // TODO: extract caller from envelope
+                        caller_id,
                         envelope.traceparent.clone().unwrap_or_default(),
                         envelope.tracestate.clone().unwrap_or_default(),
                         request_id.clone(),
@@ -2339,6 +2474,7 @@ pub async fn register_client(
         dispatcher: Rc::clone(&dispatcher),
         outproc_gate: Arc::clone(&outproc_gate),
         transport_manager: Arc::clone(&transport_manager),
+        stream_handlers: Rc::new(RefCell::new(HashMap::new())),
     });
 
     CLIENTS.with(|cell| {
@@ -2458,6 +2594,7 @@ pub async fn unregister_client(client_id: String) {
     log::info!("[SW] unregister_client: client_id={}", client_id);
     let ctx = CLIENTS.with(|cell| cell.borrow_mut().remove(&client_id));
     if let Some(ctx) = ctx {
+        ctx.stream_handlers.borrow_mut().clear();
         let rt = ctx.runtime.lock().await;
         rt.signaling.close();
         log::info!(
@@ -2524,6 +2661,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
             runtime: Rc::clone(runtime),
             outproc_gate: Arc::clone(&ctx.outproc_gate),
+            client_id: client_id.clone(),
         });
         let handler_ctx: Rc<RuntimeContext> = Rc::new(
             RuntimeContext::new(
