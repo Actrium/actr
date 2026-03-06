@@ -326,35 +326,39 @@ impl OutprocOutGate {
         // 4. Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);
 
-        // 5. Send message with per-PayloadType retry on transient failures
-        if let Err(e) = self.send_with_retry(&dest, payload_type, &data).await {
-            // Send failed after all retries — remove pending request
-            self.pending_requests
-                .write()
-                .await
-                .remove(&envelope.request_id);
-            return Err(e);
-        }
-        tracing::debug!("✅ Sent request to {:?}", target);
-
-        // 6. Wait for response (timeout from envelope.timeout_ms)
+        // 5. Unified timeout: covers both retry + wait-for-response
+        //    so the user-perceived latency never exceeds envelope.timeout_ms.
         let timeout = std::time::Duration::from_millis(envelope.timeout_ms as u64);
+        let request_id = envelope.request_id.clone();
 
-        match tokio::time::timeout(timeout, response_rx).await {
-            Ok(Ok(result)) => {
-                // result is ActorResult<Bytes>, propagate it
-                tracing::debug!("✅ Received response for request: {}", envelope.request_id);
-                result
+        let result = tokio::time::timeout(timeout, async {
+            // 5a. Send with per-PayloadType retry on transient failures
+            self.send_with_retry(&dest, payload_type, &data).await?;
+            tracing::debug!("✅ Sent request to {:?}", target);
+
+            // 5b. Wait for response
+            match response_rx.await {
+                Ok(result) => result,
+                Err(_) => Err(ActrError::Unavailable(
+                    "Response channel closed".to_string(),
+                )),
             }
-            Ok(Err(_)) => Err(ActrError::Unavailable(
-                "Response channel closed".to_string(),
-            )),
+        })
+        .await;
+
+        match result {
+            Ok(inner) => {
+                if inner.is_err() {
+                    // Send failed or channel closed — clean up pending request
+                    self.pending_requests.write().await.remove(&request_id);
+                } else {
+                    tracing::debug!("✅ Received response for request: {}", request_id);
+                }
+                inner
+            }
             Err(_) => {
-                // Timeout
-                self.pending_requests
-                    .write()
-                    .await
-                    .remove(&envelope.request_id);
+                // Timeout — covers both send retry and response wait
+                self.pending_requests.write().await.remove(&request_id);
                 Err(ActrError::Unavailable(format!(
                     "Request timeout: {}ms",
                     envelope.timeout_ms
