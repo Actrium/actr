@@ -69,6 +69,7 @@ members = [
 # - tools/protoc-gen/{typescript,python,swift,kotlin}: non-Rust plugins
 exclude = [
     "examples/rust/*",
+    "examples/audio-capture/*",
     "bindings/web",
     "bindings/python",
     "bindings/typescript",

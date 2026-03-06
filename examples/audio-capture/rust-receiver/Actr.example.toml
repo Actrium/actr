@@ -1,0 +1,37 @@
+edition = 1
+
+[package]
+name = "audio-capture-receiver"
+description = "Audio capture receiver - saves incoming MediaTrack audio to WAV"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example", "media"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "AudioRecorder"
+
+[dependencies]
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 0
+
+[system.discovery]
+visible = true
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+types = ["acme:AudioCapture"]
+
+[scripts]
+dev = "cargo run"

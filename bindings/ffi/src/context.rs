@@ -1,4 +1,4 @@
-use actr_framework::{Bytes, Context, DataStream, Dest};
+use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample as FrameworkMediaSample};
 use actr_protocol::{ActrId, PayloadType};
 use actr_runtime::context::RuntimeContext;
 use async_trait::async_trait;
@@ -15,6 +15,18 @@ pub trait DataStreamCallback: Send + Sync + 'static {
     async fn on_stream(
         &self,
         chunk: crate::types::DataStream,
+        sender: crate::types::ActrId,
+    ) -> ActrResult<()>;
+}
+
+/// Callback interface for MediaTrack events.
+#[uniffi::export(callback_interface)]
+#[async_trait]
+pub trait MediaTrackCallback: Send + Sync + 'static {
+    /// Handle an incoming media sample from a WebRTC native track.
+    async fn on_sample(
+        &self,
+        sample: crate::types::MediaSample,
         sender: crate::types::ActrId,
     ) -> ActrResult<()>;
 }
@@ -178,5 +190,77 @@ impl ContextBridge {
         let proto_type: actr_protocol::ActrType = target_type.into();
         let id = self.inner.discover_route_candidate(&proto_type).await?;
         Ok(id.into())
+    }
+
+    /// Add a media track to the WebRTC connection with the target
+    pub async fn add_media_track(
+        &self,
+        target: crate::types::ActrId,
+        track_id: String,
+        codec: String,
+        media_type: String,
+    ) -> crate::error::ActrResult<()> {
+        let target_id: ActrId = target.into();
+        self.inner
+            .add_media_track(&Dest::Actor(target_id), &track_id, &codec, &media_type)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a media track from the WebRTC connection with the target.
+    pub async fn remove_media_track(
+        &self,
+        target: crate::types::ActrId,
+        track_id: String,
+    ) -> crate::error::ActrResult<()> {
+        let target_id: ActrId = target.into();
+        self.inner
+            .remove_media_track(&Dest::Actor(target_id), &track_id)
+            .await?;
+        Ok(())
+    }
+
+    /// Send a media sample via WebRTC native RTP track
+    pub async fn send_media_sample(
+        &self,
+        target: crate::types::ActrId,
+        track_id: String,
+        sample: crate::types::MediaSample,
+    ) -> crate::error::ActrResult<()> {
+        let target_id: ActrId = target.into();
+        let framework_sample: FrameworkMediaSample = sample.into();
+        self.inner
+            .send_media_sample(&Dest::Actor(target_id), &track_id, framework_sample)
+            .await?;
+        Ok(())
+    }
+
+    /// Register a callback for incoming media track samples
+    pub async fn register_media_track(
+        &self,
+        track_id: String,
+        callback: Box<dyn MediaTrackCallback>,
+    ) -> crate::error::ActrResult<()> {
+        let callback: Arc<dyn MediaTrackCallback> = Arc::from(callback);
+        self.inner
+            .register_media_track(track_id, move |sample, sender| {
+                let callback = callback.clone();
+                Box::pin(async move {
+                    let sample: crate::types::MediaSample = sample.into();
+                    let sender: crate::types::ActrId = sender.into();
+                    callback
+                        .on_sample(sample, sender)
+                        .await
+                        .map_err(actr_protocol::ActrError::from)
+                })
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Unregister a media track callback
+    pub async fn unregister_media_track(&self, track_id: String) -> crate::error::ActrResult<()> {
+        self.inner.unregister_media_track(&track_id).await?;
+        Ok(())
     }
 }

@@ -8,12 +8,14 @@ import PackageDescription
 let env = ProcessInfo.processInfo.environment
 let bindingsPath = env["ACTR_BINDINGS_PATH"] ?? "ActrBindings"
 let overrideBinaryPath = env["ACTR_BINARY_PATH"]
+let localBinaryPath = "ActrFFI.xcframework"
 
 let releaseTag = env["ACTR_BINARY_TAG"] ?? "v0.1.29"
 let remoteBinaryURL = "https://github.com/actor-rtc/actr-swift/releases/download/\(releaseTag)/ActrFFI.xcframework.zip"
 let remoteBinaryChecksum = env["ACTR_BINARY_CHECKSUM"] ?? "403e8f520bf728edd4d01565e6ac72485c8adae9c4cb3fdbd7718c2a0af6137c"
 
 let manifestDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let localBinaryAbsolutePath = URL(fileURLWithPath: localBinaryPath, relativeTo: URL(fileURLWithPath: manifestDir)).path
 
 func binaryPathRelativeToPackageRoot(_ path: String) -> String? {
     if path.hasPrefix("/") {
@@ -38,6 +40,11 @@ if let overrideBinaryPath {
             checksum: remoteBinaryChecksum
         )
     }
+} else if FileManager.default.fileExists(atPath: localBinaryAbsolutePath) {
+    actrBinaryTarget = .binaryTarget(
+        name: "ActrFFILib",
+        path: localBinaryPath
+    )
 } else {
     actrBinaryTarget = .binaryTarget(
         name: "ActrFFILib",
@@ -73,6 +80,7 @@ let package = Package(
             name: "ActrBindings",
             dependencies: ["ActrFFI", "ActrFFILib"],
             path: bindingsPath,
+            exclude: ["actrFFI.c"],
             sources: ["Actr.swift"]
         ),
         .target(

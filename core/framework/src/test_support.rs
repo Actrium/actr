@@ -122,6 +122,20 @@ impl Context for DummyContext {
     ) -> ActorResult<()> {
         Err(Self::not_implemented("DummyContext::send_media_sample"))
     }
+
+    async fn add_media_track(
+        &self,
+        _target: &Dest,
+        _track_id: &str,
+        _codec: &str,
+        _media_type: &str,
+    ) -> ActorResult<()> {
+        Err(Self::not_implemented("DummyContext::add_media_track"))
+    }
+
+    async fn remove_media_track(&self, _target: &Dest, _track_id: &str) -> ActorResult<()> {
+        Err(Self::not_implemented("DummyContext::remove_media_track"))
+    }
 }
 
 #[cfg(test)]

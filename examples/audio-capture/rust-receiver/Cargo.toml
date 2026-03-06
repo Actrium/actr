@@ -1,0 +1,19 @@
+[package]
+name = "audio-capture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+actr-framework = { path = "../../../core/framework" }
+actr-protocol = { path = "../../../core/protocol" }
+actr-runtime = { path = "../../../core/runtime" }
+actr-config = { path = "../../../core/config" }
+tokio = { version = "1.41", features = ["full"] }
+tracing = "0.1"
+async-trait = "0.1"
+bytes = { version = "1.8" }
+opus = "0.3.1"

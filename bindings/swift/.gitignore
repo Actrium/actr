@@ -1,5 +1,6 @@
 .DS_Store
 /.build
+/ActrFFI.xcframework/
 /dist
 /Packages
 xcuserdata/

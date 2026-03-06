@@ -98,7 +98,8 @@ struct SystemSection {
 
 #[derive(Debug, Deserialize)]
 struct DeploymentSection {
-    realm: Option<u32>,
+    #[serde(alias = "realm")]
+    realm_id: Option<u32>,
 }
 
 /// Build payload string for credential signing
@@ -136,7 +137,7 @@ fn parse_realm_ids(actr_tomls: &[PathBuf]) -> Result<HashSet<u32>> {
 
         if let Some(system) = config.system {
             if let Some(deployment) = system.deployment {
-                if let Some(realm) = deployment.realm {
+                if let Some(realm) = deployment.realm_id {
                     info!("Found realm {} in {}", realm, path.display());
                     realm_ids.insert(realm);
                 }

@@ -428,6 +428,38 @@ private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
+    typealias FfiType = UInt8
+    typealias SwiftType = UInt8
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -470,6 +502,22 @@ fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
 
     public static func write(_ value: Int64, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterFloat: FfiConverterPrimitive {
+    typealias FfiType = Float
+    typealias SwiftType = Float
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Float {
+        return try lift(readFloat(&buf))
+    }
+
+    public static func write(_ value: Float, into buf: inout [UInt8]) {
+        writeFloat(&buf, lower(value))
     }
 }
 
@@ -1148,6 +1196,11 @@ public func FfiConverterTypeActrSystemWrapper_lower(_ value: ActrSystemWrapper) 
 public protocol ContextBridgeProtocol: AnyObject, Sendable {
     
     /**
+     * Add a media track to the WebRTC connection with the target
+     */
+    func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws 
+    
+    /**
      * Call a remote actor via RPC (simplified for FFI)
      *
      * # Arguments
@@ -1174,9 +1227,19 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     func discover(targetType: ActrType) async throws  -> ActrId
     
     /**
+     * Register a callback for incoming media track samples
+     */
+    func registerMediaTrack(trackId: String, callback: MediaTrackCallback) async throws 
+    
+    /**
      * Register a DataStream callback for a stream ID.
      */
     func registerStream(streamId: String, callback: DataStreamCallback) async throws 
+    
+    /**
+     * Remove a media track from the WebRTC connection with the target.
+     */
+    func removeMediaTrack(target: ActrId, trackId: String) async throws 
     
     /**
      * Send a DataStream to a remote actor (Fast Path)
@@ -1189,6 +1252,11 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     func sendDataStream(target: ActrId, chunk: DataStream, payloadType: PayloadType) async throws 
     
     /**
+     * Send a media sample via WebRTC native RTP track
+     */
+    func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample) async throws 
+    
+    /**
      * Send a one-way message to an actor (fire-and-forget)
      *
      * # Arguments
@@ -1198,6 +1266,11 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * - `payload`: Message payload bytes (protobuf encoded)
      */
     func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws 
+    
+    /**
+     * Unregister a media track callback
+     */
+    func unregisterMediaTrack(trackId: String) async throws 
     
     /**
      * Unregister a DataStream callback for a stream ID.
@@ -1257,6 +1330,26 @@ open class ContextBridge: ContextBridgeProtocol, @unchecked Sendable {
 
     
     /**
+     * Add a media track to the WebRTC connection with the target
+     */
+open func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_add_media_track(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeActrId_lower(target),FfiConverterString.lower(trackId),FfiConverterString.lower(codec),FfiConverterString.lower(mediaType)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_void,
+            completeFunc: ffi_actr_rust_future_complete_void,
+            freeFunc: ffi_actr_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
      * Call a remote actor via RPC (simplified for FFI)
      *
      * # Arguments
@@ -1313,6 +1406,26 @@ open func discover(targetType: ActrType)async throws  -> ActrId  {
 }
     
     /**
+     * Register a callback for incoming media track samples
+     */
+open func registerMediaTrack(trackId: String, callback: MediaTrackCallback)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_register_media_track(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(trackId),FfiConverterCallbackInterfaceMediaTrackCallback_lower(callback)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_void,
+            completeFunc: ffi_actr_rust_future_complete_void,
+            freeFunc: ffi_actr_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
      * Register a DataStream callback for a stream ID.
      */
 open func registerStream(streamId: String, callback: DataStreamCallback)async throws   {
@@ -1322,6 +1435,26 @@ open func registerStream(streamId: String, callback: DataStreamCallback)async th
                 uniffi_actr_fn_method_contextbridge_register_stream(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(streamId),FfiConverterCallbackInterfaceDataStreamCallback_lower(callback)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_void,
+            completeFunc: ffi_actr_rust_future_complete_void,
+            freeFunc: ffi_actr_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Remove a media track from the WebRTC connection with the target.
+     */
+open func removeMediaTrack(target: ActrId, trackId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_remove_media_track(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeActrId_lower(target),FfiConverterString.lower(trackId)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_void,
@@ -1358,6 +1491,26 @@ open func sendDataStream(target: ActrId, chunk: DataStream, payloadType: Payload
 }
     
     /**
+     * Send a media sample via WebRTC native RTP track
+     */
+open func sendMediaSample(target: ActrId, trackId: String, sample: MediaSample)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_send_media_sample(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeActrId_lower(target),FfiConverterString.lower(trackId),FfiConverterTypeMediaSample_lower(sample)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_void,
+            completeFunc: ffi_actr_rust_future_complete_void,
+            freeFunc: ffi_actr_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
      * Send a one-way message to an actor (fire-and-forget)
      *
      * # Arguments
@@ -1373,6 +1526,26 @@ open func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, pa
                 uniffi_actr_fn_method_contextbridge_tell_raw(
                     self.uniffiCloneHandle(),
                     FfiConverterTypeActrId_lower(target),FfiConverterString.lower(routeKey),FfiConverterTypePayloadType_lower(payloadType),FfiConverterData.lower(payload)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_void,
+            completeFunc: ffi_actr_rust_future_complete_void,
+            freeFunc: ffi_actr_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Unregister a media track callback
+     */
+open func unregisterMediaTrack(trackId: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_unregister_media_track(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(trackId)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_void,
@@ -1765,6 +1938,153 @@ public func FfiConverterTypeNetworkEventHandleWrapper_lower(_ value: NetworkEven
 
 
 
+
+
+/**
+ * Reusable Opus encoder for Swift audio capture.
+ */
+public protocol OpusEncoderProtocol: AnyObject, Sendable {
+    
+    /**
+     * Encode one PCM float frame into one Opus packet.
+     */
+    func encode(pcm: [Float]) throws  -> Data
+    
+    func frameSize()  -> UInt16
+    
+}
+/**
+ * Reusable Opus encoder for Swift audio capture.
+ */
+open class OpusEncoder: OpusEncoderProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_actr_fn_clone_opusencoder(self.handle, $0) }
+    }
+    /**
+     * Create an Opus encoder for fixed-size PCM float frames.
+     */
+public convenience init(sampleRate: UInt32, channels: UInt8, frameSize: UInt16)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_constructor_opusencoder_new(
+        FfiConverterUInt32.lower(sampleRate),
+        FfiConverterUInt8.lower(channels),
+        FfiConverterUInt16.lower(frameSize),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        try! rustCall { uniffi_actr_fn_free_opusencoder(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Encode one PCM float frame into one Opus packet.
+     */
+open func encode(pcm: [Float])throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_method_opusencoder_encode(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceFloat.lower(pcm),$0
+    )
+})
+}
+    
+open func frameSize() -> UInt16  {
+    return try!  FfiConverterUInt16.lift(try! rustCall() {
+    uniffi_actr_fn_method_opusencoder_frame_size(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOpusEncoder: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = OpusEncoder
+
+    public static func lift(_ handle: UInt64) throws -> OpusEncoder {
+        return OpusEncoder(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: OpusEncoder) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> OpusEncoder {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: OpusEncoder, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOpusEncoder_lift(_ handle: UInt64) throws -> OpusEncoder {
+    return try FfiConverterTypeOpusEncoder.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOpusEncoder_lower(_ value: OpusEncoder) -> UInt64 {
+    return FfiConverterTypeOpusEncoder.lower(value)
+}
+
+
+
+
 /**
  * Actor identifier (realm + serial_number + type)
  */
@@ -1982,6 +2302,69 @@ public func FfiConverterTypeDataStream_lift(_ buf: RustBuffer) throws -> DataStr
 #endif
 public func FfiConverterTypeDataStream_lower(_ value: DataStream) -> RustBuffer {
     return FfiConverterTypeDataStream.lower(value)
+}
+
+
+/**
+ * Media sample for WebRTC native track
+ */
+public struct MediaSample: Equatable, Hashable {
+    public var data: Data
+    public var timestamp: UInt32
+    public var codec: String
+    public var mediaType: MediaType
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(data: Data, timestamp: UInt32, codec: String, mediaType: MediaType) {
+        self.data = data
+        self.timestamp = timestamp
+        self.codec = codec
+        self.mediaType = mediaType
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension MediaSample: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMediaSample: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MediaSample {
+        return
+            try MediaSample(
+                data: FfiConverterData.read(from: &buf), 
+                timestamp: FfiConverterUInt32.read(from: &buf), 
+                codec: FfiConverterString.read(from: &buf), 
+                mediaType: FfiConverterTypeMediaType.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MediaSample, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.data, into: &buf)
+        FfiConverterUInt32.write(value.timestamp, into: &buf)
+        FfiConverterString.write(value.codec, into: &buf)
+        FfiConverterTypeMediaType.write(value.mediaType, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMediaSample_lift(_ buf: RustBuffer) throws -> MediaSample {
+    return try FfiConverterTypeMediaSample.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMediaSample_lower(_ value: MediaSample) -> RustBuffer {
+    return FfiConverterTypeMediaSample.lower(value)
 }
 
 
@@ -2370,6 +2753,74 @@ public func FfiConverterTypeActrError_lower(_ value: ActrError) -> RustBuffer {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Media type for MediaTrack
+ */
+
+public enum MediaType: Equatable, Hashable {
+    
+    case audio
+    case video
+
+
+
+}
+
+#if compiler(>=6)
+extension MediaType: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMediaType: FfiConverterRustBuffer {
+    typealias SwiftType = MediaType
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MediaType {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .audio
+        
+        case 2: return .video
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MediaType, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .audio:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .video:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMediaType_lift(_ buf: RustBuffer) throws -> MediaType {
+    return try FfiConverterTypeMediaType.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMediaType_lower(_ value: MediaType) -> RustBuffer {
+    return FfiConverterTypeMediaType.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Network event types for runtime lifecycle callbacks
  */
 
@@ -2701,6 +3152,155 @@ public func FfiConverterCallbackInterfaceDataStreamCallback_lower(_ v: DataStrea
 
 
 
+/**
+ * Callback interface for MediaTrack events.
+ */
+public protocol MediaTrackCallback: AnyObject, Sendable {
+    
+    /**
+     * Handle an incoming media sample from a WebRTC native track.
+     */
+    func onSample(sample: MediaSample, sender: ActrId) async throws 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMediaTrackCallback {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceMediaTrackCallback] = [UniffiVTableCallbackInterfaceMediaTrackCallback(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMediaTrackCallback.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MediaTrackCallback: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMediaTrackCallback.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MediaTrackCallback: handle missing in uniffiClone")
+            }
+        },
+        onSample: { (
+            uniffiHandle: UInt64,
+            sample: RustBuffer,
+            sender: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMediaTrackCallback.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.onSample(
+                     sample: try FfiConverterTypeMediaSample_lift(sample),
+                     sender: try FfiConverterTypeActrId_lift(sender)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeActrError_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitMediaTrackCallback() {
+    uniffi_actr_fn_init_callback_vtable_mediatrackcallback(UniffiCallbackInterfaceMediaTrackCallback.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMediaTrackCallback {
+    fileprivate static let handleMap = UniffiHandleMap<MediaTrackCallback>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMediaTrackCallback : FfiConverter {
+    typealias SwiftType = MediaTrackCallback
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMediaTrackCallback_lift(_ handle: UInt64) throws -> MediaTrackCallback {
+    return try FfiConverterCallbackInterfaceMediaTrackCallback.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMediaTrackCallback_lower(_ v: MediaTrackCallback) -> UInt64 {
+    return FfiConverterCallbackInterfaceMediaTrackCallback.lower(v)
+}
+
+
+
+
 public protocol WorkloadBridge: AnyObject, Sendable {
     
     /**
@@ -3005,6 +3605,31 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceFloat: FfiConverterRustBuffer {
+    typealias SwiftType = [Float]
+
+    public static func write(_ value: [Float], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterFloat.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Float] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Float]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterFloat.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeActrId: FfiConverterRustBuffer {
     typealias SwiftType = [ActrId]
 
@@ -3241,19 +3866,34 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 49856) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_contextbridge_call_raw() != 32688) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_discover() != 16612) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_contextbridge_register_media_track() != 44495) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_contextbridge_register_stream() != 17477) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_contextbridge_remove_media_track() != 23065) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_send_data_stream() != 17067) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_contextbridge_send_media_sample() != 49083) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_contextbridge_tell_raw() != 35223) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 6533) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010) {
@@ -3271,10 +3911,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 45770) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_opusencoder_encode() != 30032) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_opusencoder_frame_size() != 61591) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_file() != 63620) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_constructor_opusencoder_new() != 55174) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_datastreamcallback_on_stream() != 55109) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 21659) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_workloadbridge_on_start() != 1270) {
@@ -3288,6 +3940,7 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitDataStreamCallback()
+    uniffiCallbackInitMediaTrackCallback()
     uniffiCallbackInitWorkloadBridge()
     return InitializationResult.ok
 }()

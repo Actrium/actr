@@ -240,3 +240,59 @@ impl From<runtime_lifecycle::NetworkEventResult> for NetworkEventResult {
         }
     }
 }
+
+/// Media type for MediaTrack
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MediaType {
+    Audio,
+    Video,
+}
+
+impl From<MediaType> for actr_framework::MediaType {
+    fn from(mt: MediaType) -> Self {
+        match mt {
+            MediaType::Audio => actr_framework::MediaType::Audio,
+            MediaType::Video => actr_framework::MediaType::Video,
+        }
+    }
+}
+
+impl From<actr_framework::MediaType> for MediaType {
+    fn from(mt: actr_framework::MediaType) -> Self {
+        match mt {
+            actr_framework::MediaType::Audio => MediaType::Audio,
+            actr_framework::MediaType::Video => MediaType::Video,
+        }
+    }
+}
+
+/// Media sample for WebRTC native track
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MediaSample {
+    pub data: Vec<u8>,
+    pub timestamp: u32,
+    pub codec: String,
+    pub media_type: MediaType,
+}
+
+impl From<MediaSample> for actr_framework::MediaSample {
+    fn from(s: MediaSample) -> Self {
+        Self {
+            data: s.data.into(),
+            timestamp: s.timestamp,
+            codec: s.codec,
+            media_type: s.media_type.into(),
+        }
+    }
+}
+
+impl From<actr_framework::MediaSample> for MediaSample {
+    fn from(s: actr_framework::MediaSample) -> Self {
+        Self {
+            data: s.data.to_vec(),
+            timestamp: s.timestamp,
+            codec: s.codec,
+            media_type: s.media_type.into(),
+        }
+    }
+}

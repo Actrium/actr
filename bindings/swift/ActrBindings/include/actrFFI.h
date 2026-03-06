@@ -249,6 +249,12 @@ typedef void (*UniffiCallbackInterfaceDataStreamCallbackMethod0)(uint64_t, RustB
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_MEDIA_TRACK_CALLBACK_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_MEDIA_TRACK_CALLBACK_METHOD0
+typedef void (*UniffiCallbackInterfaceMediaTrackCallbackMethod0)(uint64_t, RustBuffer, RustBuffer, UniffiForeignFutureCompleteVoid _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_WORKLOAD_BRIDGE_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_WORKLOAD_BRIDGE_METHOD0
 typedef void (*UniffiCallbackInterfaceWorkloadBridgeMethod0)(uint64_t, uint64_t, UniffiForeignFutureCompleteVoid _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
@@ -274,6 +280,15 @@ typedef struct UniffiVTableCallbackInterfaceDataStreamCallback {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceDataStreamCallbackMethod0 _Nonnull onStream;
 } UniffiVTableCallbackInterfaceDataStreamCallback;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MEDIA_TRACK_CALLBACK
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_MEDIA_TRACK_CALLBACK
+typedef struct UniffiVTableCallbackInterfaceMediaTrackCallback {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceMediaTrackCallbackMethod0 _Nonnull onSample;
+} UniffiVTableCallbackInterfaceMediaTrackCallback;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_WORKLOAD_BRIDGE
@@ -382,6 +397,11 @@ uint64_t uniffi_actr_fn_clone_contextbridge(uint64_t handle, RustCallStatus *_No
 void uniffi_actr_fn_free_contextbridge(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
+uint64_t uniffi_actr_fn_method_contextbridge_add_media_track(uint64_t ptr, RustBuffer target, RustBuffer track_id, RustBuffer codec, RustBuffer media_type
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_CALL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_CALL_RAW
 uint64_t uniffi_actr_fn_method_contextbridge_call_raw(uint64_t ptr, RustBuffer target, RustBuffer route_key, RustBuffer payload_type, RustBuffer payload, int64_t timeout_ms
@@ -392,9 +412,19 @@ uint64_t uniffi_actr_fn_method_contextbridge_call_raw(uint64_t ptr, RustBuffer t
 uint64_t uniffi_actr_fn_method_contextbridge_discover(uint64_t ptr, RustBuffer target_type
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
+uint64_t uniffi_actr_fn_method_contextbridge_register_media_track(uint64_t ptr, RustBuffer track_id, uint64_t callback
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 uint64_t uniffi_actr_fn_method_contextbridge_register_stream(uint64_t ptr, RustBuffer stream_id, uint64_t callback
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
+uint64_t uniffi_actr_fn_method_contextbridge_remove_media_track(uint64_t ptr, RustBuffer target, RustBuffer track_id
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_SEND_DATA_STREAM
@@ -402,9 +432,19 @@ uint64_t uniffi_actr_fn_method_contextbridge_register_stream(uint64_t ptr, RustB
 uint64_t uniffi_actr_fn_method_contextbridge_send_data_stream(uint64_t ptr, RustBuffer target, RustBuffer chunk, RustBuffer payload_type
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
+uint64_t uniffi_actr_fn_method_contextbridge_send_media_sample(uint64_t ptr, RustBuffer target, RustBuffer track_id, RustBuffer sample
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_TELL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_TELL_RAW
 uint64_t uniffi_actr_fn_method_contextbridge_tell_raw(uint64_t ptr, RustBuffer target, RustBuffer route_key, RustBuffer payload_type, RustBuffer payload
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
+uint64_t uniffi_actr_fn_method_contextbridge_unregister_media_track(uint64_t ptr, RustBuffer track_id
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_UNREGISTER_STREAM
@@ -452,9 +492,39 @@ uint64_t uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_lost(uin
 uint64_t uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_type_changed(uint64_t ptr, int8_t is_wifi, int8_t is_cellular
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_OPUSENCODER
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_OPUSENCODER
+uint64_t uniffi_actr_fn_clone_opusencoder(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_OPUSENCODER
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_OPUSENCODER
+void uniffi_actr_fn_free_opusencoder(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_OPUSENCODER_NEW
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_OPUSENCODER_NEW
+uint64_t uniffi_actr_fn_constructor_opusencoder_new(uint32_t sample_rate, uint8_t channels, uint16_t frame_size, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_OPUSENCODER_ENCODE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_OPUSENCODER_ENCODE
+RustBuffer uniffi_actr_fn_method_opusencoder_encode(uint64_t ptr, RustBuffer pcm, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_OPUSENCODER_FRAME_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_OPUSENCODER_FRAME_SIZE
+uint16_t uniffi_actr_fn_method_opusencoder_frame_size(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_DATASTREAMCALLBACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_DATASTREAMCALLBACK
 void uniffi_actr_fn_init_callback_vtable_datastreamcallback(const UniffiVTableCallbackInterfaceDataStreamCallback* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_MEDIATRACKCALLBACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_MEDIATRACKCALLBACK
+void uniffi_actr_fn_init_callback_vtable_mediatrackcallback(const UniffiVTableCallbackInterfaceMediaTrackCallback* _Nonnull vtable
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_WORKLOADBRIDGE
@@ -782,6 +852,12 @@ uint16_t uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_hand
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
+uint16_t uniffi_actr_checksum_method_contextbridge_add_media_track(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 uint16_t uniffi_actr_checksum_method_contextbridge_call_raw(void
@@ -794,9 +870,21 @@ uint16_t uniffi_actr_checksum_method_contextbridge_discover(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_MEDIA_TRACK
+uint16_t uniffi_actr_checksum_method_contextbridge_register_media_track(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REGISTER_STREAM
 uint16_t uniffi_actr_checksum_method_contextbridge_register_stream(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_REMOVE_MEDIA_TRACK
+uint16_t uniffi_actr_checksum_method_contextbridge_remove_media_track(void
     
 );
 #endif
@@ -806,9 +894,21 @@ uint16_t uniffi_actr_checksum_method_contextbridge_send_data_stream(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_SEND_MEDIA_SAMPLE
+uint16_t uniffi_actr_checksum_method_contextbridge_send_media_sample(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_TELL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_TELL_RAW
 uint16_t uniffi_actr_checksum_method_contextbridge_tell_raw(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_UNREGISTER_MEDIA_TRACK
+uint16_t uniffi_actr_checksum_method_contextbridge_unregister_media_track(void
     
 );
 #endif
@@ -842,15 +942,39 @@ uint16_t uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_ty
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_ENCODE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_ENCODE
+uint16_t uniffi_actr_checksum_method_opusencoder_encode(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_OPUSENCODER_FRAME_SIZE
+uint16_t uniffi_actr_checksum_method_opusencoder_frame_size(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_FILE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_FILE
 uint16_t uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_file(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_OPUSENCODER_NEW
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_OPUSENCODER_NEW
+uint16_t uniffi_actr_checksum_constructor_opusencoder_new(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_DATASTREAMCALLBACK_ON_STREAM
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_DATASTREAMCALLBACK_ON_STREAM
 uint16_t uniffi_actr_checksum_method_datastreamcallback_on_stream(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
+uint16_t uniffi_actr_checksum_method_mediatrackcallback_on_sample(void
     
 );
 #endif

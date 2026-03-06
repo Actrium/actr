@@ -664,6 +664,12 @@ impl WebRtcConnection {
         use webrtc::api::media_engine::MIME_TYPE_VP8;
         use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 
+        // Reuse existing track so repeated start/stop flows can safely retry.
+        if let Some((track, _sender)) = self.media_tracks.read().await.get(&track_id).cloned() {
+            tracing::info!("♻️ Reusing existing media track: {}", track_id);
+            return Ok(track);
+        }
+
         // Determine MIME type based on codec and media_type
         let mime_type = match (media_type, codec.to_uppercase().as_str()) {
             ("video", "H264") => MIME_TYPE_H264,
@@ -715,6 +721,18 @@ impl WebRtcConnection {
         );
 
         Ok(track)
+    }
+
+    /// Remove a media track and its RTP sender from the PeerConnection
+    pub async fn remove_media_track(&self, track_id: &str) -> NetworkResult<()> {
+        let removed = self.media_tracks.write().await.remove(track_id);
+        if let Some((_track, rtp_sender)) = removed {
+            self.peer_connection.remove_track(&rtp_sender).await?;
+            self.track_sequence_numbers.write().await.remove(track_id);
+            self.track_ssrcs.write().await.remove(track_id);
+            tracing::info!("🗑️ Removed media track: {}", track_id);
+        }
+        Ok(())
     }
 
     /// Get existing media track by ID

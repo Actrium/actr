@@ -13,9 +13,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 
-CRATE_DIR="${ROOT_DIR}/libactr"
+WORKSPACE_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+CRATE_DIR="${ROOT_DIR}/../ffi"
 CRATE_LIB_NAME="actr"
 FRAMEWORK_NAME="ActrFFI"
+TARGET_DIR="${WORKSPACE_ROOT}/target"
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 
 BINDINGS_DIR="${ACTR_BINDINGS_PATH:-${ROOT_DIR}/ActrBindings}"
 HEADERS_DIR="${BINDINGS_DIR}/include"
@@ -40,11 +44,8 @@ require_cmd xcodebuild
 require_cmd uniffi-bindgen
 require_cmd rustc
 
-echo "Checking libactr submodule..."
-if [[ ! -d "${CRATE_DIR}/.git" ]]; then
-  echo "Initializing libactr submodule..."
-  git submodule update --init --recursive
-fi
+echo "Checking libactr crate..."
+echo "Using libactr crate at: ${CRATE_DIR}"
 
 require_file "${CRATE_DIR}/Cargo.toml"
 require_file "${CRATE_DIR}/uniffi.toml"
@@ -73,9 +74,9 @@ rm -f \
   "${HEADERS_DIR}/actrFFI.h"
 
 echo "[2/4] Generating Swift bindings (host: ${HOST_TARGET})"
-(cd "${CRATE_DIR}" && cargo build --release --target "${HOST_TARGET}")
+(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${HOST_TARGET}")
 
-DYLIB_PATH="${CRATE_DIR}/target/${HOST_TARGET}/release/lib${CRATE_LIB_NAME}.dylib"
+DYLIB_PATH="${TARGET_DIR}/${HOST_TARGET}/release/lib${CRATE_LIB_NAME}.dylib"
 if [[ ! -f "${DYLIB_PATH}" ]]; then
   echo "error: expected host dylib not found: ${DYLIB_PATH}" >&2
   echo "hint: ensure Cargo.toml has crate-type = [\"cdylib\", \"staticlib\"]" >&2
@@ -141,19 +142,19 @@ if [[ -f "${MODULEMAP_FILE}" ]]; then
 fi
 
 echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
-(cd "${CRATE_DIR}" && cargo build --release --target aarch64-apple-ios)
-(cd "${CRATE_DIR}" && cargo build --release --target aarch64-apple-ios-sim)
-(cd "${CRATE_DIR}" && cargo build --release --target aarch64-apple-darwin --features macos-oslog)
+(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-ios)
+(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-ios-sim)
+(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-darwin --features macos-oslog)
 
 echo "[4/4] Creating XCFramework"
 rm -rf "${XCFRAMEWORK_DIR}"
 
 xcodebuild -create-xcframework \
-  -library "${CRATE_DIR}/target/aarch64-apple-ios/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-ios/release/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
-  -library "${CRATE_DIR}/target/aarch64-apple-ios-sim/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-ios-sim/release/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
-  -library "${CRATE_DIR}/target/aarch64-apple-darwin/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-darwin/release/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
   -output "${XCFRAMEWORK_DIR}"
 

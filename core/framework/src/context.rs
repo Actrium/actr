@@ -272,6 +272,32 @@ pub trait Context: Send + Sync + Clone + 'static {
         track_id: &str,
         sample: MediaSample,
     ) -> ActorResult<()>;
+
+    /// Add a media track to the WebRTC connection with the target
+    ///
+    /// Creates a new RTP track on the PeerConnection and triggers SDP renegotiation.
+    /// Must be called before `send_media_sample()` for the given track.
+    ///
+    /// # Parameters
+    ///
+    /// - `target`: Target destination
+    /// - `track_id`: Media track identifier
+    /// - `codec`: Codec name (e.g., "VP8", "H264", "OPUS")
+    /// - `media_type`: Media type ("video" or "audio")
+    async fn add_media_track(
+        &self,
+        target: &crate::Dest,
+        track_id: &str,
+        codec: &str,
+        media_type: &str,
+    ) -> ActorResult<()>;
+
+    /// Remove a media track from the WebRTC connection with the target.
+    ///
+    /// If the track exists, this removes the RTP sender from the PeerConnection
+    /// and triggers SDP renegotiation so repeated start/stop cycles do not keep
+    /// stale tracks alive on the connection.
+    async fn remove_media_track(&self, target: &crate::Dest, track_id: &str) -> ActorResult<()>;
 }
 
 /// Media sample data from WebRTC native track

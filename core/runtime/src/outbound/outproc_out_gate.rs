@@ -454,6 +454,49 @@ impl OutprocOutGate {
         Ok(())
     }
 
+    /// Add a media track to the WebRTC connection with the target
+    pub async fn add_media_track(
+        &self,
+        target: &ActrId,
+        track_id: &str,
+        codec: &str,
+        media_type: &str,
+    ) -> ActorResult<()> {
+        tracing::debug!(
+            "📤 OutprocGate::add_media_track to {:?}, track_id={}, codec={}, type={}",
+            target,
+            track_id,
+            codec,
+            media_type
+        );
+
+        let coordinator = self.webrtc_coordinator.as_ref().ok_or_else(|| {
+            ActrError::NotImplemented("MediaTrack requires WebRTC coordinator".to_string())
+        })?;
+
+        coordinator
+            .add_dynamic_track(target, track_id.to_string(), codec, media_type)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Remove a media track from the WebRTC connection with the target.
+    pub async fn remove_media_track(&self, target: &ActrId, track_id: &str) -> ActorResult<()> {
+        tracing::debug!(
+            "📤 OutprocGate::remove_media_track to {:?}, track_id={}",
+            target,
+            track_id
+        );
+
+        let coordinator = self.webrtc_coordinator.as_ref().ok_or_else(|| {
+            ActrError::NotImplemented("MediaTrack requires WebRTC coordinator".to_string())
+        })?;
+
+        coordinator.remove_dynamic_track(target, track_id).await?;
+        Ok(())
+    }
+
     /// Send DataStream (Fast Path)
     ///
     /// # Parameters

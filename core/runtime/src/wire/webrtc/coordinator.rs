@@ -653,7 +653,13 @@ impl WebRtcCoordinator {
                             }
                         }
                         SdpType::RenegotiationOffer => {
-                            tracing::warn!("⚠️ Received RenegotiationOffer, not supported yet");
+                            tracing::info!(
+                                "📥 Received RenegotiationOffer from {:?}",
+                                source.serial_number
+                            );
+                            if let Err(e) = self.handle_renegotiation_offer(&source, sd.sdp).await {
+                                tracing::error!("❌ Failed to handle RenegotiationOffer: {}", e);
+                            }
                         }
                         SdpType::IceRestartOffer => {
                             tracing::info!(
@@ -1160,38 +1166,52 @@ impl WebRtcCoordinator {
             .await?;
         tracing::debug!("Pre-created Reliable DataChannel for ICE gathering");
 
-        // 3.5. Pre-create media tracks for sending (MUST be done before creating Offer)
-        let _video_track = webrtc_conn
-            .add_media_track("video-track-1".to_string(), "VP8", "video")
-            .await?;
-        tracing::debug!("Pre-created video MediaTrack: video-track-1");
-
         // 4. Register on_track callback for receiving MediaTrack (WebRTC native media)
         let media_registry = Arc::clone(&self.media_frame_registry);
         let sender_id = target.clone();
         peer_connection_arc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let media_registry = Arc::clone(&media_registry);
             let sender_id = sender_id.clone();
+
+            // Extract codec and media type from track metadata before spawning
+            let track_codec = track.codec();
+            let codec_name = track_codec
+                .capability
+                .mime_type
+                .split('/')
+                .last()
+                .unwrap_or("unknown")
+                .to_uppercase();
+            let media_type = match track.kind() {
+                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio => {
+                    actr_framework::MediaType::Audio
+                }
+                _ => actr_framework::MediaType::Video,
+            };
+
             Box::pin(async move {
                 let track_id = track.id();
                 tracing::info!(
-                    "📹 Received MediaTrack: track_id={}, sender={}",
+                    "📹 Received MediaTrack: track_id={}, codec={}, media_type={:?}, sender={}",
                     track_id,
+                    codec_name,
+                    media_type,
                     sender_id.to_string_repr()
                 );
 
+                let codec_name = codec_name.clone();
+                let media_type = media_type;
                 tokio::spawn(async move {
                     loop {
                         match track.read_rtp().await {
                             Ok((rtp_packet, _attributes)) => {
                                 let payload_data = rtp_packet.payload.clone();
                                 let timestamp = rtp_packet.header.timestamp;
-                                let codec = "unknown".to_string();
                                 let sample = actr_framework::MediaSample {
                                     data: payload_data,
                                     timestamp,
-                                    codec,
-                                    media_type: actr_framework::MediaType::Video,
+                                    codec: codec_name.clone(),
+                                    media_type,
                                 };
                                 media_registry
                                     .dispatch(&track_id, sample, sender_id.clone())
@@ -1466,49 +1486,53 @@ impl WebRtcCoordinator {
             })
         }));
 
-        // 3.5. Pre-create media tracks for sending (MUST be done before creating Answer)
-        // Create a default video track for demo purposes
-        let _video_track = webrtc_conn
-            .add_media_track("video-track-1".to_string(), "VP8", "video")
-            .await?;
-        tracing::debug!("Pre-created video MediaTrack: video-track-1 (answerer)");
-
         // 4. Register on_track callback for receiving MediaTrack (WebRTC native media)
         let media_registry = Arc::clone(&self.media_frame_registry);
         let sender_id = from.clone();
         peer_connection_arc.on_track(Box::new(move |track, _receiver, _transceiver| {
             let media_registry = Arc::clone(&media_registry);
             let sender_id = sender_id.clone();
+
+            // Extract codec and media type from track metadata before spawning
+            let track_codec = track.codec();
+            let codec_name = track_codec
+                .capability
+                .mime_type
+                .split('/')
+                .last()
+                .unwrap_or("unknown")
+                .to_uppercase();
+            let media_type = match track.kind() {
+                webrtc::rtp_transceiver::rtp_codec::RTPCodecType::Audio => {
+                    actr_framework::MediaType::Audio
+                }
+                _ => actr_framework::MediaType::Video,
+            };
+
             Box::pin(async move {
                 let track_id = track.id();
                 tracing::info!(
-                    "📹 Received MediaTrack: track_id={}, sender={}",
+                    "📹 Received MediaTrack: track_id={}, codec={}, media_type={:?}, sender={}",
                     track_id,
+                    codec_name,
+                    media_type,
                     sender_id.to_string_repr()
                 );
 
-                // Spawn task to read RTP packets from track
+                let codec_name = codec_name.clone();
+                let media_type = media_type;
                 tokio::spawn(async move {
                     loop {
-                        // Read RTP packet from track
                         match track.read_rtp().await {
                             Ok((rtp_packet, _attributes)) => {
-                                // Extract payload and timestamp
                                 let payload_data = rtp_packet.payload.clone();
                                 let timestamp = rtp_packet.header.timestamp;
-
-                                // TODO: Extract codec from track (for now use placeholder)
-                                let codec = "unknown".to_string();
-
-                                // Create MediaSample
                                 let sample = actr_framework::MediaSample {
                                     data: payload_data,
                                     timestamp,
-                                    codec,
-                                    media_type: actr_framework::MediaType::Video, // TODO: detect from track
+                                    codec: codec_name.clone(),
+                                    media_type,
                                 };
-
-                                // Dispatch to registered callback
                                 media_registry
                                     .dispatch(&track_id, sample, sender_id.clone())
                                     .await;
@@ -2020,6 +2044,34 @@ impl WebRtcCoordinator {
         target: &ActrId,
         data: &[u8],
     ) -> ActorResult<()> {
+        self.ensure_connected(target).await?;
+
+        // Get corresponding WebRtcConnection
+        let webrtc_conn = {
+            let peers = self.peers.read().await;
+            peers
+                .get(target)
+                .map(|state| state.webrtc_conn.clone())
+                .ok_or_else(|| {
+                    ActrError::Internal(format!("Peer connection not found: {target:?}"))
+                })?
+        };
+
+        // Get Reliable Lane
+        let lane = webrtc_conn
+            .get_lane(PayloadType::RpcReliable)
+            .await
+            .map_err(|e| ActrError::Internal(format!("Failed to get Lane: {e}")))?;
+
+        // Send message (convert to Bytes)
+        lane.send(Bytes::copy_from_slice(data))
+            .await
+            .map_err(|e| ActrError::Internal(format!("Failed to send message: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn ensure_connected(self: &Arc<Self>, target: &ActrId) -> ActorResult<()> {
         // Check if connection exists or is being established
         let has_connection = loop {
             let state = {
@@ -2100,28 +2152,6 @@ impl WebRtcCoordinator {
                 }
             }
         }
-
-        // Get corresponding WebRtcConnection
-        let webrtc_conn = {
-            let peers = self.peers.read().await;
-            peers
-                .get(target)
-                .map(|state| state.webrtc_conn.clone())
-                .ok_or_else(|| {
-                    ActrError::Internal(format!("Peer connection not found: {target:?}"))
-                })?
-        };
-
-        // Get Reliable Lane
-        let lane = webrtc_conn
-            .get_lane(PayloadType::RpcReliable)
-            .await
-            .map_err(|e| ActrError::Internal(format!("Failed to get Lane: {e}")))?;
-
-        // Send message (convert to Bytes)
-        lane.send(Bytes::copy_from_slice(data))
-            .await
-            .map_err(|e| ActrError::Internal(format!("Failed to send message: {e}")))?;
 
         Ok(())
     }
@@ -2400,6 +2430,17 @@ impl WebRtcCoordinator {
             })
     }
 
+    /// Map codec name to RTP dynamic payload type
+    fn codec_to_payload_type(codec: &str) -> u8 {
+        match codec.to_uppercase().as_str() {
+            "VP8" => 96,
+            "H264" => 97,
+            "VP9" => 98,
+            "OPUS" => 111,
+            _ => 96,
+        }
+    }
+
     /// Send media sample to target Actor via WebRTC Track
     ///
     /// # Arguments
@@ -2456,9 +2497,9 @@ impl WebRtcCoordinator {
                 version: 2,
                 padding: false,
                 extension: false,
-                marker: true,     // Mark each sample (simplified)
-                payload_type: 96, // Dynamic payload type (simplified - TODO: codec-specific)
-                sequence_number,  // Per-track sequence number (wraps at 65535)
+                marker: true, // Mark each sample (simplified)
+                payload_type: Self::codec_to_payload_type(&sample.codec),
+                sequence_number, // Per-track sequence number (wraps at 65535)
                 timestamp: sample.timestamp,
                 ssrc, // Unique SSRC per track (randomly generated)
                 ..Default::default()
@@ -2499,7 +2540,7 @@ impl WebRtcCoordinator {
     /// This triggers SDP renegotiation on the existing PeerConnection.
     /// The connection remains active and existing tracks continue transmitting.
     pub async fn add_dynamic_track(
-        &self,
+        self: &Arc<Self>,
         target: &actr_protocol::ActrId,
         track_id: String,
         codec: &str,
@@ -2512,6 +2553,9 @@ impl WebRtcCoordinator {
             media_type,
             target.to_string_repr()
         );
+
+        // Ensure the first track addition can establish the connection on demand.
+        self.ensure_connected(target).await?;
 
         // 1. Get existing peer state and extract needed parts
         let (webrtc_conn, peer_connection) = {
@@ -2549,6 +2593,54 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    /// Remove a dynamic media track and trigger SDP renegotiation when needed.
+    pub async fn remove_dynamic_track(
+        self: &Arc<Self>,
+        target: &actr_protocol::ActrId,
+        track_id: &str,
+    ) -> ActorResult<()> {
+        tracing::info!(
+            "🗑️ Removing dynamic track: track_id={}, target={}",
+            track_id,
+            target.to_string_repr()
+        );
+
+        let Some((webrtc_conn, peer_connection)) = ({
+            let peers = self.peers.read().await;
+            peers
+                .get(target)
+                .map(|state| (state.webrtc_conn.clone(), state.peer_connection.clone()))
+        }) else {
+            tracing::debug!(
+                "Skip removing track {} because no connection exists for {}",
+                track_id,
+                target.to_string_repr()
+            );
+            return Ok(());
+        };
+
+        if webrtc_conn.get_media_track(track_id).await.is_none() {
+            tracing::debug!("Skip removing missing track {}", track_id);
+            return Ok(());
+        }
+
+        webrtc_conn.remove_media_track(track_id).await?;
+
+        let root_span = tracing::info_span!("remove_track", target_id = %target.to_string_repr());
+        #[cfg(feature = "opentelemetry")]
+        self.root_context_map
+            .write()
+            .await
+            .insert(target.clone(), root_span.context());
+
+        self.renegotiate_connection(target, &peer_connection)
+            .instrument(root_span)
+            .await?;
+
+        tracing::info!("✅ Dynamic track removed successfully: {}", track_id);
+        Ok(())
+    }
+
     /// Renegotiate SDP with existing peer
     ///
     /// Creates new Offer with updated track list and exchanges SDP.
@@ -2582,7 +2674,7 @@ impl WebRtcCoordinator {
 
         // 3. Send Offer via signaling server
         let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::Offer as i32,
+            r#type: SdpType::RenegotiationOffer as i32,
             sdp: offer_sdp,
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);

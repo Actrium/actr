@@ -14,12 +14,14 @@
 mod context;
 mod error;
 mod logger;
+mod opus;
 mod runtime;
 mod types;
 mod workload;
 
 pub use error::*;
 pub use logger::*;
+pub use opus::*;
 pub use runtime::*;
 pub use types::*;
 pub use workload::*;

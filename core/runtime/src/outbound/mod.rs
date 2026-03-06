@@ -166,6 +166,35 @@ impl OutGate {
         }
     }
 
+    /// Add a media track to the WebRTC connection
+    pub async fn add_media_track(
+        &self,
+        target: &ActrId,
+        track_id: &str,
+        codec: &str,
+        media_type: &str,
+    ) -> ActorResult<()> {
+        match self {
+            OutGate::InprocOut(_gate) => Err(ActrError::NotImplemented(
+                "MediaTrack is only supported for remote actors via WebRTC".to_string(),
+            )),
+            OutGate::OutprocOut(gate) => {
+                gate.add_media_track(target, track_id, codec, media_type)
+                    .await
+            }
+        }
+    }
+
+    /// Remove a media track from the WebRTC connection.
+    pub async fn remove_media_track(&self, target: &ActrId, track_id: &str) -> ActorResult<()> {
+        match self {
+            OutGate::InprocOut(_gate) => Err(ActrError::NotImplemented(
+                "MediaTrack is only supported for remote actors via WebRTC".to_string(),
+            )),
+            OutGate::OutprocOut(gate) => gate.remove_media_track(target, track_id).await,
+        }
+    }
+
     /// 发送 DataStream（Fast Path 数据流）
     ///
     /// # 参数

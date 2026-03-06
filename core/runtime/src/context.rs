@@ -756,4 +756,23 @@ impl Context for RuntimeContext {
         // 3. Send via OutGate (delegates to WebRTC Track)
         gate.send_media_sample(target_id, track_id, sample).await
     }
+
+    async fn add_media_track(
+        &self,
+        target: &Dest,
+        track_id: &str,
+        codec: &str,
+        media_type: &str,
+    ) -> ActorResult<()> {
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.add_media_track(target_id, track_id, codec, media_type)
+            .await
+    }
+
+    async fn remove_media_track(&self, target: &Dest, track_id: &str) -> ActorResult<()> {
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.remove_media_track(target_id, track_id).await
+    }
 }

@@ -1,0 +1,6 @@
+.DS_Store
+
+AudioCaptureApp/.build/
+AudioCaptureApp/.swiftpm/
+rust-receiver/target/
+rust-receiver/recorded_audio.wav

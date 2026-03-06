@@ -2,6 +2,8 @@
 
 This repository collects ready-to-run ACTR examples and is now organized as a single Rust workspace targeting edition 2024.
 
+For the cross-language audio capture demo, use the dedicated guide at `../audio-capture/README.md`.
+
 ## Actrix Configuration
 
 All examples share the workspace-root `actrix-config.toml`. Do not keep or add per-example copies; start scripts launch actrix from the repository root using this config.
@@ -42,6 +44,7 @@ Run workspace commands from the repository root. Examples:
 - `bash data-stream/start.sh` – spin up actrix (root config), receiver, and sender.
 - `bash shell-actr-echo/start.sh` – run the echo server/client against the root actrix config.
 - `bash media-relay/start.sh` – launch the relay demo; actrix starts from the workspace root config.
+- `../audio-capture/README.md` – run the Swift sender plus Rust receiver audio capture demo.
 
 ### Running Individual Examples
 
