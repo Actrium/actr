@@ -596,6 +596,7 @@ impl SwRuntime {
             service_spec: None,
             acl: self.acl.clone(),
             service: None,
+            ws_address: None,
         };
         let envelope = SignalingEnvelope {
             envelope_version: 1,

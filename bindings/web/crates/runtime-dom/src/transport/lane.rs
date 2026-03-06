@@ -152,7 +152,7 @@ impl DataLane {
                         })?;
 
                 let result = js_sys::Reflect::apply(
-                    post_message_fn.unchecked_ref(),
+                    post_message_fn.unchecked_ref::<js_sys::Function>(),
                     port.as_ref(),
                     &js_sys::Array::of2(&js_view.into(), &transfer_list),
                 );
