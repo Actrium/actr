@@ -230,15 +230,15 @@ impl KeyStorageBackend for PostgresBackend {
         Ok(count as u32)
     }
 
-    async fn cleanup_expired_keys(&self) -> KsResult<u32> {
+    async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
+        let cutoff = now - tolerance_seconds as i64;
 
-        // 删除过期的密钥（expires_at > 0 且 < now）
         let result = sqlx::query("DELETE FROM keys WHERE expires_at > 0 AND expires_at < $1")
-            .bind(now)
+            .bind(cutoff)
             .execute(&self.pool)
             .await
             .map_err(|e| KsError::Internal(format!("Failed to cleanup expired keys: {e}")))?;
@@ -246,7 +246,11 @@ impl KeyStorageBackend for PostgresBackend {
         let deleted_count = result.rows_affected() as u32;
 
         if deleted_count > 0 {
-            crate::recording::info!("Cleaned up {} expired keys from PostgreSQL", deleted_count);
+            crate::recording::info!(
+                "Cleaned up {} expired keys from PostgreSQL (tolerance {}s)",
+                deleted_count,
+                tolerance_seconds
+            );
         }
 
         Ok(deleted_count)
@@ -371,7 +375,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         // 清理过期密钥
-        let cleaned = backend.cleanup_expired_keys().await.unwrap();
+        let cleaned = backend.cleanup_expired_keys(0).await.unwrap();
         assert_eq!(cleaned, 1);
         assert_eq!(backend.get_key_count().await.unwrap(), 0);
 
@@ -402,7 +406,7 @@ mod tests {
         assert_eq!(backend.get_key_count().await.unwrap(), 1);
 
         // 清理不应删除永不过期的密钥
-        let cleaned = backend.cleanup_expired_keys().await.unwrap();
+        let cleaned = backend.cleanup_expired_keys(0).await.unwrap();
         assert_eq!(cleaned, 0);
         assert_eq!(backend.get_key_count().await.unwrap(), 1);
 

@@ -32,6 +32,18 @@ pub struct ControlGrpcApiConfig {
     pub max_clock_skew_secs: u64,
 }
 
+/// Admin UI 配置（仅当 `head = "admin_ui"` 时生效）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminUiConfig {
+    /// 登录密码（admin_ui 模式必填，≥8 字符）
+    #[serde(default)]
+    pub password: String,
+
+    /// JWT 会话过期时间（秒），默认 86400（24 小时）
+    #[serde(default = "default_session_expiry_secs")]
+    pub session_expiry_secs: u64,
+}
+
 /// Control 常驻配置。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ControlConfig {
@@ -42,6 +54,10 @@ pub struct ControlConfig {
     /// gRPC 头参数（仅 grpc_api 模式使用）
     #[serde(default)]
     pub grpc_api: ControlGrpcApiConfig,
+
+    /// Admin UI 参数（仅 admin_ui 模式使用）
+    #[serde(default)]
+    pub admin_ui: AdminUiConfig,
 }
 
 fn default_grpc_node_id() -> String {
@@ -54,6 +70,19 @@ fn default_grpc_node_name() -> String {
 
 fn default_max_clock_skew_secs() -> u64 {
     300
+}
+
+fn default_session_expiry_secs() -> u64 {
+    86400
+}
+
+impl Default for AdminUiConfig {
+    fn default() -> Self {
+        Self {
+            password: String::new(),
+            session_expiry_secs: default_session_expiry_secs(),
+        }
+    }
 }
 
 impl Default for ControlGrpcApiConfig {
@@ -72,6 +101,7 @@ impl Default for ControlConfig {
         Self {
             head: ControlHead::AdminUi,
             grpc_api: ControlGrpcApiConfig::default(),
+            admin_ui: AdminUiConfig::default(),
         }
     }
 }
@@ -90,9 +120,27 @@ impl ControlGrpcApiConfig {
 impl ControlConfig {
     pub fn validate(&self) -> Result<(), String> {
         match self.head {
-            ControlHead::AdminUi => Ok(()),
+            ControlHead::AdminUi => self.validate_admin_ui(),
             ControlHead::GrpcApi => self.validate_grpc_api(),
         }
+    }
+
+    fn validate_admin_ui(&self) -> Result<(), String> {
+        let cfg = &self.admin_ui;
+
+        if cfg.password.is_empty() {
+            return Err("control.admin_ui.password is required when head = admin_ui".to_string());
+        }
+
+        if cfg.password.len() < 8 {
+            return Err("control.admin_ui.password must be at least 8 characters".to_string());
+        }
+
+        if cfg.session_expiry_secs == 0 {
+            return Err("control.admin_ui.session_expiry_secs must be greater than 0".to_string());
+        }
+
+        Ok(())
     }
 
     fn validate_grpc_api(&self) -> Result<(), String> {
@@ -138,6 +186,48 @@ mod tests {
     }
 
     #[test]
+    fn admin_ui_requires_password() {
+        let cfg = ControlConfig {
+            head: ControlHead::AdminUi,
+            admin_ui: AdminUiConfig {
+                password: String::new(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn admin_ui_rejects_short_password() {
+        let cfg = ControlConfig {
+            head: ControlHead::AdminUi,
+            admin_ui: AdminUiConfig {
+                password: "short".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn admin_ui_accepts_valid_password() {
+        let cfg = ControlConfig {
+            head: ControlHead::AdminUi,
+            admin_ui: AdminUiConfig {
+                password: "changeme123".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
     fn grpc_api_requires_shared_secret() {
         let cfg = ControlConfig {
             head: ControlHead::GrpcApi,
@@ -145,6 +235,7 @@ mod tests {
                 shared_secret: String::new(),
                 ..Default::default()
             },
+            ..Default::default()
         };
 
         assert!(cfg.validate().is_err());
@@ -159,6 +250,7 @@ mod tests {
                     .to_string(),
                 ..Default::default()
             },
+            ..Default::default()
         };
 
         assert!(cfg.validate().is_ok());

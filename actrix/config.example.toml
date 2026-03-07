@@ -46,29 +46,53 @@ actrix_shared_key = "example-key-please-replace-with-secure-random-value-32chars
 
 # Recording pipeline (logging + tracing)
 [recording]
-# Unified filter for logs and tracing (EnvFilter syntax)
-# If RUST_LOG is set, it overrides this value.
-filter_level = "info"
-# Global sink (optional, single value)
-# Supported URI schemes:
-# - file://...
-# - otlp+http://...
-# - otlp+grpc://...
+# Global sink — default for all channels. Per-channel sink overrides below.
+# Supported URI schemes: file://, otlp+http://, otlp+grpc://
+# If omitted, output goes to stderr.
 # sink = "file:///var/log/actrix/actrix.log"
 service_name = "actrix"
 
-# Optional per-channel overrides (global + override)
-# [recording.observability]
+# Each channel has its own semantic filter and optional sink override.
+# RUST_LOG env var overrides all per-channel filters (pass-all mode).
+
+[recording.observability]
+# Resolution: off / digest / detailed / full
+filter = "digest"
 # sink = "file:///var/log/actrix/observability.log"
-#
-# [recording.audit]
+
+[recording.audit]
+# Scope: off / mutations / all
+filter = "mutations"         # only write actions (create/update/delete/rotate)
 # sink = "otlp+http://127.0.0.1:4318/v1/logs"
-#
-# [recording.security]
+
+[recording.security]
+# Severity: off / critical / high / medium / all
+filter = "all"               # security events should not be missed
 # sink = "otlp+grpc://127.0.0.1:4317"
-#
-# [recording.operations]
+
+[recording.operations]
+# Detail: off / lifecycle / detailed
+filter = "lifecycle"         # start/stop, deploy, reload
 # sink = "file:///var/log/actrix/operations.log"
+
+# ============================================================================
+# Monitoring Endpoints (/health, /metrics)
+# ============================================================================
+# Two auth methods, usable independently or together (OR logic):
+#   1. IP whitelist — CIDR notation (bare IP implies /32 or /128)
+#   2. HTTP Basic Auth — htpasswd file (each line: user:password)
+# When both are configured, matching either allows access.
+# When neither is configured (default), endpoints are publicly accessible.
+#
+# Per-service overrides completely replace global config for that service.
+[monitoring]
+# allowed_ips = ["127.0.0.1/32", "10.0.0.0/8", "::1/128"]
+# htpasswd_file = "/etc/actrix/monitoring.htpasswd"
+
+# Per-service override example:
+# [monitoring.services.ks]
+# allowed_ips = ["192.168.1.0/24"]
+# htpasswd_file = ""  # disable Basic Auth for KS endpoints
 
 # Process management (optional)
 # pid = "/var/run/actrix.pid"  # (optional)
@@ -80,40 +104,32 @@ service_name = "actrix"
 # ============================================================================
 
 [bind]
-# HTTP (development only - NOT recommended for production)
+# HTTP/HTTPS binding (unified)
+# Configure cert + key to enable HTTPS, otherwise plain HTTP
 [bind.http]
 domain_name = "localhost"
 advertised_ip = "127.0.0.1"
-ip = "127.0.0.1"
+ip = "::"
 port = 8080
-
-# HTTPS (required for production)
-[bind.https]
-domain_name = "actrix.example.com"
-advertised_ip = "203.0.113.10"
-ip = "0.0.0.0"
-port = 8443
-cert = "certificates/server.crt"
-key = "certificates/server.key"
+# advertised_port = 8080  # (optional, defaults to port)
+# TLS — uncomment to enable HTTPS:
+# cert = "certificates/server.crt"
+# key = "certificates/server.key"
 
 # ICE services (STUN/TURN)
 [bind.ice]
-domain_name = "ice.example.com"
-advertised_ip = "203.0.113.10"
 ip = "0.0.0.0"
 port = 3478
+# Advertised public IP (must be routable)
+# Replace with your actual public IP
+advertised_ip = "203.0.113.10"
+# Advertised port (usually same as bind port)
+advertised_port = 3478
 
 # ============================================================================
 # TURN Configuration
 # ============================================================================
 [turn]
-# Server advertised IP (must be routable)
-# Replace with your actual public IP
-advertised_ip = "203.0.113.10"
-
-# Advertised port for TURN
-advertised_port = 3478
-
 # Relay port range for TURN data channels
 # Format: start-end (e.g., "49152-65535")
 # Larger range = more concurrent relay sessions
@@ -150,7 +166,7 @@ path = "ks.db"
 
 # AIS automatically uses local KS if enabled, or configure explicitly (optional):
 # [services.ais.dependencies.ks]
-# endpoint = "http://remote-ks:50052"  # gRPC endpoint
+# endpoint = "http://remote-ks:8080"  # gRPC endpoint（复用该实例主端口）
 
 # Signaling Service Configuration (optional)
 # Service enablement is controlled by the bitmask (enable field)
@@ -174,7 +190,7 @@ ws_path = "/signaling"
 
 # Signaling dependencies (optional, auto-discovered if local services enabled)
 # [services.signaling.dependencies.ks]
-# endpoint = "http://remote-ks:50052"  # (optional)
+# endpoint = "http://remote-ks:8080"  # (optional, gRPC endpoint)
 #
 # [services.signaling.dependencies.ais]
 # endpoint = "http://remote-ais:8080"  # (optional)
@@ -188,6 +204,12 @@ ws_path = "/signaling"
 # - "grpc_api": supervisor-facing NodeAdminService under /admin.v1.NodeAdminService/*
 #   (compat alias: /admin/grpc/admin.v1.NodeAdminService/*)
 head = "admin_ui"
+
+[control.admin_ui]
+# Login password for Admin UI (required when head = "admin_ui", min 8 chars)
+password = "changeme"
+# JWT session expiry in seconds (default: 86400 = 24h)
+session_expiry_secs = 86400
 
 [control.grpc_api]
 # Used only when control.head = "grpc_api"
@@ -216,11 +238,13 @@ max_clock_skew_secs = 300
 # name = "actrix-prod-01"
 # env = "prod"
 # [recording]
-# filter_level = "info"
 # sink = "file:///var/log/actrix/actrix.log"
 # service_name = "actrix-prod-01"
 # [recording.audit]
+# filter = "all"
 # sink = "otlp+grpc://otel-collector.internal:4317"
+# [recording.security]
+# filter = "all"
 # 
 # sqlite_path = "/var/lib/actrix"
 # location_tag = "aws,us-west-2,zone-a"
@@ -229,21 +253,21 @@ max_clock_skew_secs = 300
 # user = "actrix"
 # group = "actrix"
 #
-# [bind.https]
+# [bind.http]
 # domain_name = "actrix.example.com"
-# ip = "0.0.0.0"
+# advertised_ip = "203.0.113.10"
+# ip = "::"
 # port = 443
 # cert = "/etc/actrix/tls/fullchain.pem"
 # key = "/etc/actrix/tls/privkey.pem"
 #
 # [bind.ice]
-# domain_name = "ice.example.com"
 # ip = "0.0.0.0"
 # port = 3478
-#
-# [turn]
 # advertised_ip = "203.0.113.10"  # Your actual public IP
 # advertised_port = 3478
+#
+# [turn]
 # relay_port_range = "49152-65535"
 # realm = "actrix.example.com"
 

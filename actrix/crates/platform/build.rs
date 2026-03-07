@@ -297,7 +297,7 @@ fn get_default_value_for_field_with_context(field_name: &str, section_prefix: &s
         "actrix_shared_key" => "\"CHANGE_ME_32_CHAR_RANDOM_KEY_HERE\"".to_string(),
 
         // Recording pipeline config fields
-        "filter_level" => "\"info\"".to_string(),
+        "filter" => "\"digest\"".to_string(),
         "sink" => "\"file:///var/log/actrix/actrix.log\"".to_string(),
 
         // Tracing config fields

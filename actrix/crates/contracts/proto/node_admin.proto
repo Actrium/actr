@@ -23,6 +23,11 @@ service NodeAdminService {
   // ------------ Node control ------------
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+
+  // ------------ Config override management (remote admin) ------------
+  rpc ListConfigOverrides(ListConfigOverridesRequest) returns (ListConfigOverridesResponse);
+  rpc SetConfigOverride(SetConfigOverrideRequest) returns (SetConfigOverrideResponse);
+  rpc DeleteConfigOverride(DeleteConfigOverrideRequest) returns (DeleteConfigOverrideResponse);
 }
 
 // ============================================================================
@@ -62,12 +67,12 @@ message GetConfigResponse {
 // ------------ CreateRealm ------------
 
 message CreateRealmRequest {
-  required uint32 realm_id = 1;            // Realm identifier
+  // Field 1 removed (was realm_id, now DB auto-generated)
   required string name = 2;                 // Realm name
   required bool enabled = 3;                // Enabled status
-  repeated ResourceType use_servers = 4;    // Allowed server types
+  // Field 4 removed (was use_servers)
   required NonceCredential credential = 5;  // Authentication credential
-  required uint64 version = 6;              // Realm version (assigned by Boss)
+  // Field 6 removed (was version)
   required uint64 expires_at = 7;           // Expiration timestamp (Unix timestamp)
 }
 
@@ -164,4 +169,48 @@ message ShutdownResponse {
   required bool accepted = 1;               // Whether shutdown request accepted
   optional string error_message = 2;        // Error message on failure
   optional int64 estimated_shutdown_time = 3;  // Estimated shutdown timestamp
+}
+
+// ============================================================================
+// Config override management (L2 dynamic overrides)
+// ============================================================================
+
+message ConfigOverrideEntry {
+  required string key_path = 1;             // Dot-separated config key
+  required string value = 2;                // Override value
+  required string updated_at = 3;           // ISO 8601 timestamp
+  required string updated_by = 4;           // Who set this override
+}
+
+message ListConfigOverridesRequest {
+  required NonceCredential credential = 1;  // Authentication credential
+}
+
+message ListConfigOverridesResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+  repeated ConfigOverrideEntry overrides = 3;
+}
+
+message SetConfigOverrideRequest {
+  required string key = 1;                  // Config key to override
+  required string value = 2;               // Override value
+  optional string updated_by = 3;          // Who set this override (default: "admin")
+  required NonceCredential credential = 4; // Authentication credential
+}
+
+message SetConfigOverrideResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+}
+
+message DeleteConfigOverrideRequest {
+  required string key = 1;                  // Config key to delete
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message DeleteConfigOverrideResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+  required bool deleted = 3;               // Whether a row was actually deleted
 }

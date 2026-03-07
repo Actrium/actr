@@ -18,7 +18,7 @@ pub struct KsServerConfig {}
 pub struct KsClientConfig {
     /// KS 服务地址
     ///
-    /// gRPC endpoint，例如: "http://127.0.0.1:50052" 或 "https://ks.example.com:50052"
+    /// gRPC endpoint，例如: "http://127.0.0.1:8080" 或 "https://ks.example.com:8443"
     pub endpoint: String,
 
     /// 请求超时时间（秒）
@@ -66,7 +66,7 @@ pub struct KsConfig {
 impl Default for KsClientConfig {
     fn default() -> Self {
         Self {
-            endpoint: "http://127.0.0.1:50052".to_string(), // gRPC 默认端口
+            endpoint: "http://127.0.0.1:8080".to_string(), // 默认复用主 HTTP 端口
             timeout_seconds: 30,
             enable_tls: false,
             tls_domain: None,

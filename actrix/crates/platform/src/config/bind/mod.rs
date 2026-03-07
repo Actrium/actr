@@ -1,9 +1,7 @@
 pub mod http;
-pub mod https;
 pub mod ice;
 
 pub use crate::config::bind::http::HttpBindConfig;
-pub use crate::config::bind::https::HttpsBindConfig;
 pub use crate::config::bind::ice::IceBindConfig;
 use serde::{Deserialize, Serialize};
 
@@ -12,16 +10,10 @@ use serde::{Deserialize, Serialize};
 /// 定义不同类型服务的网络绑定参数。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BindConfig {
-    /// HTTP 服务绑定配置（可选）
+    /// HTTP/HTTPS 服务绑定配置（可选）
     ///
-    /// 用于开发环境或内部服务。生产环境建议使用 HTTPS。
+    /// 统一的 HTTP 绑定。配置了 cert+key 即为 HTTPS，否则为 HTTP。
     pub http: Option<HttpBindConfig>,
-
-    /// HTTPS 服务绑定配置（可选）
-    ///
-    /// 提供加密的 HTTP 服务，包括 API 接口和 WebSocket 升级。
-    /// 生产环境强烈建议配置。
-    pub https: Option<HttpsBindConfig>,
 
     /// ICE 服务绑定配置
     ///
@@ -33,7 +25,6 @@ impl Default for BindConfig {
     fn default() -> Self {
         Self {
             http: Some(HttpBindConfig::default()),
-            https: Some(HttpsBindConfig::default()),
             ice: IceBindConfig::default(),
         }
     }

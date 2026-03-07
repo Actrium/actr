@@ -5,8 +5,11 @@
 
 pub mod ais;
 pub mod bind;
+pub mod config_store;
 pub mod control;
 pub mod ks;
+pub mod registry;
+pub mod resolver;
 pub mod services;
 pub mod signaling;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -14,7 +17,7 @@ pub mod turn;
 
 pub use crate::config::ais::AisConfig;
 pub use crate::config::bind::BindConfig;
-pub use crate::config::control::{ControlConfig, ControlHead};
+pub use crate::config::control::{AdminUiConfig, ControlConfig, ControlHead};
 pub use crate::config::services::ServicesConfig;
 pub use crate::config::signaling::SignalingConfig;
 pub use crate::config::turn::TurnConfig;
@@ -135,17 +138,20 @@ pub struct ActrixConfig {
     /// 将日志和 OpenTelemetry 追踪配置合并到统一的 recording 段，便于统一管理。
     #[serde(default)]
     pub recording: RecordingConfig,
+
+    /// Monitoring endpoints configuration
+    ///
+    /// Controls authentication for `/health` and `/metrics` endpoints.
+    /// Supports IP whitelist (CIDR) and/or HTTP Basic Auth (htpasswd file).
+    /// When both are configured, a request matching either is allowed (OR logic).
+    /// Per-service overrides replace the global config for that service.
+    #[serde(default)]
+    pub monitoring: MonitoringConfig,
 }
 
 /// 记录管线配置
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct RecordingConfig {
-    /// 过滤级别（用于日志与追踪）
-    ///
-    /// 支持 EnvFilter 语法（如 "info,hyper=warn"）。默认值 "info"。
-    #[serde(default = "default_filter_level")]
-    pub filter_level: String,
-
     /// 全局记录出口 URI（single sink）
     ///
     /// 作为所有通道默认出口；可被 [recording.<channel>] 覆盖。
@@ -161,23 +167,33 @@ pub struct RecordingConfig {
     #[serde(default = "default_recording_service_name")]
     pub service_name: String,
 
-    /// observability 通道特定出口覆盖
-    #[serde(default)]
+    /// observability 通道配置
+    #[serde(default = "default_observability_channel")]
     pub observability: RecordingChannelConfig,
-    /// audit 通道特定出口覆盖
-    #[serde(default)]
+    /// audit 通道配置
+    #[serde(default = "default_audit_channel")]
     pub audit: RecordingChannelConfig,
-    /// security 通道特定出口覆盖
-    #[serde(default)]
+    /// security 通道配置
+    #[serde(default = "default_security_channel")]
     pub security: RecordingChannelConfig,
-    /// operations 通道特定出口覆盖
-    #[serde(default)]
+    /// operations 通道配置
+    #[serde(default = "default_operations_channel")]
     pub operations: RecordingChannelConfig,
 }
 
-/// 单通道出口覆盖配置（spec）
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// 单通道配置：语义过滤器 + 出口覆盖
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
 pub struct RecordingChannelConfig {
+    /// 通道语义过滤器
+    ///
+    /// 每个通道有自己的过滤词汇：
+    /// - observability: off / digest / detailed / full
+    /// - audit: off / mutations / all
+    /// - security: off / critical / high / medium / all
+    /// - operations: off / lifecycle / detailed
+    #[serde(default)]
+    pub filter: String,
+
     /// 记录出口 URI（single sink）
     ///
     /// 支持：
@@ -188,16 +204,43 @@ pub struct RecordingChannelConfig {
     pub sink: Option<String>,
 }
 
+fn default_audit_channel() -> RecordingChannelConfig {
+    RecordingChannelConfig {
+        filter: "mutations".to_string(),
+        sink: None,
+    }
+}
+
+fn default_security_channel() -> RecordingChannelConfig {
+    RecordingChannelConfig {
+        filter: "all".to_string(),
+        sink: None,
+    }
+}
+
+fn default_operations_channel() -> RecordingChannelConfig {
+    RecordingChannelConfig {
+        filter: "lifecycle".to_string(),
+        sink: None,
+    }
+}
+
+fn default_observability_channel() -> RecordingChannelConfig {
+    RecordingChannelConfig {
+        filter: "digest".to_string(),
+        sink: None,
+    }
+}
+
 impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
             sink: None,
             service_name: default_recording_service_name(),
-            observability: RecordingChannelConfig::default(),
-            audit: RecordingChannelConfig::default(),
-            security: RecordingChannelConfig::default(),
-            operations: RecordingChannelConfig::default(),
-            filter_level: default_filter_level(),
+            observability: default_observability_channel(),
+            audit: default_audit_channel(),
+            security: default_security_channel(),
+            operations: default_operations_channel(),
         }
     }
 }
@@ -261,12 +304,63 @@ fn validate_recording_sink_field(field: &str, value: &Option<String>, errors: &m
     }
 }
 
-fn default_enable() -> u8 {
-    6 // STUN + TURN (默认启用 ICE 服务)
+/// Monitoring endpoint auth configuration.
+///
+/// Both `allowed_ips` and `htpasswd_file` can be used simultaneously.
+/// When both are configured, a request matching either is allowed (OR logic).
+/// When neither is configured, endpoints are publicly accessible.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MonitoringConfig {
+    /// IP whitelist in CIDR notation (e.g. "10.0.0.0/8", "127.0.0.1").
+    /// A bare IP without prefix length implies /32 (IPv4) or /128 (IPv6).
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+
+    /// Path to an htpasswd-format file for HTTP Basic Auth.
+    /// Each line: `username:password` (plaintext).
+    #[serde(default)]
+    pub htpasswd_file: String,
+
+    /// Per-service overrides. When a service key is present here,
+    /// it completely replaces the global config for that service.
+    #[serde(default)]
+    pub services: std::collections::HashMap<String, MonitoringServiceOverride>,
 }
 
-fn default_filter_level() -> String {
-    "info".to_string()
+/// Per-service monitoring auth override.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MonitoringServiceOverride {
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub htpasswd_file: String,
+}
+
+impl MonitoringConfig {
+    /// Returns true if no auth is configured (globally).
+    pub fn is_open(&self) -> bool {
+        self.allowed_ips.is_empty() && self.htpasswd_file.is_empty()
+    }
+
+    /// Get the effective auth config for a given service.
+    /// Per-service override replaces global when present.
+    pub fn effective_for(&self, service: &str) -> (&[String], &str) {
+        if let Some(ovr) = self.services.get(service) {
+            (ovr.allowed_ips.as_slice(), ovr.htpasswd_file.as_str())
+        } else {
+            (self.allowed_ips.as_slice(), self.htpasswd_file.as_str())
+        }
+    }
+
+    /// Returns true if no auth is configured for the given service.
+    pub fn is_open_for(&self, service: &str) -> bool {
+        let (ips, htpasswd) = self.effective_for(service);
+        ips.is_empty() && htpasswd.is_empty()
+    }
+}
+
+fn default_enable() -> u8 {
+    31 // Signaling(1) + STUN(2) + TURN(4) + AIS(8) + KS(16)
 }
 
 fn default_recording_service_name() -> String {
@@ -305,6 +399,7 @@ impl Default for ActrixConfig {
             sqlite_path: PathBuf::from("database"),
             actrix_shared_key: "XDDYE8d+yMfdXcdWMrXprcUk2uzjnmoX6nCfFw1gGIg=".to_string(),
             recording: RecordingConfig::default(),
+            monitoring: MonitoringConfig::default(),
         }
     }
 }
@@ -386,19 +481,20 @@ impl ActrixConfig {
         &self.recording.service_name
     }
 
-    /// 获取日志/追踪过滤级别，优先使用 RUST_LOG
+    /// 获取复合日志/追踪过滤级别，优先使用 RUST_LOG。
+    ///
+    /// With semantic filters, channel targets are set to TRACE so that
+    /// all events reach the recording layer (which applies its own gate).
+    /// The base level stays `info` to suppress third-party noise.
     pub fn get_filter_level(&self) -> String {
-        std::env::var("RUST_LOG")
-            .ok()
-            .and_then(|v| {
-                let trimmed = v.trim().to_string();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            })
-            .unwrap_or_else(|| self.recording.filter_level.clone())
+        if let Ok(rust_log) = std::env::var("RUST_LOG") {
+            let trimmed = rust_log.trim().to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+
+        "info,actrix::observability=trace,actrix::audit=trace,actrix::security=trace,actrix::operations=trace".to_string()
     }
 
     /// 从文件加载配置
@@ -467,28 +563,52 @@ impl ActrixConfig {
             ));
         }
 
-        // control 始终挂载在主 HTTP/HTTPS 端口，必须存在至少一个绑定。
-        if self.bind.http.is_none() && self.bind.https.is_none() {
+        // control 始终挂载在主 HTTP 端口，必须存在绑定。
+        if self.bind.http.is_none() {
             errors.push(
-                "Control plane requires bind.http or bind.https because /admin is always served"
-                    .to_string(),
+                "Control plane requires bind.http because /admin is always served".to_string(),
             );
         }
 
-        // 验证过滤级别（EnvFilter 语法）
+        // 验证各通道语义过滤器（空字符串 = 使用通道默认值，跳过验证）
         {
-            let main_level = self
-                .recording
-                .filter_level
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim();
-            if !["trace", "debug", "info", "warn", "error"].contains(&main_level) {
-                errors.push(format!(
-                    "Invalid filter level '{}', must start with one of: trace, debug, info, warn, error",
-                    self.recording.filter_level
-                ));
+            let check = |name: &str, value: &str, valid: &[&str]| -> Option<String> {
+                if value.is_empty() || valid.contains(&value) {
+                    None
+                } else {
+                    Some(format!(
+                        "Invalid recording.{name}.filter '{value}', must be one of: {}",
+                        valid.join(", ")
+                    ))
+                }
+            };
+            if let Some(e) = check(
+                "observability",
+                &self.recording.observability.filter,
+                &["off", "digest", "detailed", "full"],
+            ) {
+                errors.push(e);
+            }
+            if let Some(e) = check(
+                "audit",
+                &self.recording.audit.filter,
+                &["off", "mutations", "all"],
+            ) {
+                errors.push(e);
+            }
+            if let Some(e) = check(
+                "security",
+                &self.recording.security.filter,
+                &["off", "critical", "high", "medium", "all"],
+            ) {
+                errors.push(e);
+            }
+            if let Some(e) = check(
+                "operations",
+                &self.recording.operations.filter,
+                &["off", "lifecycle", "detailed"],
+            ) {
+                errors.push(e);
             }
         }
 
@@ -537,21 +657,31 @@ impl ActrixConfig {
             errors.push("SQLite database path cannot be empty".to_string());
         }
 
-        // 验证 TURN 配置（如果启用）
-        if self.is_turn_enabled() {
-            if self.turn.advertised_ip.trim().is_empty() {
-                errors.push("TURN advertised_ip is required when TURN is enabled".to_string());
-            }
-            if self.turn.realm.trim().is_empty() {
-                errors.push("TURN realm is required when TURN is enabled".to_string());
+        // 验证 ICE 配置（如果启用 STUN 或 TURN）
+        if self.is_ice_enabled() {
+            if self.bind.ice.advertised_ip.trim().is_empty() {
+                errors.push(
+                    "bind.ice.advertised_ip is required when ICE services are enabled".to_string(),
+                );
             }
             // 验证 advertised_ip 格式
-            if self.turn.advertised_ip.parse::<std::net::IpAddr>().is_err() {
+            if self
+                .bind
+                .ice
+                .advertised_ip
+                .parse::<std::net::IpAddr>()
+                .is_err()
+            {
                 errors.push(format!(
-                    "Invalid TURN advertised_ip '{}', must be a valid IP address",
-                    self.turn.advertised_ip
+                    "Invalid bind.ice.advertised_ip '{}', must be a valid IP address",
+                    self.bind.ice.advertised_ip
                 ));
             }
+        }
+
+        // 验证 TURN 配置（如果启用）
+        if self.is_turn_enabled() && self.turn.realm.trim().is_empty() {
+            errors.push("TURN realm is required when TURN is enabled".to_string());
         }
 
         // 验证 KS 配置（如果启用）
@@ -626,15 +756,15 @@ impl ActrixConfig {
 
         // 生产环境额外检查
         if self.env == "prod" {
-            // 生产环境应使用 HTTPS
-            if let Some(ref https) = self.bind.https {
-                if https.port == 0 {
+            // 生产环境应使用 HTTPS (bind.http 必须存在且 is_tls() == true)
+            if let Some(ref http) = self.bind.http {
+                if !http.is_tls() {
                     errors.push(
-                        "Production environment should enable HTTPS with valid port".to_string(),
+                        "Production environment should enable HTTPS (configure cert and key in bind.http)".to_string(),
                     );
                 }
             } else {
-                errors.push("Production environment should enable HTTPS".to_string());
+                errors.push("Production environment requires bind.http configuration".to_string());
             }
 
             // 生产环境建议至少配置一个 file:// 出口
@@ -663,16 +793,20 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ActrixConfig::default();
-        assert_eq!(config.enable, 6); // 默认启用 STUN + TURN
+        assert_eq!(config.enable, 31); // 默认启用所有服务
         assert_eq!(config.name, "actrix-default");
         assert_eq!(config.env, "dev");
-        assert!(!config.is_signaling_enabled()); // Signaling 默认不启用
+        assert!(config.is_signaling_enabled());
         assert!(config.is_stun_enabled());
         assert!(config.is_turn_enabled());
-        assert!(!config.is_ais_enabled()); // AIS 默认不启用
-        assert!(!config.is_ks_enabled()); // KS 默认不启用
+        assert!(config.is_ais_enabled());
+        assert!(config.is_ks_enabled());
         assert_eq!(config.recording.service_name, "actrix");
         assert!(config.recording.sink.is_none());
+        assert_eq!(config.recording.observability.filter, "digest");
+        assert_eq!(config.recording.audit.filter, "mutations");
+        assert_eq!(config.recording.security.filter, "all");
+        assert_eq!(config.recording.operations.filter, "lifecycle");
     }
 
     #[test]
@@ -714,7 +848,11 @@ mod tests {
 
     #[test]
     fn test_recording_sink_validation_accepts_supported_schemes() {
-        let mut config = ActrixConfig::default();
+        let mut config = ActrixConfig {
+            enable: 0,
+            ..Default::default()
+        };
+        config.control.admin_ui.password = "testpassword123".to_string();
         config.recording.sink = Some("file:///tmp/actrix.log".to_string());
         config.recording.audit.sink = Some("otlp+http://127.0.0.1:4318/v1/logs".to_string());
         config.recording.security.sink = Some("otlp+grpc://127.0.0.1:4317".to_string());
@@ -757,7 +895,7 @@ mod tests {
     fn test_toml_serialization() {
         let config = ActrixConfig::default();
         let toml_str = config.to_toml().unwrap();
-        assert!(toml_str.contains("enable = 6")); // STUN + TURN
+        assert!(toml_str.contains("enable = 31")); // all services
         assert!(toml_str.contains("name = \"actrix-default\""));
         assert!(
             toml_str
@@ -896,15 +1034,15 @@ mod tests {
             .get_ks_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
-        // gRPC 默认端口 50052
-        assert_eq!(ks_config.endpoint, "http://127.0.0.1:50052");
+        // KS gRPC 复用主 HTTP 端口（默认 8080）
+        assert_eq!(ks_config.endpoint, "http://127.0.0.1:8080");
 
         // 场景 2: 显式配置 KS 客户端，应使用显式配置
         config.services.ais = Some(AisConfig {
             server: ais::AisServerConfig::default(),
             dependencies: ais::AisDependencies {
                 ks: Some(crate::config::ks::KsClientConfig {
-                    endpoint: "http://remote-ks:50052".to_string(),
+                    endpoint: "http://remote-ks:8080".to_string(),
                     timeout_seconds: 10,
                     enable_tls: false,
                     tls_domain: None,
@@ -923,7 +1061,7 @@ mod tests {
             .get_ks_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
-        assert_eq!(ks_config.endpoint, "http://remote-ks:50052"); // 使用显式配置
+        assert_eq!(ks_config.endpoint, "http://remote-ks:8080"); // 使用显式配置
 
         // 场景 3: 没有本地 KS，也没有显式配置，应返回 None
         config.services.ks = None;
@@ -972,8 +1110,8 @@ mod tests {
             .get_ks_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
-        // gRPC 默认端口 50052
-        assert_eq!(ks_config.endpoint, "http://127.0.0.1:50052");
+        // KS gRPC 复用主 HTTP 端口（默认 8080）
+        assert_eq!(ks_config.endpoint, "http://127.0.0.1:8080");
     }
 
     #[test]
@@ -1052,7 +1190,7 @@ mod tests {
             server: ais::AisServerConfig::default(),
             dependencies: ais::AisDependencies {
                 ks: Some(crate::config::ks::KsClientConfig {
-                    endpoint: "http://127.0.0.1:50052".to_string(),
+                    endpoint: "http://127.0.0.1:8080".to_string(),
                     timeout_seconds: 10,
                     enable_tls: false,
                     tls_domain: None,
@@ -1120,6 +1258,7 @@ mod tests {
             enable: ENABLE_SIGNALING | ENABLE_KS | ENABLE_AIS,
             ..ActrixConfig::default()
         };
+        config.control.admin_ui.password = "testpassword123".to_string();
         config.services.signaling = Some(SignalingConfig {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies::default(),

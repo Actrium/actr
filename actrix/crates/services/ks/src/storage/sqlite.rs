@@ -237,21 +237,26 @@ impl KeyStorageBackend for SqliteBackend {
         Ok(result.0 as u32)
     }
 
-    async fn cleanup_expired_keys(&self) -> KsResult<u32> {
+    async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
+        let cutoff = now - tolerance_seconds as i64;
 
         let result = sqlx::query("DELETE FROM keys WHERE expires_at > 0 AND expires_at < ?")
-            .bind(now)
+            .bind(cutoff)
             .execute(&self.pool)
             .await
             .map_err(|e| KsError::Internal(format!("Failed to cleanup expired keys: {e}")))?;
 
         let deleted = result.rows_affected() as u32;
         if deleted > 0 {
-            crate::recording::debug!("Cleaned up {} expired keys", deleted);
+            crate::recording::debug!(
+                "Cleaned up {} expired keys (tolerance {}s)",
+                deleted,
+                tolerance_seconds
+            );
         }
 
         Ok(deleted)
@@ -361,8 +366,8 @@ mod tests {
         // 等待过期
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-        // 清理过期密钥
-        let cleaned = backend.cleanup_expired_keys().await.unwrap();
+        // 清理过期密钥（tolerance=0 表示过期即删）
+        let cleaned = backend.cleanup_expired_keys(0).await.unwrap();
         assert_eq!(cleaned, 1);
         assert_eq!(backend.get_key_count().await.unwrap(), 0);
     }
@@ -386,7 +391,7 @@ mod tests {
         assert_eq!(backend.get_key_count().await.unwrap(), 1);
 
         // 清理不应删除永不过期的密钥
-        let cleaned = backend.cleanup_expired_keys().await.unwrap();
+        let cleaned = backend.cleanup_expired_keys(0).await.unwrap();
         assert_eq!(cleaned, 0);
         assert_eq!(backend.get_key_count().await.unwrap(), 1);
     }

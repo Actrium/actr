@@ -49,36 +49,33 @@ impl Database {
         // 创建 Realm 表
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS realm (
-                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                realm_id INTEGER NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Normal',
+                status TEXT NOT NULL DEFAULT 'Active',
+                enabled INTEGER NOT NULL DEFAULT 1,
                 expires_at INTEGER,
-                created_at INTEGER,
+                created_at INTEGER NOT NULL,
                 updated_at INTEGER,
-                UNIQUE(realm_id)
+                secret_current TEXT NOT NULL DEFAULT '',
+                secret_previous_hash TEXT,
+                secret_previous_valid_until INTEGER
             )",
         )
         .execute(&self.pool)
         .await?;
 
-        // 创建 Realm 配置表
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS realmconfig (
-                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                realm_rowid INTEGER NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
+        // Set autoincrement start to 2^25 = 33554432
+        // Only insert if not already present (fresh database)
+        sqlx::query("INSERT OR IGNORE INTO sqlite_sequence(name, seq) VALUES('realm', 33554431)")
+            .execute(&self.pool)
+            .await?;
 
         // 创建访问控制列表表
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS actoracl (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
                 realm_id INTEGER NOT NULL,
+                source_realm_id INTEGER,
                 from_type TEXT NOT NULL,
                 to_type TEXT NOT NULL,
                 access INTEGER NOT NULL
@@ -89,15 +86,8 @@ impl Database {
 
         // 创建索引
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_realm_realm_id
-             ON realm(realm_id)",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_realmconfig_realm_rowid
-             ON realmconfig(realm_rowid)",
+            "CREATE INDEX IF NOT EXISTS idx_realm_name
+             ON realm(name)",
         )
         .execute(&self.pool)
         .await?;
@@ -105,6 +95,25 @@ impl Database {
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_actoracl_realm_id
              ON actoracl(realm_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_actoracl_lookup
+             ON actoracl(realm_id, source_realm_id, from_type, to_type)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Pending registration data: AIS writes, signaling reads on WS connect
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS pending_registration (
+                serial_number INTEGER PRIMARY KEY,
+                realm_id INTEGER NOT NULL,
+                service_spec_blob BLOB,
+                created_at INTEGER NOT NULL
+            )",
         )
         .execute(&self.pool)
         .await?;

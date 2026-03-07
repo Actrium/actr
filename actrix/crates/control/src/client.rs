@@ -4,7 +4,7 @@ use crate::config::AdminConfig;
 use crate::error::{AdminError, Result};
 use crate::metrics::collect_system_metrics;
 use crate::nonce_auth::generate_credential;
-use crate::realm::get_max_realm_version;
+use crate::realm::get_max_realm_updated_at;
 use crate::{
     ControlServiceClient as GrpcAdminClient, HealthCheckRequest, HealthCheckResponse,
     RegisterNodeRequest, RegisterNodeResponse, ReportRequest, ReportResponse, ServiceAdvertisement,
@@ -358,7 +358,7 @@ impl AdminClient {
         };
 
         // 获取本地最大 realm 版本号（用于 Admin 检测同步滞后）
-        let realm_sync_version = get_max_realm_version().await.unwrap_or(0);
+        let realm_sync_version = get_max_realm_updated_at().await.unwrap_or(0);
 
         let timestamp = chrono::Utc::now().timestamp();
 
@@ -496,7 +496,7 @@ impl AdminClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use platform::{ServiceInfo, ServiceState, ServiceType};
+    use platform::{ServiceInfo, ServiceType};
 
     #[test]
     fn test_client_creation() {
@@ -526,14 +526,13 @@ mod tests {
             ..Default::default()
         };
 
-        let service_info = ServiceInfo {
-            name: "turn-service".to_string(),
-            service_type: ServiceType::Turn,
-            domain_name: "turn:example.com".to_string(),
-            port_info: "3478".to_string(),
-            status: ServiceState::Running("turn:example.com:3478".to_string()),
-            description: None,
-        };
+        let service_info = ServiceInfo::new_raw(
+            "turn-service",
+            ServiceType::Turn,
+            "turn:example.com".to_string(),
+            "3478".to_string(),
+            None,
+        );
         let registry = ServiceCollector::new();
         registry.insert("turn".to_string(), service_info).await;
         let service_collector = registry;

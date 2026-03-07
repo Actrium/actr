@@ -24,5 +24,10 @@ sha2 = { workspace = true }
 nonce-auth = { workspace = true }
 pwrzv = { workspace = true }
 
+sqlx = { workspace = true }
+
 platform = { path = "../platform" }
 actrix-proto = { path = "../contracts" }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal"] }

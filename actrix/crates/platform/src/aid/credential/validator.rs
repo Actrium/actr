@@ -9,17 +9,16 @@ use crate::config::ks::KsClientConfig;
 use actr_protocol::AIdCredential;
 use ecies::{SecretKey, decrypt};
 use ks::GrpcClient;
-use once_cell::sync::OnceCell;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// AId Token 验证器 - 提供静态方法验证和解密 Token
 pub struct AIdCredentialValidator {
     key_cache: Arc<KeyCache>,
-    ks_client: Arc<RwLock<GrpcClient>>,
+    ks_client_config: ks::GrpcClientConfig,
+    ks_client: Arc<tokio::sync::RwLock<Option<GrpcClient>>>,
 }
 
-static VALIDATOR_INSTANCE: OnceCell<Arc<AIdCredentialValidator>> = OnceCell::new();
+static VALIDATOR_INSTANCE: RwLock<Option<Arc<AIdCredentialValidator>>> = RwLock::new(None);
 
 impl AIdCredentialValidator {
     /// 创建新的验证器实例
@@ -44,34 +43,37 @@ impl AIdCredentialValidator {
             client_key: ks_client_config.client_key.clone(),
         };
 
-        let grpc_client = GrpcClient::new(&grpc_config).await.map_err(|e| {
-            AidError::DecryptionFailed(format!("Failed to create KS gRPC client: {e}"))
-        })?;
-
-        let ks_client = Arc::new(RwLock::new(grpc_client));
-
         Ok(Self {
             key_cache,
-            ks_client,
+            ks_client_config: grpc_config,
+            ks_client: Arc::new(tokio::sync::RwLock::new(None)),
         })
     }
 
-    /// 初始化全局验证器实例
+    /// 初始化或重新初始化全局验证器实例
+    ///
+    /// On first call, creates the validator. On subsequent calls (e.g. after
+    /// SIGHUP reload), replaces the existing instance so that updated KS
+    /// endpoint / TLS / shared-key settings take effect.
     pub async fn init(
         ks_client_config: &KsClientConfig,
         actrix_shared_key: &str,
         sqlite_path: &std::path::Path,
     ) -> Result<(), AidError> {
         let validator = Self::new(ks_client_config, actrix_shared_key, sqlite_path).await?;
-        VALIDATOR_INSTANCE
-            .set(Arc::new(validator))
-            .map_err(|_| AidError::DecryptionFailed("Validator already initialized".to_string()))?;
+        let mut guard = VALIDATOR_INSTANCE.write().map_err(|e| {
+            AidError::DecryptionFailed(format!("Failed to acquire validator write lock: {e}"))
+        })?;
+        *guard = Some(Arc::new(validator));
         Ok(())
     }
 
     /// 获取全局验证器实例
     fn get_instance() -> Result<Arc<AIdCredentialValidator>, AidError> {
-        VALIDATOR_INSTANCE.get().cloned().ok_or_else(|| {
+        let guard = VALIDATOR_INSTANCE.read().map_err(|e| {
+            AidError::DecryptionFailed(format!("Failed to acquire validator read lock: {e}"))
+        })?;
+        guard.clone().ok_or_else(|| {
             AidError::DecryptionFailed(
                 "Validator not initialized. Call AIdCredentialValidator::init() first".to_string(),
             )
@@ -128,7 +130,7 @@ impl AIdCredentialValidator {
 
     /// 使用提供的密钥检查 credential (解密 + 验证有效性)
     ///
-    /// # Arguments  
+    /// # Arguments
     /// * `credential` - 来自 actr-protocol 的 AIdCredential
     /// * `realm_id` - 期望的 Realm ID
     /// * `secret_key` - 用于解密的密钥
@@ -196,11 +198,26 @@ impl AIdCredentialValidator {
 
         // 2. 从 KS 服务获取密钥、过期时间和容忍期秒数
         let (secret_key, expires_at, tolerance_seconds) = {
-            let mut client = self.ks_client.write().await;
-            client.fetch_secret_key(key_id).await.map_err(|e| {
-                crate::recording::error!("Failed to fetch secret key {} from KS: {}", key_id, e);
-                AidError::DecryptionFailed(format!("KS error: {e}"))
-            })?
+            let mut client_guard = self.ks_client.write().await;
+            if client_guard.is_none() {
+                let client = GrpcClient::new(&self.ks_client_config).await.map_err(|e| {
+                    AidError::DecryptionFailed(format!("Failed to create KS gRPC client: {e}"))
+                })?;
+                *client_guard = Some(client);
+            }
+            client_guard
+                .as_mut()
+                .expect("ks client must exist after lazy init")
+                .fetch_secret_key(key_id)
+                .await
+                .map_err(|e| {
+                    crate::recording::error!(
+                        "Failed to fetch secret key {} from KS: {}",
+                        key_id,
+                        e
+                    );
+                    AidError::DecryptionFailed(format!("KS error: {e}"))
+                })?
         };
 
         // 3. 更新 SQLite 缓存（包含过期时间和容忍期秒数）

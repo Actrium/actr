@@ -1,7 +1,9 @@
 use actrix_proto::{
-    CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest, DeleteRealmResponse,
-    GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest,
-    GetRealmResponse, ListRealmsRequest, ListRealmsResponse, NodeAdminService, NonceCredential,
+    CreateRealmRequest, CreateRealmResponse, DeleteConfigOverrideRequest,
+    DeleteConfigOverrideResponse, DeleteRealmRequest, DeleteRealmResponse, GetConfigRequest,
+    GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest, GetRealmResponse,
+    ListConfigOverridesRequest, ListConfigOverridesResponse, ListRealmsRequest, ListRealmsResponse,
+    NodeAdminService, NonceCredential, SetConfigOverrideRequest, SetConfigOverrideResponse,
     ShutdownRequest, ShutdownResponse, UpdateConfigRequest, UpdateConfigResponse,
     UpdateRealmRequest, UpdateRealmResponse,
 };
@@ -158,6 +160,30 @@ where
         self.verify_body(request.get_ref()).await?;
         self.inner.shutdown(request).await
     }
+
+    async fn list_config_overrides(
+        &self,
+        request: Request<ListConfigOverridesRequest>,
+    ) -> Result<Response<ListConfigOverridesResponse>, Status> {
+        self.verify_body(request.get_ref()).await?;
+        self.inner.list_config_overrides(request).await
+    }
+
+    async fn set_config_override(
+        &self,
+        request: Request<SetConfigOverrideRequest>,
+    ) -> Result<Response<SetConfigOverrideResponse>, Status> {
+        self.verify_body(request.get_ref()).await?;
+        self.inner.set_config_override(request).await
+    }
+
+    async fn delete_config_override(
+        &self,
+        request: Request<DeleteConfigOverrideRequest>,
+    ) -> Result<Response<DeleteConfigOverrideResponse>, Status> {
+        self.verify_body(request.get_ref()).await?;
+        self.inner.delete_config_override(request).await
+    }
 }
 
 // ========= 请求类型的载荷构造实现 =========
@@ -194,7 +220,7 @@ impl CredentialPayload for CreateRealmRequest {
     }
 
     fn auth_payload(&self, node_id: &str) -> String {
-        format!("create_realm:{node_id}:{}", self.realm_id)
+        format!("create_realm:{node_id}:{}", self.name)
     }
 }
 
@@ -255,6 +281,36 @@ impl CredentialPayload for ShutdownRequest {
 
     fn auth_payload(&self, node_id: &str) -> String {
         format!("shutdown:{node_id}")
+    }
+}
+
+impl CredentialPayload for ListConfigOverridesRequest {
+    fn credential(&self) -> &NonceCredential {
+        &self.credential
+    }
+
+    fn auth_payload(&self, node_id: &str) -> String {
+        format!("list_config_overrides:{node_id}")
+    }
+}
+
+impl CredentialPayload for SetConfigOverrideRequest {
+    fn credential(&self) -> &NonceCredential {
+        &self.credential
+    }
+
+    fn auth_payload(&self, node_id: &str) -> String {
+        format!("set_config_override:{node_id}:{}", self.key)
+    }
+}
+
+impl CredentialPayload for DeleteConfigOverrideRequest {
+    fn credential(&self) -> &NonceCredential {
+        &self.credential
+    }
+
+    fn auth_payload(&self, node_id: &str) -> String {
+        format!("delete_config_override:{node_id}:{}", self.key)
     }
 }
 

@@ -36,7 +36,7 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let ks_config = KsClientConfig {
-//!     endpoint: "http://localhost:50052".to_string(),
+//!     endpoint: "http://localhost:8080".to_string(),
 //!     timeout_seconds: 30,
 //!     enable_tls: false,
 //!     tls_domain: None,
@@ -47,7 +47,7 @@
 //! let ks_client = create_ks_client(&ks_config, "shared-key").await?;
 //! let config = IssuerConfig::default();
 //!
-//! let issuer = AIdIssuer::new(ks_client, config).await?;
+//! let issuer = AIdIssuer::new(ks_client, config, tokio_util::sync::CancellationToken::new()).await?;
 //!
 //! // 处理注册请求
 //! // let response = issuer.issue_credential(&request).await?;
@@ -137,7 +137,11 @@ pub struct AIdIssuer {
 
 impl AIdIssuer {
     /// 创建新的 AIdIssuer
-    pub async fn new(ks_client: KsClientWrapper, config: IssuerConfig) -> Result<Self, AidError> {
+    pub async fn new(
+        ks_client: KsClientWrapper,
+        config: IssuerConfig,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Self, AidError> {
         let key_storage = KeyStorage::new(&config.key_storage_file)
             .await
             .map_err(|e| {
@@ -151,11 +155,14 @@ impl AIdIssuer {
             config,
         };
 
-        // 初始化时加载或获取密钥
-        issuer.ensure_key_loaded().await?;
+        // 初始化时尝试加载/获取密钥。主端口复用场景下，
+        // KS 可能在同进程稍后就绪，因此这里失败不阻塞服务启动。
+        if let Err(e) = issuer.ensure_key_loaded().await {
+            platform::recording::warn!("Initial KS key load deferred, will retry on demand: {}", e);
+        }
 
         // 启动后台密钥刷新任务
-        issuer.spawn_key_refresh_task();
+        issuer.spawn_key_refresh_task(cancel);
 
         Ok(issuer)
     }
@@ -274,7 +281,7 @@ impl AIdIssuer {
     }
 
     /// 启动后台密钥刷新任务
-    fn spawn_key_refresh_task(&self) {
+    fn spawn_key_refresh_task(&self, cancel: tokio_util::sync::CancellationToken) {
         let ks_client = self.ks_client.clone();
         let key_storage = self.key_storage.clone();
         let key_cache = self.key_cache.clone();
@@ -285,7 +292,10 @@ impl AIdIssuer {
                 tokio::time::interval(Duration::from_secs(KEY_REFRESH_CHECK_INTERVAL_SECS));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
 
                 let mut should_rotate = false;
 
@@ -343,6 +353,7 @@ impl AIdIssuer {
                     }
                 }
             }
+            platform::recording::debug!("AIS key refresh task cancelled");
         });
 
         platform::recording::info!("Background key refresh task started");
@@ -576,6 +587,11 @@ impl AIdIssuer {
 
     /// 检查密钥缓存健康状态
     pub async fn check_key_cache_health(&self) -> Result<KeyCacheInfo, AidError> {
+        let has_cache = self.key_cache.read().await.is_some();
+        if !has_cache {
+            self.ensure_key_loaded().await?;
+        }
+
         let cache = self.key_cache.read().await;
         let cache = cache
             .as_ref()

@@ -4,8 +4,10 @@ use crate::service::IceService;
 use anyhow::Result;
 use async_trait::async_trait;
 use platform::config::ActrixConfig;
+use platform::monitoring::ServiceCounters;
 use platform::status::services::ServiceState;
 use platform::{ServiceInfo, ServiceType};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use stun;
 use tokio::net::UdpSocket;
@@ -17,6 +19,8 @@ pub struct StunService {
     info: ServiceInfo,
     config: ActrixConfig,
     socket: Option<Arc<UdpSocket>>,
+    /// Service-level counters for metrics collection.
+    pub counters: Option<Arc<ServiceCounters>>,
 }
 
 impl StunService {
@@ -30,7 +34,14 @@ impl StunService {
             ),
             config,
             socket: None,
+            counters: None,
         }
+    }
+
+    /// Attach service-level counters.
+    pub fn with_counters(mut self, counters: Arc<ServiceCounters>) -> Self {
+        self.counters = Some(counters);
+        self
     }
 }
 
@@ -50,12 +61,19 @@ impl IceService for StunService {
         oneshot_tx: tokio::sync::oneshot::Sender<ServiceInfo>,
     ) -> Result<()> {
         let ice_bind = &self.config.bind.ice;
-        let addr = format!("{}:{}", ice_bind.ip, ice_bind.port);
+        let ip = ice_bind.ip.parse::<IpAddr>().map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid bind.ice.ip '{}': {} (expected IPv4/IPv6 literal)",
+                ice_bind.ip,
+                e
+            )
+        })?;
+        let addr = SocketAddr::new(ip, ice_bind.port);
 
         platform::recording::info!("Starting STUN service on {}", addr);
 
         // 绑定UDP套接字
-        let socket = match UdpSocket::bind(&addr).await {
+        let socket = match UdpSocket::bind(addr).await {
             Ok(socket) => {
                 platform::recording::info!("STUN service listening on: {}", addr);
                 Arc::new(socket)
@@ -70,15 +88,24 @@ impl IceService for StunService {
         self.socket = Some(socket.clone());
 
         // 设置运行状态
-        let url = Url::parse(&format!("stun:{}:{}", ice_bind.domain_name, ice_bind.port))?;
+        let url = Url::parse(&format!("stun:{}:{}", ice_bind.ip, ice_bind.port))?;
         self.info.set_running(url);
+        if let Some(ref ctr) = self.counters {
+            self.info.set_counters(ctr.clone());
+        }
         oneshot_tx
             .send(self.info.clone())
             .map_err(|e| anyhow::anyhow!("Failed to send STUN service info: {e:?}"))?;
         platform::recording::info!("STUN service started successfully");
 
         // 启动STUN服务器（带优雅关闭支持）
-        if let Err(e) = stun::create_stun_server_with_shutdown(socket.clone(), shutdown_rx).await {
+        if let Err(e) = stun::create_stun_server_with_shutdown_and_counters(
+            socket.clone(),
+            shutdown_rx,
+            self.counters.clone(),
+        )
+        .await
+        {
             let error_msg = format!("STUN server stopped with error: {e}");
             self.info.set_error(&error_msg);
             platform::recording::error!("{}", error_msg);

@@ -18,7 +18,10 @@ const CHAT_ACTOR_TYPE: &str = "CHAT";
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ActorAcl {
     pub rowid: Option<i64>,
+    /// 目标（被访问方）所在 realm
     pub realm_id: u32,
+    /// 来源（访问方）所在 realm；None 表示未设置来源范围
+    pub source_realm_id: Option<u32>,
     pub from_type: String,
     pub to_type: String,
     pub access: bool,
@@ -27,9 +30,13 @@ pub struct ActorAcl {
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActorAcl {
     fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
+        let source_realm_id = row
+            .try_get::<Option<i64>, _>("source_realm_id")?
+            .and_then(|v| u32::try_from(v).ok());
         Ok(Self {
             rowid: row.try_get("rowid")?,
             realm_id: row.try_get::<i64, _>("realm_id")?.try_into().unwrap(),
+            source_realm_id,
             from_type: row.try_get("from_type")?,
             to_type: row.try_get("to_type")?,
             access: row.try_get::<i64, _>("access")? != 0,
@@ -40,9 +47,22 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActorAcl {
 impl ActorAcl {
     /// 创建新的访问控制规则
     pub fn new(realm_id: u32, from_type: String, to_type: String, access: bool) -> Self {
+        // 兼容历史语义：不显式指定来源 realm 时，默认仅同 realm 生效
+        Self::new_with_source_realm(realm_id, Some(realm_id), from_type, to_type, access)
+    }
+
+    /// 创建带来源 realm 约束的访问控制规则
+    pub fn new_with_source_realm(
+        realm_id: u32,
+        source_realm_id: Option<u32>,
+        from_type: String,
+        to_type: String,
+        access: bool,
+    ) -> Self {
         Self {
             rowid: None,
             realm_id,
+            source_realm_id,
             from_type: from_type.to_string(),
             to_type: to_type.to_string(),
             access,
@@ -63,9 +83,12 @@ impl ActorAcl {
         if let Some(rowid) = self.rowid {
             // 更新现有记录
             sqlx::query(
-                "UPDATE actoracl SET realm_id = ?, from_type = ?, to_type = ?, access = ? WHERE rowid = ?"
+                "UPDATE actoracl
+                 SET realm_id = ?, source_realm_id = ?, from_type = ?, to_type = ?, access = ?
+                 WHERE rowid = ?",
             )
             .bind(self.realm_id)
+            .bind(self.source_realm_id.map(i64::from))
             .bind(&self.from_type)
             .bind(&self.to_type)
             .bind(if self.access { 1 } else { 0 })
@@ -77,9 +100,11 @@ impl ActorAcl {
         } else {
             // 插入新记录
             let result = sqlx::query(
-                "INSERT INTO actoracl (realm_id, from_type, to_type, access) VALUES (?, ?, ?, ?)",
+                "INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
+                 VALUES (?, ?, ?, ?, ?)",
             )
             .bind(self.realm_id)
+            .bind(self.source_realm_id.map(i64::from))
             .bind(&self.from_type)
             .bind(&self.to_type)
             .bind(if self.access { 1 } else { 0 })
@@ -132,7 +157,9 @@ impl ActorAcl {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl WHERE rowid = ?",
+            "SELECT rowid, realm_id, source_realm_id, from_type, to_type, access
+             FROM actoracl
+             WHERE rowid = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -147,7 +174,9 @@ impl ActorAcl {
         let pool = db.get_pool();
 
         let acls = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl WHERE realm_id = ?",
+            "SELECT rowid, realm_id, source_realm_id, from_type, to_type, access
+             FROM actoracl
+             WHERE realm_id = ?",
         )
         .bind(realm_id)
         .fetch_all(pool)
@@ -158,7 +187,8 @@ impl ActorAcl {
 
     /// 根据类型获取访问控制规则
     pub async fn get_by_types(
-        realm_id: u32,
+        target_realm_id: u32,
+        source_realm_id: u32,
         from_type: &str,
         to_type: &str,
     ) -> Result<Option<Self>, RealmError> {
@@ -166,16 +196,34 @@ impl ActorAcl {
         let pool = db.get_pool();
 
         let result = sqlx::query_as::<_, ActorAcl>(
-            "SELECT rowid, realm_id, from_type, to_type, access FROM actoracl
-             WHERE realm_id = ? AND from_type = ? AND to_type = ?",
+            "SELECT rowid, realm_id, source_realm_id, from_type, to_type, access
+             FROM actoracl
+             WHERE realm_id = ? AND source_realm_id = ? AND from_type = ? AND to_type = ?
+             ORDER BY rowid DESC
+             LIMIT 1",
         )
-        .bind(realm_id)
+        .bind(target_realm_id)
+        .bind(source_realm_id)
         .bind(from_type)
         .bind(to_type)
         .fetch_optional(pool)
         .await?;
 
         Ok(result)
+    }
+
+    /// 删除指定目标类型的全部 ACL（用于服务重注册时替换旧 ACL）
+    pub async fn delete_by_target(realm_id: u32, to_type: &str) -> Result<u64, RealmError> {
+        let db = get_database();
+        let pool = db.get_pool();
+
+        let result = sqlx::query("DELETE FROM actoracl WHERE realm_id = ? AND to_type = ?")
+            .bind(realm_id)
+            .bind(to_type)
+            .execute(pool)
+            .await?;
+
+        Ok(result.rows_affected())
     }
 
     pub fn access(&self) -> bool {
@@ -188,7 +236,8 @@ impl ActorAcl {
     ///
     /// # Arguments
     ///
-    /// - `realm_id`: Realm ID
+    /// - `source_realm_id`: 来源 Actor 的 realm
+    /// - `target_realm_id`: 目标 Actor 的 realm
     /// - `from_type`: Source actor type
     /// - `to_type`: Target actor type
     ///
@@ -197,15 +246,17 @@ impl ActorAcl {
     /// Returns true if discovery is allowed, false otherwise.
     /// Default policy: deny if no rule exists (secure by default)
     pub async fn can_discover(
-        realm_id: u32,
+        source_realm_id: u32,
+        target_realm_id: u32,
         from_type: &str,
         to_type: &str,
     ) -> Result<bool, RealmError> {
-        match Self::get_by_types(realm_id, from_type, to_type).await? {
+        match Self::get_by_types(target_realm_id, source_realm_id, from_type, to_type).await? {
             Some(acl) => {
                 crate::recording::debug!(
-                    "ACL rule found: realm_id={}, from_type={}, to_type={}, access={}",
-                    realm_id,
+                    "ACL rule found: source_realm_id={}, target_realm_id={}, from_type={}, to_type={}, access={}",
+                    source_realm_id,
+                    target_realm_id,
                     from_type,
                     to_type,
                     acl.access()
@@ -215,8 +266,9 @@ impl ActorAcl {
             None => {
                 // Default policy: deny if no rule exists
                 crate::recording::debug!(
-                    "No ACL rule found, denying discovery (default policy): realm_id={}, from_type={}, to_type={}",
-                    realm_id,
+                    "No ACL rule found, denying discovery (default policy): source_realm_id={}, target_realm_id={}, from_type={}, to_type={}",
+                    source_realm_id,
+                    target_realm_id,
                     from_type,
                     to_type
                 );
@@ -231,6 +283,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
@@ -238,6 +291,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
@@ -245,6 +299,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: false,
@@ -252,6 +307,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: true,
@@ -259,6 +315,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
@@ -266,6 +323,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: CHAT_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
@@ -273,6 +331,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: ANONYMOUS_ACTOR_TYPE.to_string(),
             access: true,
@@ -280,6 +339,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: CHAT_ACTOR_TYPE.to_string(),
             access: true,
@@ -287,6 +347,7 @@ pub fn mock_actor_acl() -> Vec<ActorAcl> {
         ActorAcl {
             rowid: None,
             realm_id: 2,
+            source_realm_id: Some(2),
             from_type: VOICE_ACTOR_TYPE.to_string(),
             to_type: VOICE_ACTOR_TYPE.to_string(),
             access: true,
@@ -306,14 +367,13 @@ mod tests {
     async fn test_actor_acl_crud() -> anyhow::Result<()> {
         setup_test_db().await?;
 
-        // Create a realm first with unique name
-        let realm_id = rand::random::<u32>();
-        let mut realm = Realm::new(realm_id, "test_name".to_string());
-        let _ = realm.save().await?;
+        // Create a realm first
+        let realm = Realm::create("acl_test_realm".to_string(), String::new()).await?;
+        let realm_id = realm.id;
 
         // Test create
         let mut acl = ActorAcl::new(
-            realm_id, // realm_id
+            realm_id,
             "identified_client_user".to_string(),
             "identified_client_room".to_string(),
             true,
@@ -327,6 +387,7 @@ mod tests {
         assert!(fetched_opt.is_some());
         let fetched = fetched_opt.unwrap();
         assert_eq!(fetched.realm_id, realm_id);
+        assert_eq!(fetched.source_realm_id, Some(realm_id));
         assert_eq!(fetched.from_type, "identified_client_user");
         assert_eq!(fetched.to_type, "identified_client_room");
         assert!(fetched.access);
@@ -347,9 +408,13 @@ mod tests {
         assert_eq!(acls_for_realm[0].rowid, Some(acl_id));
 
         // Test get_by_types
-        let acl_by_types_opt =
-            ActorAcl::get_by_types(realm_id, "identified_client_user", "identified_client_room")
-                .await?;
+        let acl_by_types_opt = ActorAcl::get_by_types(
+            realm_id,
+            realm_id,
+            "identified_client_user",
+            "identified_client_room",
+        )
+        .await?;
         assert!(acl_by_types_opt.is_some());
         let acl_by_types = acl_by_types_opt.unwrap();
         assert!(!acl_by_types.access);
@@ -358,6 +423,42 @@ mod tests {
         ActorAcl::delete_by_id(acl_id).await?;
         let deleted_acl_opt = ActorAcl::get(acl_id).await?;
         assert!(deleted_acl_opt.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_cross_realm_acl_allow_and_deny() -> anyhow::Result<()> {
+        setup_test_db().await?;
+
+        let source = Realm::create("acl_source_realm".to_string(), String::new()).await?;
+        let target = Realm::create("acl_target_realm".to_string(), String::new()).await?;
+        let source_realm = source.id;
+        let target_realm = target.id;
+
+        let mut acl = ActorAcl::new_with_source_realm(
+            target_realm,
+            Some(source_realm),
+            "acme:client".to_string(),
+            "acme:worker".to_string(),
+            true,
+        );
+        let _ = acl.save().await?;
+
+        let allowed =
+            ActorAcl::can_discover(source_realm, target_realm, "acme:client", "acme:worker")
+                .await?;
+        assert!(allowed);
+
+        let denied_same_realm =
+            ActorAcl::can_discover(target_realm, target_realm, "acme:client", "acme:worker")
+                .await?;
+        assert!(!denied_same_realm);
+
+        let denied_other_type =
+            ActorAcl::can_discover(source_realm, target_realm, "acme:other", "acme:worker").await?;
+        assert!(!denied_other_type);
 
         Ok(())
     }

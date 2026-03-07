@@ -54,14 +54,16 @@
 //! ```no_run
 //! use ais::create_ais_router;
 //! use platform::config::{AisConfig, ActrixConfig};
+//! use tokio_util::sync::CancellationToken;
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // 创建配置
 //! let global_config = ActrixConfig::default();
 //! let ais_config = AisConfig::default();
+//! let cancel = CancellationToken::new();
 //!
 //! // 创建 AIS 路由器
-//! let router = create_ais_router(&ais_config, &global_config).await?;
+//! let router = create_ais_router(&ais_config, &global_config, cancel).await?;
 //!
 //! // 集成到主 HTTP 服务
 //! // let app = Router::new().nest("/ais", router);
@@ -95,11 +97,24 @@ use crate::ks_client_wrapper::create_ks_client;
 use anyhow::{Context, Result};
 use axum::Router;
 use platform::config::AisConfig;
+use platform::monitoring::ServiceCounters;
+use std::sync::Arc;
 
 /// 创建 AIS 路由器，遵循项目的 HttpRouterService 架构
 pub async fn create_ais_router(
     config: &AisConfig,
     global_config: &platform::config::ActrixConfig,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<Router> {
+    create_ais_router_with_counters(config, global_config, cancel, None).await
+}
+
+/// Create AIS router with optional service counters for metrics collection.
+pub async fn create_ais_router_with_counters(
+    config: &AisConfig,
+    global_config: &platform::config::ActrixConfig,
+    cancel: tokio_util::sync::CancellationToken,
+    counters: Option<Arc<ServiceCounters>>,
 ) -> Result<Router> {
     platform::recording::info!("Creating AIS router with config");
 
@@ -126,11 +141,15 @@ pub async fn create_ais_router(
     };
 
     // 创建 AId Token 签发器
-    let issuer = AIdIssuer::new(ks_client, issuer_config)
+    let issuer = AIdIssuer::new(ks_client, issuer_config, cancel)
         .await
         .context("Failed to create AIS issuer")?;
 
-    let state = AISState::new(issuer);
+    let state = if let Some(ctr) = counters {
+        AISState::new(issuer).with_counters(ctr)
+    } else {
+        AISState::new(issuer)
+    };
 
     // 创建路由器
     let router = create_router(state);

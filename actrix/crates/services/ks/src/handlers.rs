@@ -105,6 +105,7 @@ impl KSState {
 
         // 在后台异步清理，不阻塞当前请求
         let storage = self.storage.clone();
+        let tolerance = self.tolerance_seconds;
         tokio::spawn(async move {
             // 先检查密钥总数
             let total_keys = match storage.get_key_count().await {
@@ -124,8 +125,8 @@ impl KSState {
                 return;
             }
 
-            // 执行清理
-            match storage.cleanup_expired_keys().await {
+            // 执行清理（仅删除超出容忍期的密钥）
+            match storage.cleanup_expired_keys(tolerance).await {
                 Ok(cleaned) => {
                     if cleaned > 0 {
                         crate::recording::info!(

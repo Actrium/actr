@@ -27,8 +27,7 @@ use std::fmt::Debug;
 use url::Url;
 
 // 重新导出服务实现
-pub use grpc::KsGrpcService;
-pub use http::{AisService, KsHttpService, SignalingService};
+pub use http::{AisService, SignalingService};
 pub use ice::{StunService, TurnService};
 
 // 重新导出核心组件

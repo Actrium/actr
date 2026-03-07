@@ -16,6 +16,7 @@ opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dependencies]
 tokio = { workspace = true }
+tokio-util = "0.7"
 futures-util = { workspace = true }
 tracing = { workspace = true }
 bytes = "1.0"
@@ -40,9 +41,6 @@ base64 = { workspace = true }
 
 # 内部依赖
 platform = { path = "../../platform" }
-
-# HTTP client for AIS
-reqwest = { workspace = true }
 
 # Database
 sqlx = { workspace = true }

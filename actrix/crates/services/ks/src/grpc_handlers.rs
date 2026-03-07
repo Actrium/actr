@@ -184,9 +184,15 @@ impl KeyServer for KsGrpcService {
     /// 健康检查
     async fn health_check(
         &self,
-        _request: Request<HealthCheckRequest>,
+        request: Request<HealthCheckRequest>,
     ) -> Result<Response<HealthCheckResponse>, Status> {
         crate::recording::debug!("gRPC health check requested");
+        let req = request.into_inner();
+
+        // 与其他方法一致，health 也要求 nonce-auth
+        self.verify_credential(&req.credential, "health_check")
+            .await
+            .map_err(|e| Status::unauthenticated(format!("Authentication failed: {e}")))?;
 
         let key_count = self
             .storage

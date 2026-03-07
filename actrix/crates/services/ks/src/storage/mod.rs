@@ -146,13 +146,13 @@ impl KeyStorage {
         }
     }
 
-    /// 清理过期的密钥
-    pub async fn cleanup_expired_keys(&self) -> KsResult<u32> {
+    /// 清理过期的密钥（仅删除超出容忍期的）
+    pub async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32> {
         match self {
-            Self::Sqlite(b) => b.cleanup_expired_keys().await,
+            Self::Sqlite(b) => b.cleanup_expired_keys(tolerance_seconds).await,
 
             #[cfg(feature = "backend-postgres")]
-            Self::Postgres(b) => b.cleanup_expired_keys().await,
+            Self::Postgres(b) => b.cleanup_expired_keys(tolerance_seconds).await,
         }
     }
 

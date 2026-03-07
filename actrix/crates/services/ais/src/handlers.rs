@@ -2,8 +2,12 @@
 
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
 use actr_protocol::{ErrorResponse, RegisterRequest, RegisterResponse, register_response};
-use axum::{Router, body::Bytes, extract::State, response::Json, routing::post};
+use axum::{Router, body::Bytes, extract::State, http::HeaderMap, response::Json, routing::post};
 use platform::aid::AidError;
+use platform::monitoring::ServiceCounters;
+use platform::realm::{
+    REALM_SECRET_HEADER, Realm as RealmEntity, RealmSecretCheck, acl::ActorAcl, verify_realm_secret,
+};
 use prost::Message;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -12,13 +16,21 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct AISState {
     pub issuer: Arc<AIdIssuer>,
+    /// Service-level counters for metrics collection.
+    pub counters: Option<Arc<ServiceCounters>>,
 }
 
 impl AISState {
     pub fn new(issuer: AIdIssuer) -> Self {
         Self {
             issuer: Arc::new(issuer),
+            counters: None,
         }
+    }
+
+    pub fn with_counters(mut self, counters: Arc<ServiceCounters>) -> Self {
+        self.counters = Some(counters);
+        self
     }
 }
 
@@ -38,7 +50,9 @@ pub fn create_router(state: AISState) -> Router {
 
 /// ActrId 注册处理器 - 严格按照 proto 定义返回 RegisterResponse
 /// RegisterRequest -> RegisterResponse
-async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
+async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: Bytes) -> Bytes {
+    let start = std::time::Instant::now();
+
     // 解析 protobuf 请求
     let request = match RegisterRequest::decode(body) {
         Ok(req) => req,
@@ -61,6 +75,62 @@ async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
         request.actr_type.name
     );
 
+    // 验证 Realm 是否存在、状态正常、未过期
+    if let Err(e) = RealmEntity::validate_realm(request.realm.realm_id).await {
+        let error_result = RegisterResponse {
+            result: Some(register_response::Result::Error(ErrorResponse {
+                code: 403,
+                message: format!("Realm validation failed: {e}"),
+            })),
+        };
+        return encode_result(error_result);
+    }
+
+    // 校验 realm secret（历史 realm 未配置 secret 时兼容放行）
+    let provided_secret = headers
+        .get(REALM_SECRET_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
+    match verify_realm_secret(request.realm.realm_id, provided_secret).await {
+        Ok(RealmSecretCheck::NotConfigured)
+        | Ok(RealmSecretCheck::ValidCurrent)
+        | Ok(RealmSecretCheck::ValidPrevious) => {}
+        Ok(RealmSecretCheck::MissingRequired) => {
+            let error_result = RegisterResponse {
+                result: Some(register_response::Result::Error(ErrorResponse {
+                    code: 403,
+                    message: "Realm secret required".to_string(),
+                })),
+            };
+            return encode_result(error_result);
+        }
+        Ok(RealmSecretCheck::Invalid) => {
+            let error_result = RegisterResponse {
+                result: Some(register_response::Result::Error(ErrorResponse {
+                    code: 403,
+                    message: "Invalid realm secret".to_string(),
+                })),
+            };
+            return encode_result(error_result);
+        }
+        Err(e) => {
+            platform::recording::error!(
+                "Failed to verify realm secret for realm {}: {}",
+                request.realm.realm_id,
+                e
+            );
+            let error_result = RegisterResponse {
+                result: Some(register_response::Result::Error(ErrorResponse {
+                    code: 500,
+                    message: "Internal error while verifying realm secret".to_string(),
+                })),
+            };
+            return encode_result(error_result);
+        }
+    }
+
     // 调用 issuer 签发 credential
     let result = match state.issuer.issue_credential(&request).await {
         Ok(response) => {
@@ -72,11 +142,94 @@ async fn register_actr(State(state): State<AISState>, body: Bytes) -> Bytes {
                     register_ok.actr_id.r#type.manufacturer,
                     register_ok.actr_id.r#type.name
                 );
+
+                // Persist ACL rules to database
+                if let Some(ref acl) = request.acl {
+                    let realm_id = register_ok.actr_id.realm.realm_id;
+                    let my_type = format!(
+                        "{}:{}",
+                        register_ok.actr_id.r#type.manufacturer, register_ok.actr_id.r#type.name
+                    );
+
+                    for rule in &acl.rules {
+                        let permission =
+                            rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
+
+                        for principal in &rule.principals {
+                            let from_type = match &principal.actr_type {
+                                Some(t) => format!("{}:{}", t.manufacturer, t.name),
+                                None => continue,
+                            };
+                            let source_realm_id = principal.realm.as_ref().map(|r| r.realm_id);
+
+                            let mut actor_acl = if let Some(src) = source_realm_id {
+                                ActorAcl::new_with_source_realm(
+                                    realm_id,
+                                    Some(src),
+                                    from_type.clone(),
+                                    my_type.clone(),
+                                    permission,
+                                )
+                            } else {
+                                ActorAcl::new(
+                                    realm_id,
+                                    from_type.clone(),
+                                    my_type.clone(),
+                                    permission,
+                                )
+                            };
+
+                            if let Err(e) = actor_acl.save().await {
+                                platform::recording::warn!(
+                                    "Failed to save ACL rule ({} -> {}): {}",
+                                    from_type,
+                                    my_type,
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Store pending registration (service_spec) for signaling to pick up
+                if request.service_spec.is_some() {
+                    let serial = register_ok.actr_id.serial_number;
+                    let realm = register_ok.actr_id.realm.realm_id;
+                    let spec_blob = request
+                        .service_spec
+                        .as_ref()
+                        .map(prost::Message::encode_to_vec);
+                    let db = platform::storage::db::get_database();
+                    let pool = db.get_pool();
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let _ = sqlx::query(
+                        "INSERT OR REPLACE INTO pending_registration \
+                         (serial_number, realm_id, service_spec_blob, created_at) \
+                         VALUES (?, ?, ?, ?)",
+                    )
+                    .bind(serial as i64)
+                    .bind(realm as i64)
+                    .bind(spec_blob)
+                    .bind(now)
+                    .execute(pool)
+                    .await;
+                }
+            }
+            if let Some(ref ctr) = state.counters {
+                ctr.record_request(true, start.elapsed().as_secs_f64() * 1000.0)
+                    .await;
             }
             response
         }
         Err(err) => {
             platform::recording::error!("Failed to register ActrId: {}", err);
+            if let Some(ref ctr) = state.counters {
+                ctr.record_request(false, start.elapsed().as_secs_f64() * 1000.0)
+                    .await;
+            }
             RegisterResponse {
                 result: Some(register_response::Result::Error(
                     aid_error_to_error_response(err),

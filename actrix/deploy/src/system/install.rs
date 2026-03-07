@@ -5,10 +5,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::dependencies::{ServiceManager, detect_service_manager};
+use super::firewall::{apply_firewall, plan_firewall};
 use crate::config::InstallConfig;
 use crate::tpl::SystemdServiceTemplate;
-use super::dependencies::{detect_service_manager, ServiceManager};
-use super::firewall::{apply_firewall, plan_firewall};
 
 const DEFAULT_SERVICE_USER: &str = "actrix";
 const DEFAULT_SERVICE_GROUP: &str = "actrix";
@@ -100,10 +100,7 @@ fn configure_config_path() -> Result<PathBuf> {
     println!("Specify the configuration file path for the service:");
     println!();
 
-    let config_path = prompt_text(
-        "Configuration file path",
-        "/etc/actrix/config.toml",
-    )?;
+    let config_path = prompt_text("Configuration file path", "/etc/actrix/config.toml")?;
 
     let path = PathBuf::from(config_path);
 
@@ -432,7 +429,9 @@ fn configure_firewall_step(config_path: &Path) -> Result<()> {
     let preview = match plan_firewall(config_path) {
         Ok(Some(preview)) => preview,
         Ok(None) => {
-            println!("ℹ️  No external listener ports detected from config; skipping firewall step.");
+            println!(
+                "ℹ️  No external listener ports detected from config; skipping firewall step."
+            );
             println!();
             return Ok(());
         }

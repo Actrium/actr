@@ -8,6 +8,7 @@ pub mod error;
 // Re-export error types for convenience
 pub use error::{ErrorSeverity, Result, StunError};
 
+use platform::monitoring::ServiceCounters;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -17,7 +18,16 @@ use webrtc_stun::xoraddr::XorMappedAddress;
 /// Create and run a STUN server with graceful shutdown support
 pub async fn create_stun_server_with_shutdown(
     socket: Arc<UdpSocket>,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) -> Result<()> {
+    create_stun_server_with_shutdown_and_counters(socket, shutdown_rx, None).await
+}
+
+/// Create and run a STUN server with graceful shutdown support and optional service counters.
+pub async fn create_stun_server_with_shutdown_and_counters(
+    socket: Arc<UdpSocket>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    counters: Option<Arc<ServiceCounters>>,
 ) -> Result<()> {
     platform::recording::info!(
         "Starting STUN server with shutdown support on {}",
@@ -37,6 +47,11 @@ pub async fn create_stun_server_with_shutdown(
                         // Check if this might be a STUN message before processing
                         if is_stun_message(packet_data) {
                             platform::recording::debug!("Received potential STUN packet from {} ({} bytes)", src_addr, len);
+
+                            // Record the STUN request
+                            if let Some(ref ctr) = counters {
+                                ctr.record_request(true, 0.0).await;
+                            }
 
                             // Process the packet in the background to avoid blocking the receive loop
                             let socket_clone = socket.clone();

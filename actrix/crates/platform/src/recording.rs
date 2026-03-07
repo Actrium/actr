@@ -8,6 +8,7 @@ use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fmt;
+use std::sync::OnceLock;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -226,6 +227,174 @@ pub enum SecuritySeverity {
     Medium,
     High,
     Critical,
+}
+
+// ── Per-channel semantic filters ────────────────────────────────────────
+
+/// Observability channel filter — controls resolution (how much detail).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ObservabilityFilter {
+    Off,
+    #[default]
+    Digest,
+    Detailed,
+    Full,
+}
+
+/// Audit channel filter — controls scope (which actions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuditFilter {
+    Off,
+    #[default]
+    Mutations,
+    All,
+}
+
+/// Security channel filter — controls severity threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SecurityFilter {
+    Off,
+    Critical,
+    High,
+    Medium,
+    #[default]
+    All,
+}
+
+/// Operations channel filter — controls detail level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OperationsFilter {
+    Off,
+    #[default]
+    Lifecycle,
+    Detailed,
+}
+
+/// Holds the active filter for each channel.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelFilters {
+    pub observability: ObservabilityFilter,
+    pub audit: AuditFilter,
+    pub security: SecurityFilter,
+    pub operations: OperationsFilter,
+}
+
+static CHANNEL_FILTERS: OnceLock<ChannelFilters> = OnceLock::new();
+
+/// Install channel filters (call once at pipeline init).
+pub fn set_channel_filters(filters: ChannelFilters) {
+    let _ = CHANNEL_FILTERS.set(filters);
+}
+
+/// Read the active channel filters (returns defaults if never set).
+pub fn get_channel_filters() -> &'static ChannelFilters {
+    static DEFAULT: Lazy<ChannelFilters> = Lazy::new(ChannelFilters::default);
+    CHANNEL_FILTERS.get().unwrap_or(&DEFAULT)
+}
+
+/// Parse a config string into an `ObservabilityFilter`.
+pub fn parse_observability_filter(s: &str) -> ObservabilityFilter {
+    match s {
+        "off" => ObservabilityFilter::Off,
+        "digest" => ObservabilityFilter::Digest,
+        "detailed" => ObservabilityFilter::Detailed,
+        "full" => ObservabilityFilter::Full,
+        _ => ObservabilityFilter::default(),
+    }
+}
+
+/// Parse a config string into an `AuditFilter`.
+pub fn parse_audit_filter(s: &str) -> AuditFilter {
+    match s {
+        "off" => AuditFilter::Off,
+        "mutations" => AuditFilter::Mutations,
+        "all" => AuditFilter::All,
+        _ => AuditFilter::default(),
+    }
+}
+
+/// Parse a config string into a `SecurityFilter`.
+pub fn parse_security_filter(s: &str) -> SecurityFilter {
+    match s {
+        "off" => SecurityFilter::Off,
+        "critical" => SecurityFilter::Critical,
+        "high" => SecurityFilter::High,
+        "medium" => SecurityFilter::Medium,
+        "all" => SecurityFilter::All,
+        _ => SecurityFilter::default(),
+    }
+}
+
+/// Parse a config string into an `OperationsFilter`.
+pub fn parse_operations_filter(s: &str) -> OperationsFilter {
+    match s {
+        "off" => OperationsFilter::Off,
+        "lifecycle" => OperationsFilter::Lifecycle,
+        "detailed" => OperationsFilter::Detailed,
+        _ => OperationsFilter::default(),
+    }
+}
+
+// ── Gate functions ──────────────────────────────────────────────────────
+
+/// Read-only verbs for audit mutation detection.
+const AUDIT_READ_PREFIXES: &[&str] = &["read", "get", "list", "query", "check", "view", "describe"];
+
+fn is_audit_read_action(action: &str) -> bool {
+    let lower = action.to_ascii_lowercase();
+    AUDIT_READ_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+fn should_emit_observability(common: &Common, filter: ObservabilityFilter) -> bool {
+    match filter {
+        ObservabilityFilter::Off => false,
+        ObservabilityFilter::Digest => matches!(
+            common.level,
+            RecordLevel::Info | RecordLevel::Warn | RecordLevel::Error
+        ),
+        ObservabilityFilter::Detailed => matches!(
+            common.level,
+            RecordLevel::Debug | RecordLevel::Info | RecordLevel::Warn | RecordLevel::Error
+        ),
+        ObservabilityFilter::Full => true,
+    }
+}
+
+fn should_emit_audit(payload: &AuditPayload, filter: AuditFilter) -> bool {
+    match filter {
+        AuditFilter::Off => false,
+        AuditFilter::Mutations => !is_audit_read_action(&payload.action),
+        AuditFilter::All => true,
+    }
+}
+
+fn should_emit_security(payload: &SecurityPayload, filter: SecurityFilter) -> bool {
+    match filter {
+        SecurityFilter::Off => false,
+        SecurityFilter::Critical => matches!(payload.severity, SecuritySeverity::Critical),
+        SecurityFilter::High => matches!(
+            payload.severity,
+            SecuritySeverity::High | SecuritySeverity::Critical
+        ),
+        SecurityFilter::Medium => matches!(
+            payload.severity,
+            SecuritySeverity::Medium | SecuritySeverity::High | SecuritySeverity::Critical
+        ),
+        SecurityFilter::All => true,
+    }
+}
+
+fn should_emit_operations(common: &Common, filter: OperationsFilter) -> bool {
+    match filter {
+        OperationsFilter::Off => false,
+        OperationsFilter::Lifecycle => matches!(
+            common.level,
+            RecordLevel::Info | RecordLevel::Warn | RecordLevel::Error
+        ),
+        OperationsFilter::Detailed => true,
+    }
 }
 
 /// Security-specific payload.
@@ -520,6 +689,7 @@ pub fn emit_with_callsite<const CHANNEL_MASK: u8>(
     record.common = enrich_common(record.common, &callsite);
     record.validate()?;
 
+    let filters = get_channel_filters();
     let level = record.common.level;
     let common = record.common;
     let Record {
@@ -533,7 +703,9 @@ pub fn emit_with_callsite<const CHANNEL_MASK: u8>(
         attributes,
     } = record;
 
-    if let Some(payload) = observability {
+    if let Some(payload) = observability
+        && should_emit_observability(&common, filters.observability)
+    {
         let value = build_channel_record(
             "observability",
             &id,
@@ -546,7 +718,9 @@ pub fn emit_with_callsite<const CHANNEL_MASK: u8>(
         emit_channel(level, Channel::Observability, &value);
     }
 
-    if let Some(payload) = audit {
+    if let Some(payload) = audit
+        && should_emit_audit(&payload, filters.audit)
+    {
         let value = build_channel_record(
             "audit",
             &id,
@@ -559,7 +733,9 @@ pub fn emit_with_callsite<const CHANNEL_MASK: u8>(
         emit_channel(level, Channel::Audit, &value);
     }
 
-    if let Some(payload) = security {
+    if let Some(payload) = security
+        && should_emit_security(&payload, filters.security)
+    {
         let value = build_channel_record(
             "security",
             &id,
@@ -572,7 +748,9 @@ pub fn emit_with_callsite<const CHANNEL_MASK: u8>(
         emit_channel(level, Channel::Security, &value);
     }
 
-    if let Some(payload) = operations {
+    if let Some(payload) = operations
+        && should_emit_operations(&common, filters.operations)
+    {
         let value = build_channel_record(
             "operations",
             &id,
@@ -1037,5 +1215,221 @@ mod tests {
                 channel: "observability"
             }
         ));
+    }
+
+    // ── Filter parse tests ──
+
+    #[test]
+    fn parse_observability_filter_values() {
+        assert_eq!(parse_observability_filter("off"), ObservabilityFilter::Off);
+        assert_eq!(
+            parse_observability_filter("digest"),
+            ObservabilityFilter::Digest
+        );
+        assert_eq!(
+            parse_observability_filter("detailed"),
+            ObservabilityFilter::Detailed
+        );
+        assert_eq!(
+            parse_observability_filter("full"),
+            ObservabilityFilter::Full
+        );
+        assert_eq!(
+            parse_observability_filter("bogus"),
+            ObservabilityFilter::Digest
+        );
+    }
+
+    #[test]
+    fn parse_audit_filter_values() {
+        assert_eq!(parse_audit_filter("off"), AuditFilter::Off);
+        assert_eq!(parse_audit_filter("mutations"), AuditFilter::Mutations);
+        assert_eq!(parse_audit_filter("all"), AuditFilter::All);
+        assert_eq!(parse_audit_filter("bogus"), AuditFilter::Mutations);
+    }
+
+    #[test]
+    fn parse_security_filter_values() {
+        assert_eq!(parse_security_filter("off"), SecurityFilter::Off);
+        assert_eq!(parse_security_filter("critical"), SecurityFilter::Critical);
+        assert_eq!(parse_security_filter("high"), SecurityFilter::High);
+        assert_eq!(parse_security_filter("medium"), SecurityFilter::Medium);
+        assert_eq!(parse_security_filter("all"), SecurityFilter::All);
+        assert_eq!(parse_security_filter("bogus"), SecurityFilter::All);
+    }
+
+    #[test]
+    fn parse_operations_filter_values() {
+        assert_eq!(parse_operations_filter("off"), OperationsFilter::Off);
+        assert_eq!(
+            parse_operations_filter("lifecycle"),
+            OperationsFilter::Lifecycle
+        );
+        assert_eq!(
+            parse_operations_filter("detailed"),
+            OperationsFilter::Detailed
+        );
+        assert_eq!(
+            parse_operations_filter("bogus"),
+            OperationsFilter::Lifecycle
+        );
+    }
+
+    // ── Gate logic tests ──
+
+    #[test]
+    fn observability_gate_digest_passes_info_blocks_debug() {
+        let info = Common {
+            level: RecordLevel::Info,
+            ..Default::default()
+        };
+        let debug = Common {
+            level: RecordLevel::Debug,
+            ..Default::default()
+        };
+        let trace = Common {
+            level: RecordLevel::Trace,
+            ..Default::default()
+        };
+        assert!(should_emit_observability(
+            &info,
+            ObservabilityFilter::Digest
+        ));
+        assert!(!should_emit_observability(
+            &debug,
+            ObservabilityFilter::Digest
+        ));
+        assert!(!should_emit_observability(
+            &trace,
+            ObservabilityFilter::Digest
+        ));
+    }
+
+    #[test]
+    fn observability_gate_detailed_passes_debug_blocks_trace() {
+        let debug = Common {
+            level: RecordLevel::Debug,
+            ..Default::default()
+        };
+        let trace = Common {
+            level: RecordLevel::Trace,
+            ..Default::default()
+        };
+        assert!(should_emit_observability(
+            &debug,
+            ObservabilityFilter::Detailed
+        ));
+        assert!(!should_emit_observability(
+            &trace,
+            ObservabilityFilter::Detailed
+        ));
+    }
+
+    #[test]
+    fn observability_gate_full_passes_all() {
+        let trace = Common {
+            level: RecordLevel::Trace,
+            ..Default::default()
+        };
+        assert!(should_emit_observability(&trace, ObservabilityFilter::Full));
+    }
+
+    #[test]
+    fn observability_gate_off_blocks_all() {
+        let error = Common {
+            level: RecordLevel::Error,
+            ..Default::default()
+        };
+        assert!(!should_emit_observability(&error, ObservabilityFilter::Off));
+    }
+
+    #[test]
+    fn audit_gate_mutations_filters_reads() {
+        let write_payload = AuditPayload {
+            action: "config.update".to_string(),
+            resource: "bind".to_string(),
+            resource_id: None,
+            reason: None,
+            remote_addr: None,
+            session_id: None,
+            before: None,
+            after: None,
+        };
+        let read_payload = AuditPayload {
+            action: "read.config".to_string(),
+            resource: "bind".to_string(),
+            resource_id: None,
+            reason: None,
+            remote_addr: None,
+            session_id: None,
+            before: None,
+            after: None,
+        };
+        let list_payload = AuditPayload {
+            action: "list.realms".to_string(),
+            resource: "realm".to_string(),
+            resource_id: None,
+            reason: None,
+            remote_addr: None,
+            session_id: None,
+            before: None,
+            after: None,
+        };
+        assert!(should_emit_audit(&write_payload, AuditFilter::Mutations));
+        assert!(!should_emit_audit(&read_payload, AuditFilter::Mutations));
+        assert!(!should_emit_audit(&list_payload, AuditFilter::Mutations));
+        assert!(should_emit_audit(&read_payload, AuditFilter::All));
+    }
+
+    #[test]
+    fn security_gate_severity_threshold() {
+        let low = SecurityPayload {
+            control: "test".to_string(),
+            severity: SecuritySeverity::Low,
+            category: None,
+            subject: None,
+            source_addr: None,
+            destination_addr: None,
+            evidence: None,
+        };
+        let high = SecurityPayload {
+            control: "test".to_string(),
+            severity: SecuritySeverity::High,
+            category: None,
+            subject: None,
+            source_addr: None,
+            destination_addr: None,
+            evidence: None,
+        };
+        let critical = SecurityPayload {
+            control: "test".to_string(),
+            severity: SecuritySeverity::Critical,
+            category: None,
+            subject: None,
+            source_addr: None,
+            destination_addr: None,
+            evidence: None,
+        };
+        assert!(!should_emit_security(&low, SecurityFilter::High));
+        assert!(should_emit_security(&high, SecurityFilter::High));
+        assert!(should_emit_security(&critical, SecurityFilter::High));
+        assert!(should_emit_security(&critical, SecurityFilter::Critical));
+        assert!(!should_emit_security(&high, SecurityFilter::Critical));
+        assert!(should_emit_security(&low, SecurityFilter::All));
+    }
+
+    #[test]
+    fn operations_gate_lifecycle_passes_info() {
+        let info = Common {
+            level: RecordLevel::Info,
+            ..Default::default()
+        };
+        let debug = Common {
+            level: RecordLevel::Debug,
+            ..Default::default()
+        };
+        assert!(should_emit_operations(&info, OperationsFilter::Lifecycle));
+        assert!(!should_emit_operations(&debug, OperationsFilter::Lifecycle));
+        assert!(should_emit_operations(&debug, OperationsFilter::Detailed));
     }
 }

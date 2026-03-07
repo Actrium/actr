@@ -17,7 +17,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 pub struct GrpcClientConfig {
     /// KS 服务地址 (gRPC endpoint)
     ///
-    /// 例如: "http://127.0.0.1:50052" 或 "https://ks.example.com:50052"
+    /// 例如: "http://127.0.0.1:8080" 或 "https://ks.example.com:8443"
     pub endpoint: String,
 
     /// Actrix 共享密钥（用于认证）
@@ -246,7 +246,17 @@ impl GrpcClient {
 
     /// 健康检查
     pub async fn health_check(&mut self) -> Result<String, KsError> {
-        let request = tonic::Request::new(HealthCheckRequest {});
+        let request_data = "health_check";
+        let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
+            .sign(request_data.as_bytes())?;
+
+        let credential = NonceCredential {
+            timestamp: nonce_credential.timestamp,
+            nonce: nonce_credential.nonce,
+            signature: nonce_credential.signature,
+        };
+
+        let request = tonic::Request::new(HealthCheckRequest { credential });
 
         let response = self
             .client
@@ -266,7 +276,7 @@ mod tests {
     #[test]
     fn test_grpc_client_config() {
         let config = GrpcClientConfig {
-            endpoint: "http://127.0.0.1:50052".to_string(),
+            endpoint: "http://127.0.0.1:8080".to_string(),
             actrix_shared_key: "test-key".to_string(),
             timeout_seconds: 30,
             enable_tls: false,
@@ -276,14 +286,14 @@ mod tests {
             client_key: None,
         };
 
-        assert_eq!(config.endpoint, "http://127.0.0.1:50052");
+        assert_eq!(config.endpoint, "http://127.0.0.1:8080");
         assert!(!config.enable_tls);
     }
 
     #[test]
     fn test_tls_config_validation() {
         let config = GrpcClientConfig {
-            endpoint: "https://ks.example.com:50052".to_string(),
+            endpoint: "https://ks.example.com:8443".to_string(),
             actrix_shared_key: "test-key".to_string(),
             timeout_seconds: 30,
             enable_tls: true,
@@ -300,7 +310,7 @@ mod tests {
     #[test]
     fn test_mtls_partial_config() {
         let config = GrpcClientConfig {
-            endpoint: "https://ks.example.com:50052".to_string(),
+            endpoint: "https://ks.example.com:8443".to_string(),
             actrix_shared_key: "test-key".to_string(),
             timeout_seconds: 30,
             enable_tls: true,

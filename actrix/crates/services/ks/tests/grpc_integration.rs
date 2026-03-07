@@ -135,7 +135,9 @@ async fn test_grpc_health_and_key_lifecycle() {
     let mut client = connect_client(&server.endpoint).await;
 
     let health_before = client
-        .health_check(HealthCheckRequest {})
+        .health_check(HealthCheckRequest {
+            credential: sign_credential(psk, "health_check"),
+        })
         .await
         .expect("health check before generate")
         .into_inner();
@@ -179,7 +181,9 @@ async fn test_grpc_health_and_key_lifecycle() {
     assert_eq!(secret_key_bytes.len(), 32, "Secret key must be 32 bytes");
 
     let health_after = client
-        .health_check(HealthCheckRequest {})
+        .health_check(HealthCheckRequest {
+            credential: sign_credential(psk, "health_check"),
+        })
         .await
         .expect("health check after generate")
         .into_inner();

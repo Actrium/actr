@@ -1,68 +1,126 @@
+use super::admin_api::{AdminApiState, build_admin_api_router};
 use actrix_sdk::control::{AdminApiService, AuthService, NodeAdminServiceServer};
 use anyhow::Result;
-use axum::{Json, Router, response::Html, routing::get};
+use axum::{Json, Router, routing::get};
 use platform::{
     ServiceCollector,
+    config::config_store::ConfigOverrideStore,
     config::{ActrixConfig, ControlHead},
+    monitoring::MetricsStore,
     storage::nonce::SqliteNonceStorage,
 };
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
 /// Build control router with absolute routes.
 ///
 /// Control is always available and reuses the main HTTP listener.
+///
+/// `jwt_secret` is an optional pre-existing secret for Admin UI JWT tokens.
+/// When `None`, a new random secret is generated.  Pass the same secret on
+/// reload to avoid invalidating active admin sessions.
+///
+/// Returns `(Router, jwt_secret)` — the caller should persist the secret
+/// for subsequent reloads.
 pub async fn build_control_router(
     config: &ActrixConfig,
     service_collector: ServiceCollector,
     shutdown_tx: broadcast::Sender<()>,
-) -> Result<Router> {
+    config_path: PathBuf,
+    jwt_secret: Option<Vec<u8>>,
+    config_store: Arc<ConfigOverrideStore>,
+    metrics_store: MetricsStore,
+) -> Result<(Router, Vec<u8>)> {
     match config.control.head {
-        ControlHead::AdminUi => Ok(build_admin_ui_router()),
-        ControlHead::GrpcApi => build_grpc_api_router(config, service_collector, shutdown_tx).await,
+        ControlHead::AdminUi => {
+            build_admin_ui_router(
+                config,
+                service_collector,
+                shutdown_tx,
+                config_path,
+                jwt_secret,
+                config_store,
+                metrics_store,
+            )
+            .await
+        }
+        ControlHead::GrpcApi => {
+            let router = build_grpc_api_router(config, service_collector, shutdown_tx).await?;
+            // gRPC head doesn't use JWT; return a dummy secret for API consistency
+            Ok((router, jwt_secret.unwrap_or_default()))
+        }
     }
 }
 
-fn build_admin_ui_router() -> Router {
-    Router::new()
-        .route("/admin", get(control_admin_ui_index))
-        .route("/admin/health", get(control_admin_ui_health))
-}
+async fn build_admin_ui_router(
+    config: &ActrixConfig,
+    service_collector: ServiceCollector,
+    shutdown_tx: broadcast::Sender<()>,
+    config_path: PathBuf,
+    jwt_secret: Option<Vec<u8>>,
+    config_store: Arc<ConfigOverrideStore>,
+    metrics_store: MetricsStore,
+) -> Result<(Router, Vec<u8>)> {
+    // Read raw TOML content for L1 detection
+    let toml_content = tokio::fs::read_to_string(&config_path)
+        .await
+        .unwrap_or_default();
 
-async fn control_admin_ui_index() -> Html<&'static str> {
-    Html(
-        r#"<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Actrix Admin</title>
-    <style>
-      body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 2rem; color: #111; }
-      h1 { margin-bottom: .5rem; }
-      code { background: #f3f3f3; padding: .15rem .35rem; border-radius: 4px; }
-      .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem; max-width: 760px; }
-    </style>
-  </head>
-  <body>
-    <h1>Actrix Admin UI</h1>
-    <div class="card">
-      <p>Control head: <code>admin_ui</code></p>
-      <p>Health endpoint: <code>/admin/health</code></p>
-      <p>This node reuses the main HTTP port and does not open an extra control port.</p>
-    </div>
-  </body>
-</html>"#,
+    let mut service = AdminApiService::new(
+        config.name.clone(),
+        config.name.clone(),
+        config.location_tag.clone(),
+        env!("CARGO_PKG_VERSION"),
+        service_collector,
     )
-}
+    .map_err(|e| anyhow::anyhow!("Failed to create admin API service: {e}"))?;
 
-async fn control_admin_ui_health() -> Json<serde_json::Value> {
-    Json(json!({
-        "service": "control",
-        "head": "admin_ui",
-        "status": "healthy"
-    }))
+    service = service
+        .with_override_store(config_store)
+        .with_running_config(config.clone())
+        .with_toml_content(toml_content)
+        .with_config_path(config_path);
+
+    let shutdown_tx_for_handler = shutdown_tx.clone();
+    service = service.with_shutdown_handler(move |_graceful, _timeout, reason| {
+        let shutdown_tx = shutdown_tx_for_handler.clone();
+        async move {
+            if let Some(reason) = reason {
+                platform::recording::warn!("Admin UI shutdown requested: {}", reason);
+            } else {
+                platform::recording::warn!("Admin UI shutdown requested");
+            }
+            let _ = shutdown_tx.send(());
+            Ok(())
+        }
+    });
+
+    // Reuse existing JWT secret on reload, generate only on first call
+    let jwt_secret: Vec<u8> = jwt_secret.unwrap_or_else(|| {
+        use rand::RngCore;
+        let mut buf = vec![0u8; 32];
+        rand::rng().fill_bytes(&mut buf);
+        buf
+    });
+
+    let jwt_secret_clone = jwt_secret.clone();
+    let advertised_ip = config
+        .bind
+        .http
+        .as_ref()
+        .map(|h| h.advertised_ip.clone())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let state = Arc::new(AdminApiState {
+        service,
+        config: config.control.admin_ui.clone(),
+        jwt_secret,
+        advertised_ip,
+        metrics_store,
+    });
+
+    Ok((build_admin_api_router(state), jwt_secret_clone))
 }
 
 async fn build_grpc_api_router(
@@ -120,7 +178,6 @@ async fn build_grpc_api_router(
     // `/admin/grpc/admin.v1.NodeAdminService/<Method>`
     Ok(Router::new()
         .route("/admin", get(control_grpc_head_index))
-        .route("/admin/health", get(control_grpc_head_health))
         .route_service(
             "/admin.v1.NodeAdminService/{*grpc_method}",
             node_admin_service.clone(),
@@ -134,13 +191,5 @@ async fn control_grpc_head_index() -> Json<serde_json::Value> {
         "head": "grpc_api",
         "grpc_methods": "/admin.v1.NodeAdminService/<Method>",
         "grpc_compat_mount": "/admin/grpc/admin.v1.NodeAdminService/<Method>"
-    }))
-}
-
-async fn control_grpc_head_health() -> Json<serde_json::Value> {
-    Json(json!({
-        "service": "control",
-        "head": "grpc_api",
-        "status": "healthy"
     }))
 }

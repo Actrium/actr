@@ -6,7 +6,8 @@ use lazy_static::lazy_static;
 use prometheus::{
     HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
 };
-use std::sync::Once;
+use std::collections::HashMap;
+use std::sync::{Once, RwLock};
 use std::time::Instant;
 
 static METRICS_INIT: Once = Once::new();
@@ -158,6 +159,77 @@ lazy_static! {
             .namespace("actrix"),
         &["direction"]
     ).unwrap();
+}
+
+/// Per-service Prometheus registries for isolated metrics export.
+pub struct ServiceMetricsRegistry {
+    registries: RwLock<HashMap<String, Registry>>,
+}
+
+impl Default for ServiceMetricsRegistry {
+    fn default() -> Self {
+        Self {
+            registries: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl ServiceMetricsRegistry {
+    pub fn new() -> Self {
+        Self {
+            registries: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get an existing registry or create a new one for the given service.
+    pub fn get_or_create(&self, service: &str) -> Registry {
+        {
+            let read = self.registries.read().unwrap();
+            if let Some(r) = read.get(service) {
+                return r.clone();
+            }
+        }
+        let mut write = self.registries.write().unwrap();
+        write.entry(service.to_string()).or_default().clone()
+    }
+
+    /// Export Prometheus text for a single service registry.
+    pub fn export_for(&self, service: &str) -> String {
+        use prometheus::Encoder;
+        let read = self.registries.read().unwrap();
+        let Some(registry) = read.get(service) else {
+            return String::new();
+        };
+        let encoder = prometheus::TextEncoder::new();
+        let families = registry.gather();
+        let mut buf = Vec::new();
+        encoder.encode(&families, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// Export all per-service registries merged with the global REGISTRY.
+    pub fn export_all(&self) -> String {
+        use prometheus::Encoder;
+        let encoder = prometheus::TextEncoder::new();
+
+        // Gather from global registry
+        let mut families = REGISTRY.gather();
+
+        // Gather from all per-service registries
+        let read = self.registries.read().unwrap();
+        for registry in read.values() {
+            families.extend(registry.gather());
+        }
+
+        let mut buf = Vec::new();
+        encoder.encode(&families, &mut buf).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+}
+
+lazy_static! {
+    /// Per-service Prometheus registries
+    pub static ref SERVICE_REGISTRIES: ServiceMetricsRegistry = ServiceMetricsRegistry::new();
 }
 
 /// 注册所有指标到全局 Registry

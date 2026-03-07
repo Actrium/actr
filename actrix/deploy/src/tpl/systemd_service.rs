@@ -29,6 +29,7 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=actrix
+{{CAPABILITY_BLOCK}}
 
 # Security settings
 NoNewPrivileges=true
@@ -49,6 +50,23 @@ WantedBy=multi-user.target
 struct RuntimeConfig {
     pid: Option<String>,
     sqlite_path: Option<String>,
+    #[serde(default)]
+    bind: RuntimeBindConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeBindConfig {
+    #[serde(default)]
+    http: Option<RuntimeListenerConfig>,
+    #[serde(default)]
+    https: Option<RuntimeListenerConfig>,
+    #[serde(default)]
+    ice: Option<RuntimeListenerConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeListenerConfig {
+    port: Option<u16>,
 }
 
 /// Systemd service template processor
@@ -102,9 +120,18 @@ impl SystemdServiceTemplate {
     }
 
     fn create_service_content(&self, service_user: &str, service_group: &str) -> Result<String> {
-        let install_dir_str = self.install_config.install_dir.to_string_lossy().to_string();
+        let install_dir_str = self
+            .install_config
+            .install_dir
+            .to_string_lossy()
+            .to_string();
         let config_path_str = self.config_path.to_string_lossy().to_string();
         let read_write_paths = self.collect_read_write_paths().join(" ");
+        let capability_block = if self.requires_low_port_capability() {
+            "# Allow binding privileged ports (<1024) while running as non-root\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+        } else {
+            ""
+        };
 
         println!("ℹ️  ReadWritePaths: {}", read_write_paths);
 
@@ -114,6 +141,7 @@ impl SystemdServiceTemplate {
         placeholders.insert("INSTALL_DIR".to_string(), install_dir_str);
         placeholders.insert("CONFIG_PATH".to_string(), config_path_str);
         placeholders.insert("READ_WRITE_PATHS".to_string(), read_write_paths);
+        placeholders.insert("CAPABILITY_BLOCK".to_string(), capability_block.to_string());
 
         let mut result = SYSTEMD_SERVICE_TEMPLATE.to_string();
         for (key, value) in placeholders {
@@ -214,7 +242,13 @@ impl SystemdServiceTemplate {
         println!("════════════════");
 
         let output = Command::new("sudo")
-            .args(["systemctl", "status", service_name, "--no-pager", "--lines=10"])
+            .args([
+                "systemctl",
+                "status",
+                service_name,
+                "--no-pager",
+                "--lines=10",
+            ])
             .output()?;
 
         if output.status.success() {
@@ -277,5 +311,38 @@ impl SystemdServiceTemplate {
         }
 
         paths.into_iter().collect()
+    }
+
+    fn requires_low_port_capability(&self) -> bool {
+        const DEFAULT_HTTP_PORT: u16 = 8080;
+        const DEFAULT_HTTPS_PORT: u16 = 8443;
+        const DEFAULT_ICE_PORT: u16 = 3478;
+
+        let config_text = match std::fs::read_to_string(&self.config_path) {
+            Ok(text) => text,
+            Err(_) => return false,
+        };
+        let runtime_cfg = match toml::from_str::<RuntimeConfig>(&config_text) {
+            Ok(cfg) => cfg,
+            Err(_) => return false,
+        };
+
+        [
+            runtime_cfg
+                .bind
+                .http
+                .map(|cfg| cfg.port.unwrap_or(DEFAULT_HTTP_PORT)),
+            runtime_cfg
+                .bind
+                .https
+                .map(|cfg| cfg.port.unwrap_or(DEFAULT_HTTPS_PORT)),
+            runtime_cfg
+                .bind
+                .ice
+                .map(|cfg| cfg.port.unwrap_or(DEFAULT_ICE_PORT)),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|port| port < 1024)
     }
 }

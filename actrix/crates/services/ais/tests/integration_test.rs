@@ -154,9 +154,13 @@ async fn test_end_to_end_credential_flow() {
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
         .expect("Failed to create KS gRPC client");
-    let issuer = AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir))
-        .await
-        .expect("Failed to create issuer");
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("Failed to create issuer");
 
     AIdCredentialValidator::init(
         &env.ks_config,
@@ -263,9 +267,13 @@ async fn test_issuer_health_checks() {
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
         .expect("Failed to create KS gRPC client");
-    let issuer = AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir))
-        .await
-        .expect("Failed to create issuer");
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("Failed to create issuer");
 
     issuer
         .check_database_health()
@@ -284,9 +292,13 @@ async fn test_issuer_rotate_key_updates_current_key() {
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
         .expect("Failed to create KS gRPC client");
-    let issuer = AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir))
-        .await
-        .expect("Failed to create issuer");
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("Failed to create issuer");
 
     let key_before = issuer
         .get_current_key_id()
@@ -320,17 +332,36 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         .await
         .expect("gRPC channel creation should succeed even with wrong secret");
 
-    let err = match AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir)).await {
-        Ok(_) => panic!("issuer initialization should fail when KS authentication fails"),
-        Err(err) => err,
-    };
+    // With lazy KS connection, issuer creation succeeds — auth failure happens on first use
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer creation succeeds with lazy KS connection");
 
-    let msg = err.to_string();
+    // Credential issuance should return an error response due to wrong shared key
+    let request = actr_protocol::RegisterRequest {
+        actr_type: actr_protocol::ActrType {
+            manufacturer: "test".to_string(),
+            name: "bad-key-test".to_string(),
+        },
+        realm: actr_protocol::Realm { realm_id: 1 },
+        service_spec: None,
+        acl: None,
+    };
+    let resp = issuer
+        .issue_credential(&request)
+        .await
+        .expect("issue_credential returns Ok wrapping the error");
     assert!(
-        msg.contains("Failed to fetch new key from KS")
-            || msg.contains("Authentication")
-            || msg.contains("Invalid signature"),
-        "unexpected issuer initialization error: {msg}"
+        matches!(
+            resp.result,
+            Some(actr_protocol::register_response::Result::Error(_))
+        ),
+        "expected error result in register response with wrong shared key, got {:?}",
+        resp.result
     );
 }
 
@@ -341,9 +372,13 @@ async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
         .expect("Failed to create KS gRPC client");
-    let issuer = AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir))
-        .await
-        .expect("Failed to create issuer");
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("Failed to create issuer");
 
     env.shutdown_ks().await;
 
@@ -375,9 +410,13 @@ async fn test_issuer_rotate_key_fails_when_ks_is_unavailable() {
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
         .expect("Failed to create KS gRPC client");
-    let issuer = AIdIssuer::new(ks_client, default_issuer_config(&env.issuer_temp_dir))
-        .await
-        .expect("Failed to create issuer");
+    let issuer = AIdIssuer::new(
+        ks_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("Failed to create issuer");
 
     env.shutdown_ks().await;
 

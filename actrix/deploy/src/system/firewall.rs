@@ -250,10 +250,7 @@ fn should_open_for_bind(bind_ip: Option<&str>) -> bool {
 
 fn is_loopback_bind(raw: &str) -> bool {
     let value = raw.trim().to_ascii_lowercase();
-    value == "localhost"
-        || value == "::1"
-        || value == "127.0.0.1"
-        || value.starts_with("127.")
+    value == "localhost" || value == "::1" || value == "127.0.0.1" || value.starts_with("127.")
 }
 
 fn parse_relay_port_range(raw: &str) -> Option<(u16, u16)> {
@@ -347,9 +344,9 @@ fn apply_rules(manager: FirewallManagerKind, rules: &[FirewallRule]) -> Result<(
     match manager {
         FirewallManagerKind::Ufw => apply_ufw_rules(rules),
         FirewallManagerKind::Firewalld => apply_firewalld_rules(rules),
-        FirewallManagerKind::Unsupported => anyhow::bail!(
-            "No supported firewall manager found (supported: ufw, firewalld)"
-        ),
+        FirewallManagerKind::Unsupported => {
+            anyhow::bail!("No supported firewall manager found (supported: ufw, firewalld)")
+        }
     }
 }
 
@@ -384,7 +381,11 @@ fn apply_firewalld_rules(rules: &[FirewallRule]) -> Result<()> {
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to apply firewalld rule '{}': {}", arg, stderr.trim());
+            anyhow::bail!(
+                "Failed to apply firewalld rule '{}': {}",
+                arg,
+                stderr.trim()
+            );
         }
     }
 

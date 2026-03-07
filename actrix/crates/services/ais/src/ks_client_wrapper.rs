@@ -3,7 +3,7 @@
 //! 提供统一的 KS 客户端接口，支持 gRPC 客户端（需要 &mut self）
 
 use ecies::{PublicKey, SecretKey};
-use ks::GrpcClient;
+use ks::{GrpcClient, GrpcClientConfig};
 use platform::aid::AidError;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -11,21 +11,31 @@ use tokio::sync::RwLock;
 /// KS 客户端包装器（用于 gRPC 客户端）
 #[derive(Clone)]
 pub struct KsClientWrapper {
-    inner: Arc<RwLock<GrpcClient>>,
+    inner: Arc<RwLock<Option<GrpcClient>>>,
+    grpc_config: GrpcClientConfig,
 }
 
 impl KsClientWrapper {
     /// 创建新的 KS 客户端包装器
-    pub fn new(client: GrpcClient) -> Self {
+    pub fn new(grpc_config: GrpcClientConfig) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(client)),
+            inner: Arc::new(RwLock::new(None)),
+            grpc_config,
         }
     }
 
     /// 生成密钥对
     pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64, u64), ks::KsError> {
-        let mut client = self.inner.write().await;
-        client.generate_key().await
+        let mut guard = self.inner.write().await;
+        if guard.is_none() {
+            let client = GrpcClient::new(&self.grpc_config).await?;
+            *guard = Some(client);
+        }
+        guard
+            .as_mut()
+            .expect("grpc client must exist after lazy init")
+            .generate_key()
+            .await
     }
 
     /// 获取私钥
@@ -33,14 +43,30 @@ impl KsClientWrapper {
         &self,
         key_id: u32,
     ) -> Result<(SecretKey, u64, u64), ks::KsError> {
-        let mut client = self.inner.write().await;
-        client.fetch_secret_key(key_id).await
+        let mut guard = self.inner.write().await;
+        if guard.is_none() {
+            let client = GrpcClient::new(&self.grpc_config).await?;
+            *guard = Some(client);
+        }
+        guard
+            .as_mut()
+            .expect("grpc client must exist after lazy init")
+            .fetch_secret_key(key_id)
+            .await
     }
 
     /// 健康检查
     pub async fn health_check(&self) -> Result<String, ks::KsError> {
-        let mut client = self.inner.write().await;
-        client.health_check().await
+        let mut guard = self.inner.write().await;
+        if guard.is_none() {
+            let client = GrpcClient::new(&self.grpc_config).await?;
+            *guard = Some(client);
+        }
+        guard
+            .as_mut()
+            .expect("grpc client must exist after lazy init")
+            .health_check()
+            .await
     }
 }
 
@@ -60,9 +86,5 @@ pub async fn create_ks_client(
         client_key: config.client_key.clone(),
     };
 
-    let client = GrpcClient::new(&grpc_config)
-        .await
-        .map_err(|e| AidError::GenerationFailed(format!("Failed to create KS client: {e}")))?;
-
-    Ok(KsClientWrapper::new(client))
+    Ok(KsClientWrapper::new(grpc_config))
 }

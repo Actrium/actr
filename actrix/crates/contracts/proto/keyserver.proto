@@ -71,7 +71,8 @@ message GetSecretKeyResponse {
 // ============================================================================
 
 message HealthCheckRequest {
-  // 健康检查不需要参数
+  // nonce-auth 认证凭证
+  required admin.v1.NonceCredential credential = 1;
 }
 
 message HealthCheckResponse {

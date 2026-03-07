@@ -47,10 +47,6 @@ pub enum Error {
     Network(#[from] tokio::task::JoinError),
 
     // ========== 业务逻辑错误 ==========
-    /// 服务启动失败
-    #[error("Service startup failed: {message}")]
-    ServiceStartup { message: String },
-
     /// 服务配置验证失败  
     #[error("Service configuration validation failed: {message}")]
     ServiceValidation { message: String },
@@ -80,13 +76,6 @@ impl Error {
     /// 创建自定义错误
     pub fn custom(message: impl Into<String>) -> Self {
         Self::Custom {
-            message: message.into(),
-        }
-    }
-
-    /// 创建服务启动失败错误
-    pub fn service_startup(message: impl Into<String>) -> Self {
-        Self::ServiceStartup {
             message: message.into(),
         }
     }

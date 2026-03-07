@@ -12,13 +12,14 @@ mod service;
 
 use anyhow::Context;
 use clap::Parser;
+use futures::stream::{FuturesUnordered, StreamExt};
 use platform::config::{ActrixConfig, ControlHead};
 use recording_pipeline::init_recording_pipeline;
 use service::{
-    AisService, KsGrpcService, KsHttpService, ServiceContainer, ServiceManager, SignalingService,
-    StunService, TurnService,
+    AisService, ServiceContainer, ServiceManager, SignalingService, StunService, TurnService,
 };
 use std::path::{Path, PathBuf};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 macro_rules! bootstrap_info {
@@ -211,7 +212,7 @@ impl ApplicationLauncher {
         let group = config.group.clone();
 
         // 运行服务
-        Self::run_services_with_privilege_drop(config, user, group).await
+        Self::run_services_with_privilege_drop(config, user, group, config_path.to_path_buf()).await
     }
 
     /// 运行服务并在适当时机切换用户权限
@@ -219,6 +220,7 @@ impl ApplicationLauncher {
         config: ActrixConfig,
         user: Option<String>,
         group: Option<String>,
+        config_path: PathBuf,
     ) -> Result<()> {
         platform::recording::info!("🚀 启动 WebRTC 辅助服务器集群");
 
@@ -239,24 +241,7 @@ impl ApplicationLauncher {
         let mut handle_futs: Vec<JoinHandle<()>> = Vec::new();
 
         let mut service_manager =
-            Self::create_service_manager(config.clone(), shutdown_tx.clone()).await?;
-
-        if config.is_ks_enabled() {
-            platform::recording::info!("启动 KS gRPC 服务器...");
-            let grpc_addr = "127.0.0.1:50052".parse().map_err(|e| {
-                Error::service_startup(format!("Failed to parse gRPC address: {e}"))
-            })?;
-            let mut grpc_service = KsGrpcService::new(config.clone());
-            let grpc_future = grpc_service
-                .start(grpc_addr, shutdown_tx.clone())
-                .await
-                .map_err(|e| Error::service_startup(format!("KS gRPC 初始化失败: {e}")))?;
-
-            handle_futs.push(grpc_future);
-        }
-
-        // wait for gRPC service to start
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            Self::create_service_manager(config.clone(), shutdown_tx.clone(), config_path).await?;
 
         let handle_futures = service_manager.start_all().await?;
         handle_futs.extend(handle_futures);
@@ -273,10 +258,38 @@ impl ApplicationLauncher {
         // 显示服务信息
         Self::display_service_info(&config);
 
-        for handle in handle_futs {
-            if let Err(e) = handle.await {
-                platform::recording::error!("Service task terminated unexpectedly: {}", e);
-                let _ = shutdown_tx.send(());
+        // Setup SIGHUP handler for hot reload
+        let mut sighup_rx = setup_sighup_channel();
+
+        // Main event loop: monitor services, SIGHUP, and shutdown
+        let mut shutdown_rx = shutdown_tx.subscribe();
+        let mut pending: FuturesUnordered<_> = handle_futs.into_iter().collect();
+        loop {
+            tokio::select! {
+                Some(result) = pending.next() => {
+                    if let Err(e) = result {
+                        platform::recording::error!("Service task terminated unexpectedly: {}", e);
+                        let _ = shutdown_tx.send(());
+                        break;
+                    }
+                    // A task completed normally (e.g. shutdown in progress).
+                    // If all tasks are done, next() returns None and the loop
+                    // exits via the else branch.
+                }
+                Some(()) = sighup_rx.recv() => {
+                    platform::recording::info!("Received SIGHUP, initiating configuration reload...");
+                    if let Err(e) = service_manager.reload().await {
+                        platform::recording::error!(
+                            "Configuration reload failed: {}. Continuing with previous config.",
+                            e
+                        );
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    platform::recording::info!("Shutdown signal received, exiting main loop");
+                    break;
+                }
+                else => break,
             }
         }
         service_manager.stop_all().await?;
@@ -289,6 +302,7 @@ impl ApplicationLauncher {
     async fn create_service_manager(
         config: ActrixConfig,
         shutdown_tx: tokio::sync::broadcast::Sender<()>,
+        config_path: PathBuf,
     ) -> Result<ServiceManager> {
         platform::recording::info!("📊 计划启动的服务:");
         // 数据库已在 run_services_with_privilege_drop 中提前初始化，
@@ -315,7 +329,8 @@ impl ApplicationLauncher {
 
         platform::recording::info!("✅ Prometheus metrics registry 初始化成功");
 
-        let mut service_manager = ServiceManager::new(config.clone(), shutdown_tx.clone());
+        let mut service_manager =
+            ServiceManager::new(config.clone(), shutdown_tx.clone(), config_path);
         // 添加ICE服务 - 细粒度控制STUN和TURN
         if config.is_ice_enabled() {
             if config.is_turn_enabled() {
@@ -334,20 +349,20 @@ impl ApplicationLauncher {
         // 添加HTTP路由服务 - 每个服务独立控制
         if config.is_signaling_enabled() {
             platform::recording::info!("  - Signaling WebSocket Service (/signaling)");
-            let signaling_service = SignalingService::new(config.clone());
+            let signaling_service =
+                SignalingService::new(config.clone(), tokio_util::sync::CancellationToken::new());
             service_manager.add_service(ServiceContainer::signaling(signaling_service));
         }
 
         if config.is_ais_enabled() {
             platform::recording::info!("  - AIS Service (/ais)");
-            let ais_service = AisService::new(config.clone());
+            let ais_service =
+                AisService::new(config.clone(), tokio_util::sync::CancellationToken::new());
             service_manager.add_service(ServiceContainer::ais(ais_service));
         }
 
         if config.is_ks_enabled() {
-            platform::recording::info!("  - KS Service (/ks)");
-            let ks_service = KsHttpService::new(config.clone());
-            service_manager.add_service(ServiceContainer::ks(ks_service));
+            platform::recording::info!("  - KS Service (gRPC: /ks.v1.KeyServer/<Method>)");
         }
 
         platform::recording::info!(
@@ -360,21 +375,20 @@ impl ApplicationLauncher {
 
     /// 显示服务信息
     fn display_service_info(config: &ActrixConfig) {
-        let is_dev = config.env == "dev";
-
         // Determine which URLs are available
         let mut urls = Vec::new();
 
-        if is_dev && let Some(ref http_config) = config.bind.http {
-            let http_url = format!("http://{}:{}", http_config.ip, http_config.port);
-            let ws_url = format!("ws://{}:{}", http_config.ip, http_config.port);
-            urls.push(("HTTP", http_url, ws_url));
-        }
-
-        if let Some(ref https_config) = config.bind.https {
-            let https_url = format!("https://{}:{}", https_config.domain_name, https_config.port);
-            let wss_url = format!("wss://{}:{}", https_config.domain_name, https_config.port);
-            urls.push(("HTTPS", https_url, wss_url));
+        if let Some(ref http_config) = config.bind.http {
+            let scheme = http_config.scheme();
+            let ws_scheme = http_config.ws_scheme();
+            let protocol = if http_config.is_tls() {
+                "HTTPS"
+            } else {
+                "HTTP"
+            };
+            let http_url = format!("{}://{}:{}", scheme, http_config.ip, http_config.port);
+            let ws_url = format!("{}://{}:{}", ws_scheme, http_config.ip, http_config.port);
+            urls.push((protocol, http_url, ws_url));
         }
 
         platform::recording::info!("✅ 所有服务已启动");
@@ -387,7 +401,7 @@ impl ApplicationLauncher {
                     platform::recording::info!("  - {}/signaling/ws", _ws_url);
                 }
                 if config.is_ks_enabled() {
-                    platform::recording::info!("  - {}/ks/health", http_url);
+                    platform::recording::info!("  - {}/ks.v1.KeyServer/<Method>", http_url);
                 }
                 if config.is_ais_enabled() {
                     platform::recording::info!("  - {}/ais/health", http_url);
@@ -411,11 +425,7 @@ impl ApplicationLauncher {
             platform::recording::info!("📡 没有配置 HTTP/HTTPS 服务器");
         }
 
-        // 显示 gRPC 服务信息
-        if config.is_ks_enabled() {
-            platform::recording::info!("🔌 gRPC 服务:");
-            platform::recording::info!("  - KS gRPC Server: 127.0.0.1:50052");
-        }
+        // KS gRPC 已复用主 HTTP 监听端口，无独立 gRPC 端口。
     }
 }
 
@@ -429,4 +439,32 @@ async fn setup_ctrl_c_handler(shutdown_tx: tokio::sync::broadcast::Sender<()>) {
         platform::recording::info!("收到Ctrl-C信号，开始优雅关闭...");
         let _ = shutdown_tx.send(());
     });
+}
+
+/// Setup SIGHUP signal handler for hot-reload.
+///
+/// Returns an mpsc receiver that yields `()` each time SIGHUP is received.
+#[cfg(unix)]
+fn setup_sighup_channel() -> mpsc::Receiver<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let (tx, rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        let mut sighup = signal(SignalKind::hangup()).expect("Failed to install SIGHUP handler");
+        loop {
+            sighup.recv().await;
+            if tx.send(()).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// On non-Unix platforms, SIGHUP is not available. Return a receiver that
+/// never yields.
+#[cfg(not(unix))]
+fn setup_sighup_channel() -> mpsc::Receiver<()> {
+    let (_tx, rx) = mpsc::channel::<()>(1);
+    rx
 }

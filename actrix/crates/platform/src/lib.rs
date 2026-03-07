@@ -21,7 +21,10 @@ pub use error::{
     BaseError, ConfigError, DatabaseError, NetworkError, Result, SerializationError, StorageError,
     ValidationError,
 };
-pub use monitoring::{ServiceCollector, ServiceInfo, ServiceState, ServiceType};
+pub use monitoring::{
+    MetricSample, MetricsStore, ServiceCollector, ServiceCounters, ServiceInfo, ServiceState,
+    ServiceType,
+};
 pub use realm::{ActorAcl, Realm, RealmError};
 pub use storage::SqliteNonceStorage;
 pub use types::{ActrId, PeerId, RealmId};

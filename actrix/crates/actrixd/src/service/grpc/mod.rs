@@ -4,4 +4,4 @@
 
 pub mod ks;
 
-pub use ks::KsGrpcService;
+pub use ks::build_ks_grpc_router;

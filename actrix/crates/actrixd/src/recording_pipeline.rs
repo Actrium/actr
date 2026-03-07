@@ -1,4 +1,8 @@
 use platform::config::{ActrixConfig, RecordingConfig};
+use platform::recording::{
+    self, AuditFilter, ChannelFilters, ObservabilityFilter, OperationsFilter, SecurityFilter,
+    parse_audit_filter, parse_observability_filter, parse_operations_filter, parse_security_filter,
+};
 use std::fs;
 use std::path::PathBuf;
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
@@ -274,6 +278,30 @@ pub fn init_recording_pipeline(config: &ActrixConfig) -> Result<RecordingPipelin
     let mut guard = RecordingPipelineGuard::default();
     let recording_config = config.recording_config();
 
+    // Parse and install semantic channel filters.
+    // When RUST_LOG is set, use pass-all filters so EnvFilter handles everything.
+    let rust_log_override = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some();
+
+    let filters = if rust_log_override {
+        ChannelFilters {
+            observability: ObservabilityFilter::Full,
+            audit: AuditFilter::All,
+            security: SecurityFilter::All,
+            operations: OperationsFilter::Detailed,
+        }
+    } else {
+        ChannelFilters {
+            observability: parse_observability_filter(&recording_config.observability.filter),
+            audit: parse_audit_filter(&recording_config.audit.filter),
+            security: parse_security_filter(&recording_config.security.filter),
+            operations: parse_operations_filter(&recording_config.operations.filter),
+        }
+    };
+    recording::set_channel_filters(filters);
+
     let (writer, use_ansi) = build_log_writer(recording_config, &mut guard)?;
     init_subscriber(writer, use_ansi, &mut guard, config)?;
 
@@ -281,18 +309,33 @@ pub fn init_recording_pipeline(config: &ActrixConfig) -> Result<RecordingPipelin
 }
 
 /// Create an EnvFilter from config, with RUST_LOG taking precedence.
+///
+/// With semantic per-channel filters, all channel targets are set to TRACE
+/// so events always reach the recording layer (which applies its own gate).
+/// The base level stays `info` to suppress third-party noise.
 fn create_env_filter(config: &RecordingConfig) -> EnvFilter {
-    let directive = std::env::var("RUST_LOG")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| {
-            println!(
-                "RUST_LOG not set, using default filter level: {}",
-                config.filter_level
-            );
-            config.filter_level.clone()
-        });
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        let trimmed = rust_log.trim().to_string();
+        if !trimmed.is_empty() {
+            return EnvFilter::try_new(&trimmed).unwrap_or_else(|_| {
+                println!("Failed to parse RUST_LOG: {trimmed}. Falling back to default: info");
+                EnvFilter::new("info")
+            });
+        }
+    }
+
+    // All channel targets at TRACE — semantic filter does the real gating
+    let directive = format!(
+        "info,{TARGET_OBSERVABILITY}=trace,{TARGET_AUDIT}=trace,{TARGET_SECURITY}=trace,{TARGET_OPERATIONS}=trace",
+    );
+
+    println!(
+        "Semantic filters: observability={}, audit={}, security={}, operations={}",
+        config.observability.filter,
+        config.audit.filter,
+        config.security.filter,
+        config.operations.filter,
+    );
 
     EnvFilter::try_new(&directive).unwrap_or_else(|_| {
         println!("Failed to parse filter directive: {directive}. Falling back to default: info");

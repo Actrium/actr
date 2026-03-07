@@ -66,9 +66,13 @@ pub trait KeyStorageBackend: Send + Sync {
 
     /// 清理过期的密钥
     ///
-    /// 删除所有已过期的密钥记录（expires_at > 0 且 < 当前时间）
+    /// 删除所有已过期且超出容忍期的密钥记录
+    /// （expires_at > 0 且 expires_at + tolerance_seconds < 当前时间）
+    ///
+    /// # Arguments
+    /// * `tolerance_seconds` - 过期后的容忍期（秒）
     ///
     /// # Returns
     /// 被清理的密钥数量
-    async fn cleanup_expired_keys(&self) -> KsResult<u32>;
+    async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32>;
 }

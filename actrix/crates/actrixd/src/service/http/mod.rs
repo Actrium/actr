@@ -2,12 +2,12 @@
 //!
 //! 管理HTTP相关的服务
 
+pub mod admin_api;
 mod ais;
 mod control;
-mod ks;
+pub mod observability;
 mod signaling;
 
 pub use ais::AisService;
 pub use control::build_control_router;
-pub use ks::KsHttpService;
 pub use signaling::SignalingService;

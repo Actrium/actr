@@ -17,22 +17,25 @@ pub use auth::AuthService;
 pub use client::AdminClient;
 pub use config::AdminConfig;
 pub use error::{AdminError, Result as AdminResult};
-pub use realm::{
-    REALM_ENABLED_KEY, REALM_USE_SERVERS_KEY, REALM_VERSION_KEY, RealmMetadata,
-    get_max_realm_version,
+pub use realm::{get_max_realm_updated_at, realm_to_proto};
+pub use service::{
+    AdminApiService, ConfigFileContent, HealthInfo, KeyInfo, KsCleanupResult, KsKeysResult,
+    PlatformDetail, RealmSecretRotationResult, ServiceDetail,
 };
-pub use service::AdminApiService;
 
 // Re-export commonly used proto types from actrix-proto.
 pub use actrix_proto::{
-    ConfigType, ControlHealthCheckRequest as HealthCheckRequest,
+    ConfigOverrideEntry as ProtoConfigOverrideEntry, ConfigType,
+    ControlHealthCheckRequest as HealthCheckRequest,
     ControlHealthCheckResponse as HealthCheckResponse, ControlService, ControlServiceClient,
-    ControlServiceServer, CreateRealmRequest, CreateRealmResponse, DeleteRealmRequest,
-    DeleteRealmResponse, Directive, DirectiveType, GetConfigRequest, GetConfigResponse,
-    GetNodeInfoRequest, GetNodeInfoResponse, GetRealmRequest, GetRealmResponse, ListRealmsRequest,
-    ListRealmsResponse, NodeAdminService, NodeAdminServiceClient, NodeAdminServiceServer,
-    NonceCredential, RegisterNodeRequest, RegisterNodeResponse, ReportRequest, ReportResponse,
-    ResourceType, ServiceAdvertisement, ServiceAdvertisementStatus, ServiceStatus, ShutdownRequest,
+    ControlServiceServer, CreateRealmRequest, CreateRealmResponse, DeleteConfigOverrideRequest,
+    DeleteConfigOverrideResponse, DeleteRealmRequest, DeleteRealmResponse, Directive,
+    DirectiveType, GetConfigRequest, GetConfigResponse, GetNodeInfoRequest, GetNodeInfoResponse,
+    GetRealmRequest, GetRealmResponse, ListConfigOverridesRequest, ListConfigOverridesResponse,
+    ListRealmsRequest, ListRealmsResponse, NodeAdminService, NodeAdminServiceClient,
+    NodeAdminServiceServer, NonceCredential, RealmInfo, RegisterNodeRequest, RegisterNodeResponse,
+    ReportRequest, ReportResponse, ResourceType, ServiceAdvertisement, ServiceAdvertisementStatus,
+    ServiceStatus, SetConfigOverrideRequest, SetConfigOverrideResponse, ShutdownRequest,
     ShutdownResponse, SystemMetrics, UpdateConfigRequest, UpdateConfigResponse, UpdateRealmRequest,
     UpdateRealmResponse,
 };

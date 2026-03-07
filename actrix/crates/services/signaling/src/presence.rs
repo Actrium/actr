@@ -18,7 +18,6 @@
 //! let user_service_type = ActrType {
 //!     manufacturer: "acme".to_string(),
 //!     name: "user-service".to_string(),
-//!     version: None,
 //! };
 //!
 //! // Actor A 订阅 user-service 类型的上线事件
@@ -33,8 +32,6 @@ use actr_protocol::{ActrId, ActrType};
 use platform::RealmError;
 use platform::realm::acl::ActorAcl;
 use std::collections::HashMap;
-
-use crate::actr_type_utils::type_key;
 
 /// Presence 订阅管理器
 #[derive(Debug, Default)]
@@ -270,20 +267,14 @@ impl PresenceManager {
         let from_realm = from_actor.realm.realm_id;
         let to_realm = to_actor.realm.realm_id;
 
-        // Only check ACL if actors are in the same realm
-        if from_realm != to_realm {
-            platform::recording::debug!(
-                "Cross-realm discovery denied: from_realm={}, to_realm={}",
-                from_realm,
-                to_realm
-            );
-            return Ok(false);
-        }
+        // 使用完整的 manufacturer:type 格式
+        let from_type = format!(
+            "{}:{}",
+            from_actor.r#type.manufacturer, from_actor.r#type.name
+        );
+        let to_type = format!("{}:{}", to_actor.r#type.manufacturer, to_actor.r#type.name);
 
-        let from_type = type_key(&from_actor.r#type);
-        let to_type = type_key(&to_actor.r#type);
-
-        ActorAcl::can_discover(from_realm, &from_type, &to_type).await
+        ActorAcl::can_discover(from_realm, to_realm, &from_type, &to_type).await
     }
 }
 
@@ -298,7 +289,6 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test-actor".to_string(),
-                version: None,
             },
             realm: Realm { realm_id: 0 },
         }
@@ -308,7 +298,6 @@ mod tests {
         ActrType {
             manufacturer: "test".to_string(),
             name: name.to_string(),
-            version: None,
         }
     }
 

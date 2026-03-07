@@ -92,13 +92,20 @@ message ServiceStatus {
 // ============================================================================
 
 message RealmInfo {
-  required uint32 realm_id = 1;            // Realm identifier
+  required uint32 realm_id = 1;            // Realm identifier (DB auto-increment, starts at 2^25)
   required string name = 2;                 // Realm name
   required bool enabled = 3;                // Enabled status
   required int64 created_at = 4;            // Creation timestamp
-  optional int64 updated_at = 5;            // Update timestamp (empty if never updated)
-  repeated ResourceType use_servers = 6;    // Allowed server types
-  required uint64 version = 7;              // Realm version (assigned by Boss for sync tracking)
+  optional int64 updated_at = 5;            // Update timestamp
+  // Field 6 removed (was use_servers)
+  // Field 7 removed (was version, replaced by updated_at)
   required uint64 expires_at = 8;           // Expiration timestamp (Unix timestamp)
-  required string status = 9;               // Realm status (Normal, Suspended, Terminated)
+  required string status = 9;               // Realm status (Active, Inactive, Suspended)
+  optional SecretRotationState secret_rotation_state = 10; // Secret rotation state
+}
+
+message SecretRotationState {
+  required string current_hash_preview = 1;
+  optional string previous_hash_preview = 2;
+  optional int64 previous_valid_until = 3;
 }

@@ -29,21 +29,22 @@ ip = "127.0.0.1"
 port = 39999
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()
@@ -77,31 +78,26 @@ domain_name = "localhost"
 advertised_ip = "127.0.0.1"
 ip = "127.0.0.1"
 port = 39998
-
-[bind.https]
-domain_name = "localhost"
-advertised_ip = "127.0.0.1"
-ip = "127.0.0.1"
-port = 44443
 cert = "/tmp/fake.crt"
 key = "/tmp/fake.key"
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()
@@ -137,21 +133,19 @@ ip = "127.0.0.1"
 port = 39997
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 # Intentionally no [services.ks] to trigger validation error for ENABLE_KS.
 
 [recording]
-filter_level = "info"
+
 "#,
             sqlite = data_dir.display(),
             pid = dir.join("actrix.pid").display()

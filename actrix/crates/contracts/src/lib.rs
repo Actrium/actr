@@ -98,9 +98,13 @@ pub use admin::v1::{
 // ============================================================================
 
 pub use admin::v1::{
+    // Config override management
+    ConfigOverrideEntry,
     // Realm management
     CreateRealmRequest,
     CreateRealmResponse,
+    DeleteConfigOverrideRequest,
+    DeleteConfigOverrideResponse,
     DeleteRealmRequest,
     DeleteRealmResponse,
     // Configuration management
@@ -111,8 +115,12 @@ pub use admin::v1::{
     GetNodeInfoResponse,
     GetRealmRequest,
     GetRealmResponse,
+    ListConfigOverridesRequest,
+    ListConfigOverridesResponse,
     ListRealmsRequest,
     ListRealmsResponse,
+    SetConfigOverrideRequest,
+    SetConfigOverrideResponse,
     ShutdownRequest,
     ShutdownResponse,
     UpdateConfigRequest,

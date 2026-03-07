@@ -5,6 +5,10 @@ use actrix_proto::{ServiceStatus, SystemMetrics};
 use std::sync::Arc;
 
 /// 收集系统指标
+///
+/// pwrzv 0.7 returns ratio-based metrics (0.0–1.0 for most dimensions).
+/// We map the available ratios into the proto `SystemMetrics` as percentages
+/// where possible; absolute byte counts are not available from pwrzv.
 pub async fn collect_system_metrics() -> Result<SystemMetrics> {
     let (_, details) = pwrzv::get_power_reserve_level_with_details_direct()
         .await
@@ -13,30 +17,20 @@ pub async fn collect_system_metrics() -> Result<SystemMetrics> {
             AdminError::Metrics(e.to_string())
         })?;
 
-    // 从详细信息中提取指标 (pwrzv 返回 HashMap<String, f32>)
-    let cpu_usage = details.get("cpu_usage").copied().unwrap_or(0.0) as f64;
-    let memory_used = details.get("memory_used").copied().unwrap_or(0.0) as u64;
-    let memory_total = details.get("memory_total").copied().unwrap_or(0.0) as u64;
-    let load_avg_1 = details.get("load_avg_1").copied().unwrap_or(0.0) as f64;
-    let load_avg_5 = details.get("load_avg_5").copied().unwrap_or(0.0) as f64;
-    let load_avg_15 = details.get("load_avg_15").copied().unwrap_or(0.0) as f64;
+    let val = |key: &str| details.get(key).map(|d| d.value).unwrap_or(0.0);
 
     Ok(SystemMetrics {
-        cpu_usage_percent: cpu_usage,
-        memory_used_bytes: memory_used,
-        memory_total_bytes: memory_total,
-        memory_usage_percent: if memory_total > 0 {
-            (memory_used as f64 / memory_total as f64) * 100.0
-        } else {
-            0.0
-        },
-        network_rx_bytes: 0, // pwrzv 0.6 不提供网络统计
+        cpu_usage_percent: (val("cpu_usage") * 100.0) as f64,
+        memory_usage_percent: (val("memory_usage") * 100.0) as f64,
+        memory_used_bytes: 0, // pwrzv provides ratios only
+        memory_total_bytes: 0,
+        network_rx_bytes: 0,
         network_tx_bytes: 0,
-        disk_used_bytes: 0, // pwrzv 不提供磁盘统计
+        disk_used_bytes: 0,
         disk_total_bytes: 0,
-        load_average_1m: load_avg_1,
-        load_average_5m: Some(load_avg_5),   // proto2 optional 字段
-        load_average_15m: Some(load_avg_15), // proto2 optional 字段
+        load_average_1m: val("cpu_load") as f64,
+        load_average_5m: None,
+        load_average_15m: None,
     })
 }
 

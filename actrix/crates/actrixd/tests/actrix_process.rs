@@ -126,22 +126,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -176,22 +177,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 service_name = "actrix-otlp-e2e"
 sink = "{sink}"
 "#,
@@ -228,22 +230,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 kek = "{kek}"
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -278,22 +281,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -326,22 +330,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port
@@ -420,22 +425,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 {global_sink_line}
 {channel_overrides}
 
@@ -478,22 +484,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -528,22 +535,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = sqlite_path,
         port = port,
@@ -577,22 +585,23 @@ ip = "{bind_ip}"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -627,14 +636,12 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "localhost"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
@@ -651,7 +658,7 @@ shared_secret = "{shared_secret}"
 max_clock_skew_secs = 300
 
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         port = port,
@@ -687,19 +694,20 @@ ip = "127.0.0.1"
 port = {http_port}
 
 [bind.ice]
-domain_name = "127.0.0.1"
 advertised_ip = "127.0.0.1"
+advertised_port = {ice_port}
 ip = "127.0.0.1"
 port = {ice_port}
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = {ice_port}
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         enable = enable,
         sqlite = data_dir.display(),
@@ -729,22 +737,23 @@ pid = "{pid}"
 
 [bind]
 [bind.ice]
-domain_name = "127.0.0.1"
 advertised_ip = "127.0.0.1"
+advertised_port = {ice_port}
 ip = "127.0.0.1"
 port = {ice_port}
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = {ice_port}
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         pid = dir.join("actrix.pid").display(),
@@ -778,22 +787,23 @@ ip = "127.0.0.1"
 port = {port}
 
 [bind.ice]
-domain_name = "127.0.0.1"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         sqlite = data_dir.display(),
         pid = dir.join("actrix.pid").display(),
@@ -832,7 +842,7 @@ location_tag = "local,test,https-missing-tls"
 pid = "{pid}"
 
 [bind]
-[bind.https]
+[bind.http]
 domain_name = "localhost"
 advertised_ip = "127.0.0.1"
 ip = "127.0.0.1"
@@ -841,22 +851,23 @@ cert = "{cert}"
 key = "{key}"
 
 [bind.ice]
-domain_name = "127.0.0.1"
 advertised_ip = "127.0.0.1"
+advertised_port = 3478
 ip = "127.0.0.1"
 port = 0
 
 [turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
 [services.ks]
 # defaults
 
+[control.admin_ui]
+password = "testpassword123"
+
 [recording]
-filter_level = "info"
+
 "#,
         env = env,
         sqlite = data_dir.display(),
@@ -895,13 +906,39 @@ fn spawn_actrix_from_workdir(workdir: &Path, log_path: &Path) -> Child {
 async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::new();
     let start = Instant::now();
+    let is_ks_health = url.ends_with("/ks/health");
+    let ks_grpc_endpoint = if is_ks_health {
+        Some(url.trim_end_matches("/ks/health").to_string())
+    } else {
+        None
+    };
     loop {
         if let Some(status) = child.try_wait().unwrap_or(None) {
             let log = fs::read_to_string(log_path).unwrap_or_default();
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(resp) = client.get(url).send().await
+        if is_ks_health {
+            let config = GrpcClientConfig {
+                endpoint: ks_grpc_endpoint
+                    .as_ref()
+                    .expect("ks grpc endpoint should exist")
+                    .clone(),
+                actrix_shared_key: TEST_ACTRIX_SHARED_KEY.to_string(),
+                timeout_seconds: 2,
+                enable_tls: false,
+                tls_domain: None,
+                ca_cert: None,
+                client_cert: None,
+                client_key: None,
+            };
+            if let Ok(mut grpc) = GrpcClient::new(&config).await
+                && let Ok(status) = grpc.health_check().await
+                && status == "healthy"
+            {
+                return;
+            }
+        } else if let Ok(resp) = client.get(url).send().await
             && resp.status().is_success()
         {
             return;
@@ -919,6 +956,11 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
         .danger_accept_invalid_certs(true)
         .build()
         .expect("create insecure https client");
+    let request_url = if url.ends_with("/ks/health") {
+        format!("{}{}", url.trim_end_matches("/ks/health"), "/admin/health")
+    } else {
+        url.to_string()
+    };
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().unwrap_or(None) {
@@ -926,7 +968,7 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if let Ok(resp) = client.get(url).send().await
+        if let Ok(resp) = client.get(&request_url).send().await
             && resp.status().is_success()
         {
             return;
@@ -1123,12 +1165,12 @@ async fn wait_for_control_grpc(
 }
 
 async fn wait_for_ks_grpc_client(
+    endpoint: &str,
     shared_key: &str,
     child: &mut Child,
     log_path: &Path,
 ) -> GrpcClient {
     let start = Instant::now();
-    let endpoint = "http://127.0.0.1:50052".to_string();
     loop {
         if let Some(status) = child.try_wait().unwrap_or(None) {
             let log = fs::read_to_string(log_path).unwrap_or_default();
@@ -1136,7 +1178,7 @@ async fn wait_for_ks_grpc_client(
         }
 
         let config = GrpcClientConfig {
-            endpoint: endpoint.clone(),
+            endpoint: endpoint.to_string(),
             actrix_shared_key: shared_key.to_string(),
             timeout_seconds: 2,
             enable_tls: false,
@@ -1275,12 +1317,16 @@ async fn actrix_starts_serves_health_and_shuts_down() {
 
     let health_url = format!("http://127.0.0.1:{}/ks/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
-
-    let resp = reqwest::get(&health_url).await.expect("health request");
-    assert!(resp.status().is_success());
-    let body: Value = resp.json().await.expect("health json");
-    assert_eq!(body["status"], "healthy");
-    assert_eq!(body["service"], "ks");
+    let grpc_endpoint = format!("http://127.0.0.1:{port}");
+    let mut grpc_client = wait_for_ks_grpc_client(
+        &grpc_endpoint,
+        TEST_ACTRIX_SHARED_KEY,
+        &mut child,
+        &log_path,
+    )
+    .await;
+    let grpc_health = grpc_client.health_check().await.expect("grpc health");
+    assert_eq!(grpc_health, "healthy");
 
     graceful_shutdown(child);
 }
@@ -1296,9 +1342,15 @@ async fn actrix_ks_grpc_health_and_key_lifecycle() {
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
+    let grpc_endpoint = format!("http://127.0.0.1:{port}");
 
-    let mut grpc_client =
-        wait_for_ks_grpc_client(TEST_ACTRIX_SHARED_KEY, &mut child, &log_path).await;
+    let mut grpc_client = wait_for_ks_grpc_client(
+        &grpc_endpoint,
+        TEST_ACTRIX_SHARED_KEY,
+        &mut child,
+        &log_path,
+    )
+    .await;
     let grpc_health = grpc_client.health_check().await.expect("grpc health check");
     assert_eq!(grpc_health, "healthy");
 
@@ -1340,11 +1392,17 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
-    let _ready_client =
-        wait_for_ks_grpc_client(TEST_ACTRIX_SHARED_KEY, &mut child, &log_path).await;
+    let grpc_endpoint = format!("http://127.0.0.1:{port}");
+    let _ready_client = wait_for_ks_grpc_client(
+        &grpc_endpoint,
+        TEST_ACTRIX_SHARED_KEY,
+        &mut child,
+        &log_path,
+    )
+    .await;
 
     let bad_config = GrpcClientConfig {
-        endpoint: "http://127.0.0.1:50052".to_string(),
+        endpoint: grpc_endpoint,
         actrix_shared_key: "wrong-shared-secret".to_string(),
         timeout_seconds: 2,
         enable_tls: false,
@@ -1366,7 +1424,10 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
         "expected authentication failure from grpc generate_key, got: {err_text}"
     );
 
-    let http_health = reqwest::get(&health_url).await.expect("ks health request");
+    let admin_health_url = format!("http://127.0.0.1:{port}/admin/health");
+    let http_health = reqwest::get(&admin_health_url)
+        .await
+        .expect("admin health request");
     assert!(
         http_health.status().is_success(),
         "process should keep running after grpc auth rejection"
@@ -1386,9 +1447,15 @@ async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
 
     let health_url = format!("http://127.0.0.1:{port}/ks/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
+    let grpc_endpoint = format!("http://127.0.0.1:{port}");
 
-    let mut grpc_client =
-        wait_for_ks_grpc_client(TEST_ACTRIX_SHARED_KEY, &mut child, &log_path).await;
+    let mut grpc_client = wait_for_ks_grpc_client(
+        &grpc_endpoint,
+        TEST_ACTRIX_SHARED_KEY,
+        &mut child,
+        &log_path,
+    )
+    .await;
     let (key_id, _public_key, expires_at, tolerance_seconds) = grpc_client
         .generate_key()
         .await
@@ -1724,7 +1791,7 @@ async fn actrix_exports_spans_to_otlp_http_sink() {
     let collector = start_mock_otlp_http_collector(collector_port).await;
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
-    let health_url = format!("http://127.0.0.1:{service_port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{service_port}/admin/health");
     wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
 
     // Trigger at least one HTTP request span and flush on shutdown.
@@ -1748,7 +1815,7 @@ async fn actrix_exports_spans_to_otlp_grpc_sink() {
     let collector = start_mock_otlp_grpc_collector(collector_port).await;
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
-    let health_url = format!("http://127.0.0.1:{service_port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{service_port}/admin/health");
     wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
 
     // Trigger at least one HTTP request span and flush on shutdown.
@@ -1768,7 +1835,7 @@ async fn actrix_starts_with_user_and_group_set_on_non_root() {
     let log_path = tmp.path().join("actrix-user-group.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/metrics");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     graceful_shutdown(child);
@@ -1869,6 +1936,7 @@ async fn actrix_exits_when_http_bind_ip_is_invalid() {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             assert!(
                 log.contains("Invalid bind address")
+                    || log.contains("Invalid bind.http.ip")
                     || log.contains("Failed to bind")
                     || log.to_lowercase().contains("bind address"),
                 "expected invalid http bind address error in logs, got: {log}"
@@ -1974,7 +2042,8 @@ async fn actrix_exits_on_incompatible_existing_schema() {
     fs::create_dir_all(&data_dir).expect("create data dir");
 
     // Pre-create a deliberately incompatible schema:
-    // `realm` exists but misses required `realm_id`, so index creation must fail on startup.
+    // `realm` exists but misses required `name` column, so `idx_realm_name` index creation
+    // will fail on startup.
     let db = Database::new(&data_dir)
         .await
         .expect("precreate db with default schema");
@@ -1984,7 +2053,7 @@ async fn actrix_exits_on_incompatible_existing_schema() {
     db.execute(
         "CREATE TABLE realm (
             rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL
+            label TEXT NOT NULL
         )",
     )
     .await
@@ -2005,8 +2074,8 @@ async fn actrix_exits_on_incompatible_existing_schema() {
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             let log_lower = log.to_lowercase();
             assert!(
-                log_lower.contains("realm_id")
-                    || log_lower.contains("idx_realm_realm_id")
+                log_lower.contains("name")
+                    || log_lower.contains("idx_realm_name")
                     || log_lower.contains("database")
                     || log.contains("数据库"),
                 "expected schema/index failure hint in logs, got: {log}"
@@ -2079,9 +2148,10 @@ async fn actrix_exits_when_http_service_has_no_http_or_https_bind_config() {
             );
             let log = fs::read_to_string(&log_path).unwrap_or_default();
             assert!(
-                log.contains("No HTTP or HTTPS binding configuration found")
-                    || log.to_lowercase().contains("http") && log.to_lowercase().contains("https"),
-                "expected missing HTTP/HTTPS bind error in logs, got: {log}"
+                log.contains("Control plane requires bind.http")
+                    || log.contains("No bind.http configuration found")
+                    || log.to_lowercase().contains("bind.http"),
+                "expected missing bind.http error in logs, got: {log}"
             );
             return;
         }
@@ -2210,7 +2280,7 @@ async fn actrix_serves_https_health_in_dev_when_only_https_bind_is_configured() 
     let log_path = tmp.path().join("actrix-dev-https.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("https://127.0.0.1:{port}/ks/health");
+    let health_url = format!("https://127.0.0.1:{port}/admin/health");
     wait_for_health_https_insecure(&health_url, &mut child, &log_path).await;
 
     let client = reqwest::Client::builder()
@@ -2225,7 +2295,6 @@ async fn actrix_serves_https_health_in_dev_when_only_https_bind_is_configured() 
     assert!(resp.status().is_success());
     let body: Value = resp.json().await.expect("health json");
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["service"], "ks");
 
     graceful_shutdown(child);
 }
@@ -2240,7 +2309,7 @@ async fn actrix_serves_https_health_in_prod_with_valid_tls_config() {
     let log_path = tmp.path().join("actrix-prod-https.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("https://127.0.0.1:{port}/ks/health");
+    let health_url = format!("https://127.0.0.1:{port}/admin/health");
     wait_for_health_https_insecure(&health_url, &mut child, &log_path).await;
 
     let client = reqwest::Client::builder()
@@ -2255,7 +2324,6 @@ async fn actrix_serves_https_health_in_prod_with_valid_tls_config() {
     assert!(resp.status().is_success());
     let body: Value = resp.json().await.expect("health json");
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["service"], "ks");
 
     graceful_shutdown(child);
 }
@@ -2269,7 +2337,7 @@ async fn actrix_control_grpc_serves_node_info_and_rejects_bad_signature() {
     let log_path = tmp.path().join("actrix-control-grpc-auth.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/metrics");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");
@@ -2310,7 +2378,7 @@ async fn actrix_control_grpc_shutdown_rpc_stops_process() {
     let log_path = tmp.path().join("actrix-control-grpc-shutdown.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/metrics");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");

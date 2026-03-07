@@ -43,6 +43,16 @@ impl ServiceCollector {
         self.inner.write().await.insert(key, value);
     }
 
+    /// Get a service info entry by key
+    pub async fn get(&self, key: &str) -> Option<ServiceInfo> {
+        self.inner.read().await.get(key).cloned()
+    }
+
+    /// Remove a service info entry by key
+    pub async fn remove(&self, key: &str) -> Option<ServiceInfo> {
+        self.inner.write().await.remove(key)
+    }
+
     /// Get all service statuses as proto ServiceStatus
     ///
     /// Converts all ServiceInfo entries to ServiceStatus using the From trait.

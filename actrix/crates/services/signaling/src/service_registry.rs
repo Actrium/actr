@@ -12,13 +12,10 @@ use actr_protocol::{ActrId, ActrType};
 use platform::RealmError;
 use platform::realm::acl::ActorAcl;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info, warn};
 
-use crate::actr_type_utils::{cmp_version_desc, normalize_version, type_key};
 use crate::service_registry_storage::ServiceRegistryStorage;
 
 /// 服务过期阈值（秒）- 超过此时间未收到心跳则认为服务过期
@@ -90,13 +87,6 @@ pub struct ServiceInfo {
     pub geo_location: Option<ServiceLocation>,
     /// 粘滞客户端 ID 列表（会话保持，从 Ping 消息获取）
     pub sticky_client_ids: Vec<String>,
-
-    // WebSocket 直连地址
-    /// 该服务当前开启的 WebSocket 服务端地址（如 "ws://192.168.1.10:9100"）。
-    /// 来自注册时的 `RegisterRequest::ws_address` 字段。
-    /// `None` 表示该服务不支持 WebSocket 直连。
-    #[serde(default)]
-    pub ws_address: Option<String>,
 }
 
 /// 服务地理位置信息
@@ -152,7 +142,7 @@ impl ServiceRegistry {
 
     /// 设置持久化存储（启动时调用）
     pub fn set_storage(&mut self, storage: Arc<ServiceRegistryStorage>) {
-        info!("ServiceRegistry 启用 SQLite 持久化缓存");
+        platform::recording::info!("ServiceRegistry 启用 SQLite 持久化缓存");
         self.storage = Some(storage);
     }
 
@@ -161,7 +151,7 @@ impl ServiceRegistry {
         let storage = match &self.storage {
             Some(s) => s,
             None => {
-                warn!("未配置存储，跳过恢复");
+                platform::recording::warn!("未配置存储，跳过恢复");
                 return Ok(0);
             }
         };
@@ -169,7 +159,7 @@ impl ServiceRegistry {
         match storage.load_all_services().await {
             Ok(services) => {
                 let count = services.len();
-                info!("从缓存恢复 {} 个服务", count);
+                platform::recording::info!("从缓存恢复 {} 个服务", count);
 
                 // 将服务加载到内存
                 for service in services {
@@ -201,14 +191,13 @@ impl ServiceRegistry {
                 Ok(count)
             }
             Err(e) => {
-                error!("从缓存恢复服务失败: {}", e);
+                platform::recording::error!("从缓存恢复服务失败: {}", e);
                 Err(format!("恢复失败: {e}"))
             }
         }
     }
 
     /// 注册服务（完整版本，支持 ServiceSpec 和 ACL）
-    #[allow(clippy::too_many_arguments)]
     pub fn register_service_full(
         &mut self,
         actor_id: ActrId,
@@ -217,15 +206,13 @@ impl ServiceRegistry {
         capabilities: Option<ServiceCapabilities>,
         service_spec: Option<actr_protocol::ServiceSpec>,
         acl: Option<actr_protocol::Acl>,
-        ws_address: Option<String>,
     ) -> Result<(), String> {
-        info!(
-            "注册服务: {} (Actor {}), has_spec={}, has_acl={}, ws_address={:?}",
+        platform::recording::info!(
+            "注册服务: {} (Actor {}), has_spec={}, has_acl={}",
             service_name,
             actor_id.serial_number,
             service_spec.is_some(),
-            acl.is_some(),
-            ws_address
+            acl.is_some()
         );
 
         let service_info = ServiceInfo {
@@ -244,7 +231,6 @@ impl ServiceRegistry {
             protocol_compatibility_score: None,
             geo_location: None,
             sticky_client_ids: Vec::new(),
-            ws_address,
         };
 
         // 异步写入 SQLite 缓存（后台任务，不阻塞）
@@ -255,17 +241,18 @@ impl ServiceRegistry {
             tokio::spawn(async move {
                 // 保存服务信息
                 if let Err(e) = storage.save_service(&service_to_save).await {
-                    error!("保存服务到缓存失败: {}", e);
+                    platform::recording::error!("保存服务到缓存失败: {}", e);
                 }
 
                 // 保存 Proto spec 到 service_specs 表（用于兼容性协商）
                 if let Some(ref spec) = service_spec_to_save {
                     if let Err(e) = storage.save_proto_spec(&actr_type, spec).await {
-                        error!("保存 Proto spec 到缓存失败: {}", e);
+                        platform::recording::error!("保存 Proto spec 到缓存失败: {}", e);
                     } else {
-                        info!(
-                            "✅ Proto spec 已保存: {} fingerprint={}",
-                            type_key(&actr_type),
+                        platform::recording::info!(
+                            "✅ Proto spec 已保存: {}/{} fingerprint={}",
+                            actr_type.manufacturer,
+                            actr_type.name,
                             spec.fingerprint
                         );
                     }
@@ -311,7 +298,6 @@ impl ServiceRegistry {
             capabilities,
             None,
             None,
-            None,
         )
     }
 
@@ -323,9 +309,12 @@ impl ServiceRegistry {
         power_reserve: f32,
         mailbox_backlog: f32,
     ) -> Result<(), String> {
-        debug!(
+        platform::recording::debug!(
             "更新 Actor {} 负载指标: service_availability_state={}, power={:.2}, backlog={:.2}",
-            actor_id.serial_number, service_availability_state, power_reserve, mailbox_backlog
+            actor_id.serial_number,
+            service_availability_state,
+            power_reserve,
+            mailbox_backlog
         );
 
         // 查找该 Actor 的所有服务
@@ -338,7 +327,7 @@ impl ServiceRegistry {
                             service.power_reserve = Some(power_reserve);
                             service.mailbox_backlog = Some(mailbox_backlog);
                             service.last_heartbeat_time_secs = current_timestamp();
-                            debug!("负载指标更新成功: {}", service_name);
+                            platform::recording::debug!("负载指标更新成功: {}", service_name);
 
                             // 异步更新 SQLite 缓存的心跳时间（后台任务，不阻塞）
                             if let Some(storage) = self.storage.clone() {
@@ -349,7 +338,7 @@ impl ServiceRegistry {
                                         .update_heartbeat(&actor_id_clone, &service_name_clone)
                                         .await
                                     {
-                                        error!("更新缓存心跳失败: {}", e);
+                                        platform::recording::error!("更新缓存心跳失败: {}", e);
                                     }
                                 });
                             }
@@ -402,7 +391,7 @@ impl ServiceRegistry {
 
     /// 根据消息类型发现服务
     pub fn discover_by_message_type(&self, message_type: &str) -> Vec<&ServiceInfo> {
-        debug!("根据消息类型发现服务: {}", message_type);
+        platform::recording::debug!("根据消息类型发现服务: {}", message_type);
 
         if let Some(service_names) = self.message_type_index.get(message_type) {
             let mut services = Vec::new();
@@ -418,14 +407,14 @@ impl ServiceRegistry {
             }
             services
         } else {
-            debug!("未找到支持消息类型 {} 的服务", message_type);
+            platform::recording::debug!("未找到支持消息类型 {} 的服务", message_type);
             Vec::new()
         }
     }
 
     /// 根据服务名发现服务
     pub fn discover_by_service_name(&self, service_name: &str) -> Vec<&ServiceInfo> {
-        debug!("根据服务名发现服务: {}", service_name);
+        platform::recording::debug!("根据服务名发现服务: {}", service_name);
 
         if let Some(services) = self.services.get(service_name) {
             services
@@ -433,9 +422,23 @@ impl ServiceRegistry {
                 .filter(|s| s.status == ServiceStatus::Available)
                 .collect()
         } else {
-            debug!("未找到服务: {}", service_name);
+            platform::recording::debug!("未找到服务: {}", service_name);
             Vec::new()
         }
+    }
+
+    /// 根据 ServiceSpec name 发现服务（跨所有服务类型搜索）
+    pub fn discover_by_spec_name(&self, spec_name: &str) -> Vec<&ServiceInfo> {
+        self.services
+            .values()
+            .flatten()
+            .filter(|s| {
+                s.status == ServiceStatus::Available
+                    && s.service_spec
+                        .as_ref()
+                        .is_some_and(|spec| spec.name == spec_name)
+            })
+            .collect()
     }
 
     /// 根据需求发现服务
@@ -443,7 +446,7 @@ impl ServiceRegistry {
         &self,
         requirements: &ServiceRequirements,
     ) -> Vec<&ServiceInfo> {
-        debug!("根据需求发现服务: {:?}", requirements);
+        platform::recording::debug!("根据需求发现服务: {:?}", requirements);
 
         let mut matching_services = Vec::new();
 
@@ -509,9 +512,11 @@ impl ServiceRegistry {
         status: ServiceStatus,
         metrics: Option<ServiceMetrics>,
     ) -> Result<(), String> {
-        debug!(
+        platform::recording::debug!(
             "更新服务状态: {} (Actor {}) -> {:?}",
-            service_name, actor_id.serial_number, status
+            service_name,
+            actor_id.serial_number,
+            status
         );
 
         if let Some(services) = self.services.get_mut(service_name) {
@@ -522,7 +527,7 @@ impl ServiceRegistry {
 
                     if let Some(_metrics) = metrics {
                         // 这里可以存储性能指标，暂时忽略
-                        debug!("收到服务性能指标数据");
+                        platform::recording::debug!("收到服务性能指标数据");
                     }
 
                     return Ok(());
@@ -542,9 +547,10 @@ impl ServiceRegistry {
         actor_id: &ActrId,
         service_name: &str,
     ) -> Result<(), String> {
-        info!(
+        platform::recording::info!(
             "注销服务: {} (Actor {})",
-            service_name, actor_id.serial_number
+            service_name,
+            actor_id.serial_number
         );
 
         // 从服务映射表中移除
@@ -589,7 +595,7 @@ impl ServiceRegistry {
                     .delete_service(&actor_id_clone, &service_name_owned)
                     .await
                 {
-                    error!("从缓存删除服务失败: {}", e);
+                    platform::recording::error!("从缓存删除服务失败: {}", e);
                 }
             });
         }
@@ -599,7 +605,7 @@ impl ServiceRegistry {
 
     /// 注销 Actor 的所有服务
     pub fn unregister_actor(&mut self, actor_id: &ActrId) {
-        info!("注销 Actor {} 的所有服务", actor_id.serial_number);
+        platform::recording::info!("注销 Actor {} 的所有服务", actor_id.serial_number);
 
         if let Some(service_names) = self.actor_index.remove(actor_id) {
             for service_name in &service_names {
@@ -628,9 +634,10 @@ impl ServiceRegistry {
         }
 
         for (actor_id, service_name) in services_to_remove {
-            warn!(
+            platform::recording::warn!(
                 "清理内存中的过期服务: {} (Actor {}) [数据库保留用于恢复]",
-                service_name, actor_id.serial_number
+                service_name,
+                actor_id.serial_number
             );
             // 只清理内存，不删除数据库
             let _ = self.unregister_service_memory_only(&actor_id, &service_name);
@@ -705,7 +712,7 @@ impl ServiceRegistry {
         let storage = match &self.storage {
             Some(s) => s,
             None => {
-                debug!("No storage backend available for service recovery");
+                platform::recording::debug!("No storage backend available for service recovery");
                 return Ok(false);
             }
         };
@@ -717,14 +724,14 @@ impl ServiceRegistry {
             .map_err(|e| format!("Failed to load services from storage: {}", e))?;
 
         if services.is_empty() {
-            debug!(
+            platform::recording::debug!(
                 "No services found in storage for Actor {}",
                 actor_id.serial_number
             );
             return Ok(false);
         }
 
-        info!(
+        platform::recording::info!(
             "🔄 Restoring {} service(s) from storage for Actor {}",
             services.len(),
             actor_id.serial_number
@@ -752,9 +759,10 @@ impl ServiceRegistry {
                 .or_default()
                 .push(service.service_name.clone());
 
-            info!(
+            platform::recording::info!(
                 "  ✅ Restored service: {} (Actor {})",
-                service.service_name, service.actor_id.serial_number
+                service.service_name,
+                service.actor_id.serial_number
             );
         }
 
@@ -820,11 +828,9 @@ impl ServiceRegistry {
     /// - `target_type`: 目标 Actor 类型
     ///
     /// # 返回
-    /// - 请求带 version：返回精确版本匹配实例
-    /// - 请求不带 version：返回字典序最新版本的实例集合
+    /// 所有匹配该类型的可用服务实例（克隆）
     pub fn find_by_actr_type(&self, target_type: &ActrType) -> Vec<ServiceInfo> {
-        let target_version = normalize_version(target_type.version.clone());
-        let mut candidates = Vec::new();
+        let mut results = Vec::new();
 
         for services in self.services.values() {
             for service in services {
@@ -837,41 +843,12 @@ impl ServiceRegistry {
                 if service.actor_id.r#type.manufacturer == target_type.manufacturer
                     && service.actor_id.r#type.name == target_type.name
                 {
-                    candidates.push(service.clone());
+                    results.push(service.clone());
                 }
             }
         }
 
-        if let Some(version) = target_version {
-            return candidates
-                .into_iter()
-                .filter(|service| {
-                    normalize_version(service.actor_id.r#type.version.clone()).as_deref()
-                        == Some(version.as_str())
-                })
-                .collect();
-        }
-
-        let latest_version = candidates
-            .iter()
-            .map(|service| normalize_version(service.actor_id.r#type.version.clone()))
-            .fold(None, |latest: Option<String>, current| match latest {
-                Some(ref latest_value)
-                    if cmp_version_desc(current.as_deref(), Some(latest_value.as_str()))
-                        == Ordering::Less =>
-                {
-                    current
-                }
-                None => current,
-                _ => latest,
-            });
-
-        candidates
-            .into_iter()
-            .filter(|service| {
-                normalize_version(service.actor_id.r#type.version.clone()) == latest_version
-            })
-            .collect()
+        results
     }
 
     /// Discover services by ActrType with ACL filtering
@@ -909,20 +886,20 @@ impl ServiceRegistry {
             if can_discover {
                 allowed_services.push(service);
             } else {
-                debug!(
-                    requester = %requester_id.serial_number,
-                    service = %service.actor_id.serial_number,
-                    "ACL denied service discovery"
+                platform::recording::debug!(
+                    "ACL denied service discovery: requester={}, service={}",
+                    requester_id.serial_number,
+                    service.actor_id.serial_number
                 );
             }
         }
 
-        info!(
-            requester = %requester_id.serial_number,
-            target_type = ?target_type,
-            total_services = total_count,
-            allowed_services = allowed_services.len(),
-            "Service discovery completed with ACL filtering"
+        platform::recording::info!(
+            "Service discovery completed with ACL filtering: requester={}, target_type={:?}, total_services={}, allowed_services={}",
+            requester_id.serial_number,
+            target_type,
+            total_count,
+            allowed_services.len()
         );
 
         Ok(allowed_services)
@@ -946,20 +923,14 @@ impl ServiceRegistry {
         let from_realm = from_actor.realm.realm_id;
         let to_realm = to_actor.realm.realm_id;
 
-        // Only check ACL if actors are in the same realm
-        if from_realm != to_realm {
-            debug!(
-                from_realm = %from_realm,
-                to_realm = %to_realm,
-                "Cross-realm discovery denied"
-            );
-            return Ok(false);
-        }
+        // 使用完整的 manufacturer:type 格式，避免 name-only 冲突
+        let from_type = format!(
+            "{}:{}",
+            from_actor.r#type.manufacturer, from_actor.r#type.name
+        );
+        let to_type = format!("{}:{}", to_actor.r#type.manufacturer, to_actor.r#type.name);
 
-        let from_type = type_key(&from_actor.r#type);
-        let to_type = type_key(&to_actor.r#type);
-
-        ActorAcl::can_discover(from_realm, &from_type, &to_type).await
+        ActorAcl::can_discover(from_realm, to_realm, &from_type, &to_type).await
     }
 }
 
@@ -975,6 +946,12 @@ fn current_timestamp() -> u64 {
 mod tests {
     use super::*;
     use actr_protocol::ActrType;
+    use platform::realm::Realm as RealmEntity;
+    use platform::realm::acl::ActorAcl;
+    use platform::storage::db::set_db_path;
+    use serial_test::serial;
+    use std::path::Path;
+    use tokio::sync::OnceCell;
 
     fn create_test_actor_id(serial: u64) -> ActrId {
         ActrId {
@@ -982,10 +959,53 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test".to_string(),
-                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         }
+    }
+
+    fn create_actor_id(serial: u64, realm_id: u32, manufacturer: &str, name: &str) -> ActrId {
+        ActrId {
+            serial_number: serial,
+            r#type: ActrType {
+                manufacturer: manufacturer.to_string(),
+                name: name.to_string(),
+            },
+            realm: actr_protocol::Realm { realm_id },
+        }
+    }
+
+    async fn setup_test_db() -> anyhow::Result<()> {
+        static INIT: OnceCell<()> = OnceCell::const_new();
+
+        INIT.get_or_init(|| async {
+            let db_dir = std::env::temp_dir().join("actrix_signaling_registry_test_db");
+            std::fs::create_dir_all(&db_dir).expect("Failed to create signaling test db dir");
+
+            let db_file = db_dir.join("actrix.db");
+            if db_file.exists() {
+                let _ = std::fs::remove_file(&db_file);
+            }
+
+            let db_dir_str = db_dir
+                .to_str()
+                .expect("Failed to convert signaling test db path to string");
+
+            match set_db_path(Path::new(db_dir_str)).await {
+                Ok(()) => {}
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    if !err_msg.contains("already initialized")
+                        && !err_msg.contains("Database already")
+                    {
+                        panic!("Failed to initialize signaling test database: {e}");
+                    }
+                }
+            }
+        })
+        .await;
+
+        Ok(())
     }
 
     #[test]
@@ -1376,7 +1396,6 @@ mod tests {
             None,
             Some(service_spec.clone()),
             Some(acl),
-            None,
         );
 
         assert!(result.is_ok());
@@ -1401,7 +1420,6 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
-                version: Some("1".to_string()),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1411,7 +1429,6 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
-                version: Some("2".to_string()),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1419,9 +1436,8 @@ mod tests {
         let actor_id3 = ActrId {
             serial_number: 3,
             r#type: ActrType {
-                manufacturer: "acme".to_string(),
-                name: "worker".to_string(),
-                version: Some("alpha".to_string()),
+                manufacturer: "other".to_string(),
+                name: "service".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1447,8 +1463,8 @@ mod tests {
         registry
             .register_service(
                 actor_id3,
-                "worker3".to_string(),
-                vec!["Work".to_string()],
+                "other_service".to_string(),
+                vec!["Other".to_string()],
                 None,
             )
             .unwrap();
@@ -1456,62 +1472,13 @@ mod tests {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "worker".to_string(),
-            version: None,
-        };
-
-        let results = registry.find_by_actr_type(&target_type);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].actor_id.serial_number, 3);
-
-        let target_type_v2 = ActrType {
-            manufacturer: "acme".to_string(),
-            name: "worker".to_string(),
-            version: Some("2".to_string()),
-        };
-        let results_v2 = registry.find_by_actr_type(&target_type_v2);
-        assert_eq!(results_v2.len(), 1);
-        assert_eq!(results_v2[0].actor_id.serial_number, 2);
-    }
-
-    #[test]
-    fn test_find_by_actr_type_no_version_only_returns_none_version_group() {
-        let mut registry = ServiceRegistry::new();
-
-        let actor_id1 = ActrId {
-            serial_number: 11,
-            r#type: ActrType {
-                manufacturer: "acme".to_string(),
-                name: "processor".to_string(),
-                version: None,
-            },
-            realm: actr_protocol::Realm { realm_id: 0 },
-        };
-
-        let actor_id2 = ActrId {
-            serial_number: 12,
-            r#type: ActrType {
-                manufacturer: "acme".to_string(),
-                name: "processor".to_string(),
-                version: Some(String::new()),
-            },
-            realm: actr_protocol::Realm { realm_id: 0 },
-        };
-
-        registry
-            .register_service(actor_id1, "p1".to_string(), vec!["Work".to_string()], None)
-            .unwrap();
-        registry
-            .register_service(actor_id2, "p2".to_string(), vec!["Work".to_string()], None)
-            .unwrap();
-
-        let target_type = ActrType {
-            manufacturer: "acme".to_string(),
-            name: "processor".to_string(),
-            version: None,
         };
 
         let results = registry.find_by_actr_type(&target_type);
         assert_eq!(results.len(), 2);
+        assert!(results.iter().all(
+            |s| s.actor_id.r#type.manufacturer == "acme" && s.actor_id.r#type.name == "worker"
+        ));
     }
 
     #[test]
@@ -1523,7 +1490,6 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "service1".to_string(),
-                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1533,7 +1499,6 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "vendor".to_string(),
                 name: "service2".to_string(),
-                version: None,
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1554,5 +1519,62 @@ mod tests {
         let acme_only = registry.discover_all(Some("acme"));
         assert_eq!(acme_only.len(), 1);
         assert_eq!(acme_only[0].actor_id.r#type.manufacturer, "acme");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_check_discovery_acl_cross_realm_and_full_type() -> anyhow::Result<()> {
+        setup_test_db().await?;
+
+        let source_realm = 4_100_001;
+        let target_realm = 4_100_002;
+        let other_realm = 4_100_003;
+
+        let mut source_realm_entity = RealmEntity {
+            id: source_realm,
+            name: "source-realm".to_string(),
+            ..Default::default()
+        };
+        let mut target_realm_entity = RealmEntity {
+            id: target_realm,
+            name: "target-realm".to_string(),
+            ..Default::default()
+        };
+        let mut other_realm_entity = RealmEntity {
+            id: other_realm,
+            name: "other-realm".to_string(),
+            ..Default::default()
+        };
+        let _ = source_realm_entity.save().await;
+        let _ = target_realm_entity.save().await;
+        let _ = other_realm_entity.save().await;
+
+        let _ = ActorAcl::delete_by_target(target_realm, "acme:worker").await?;
+
+        let mut acl = ActorAcl::new_with_source_realm(
+            target_realm,
+            Some(source_realm),
+            "acme:edge".to_string(),
+            "acme:worker".to_string(),
+            true,
+        );
+        let _ = acl.save().await?;
+
+        let from_allowed = create_actor_id(1, source_realm, "acme", "edge");
+        let to_target = create_actor_id(2, target_realm, "acme", "worker");
+        let allowed = ServiceRegistry::check_discovery_acl(&from_allowed, &to_target).await?;
+        assert!(allowed);
+
+        let from_wrong_realm = create_actor_id(3, other_realm, "acme", "edge");
+        let denied_wrong_realm =
+            ServiceRegistry::check_discovery_acl(&from_wrong_realm, &to_target).await?;
+        assert!(!denied_wrong_realm);
+
+        let from_wrong_manufacturer = create_actor_id(4, source_realm, "other", "edge");
+        let denied_wrong_manufacturer =
+            ServiceRegistry::check_discovery_acl(&from_wrong_manufacturer, &to_target).await?;
+        assert!(!denied_wrong_manufacturer);
+
+        Ok(())
     }
 }
