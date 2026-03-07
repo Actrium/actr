@@ -9,8 +9,10 @@ use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
 use super::manager::WireBuilder;
 use super::wire_handle::WireHandle;
+use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
+use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::ActrId;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -35,6 +37,10 @@ pub struct DefaultWireBuilderConfig {
     /// from the signaling server.  When a connection to an ActrId is needed and this map
     /// contains an entry for it, the stored URL is used instead of the url_template.
     pub discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+
+    /// 本地节点凭证状态（可选）。出站 WebSocket 握手时将当前 credential 以 base64 编码随
+    /// X-Actr-Credential 头发送，供对端进行 Ed25519 签名验证。
+    pub credential_state: Option<CredentialState>,
 }
 
 impl Default for DefaultWireBuilderConfig {
@@ -44,6 +50,7 @@ impl Default for DefaultWireBuilderConfig {
             enable_webrtc: true,
             enable_websocket: true,
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
+            credential_state: None,
         }
     }
 }
@@ -61,6 +68,9 @@ pub struct DefaultWireBuilder {
 
     /// Shared map of discovered WebSocket URLs (from signaling discovery)
     discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+
+    /// 本地节点凭证状态（出站 WS 握手时提供 X-Actr-Credential 供对端验签）
+    credential_state: Option<CredentialState>,
 
     /// configuration
     config: DefaultWireBuilderConfig,
@@ -80,6 +90,7 @@ impl DefaultWireBuilder {
             webrtc_coordinator,
             local_id_hex: config.local_id_hex.clone(),
             discovered_ws_addresses: config.discovered_ws_addresses.clone(),
+            credential_state: config.credential_state.clone(),
             config,
         }
     }
@@ -139,8 +150,18 @@ impl WireBuilder for DefaultWireBuilder {
 
             if let Some(url) = self.resolve_websocket_url(dest).await {
                 tracing::debug!("🏭 [Factory] Create WebSocket Connect: {}", url);
-                let ws_conn =
+                let mut ws_conn =
                     WebSocketConnection::new(url).with_local_id(self.local_id_hex.clone());
+
+                // 携带本地 credential，供对端 WebSocketGate 进行 Ed25519 验签
+                if let Some(ref cred_state) = self.credential_state {
+                    let credential = cred_state.credential().await;
+                    let cred_bytes = credential.encode_to_vec();
+                    use base64::Engine as _;
+                    let cred_b64 = base64::engine::general_purpose::STANDARD.encode(&cred_bytes);
+                    ws_conn = ws_conn.with_credential_b64(cred_b64);
+                }
+
                 connections.push(WireHandle::WebSocket(ws_conn));
             } else {
                 tracing::debug!(
@@ -223,6 +244,7 @@ mod tests {
             enable_webrtc: false,
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
+            credential_state: None,
         };
         let factory = DefaultWireBuilder::new(None, config);
         let dest = Dest::actor(ActrId::default());
@@ -244,6 +266,7 @@ mod tests {
             enable_webrtc: false,
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: map,
+            credential_state: None,
         };
         let factory = DefaultWireBuilder::new(None, config);
         let dest = Dest::actor(actor_id);

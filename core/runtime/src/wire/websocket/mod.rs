@@ -7,5 +7,5 @@ pub mod gate;
 pub mod server;
 
 pub use connection::WebSocketConnection;
-pub use gate::WebSocketGate;
+pub use gate::{WebSocketGate, WsAuthContext};
 pub use server::WebSocketServer;

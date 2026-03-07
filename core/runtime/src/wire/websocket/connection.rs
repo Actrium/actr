@@ -82,6 +82,8 @@ pub struct WebSocketConnection {
     url: String,
     /// 本地节点身份（hex-encoded protobuf ActrId bytes），直连模式下在握手请求中发送为 X-Actr-Source-ID
     local_id_hex: Option<String>,
+    /// 本地 AIdCredential（base64 编码），握手时随 X-Actr-Credential 头发送，供对端验签
+    credential_b64: Option<String>,
     /// Write end (Sink) - using Option to avoid initialization issues
     sink: WsSink,
 
@@ -111,6 +113,7 @@ impl WebSocketConnection {
         Self {
             url: url.clone(),
             local_id_hex: None,
+            credential_b64: None,
             sink: Arc::new(Mutex::new(None)), // initial begin as None
             router: Arc::new(RwLock::new([None, None, None, None, None])),
             lane_cache: Arc::new(RwLock::new([None, None, None, None, None])),
@@ -121,6 +124,12 @@ impl WebSocketConnection {
     /// 设置本地节点身份，握手时自动附加 X-Actr-Source-ID 请求头（直连模式使用）
     pub fn with_local_id(mut self, id_hex: String) -> Self {
         self.local_id_hex = Some(id_hex);
+        self
+    }
+
+    /// 设置本地节点 AIdCredential（base64 编码），握手时随 X-Actr-Credential 头发送
+    pub fn with_credential_b64(mut self, credential_b64: String) -> Self {
+        self.credential_b64 = Some(credential_b64);
         self
     }
 
@@ -145,6 +154,7 @@ impl WebSocketConnection {
         Self {
             url: String::from("<inbound>"),
             local_id_hex: None,
+            credential_b64: None,
             sink: Arc::new(Mutex::new(Some(sink))),
             router,
             lane_cache: Arc::new(RwLock::new([None, None, None, None, None])),
@@ -170,18 +180,22 @@ impl WebSocketConnection {
                 Some(port) => format!("{host}:{port}"),
                 None => host.to_string(),
             };
-            let request = WsRequest::builder()
+            let mut builder = WsRequest::builder()
                 .uri(self.url.as_str())
                 .header("Host", host_header)
                 .header("Connection", "Upgrade")
                 .header("Upgrade", "websocket")
                 .header("Sec-WebSocket-Version", "13")
                 .header("Sec-WebSocket-Key", generate_key())
-                .header("X-Actr-Source-ID", hex_id)
-                .body(())
-                .map_err(|e| {
-                    NetworkError::ConnectionError(format!("WS request build failed: {e}"))
-                })?;
+                .header("X-Actr-Source-ID", hex_id);
+
+            if let Some(ref cred_b64) = self.credential_b64 {
+                builder = builder.header("X-Actr-Credential", cred_b64.as_str());
+            }
+
+            let request = builder.body(()).map_err(|e| {
+                NetworkError::ConnectionError(format!("WS request build failed: {e}"))
+            })?;
             connect_async(request).await?
         } else {
             connect_async(&self.url).await?

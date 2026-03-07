@@ -26,6 +26,10 @@ message SignalingEnvelope {
   }
 }
 
+// Signing key lookup (actor queries AIS public key by key_id for offline verification)
+message GetSigningKeyRequest  { required uint32 key_id = 1; }
+message GetSigningKeyResponse { required uint32 key_id = 1; required bytes pubkey = 2; }
+
 // Flow: peer (no ActrId yet) -> SignalingServer (registration only)
 message PeerToSignaling {
   oneof payload {
@@ -49,6 +53,7 @@ message ActrToSignaling {
     actr.DiscoveryRequest discovery_request = 10;
     actr.RouteCandidatesRequest route_candidates_request = 11;
     actr.GetServiceSpecRequest get_service_spec_request = 12;
+    GetSigningKeyRequest get_signing_key_request = 13;
 
     // Presence subscription
     actr.SubscribeActrUpRequest subscribe_actr_up_request = 20;
@@ -72,6 +77,7 @@ message SignalingToActr {
     actr.DiscoveryResponse discovery_response = 10;
     actr.RouteCandidatesResponse route_candidates_response = 11;
     actr.GetServiceSpecResponse get_service_spec_response = 12;
+    GetSigningKeyResponse get_signing_key_response = 13;
 
     // Presence subscription
     actr.SubscribeActrUpResponse subscribe_actr_up_response = 20;

@@ -141,6 +141,17 @@ impl SignalingClient for FakeSignalingClient {
     async fn set_credential_state(&self, _credential_state: CredentialState) {}
 
     async fn clear_identity(&self) {}
+
+    async fn get_signing_key(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _key_id: u32,
+    ) -> NetworkResult<(u32, Vec<u8>)> {
+        Err(NetworkError::NotImplemented(
+            "get_signing_key not implemented in fake client".to_string(),
+        ))
+    }
 }
 
 #[tokio::test]

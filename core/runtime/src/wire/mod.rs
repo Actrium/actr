@@ -12,7 +12,7 @@ pub mod websocket;
 // Re-export commonly used types
 pub use webrtc::{
     AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-    SignalingStats, WebRtcConfig, WebRtcConnection, WebRtcCoordinator, WebRtcGate,
+    SignalingEvent, SignalingStats, WebRtcConfig, WebRtcConnection, WebRtcCoordinator, WebRtcGate,
     WebRtcNegotiator, WebSocketSignalingClient,
 };
-pub use websocket::WebSocketConnection;
+pub use websocket::{WebSocketConnection, WebSocketGate, WebSocketServer, WsAuthContext};

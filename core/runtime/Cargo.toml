@@ -20,6 +20,7 @@ actr-version.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64 = "0.22.1"
+ed25519-dalek = "2"
 bytes = "1.10"
 chrono.workspace = true
 crossbeam = "0.8"
@@ -27,7 +28,6 @@ dashmap = "5.5"
 dotenvy = "0.15"
 either = "1.15"
 futures-util.workspace = true
-# === TURN authentication ===
 hex = "0.4"
 num_cpus = "1.17"
 opentelemetry = { workspace = true, optional = true }

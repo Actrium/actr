@@ -158,6 +158,9 @@
 //! This is a low-level runtime library. For application development, use the high-level
 //! framework APIs provided by `actr-framework` which builds on top of this runtime.
 
+// AIS signing 公钥缓存（按 key_id 索引，miss 时通过 signaling 拉取）
+pub mod ais_key_cache;
+
 // Lifecycle management layer (not architectural layering)
 pub mod lifecycle;
 
@@ -194,7 +197,7 @@ pub use actr_protocol::{ActrId, ActrType};
 
 // Runtime core structures
 pub use actr_ref::ActrRef;
-pub use lifecycle::{ActrNode, ActrSystem, NetworkEventHandle};
+pub use lifecycle::{ActrNode, ActrSystem, CredentialState, NetworkEventHandle};
 
 // Layer 3: Inbound dispatch layer
 pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
@@ -228,9 +231,10 @@ pub use transport::TransportManager;
 // Layer 0: Wire Layer
 pub use wire::{
     AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-    SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
-    WebSocketConnection, WebSocketSignalingClient,
+    SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
+    WebSocketConnection, WebSocketGate, WebSocketServer, WebSocketSignalingClient, WsAuthContext,
 };
+pub use ais_key_cache::AisKeyCache;
 
 // Mailbox
 pub use actr_runtime_mailbox::{

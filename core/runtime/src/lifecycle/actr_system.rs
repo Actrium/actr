@@ -260,8 +260,7 @@ impl ActrSystem {
             context_factory: Some(self.context_factory), // Initialized with inproc_gate ready
             signaling_client: self.signaling_client,
             actor_id: None,              // Obtained after startup
-            credential_state: None,      // Obtained after startup
-            psk: None,                   // Obtained after startup (for TURN auth)
+            credential_state: None,      // Obtained after startup（含 TurnCredential）
             webrtc_coordinator: None,    // Pass shared coordinator
             webrtc_gate: None,           // Created after startup
             websocket_gate: None,        // Created after startup (if websocket_listen_port is set)

@@ -4,7 +4,6 @@
 
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkResult;
-use actr_protocol::turn::Claims;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -21,9 +20,7 @@ pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 pub struct WebRtcNegotiator {
     /// Base WebRTC configuration (URLs + policy)
     config: WebRtcConfig,
-    /// Realm id for TURN credential claims
-    realm_id: u32,
-    /// Latest credential state (token and PSK refreshes update this)
+    /// 最新凭证状态（注册/续期时更新，包含 TurnCredential）
     credential_state: CredentialState,
     /// Optional virtual network for integration testing.
     /// When set, RTCPeerConnection will use this VNet instead of real OS networking.
@@ -35,10 +32,10 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `config`: WebRTC configuration
-    pub fn new(config: WebRtcConfig, realm_id: u32, credential_state: CredentialState) -> Self {
+    /// - `credential_state`: 共享凭证状态，包含 TurnCredential
+    pub fn new(config: WebRtcConfig, credential_state: CredentialState) -> Self {
         Self {
             config,
-            realm_id,
             credential_state,
             #[cfg(feature = "test-utils")]
             vnet: None,
@@ -84,8 +81,6 @@ impl WebRtcNegotiator {
         use webrtc::rtp_transceiver::rtp_codec::{
             RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
         };
-
-        let credential = self.credential_state.credential().await;
 
         // Create MediaEngine and register codecs
         let mut media_engine = MediaEngine::default();
@@ -140,12 +135,10 @@ impl WebRtcNegotiator {
             RTPCodecType::Audio,
         )?;
 
-        // convert exchange ICE service device configuration
-        let psk = self
-            .credential_state
-            .psk()
-            .await
-            .expect("PSK must be available for TURN authentication");
+        // 获取 TURN 凭证（HMAC 时效凭证，由服务端在注册/续期时下发）
+        let turn_cred = self.credential_state.turn_credential().await;
+
+        // 组装 ICE server 列表；TURN server 使用 TurnCredential，STUN server 使用静态配置
         let ice_servers: Vec<RTCIceServer> = self
             .config
             .ice_servers
@@ -157,16 +150,25 @@ impl WebRtcNegotiator {
                     .any(|url| url.starts_with("turn:") || url.starts_with("turns:"));
 
                 if is_turn {
-                    let claims = Claims {
-                        realm_id: self.realm_id,
-                        key_id: credential.token_key_id,
-                        token: credential.encrypted_token.clone(),
-                    };
-
-                    RTCIceServer {
-                        urls: server.urls.clone(),
-                        username: claims.encode(),
-                        credential: hex::encode(&psk),
+                    match &turn_cred {
+                        Some(tc) => RTCIceServer {
+                            urls: server.urls.clone(),
+                            username: tc.username.clone(),
+                            credential: tc.password.clone(),
+                        },
+                        None => {
+                            // 凭证尚未就绪，跳过该 TURN server（不填凭证会导致 ICE 失败，
+                            // 保留 URL 以便 webrtc-rs 报错时能在日志中看到具体地址）
+                            tracing::warn!(
+                                "⚠️ TurnCredential 未就绪，TURN server {} 将无法认证",
+                                server.urls.first().cloned().unwrap_or_default()
+                            );
+                            RTCIceServer {
+                                urls: server.urls.clone(),
+                                username: String::new(),
+                                credential: String::new(),
+                            }
+                        }
                     }
                 } else {
                     RTCIceServer {

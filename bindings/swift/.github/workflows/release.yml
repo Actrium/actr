@@ -1,0 +1,104 @@
+name: release-xcframework
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.1.7)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0 # Required to push back to main
+
+      - name: Install dependencies
+        run: brew install protobuf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libactr -> target
+
+      - name: Add Apple targets
+        run: |
+          rustup target add \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            aarch64-apple-darwin
+
+      - name: Cache UniFFI CLI
+        id: cache-uniffi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen
+          key: ${{ runner.os }}-uniffi-cli
+
+      - name: Install UniFFI CLI
+        if: steps.cache-uniffi.outputs.cache-hit != 'true'
+        run: cargo install uniffi --features "cli" --locked
+
+      - name: Build XCFramework
+        run: ./build-xcframework.sh
+
+      - name: Package binary
+        run: ./scripts/package-binary.sh v${{ inputs.version }}
+
+      - name: Update Package.swift
+        id: update_package
+        run: |
+          CHECKSUM=$(swift package compute-checksum dist/ActrFFI.xcframework.zip)
+          VERSION="v${{ inputs.version }}"
+          echo "Computed checksum: $CHECKSUM"
+
+          # Update Package.swift with the new checksum
+          sed -i '' "s/let remoteBinaryChecksum = env\[\"ACTR_BINARY_CHECKSUM\"\] ?? \".*\"/let remoteBinaryChecksum = env[\"ACTR_BINARY_CHECKSUM\"] ?? \"$CHECKSUM\"/" Package.swift
+
+          # Update Package.swift with the version as default
+          sed -i '' "s/let releaseTag = env\[\"ACTR_BINARY_TAG\"\] ?? \".*\"/let releaseTag = env[\"ACTR_BINARY_TAG\"] ?? \"$VERSION\"/" Package.swift
+
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Commit, Tag and Push
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          TAG_NAME="${{ steps.update_package.outputs.tag }}"
+
+          git add Package.swift
+          git commit -m "chore: release $TAG_NAME [skip ci]" || echo "No changes to commit"
+
+          # Create tag on the new commit
+          git tag $TAG_NAME
+
+          # Push both commit and tag
+          git push origin main
+          git push origin $TAG_NAME
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.update_package.outputs.tag }}
+          files: dist/ActrFFI.xcframework.zip
+          generate_release_notes: true
+
+      - name: Release summary
+        run: |
+          {
+            echo "## Release artifacts"
+            cat dist/release.txt
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,8 +10,8 @@ use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, CandidateCompatibilityInfo,
-    PayloadType, RegisterRequest, RouteCandidatesRequest, RpcEnvelope, register_response,
-    route_candidates_request,
+    PayloadType, RegisterRequest, RouteCandidatesRequest, RpcEnvelope, TurnCredential,
+    register_response, route_candidates_request,
 };
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
@@ -91,9 +91,6 @@ pub struct ActrNode<W: Workload> {
     /// Actor Credential (obtained after startup, used for subsequent authentication messages)
     pub(crate) credential_state: Option<CredentialState>,
 
-    /// Pre-shared key for TURN authentication (obtained from registration)
-    pub(crate) psk: Option<Bytes>,
-
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::coordinator::WebRtcCoordinator>>,
 
@@ -152,22 +149,22 @@ pub struct CredentialState {
 struct CredentialStateInner {
     credential: AIdCredential,
     expires_at: Option<prost_types::Timestamp>,
-    /// This is updated together with credential when credential is refreshed
-    psk: Option<Bytes>,
+    /// HMAC 时效 TURN 认证凭证，随 credential 一起在注册/续期时更新
+    turn_credential: Option<TurnCredential>,
 }
 
 impl CredentialState {
-    /// Create a new CredentialState with PSK
-    pub(crate) fn new(
+    /// 创建新的 CredentialState，携带 TURN 凭证
+    pub fn new(
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
-        psk: Option<Bytes>,
+        turn_credential: Option<TurnCredential>,
     ) -> Self {
         Self {
             inner: Arc::new(RwLock::new(CredentialStateInner {
                 credential,
                 expires_at,
-                psk,
+                turn_credential,
             })),
         }
     }
@@ -180,24 +177,25 @@ impl CredentialState {
         self.inner.read().await.expires_at
     }
 
-    /// Get the PSK for TURN authentication
-    pub async fn psk(&self) -> Option<Bytes> {
-        self.inner.read().await.psk.clone()
+    /// 获取 TURN 认证凭证（HMAC 时效凭证）
+    pub async fn turn_credential(&self) -> Option<TurnCredential> {
+        self.inner.read().await.turn_credential.clone()
     }
 
-    /// Update credential along with PSK
-    /// This should be called when credential is refreshed and a new PSK is provided
+    /// 更新 credential 以及 TURN 凭证
+    ///
+    /// 在 credential 续期时调用，新 TURN 凭证不为空时才覆盖旧值
     pub(crate) async fn update(
         &self,
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
-        psk: Option<Bytes>,
+        turn_credential: Option<TurnCredential>,
     ) {
         let mut guard = self.inner.write().await;
         guard.credential = credential;
         guard.expires_at = expires_at;
-        if psk.is_some() {
-            guard.psk = psk;
+        if turn_credential.is_some() {
+            guard.turn_credential = turn_credential;
         }
     }
 }
@@ -1286,39 +1284,35 @@ impl<W: Workload> ActrNode<W> {
                     actr_protocol::ActrIdExt::to_string_repr(&actor_id)
                 );
                 tracing::info!(
-                    "🔐 Received credential (token_key_id: {})",
-                    credential.token_key_id
+                    "🔐 Received credential (key_id: {})",
+                    credential.key_id
                 );
                 tracing::info!(
                     "💓 Signaling heartbeat interval: {} seconds",
                     register_ok.signaling_heartbeat_interval_secs
                 );
 
-                // Log additional information (if available)
-                if register_ok.psk.is_some() {
-                    tracing::debug!("🔑 Received PSK (bootstrap keying material)");
-                }
+                // 记录附加信息：TurnCredential 为 required 字段，正常情况下一定存在
+                tracing::debug!("🔑 收到 TurnCredential，TURN 认证就绪");
 
                 if let Some(expires_at) = &register_ok.credential_expires_at {
                     tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
                 }
 
-                // Store ActrId and Credential
+                // 存储 ActrId 与凭证状态
                 self.actor_id = Some(actor_id.clone());
                 let credential_state = CredentialState::new(
                     credential,
                     register_ok.credential_expires_at,
-                    register_ok.psk.clone(),
+                    Some(register_ok.turn_credential.clone()),
                 );
                 self.credential_state = Some(credential_state.clone());
 
-                // Pass identity to signaling client so reconnect URLs carry auth info.
+                // 将身份信息传递给 signaling client，使后续重连 URL 携带正确的认证信息
                 self.signaling_client.set_actor_id(actor_id.clone()).await;
                 self.signaling_client
                     .set_credential_state(credential_state.clone())
                     .await;
-                // Store PSK and public_key for TURN authentication
-                self.psk = register_ok.psk.clone();
 
                 // Populate hook callback ctx dependencies now that we have actor_id + credential.
                 // After this, all hook invocations will receive Some(ctx) instead of None.
@@ -1386,14 +1380,13 @@ impl<W: Workload> ActrNode<W> {
                     .media_frame_registry
                     .clone();
 
-                // Create WebRtcCoordinator
+                // 创建 WebRtcCoordinator
                 let coordinator =
                     Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
                         actor_id.clone(),
                         credential_state.clone(),
                         self.signaling_client.clone(),
                         self.config.webrtc.clone(),
-                        self.config.realm.realm_id,
                         media_frame_registry,
                     ));
 
@@ -1414,6 +1407,9 @@ impl<W: Workload> ActrNode<W> {
                     // Share the discovered_ws_addresses map so that post-discovery connections
                     // can use the signaling-provided ws:// URL for this actor node.
                     discovered_ws_addresses: self.discovered_ws_addresses.clone(),
+                    // 传递 credential_state，使出站 WS 握手携带 X-Actr-Credential 头，
+                    // 供对端 WebSocketGate 进行 Ed25519 签名验证
+                    credential_state: Some(credential_state.clone()),
                 };
                 let wire_builder = Arc::new(DefaultWireBuilder::new(
                     Some(coordinator.clone()),
@@ -1485,7 +1481,38 @@ impl<W: Workload> ActrNode<W> {
                         "🔌 WebSocket direct-connect mode enabled, binding port {}",
                         listen_port
                     );
+                    use crate::ais_key_cache::AisKeyCache;
                     use crate::wire::websocket::{WebSocketGate, WebSocketServer};
+                    use crate::wire::websocket::gate::WsAuthContext;
+
+                    // 构建 AisKeyCache，并用注册响应中的 signing key 进行初始化
+                    let ais_key_cache = AisKeyCache::new();
+                    if !register_ok.signing_pubkey.is_empty() {
+                        match ais_key_cache
+                            .seed(register_ok.signing_key_id, &register_ok.signing_pubkey)
+                            .await
+                        {
+                            Ok(()) => tracing::info!(
+                                key_id = register_ok.signing_key_id,
+                                "🔑 AisKeyCache seeded from RegisterOk"
+                            ),
+                            Err(e) => tracing::warn!(
+                                key_id = register_ok.signing_key_id,
+                                error = ?e,
+                                "⚠️ AisKeyCache seed 失败，WebSocket 连接将拒绝所有入站"
+                            ),
+                        }
+                    } else {
+                        tracing::warn!("⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级");
+                    }
+
+                    let auth_ctx = WsAuthContext {
+                        ais_key_cache,
+                        actor_id: actor_id.clone(),
+                        credential_state: credential_state.clone(),
+                        signaling_client: self.signaling_client.clone(),
+                    };
+
                     match WebSocketServer::bind(listen_port).await {
                         Ok((ws_server, conn_rx)) => {
                             ws_server.start(self.shutdown_token.clone());
@@ -1493,9 +1520,10 @@ impl<W: Workload> ActrNode<W> {
                                 conn_rx,
                                 outproc_gate.get_pending_requests(),
                                 data_stream_registry.clone(),
+                                Some(auth_ctx),
                             ));
                             self.websocket_gate = Some(ws_gate);
-                            tracing::info!("✅ WebSocketServer + WebSocketGate initialized");
+                            tracing::info!("✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)");
                         }
                         Err(e) => {
                             tracing::error!(
@@ -2267,10 +2295,11 @@ mod tests {
     use actr_protocol::AIdCredential;
     use prost_types::Timestamp;
 
-    fn create_test_credential(token_key_id: u32) -> AIdCredential {
+    fn create_test_credential(key_id: u32) -> AIdCredential {
         AIdCredential {
-            encrypted_token: vec![1, 2, 3, 4].into(),
-            token_key_id,
+            key_id,
+            claims: vec![1, 2, 3, 4].into(),
+            signature: vec![0u8; 64].into(),
         }
     }
 
@@ -2286,8 +2315,8 @@ mod tests {
         let state = CredentialState::new(credential.clone(), expires_at, None);
 
         let retrieved_credential = state.credential().await;
-        assert_eq!(retrieved_credential.token_key_id, 1);
-        assert_eq!(retrieved_credential.encrypted_token.as_ref(), &[1, 2, 3, 4]);
+        assert_eq!(retrieved_credential.key_id, 1);
+        assert_eq!(retrieved_credential.claims.as_ref(), &[1, 2, 3, 4]);
 
         let retrieved_expires_at = state.expires_at().await;
         assert_eq!(retrieved_expires_at, expires_at);
@@ -2299,7 +2328,7 @@ mod tests {
         let state = CredentialState::new(credential.clone(), None, None);
 
         let retrieved_credential = state.credential().await;
-        assert_eq!(retrieved_credential.token_key_id, 2);
+        assert_eq!(retrieved_credential.key_id, 2);
 
         let retrieved_expires_at = state.expires_at().await;
         assert!(retrieved_expires_at.is_none());
@@ -2313,7 +2342,7 @@ mod tests {
 
         // Verify initial state
         let initial_credential = state.credential().await;
-        assert_eq!(initial_credential.token_key_id, 1);
+        assert_eq!(initial_credential.key_id, 1);
 
         // Update credential
         let credential2 = create_test_credential(2);
@@ -2322,10 +2351,10 @@ mod tests {
 
         // Verify updated state
         let updated_credential = state.credential().await;
-        assert_eq!(updated_credential.token_key_id, 2);
+        assert_eq!(updated_credential.key_id, 2);
         assert_eq!(
-            updated_credential.encrypted_token,
-            credential2.encrypted_token
+            updated_credential.claims,
+            credential2.claims
         );
 
         let updated_expires_at = state.expires_at().await;
@@ -2344,7 +2373,7 @@ mod tests {
             let state_clone = state.clone();
             let handle = tokio::spawn(async move {
                 let cred = state_clone.credential().await;
-                assert_eq!(cred.token_key_id, 1);
+                assert_eq!(cred.key_id, 1);
                 i
             });
             handles.push(handle);
@@ -2381,6 +2410,6 @@ mod tests {
         // Verify final state (should be the last update)
         let final_credential = state.credential().await;
         // The exact value depends on which update finished last, but it should be valid
-        assert!(final_credential.token_key_id >= 2 && final_credential.token_key_id <= 11);
+        assert!(final_credential.key_id >= 2 && final_credential.key_id <= 11);
     }
 }

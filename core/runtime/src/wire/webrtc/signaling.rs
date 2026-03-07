@@ -12,10 +12,10 @@ use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, PeerToSignaling, Ping, Pong,
-    RegisterRequest, RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse,
-    ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest, UnregisterResponse,
-    actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
+    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, GetSigningKeyRequest,
+    PeerToSignaling, Ping, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
+    RouteCandidatesResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest,
+    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -178,6 +178,17 @@ pub trait SignalingClient: Send + Sync {
         credential: AIdCredential,
         request: RouteCandidatesRequest,
     ) -> NetworkResult<RouteCandidatesResponse>;
+
+    /// 向 signaling 查询 AIS 的 Ed25519 signing 公钥
+    ///
+    /// 返回 `(key_id, pubkey_bytes)`，其中 pubkey_bytes 为 32 字节原始公钥。
+    /// 通常由 AisKeyCache 在缓存 miss 时调用，不应在热路径中直接使用。
+    async fn get_signing_key(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+        key_id: u32,
+    ) -> NetworkResult<(u32, Vec<u8>)>;
 
     /// Send CredentialUpdateRequest to refresh the Actor's credential
     ///
@@ -513,22 +524,16 @@ impl WebSocketSignalingClient {
         *self.inbound_rx.lock().await = rx;
     }
 
-    /// Build signaling URL, attaching actor identity/token if available for reconnects.
+    /// Build signaling URL, attaching actor identity if available for reconnects.
+    ///
+    /// URL 参数方式的 credential 传递已弃用（Ed25519 格式不支持 URL 传参）；
+    /// actor_id 保留仅供服务端日志调试使用，实际认证通过 RegisterRequest 消息进行。
     async fn build_url_with_identity(&self) -> Url {
         let mut url = self.config.server_url.clone();
         let actor_id_opt = self.actor_id.lock().await.clone();
-        let credential_state_opt = self.credential_state.lock().await.clone();
-        if let (Some(actor_id), Some(credential_state)) = (actor_id_opt, credential_state_opt) {
-            let credential = credential_state.credential().await;
+        if let Some(actor_id) = actor_id_opt {
             let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
-            let token_b64 =
-                base64::engine::general_purpose::STANDARD.encode(&credential.encrypted_token);
-            {
-                let mut pairs = url.query_pairs_mut();
-                pairs.append_pair("actor_id", &actor_str);
-                pairs.append_pair("token", &token_b64);
-                pairs.append_pair("token_key_id", &credential.token_key_id.to_string());
-            }
+            url.query_pairs_mut().append_pair("actor_id", &actor_str);
         }
 
         // Add WebRTC role preference if configured
@@ -1168,6 +1173,44 @@ impl SignalingClient for WebSocketSignalingClient {
         ))
     }
 
+    async fn get_signing_key(
+        &self,
+        actor_id: ActrId,
+        credential: AIdCredential,
+        key_id: u32,
+    ) -> NetworkResult<(u32, Vec<u8>)> {
+        let flow = signaling_envelope::Flow::ActrToServer(ActrToSignaling {
+            source: actor_id,
+            credential,
+            payload: Some(actr_to_signaling::Payload::GetSigningKeyRequest(
+                GetSigningKeyRequest { key_id },
+            )),
+        });
+
+        let envelope = self.create_envelope(flow).await;
+        let response_envelope = self.send_envelope_and_wait_response(envelope).await?;
+
+        if let Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) = response_envelope.flow
+        {
+            match server_to_actr.payload {
+                Some(signaling_to_actr::Payload::GetSigningKeyResponse(resp)) => {
+                    return Ok((resp.key_id, resp.pubkey.to_vec()));
+                }
+                Some(signaling_to_actr::Payload::Error(err)) => {
+                    return Err(NetworkError::ConnectionError(format!(
+                        "get_signing_key failed: {} ({})",
+                        err.message, err.code
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        Err(NetworkError::ConnectionError(
+            "get_signing_key: 无效响应".to_string(),
+        ))
+    }
+
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
@@ -1438,6 +1481,15 @@ mod tests {
             _credential: AIdCredential,
             _request: RouteCandidatesRequest,
         ) -> NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not needed in tests");
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
             unimplemented!("not needed in tests");
         }
 

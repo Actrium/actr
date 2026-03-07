@@ -2,7 +2,7 @@
 //!
 //! Helper functions for creating test actors, credentials, and peers
 
-use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm};
+use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm, TurnCredential};
 use actr_runtime::inbound::MediaFrameRegistry;
 use actr_runtime::lifecycle::CredentialState;
 use actr_runtime::wire::webrtc::{
@@ -26,8 +26,9 @@ pub fn make_actor_id(serial_number: u64) -> ActrId {
 /// Create a dummy credential for testing
 pub fn dummy_credential() -> AIdCredential {
     AIdCredential {
-        encrypted_token: b"token".to_vec().into(),
-        token_key_id: 7,
+        key_id: 7,
+        claims: bytes::Bytes::from_static(b"dummy-claims"),
+        signature: bytes::Bytes::from(vec![0u8; 64]),
     }
 }
 
@@ -38,14 +39,13 @@ pub fn create_credential_state_for_test(credential: AIdCredential) -> Credential
     struct CredentialStateInner {
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
-        psk: Option<bytes::Bytes>,
+        turn_credential: Option<TurnCredential>,
     }
 
-    let mock_psk = bytes::Bytes::from_static(b"mock_psk_for_testing_32_bytes!!");
     let inner = Arc::new(tokio::sync::RwLock::new(CredentialStateInner {
         credential,
         expires_at: None,
-        psk: Some(mock_psk),
+        turn_credential: None,
     }));
 
     unsafe { std::mem::transmute(inner) }
@@ -75,7 +75,6 @@ pub async fn create_peer_with_websocket(
         credential_state,
         signaling_client_arc.clone(),
         config,
-        1,
         media_registry,
     ));
 
@@ -123,7 +122,6 @@ pub async fn create_peer_with_vnet(
         credential_state,
         signaling_client_arc.clone(),
         config,
-        1,
         media_registry,
     );
 

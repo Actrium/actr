@@ -179,11 +179,10 @@ impl WebRtcCoordinator {
         credential_state: CredentialState,
         signaling_client: Arc<dyn SignalingClient>,
         webrtc_config: WebRtcConfig,
-        realm_id: u32,
         media_frame_registry: Arc<MediaFrameRegistry>,
     ) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
-        let negotiator = WebRtcNegotiator::new(webrtc_config, realm_id, credential_state.clone());
+        let negotiator = WebRtcNegotiator::new(webrtc_config, credential_state.clone());
 
         Self {
             local_id,

@@ -61,10 +61,25 @@ message ServiceLocation {
 // AId Credential
 // ============================================================================
 
+// Actor 身份声明，明文 proto 编码后由 AIS 用 Ed25519 签名
+message IdentityClaims {
+  required uint32 realm_id   = 1;
+  required string actor_id   = 2;
+  required uint64 expires_at = 3;
+}
+
+// HMAC 时效 TURN 认证凭证（coturn --use-auth-secret 兼容格式）
+message TurnCredential {
+  required string username   = 1;   // "<expires_at>:<actor_id>"
+  required string password   = 2;   // base64(HMAC-SHA1(turn_secret, username))
+  required uint64 expires_at = 3;
+}
+
 // Credential structure for ActrId authentication
 message AIdCredential {
-  required bytes encrypted_token = 1;
-  required uint32 token_key_id = 2;
+  required uint32 key_id    = 1;
+  required bytes  claims    = 2;   // proto_encode(IdentityClaims)，明文
+  required bytes  signature = 3;   // Ed25519 签名，64 bytes
 }
 
 // ============================================================================
@@ -151,12 +166,14 @@ message RegisterRequest {
 message RegisterResponse {
   message RegisterOk {
     // Allocated identity and credentials
-    required ActrId actr_id = 1;
-    required AIdCredential credential = 2;
-    optional bytes psk = 3; // bootstrap keying material
+    required ActrId        actr_id                          = 1;
+    required AIdCredential credential                       = 2;
+    required TurnCredential turn_credential                 = 3;
     optional google.protobuf.Timestamp credential_expires_at = 4;
     // Operational advice: heartbeat interval for subsequent Signaling Server connection
-    required uint32 signaling_heartbeat_interval_secs = 5;
+    required uint32        signaling_heartbeat_interval_secs = 5;
+    required bytes         signing_pubkey                   = 6;   // AIS Ed25519 verifying key，32 bytes
+    required uint32        signing_key_id                   = 7;
   }
   oneof result {
     RegisterOk success = 1;
