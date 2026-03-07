@@ -462,8 +462,12 @@ impl Drop for LoggedProcess {
 }
 
 pub struct LocalActrix {
-    _state_dir: TempDir,
+    pub state_dir: TempDir,
     process: LoggedProcess,
+    actrix_bin: PathBuf,
+    config_path: PathBuf,
+    http_port: u16,
+    ice_port: u16,
     pub http_base_url: String,
     pub signaling_ws_url: String,
 }
@@ -501,15 +505,56 @@ impl LocalActrix {
         ensure_realm_exists(&state_dir.path().join("sqlite"), LOCAL_E2E_REALM_ID)?;
 
         Ok(Self {
-            _state_dir: state_dir,
+            state_dir,
             process,
+            actrix_bin,
+            config_path,
+            http_port,
+            ice_port,
             http_base_url: format!("http://127.0.0.1:{http_port}"),
             signaling_ws_url: format!("ws://127.0.0.1:{http_port}/signaling/ws"),
         })
     }
 
+    /// Kill the actrix process without cleaning up state (SQLite remains).
+    pub fn kill(&mut self) {
+        self.process.kill();
+    }
+
+    /// Restart actrix using the same state directory and ports.
+    /// The SQLite database is preserved so service registry can be restored.
+    pub fn restart(&mut self) -> Result<()> {
+        self.kill();
+        // Brief pause to let the OS release the port
+        thread::sleep(Duration::from_millis(500));
+
+        let mut cmd = Command::new(&self.actrix_bin);
+        cmd.arg("--config")
+            .arg(&self.config_path)
+            .current_dir(self.state_dir.path());
+        let mut process = LoggedProcess::spawn(cmd, "actrix")?;
+
+        let health_path = "/signaling/health";
+        if !wait_for_http_ok(
+            &mut process,
+            self.http_port,
+            health_path,
+            Duration::from_secs(120),
+        ) {
+            let logs = process.logs();
+            bail!("actrix did not become healthy after restart\n{logs}");
+        }
+
+        self.process = process;
+        Ok(())
+    }
+
     pub fn logs(&self) -> String {
         self.process.logs()
+    }
+
+    pub fn wait_for_log(&mut self, needle: &str, timeout: Duration) -> bool {
+        self.process.wait_for_log(needle, timeout)
     }
 }
 
