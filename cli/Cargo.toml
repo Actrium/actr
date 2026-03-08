@@ -27,7 +27,7 @@ actr-config = { path = "../core/config", version = "0.1" }
 actr-protocol = { path = "../core/protocol", version = "0.1" }
 
 # Version / fingerprint utilities
-actr-version = { path = "../core/version", version = "0.1" }
+actr-service-compat = { path = "../core/service-compat", version = "0.1" }
 
 # Protoc code generator - CLI specific tool
 actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.1" }

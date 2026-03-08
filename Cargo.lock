@@ -22,7 +22,7 @@ dependencies = [
  "actr-framework-protoc-codegen",
  "actr-protocol",
  "actr-runtime-mailbox",
- "actr-version",
+ "actr-service-compat",
  "actr-web-protoc-codegen",
  "anyhow",
  "async-trait",
@@ -72,7 +72,7 @@ name = "actr-config"
 version = "0.1.8"
 dependencies = [
  "actr-protocol",
- "actr-version",
+ "actr-service-compat",
  "chrono",
  "serde",
  "serde_json",
@@ -147,7 +147,7 @@ dependencies = [
  "actr-protocol",
  "actr-runtime",
  "actr-runtime-mailbox",
- "actr-version",
+ "actr-service-compat",
  "anyhow",
  "async-trait",
  "base64",
@@ -209,7 +209,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-version"
+name = "actr-service-compat"
 version = "0.1.5"
 dependencies = [
  "actr-protocol",

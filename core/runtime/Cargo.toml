@@ -16,7 +16,7 @@ actr-framework.workspace = true
 actr-protocol.workspace = true
 # === Runtime 子 crate ===
 actr-runtime-mailbox.workspace = true
-actr-version.workspace = true
+actr-service-compat.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64 = "0.22.1"

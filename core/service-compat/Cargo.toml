@@ -1,18 +1,18 @@
 [package]
-name = "actr-version"
+name = "actr-service-compat"
 version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Protocol compatibility analysis library using semantic proto analysis"
+description = "Actor service protocol compatibility analysis using semantic proto schema comparison"
 keywords = [
     "actor",
     "protobuf",
     "compatibility",
     "breaking-changes",
-    "protocol",
+    "service",
 ]
-repository = "https://github.com/actor-rtc/actr-version"
+repository = "https://github.com/actor-rtc/actr"
 readme = "README.md"
 
 [lints]

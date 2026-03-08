@@ -19,7 +19,7 @@ workspace = true
 actr-protocol.workspace = true
 
 # Version management (local path)
-actr-version.workspace = true
+actr-service-compat.workspace = true
 
 # Serialization and configuration parsing
 serde = { version = "1.0", features = ["derive"] }

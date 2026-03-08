@@ -49,7 +49,7 @@ resolver = "2"
 members = [
     # === Core Crates (核心 crate) ===
     "core/protocol",
-    "core/version",
+    "core/service-compat",
     "core/config",
     "core/framework",
     "core/runtime",
@@ -96,7 +96,7 @@ collapsible_else_if = "allow"
 [workspace.dependencies]
 # === Internal Dependencies (内部依赖) ===
 actr-protocol = { path = "core/protocol", version = "0.1.7" }
-actr-version = { path = "core/version", version = "0.1.5" }
+actr-service-compat = { path = "core/service-compat", version = "0.1.5" }
 actr-config = { path = "core/config", version = "0.1.8" }
 actr-framework = { path = "core/framework", version = "0.1.5" }
 actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.1.10" }

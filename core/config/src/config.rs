@@ -265,10 +265,10 @@ impl Config {
         }
 
         // Convert exports to ProtoFile format for fingerprint calculation
-        let proto_files: Vec<actr_version::ProtoFile> = self
+        let proto_files: Vec<actr_service_compat::ProtoFile> = self
             .exports
             .iter()
-            .map(|export| actr_version::ProtoFile {
+            .map(|export| actr_service_compat::ProtoFile {
                 name: export
                     .path
                     .file_name()
@@ -282,7 +282,7 @@ impl Config {
 
         // Calculate service fingerprint
         let fingerprint =
-            actr_version::Fingerprint::calculate_service_semantic_fingerprint(&proto_files).ok()?;
+            actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files).ok()?;
 
         // Build Protobuf entries
         let protobufs = self
@@ -291,7 +291,7 @@ impl Config {
             .map(|export| {
                 // Calculate individual file fingerprint
                 let file_fingerprint =
-                    actr_version::Fingerprint::calculate_proto_semantic_fingerprint(
+                    actr_service_compat::Fingerprint::calculate_proto_semantic_fingerprint(
                         &export.content,
                     )
                     .unwrap_or_else(|_| "error".to_string());

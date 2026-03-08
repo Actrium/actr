@@ -9,7 +9,7 @@ use crate::core::{
 use crate::utils::command_exists;
 use actr_config::LockFile;
 use actr_protocol::{ActrType, ActrTypeExt};
-use actr_version::{CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility};
+use actr_service_compat::{CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility};
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;

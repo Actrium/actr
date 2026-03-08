@@ -4,7 +4,7 @@
 
 use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use actr_config::ConfigParser;
-use actr_version::{Fingerprint, ProtoFile};
+use actr_service_compat::{Fingerprint, ProtoFile};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use clap::Args;
@@ -121,7 +121,7 @@ async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
     let config = ConfigParser::from_file(config_path)
         .with_context(|| format!("Failed to load config from {}", args.config))?;
 
-    // Convert actr_config::ProtoFile to actr_version::ProtoFile
+    // Convert actr_config::ProtoFile to actr_service_compat::ProtoFile
     let mut proto_files: Vec<ProtoFile> = config
         .exports
         .iter()

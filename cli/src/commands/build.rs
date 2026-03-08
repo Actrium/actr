@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use actr_config::ConfigParser;
-use actr_version::{Fingerprint, ProtoFile};
+use actr_service_compat::{Fingerprint, ProtoFile};
 use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
