@@ -524,16 +524,28 @@ impl WebSocketSignalingClient {
         *self.inbound_rx.lock().await = rx;
     }
 
-    /// Build signaling URL, attaching actor identity if available for reconnects.
+    /// Build signaling URL with actor identity and Ed25519 credential params for authentication.
     ///
-    /// URL 参数方式的 credential 传递已弃用（Ed25519 格式不支持 URL 传参）；
-    /// actor_id 保留仅供服务端日志调试使用，实际认证通过 RegisterRequest 消息进行。
+    /// Passes `actor_id`, `key_id`, `claims` (base64), `signature` (base64) as URL query params
+    /// so the signaling server can validate the credential before upgrading the WebSocket.
     async fn build_url_with_identity(&self) -> Url {
         let mut url = self.config.server_url.clone();
         let actor_id_opt = self.actor_id.lock().await.clone();
         if let Some(actor_id) = actor_id_opt {
             let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
             url.query_pairs_mut().append_pair("actor_id", &actor_str);
+        }
+
+        // Pass Ed25519 credential in URL for initial WS auth
+        let cred_state_opt = self.credential_state.lock().await.clone();
+        if let Some(cred_state) = cred_state_opt {
+            let cred = cred_state.credential().await;
+            let claims_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.claims);
+            let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.signature);
+            url.query_pairs_mut()
+                .append_pair("key_id", &cred.key_id.to_string())
+                .append_pair("claims", &claims_b64)
+                .append_pair("signature", &sig_b64);
         }
 
         // Add WebRTC role preference if configured
