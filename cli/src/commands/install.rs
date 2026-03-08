@@ -940,7 +940,7 @@ impl InstallCommand {
                 continue;
             }
 
-            // Fingerprints differ - perform deep compatibility analysis using actr-version
+            // Fingerprints differ - perform deep compatibility analysis using actr-service-compat
             tracing::info!(
                 "Fingerprint mismatch for '{}': locked={}, current={}",
                 spec.name,
@@ -952,7 +952,7 @@ impl InstallCommand {
             // Note: Since lock file only stores metadata (not full proto content),
             // we need to use semantic fingerprint comparison for compatibility check
 
-            // Convert current service proto files to actr-version ProtoFile format
+            // Convert current service proto files to actr-service-compat ProtoFile format
             let current_proto_files: Vec<ProtoFile> = current_service
                 .proto_files
                 .iter()

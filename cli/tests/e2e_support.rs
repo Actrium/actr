@@ -131,7 +131,7 @@ pub fn align_rust_project_with_workspace(project_dir: &Path) -> Result<()> {
         ("actr-framework", workspace.join("core/framework")),
         ("actr-runtime", workspace.join("core/runtime")),
         ("actr-config", workspace.join("core/config")),
-        ("actr-version", workspace.join("core/version")),
+        ("actr-service-compat", workspace.join("core/service-compat")),
         (
             "actr-runtime-mailbox",
             workspace.join("core/runtime-mailbox"),
