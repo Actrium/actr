@@ -772,7 +772,7 @@ impl SwiftGenerator {
 
     /// Check installed protoc-gen-actrframework-swift version and ensure it matches actr version
     fn check_and_update_plugin_version(&self, context: &GenContext) -> Result<()> {
-        let actr_version = env!("CARGO_PKG_VERSION");
+        let cli_version = env!("CARGO_PKG_VERSION");
         let min_version =
             self.resolve_plugin_min_version(context, PROTOC_GEN_ACTR_FRAMEWORK_SWIFT)?;
         let plugin_version = self.get_plugin_version()?;
@@ -816,23 +816,23 @@ impl SwiftGenerator {
                     min_version
                 )));
             }
-            (None, Some(plugin_ver)) => match compare_versions(&plugin_ver, actr_version) {
+            (None, Some(plugin_ver)) => match compare_versions(&plugin_ver, cli_version) {
                 std::cmp::Ordering::Equal => {
                     debug!(
                         "✅ protoc-gen-actrframework-swift version {} matches actr version {}",
-                        plugin_ver, actr_version
+                        plugin_ver, cli_version
                     );
                     return Ok(());
                 }
                 std::cmp::Ordering::Less => {
                     warn!(
                         "⚠️  protoc-gen-actrframework-swift version {} is lower than actr version {}",
-                        plugin_ver, actr_version
+                        plugin_ver, cli_version
                     );
                     self.try_update_plugin()?;
                     let updated_version = self.get_plugin_version()?;
                     if let Some(updated_ver) = updated_version {
-                        match compare_versions(&updated_ver, actr_version) {
+                        match compare_versions(&updated_ver, cli_version) {
                             std::cmp::Ordering::Equal => {
                                 info!(
                                     "✅ Successfully updated protoc-gen-actrframework-swift to version {}",
@@ -843,13 +843,13 @@ impl SwiftGenerator {
                             std::cmp::Ordering::Less => {
                                 return Err(ActrCliError::command_error(format!(
                                     "protoc-gen-actrframework-swift version {} is still lower than actr version {} after update. Please manually update it.",
-                                    updated_ver, actr_version
+                                    updated_ver, cli_version
                                 )));
                             }
                             std::cmp::Ordering::Greater => {
                                 return Err(ActrCliError::command_error(format!(
                                     "protoc-gen-actrframework-swift version {} is higher than actr version {} after update. Please downgrade actr or upgrade protoc-gen-actrframework-swift.",
-                                    updated_ver, actr_version
+                                    updated_ver, cli_version
                                 )));
                             }
                         }
@@ -863,7 +863,7 @@ impl SwiftGenerator {
                 std::cmp::Ordering::Greater => {
                     return Err(ActrCliError::command_error(format!(
                         "protoc-gen-actrframework-swift version {} is higher than actr version {}. Please downgrade protoc-gen-actrframework-swift or upgrade actr.",
-                        plugin_ver, actr_version
+                        plugin_ver, cli_version
                     )));
                 }
             },
