@@ -3,7 +3,6 @@
 //! Implements the Context trait defined in actr-framework.
 
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
-use crate::lifecycle::compat_lock::{CompatLockManager, CompatibilityCheck};
 use crate::outbound::OutGate;
 use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
@@ -16,7 +15,6 @@ use actr_protocol::{
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// RuntimeContext - Runtime's implementation of Context trait
@@ -45,7 +43,6 @@ pub struct RuntimeContext {
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
     actr_lock: Option<LockFile>, // Actr.lock.toml for fingerprint lookups
-    config_dir: Option<PathBuf>, // Config directory for compat.lock.toml
 }
 
 impl RuntimeContext {
@@ -63,7 +60,6 @@ impl RuntimeContext {
     /// - `signaling_client`: 用于路由发现的信令客户端
     /// - `credential`: 该 Actor 的凭证（调用信令接口时使用）
     /// - `actr_lock`: Actr.lock.toml 依赖配置（用于 fingerprint 查找）
-    /// - `config_dir`: 配置目录路径（用于 compat.lock.toml Fast Path 缓存）
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub fn new(
         self_id: ActrId,
@@ -76,7 +72,6 @@ impl RuntimeContext {
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
         actr_lock: Option<LockFile>,
-        config_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             self_id,
@@ -89,7 +84,6 @@ impl RuntimeContext {
             signaling_client,
             credential,
             actr_lock,
-            config_dir,
         }
     }
 
@@ -280,9 +274,6 @@ impl RuntimeContext {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
                 Ok(InternalDiscoveryResult {
                     candidates: success.candidates,
-                    has_exact_match: success.has_exact_match.unwrap_or(false),
-                    is_sub_healthy: success.is_sub_healthy.unwrap_or(false),
-                    compatibility_info: success.compatibility_info,
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
@@ -297,98 +288,11 @@ impl RuntimeContext {
         }
     }
 
-    /// Internal: Handle negotiation result - log warnings and update compat.lock.toml
-    async fn handle_negotiation_result(
-        &self,
-        target_type: &ActrType,
-        client_fingerprint: &str,
-        compatibility_info: &[actr_protocol::CandidateCompatibilityInfo],
-        has_exact_match: bool,
-        is_sub_healthy: bool,
-    ) {
-        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
-
-        // Log detailed compatibility info
-        for info in compatibility_info {
-            let status = if info.is_exact_match.unwrap_or(false) {
-                "✅ 精确匹配"
-            } else if let Some(ref result) = info.analysis_result {
-                match result.level() {
-                    actr_protocol::CompatibilityLevel::FullyCompatible => "✅ 完全兼容",
-                    actr_protocol::CompatibilityLevel::BackwardCompatible => "⚠️ 向后兼容",
-                    actr_protocol::CompatibilityLevel::BreakingChanges => "❌ 破坏性变更",
-                }
-            } else {
-                "❓ 未知"
-            };
-
-            tracing::debug!(
-                "   - 候选 {}: {} (指纹: {})",
-                info.candidate_id.serial_number,
-                status,
-                &info.candidate_fingerprint[..20.min(info.candidate_fingerprint.len())]
-            );
-        }
-
-        // Handle sub-healthy state - update compat.lock.toml if config_dir is available
-        if let Some(config_dir) = &self.config_dir {
-            if is_sub_healthy && !has_exact_match {
-                // Find the first compatible (non-exact) match for logging
-                if let Some(resolved) = compatibility_info.first() {
-                    tracing::warn!(
-                        "🟡 SYSTEM SUB-HEALTHY: Service '{}' using compatible fingerprint ({}) \
-                         instead of exact match ({}). Run 'actr install --force-update' to restore health.",
-                        service_name,
-                        &resolved.candidate_fingerprint
-                            [..20.min(resolved.candidate_fingerprint.len())],
-                        &client_fingerprint[..20.min(client_fingerprint.len())]
-                    );
-
-                    // Update compat.lock.toml
-                    let mut manager = CompatLockManager::new(config_dir.clone());
-                    if let Err(e) = manager
-                        .record_negotiation(
-                            &service_name,
-                            client_fingerprint,
-                            &resolved.candidate_fingerprint,
-                            false, // not exact match
-                            CompatibilityCheck::BackwardCompatible,
-                        )
-                        .await
-                    {
-                        tracing::warn!("Failed to update compat.lock.toml: {}", e);
-                    }
-                }
-            } else if has_exact_match {
-                // Exact match found - try to clean up compat.lock.toml entry if exists
-                let mut manager = CompatLockManager::new(config_dir.clone());
-                if let Ok(Some(_)) = manager.load().await {
-                    if let Some(resolved) = compatibility_info.first() {
-                        if let Err(e) = manager
-                            .record_negotiation(
-                                &service_name,
-                                client_fingerprint,
-                                &resolved.candidate_fingerprint,
-                                true, // exact match
-                                CompatibilityCheck::ExactMatch,
-                            )
-                            .await
-                        {
-                            tracing::debug!("Could not update compat.lock.toml: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Internal discovery result structure
 struct InternalDiscoveryResult {
     candidates: Vec<ActrId>,
-    has_exact_match: bool,
-    is_sub_healthy: bool,
-    compatibility_info: Vec<actr_protocol::CandidateCompatibilityInfo>,
 }
 
 #[async_trait]
@@ -554,45 +458,6 @@ impl Context for RuntimeContext {
         let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 0: Fast Path - Check compat.lock.toml for cached negotiation
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if let Some(config_dir) = &self.config_dir {
-            let mut compat_lock_manager = CompatLockManager::new(config_dir.clone());
-            if let Ok(Some(compat_lock)) = compat_lock_manager.load().await {
-                if let Some(cached_entry) = compat_lock.find_valid_entry(&service_name) {
-                    tracing::info!(
-                        "⚡ Fast path: Using cached negotiation for '{}' (resolved: {})",
-                        service_name,
-                        &cached_entry.resolved_fingerprint
-                            [..20.min(cached_entry.resolved_fingerprint.len())]
-                    );
-
-                    // Use the cached resolved_fingerprint to find candidates
-                    let result = self
-                        .send_discovery_request(
-                            target_type,
-                            1,
-                            cached_entry.resolved_fingerprint.clone(),
-                        )
-                        .await?;
-
-                    if let Some(candidate) = result.candidates.into_iter().next() {
-                        tracing::info!(
-                            "📊 服务发现结果 [{}]: 1 个候选 (快速路径, sub_healthy=true)",
-                            service_name
-                        );
-                        return Ok(candidate);
-                    }
-                    // If fast path fails, fall through to normal discovery
-                    tracing::warn!(
-                        "⚠️ Fast path failed for '{}', falling back to normal discovery",
-                        service_name
-                    );
-                }
-            }
-        }
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Step 1: Get fingerprint from Actr.lock.toml (when available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         let client_fingerprint = match self.get_dependency_fingerprint(target_type) {
@@ -635,33 +500,13 @@ impl Context for RuntimeContext {
         // Step 2: Send discovery request to signaling server
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         let result = self
-            .send_discovery_request(target_type, 1, client_fingerprint.clone())
+            .send_discovery_request(target_type, 1, client_fingerprint)
             .await?;
 
-        let has_exact_match = result.has_exact_match;
-        let is_sub_healthy = result.is_sub_healthy;
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 3 & 4: Handle negotiation result
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if !client_fingerprint.is_empty() {
-            self.handle_negotiation_result(
-                target_type,
-                &client_fingerprint,
-                &result.compatibility_info,
-                has_exact_match,
-                is_sub_healthy,
-            )
-            .await;
-        }
-
-        // Log result
         tracing::info!(
-            "📊 服务发现结果 [{}]: {} 个候选, exact_match={}, sub_healthy={}",
+            "服务发现结果 [{}]: {} 个候选",
             service_name,
             result.candidates.len(),
-            has_exact_match,
-            is_sub_healthy
         );
 
         result.candidates.into_iter().next().ok_or_else(|| {

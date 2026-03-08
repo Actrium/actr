@@ -257,52 +257,12 @@ message RouteCandidatesRequest {
   required ActrType target_type = 1;
   optional NodeSelectionCriteria criteria = 2;
   optional ServiceLocation client_location = 3;  // Client's geographic location for NEAREST ranking
-  // Client's service fingerprint for compatibility negotiation.
-  // When provided, signaling server performs compatibility negotiation automatically.
+  // Client's service fingerprint; used by EXACT_MATCH_FIRST ranking factor to
+  // prioritise candidates whose fingerprint matches exactly.
   required string client_fingerprint = 4;
 }
 
-// Compatibility level between two protocol versions
-enum CompatibilityLevel {
-  FULLY_COMPATIBLE = 0; // No changes detected (semantic fingerprints match)
-  BACKWARD_COMPATIBLE = 1; // Changes present but backward compatible
-  BREAKING_CHANGES = 2; // Breaking changes detected
-}
-
-// Individual protocol change detected during compatibility analysis
-message ProtocolChange {
-  required string change_type = 1; // Type of change (e.g., "FIELD_REMOVED", "TYPE_CHANGED")
-  required string file_name = 2; // File where change occurred
-  required string location = 3; // Location within the file
-  required string description = 4; // Human-readable description
-  required bool is_breaking = 5; // Whether this change breaks compatibility
-}
-
-// Compatibility analysis result (mirrors actr-version CompatibilityAnalysisResult)
-message CompatibilityAnalysisResult {
-  required CompatibilityLevel level = 1;
-  repeated ProtocolChange changes = 2; // Detailed list of changes detected
-  repeated ProtocolChange breaking_changes = 3; // Breaking changes (subset of changes)
-  required string base_fingerprint = 4; // Semantic fingerprint of base (client) version
-  required string candidate_fingerprint = 5; // Semantic fingerprint of candidate version
-  required int64 analyzed_at = 6; // Analysis timestamp (Unix epoch seconds)
-}
-
-// Compatibility information for a single route candidate
-message CandidateCompatibilityInfo {
-  required ActrId candidate_id = 1;
-  required string candidate_fingerprint = 2;
-  // Compatibility analysis result (only for non-exact matches)
-  optional CompatibilityAnalysisResult analysis_result = 3;
-  // True if fingerprints match exactly (fast path - no analysis needed)
-  optional bool is_exact_match = 4 [default = false];
-  // WebSocket direct-connect address for this candidate (if available).
-  // Clients should use this URL to establish a direct WebSocket connection
-  // instead of going through a relay (e.g., WebRTC).
-  optional string ws_address = 5;
-}
-
-// WebSocket address entry for a single route candidate (used in non-negotiation mode)
+// WebSocket address entry for a route candidate
 message WsAddressEntry {
   required ActrId candidate_id = 1;
   optional string ws_address = 2;
@@ -311,14 +271,8 @@ message WsAddressEntry {
 message RouteCandidatesResponse {
   message RouteCandidatesOk {
     repeated ActrId candidates = 1;
-    // Compatibility info for each candidate (only when client_fingerprint was provided)
-    repeated CandidateCompatibilityInfo compatibility_info = 2;
-    // Indicates if exact match was found
-    optional bool has_exact_match = 3;
-    // Indicates if system is in sub-healthy state (using compatible but not exact match)
-    optional bool is_sub_healthy = 4;
-    // WebSocket addresses for candidates (used in non-negotiation mode, i.e. no client_fingerprint)
-    repeated WsAddressEntry ws_address_map = 5;
+    // WebSocket direct-connect addresses for each candidate (if registered)
+    repeated WsAddressEntry ws_address_map = 2;
   }
   oneof result {
     RouteCandidatesOk success = 1;

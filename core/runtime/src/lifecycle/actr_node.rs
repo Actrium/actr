@@ -1,7 +1,6 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
 use crate::context_factory::ContextFactory;
-use crate::lifecycle::compat_lock::{CompatLockManager, CompatibilityCheck};
 use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::transport::InprocTransportManager;
 #[cfg(feature = "opentelemetry")]
@@ -9,9 +8,9 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, CandidateCompatibilityInfo,
-    PayloadType, RegisterRequest, RouteCandidatesRequest, RpcEnvelope, TurnCredential,
-    register_response, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RegisterRequest,
+    RouteCandidatesRequest, RpcEnvelope, TurnCredential, register_response,
+    route_candidates_request,
 };
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
@@ -32,21 +31,14 @@ use crate::lifecycle::heartbeat::heartbeat_task;
 // Service Discovery Result
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Result of a service discovery request with compatibility information.
+/// Result of a service discovery request.
 ///
 /// This struct is returned by `discover_route_candidates` and provides
-/// detailed information about the compatibility status when fingerprint-based
-/// discovery is used.
+/// the list of discovered candidates along with their WebSocket addresses.
 #[derive(Debug, Clone)]
 pub struct DiscoveryResult {
     /// Ordered list of compatible candidates (best match first)
     pub candidates: Vec<ActrId>,
-    /// True if at least one candidate has an exact fingerprint match
-    pub has_exact_match: bool,
-    /// True if system is in sub-healthy state (compatible but not exact match)
-    pub is_sub_healthy: bool,
-    /// Detailed compatibility info for each candidate (when fingerprint was provided)
-    pub compatibility_info: Vec<CandidateCompatibilityInfo>,
     /// WebSocket direct-connect addresses discovered from signaling server.
     /// Maps each candidate ActrId to its ws:// URL if the server has one.
     /// Clients should use this URL to bypass relay (WebRTC) and connect directly.
@@ -389,40 +381,12 @@ impl<W: Workload> ActrNode<W> {
 
     /// Discover remote actors of the specified type via signaling server.
     ///
-    /// This method implements the full runtime compatibility negotiation workflow
-    /// as specified in the documentation:
-    ///
-    /// # Compatibility Negotiation Flow
-    ///
-    /// 1. **Step 0: Fast Path (compat.lock.toml)**
-    ///    - Check if `compat.lock.toml` has a cached negotiation for this service
-    ///    - If found and not expired, use the cached `resolved_fingerprint` directly
-    ///
-    /// 2. **Step 1: Ideal Path (Exact Match)**
-    ///    - Read the expected fingerprint from `Actr.lock.toml` when available
-    ///    - If missing, send discovery without a fingerprint (no compatibility negotiation)
-    ///    - Otherwise request exact match from signaling server
-    ///    - If found → connection success, system is HEALTHY
-    ///
-    /// 3. **Step 2: Trigger Negotiation (Match Failure)**
-    ///    - If no exact match, enter compatibility negotiation mode
-    ///
-    /// 4. **Step 3: Compatibility Check (Server-side)**
-    ///    - Server performs backward compatibility analysis using proto-sign
-    ///
-    /// 5. **Step 4: Decision**
-    ///    - **Success**: Found compatible version → SUB-HEALTHY state
-    ///      - Update `compat.lock.toml` with negotiation result
-    ///      - Log warning: "SYSTEM SUB-HEALTHY"
-    ///    - **Failure**: No compatible version → FAILED state
-    ///      - Log error: "SYSTEM FAILED"
-    ///
     /// # Arguments
     /// - `target_type`: The ActrType of the target service to discover
     /// - `candidate_count`: Maximum number of candidates to return
     ///
     /// # Returns
-    /// A `DiscoveryResult` containing candidates and compatibility information
+    /// A `DiscoveryResult` containing candidates and their WebSocket addresses
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn discover_route_candidates(
         &self,
@@ -442,63 +406,6 @@ impl<W: Workload> ActrNode<W> {
         }
 
         let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 0: Fast Path - Check compat.lock.toml for cached negotiation
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        let mut compat_lock_manager = CompatLockManager::new(self.config.config_dir.clone());
-        if let Ok(Some(compat_lock)) = compat_lock_manager.load().await {
-            if let Some(cached_entry) = compat_lock.find_valid_entry(&service_name) {
-                tracing::info!(
-                    "⚡ Fast path: Using cached negotiation for '{}' (resolved: {})",
-                    service_name,
-                    &cached_entry.resolved_fingerprint
-                        [..20.min(cached_entry.resolved_fingerprint.len())]
-                );
-
-                // Use the cached resolved_fingerprint to find candidates
-                let result = self
-                    .send_discovery_request(
-                        actor_id,
-                        target_type,
-                        candidate_count,
-                        cached_entry.resolved_fingerprint.clone(),
-                    )
-                    .await?;
-
-                if !result.candidates.is_empty() {
-                    tracing::info!(
-                        "📊 服务发现结果 [{}]: {} 个候选 (快速路径, sub_healthy=true)",
-                        service_name,
-                        result.candidates.len()
-                    );
-                    // Populate the shared ws_addresses map for wire builder
-                    if !result.ws_addresses.is_empty() {
-                        let mut map = self.discovered_ws_addresses.write().await;
-                        for (id, url) in &result.ws_addresses {
-                            tracing::info!(
-                                "📡 Caching WS address (fast path) for {}: {}",
-                                id.serial_number,
-                                url
-                            );
-                            map.insert(id.clone(), url.clone());
-                        }
-                    }
-                    return Ok(DiscoveryResult {
-                        candidates: result.candidates,
-                        has_exact_match: false, // Cached negotiation means not exact
-                        is_sub_healthy: true,   // Using compat.lock means sub-healthy
-                        compatibility_info: result.compatibility_info,
-                        ws_addresses: result.ws_addresses,
-                    });
-                }
-                // If fast path fails, fall through to normal discovery
-                tracing::warn!(
-                    "⚠️ Fast path failed for '{}', falling back to normal discovery",
-                    service_name
-                );
-            }
-        }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Step 1: Get fingerprint from Actr.lock.toml (when available)
@@ -547,34 +454,14 @@ impl<W: Workload> ActrNode<W> {
                 actor_id,
                 target_type,
                 candidate_count,
-                client_fingerprint.clone(),
+                client_fingerprint,
             )
             .await?;
 
-        let has_exact_match = result.has_exact_match;
-        let is_sub_healthy = result.is_sub_healthy;
-
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 3 & 4: Handle negotiation result
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if !client_fingerprint.is_empty() {
-            self.handle_negotiation_result(
-                target_type,
-                &client_fingerprint,
-                &result.compatibility_info,
-                has_exact_match,
-                is_sub_healthy,
-            )
-            .await;
-        }
-
-        // Log result
         tracing::info!(
-            "📊 服务发现结果 [{}]: {} 个候选, exact_match={}, sub_healthy={}",
+            "服务发现结果 [{}]: {} 个候选",
             service_name,
             result.candidates.len(),
-            has_exact_match,
-            is_sub_healthy
         );
 
         // Populate the shared ws_addresses map so the wire builder can use discovered URLs
@@ -582,7 +469,7 @@ impl<W: Workload> ActrNode<W> {
             let mut map = self.discovered_ws_addresses.write().await;
             for (id, url) in &result.ws_addresses {
                 tracing::info!(
-                    "📡 Caching discovered WS address for {}: {}",
+                    "Caching discovered WS address for {}: {}",
                     id.serial_number,
                     url
                 );
@@ -592,9 +479,6 @@ impl<W: Workload> ActrNode<W> {
 
         Ok(DiscoveryResult {
             candidates: result.candidates,
-            has_exact_match,
-            is_sub_healthy,
-            compatibility_info: result.compatibility_info,
             ws_addresses: result.ws_addresses,
         })
     }
@@ -672,24 +556,16 @@ impl<W: Workload> ActrNode<W> {
 
         match route_response.result {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
-                // Extract ws_address exclusively from ws_address_map (WsAddressEntry).
-                // ws_address is no longer carried in CandidateCompatibilityInfo.
                 let ws_addresses: std::collections::HashMap<ActrId, String> = success
                     .ws_address_map
-                    .iter()
+                    .into_iter()
                     .filter_map(|entry| {
-                        entry
-                            .ws_address
-                            .as_ref()
-                            .map(|url| (entry.candidate_id.clone(), url.clone()))
+                        entry.ws_address.map(|url| (entry.candidate_id, url))
                     })
                     .collect();
 
                 Ok(DiscoveryResult {
                     candidates: success.candidates,
-                    has_exact_match: success.has_exact_match.unwrap_or(false),
-                    is_sub_healthy: success.is_sub_healthy.unwrap_or(false),
-                    compatibility_info: success.compatibility_info,
                     ws_addresses,
                 })
             }
@@ -702,96 +578,6 @@ impl<W: Workload> ActrNode<W> {
             None => Err(ActrError::Unavailable(
                 "Invalid route candidates response: missing result".to_string(),
             )),
-        }
-    }
-
-    /// Internal: Handle negotiation result - log warnings and update compat.lock.toml
-    async fn handle_negotiation_result(
-        &self,
-        target_type: &ActrType,
-        client_fingerprint: &str,
-        compatibility_info: &[CandidateCompatibilityInfo],
-        has_exact_match: bool,
-        is_sub_healthy: bool,
-    ) {
-        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
-
-        // Log detailed compatibility info
-        tracing::info!(
-            "📊 服务发现结果 [{}]: {} 个候选, exact_match={}, sub_healthy={}",
-            service_name,
-            compatibility_info.len(),
-            has_exact_match,
-            is_sub_healthy
-        );
-
-        for info in compatibility_info {
-            let status = if info.is_exact_match.unwrap_or(false) {
-                "✅ 精确匹配"
-            } else if let Some(ref result) = info.analysis_result {
-                match result.level() {
-                    actr_protocol::CompatibilityLevel::FullyCompatible => "✅ 完全兼容",
-                    actr_protocol::CompatibilityLevel::BackwardCompatible => "⚠️ 向后兼容",
-                    actr_protocol::CompatibilityLevel::BreakingChanges => "❌ 破坏性变更",
-                }
-            } else {
-                "❓ 未知"
-            };
-
-            tracing::debug!(
-                "   - 候选 {}: {} (指纹: {})",
-                info.candidate_id.serial_number,
-                status,
-                &info.candidate_fingerprint[..20.min(info.candidate_fingerprint.len())]
-            );
-        }
-
-        // Handle sub-healthy state
-        if is_sub_healthy && !has_exact_match {
-            // Find the first compatible (non-exact) match for logging
-            if let Some(resolved) = compatibility_info.first() {
-                tracing::warn!(
-                    "🟡 SYSTEM SUB-HEALTHY: Service '{}' using compatible fingerprint ({}) \
-                     instead of exact match ({}). Run 'actr install --force-update' to restore health.",
-                    service_name,
-                    &resolved.candidate_fingerprint[..20.min(resolved.candidate_fingerprint.len())],
-                    &client_fingerprint[..20.min(client_fingerprint.len())]
-                );
-
-                // Update compat.lock.toml
-                let mut manager = CompatLockManager::new(self.config.config_dir.clone());
-                if let Err(e) = manager
-                    .record_negotiation(
-                        &service_name,
-                        client_fingerprint,
-                        &resolved.candidate_fingerprint,
-                        false, // not exact match
-                        CompatibilityCheck::BackwardCompatible,
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to update compat.lock.toml: {}", e);
-                }
-            }
-        } else if has_exact_match {
-            // Exact match found - try to clean up compat.lock.toml entry if exists
-            let mut manager = CompatLockManager::new(self.config.config_dir.clone());
-            if let Ok(Some(_)) = manager.load().await {
-                if let Some(resolved) = compatibility_info.first() {
-                    if let Err(e) = manager
-                        .record_negotiation(
-                            &service_name,
-                            client_fingerprint,
-                            &resolved.candidate_fingerprint,
-                            true, // exact match
-                            CompatibilityCheck::ExactMatch,
-                        )
-                        .await
-                    {
-                        tracing::debug!("Could not update compat.lock.toml: {}", e);
-                    }
-                }
-            }
         }
     }
 
@@ -1336,15 +1122,6 @@ impl<W: Workload> ActrNode<W> {
                         "✅ Actr.lock.toml set in ContextFactory for fingerprint lookups"
                     );
                 }
-
-                // Set config_dir in ContextFactory for compat.lock.toml Fast Path
-                self.context_factory
-                    .as_mut()
-                    .expect("ContextFactory must exist")
-                    .set_config_dir(self.config.config_dir.clone());
-                tracing::info!(
-                    "✅ config_dir set in ContextFactory for compat.lock.toml Fast Path"
-                );
 
                 // Persist identity into ContextFactory for later Context creation
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
