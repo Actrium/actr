@@ -238,18 +238,19 @@ message Pong {
 // Request route candidates for a target actor type with optional selection policy.
 message RouteCandidatesRequest {
   message NodeSelectionCriteria {
-    // Ranking factors for candidate ordering
+    // Ranking factors for candidate ordering, applied in specified order.
+    // Same ActrType implies protocol compatibility; EXACT_MATCH_FIRST further
+    // prefers candidates whose proto fingerprint matches the requester's exactly.
     enum NodeRankingFactor {
       MAXIMUM_POWER_RESERVE = 0;
       MINIMUM_MAILBOX_BACKLOG = 1;
-      BEST_COMPATIBILITY = 2;
+      EXACT_MATCH_FIRST = 2;  // exact fingerprint match ranked above compatible
       NEAREST = 3;
       CLIENT_AFFINITY = 4;
     }
 
     required uint32 candidate_count = 1;
     repeated NodeRankingFactor ranking_factors = 2;
-    // Minimum dependency state requirement. When set, compatibility negotiation is implicitly enabled.
     optional ServiceDependencyState minimal_dependency_requirement = 3;
     optional ServiceAvailabilityState minimal_health_requirement = 4;
   }
