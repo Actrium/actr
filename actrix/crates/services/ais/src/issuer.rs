@@ -4,11 +4,16 @@
 //!
 //! 负责处理 `RegisterRequest` 并生成 `RegisterResponse`，包括：
 //! - 序列号分配（Snowflake 算法）
-//! - Token 加密（ECIES）
 //! - PSK 生成（客户端保管）
 //! - 密钥生命周期管理（从 KS 获取、缓存、刷新）
 //!
 //! # 密钥管理策略
+//!
+//! ## 安全设计
+//!
+//! - Ed25519 私钥永不离开 KS 服务
+//! - AIS 只保存 verifying key（公钥）用于凭证携带
+//! - 所有签名操作通过 KS 的 Sign RPC 完成
 //!
 //! ## 初始化阶段
 //!
@@ -71,7 +76,7 @@ use actr_protocol::{
     RegisterRequest, RegisterResponse, register_response,
 };
 use base64::prelude::*;
-use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use hmac::{Hmac, Mac};
 use platform::aid::AidError;
 use prost::Message as ProstMessage;
@@ -126,10 +131,9 @@ impl Default for IssuerConfig {
     }
 }
 
-/// 密钥缓存（Ed25519 签名密钥）
+/// 密钥缓存（只保存 verifying key，私钥由 KS 保管）
 struct KeyCache {
     key_id: u32,
-    signing_key: SigningKey,
     verifying_key: VerifyingKey,
     #[allow(dead_code)]
     expires_at: u64,
@@ -213,22 +217,23 @@ impl AIdIssuer {
         Ok(())
     }
 
-    /// 从 KeyRecord 加载 Ed25519 签名密钥到缓存
+    /// 从 KeyRecord 加载 Ed25519 verifying key 到缓存
+    ///
+    /// AIS DB 中的 `public_key` 存储 base64 编码的 Ed25519 verifying key（32 字节）
     fn load_key_from_record(&self, record: &KeyRecord) -> Result<(), AidError> {
         let key_bytes = BASE64_STANDARD
             .decode(&record.public_key)
             .map_err(|e| AidError::GenerationFailed(format!("Invalid base64 key: {e}")))?;
 
         let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| {
-            AidError::GenerationFailed("Signing key must be exactly 32 bytes".to_string())
+            AidError::GenerationFailed("Verifying key must be exactly 32 bytes".to_string())
         })?;
 
-        let signing_key = SigningKey::from_bytes(&key_array);
-        let verifying_key = signing_key.verifying_key();
+        let verifying_key = VerifyingKey::from_bytes(&key_array)
+            .map_err(|e| AidError::GenerationFailed(format!("Invalid Ed25519 verifying key: {e}")))?;
 
         let cache = KeyCache {
             key_id: record.key_id,
-            signing_key,
             verifying_key,
             expires_at: record.expires_at,
             tolerance_seconds: record.tolerance_seconds,
@@ -436,39 +441,31 @@ impl AIdIssuer {
 
     /// 内部密钥刷新方法（供后台任务使用）
     ///
-    /// 从 KS 生成新密钥对，将 32 字节私钥材料作为 Ed25519 signing key 使用。
+    /// 从 KS 生成新 Ed25519 签名密钥对，只保存 verifying key；
+    /// 私钥由 KS 保管，AIS 仅通过 Sign RPC 进行签名。
     async fn refresh_key_internal(
         ks_client: &KsClientWrapper,
         key_storage: &KeyStorage,
         key_cache: &RwLock<Option<KeyCache>>,
         config: &IssuerConfig,
     ) -> Result<(), AidError> {
-        // 从 KS 申请新的密钥 ID（key 材料由 KS 保管）
-        let (key_id, _ecies_pubkey, expires_at, tolerance_seconds) = ks_client
-            .generate_key()
+        // 从 KS 申请新的 Ed25519 签名密钥（私钥由 KS 保管）
+        let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) = ks_client
+            .generate_signing_key()
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS unavailable: {e}")))?;
 
-        // 获取 32 字节私钥材料并作为 Ed25519 signing key 使用
-        let (secret_key, _, _) = ks_client
-            .fetch_secret_key(key_id)
-            .await
-            .map_err(|e| AidError::GenerationFailed(format!("KS fetch_secret_key failed: {e}")))?;
-
-        let key_bytes = secret_key.serialize();
-        let signing_key = SigningKey::from_bytes(&key_bytes);
-        let verifying_key = signing_key.verifying_key();
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes)
+            .map_err(|e| AidError::GenerationFailed(format!("Invalid verifying key from KS: {e}")))?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        // 更新缓存
-        let signing_key_bytes = signing_key.to_bytes();
+        // 更新缓存（只存 verifying key）
         let cache = KeyCache {
             key_id,
-            signing_key,
             verifying_key,
             expires_at,
             tolerance_seconds,
@@ -476,8 +473,8 @@ impl AIdIssuer {
 
         *key_cache.write().await = Some(cache);
 
-        // 保存到存储（以 base64 编码的 signing key 字节存储）
-        let key_str = BASE64_STANDARD.encode(signing_key_bytes);
+        // 保存到存储（以 base64 编码的 verifying key 存储）
+        let key_str = BASE64_STANDARD.encode(verifying_key.as_bytes());
         let record = KeyRecord {
             key_id,
             public_key: key_str,
@@ -507,7 +504,7 @@ impl AIdIssuer {
                 e
             );
         } else {
-            platform::recording::info!("✅ verifying key 已持久化到 key_cache DB (key_id={})", key_id);
+            platform::recording::info!("verifying key 已持久化到 key_cache DB (key_id={})", key_id);
         }
 
         Ok(())
@@ -531,7 +528,7 @@ impl AIdIssuer {
         }
     }
 
-    /// 内部处理逻辑（Ed25519 签名模式）
+    /// 内部处理逻辑（Ed25519 签名，通过 KS Sign RPC）
     async fn issue_credential_inner(
         &self,
         request: &RegisterRequest,
@@ -558,15 +555,21 @@ impl AIdIssuer {
         // Proto 编码 claims bytes
         let claims_bytes = claims_proto.encode_to_vec();
 
-        // 从缓存获取 Ed25519 signing key
-        let (key_id, signature_bytes, verifying_key) = {
+        // 从缓存读取 key_id 和 verifying_key（释放读锁后进行异步签名）
+        let (key_id, verifying_key) = {
             let cache = self.key_cache.read().await;
             let cache = cache
                 .as_ref()
                 .ok_or_else(|| AidError::GenerationFailed("No key available".to_string()))?;
-            let sig = cache.signing_key.sign(&claims_bytes);
-            (cache.key_id, sig.to_bytes().to_vec(), cache.verifying_key)
+            (cache.key_id, cache.verifying_key)
         };
+
+        // 通过 KS Sign RPC 签名（私钥不离开 KS）
+        let signature_bytes = self
+            .ks_client
+            .sign(key_id, &claims_bytes)
+            .await
+            .map_err(|e| AidError::GenerationFailed(format!("KS sign failed: {e}")))?;
 
         // 创建 AIdCredential（Ed25519 格式）
         let credential = AIdCredential {
@@ -686,29 +689,13 @@ impl AIdIssuer {
 
     /// 检查 KS 服务健康状态
     ///
-    /// 通过尝试获取当前密钥来验证 KS 服务可用性
+    /// 通过 health_check RPC 验证 KS 服务可用性
     pub async fn check_ks_health(&self) -> Result<(), AidError> {
-        // 尝试从缓存获取当前 key_id
-        let key_id = {
-            let cache = self.key_cache.read().await;
-            cache.as_ref().map(|c| c.key_id)
-        };
-
-        // 如果有缓存的 key_id，尝试获取其私钥来验证 KS 连通性
-        if let Some(key_id) = key_id {
-            self.ks_client
-                .fetch_secret_key(key_id)
-                .await
-                .map(|(_, _, _)| ())
-                .map_err(|e| AidError::GenerationFailed(format!("KS service unhealthy: {e}")))
-        } else {
-            // 没有缓存密钥，尝试生成新密钥
-            self.ks_client
-                .generate_key()
-                .await
-                .map(|_| ())
-                .map_err(|e| AidError::GenerationFailed(format!("KS service unhealthy: {e}")))
-        }
+        self.ks_client
+            .health_check()
+            .await
+            .map(|_| ())
+            .map_err(|e| AidError::GenerationFailed(format!("KS service unhealthy: {e}")))
     }
 
     /// 检查密钥缓存健康状态

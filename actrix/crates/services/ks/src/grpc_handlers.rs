@@ -70,27 +70,26 @@ impl KsGrpcService {
 
 #[tonic::async_trait]
 impl KeyServer for KsGrpcService {
-    /// 生成新的密钥对
-    async fn generate_key(
+    /// 生成新的 Ed25519 签名密钥对
+    async fn generate_signing_key(
         &self,
-        request: Request<GenerateKeyRequest>,
-    ) -> Result<Response<GenerateKeyResponse>, Status> {
-        crate::recording::info!("Received gRPC GenerateKey request");
+        request: Request<GenerateSigningKeyRequest>,
+    ) -> Result<Response<GenerateSigningKeyResponse>, Status> {
+        crate::recording::info!("Received gRPC GenerateSigningKey request");
 
         let req = request.into_inner();
 
-        // 验证凭证（proto2 required 字段直接是结构体类型）
-        let request_data = "generate_key";
+        let request_data = "generate_signing_key";
         self.verify_credential(&req.credential, request_data)
             .await
             .map_err(|e| Status::unauthenticated(format!("Authentication failed: {e}")))?;
 
-        // 生成密钥对
+        // 生成 Ed25519 密钥对（私钥存储于后端）
         let key_pair = self
             .storage
             .generate_and_store_key()
             .await
-            .map_err(|e| Status::internal(format!("Failed to generate key: {e}")))?;
+            .map_err(|e| Status::internal(format!("Failed to generate signing key: {e}")))?;
 
         // 获取密钥记录以获取过期时间
         let key_record = self
@@ -100,11 +99,11 @@ impl KeyServer for KsGrpcService {
             .map_err(|e| Status::internal(format!("Failed to get key record: {e}")))?
             .ok_or_else(|| Status::internal("Failed to get key record after creation"))?;
 
-        crate::recording::info!("Generated key pair with key_id: {}", key_pair.key_id);
+        crate::recording::info!("Generated Ed25519 signing key with key_id: {}", key_pair.key_id);
 
-        let response = GenerateKeyResponse {
+        let response = GenerateSigningKeyResponse {
             key_id: key_pair.key_id,
-            public_key: key_pair.public_key,
+            verifying_key: key_pair.verifying_key,
             expires_at: key_record.expires_at,
             tolerance_seconds: self.tolerance_seconds,
         };
@@ -112,23 +111,23 @@ impl KeyServer for KsGrpcService {
         Ok(Response::new(response))
     }
 
-    /// 获取指定 key_id 的私钥
-    async fn get_secret_key(
+    /// 使用指定密钥对消息进行 Ed25519 签名
+    async fn sign(
         &self,
-        request: Request<GetSecretKeyRequest>,
-    ) -> Result<Response<GetSecretKeyResponse>, Status> {
+        request: Request<SignRequest>,
+    ) -> Result<Response<SignResponse>, Status> {
         let req = request.into_inner();
         let key_id = req.key_id;
 
-        crate::recording::info!("Received gRPC GetSecretKey request for key_id: {}", key_id);
+        crate::recording::info!("Received gRPC Sign request for key_id: {}", key_id);
 
-        // 验证凭证（proto2 required 字段直接是结构体类型）
-        let request_data = format!("get_secret_key:{key_id}");
+        // nonce payload 绑定到特定 key_id，防止重用
+        let request_data = format!("sign:{key_id}");
         self.verify_credential(&req.credential, &request_data)
             .await
             .map_err(|e| Status::unauthenticated(format!("Authentication failed: {e}")))?;
 
-        // 获取完整的密钥记录
+        // 检查密钥是否在容忍期内有效
         let key_record = self
             .storage
             .get_key_record(key_id)
@@ -136,49 +135,37 @@ impl KeyServer for KsGrpcService {
             .map_err(|e| Status::internal(format!("Failed to get key record: {e}")))?
             .ok_or_else(|| Status::not_found(format!("Key not found: {key_id}")))?;
 
-        // 检查密钥是否超过容忍期
-        let tolerance_seconds = self.tolerance_seconds;
-
         if key_record.expires_at > 0 {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
-            // 检查是否超过了过期时间 + 容忍期
-            if key_record.expires_at + tolerance_seconds < now {
+            if key_record.expires_at + self.tolerance_seconds < now {
                 crate::recording::warn!("Key {} has expired beyond tolerance period", key_id);
                 return Err(Status::not_found(format!("Key {key_id} has expired")));
             }
 
-            // 记录是否在容忍期内
             if key_record.expires_at < now {
-                crate::recording::warn!("Key {} is in tolerance period", key_id);
+                crate::recording::warn!("Key {} is in tolerance period, signing allowed", key_id);
             }
         }
 
-        // 获取私钥
-        let secret_key = self
+        // 在后端内部完成签名，私钥不离开 KS
+        let signature = self
             .storage
-            .get_secret_key(key_id)
+            .sign(key_id, &req.message)
             .await
-            .map_err(|e| Status::internal(format!("Failed to get secret key: {e}")))?
-            .ok_or_else(|| Status::not_found(format!("Secret key not found: {key_id}")))?;
+            .map_err(|e| match e {
+                crate::error::KsError::NotFound(_) => {
+                    Status::not_found(format!("Key not found: {key_id}"))
+                }
+                other => Status::internal(format!("Sign failed: {other}")),
+            })?;
 
-        crate::recording::info!(
-            "Found secret key for key_id: {}, expires_at: {}",
-            key_id,
-            key_record.expires_at
-        );
+        crate::recording::info!("Signed message for key_id: {}", key_id);
 
-        let response = GetSecretKeyResponse {
-            key_id,
-            secret_key,
-            expires_at: key_record.expires_at,
-            tolerance_seconds,
-        };
-
-        Ok(Response::new(response))
+        Ok(Response::new(SignResponse { signature }))
     }
 
     /// 健康检查

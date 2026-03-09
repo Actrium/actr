@@ -1,8 +1,8 @@
-//! Key Server (KS) - 椭圆曲线密钥生成和管理服务
+//! Key Server (KS) - Ed25519 签名密钥生成和管理服务
 //!
 //! KS 服务提供以下功能：
-//! 1. 生成椭圆曲线密钥对（使用 ECIES），返回公钥给 Issue 服务
-//! 2. 基于 key_id 查询私钥给验证服务
+//! 1. 生成 Ed25519 签名密钥对，私钥永不离开 KS
+//! 2. 对外提供 Sign API，代替调用方执行签名操作
 //! 3. PSK 签名验证和防重放攻击保护
 //! 4. 多存储后端支持：SQLite, PostgreSQL
 #![deny(clippy::disallowed_macros)]
@@ -32,8 +32,8 @@ pub use actrix_proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
 pub use handlers::{KSState, create_ks_state, create_router, get_stats, register_ks_metrics};
 pub use storage::{KeyStorage, StorageConfig};
 pub use types::{
-    GenerateKeyRequest, GenerateKeyResponse, GetSecretKeyRequest, GetSecretKeyResponse, KeyPair,
-    KeyRecord,
+    GenerateSigningKeyRequest, GenerateSigningKeyResponse, KeyPair, KeyRecord, SignRequest,
+    SignResponse,
 };
 
 #[cfg(test)]

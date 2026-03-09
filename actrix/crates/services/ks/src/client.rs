@@ -1,8 +1,8 @@
-//! KS 客户端 - 简单的 HTTP 客户端
+//! KS 客户端 - 简单的 HTTP 客户端（仅用于测试）
 
-use crate::types::{GenerateKeyRequest, GenerateKeyResponse, GetSecretKeyResponse};
+use crate::types::{GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignRequest, SignResponse};
 use base64::prelude::*;
-use ecies::{PublicKey, SecretKey};
+use ed25519_dalek::VerifyingKey;
 use nonce_auth::CredentialBuilder;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -52,116 +52,94 @@ impl Client {
         }
     }
 
-    /// 从 KS 服务生成新的密钥对
-    pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64), crate::error::KsError> {
-        let url = format!("{}/generate", self.endpoint);
+    /// 从 KS 服务生成新的 Ed25519 签名密钥对
+    ///
+    /// 返回 (key_id, verifying_key_bytes[32], expires_at)
+    /// 私钥保留在 KS 服务端
+    pub async fn generate_signing_key(
+        &self,
+    ) -> Result<(u32, VerifyingKey, u64), crate::error::KsError> {
+        let url = format!("{}/generate-signing-key", self.endpoint);
+        let request_data = "generate_signing_key";
 
-        // 构建请求数据用于签名
-        let request_data = "generate_key";
-
-        // 创建 nonce credential
         let credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
             .sign(request_data.as_bytes())?;
 
-        let request = GenerateKeyRequest { credential };
+        let request = GenerateSigningKeyRequest { credential };
 
-        crate::recording::debug!("Requesting key generation from KS at {}", url);
+        crate::recording::debug!("Requesting Ed25519 signing key generation from KS at {}", url);
 
-        // 发送请求
         let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(crate::error::KsError::Internal(format!(
-                "KS generate key request failed with status {status}: {error_text}"
+                "KS generate signing key request failed with status {status}: {error_text}"
             )));
         }
 
-        // 解析响应
-        let response: GenerateKeyResponse = response.json().await?;
+        let response: GenerateSigningKeyResponse = response.json().await?;
 
-        // 解码公钥
-        let public_key_bytes = BASE64_STANDARD.decode(&response.public_key)?;
+        let vk_bytes = BASE64_STANDARD.decode(&response.verifying_key)?;
+        let vk_array: [u8; 32] = vk_bytes.try_into().map_err(|_| {
+            crate::error::KsError::Crypto("Invalid verifying key length, expected 32 bytes".to_string())
+        })?;
 
-        // PublicKey::parse 需要 &[u8; 33] 或 &[u8; 65] 类型
-        if public_key_bytes.len() == 33 {
-            let public_key_array: [u8; 33] = public_key_bytes.try_into().map_err(|_| {
-                crate::error::KsError::Crypto("Invalid public key length".to_string())
-            })?;
-            let public_key = PublicKey::parse_compressed(&public_key_array).map_err(|e| {
-                crate::error::KsError::Crypto(format!("Failed to parse compressed public key: {e}"))
-            })?;
-            crate::recording::info!(
-                "Successfully generated key pair with key_id {} and expires_at: {}",
-                response.key_id,
-                response.expires_at
-            );
-            Ok((response.key_id, public_key, response.expires_at))
-        } else {
-            Err(crate::error::KsError::Crypto(format!(
-                "Unsupported public key length: {}",
-                public_key_bytes.len()
-            )))
-        }
+        let verifying_key = VerifyingKey::from_bytes(&vk_array)
+            .map_err(|e| crate::error::KsError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
+
+        crate::recording::info!(
+            "Successfully generated Ed25519 signing key with key_id={}, expires_at={}",
+            response.key_id,
+            response.expires_at
+        );
+        Ok((response.key_id, verifying_key, response.expires_at))
     }
 
-    /// 从 KS 服务获取私钥及过期时间
-    pub async fn fetch_secret_key(
+    /// 使用 KS 服务中的密钥对消息进行签名
+    ///
+    /// 返回 64 字节 Ed25519 签名
+    pub async fn sign(
         &self,
         key_id: u32,
-    ) -> Result<(SecretKey, u64), crate::error::KsError> {
-        let url = format!("{}/secret/{}", self.endpoint, key_id);
+        message: &[u8],
+    ) -> Result<Vec<u8>, crate::error::KsError> {
+        let url = format!("{}/sign/{}", self.endpoint, key_id);
+        let request_data = format!("sign:{key_id}");
 
-        // 构建请求数据用于签名
-        let request_data = format!("get_secret_key:{key_id}");
-
-        // 创建 nonce credential
         let credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
             .sign(request_data.as_bytes())?;
 
-        // 构建查询参数
-        let query_params = [
-            ("key_id", key_id.to_string()),
-            ("credential", serde_json::to_string(&credential)?),
-        ];
+        let request = SignRequest {
+            key_id,
+            message: message.to_vec(),
+            credential,
+        };
 
-        crate::recording::debug!("Fetching secret key {} from KS at {}", key_id, url);
+        crate::recording::debug!("Requesting signature for key_id={} from KS at {}", key_id, url);
 
-        // 发送请求
-        let response = self.client.get(&url).query(&query_params).send().await?;
+        let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             return Err(crate::error::KsError::Internal(format!(
-                "KS request failed with status {status}: {error_text}"
+                "KS sign request failed with status {status}: {error_text}"
             )));
         }
 
-        // 解析响应
-        let response: GetSecretKeyResponse = response.json().await?;
+        let response: SignResponse = response.json().await?;
 
-        // 解码私钥
-        let secret_key_bytes = BASE64_STANDARD.decode(&response.secret_key)?;
+        if response.signature.len() != 64 {
+            return Err(crate::error::KsError::Crypto(format!(
+                "Invalid signature length: expected 64 bytes, got {}",
+                response.signature.len()
+            )));
+        }
 
-        // SecretKey::parse 需要 &[u8; 32] 类型
-        let secret_key_array: [u8; 32] = secret_key_bytes.try_into().map_err(|_| {
-            crate::error::KsError::Crypto(
-                "Invalid secret key length, expected 32 bytes".to_string(),
-            )
-        })?;
-
-        let secret_key = SecretKey::parse(&secret_key_array).map_err(|e| {
-            crate::error::KsError::Crypto(format!("Failed to parse secret key: {e}"))
-        })?;
-
-        crate::recording::info!(
-            "Successfully fetched secret key {} from KS with expires_at: {}",
-            key_id,
-            response.expires_at
-        );
-        Ok((secret_key, response.expires_at))
+        crate::recording::info!("Successfully obtained signature for key_id={} from KS", key_id);
+        Ok(response.signature)
     }
 }
 

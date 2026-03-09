@@ -35,6 +35,10 @@ pub enum KsError {
     #[error("Key not found: key_id={0}")]
     KeyNotFound(u32),
 
+    /// 资源未找到
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     /// 内部服务器错误
     #[error("Internal server error: {0}")]
     Internal(String),
@@ -76,7 +80,7 @@ impl IntoResponse for KsError {
                 StatusCode::BAD_REQUEST,
                 "Invalid request parameters".to_string(),
             ),
-            KsError::KeyNotFound(_) => {
+            KsError::KeyNotFound(_) | KsError::NotFound(_) => {
                 // 生产环境不泄露具体的 key_id
                 (StatusCode::NOT_FOUND, "Resource not found".to_string())
             }

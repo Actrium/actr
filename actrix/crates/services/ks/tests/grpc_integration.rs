@@ -1,7 +1,7 @@
 use actrix_proto::{
     admin::v1::NonceCredential,
     ks::v1::{
-        GenerateKeyRequest, GetSecretKeyRequest, HealthCheckRequest,
+        GenerateSigningKeyRequest, HealthCheckRequest, SignRequest,
         key_server_client::KeyServerClient,
     },
 };
@@ -146,39 +146,45 @@ async fn test_grpc_health_and_key_lifecycle() {
     assert_eq!(health_before.key_count, 0);
 
     let generated = client
-        .generate_key(GenerateKeyRequest {
-            credential: sign_credential(psk, "generate_key"),
+        .generate_signing_key(GenerateSigningKeyRequest {
+            credential: sign_credential(psk, "generate_signing_key"),
         })
         .await
-        .expect("generate key")
+        .expect("generate signing key")
         .into_inner();
     assert!(generated.key_id > 0);
     assert!(generated.expires_at > 0);
 
-    let public_key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(generated.public_key.as_bytes())
-        .expect("public key should be valid base64");
+    // verifying key must be 32-byte Ed25519 public key
+    let vk_bytes = base64::engine::general_purpose::STANDARD
+        .decode(generated.verifying_key.as_bytes())
+        .expect("verifying key should be valid base64");
     assert_eq!(
-        public_key_bytes.len(),
-        33,
-        "Public key must be 33-byte compressed secp256k1 key"
+        vk_bytes.len(),
+        32,
+        "Ed25519 verifying key must be 32 bytes"
     );
 
-    let fetched = client
-        .get_secret_key(GetSecretKeyRequest {
+    // sign a message using the generated key
+    let message = b"test message for signing";
+    let signature = client
+        .sign(SignRequest {
             key_id: generated.key_id,
-            credential: sign_credential(psk, &format!("get_secret_key:{}", generated.key_id)),
+            message: message.to_vec(),
+            credential: sign_credential(psk, &format!("sign:{}", generated.key_id)),
         })
         .await
-        .expect("fetch secret key")
+        .expect("sign message")
         .into_inner();
-    assert_eq!(fetched.key_id, generated.key_id);
-    assert!(fetched.expires_at > 0);
+    assert_eq!(signature.signature.len(), 64, "Ed25519 signature must be 64 bytes");
 
-    let secret_key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(fetched.secret_key.as_bytes())
-        .expect("secret key should be valid base64");
-    assert_eq!(secret_key_bytes.len(), 32, "Secret key must be 32 bytes");
+    // verify signature is valid
+    let vk_array: [u8; 32] = vk_bytes.try_into().unwrap();
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&vk_array).unwrap();
+    let sig_array: [u8; 64] = signature.signature.try_into().unwrap();
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+    use ed25519_dalek::Verifier;
+    assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must verify");
 
     let health_after = client
         .health_check(HealthCheckRequest {
@@ -197,8 +203,8 @@ async fn test_grpc_generate_rejects_invalid_signature() {
     let mut client = connect_client(&server.endpoint).await;
 
     let err = client
-        .generate_key(GenerateKeyRequest {
-            credential: sign_credential(psk, "not-generate-key"),
+        .generate_signing_key(GenerateSigningKeyRequest {
+            credential: sign_credential(psk, "not-generate-signing-key"),
         })
         .await
         .expect_err("generate should fail for invalid payload signature");
@@ -211,32 +217,33 @@ async fn test_grpc_generate_rejects_replay_nonce() {
     let server = start_grpc_server(psk, 3600, 3600).await;
     let mut client = connect_client(&server.endpoint).await;
 
-    let credential = sign_credential(psk, "generate_key");
+    let credential = sign_credential(psk, "generate_signing_key");
     client
-        .generate_key(GenerateKeyRequest {
+        .generate_signing_key(GenerateSigningKeyRequest {
             credential: credential.clone(),
         })
         .await
         .expect("first request should succeed");
 
     let replay_err = client
-        .generate_key(GenerateKeyRequest { credential })
+        .generate_signing_key(GenerateSigningKeyRequest { credential })
         .await
         .expect_err("replayed nonce should be rejected");
     assert_eq!(replay_err.code(), Code::Unauthenticated);
 }
 
 #[tokio::test]
-async fn test_grpc_get_secret_key_not_found() {
+async fn test_grpc_sign_nonexistent_key_returns_not_found() {
     let psk = "test-ks-grpc-psk";
     let server = start_grpc_server(psk, 3600, 3600).await;
     let mut client = connect_client(&server.endpoint).await;
 
     let missing_key_id = 9_999_999_u32;
     let err = client
-        .get_secret_key(GetSecretKeyRequest {
+        .sign(SignRequest {
             key_id: missing_key_id,
-            credential: sign_credential(psk, &format!("get_secret_key:{missing_key_id}")),
+            message: b"test".to_vec(),
+            credential: sign_credential(psk, &format!("sign:{missing_key_id}")),
         })
         .await
         .expect_err("missing key should return not found");
@@ -244,14 +251,14 @@ async fn test_grpc_get_secret_key_not_found() {
 }
 
 #[tokio::test]
-async fn test_grpc_get_secret_key_rejects_stale_timestamp() {
+async fn test_grpc_rejects_stale_timestamp() {
     let psk = "test-ks-grpc-psk";
     let server = start_grpc_server(psk, 3600, 3600).await;
     let mut client = connect_client(&server.endpoint).await;
 
     let err = client
-        .generate_key(GenerateKeyRequest {
-            credential: sign_credential_with_timestamp(psk, "generate_key", 0),
+        .generate_signing_key(GenerateSigningKeyRequest {
+            credential: sign_credential_with_timestamp(psk, "generate_signing_key", 0),
         })
         .await
         .expect_err("stale timestamp should be rejected");
@@ -259,25 +266,26 @@ async fn test_grpc_get_secret_key_rejects_stale_timestamp() {
 }
 
 #[tokio::test]
-async fn test_grpc_get_secret_key_expired_beyond_tolerance_returns_not_found() {
+async fn test_grpc_sign_expired_key_beyond_tolerance_returns_not_found() {
     let psk = "test-ks-grpc-psk";
     let server = start_grpc_server(psk, 1, 0).await;
     let mut client = connect_client(&server.endpoint).await;
 
     let generated = client
-        .generate_key(GenerateKeyRequest {
-            credential: sign_credential(psk, "generate_key"),
+        .generate_signing_key(GenerateSigningKeyRequest {
+            credential: sign_credential(psk, "generate_signing_key"),
         })
         .await
-        .expect("generate key")
+        .expect("generate signing key")
         .into_inner();
 
     sleep(Duration::from_secs(2)).await;
 
     let err = client
-        .get_secret_key(GetSecretKeyRequest {
+        .sign(SignRequest {
             key_id: generated.key_id,
-            credential: sign_credential(psk, &format!("get_secret_key:{}", generated.key_id)),
+            message: b"test".to_vec(),
+            credential: sign_credential(psk, &format!("sign:{}", generated.key_id)),
         })
         .await
         .expect_err("expired key should be unavailable");
@@ -305,18 +313,26 @@ async fn test_ks_grpc_client_end_to_end() {
     let status = client.health_check().await.expect("health check");
     assert_eq!(status, "healthy");
 
-    let (key_id, _public_key, expires_at, tolerance_seconds) =
-        client.generate_key().await.expect("generate key");
+    let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) =
+        client.generate_signing_key().await.expect("generate signing key");
     assert!(key_id > 0);
     assert!(expires_at > 0);
     assert_eq!(tolerance_seconds, 90);
 
-    let (_secret_key, fetched_expires_at, fetched_tolerance_seconds) = client
-        .fetch_secret_key(key_id)
-        .await
-        .expect("fetch secret key");
-    assert_eq!(fetched_expires_at, expires_at);
-    assert_eq!(fetched_tolerance_seconds, 90);
+    // verifying key should be valid 32-byte Ed25519 key
+    assert_eq!(verifying_key_bytes.len(), 32);
+
+    // sign a message
+    let message = b"end-to-end test message";
+    let signature = client.sign(key_id, message).await.expect("sign");
+    assert_eq!(signature.len(), 64);
+
+    // verify signature
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&verifying_key_bytes).unwrap();
+    let sig_array: [u8; 64] = signature.try_into().unwrap();
+    let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+    use ed25519_dalek::Verifier;
+    assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must verify end-to-end");
 }
 
 #[tokio::test]
@@ -337,7 +353,7 @@ async fn test_ks_grpc_client_rejects_wrong_shared_secret() {
     .expect("create grpc client");
 
     let err = client
-        .generate_key()
+        .generate_signing_key()
         .await
         .expect_err("wrong shared secret should fail");
     match err {

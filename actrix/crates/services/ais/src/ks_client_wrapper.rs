@@ -2,7 +2,6 @@
 //!
 //! 提供统一的 KS 客户端接口，支持 gRPC 客户端（需要 &mut self）
 
-use ecies::{PublicKey, SecretKey};
 use ks::{GrpcClient, GrpcClientConfig};
 use platform::aid::AidError;
 use std::sync::Arc;
@@ -24,8 +23,9 @@ impl KsClientWrapper {
         }
     }
 
-    /// 从 KS 申请新的密钥 ID，返回 (key_id, ecies_pubkey, expires_at, tolerance_secs)
-    pub async fn generate_key(&self) -> Result<(u32, PublicKey, u64, u64), ks::KsError> {
+    /// 从 KS 申请新的 Ed25519 签名密钥，返回 (key_id, verifying_key_bytes[32], expires_at, tolerance_secs)
+    /// 私钥保留在 KS 服务端
+    pub async fn generate_signing_key(&self) -> Result<(u32, [u8; 32], u64, u64), ks::KsError> {
         let mut guard = self.inner.write().await;
         if guard.is_none() {
             let client = GrpcClient::new(&self.grpc_config).await?;
@@ -34,15 +34,13 @@ impl KsClientWrapper {
         guard
             .as_mut()
             .expect("grpc client must exist after lazy init")
-            .generate_key()
+            .generate_signing_key()
             .await
     }
 
-    /// 获取私钥字节（32 bytes），返回 (SecretKey, expires_at, tolerance_secs)
-    pub async fn fetch_secret_key(
-        &self,
-        key_id: u32,
-    ) -> Result<(SecretKey, u64, u64), ks::KsError> {
+    /// 使用 KS 中的密钥对消息进行 Ed25519 签名，返回 64 字节签名
+    /// 私钥不离开 KS 服务
+    pub async fn sign(&self, key_id: u32, message: &[u8]) -> Result<Vec<u8>, ks::KsError> {
         let mut guard = self.inner.write().await;
         if guard.is_none() {
             let client = GrpcClient::new(&self.grpc_config).await?;
@@ -51,7 +49,7 @@ impl KsClientWrapper {
         guard
             .as_mut()
             .expect("grpc client must exist after lazy init")
-            .fetch_secret_key(key_id)
+            .sign(key_id, message)
             .await
     }
 

@@ -4,11 +4,11 @@ use crate::{
     crypto::KeyEncryptor,
     error::KsError,
     storage::KeyStorage,
-    types::{GenerateKeyRequest, GenerateKeyResponse, GetSecretKeyRequest, GetSecretKeyResponse},
+    types::{GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignRequest, SignResponse},
 };
 use axum::{
     Router,
-    extract::{Json, Path, Query, State},
+    extract::{Json, Path, State},
     routing::{get, post},
 };
 use lazy_static::lazy_static;
@@ -19,7 +19,6 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 use std::time::Instant;
-use std::{collections::HashMap, str::FromStr};
 
 lazy_static! {
     /// KS 服务指标
@@ -207,8 +206,8 @@ pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
 /// 创建 KS 服务的路由
 pub fn create_router(state: KSState) -> Router {
     Router::new()
-        .route("/generate", post(generate_key_handler))
-        .route("/secret/{key_id}", get(get_secret_key_handler))
+        .route("/generate-signing-key", post(generate_signing_key_handler))
+        .route("/sign/{key_id}", post(sign_handler))
         .route("/health", get(health_check_handler))
         .with_state(state)
 }
@@ -225,12 +224,12 @@ pub struct ServiceStats {
     pub key_count: u32,
 }
 
-async fn generate_key_handler(
+async fn generate_signing_key_handler(
     State(app_state): State<KSState>,
-    Json(request): Json<GenerateKeyRequest>,
-) -> Result<Json<GenerateKeyResponse>, KsError> {
+    Json(request): Json<GenerateSigningKeyRequest>,
+) -> Result<Json<GenerateSigningKeyResponse>, KsError> {
     let start_time = Instant::now();
-    crate::recording::info!("Received key generation request");
+    crate::recording::info!("Received Ed25519 signing key generation request");
 
     // 验证凭据
     let request_data = request.request_payload();
@@ -247,20 +246,19 @@ async fn generate_key_handler(
         };
         KS_AUTH_FAILURES.with_label_values(&["ks", reason]).inc();
 
-        // 记录请求指标（失败）
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
-            .with_label_values(&["ks", "POST", "/generate", "401"])
+            .with_label_values(&["ks", "POST", "/generate-signing-key", "401"])
             .observe(duration);
         KS_REQUESTS_TOTAL
-            .with_label_values(&["ks", "POST", "/generate", "401"])
+            .with_label_values(&["ks", "POST", "/generate-signing-key", "401"])
             .inc();
 
         return verify_result.map(|_| unreachable!());
     }
     verify_result?;
 
-    // 生成并存储密钥
+    // 生成并存储 Ed25519 密钥对
     let key_pair = app_state.storage.generate_and_store_key().await?;
 
     // 获取密钥记录以获取正确的过期时间
@@ -270,104 +268,38 @@ async fn generate_key_handler(
         .await?
         .ok_or_else(|| KsError::Internal("Failed to get key record after creation".into()))?;
 
-    // 惰性清理：在生成新密钥时检查是否需要清理过期密钥
+    // 惰性清理
     app_state.maybe_cleanup_expired_keys().await;
 
     // 记录密钥生成指标
-    KS_KEYS_GENERATED.with_label_values(&["ecies"]).inc();
+    KS_KEYS_GENERATED.with_label_values(&["ed25519"]).inc();
 
-    let response = GenerateKeyResponse {
+    let response = GenerateSigningKeyResponse {
         key_id: key_pair.key_id,
-        public_key: key_pair.public_key,
+        verifying_key: key_pair.verifying_key,
         expires_at: key_record.expires_at,
         tolerance_seconds: app_state.tolerance_seconds,
     };
 
-    // 记录请求指标（成功）
     let duration = start_time.elapsed().as_secs_f64();
     KS_REQUEST_DURATION
-        .with_label_values(&["ks", "POST", "/generate", "200"])
+        .with_label_values(&["ks", "POST", "/generate-signing-key", "200"])
         .observe(duration);
     KS_REQUESTS_TOTAL
-        .with_label_values(&["ks", "POST", "/generate", "200"])
+        .with_label_values(&["ks", "POST", "/generate-signing-key", "200"])
         .inc();
 
-    crate::recording::info!("Generated key pair with key_id: {}", key_pair.key_id);
+    crate::recording::info!("Generated Ed25519 signing key with key_id: {}", key_pair.key_id);
     Ok(Json(response))
 }
 
-async fn get_secret_key_handler(
+async fn sign_handler(
     State(app_state): State<KSState>,
     Path(key_id): Path<u32>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<GetSecretKeyResponse>, KsError> {
+    Json(request): Json<SignRequest>,
+) -> Result<Json<SignResponse>, KsError> {
     let start_time = Instant::now();
-    crate::recording::info!("Received secret key request for key_id: {}", key_id);
-
-    let request_key_id = params
-        .get("key_id")
-        .ok_or_else(|| KsError::InvalidRequest("Missing key_id query parameter".to_string()))
-        .and_then(|v| {
-            u32::from_str(v)
-                .map_err(|_| KsError::InvalidRequest("Invalid key_id query parameter".to_string()))
-        })?;
-
-    if key_id != request_key_id {
-        let duration = start_time.elapsed().as_secs_f64();
-        KS_REQUEST_DURATION
-            .with_label_values(&["ks", "GET", "/secret", "400"])
-            .observe(duration);
-        KS_REQUESTS_TOTAL
-            .with_label_values(&["ks", "GET", "/secret", "400"])
-            .inc();
-
-        return Err(KsError::InvalidRequest(
-            "key_id in path and query parameters must match".to_string(),
-        ));
-    }
-
-    // Query compatibility:
-    // 1) credential as JSON string (used by ks::client)
-    // 2) flattened fields: credential.timestamp/nonce/signature
-    // 3) bracket fields: credential[timestamp]/[nonce]/[signature]
-    let credential: nonce_auth::NonceCredential = if let Some(credential_json) =
-        params.get("credential")
-    {
-        serde_json::from_str(credential_json).map_err(|_| {
-            KsError::InvalidRequest("Invalid credential query parameter".to_string())
-        })?
-    } else {
-        let timestamp = params
-            .get("credential.timestamp")
-            .or_else(|| params.get("credential[timestamp]"))
-            .ok_or_else(|| KsError::InvalidRequest("Missing credential timestamp".to_string()))
-            .and_then(|v| {
-                u64::from_str(v).map_err(|_| {
-                    KsError::InvalidRequest("Invalid credential timestamp".to_string())
-                })
-            })?;
-        let nonce = params
-            .get("credential.nonce")
-            .or_else(|| params.get("credential[nonce]"))
-            .cloned()
-            .ok_or_else(|| KsError::InvalidRequest("Missing credential nonce".to_string()))?;
-        let signature = params
-            .get("credential.signature")
-            .or_else(|| params.get("credential[signature]"))
-            .cloned()
-            .ok_or_else(|| KsError::InvalidRequest("Missing credential signature".to_string()))?;
-
-        nonce_auth::NonceCredential {
-            timestamp,
-            nonce,
-            signature,
-        }
-    };
-
-    let request = GetSecretKeyRequest {
-        key_id: request_key_id,
-        credential,
-    };
+    crate::recording::info!("Received sign request for key_id: {}", key_id);
 
     // 验证凭据
     let request_data = request.request_payload();
@@ -376,7 +308,6 @@ async fn get_secret_key_handler(
         .await;
 
     if let Err(ref e) = verify_result {
-        // 记录认证失败指标
         let reason = match e {
             KsError::ReplayAttack(_) => "replay_attack",
             KsError::Authentication(_) => "invalid_signature",
@@ -384,101 +315,66 @@ async fn get_secret_key_handler(
         };
         KS_AUTH_FAILURES.with_label_values(&["ks", reason]).inc();
 
-        // 记录请求指标（失败）
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
-            .with_label_values(&["ks", "GET", "/secret", "401"])
+            .with_label_values(&["ks", "POST", "/sign", "401"])
             .observe(duration);
         KS_REQUESTS_TOTAL
-            .with_label_values(&["ks", "GET", "/secret", "401"])
+            .with_label_values(&["ks", "POST", "/sign", "401"])
             .inc();
 
         return verify_result.map(|_| unreachable!());
     }
     verify_result?;
 
-    // 获取完整的密钥记录
-    match app_state.storage.get_key_record(key_id).await? {
-        Some(key_record) => {
-            // 检查密钥是否超过容忍期
-            if key_record.expires_at > 0 {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
+    // 检查密钥是否在容忍期内有效
+    let key_record = app_state
+        .storage
+        .get_key_record(key_id)
+        .await?
+        .ok_or(KsError::KeyNotFound(key_id))?;
 
-                // 检查是否超过了过期时间 + 容忍期
-                if key_record.expires_at + app_state.tolerance_seconds < now {
-                    crate::recording::warn!(
-                        "Key {} has expired beyond tolerance period. Expires at: {}, Tolerance: {}s, Now: {}",
-                        key_id,
-                        key_record.expires_at,
-                        app_state.tolerance_seconds,
-                        now
-                    );
-                    let duration = start_time.elapsed().as_secs_f64();
-                    KS_REQUEST_DURATION
-                        .with_label_values(&["ks", "GET", "/secret", "404"])
-                        .observe(duration);
-                    KS_REQUESTS_TOTAL
-                        .with_label_values(&["ks", "GET", "/secret", "404"])
-                        .inc();
-                    return Err(KsError::KeyNotFound(key_id));
-                }
+    if key_record.expires_at > 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-                // 记录是否在容忍期内（用于日志）
-                if key_record.expires_at < now {
-                    crate::recording::warn!(
-                        "Key {} is in tolerance period (expired at: {}, now: {})",
-                        key_id,
-                        key_record.expires_at,
-                        now
-                    );
-                }
-            }
-
-            // 获取私钥
-            let secret_key = app_state
-                .storage
-                .get_secret_key(key_id)
-                .await?
-                .ok_or_else(|| KsError::KeyNotFound(key_id))?;
-
-            let response = GetSecretKeyResponse {
-                key_id,
-                secret_key,
-                expires_at: key_record.expires_at,
-                tolerance_seconds: app_state.tolerance_seconds,
-            };
-
-            // 记录成功的请求指标
+        if key_record.expires_at + app_state.tolerance_seconds < now {
+            crate::recording::warn!("Key {} has expired beyond tolerance period", key_id);
             let duration = start_time.elapsed().as_secs_f64();
             KS_REQUEST_DURATION
-                .with_label_values(&["ks", "GET", "/secret", "200"])
+                .with_label_values(&["ks", "POST", "/sign", "404"])
                 .observe(duration);
             KS_REQUESTS_TOTAL
-                .with_label_values(&["ks", "GET", "/secret", "200"])
+                .with_label_values(&["ks", "POST", "/sign", "404"])
                 .inc();
-
-            crate::recording::info!(
-                "Returned secret key for key_id: {}, expires_at: {}",
-                key_id,
-                key_record.expires_at
-            );
-            Ok(Json(response))
-        }
-        None => {
-            crate::recording::debug!("Secret key retrieval failed: key not found");
-            let duration = start_time.elapsed().as_secs_f64();
-            KS_REQUEST_DURATION
-                .with_label_values(&["ks", "GET", "/secret", "404"])
-                .observe(duration);
-            KS_REQUESTS_TOTAL
-                .with_label_values(&["ks", "GET", "/secret", "404"])
-                .inc();
-            Err(KsError::KeyNotFound(key_id))
+            return Err(KsError::KeyNotFound(key_id));
         }
     }
+
+    // 在后端内部签名，私钥不离开 KS
+    let signature = app_state
+        .storage
+        .sign(key_id, &request.message)
+        .await
+        .map_err(|e| match e {
+            KsError::NotFound(_) => KsError::KeyNotFound(key_id),
+            other => other,
+        })?;
+
+    let response = SignResponse { signature };
+
+    let duration = start_time.elapsed().as_secs_f64();
+    KS_REQUEST_DURATION
+        .with_label_values(&["ks", "POST", "/sign", "200"])
+        .observe(duration);
+    KS_REQUESTS_TOTAL
+        .with_label_values(&["ks", "POST", "/sign", "200"])
+        .inc();
+
+    crate::recording::info!("Signed message for key_id: {}", key_id);
+    Ok(Json(response))
 }
 
 async fn health_check_handler(
@@ -536,8 +432,8 @@ mod tests {
             .unwrap();
 
         let router = Router::new()
-            .route("/generate", post(generate_key_handler))
-            .route("/secret/{key_id}", get(get_secret_key_handler))
+            .route("/generate-signing-key", post(generate_signing_key_handler))
+            .route("/sign/{key_id}", post(sign_handler))
             .route("/health", get(health_check_handler))
             .with_state(app_state);
         (router, psk, temp_dir)
@@ -650,20 +546,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_key() {
+    async fn test_generate_signing_key() {
         let (app, psk, _temp_dir) = create_test_app().await;
 
-        let request_data = "generate_key";
+        let request_data = "generate_signing_key";
         let credential = create_credential_for_request(&psk, request_data);
 
-        let request = GenerateKeyRequest { credential };
+        let request = GenerateSigningKeyRequest { credential };
         let request_body = serde_json::to_value(request).unwrap();
 
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/generate")
+                    .uri("/generate-signing-key")
                     .header("content-type", "application/json")
                     .body(Body::from(request_body.to_string()))
                     .unwrap(),
@@ -682,10 +578,10 @@ mod tests {
         }
         assert_eq!(status, StatusCode::OK);
 
-        let response_json: GenerateKeyResponse = serde_json::from_slice(&body).unwrap();
+        let response_json: GenerateSigningKeyResponse = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(response_json.key_id, 1);
-        assert!(!response_json.public_key.is_empty());
+        assert!(!response_json.verifying_key.is_empty());
         assert_eq!(response_json.tolerance_seconds, 3600);
     }
 
@@ -693,13 +589,9 @@ mod tests {
     async fn test_invalid_signature() {
         let (app, psk, _temp_dir) = create_test_app().await;
 
-        let request_data = "generate_key";
-        let _credential = create_credential_for_request(&psk, request_data);
+        let invalid_credential = create_credential_for_request(&psk, "invalid-data");
 
-        let invalid_data = "invalid-data";
-        let invalid_credential = create_credential_for_request(&psk, invalid_data);
-
-        let invalid_request = GenerateKeyRequest {
+        let invalid_request = GenerateSigningKeyRequest {
             credential: invalid_credential,
         };
         let request_body = serde_json::to_value(invalid_request).unwrap();
@@ -708,7 +600,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/generate")
+                    .uri("/generate-signing-key")
                     .header("content-type", "application/json")
                     .body(Body::from(request_body.to_string()))
                     .unwrap(),

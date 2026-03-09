@@ -8,6 +8,8 @@ use crate::storage::config::PostgresConfig;
 use crate::types::{KeyPair, KeyRecord};
 use async_trait::async_trait;
 use base64::prelude::*;
+use ed25519_dalek::{Signer, SigningKey};
+use rand::rngs::OsRng;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -67,7 +69,7 @@ impl PostgresBackend {
 #[async_trait]
 impl KeyStorageBackend for PostgresBackend {
     async fn init(&self) -> KsResult<()> {
-        // 创建密钥表
+        // 创建密钥表（secret_key 列存储加密后的 Ed25519 signing key，public_key 存储 verifying key）
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS keys (
@@ -96,12 +98,13 @@ impl KeyStorageBackend for PostgresBackend {
     }
 
     async fn generate_and_store_key(&self) -> KsResult<KeyPair> {
-        // 生成椭圆曲线密钥对
-        let (secret_key, public_key) = ecies::utils::generate_keypair();
+        // 生成 Ed25519 密钥对
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
 
         // 编码为 Base64
-        let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
-        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize_compressed());
+        let verifying_key_b64 = BASE64_STANDARD.encode(verifying_key.as_bytes());
+        let signing_key_b64 = BASE64_STANDARD.encode(signing_key.as_bytes());
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -115,7 +118,7 @@ impl KeyStorageBackend for PostgresBackend {
             now + self.key_ttl as i64
         };
 
-        // 插入密钥并获取自动生成的 key_id
+        // 插入密钥并获取自动生成的 key_id（public_key 存储 verifying key，secret_key 存储 signing key）
         let row = sqlx::query_as::<_, (i32,)>(
             r#"
             INSERT INTO keys (public_key, secret_key, created_at, expires_at)
@@ -123,8 +126,8 @@ impl KeyStorageBackend for PostgresBackend {
             RETURNING key_id
             "#,
         )
-        .bind(&public_key_b64)
-        .bind(&secret_key_b64)
+        .bind(&verifying_key_b64)
+        .bind(&signing_key_b64)
         .bind(now)
         .bind(expires_at)
         .fetch_one(&self.pool)
@@ -134,15 +137,14 @@ impl KeyStorageBackend for PostgresBackend {
         let key_id = row.0 as u32;
 
         crate::recording::info!(
-            "Generated and stored new key pair in PostgreSQL: key_id={}, expires_at={}",
+            "Generated and stored new Ed25519 key pair in PostgreSQL: key_id={}, expires_at={}",
             key_id,
             expires_at
         );
 
         Ok(KeyPair {
             key_id,
-            secret_key: secret_key_b64,
-            public_key: public_key_b64,
+            verifying_key: verifying_key_b64,
         })
     }
 
@@ -159,15 +161,16 @@ impl KeyStorageBackend for PostgresBackend {
                 })?;
 
         if result.is_some() {
-            crate::recording::debug!("Found public key for key_id: {} in PostgreSQL", key_id);
+            crate::recording::debug!("Found verifying key for key_id: {} in PostgreSQL", key_id);
         } else {
-            crate::recording::debug!("No public key found for key_id: {} in PostgreSQL", key_id);
+            crate::recording::debug!("No verifying key found for key_id: {} in PostgreSQL", key_id);
         }
 
         Ok(result)
     }
 
-    async fn get_secret_key(&self, key_id: u32) -> KsResult<Option<String>> {
+    async fn sign(&self, key_id: u32, message: &[u8]) -> KsResult<Vec<u8>> {
+        // 从数据库读取 signing key（PostgreSQL 版本未加密）
         let result =
             sqlx::query_scalar::<_, String>("SELECT secret_key FROM keys WHERE key_id = $1")
                 .bind(key_id as i32)
@@ -175,17 +178,34 @@ impl KeyStorageBackend for PostgresBackend {
                 .await
                 .map_err(|e| {
                     KsError::Internal(format!(
-                        "Failed to query secret key for key_id {key_id}: {e}"
+                        "Failed to query signing key for key_id {key_id}: {e}"
                     ))
                 })?;
 
-        if result.is_some() {
-            crate::recording::trace!("Secret key found in PostgreSQL database");
-        } else {
-            crate::recording::trace!("Secret key not found in PostgreSQL database");
-        }
+        let signing_key_b64 = match result {
+            Some(key) => key,
+            None => {
+                crate::recording::warn!("Signing key not found for key_id: {} in PostgreSQL", key_id);
+                return Err(KsError::NotFound(format!("Key not found: {key_id}")));
+            }
+        };
 
-        Ok(result)
+        // Base64 解码
+        let signing_key_bytes = BASE64_STANDARD
+            .decode(&signing_key_b64)
+            .map_err(|e| KsError::Crypto(format!("Failed to decode signing key: {e}")))?;
+
+        let signing_key_array: [u8; 32] = signing_key_bytes.try_into().map_err(|_| {
+            KsError::Crypto("Signing key must be exactly 32 bytes".to_string())
+        })?;
+
+        // 重建 SigningKey 并签名
+        let signing_key = SigningKey::from_bytes(&signing_key_array);
+        let signature = signing_key.sign(message);
+
+        crate::recording::debug!("Signed message with key_id: {} in PostgreSQL", key_id);
+
+        Ok(signature.to_bytes().to_vec())
     }
 
     async fn get_key_record(&self, key_id: u32) -> KsResult<Option<KeyRecord>> {
@@ -304,16 +324,29 @@ mod tests {
         // 生成密钥
         let key_pair = backend.generate_and_store_key().await.unwrap();
         assert!(key_pair.key_id > 0);
-        assert!(!key_pair.public_key.is_empty());
-        assert!(!key_pair.secret_key.is_empty());
+        assert!(!key_pair.verifying_key.is_empty());
+
+        // 验证 verifying key 为 32 字节
+        let vk_bytes = BASE64_STANDARD.decode(&key_pair.verifying_key).unwrap();
+        assert_eq!(vk_bytes.len(), 32);
 
         // 查询公钥
         let public_key = backend.get_public_key(key_pair.key_id).await.unwrap();
-        assert_eq!(public_key, Some(key_pair.public_key.clone()));
+        assert_eq!(public_key, Some(key_pair.verifying_key.clone()));
 
-        // 查询私钥
-        let secret_key = backend.get_secret_key(key_pair.key_id).await.unwrap();
-        assert_eq!(secret_key, Some(key_pair.secret_key));
+        cleanup_test_data(&backend).await;
+    }
+
+    #[tokio::test]
+    #[ignore] // 需要 PostgreSQL 服务器
+    async fn test_sign() {
+        let backend = create_test_backend().await;
+        cleanup_test_data(&backend).await;
+
+        let key_pair = backend.generate_and_store_key().await.unwrap();
+        let message = b"test message";
+        let signature = backend.sign(key_pair.key_id, message).await.unwrap();
+        assert_eq!(signature.len(), 64);
 
         cleanup_test_data(&backend).await;
     }

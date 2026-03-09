@@ -3,7 +3,6 @@
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
 use actr_protocol::{ErrorResponse, RegisterRequest, RegisterResponse, register_response};
 use axum::{Router, body::Bytes, extract::State, http::HeaderMap, response::Json, routing::post};
-use base64::Engine as _;
 use platform::aid::AidError;
 use platform::monitoring::ServiceCounters;
 use platform::realm::{

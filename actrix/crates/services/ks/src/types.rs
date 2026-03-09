@@ -3,57 +3,51 @@
 use nonce_auth::NonceCredential;
 use serde::{Deserialize, Serialize};
 
-/// 密钥对结构
+/// 密钥对结构（内部使用，存储公钥引用）
 #[derive(Debug, Clone)]
 pub struct KeyPair {
     /// 密钥 ID
     pub key_id: u32,
-    /// 私钥（Base64 编码）
-    pub secret_key: String,
-    /// 公钥（Base64 编码）
-    pub public_key: String,
+    /// 验证公钥（Base64 编码的 Ed25519 verifying key，32 字节）
+    pub verifying_key: String,
 }
 
-/// 生成密钥请求
+/// 生成签名密钥请求
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GenerateKeyRequest {
+pub struct GenerateSigningKeyRequest {
     /// nonce-auth 凭证
     pub credential: NonceCredential,
 }
 
-/// 生成密钥响应
+/// 生成签名密钥响应
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GenerateKeyResponse {
+pub struct GenerateSigningKeyResponse {
     /// 生成的密钥 ID
     pub key_id: u32,
-    /// 公钥（Base64 编码）
-    pub public_key: String,
+    /// 验证公钥（Base64 编码的 Ed25519 verifying key，32 字节）
+    pub verifying_key: String,
     /// 过期时间（Unix 时间戳）
     pub expires_at: u64,
     /// 容忍时间（秒）
     pub tolerance_seconds: u64,
 }
 
-/// 获取私钥请求
+/// 签名请求
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GetSecretKeyRequest {
-    /// 要查询的密钥 ID
+pub struct SignRequest {
+    /// 要使用的密钥 ID
     pub key_id: u32,
+    /// 待签名的消息（原始字节，base64 编码用于 HTTP 传输）
+    pub message: Vec<u8>,
     /// nonce-auth 凭证
     pub credential: NonceCredential,
 }
 
-/// 获取私钥响应
+/// 签名响应
 #[derive(Debug, Serialize, Deserialize)]
-pub struct GetSecretKeyResponse {
-    /// 密钥 ID
-    pub key_id: u32,
-    /// 私钥（Base64 编码）
-    pub secret_key: String,
-    /// 过期时间（Unix 时间戳）
-    pub expires_at: u64,
-    /// 容忍时间（秒）
-    pub tolerance_seconds: u64,
+pub struct SignResponse {
+    /// Ed25519 签名（64 字节）
+    pub signature: Vec<u8>,
 }
 
 /// 存储在数据库中的密钥记录
@@ -61,7 +55,7 @@ pub struct GetSecretKeyResponse {
 pub struct KeyRecord {
     /// 密钥 ID
     pub key_id: u32,
-    /// 公钥（Base64 编码）
+    /// 验证公钥（Base64 编码的 Ed25519 verifying key）
     pub public_key: String,
     /// 创建时间戳
     pub created_at: u64,
@@ -69,18 +63,16 @@ pub struct KeyRecord {
     pub expires_at: u64,
 }
 
-impl GenerateKeyRequest {
+impl GenerateSigningKeyRequest {
     /// 获取用于验证的请求数据
     pub fn request_payload(&self) -> String {
-        // 为生成密钥请求，我们只需要一个固定的标识符
-        "generate_key".to_string()
+        "generate_signing_key".to_string()
     }
 }
 
-impl GetSecretKeyRequest {
+impl SignRequest {
     /// 获取用于验证的请求数据
     pub fn request_payload(&self) -> String {
-        // 为获取私钥请求，我们包含密钥 ID
-        format!("get_secret_key:{}", self.key_id)
+        format!("sign:{}", self.key_id)
     }
 }

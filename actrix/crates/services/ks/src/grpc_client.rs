@@ -3,10 +3,10 @@
 use crate::error::KsError;
 use actrix_proto::admin::v1::NonceCredential;
 use actrix_proto::ks::v1::{
-    GenerateKeyRequest, GetSecretKeyRequest, HealthCheckRequest, key_server_client::KeyServerClient,
+    GenerateSigningKeyRequest, HealthCheckRequest, SignRequest, key_server_client::KeyServerClient,
 };
 use base64::prelude::*;
-use ecies::{PublicKey, SecretKey};
+use ed25519_dalek::VerifyingKey;
 use nonce_auth::CredentialBuilder;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -131,74 +131,14 @@ impl GrpcClient {
         Ok(tls_config)
     }
 
-    /// 从 KS 服务生成新的密钥对
-    pub async fn generate_key(&mut self) -> Result<(u32, PublicKey, u64, u64), KsError> {
-        let request_data = "generate_key";
-
-        // 创建 nonce credential
-        let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
-            .sign(request_data.as_bytes())?;
-
-        // 转换为 protobuf NonceCredential
-        let credential = NonceCredential {
-            timestamp: nonce_credential.timestamp,
-            nonce: nonce_credential.nonce,
-            signature: nonce_credential.signature,
-        };
-
-        let request = tonic::Request::new(GenerateKeyRequest { credential });
-
-        crate::recording::debug!("Requesting key generation from KS via gRPC");
-
-        let response = self
-            .client
-            .generate_key(request)
-            .await
-            .map_err(|e| KsError::Internal(format!("gRPC GenerateKey failed: {e}")))?;
-
-        let resp = response.into_inner();
-
-        // 解码公钥
-        let public_key_bytes = BASE64_STANDARD
-            .decode(&resp.public_key)
-            .map_err(|e| KsError::Crypto(format!("Failed to decode public key: {e}")))?;
-
-        if public_key_bytes.len() == 33 {
-            let public_key_array: [u8; 33] = public_key_bytes
-                .try_into()
-                .map_err(|_| KsError::Crypto("Invalid public key length".to_string()))?;
-            let public_key = PublicKey::parse_compressed(&public_key_array).map_err(|e| {
-                KsError::Crypto(format!("Failed to parse compressed public key: {e}"))
-            })?;
-
-            crate::recording::info!(
-                "Successfully generated key pair with key_id {} via gRPC, expires_at: {}, tolerance_seconds: {}",
-                resp.key_id,
-                resp.expires_at,
-                resp.tolerance_seconds
-            );
-            Ok((
-                resp.key_id,
-                public_key,
-                resp.expires_at,
-                resp.tolerance_seconds,
-            ))
-        } else {
-            Err(KsError::Crypto(format!(
-                "Unsupported public key length: {}",
-                public_key_bytes.len()
-            )))
-        }
-    }
-
-    /// 从 KS 服务获取私钥、过期时间和容忍期秒数
+    /// 从 KS 服务生成新的 Ed25519 签名密钥对
     ///
-    /// 返回 (SecretKey, expires_at, tolerance_seconds)
-    pub async fn fetch_secret_key(
+    /// 返回 (key_id, verifying_key_bytes[32], expires_at, tolerance_seconds)
+    /// 私钥保留在 KS 服务端，不返回给调用方
+    pub async fn generate_signing_key(
         &mut self,
-        key_id: u32,
-    ) -> Result<(SecretKey, u64, u64), KsError> {
-        let request_data = format!("get_secret_key:{key_id}");
+    ) -> Result<(u32, [u8; 32], u64, u64), KsError> {
+        let request_data = "generate_signing_key";
 
         // 创建 nonce credential
         let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
@@ -211,37 +151,92 @@ impl GrpcClient {
             signature: nonce_credential.signature,
         };
 
-        let request = tonic::Request::new(GetSecretKeyRequest { key_id, credential });
+        let request = tonic::Request::new(GenerateSigningKeyRequest { credential });
 
-        crate::recording::debug!("Fetching secret key {} from KS via gRPC", key_id);
+        crate::recording::debug!("Requesting Ed25519 signing key generation from KS via gRPC");
 
         let response = self
             .client
-            .get_secret_key(request)
+            .generate_signing_key(request)
             .await
-            .map_err(|e| KsError::Internal(format!("gRPC GetSecretKey failed: {e}")))?;
+            .map_err(|e| KsError::Internal(format!("gRPC GenerateSigningKey failed: {e}")))?;
 
         let resp = response.into_inner();
 
-        // 解码私钥
-        let secret_key_bytes = BASE64_STANDARD
-            .decode(&resp.secret_key)
-            .map_err(|e| KsError::Crypto(format!("Failed to decode secret key: {e}")))?;
+        // 解码 verifying key（32 字节 Ed25519 公钥）
+        let verifying_key_bytes = BASE64_STANDARD
+            .decode(&resp.verifying_key)
+            .map_err(|e| KsError::Crypto(format!("Failed to decode verifying key: {e}")))?;
 
-        let secret_key_array: [u8; 32] = secret_key_bytes.try_into().map_err(|_| {
-            KsError::Crypto("Invalid secret key length, expected 32 bytes".to_string())
-        })?;
+        if verifying_key_bytes.len() != 32 {
+            return Err(KsError::Crypto(format!(
+                "Invalid verifying key length: expected 32 bytes, got {}",
+                verifying_key_bytes.len()
+            )));
+        }
 
-        let secret_key = SecretKey::parse(&secret_key_array)
-            .map_err(|e| KsError::Crypto(format!("Failed to parse secret key: {e}")))?;
+        // 验证 verifying key 合法性
+        let vk_array: [u8; 32] = verifying_key_bytes
+            .try_into()
+            .map_err(|_| KsError::Crypto("Failed to convert verifying key to array".to_string()))?;
+
+        VerifyingKey::from_bytes(&vk_array)
+            .map_err(|e| KsError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
 
         crate::recording::info!(
-            "Successfully fetched secret key {} from KS via gRPC, expires_at: {}, tolerance: {}s",
-            key_id,
+            "Successfully generated Ed25519 signing key via gRPC: key_id={}, expires_at={}, tolerance_seconds={}",
+            resp.key_id,
             resp.expires_at,
             resp.tolerance_seconds
         );
-        Ok((secret_key, resp.expires_at, resp.tolerance_seconds))
+
+        Ok((resp.key_id, vk_array, resp.expires_at, resp.tolerance_seconds))
+    }
+
+    /// 使用 KS 服务中的密钥对消息进行 Ed25519 签名
+    ///
+    /// 返回 64 字节 Ed25519 签名
+    /// 私钥不离开 KS 服务
+    pub async fn sign(&mut self, key_id: u32, message: &[u8]) -> Result<Vec<u8>, KsError> {
+        let request_data = format!("sign:{key_id}");
+
+        // 创建 nonce credential
+        let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
+            .sign(request_data.as_bytes())?;
+
+        // 转换为 protobuf NonceCredential
+        let credential = NonceCredential {
+            timestamp: nonce_credential.timestamp,
+            nonce: nonce_credential.nonce,
+            signature: nonce_credential.signature,
+        };
+
+        let request = tonic::Request::new(SignRequest {
+            key_id,
+            message: message.to_vec(),
+            credential,
+        });
+
+        crate::recording::debug!("Requesting signature for key_id={} from KS via gRPC", key_id);
+
+        let response = self
+            .client
+            .sign(request)
+            .await
+            .map_err(|e| KsError::Internal(format!("gRPC Sign failed: {e}")))?;
+
+        let resp = response.into_inner();
+
+        if resp.signature.len() != 64 {
+            return Err(KsError::Crypto(format!(
+                "Invalid signature length: expected 64 bytes, got {}",
+                resp.signature.len()
+            )));
+        }
+
+        crate::recording::info!("Successfully obtained signature for key_id={} via gRPC", key_id);
+
+        Ok(resp.signature)
     }
 
     /// 健康检查

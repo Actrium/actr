@@ -9,6 +9,8 @@ use crate::storage::config::SqliteConfig;
 use crate::types::{KeyPair, KeyRecord};
 use async_trait::async_trait;
 use base64::prelude::*;
+use ed25519_dalek::{Signer, SigningKey};
+use rand::rngs::OsRng;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 use std::str::FromStr;
@@ -85,7 +87,7 @@ impl SqliteBackend {
 #[async_trait]
 impl KeyStorageBackend for SqliteBackend {
     async fn init(&self) -> KsResult<()> {
-        // 创建密钥表
+        // 创建密钥表（secret_key 列存储加密后的 Ed25519 signing key，public_key 存储 verifying key）
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS keys (
@@ -112,15 +114,16 @@ impl KeyStorageBackend for SqliteBackend {
     }
 
     async fn generate_and_store_key(&self) -> KsResult<KeyPair> {
-        // 生成椭圆曲线密钥对
-        let (secret_key, public_key) = ecies::utils::generate_keypair();
+        // 生成 Ed25519 密钥对
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
 
         // 编码为 Base64
-        let secret_key_b64 = BASE64_STANDARD.encode(secret_key.serialize());
-        let public_key_b64 = BASE64_STANDARD.encode(public_key.serialize_compressed());
+        let verifying_key_b64 = BASE64_STANDARD.encode(verifying_key.as_bytes());
+        let signing_key_b64 = BASE64_STANDARD.encode(signing_key.as_bytes());
 
-        // 加密私钥（如果启用）
-        let encrypted_secret_key = self.encryptor.encrypt(&secret_key_b64)?;
+        // 加密 signing key（如果启用）
+        let encrypted_signing_key = self.encryptor.encrypt(&signing_key_b64)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -134,13 +137,13 @@ impl KeyStorageBackend for SqliteBackend {
             now + self.key_ttl as i64
         };
 
-        // 插入密钥并返回 ID（存储加密后的私钥）
+        // 插入密钥并返回 ID（public_key 存储 verifying key，secret_key 存储加密的 signing key）
         let result = sqlx::query(
             r#"INSERT INTO keys (public_key, secret_key, created_at, expires_at)
                VALUES (?1, ?2, ?3, ?4)"#,
         )
-        .bind(&public_key_b64)
-        .bind(&encrypted_secret_key)
+        .bind(&verifying_key_b64)
+        .bind(&encrypted_signing_key)
         .bind(now)
         .bind(expires_at)
         .execute(&self.pool)
@@ -149,13 +152,11 @@ impl KeyStorageBackend for SqliteBackend {
 
         let key_id = result.last_insert_rowid() as u32;
 
-        crate::recording::debug!("Generated key with ID: {}", key_id);
+        crate::recording::debug!("Generated Ed25519 signing key with ID: {}", key_id);
 
-        // 返回明文私钥（供调用方使用）
         Ok(KeyPair {
             key_id,
-            secret_key: secret_key_b64,
-            public_key: public_key_b64,
+            verifying_key: verifying_key_b64,
         })
     }
 
@@ -171,34 +172,53 @@ impl KeyStorageBackend for SqliteBackend {
             })?;
 
         if let Some((public_key,)) = result {
-            crate::recording::debug!("Found public key for key_id: {}", key_id);
+            crate::recording::debug!("Found verifying key for key_id: {}", key_id);
             Ok(Some(public_key))
         } else {
-            crate::recording::debug!("No public key found for key_id: {}", key_id);
+            crate::recording::debug!("No verifying key found for key_id: {}", key_id);
             Ok(None)
         }
     }
 
-    async fn get_secret_key(&self, key_id: u32) -> KsResult<Option<String>> {
+    async fn sign(&self, key_id: u32, message: &[u8]) -> KsResult<Vec<u8>> {
+        // 从数据库读取加密的 signing key
         let result = sqlx::query_as::<_, (String,)>("SELECT secret_key FROM keys WHERE key_id = ?")
             .bind(key_id as i64)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
                 KsError::Internal(format!(
-                    "Failed to query secret key for key_id {key_id}: {e}"
+                    "Failed to query signing key for key_id {key_id}: {e}"
                 ))
             })?;
 
-        if let Some((encrypted_secret_key,)) = result {
-            crate::recording::trace!("Secret key found in SQLite database");
-            // 解密私钥（如果启用了加密）
-            let decrypted_secret_key = self.encryptor.decrypt(&encrypted_secret_key)?;
-            Ok(Some(decrypted_secret_key))
-        } else {
-            crate::recording::trace!("Secret key not found in SQLite database");
-            Ok(None)
-        }
+        let encrypted_signing_key = match result {
+            Some((key,)) => key,
+            None => {
+                crate::recording::warn!("Signing key not found for key_id: {}", key_id);
+                return Err(KsError::NotFound(format!("Key not found: {key_id}")));
+            }
+        };
+
+        // 解密 signing key
+        let signing_key_b64 = self.encryptor.decrypt(&encrypted_signing_key)?;
+
+        // Base64 解码
+        let signing_key_bytes = BASE64_STANDARD
+            .decode(&signing_key_b64)
+            .map_err(|e| KsError::Crypto(format!("Failed to decode signing key: {e}")))?;
+
+        let signing_key_array: [u8; 32] = signing_key_bytes.try_into().map_err(|_| {
+            KsError::Crypto("Signing key must be exactly 32 bytes".to_string())
+        })?;
+
+        // 重建 SigningKey 并签名
+        let signing_key = SigningKey::from_bytes(&signing_key_array);
+        let signature = signing_key.sign(message);
+
+        crate::recording::debug!("Signed message with key_id: {}", key_id);
+
+        Ok(signature.to_bytes().to_vec())
     }
 
     async fn get_key_record(&self, key_id: u32) -> KsResult<Option<KeyRecord>> {
@@ -296,23 +316,53 @@ mod tests {
         // 生成密钥
         let key_pair = backend.generate_and_store_key().await.unwrap();
         assert!(key_pair.key_id > 0);
-        assert!(!key_pair.public_key.is_empty());
-        assert!(!key_pair.secret_key.is_empty());
+        assert!(!key_pair.verifying_key.is_empty());
+
+        // 验证 verifying key 为 32 字节（base64 解码后）
+        let vk_bytes = BASE64_STANDARD.decode(&key_pair.verifying_key).unwrap();
+        assert_eq!(vk_bytes.len(), 32, "Ed25519 verifying key must be 32 bytes");
 
         // 查询公钥
         let public_key = backend.get_public_key(key_pair.key_id).await.unwrap();
-        assert_eq!(public_key, Some(key_pair.public_key.clone()));
-
-        // 查询私钥
-        let secret_key = backend.get_secret_key(key_pair.key_id).await.unwrap();
-        assert_eq!(secret_key, Some(key_pair.secret_key));
+        assert_eq!(public_key, Some(key_pair.verifying_key.clone()));
 
         // 查询完整记录
         let record = backend.get_key_record(key_pair.key_id).await.unwrap();
         assert!(record.is_some());
         let record = record.unwrap();
         assert_eq!(record.key_id, key_pair.key_id);
-        assert_eq!(record.public_key, key_pair.public_key);
+        assert_eq!(record.public_key, key_pair.verifying_key);
+    }
+
+    #[tokio::test]
+    async fn test_sign() {
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
+
+        let key_pair = backend.generate_and_store_key().await.unwrap();
+        let message = b"hello world";
+
+        let signature = backend.sign(key_pair.key_id, message).await.unwrap();
+        assert_eq!(signature.len(), 64, "Ed25519 signature must be 64 bytes");
+
+        // 验证签名
+        let vk_bytes = BASE64_STANDARD.decode(&key_pair.verifying_key).unwrap();
+        let vk_array: [u8; 32] = vk_bytes.try_into().unwrap();
+        let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&vk_array).unwrap();
+        let sig_array: [u8; 64] = signature.try_into().unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+        use ed25519_dalek::Verifier;
+        assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must be valid");
+    }
+
+    #[tokio::test]
+    async fn test_sign_nonexistent_key() {
+        let temp_dir = tempdir().unwrap();
+        let backend = create_test_backend(temp_dir.path()).await;
+
+        let result = backend.sign(999, b"message").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), KsError::NotFound(_)));
     }
 
     #[tokio::test]
@@ -322,9 +372,6 @@ mod tests {
 
         let public_key = backend.get_public_key(999).await.unwrap();
         assert_eq!(public_key, None);
-
-        let secret_key = backend.get_secret_key(999).await.unwrap();
-        assert_eq!(secret_key, None);
 
         let record = backend.get_key_record(999).await.unwrap();
         assert_eq!(record, None);

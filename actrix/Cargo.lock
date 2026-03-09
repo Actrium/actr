@@ -2372,7 +2372,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
- "ecies",
+ "ed25519-dalek",
  "hex",
  "hmac",
  "hyper",

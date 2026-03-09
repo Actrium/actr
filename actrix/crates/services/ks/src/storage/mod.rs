@@ -7,13 +7,14 @@
 //! - `KeyStorageBackend` trait 定义统一的异步接口
 //! - `KeyStorage` enum 封装不同的后端实现
 //! - 通过 `StorageConfig` 配置选择和初始化后端
+//! - 私钥永不离开存储后端，签名在后端内部完成
 
 use std::path::Path;
 
 pub mod backend;
 pub mod config;
 
-// SQLite 始终可用（使用 rusqlite）
+// SQLite 始终可用（使用 sqlx）
 pub mod sqlite;
 
 #[cfg(feature = "backend-postgres")]
@@ -96,7 +97,7 @@ impl KeyStorage {
         }
     }
 
-    /// 生成并存储新的密钥对
+    /// 生成并存储新的 Ed25519 签名密钥对
     pub async fn generate_and_store_key(&self) -> KsResult<KeyPair> {
         match self {
             Self::Sqlite(b) => b.generate_and_store_key().await,
@@ -106,7 +107,7 @@ impl KeyStorage {
         }
     }
 
-    /// 根据 key_id 查询公钥
+    /// 根据 key_id 查询验证公钥
     pub async fn get_public_key(&self, key_id: u32) -> KsResult<Option<String>> {
         match self {
             Self::Sqlite(b) => b.get_public_key(key_id).await,
@@ -116,13 +117,15 @@ impl KeyStorage {
         }
     }
 
-    /// 根据 key_id 查询私钥
-    pub async fn get_secret_key(&self, key_id: u32) -> KsResult<Option<String>> {
+    /// 使用指定密钥对消息进行 Ed25519 签名
+    ///
+    /// 私钥不离开存储后端，签名在内部完成
+    pub async fn sign(&self, key_id: u32, message: &[u8]) -> KsResult<Vec<u8>> {
         match self {
-            Self::Sqlite(b) => b.get_secret_key(key_id).await,
+            Self::Sqlite(b) => b.sign(key_id, message).await,
 
             #[cfg(feature = "backend-postgres")]
-            Self::Postgres(b) => b.get_secret_key(key_id).await,
+            Self::Postgres(b) => b.sign(key_id, message).await,
         }
     }
 
@@ -196,7 +199,7 @@ mod tests {
         assert!(key_pair.key_id > 0);
 
         let public_key = storage.get_public_key(key_pair.key_id).await.unwrap();
-        assert_eq!(public_key, Some(key_pair.public_key));
+        assert_eq!(public_key, Some(key_pair.verifying_key));
     }
 
     #[tokio::test]
