@@ -13,9 +13,9 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         "project.yml",
     )?;
     ProjectTemplate::load_file(
-        &fixtures_root.join("swift/data-stream/Actr.toml.hbs"),
+        &fixtures_root.join("swift/data-stream/actr.toml.hbs"),
         files,
-        "Actr.toml",
+        "actr.toml",
     )?;
     // Load empty Actr.lock.toml template
     // This is REQUIRED for Swift projects because:

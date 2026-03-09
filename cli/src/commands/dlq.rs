@@ -175,8 +175,8 @@ async fn cmd_list(args: &DlqArgs) -> Result<()> {
     }
 
     println!(
-        "{:<36}  {:<20}  {:<24}  {}",
-        "ID", "Created at", "Category", "Error"
+        "{:<36}  {:<20}  {:<24}  Error",
+        "ID", "Created at", "Category"
     );
     println!("{}", "-".repeat(110));
     for r in &records {

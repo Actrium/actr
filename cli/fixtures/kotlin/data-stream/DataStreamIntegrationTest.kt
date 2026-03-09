@@ -74,7 +74,7 @@ class DataStreamIntegrationTest {
     @Test
     fun testDataStreamTransfer(): Unit = runBlocking {
         Log.i(TAG, "=== Starting DataStream Integration Test ===")
-        val clientConfigPath = copyAssetToInternalStorage("Actr.toml")
+        val clientConfigPath = copyAssetToInternalStorage("actr.toml")
         // Actr.lock.toml is required by the runtime now
         copyAssetToInternalStorage("Actr.lock.toml")
         var clientRef: ActrRef? = null

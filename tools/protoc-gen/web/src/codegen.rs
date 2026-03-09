@@ -1,7 +1,7 @@
 //! Web code generator — produces all build artifacts from a `WebCodegenRequest`.
 //!
 //! Generated artifacts:
-//! - `src/generated/actr-config.ts`  — Configuration from Actr.toml
+//! - `src/generated/actr-config.ts`  — Configuration from actr.toml
 //! - `src/generated/*.actorref.ts`   — Typed ActorRef wrappers
 //! - `src/generated/index.ts`        — Re-exports
 //! - `wasm/`                         — Rust WASM crate (Cargo.toml, build.sh, src/lib.rs, handlers)
@@ -108,14 +108,14 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
 
     let mut out = String::new();
     out.push_str(
-        "/**\n * 自动生成的 Actr 配置\n * 来源: Actr.toml\n *\n * ⚠️  请勿手动编辑此文件\n */\n\n",
+        "/**\n * 自动生成的 Actr 配置\n * 来源: actr.toml\n *\n * ⚠️  请勿手动编辑此文件\n */\n\n",
     );
     out.push_str("import type { ActorClientConfig, SwRuntimeConfig } from '@actr/web';\n\n");
 
     // Edition
-    out.push_str("// ── Actr.toml 完整信息 ──\n\n");
+    out.push_str("// ── actr.toml 完整信息 ──\n\n");
     out.push_str(&format!(
-        "/** Actr.toml edition */\nexport const edition = {edition};\n\n"
+        "/** actr.toml edition */\nexport const edition = {edition};\n\n"
     ));
 
     // Exports
@@ -267,7 +267,7 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
 
     // ActorClientConfig
     out.push_str("// ── ActorClientConfig (传给 createActor) ──\n\n");
-    out.push_str("/**\n * Actor 客户端配置\n * 从 Actr.toml 的 system 配置中提取\n */\n");
+    out.push_str("/**\n * Actor 客户端配置\n * 从 actr.toml 的 system 配置中提取\n */\n");
     out.push_str("export const actrConfig: ActorClientConfig = {\n");
     out.push_str("  signalingUrl: system.signaling.url,\n");
     out.push_str("  realm: String(system.deployment.realm_id),\n");
@@ -831,7 +831,7 @@ fn gen_client_handler(service: &ServiceInfo, req: &WebCodegenRequest) -> String 
             target.manufacturer
         ));
         out.push_str(&format!("        name: \"{}\".to_string(),\n", target.name));
-        out.push_str("        version: None,\n    })\n}\n\n");
+        out.push_str("        version: \"v1\".to_string(),\n    })\n}\n\n");
     }
 
     let remote_route_key = req

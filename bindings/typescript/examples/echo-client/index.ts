@@ -27,7 +27,7 @@ class EchoClientWorkload {
 }
 
 async function main() {
-  const system = await ActrSystem.fromConfig('./Actr.toml');
+  const system = await ActrSystem.fromConfig('./actr.toml');
   const node = system.attach(new EchoClientWorkload());
   const actorRef = await node.start();
 

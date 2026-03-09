@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// Complete request from CLI to plugin
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WebCodegenRequest {
-    /// Path to Actr.toml (used for reading raw TOML extras)
+    /// Path to actr.toml (used for reading raw TOML extras)
     pub config_path: PathBuf,
     /// Output directory for generated TS files (e.g. src/generated)
     pub output_dir: PathBuf,

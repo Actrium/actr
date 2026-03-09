@@ -20,7 +20,7 @@ use std::process::Command as StdCommand;
 #[derive(Args, Debug)]
 #[command(
     about = "Install service dependencies",
-    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in Actr.toml.\n\nExamples:\n  actr install                          # Install all dependencies from Actr.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
+    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in actr.toml.\n\nExamples:\n  actr install                          # Install all dependencies from actr.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
 )]
 pub struct InstallCommand {
     /// Package name or alias (when used with --actr-type, this becomes the alias)
@@ -54,14 +54,14 @@ pub struct InstallCommand {
 pub enum InstallMode {
     /// Mode 1: Add new dependency (npm install <package>)
     /// - Pull remote proto to protos/ folder
-    /// - Modify Actr.toml (add dependency)
+    /// - Modify actr.toml (add dependency)
     /// - Update Actr.lock.toml
     AddNewPackage { packages: Vec<String> },
 
     /// Mode 1b: Add dependency with explicit alias and actr_type (actr install <alias> --actr-type <type>)
     /// - Discover service by actr_type
     /// - Use first argument as alias
-    /// - Modify Actr.toml (add dependency with alias)
+    /// - Modify actr.toml (add dependency with alias)
     /// - Update Actr.lock.toml
     AddWithAlias {
         alias: String,
@@ -70,7 +70,7 @@ pub enum InstallMode {
     },
 
     /// Mode 2: Install dependencies in config (npm install)
-    /// - Do NOT modify Actr.toml
+    /// - Do NOT modify actr.toml
     /// - Use lock file versions if available
     /// - Only update Actr.lock.toml
     InstallFromConfig { force_update: bool },
@@ -215,7 +215,7 @@ impl InstallCommand {
 
     /// Check if in Actor-RTC project
     fn is_actr_project(&self) -> bool {
-        std::path::Path::new("Actr.toml").exists()
+        std::path::Path::new("actr.toml").exists()
     }
 
     fn dependency_lookup_key(spec: &DependencySpec) -> String {
@@ -227,7 +227,7 @@ impl InstallCommand {
 
     /// Execute Mode 1: Add new package (actr install <package>)
     /// - Pull remote proto to protos/ folder
-    /// - Modify Actr.toml (add dependency)
+    /// - Modify actr.toml (add dependency)
     /// - Update Actr.lock.toml
     async fn execute_add_package(
         &self,
@@ -363,7 +363,7 @@ impl InstallCommand {
         match install_pipeline.install_dependencies(&resolved_specs).await {
             Ok(result) => {
                 println!("  ├─ 💾 Backing up current configuration");
-                println!("  ├─ 📝 Updating Actr.toml configuration ✅");
+                println!("  ├─ 📝 Updating actr.toml configuration ✅");
                 println!("  ├─ 📦 Caching proto files ✅");
                 println!("  ├─ 🔒 Updating Actr.lock.toml ✅");
                 println!("  └─ ✅ Installation completed");
@@ -386,7 +386,7 @@ impl InstallCommand {
     /// Execute Mode 1b: Add dependency with explicit alias and actr_type
     /// - Discover service by actr_type
     /// - Use provided alias
-    /// - Modify Actr.toml (add dependency with alias)
+    /// - Modify actr.toml (add dependency with alias)
     /// - Update Actr.lock.toml
     async fn execute_add_with_alias(
         &self,
@@ -482,7 +482,7 @@ impl InstallCommand {
         {
             Ok(result) => {
                 println!("  ├─ 💾 Backing up current configuration");
-                println!("  ├─ 📝 Updating Actr.toml configuration ✅");
+                println!("  ├─ 📝 Updating actr.toml configuration ✅");
                 println!("  ├─ 📦 Caching proto files ✅");
                 println!("  ├─ 🔒 Updating Actr.lock.toml ✅");
                 println!("  └─ ✅ Installation completed");
@@ -503,7 +503,7 @@ impl InstallCommand {
     }
 
     /// Execute Mode 2: Install from config (actr install)
-    /// - Do NOT modify Actr.toml
+    /// - Do NOT modify actr.toml
     /// - Use lock file versions if available
     /// - Check for compatibility conflicts when lock file exists
     /// - Only update Actr.lock.toml
@@ -519,7 +519,7 @@ impl InstallCommand {
         }
         println!();
 
-        // Load dependencies from Actr.toml
+        // Load dependencies from actr.toml
         let dependency_specs = self.load_dependencies_from_config(context).await?;
 
         if dependency_specs.is_empty() {
@@ -633,7 +633,7 @@ impl InstallCommand {
             }
             println!();
             println!(
-                "💡 Tip: Use --force to update Actr.toml with the current service fingerprints"
+                "💡 Tip: Use --force to update actr.toml with the current service fingerprints"
             );
             return Err(ActrCliError::FingerprintValidation {
                 message: format!(
@@ -644,12 +644,12 @@ impl InstallCommand {
             .into());
         }
 
-        // If --force is used and there are mismatches, update Actr.toml
+        // If --force is used and there are mismatches, update actr.toml
         if !fingerprint_mismatches.is_empty() && self.force {
-            println!("  ├─ ⚠️  Fingerprint mismatch detected, updating Actr.toml...");
+            println!("  ├─ ⚠️  Fingerprint mismatch detected, updating actr.toml...");
             self.update_config_fingerprints(context, &dependency_specs, &install_pipeline)
                 .await?;
-            println!("  ├─ ✅ Actr.toml updated with current fingerprints");
+            println!("  ├─ ✅ actr.toml updated with current fingerprints");
 
             // Reload dependency specs with updated fingerprints
             let dependency_specs = self.load_dependencies_from_config(context).await?;
@@ -671,7 +671,7 @@ impl InstallCommand {
                     println!("  └─ ✅ Installation completed");
                     println!();
                     println!(
-                        "📝 Note: Actr.toml fingerprints were updated to match current services"
+                        "📝 Note: actr.toml fingerprints were updated to match current services"
                     );
                     self.install_npm_dependencies_if_needed()?;
                     self.display_install_success(&install_result);
@@ -733,7 +733,7 @@ impl InstallCommand {
             .load_config(
                 config_manager
                     .get_project_root()
-                    .join("Actr.toml")
+                    .join("actr.toml")
                     .as_path(),
             )
             .await?;
@@ -786,7 +786,7 @@ impl InstallCommand {
         conflicts
     }
 
-    /// Verify that fingerprints in Actr.toml match the currently registered services
+    /// Verify that fingerprints in actr.toml match the currently registered services
     async fn verify_fingerprints(
         &self,
         specs: &[DependencySpec],
@@ -796,7 +796,7 @@ impl InstallCommand {
         let service_discovery = install_pipeline.validation_pipeline().service_discovery();
 
         for spec in specs {
-            // Only check if fingerprint is specified in Actr.toml
+            // Only check if fingerprint is specified in actr.toml
             let expected_fingerprint = match &spec.fingerprint {
                 Some(fp) => fp,
                 None => continue,
@@ -829,7 +829,7 @@ impl InstallCommand {
         Ok(mismatches)
     }
 
-    /// Update Actr.toml with current service fingerprints
+    /// Update actr.toml with current service fingerprints
     async fn update_config_fingerprints(
         &self,
         _context: &CommandContext,
@@ -866,7 +866,7 @@ impl InstallCommand {
                 fingerprint: Some(new_fingerprint.clone()),
             };
 
-            // Use update_dependency to modify Actr.toml directly
+            // Use update_dependency to modify actr.toml directly
             config_manager.update_dependency(&updated_spec).await?;
 
             println!(

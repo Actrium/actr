@@ -14,6 +14,10 @@ use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, oneshot};
+
+/// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
+type PendingRequestsMap =
+    Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 
@@ -42,8 +46,7 @@ pub struct WebRtcGate {
     /// Used to determine if received message is Response (key exists) or Request (key doesn't exist)
     /// **Shared with OutprocOutGate** to ensure correct Response routing
     /// Can send success (Ok(Bytes)) or error (Err(ProtocolError))
-    pending_requests:
-        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>,
+    pending_requests: PendingRequestsMap,
 
     /// DataStream registry for fast-path message routing
     data_stream_registry: Arc<DataStreamRegistry>,
@@ -58,9 +61,7 @@ impl WebRtcGate {
     /// - `data_stream_registry`: DataStream registry for fast-path routing
     pub fn new(
         coordinator: Arc<WebRtcCoordinator>,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
     ) -> Self {
         Self {
@@ -94,9 +95,7 @@ impl WebRtcGate {
         from_bytes: Vec<u8>,
         data: Bytes,
         payload_type: PayloadType,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         mailbox: Arc<dyn Mailbox>,
     ) {
         // Extract and set tracing context from envelope

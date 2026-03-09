@@ -23,7 +23,7 @@ stream-echo/
 │   ├── protos/
 │   │   └── local/
 │   │       └── stream_server.proto    # Server 服务定义
-│   ├── Actr.toml                      # Server 配置
+│   ├── actr.toml                      # Server 配置
 │   ├── Actr.lock.toml                # 依赖锁文件
 │   ├── server.py                      # Server 主程序
 │   └── stream_server.py              # Server 服务实现（生成的 scaffold）
@@ -35,7 +35,7 @@ stream-echo/
     │   └── remote/
     │       └── stream-register-server-python/
     │           └── stream_server.proto  # Server 服务定义（依赖）
-    ├── Actr.toml                      # Client 配置
+    ├── actr.toml                      # Client 配置
     ├── Actr.lock.toml                # 依赖锁文件
     └── client.py                      # Client 实现
 ```
@@ -54,7 +54,7 @@ actr install
 actr gen --input protos --output generated --language python
 
 # 运行 server
-python server.py --actr-toml Actr.toml
+python server.py --actr-toml actr.toml
 ```
 
 ### 2. 启动 Client
@@ -71,10 +71,10 @@ actr install
 actr gen --input protos --output generated --language python
 
 # 运行 client（参数：stream_id 消息数量）
-python client.py --actr-toml Actr.toml <stream_id> <message_count>
+python client.py --actr-toml actr.toml <stream_id> <message_count>
 
 # 示例：接收 10 条消息
-python client.py --actr-toml Actr.toml my-stream 10
+python client.py --actr-toml actr.toml my-stream 10
 ```
 
 参数说明：
@@ -195,7 +195,7 @@ actr gen --input protos --output generated --language python
 
 ## 注意事项
 
-- Client 的 `LocalStreamService` **不在 Actr.toml 的 exports 中**，只供本地调用
+- Client 的 `LocalStreamService` **不在 actr.toml 的 exports 中**，只供本地调用
 - Client 必须在发送 `RegisterStream` 请求**之前**调用 `ctx.register_stream` 注册回调
 - Server 根据请求中的 `message_count` 发送相应数量的 stream 消息
 - Stream 消息是单向的，不需要响应
@@ -206,7 +206,7 @@ actr gen --input protos --output generated --language python
 
 ## 依赖管理
 
-### Server 配置 (Actr.toml)
+### Server 配置 (actr.toml)
 
 ```toml
 exports = ["protos/local/stream_server.proto"]
@@ -219,7 +219,7 @@ manufacturer = "acme"
 name = "StreamEchoServer"
 ```
 
-### Client 配置 (Actr.toml)
+### Client 配置 (actr.toml)
 
 ```toml
 [dependencies]

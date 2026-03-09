@@ -33,7 +33,7 @@ enum VerificationStatus {
 )]
 pub struct FingerprintCommand {
     /// Configuration file path
-    #[arg(short, long, default_value = "Actr.toml")]
+    #[arg(short, long, default_value = "actr.toml")]
     pub config: String,
 
     /// Output format (text, json, yaml)

@@ -17,7 +17,7 @@ let package = Package(
             ],
             path: "AudioCaptureApp",
             resources: [
-                .process("Actr.toml"),
+                .process("actr.toml"),
             ]
         ),
     ]

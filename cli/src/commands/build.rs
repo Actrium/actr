@@ -21,7 +21,7 @@ pub struct BuildArgs {
 impl Default for BuildArgs {
     fn default() -> Self {
         Self {
-            config: "Actr.toml".to_string(),
+            config: "actr.toml".to_string(),
         }
     }
 }

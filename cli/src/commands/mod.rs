@@ -12,6 +12,7 @@ pub mod generate;
 pub mod init;
 pub mod initialize;
 pub mod install;
+pub mod pkg;
 pub mod run;
 
 use crate::error::Result;

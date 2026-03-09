@@ -165,7 +165,7 @@ impl LanguageGenerator for PythonGenerator {
                         "Remote file '{}' not found in lock file.\n\
                          Available remote files in lock:\n  {}\n\n\
                          This usually means:\n\
-                         1. The dependency is not listed in Actr.toml\n\
+                         1. The dependency is not listed in actr.toml\n\
                          2. You need to run 'actr install' to update Actr.lock.toml\n\
                          3. The proto file path in the dependency doesn't match",
                         remote_relative_path,

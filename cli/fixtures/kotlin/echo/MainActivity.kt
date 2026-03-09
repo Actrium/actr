@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 // Copy config file from assets to internal storage
-                val configPath = copyAssetToInternalStorage("Actr.toml")
+                val configPath = copyAssetToInternalStorage("actr.toml")
                 Log.i(TAG, "Config path: $configPath")
                 // Also copy lock file - required by ActrSystem
                 copyAssetToInternalStorage("Actr.lock.toml")

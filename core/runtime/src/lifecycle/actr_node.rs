@@ -224,10 +224,9 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 /// 1. If no caller_id (local call), always allow
 /// 2. If no ACL configured, allow by default (permissive mode for backward compatibility)
 /// 3. If ACL configured but rules are empty, deny all (secure by default)
-/// 4. Iterate through ACL rules in order (first match wins)
-///    - Check if caller matches any principal in the rule
-///    - If matched, return the rule's permission (ALLOW/DENY)
-/// 5. If no rule matches, deny by default (secure by default)
+/// 4. Deny-first: any matching DENY rule overrides all ALLOWs
+/// 5. If no DENY matches and at least one ALLOW matches, allow
+/// 6. If no rule matches, deny by default
 fn check_acl_permission(
     caller_id: Option<&ActrId>,
     target_id: &ActrId,
@@ -257,92 +256,65 @@ fn check_acl_permission(
     // 3. If ACL is configured but has no rules, deny all (secure by default)
     if acl_rules.rules.is_empty() {
         tracing::warn!(
-            "ACL: ACL configured but no rules defined, denying {} -> {} (default deny)",
+            "ACL: No rules defined, denying {} -> {} (default deny)",
             caller.to_string_repr(),
             target_id.to_string_repr()
         );
         return Ok(false);
     }
 
-    // 4. Iterate through ACL rules (first match wins)
-    for (rule_idx, rule) in acl_rules.rules.iter().enumerate() {
-        // Check if caller matches any principal in this rule
-        let mut matched = false;
-
-        // If no principals specified, skip this rule (empty allow list = no match)
-        if rule.principals.is_empty() {
-            tracing::trace!(
-                "ACL: Rule {} has empty principals list, skipping (no match)",
-                rule_idx
-            );
+    // 4 & 5. Deny-first evaluation
+    let mut any_allow = false;
+    for rule in &acl_rules.rules {
+        if !matches_rule(caller, rule) {
             continue;
         }
-
-        // Check each principal
-        for principal in &rule.principals {
-            if matches_principal(caller, principal) {
-                matched = true;
-                tracing::trace!(
-                    "ACL: Rule {} matched principal: caller={}, principal_realm={:?}, principal_type={:?}",
-                    rule_idx,
-                    caller.to_string_repr(),
-                    principal.realm.as_ref().map(|r| r.realm_id),
-                    principal.actr_type.as_ref().map(|t| &t.name)
-                );
-                break;
-            }
-        }
-
-        // If matched, return the permission
-        if matched {
-            let permission = rule.permission;
-            let is_allow = permission == actr_protocol::acl_rule::Permission::Allow as i32;
-
+        let is_allow = rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
+        if !is_allow {
             tracing::debug!(
-                "ACL: Rule {} matched, permission={} for {} -> {}",
-                rule_idx,
-                if is_allow { "ALLOW" } else { "DENY" },
+                "ACL: DENY rule matched for {} -> {}",
                 caller.to_string_repr(),
                 target_id.to_string_repr()
             );
-
-            return Ok(is_allow);
+            return Ok(false);
         }
+        any_allow = true;
     }
 
-    // 5. No rule matched - deny by default (secure by default)
+    if any_allow {
+        tracing::debug!(
+            "ACL: ALLOW rule matched for {} -> {}",
+            caller.to_string_repr(),
+            target_id.to_string_repr()
+        );
+        return Ok(true);
+    }
+
+    // 6. No rule matched - deny by default
     tracing::warn!(
-        "ACL: No matching rule found, denying {} -> {} (default deny)",
+        "ACL: No matching rule, denying {} -> {} (default deny)",
         caller.to_string_repr(),
         target_id.to_string_repr()
     );
     Ok(false)
 }
 
-/// Check if a caller matches a principal
-///
-/// A principal matches if:
-/// - If principal.realm is specified, it must match caller.realm
-/// - If principal.actr_type is specified, it must match caller.type
-/// - If both are None, principal matches all (should not happen in practice)
-fn matches_principal(caller: &ActrId, principal: &actr_protocol::acl_rule::Principal) -> bool {
-    // Check realm match (if specified)
-    if let Some(ref principal_realm) = principal.realm
-        && caller.realm.realm_id != principal_realm.realm_id
+fn matches_rule(caller: &ActrId, rule: &actr_protocol::AclRule) -> bool {
+    use actr_protocol::acl_rule::SourceRealm;
+
+    // Check type match (exact: manufacturer + name + version)
+    if caller.r#type.manufacturer != rule.from_type.manufacturer
+        || caller.r#type.name != rule.from_type.name
+        || caller.r#type.version != rule.from_type.version
     {
         return false;
     }
 
-    // Check type match (if specified)
-    if let Some(ref principal_type) = principal.actr_type
-        && (caller.r#type.manufacturer != principal_type.manufacturer
-            || caller.r#type.name != principal_type.name)
-    {
-        return false;
+    // Check realm match
+    match &rule.source_realm {
+        None | Some(SourceRealm::AnyRealm(_)) => true,
+        Some(SourceRealm::RealmId(id)) => caller.realm.realm_id == *id,
     }
-
-    // If we reach here, all specified fields matched
-    true
 }
 
 impl<W: Workload> ActrNode<W> {
@@ -450,12 +422,7 @@ impl<W: Workload> ActrNode<W> {
         // Step 2: Send discovery request to signaling server
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         let result = self
-            .send_discovery_request(
-                actor_id,
-                target_type,
-                candidate_count,
-                client_fingerprint,
-            )
+            .send_discovery_request(actor_id, target_type, candidate_count, client_fingerprint)
             .await?;
 
         tracing::info!(
@@ -511,10 +478,7 @@ impl<W: Workload> ActrNode<W> {
 
         dep_type.manufacturer == target_type.manufacturer
             && dep_type.name == target_type.name
-            && target_type
-                .version
-                .as_ref()
-                .is_none_or(|version| dep_type.version.as_ref() == Some(version))
+            && (target_type.version.is_empty() || dep_type.version == target_type.version)
     }
 
     /// Internal: Send discovery request to signaling server
@@ -559,9 +523,7 @@ impl<W: Workload> ActrNode<W> {
                 let ws_addresses: std::collections::HashMap<ActrId, String> = success
                     .ws_address_map
                     .into_iter()
-                    .filter_map(|entry| {
-                        entry.ws_address.map(|url| (entry.candidate_id, url))
-                    })
+                    .filter_map(|entry| entry.ws_address.map(|url| (entry.candidate_id, url)))
                     .collect();
 
                 Ok(DiscoveryResult {
@@ -1069,10 +1031,7 @@ impl<W: Workload> ActrNode<W> {
                     "🆔 Assigned ActrId: {}",
                     actr_protocol::ActrIdExt::to_string_repr(&actor_id)
                 );
-                tracing::info!(
-                    "🔐 Received credential (key_id: {})",
-                    credential.key_id
-                );
+                tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
                 tracing::info!(
                     "💓 Signaling heartbeat interval: {} seconds",
                     register_ok.signaling_heartbeat_interval_secs
@@ -1259,8 +1218,8 @@ impl<W: Workload> ActrNode<W> {
                         listen_port
                     );
                     use crate::ais_key_cache::AisKeyCache;
-                    use crate::wire::websocket::{WebSocketGate, WebSocketServer};
                     use crate::wire::websocket::gate::WsAuthContext;
+                    use crate::wire::websocket::{WebSocketGate, WebSocketServer};
 
                     // 构建 AisKeyCache，并用注册响应中的 signing key 进行初始化
                     let ais_key_cache = AisKeyCache::new();
@@ -1280,7 +1239,9 @@ impl<W: Workload> ActrNode<W> {
                             ),
                         }
                     } else {
-                        tracing::warn!("⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级");
+                        tracing::warn!(
+                            "⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级"
+                        );
                     }
 
                     let auth_ctx = WsAuthContext {
@@ -1300,7 +1261,9 @@ impl<W: Workload> ActrNode<W> {
                                 Some(auth_ctx),
                             ));
                             self.websocket_gate = Some(ws_gate);
-                            tracing::info!("✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)");
+                            tracing::info!(
+                                "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
+                            );
                         }
                         Err(e) => {
                             tracing::error!(
@@ -2129,10 +2092,7 @@ mod tests {
         // Verify updated state
         let updated_credential = state.credential().await;
         assert_eq!(updated_credential.key_id, 2);
-        assert_eq!(
-            updated_credential.claims,
-            credential2.claims
-        );
+        assert_eq!(updated_credential.claims, credential2.claims);
 
         let updated_expires_at = state.expires_at().await;
         assert_eq!(updated_expires_at, Some(create_test_timestamp(2000)));

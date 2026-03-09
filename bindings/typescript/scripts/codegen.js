@@ -26,10 +26,10 @@ function parseArgs(argv) {
 
 function usage() {
   const message = [
-    'Usage: codegen --config <Actr.toml> [--out <generated-dir>] [--proto-root <protos/remote>] [--lock <Actr.lock.toml>] [--dist-import <path>]',
+    'Usage: codegen --config <actr.toml> [--out <generated-dir>] [--proto-root <protos/remote>] [--lock <Actr.lock.toml>] [--dist-import <path>]',
     '',
     'Example:',
-    '  node scripts/codegen.js --config examples/echo-client/Actr.toml',
+    '  node scripts/codegen.js --config examples/echo-client/actr.toml',
   ].join('\n');
   console.error(message);
 }

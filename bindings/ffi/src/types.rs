@@ -41,7 +41,11 @@ impl From<actr_protocol::ActrType> for ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
-            version: t.version,
+            version: if t.version.is_empty() {
+                None
+            } else {
+                Some(t.version)
+            },
         }
     }
 }
@@ -51,7 +55,7 @@ impl From<ActrType> for actr_protocol::ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
-            version: t.version,
+            version: t.version.unwrap_or_default(),
         }
     }
 }

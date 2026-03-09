@@ -18,7 +18,7 @@ Recommended usage:
             self.handler = handler
             super().__init__(my_service_actor.MyServiceDispatcher())
 
-    system = await ActrSystem.from_toml("Actr.toml")
+    system = await ActrSystem.from_toml("actr.toml")
     node = system.attach(MyWorkload(MyHandler()))
     ref = await node.start()
 """

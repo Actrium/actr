@@ -51,9 +51,7 @@ pub struct WebSocketServer {
 
 impl WebSocketServer {
     /// 绑定到指定端口，返回 server 实例和入站连接接收端
-    pub async fn bind(
-        port: u16,
-    ) -> ActorResult<(Self, mpsc::Receiver<InboundWsConn>)> {
+    pub async fn bind(port: u16) -> ActorResult<(Self, mpsc::Receiver<InboundWsConn>)> {
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = TcpListener::bind(addr).await.map_err(|e| {
             ActrError::Internal(format!("WebSocketServer: failed to bind port {port}: {e}"))

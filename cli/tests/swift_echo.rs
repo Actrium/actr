@@ -64,8 +64,8 @@ fn swift_echo_init_creates_expected_files() {
         "project.yml should exist"
     );
     assert!(
-        project_dir.join("Actr.toml").exists(),
-        "Actr.toml should exist"
+        project_dir.join("actr.toml").exists(),
+        "actr.toml should exist"
     );
     assert!(
         project_dir.join("Actr.lock.toml").exists(),
@@ -109,12 +109,12 @@ fn swift_echo_actr_toml_has_signaling_url() {
     let tmp = TempDir::new().unwrap();
     let project_dir = init_swift_echo(tmp.path(), "SignalingApp");
 
-    let actr_toml = std::fs::read_to_string(project_dir.join("Actr.toml")).expect("read Actr.toml");
+    let actr_toml = std::fs::read_to_string(project_dir.join("actr.toml")).expect("read actr.toml");
 
     // The template always appends /signaling/ws; input is normalized.
     assert!(
         actr_toml.contains("wss://actrix1.develenv.com/signaling/ws"),
-        "Actr.toml should contain the full signaling URL with /signaling/ws path, got:\n{actr_toml}"
+        "actr.toml should contain the full signaling URL with /signaling/ws path, got:\n{actr_toml}"
     );
 }
 

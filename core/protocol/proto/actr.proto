@@ -19,9 +19,9 @@ message Realm {
 message ActrType {
   required string manufacturer = 1;
   required string name = 2;
-  // Semantic version (e.g., "1.0.0"). Optional for backward compatibility;
-  // logically required for new registrations.
-  optional string version = 3;
+  // Version string (e.g., "1.0.0", "v2", "stable"). Not required to follow
+  // semantic versioning, but must be present.
+  required string version = 3;
 }
 
 message ActrId {
@@ -86,20 +86,24 @@ message AIdCredential {
 // Access Control (type-to-type permissions)
 // =========================================================================
 
-// A single ACL rule: from -> me : permission
+// A single ACL rule: who (from_type @ source_realm) -> permission
 message AclRule {
-  message Principal {
-    optional Realm realm = 1;
-    optional ActrType actr_type = 2;
-  }
-
-  repeated Principal principals = 1;
-
   enum Permission { DENY = 0; ALLOW = 1; }
-  required Permission permission = 2;
+
+  required Permission permission = 1;
+  required ActrType   from_type  = 2;
+
+  // Source realm selector. "self" in config is resolved to realm_id by actor
+  // before registration; "*" in config maps to any_realm = true.
+  oneof source_realm {
+    bool   any_realm = 3;  // wildcard: matches any realm
+    uint32 realm_id  = 4;  // specific realm
+  }
 }
 
-// Access Control List (ordered; first match wins)
+// Access Control List.
+// Evaluation: any matching DENY overrides all ALLOWs.
+// Default policy: deny if no rule matches.
 message Acl {
   repeated AclRule rules = 1;
 }

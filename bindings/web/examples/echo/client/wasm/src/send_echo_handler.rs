@@ -22,7 +22,7 @@ fn echo_server_type() -> &'static actr_runtime_sw::actr_protocol::ActrType {
     ECHO_SERVER_TYPE.get_or_init(|| actr_runtime_sw::actr_protocol::ActrType {
         manufacturer: "acme".to_string(),
         name: "EchoService".to_string(),
-        version: None,
+        version: "v1".to_string(),
     })
 }
 

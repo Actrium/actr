@@ -24,7 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config
         .out_dir(&generated_dir)
         // Use bytes::Bytes instead of Vec<u8> for better zero-copy performance
-        .bytes(["."]);
+        .bytes(["."])
+        .type_attribute(
+            "RegisterResponse.result",
+            "#[allow(clippy::large_enum_variant)]",
+        );
 
     // Add serde and Ord/PartialOrd for core identity types
     // (used in HashMaps, BTreeMaps, and serialized outside of protobuf)

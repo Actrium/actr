@@ -20,6 +20,7 @@ use actr_cli::core::{
 
 // 导入命令实现
 use actr_cli::commands::dlq as dlq_cmd;
+use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DiscoveryCommand, DocCommand,
     FingerprintCommand, GenCommand, InitCommand, InstallCommand, RunCommand,
@@ -73,6 +74,9 @@ enum Commands {
 
     /// Dead Letter Queue inspection
     Dlq(DlqArgs),
+
+    /// Manage actor packages (signing, publishing)
+    Pkg(pkg_cmd::PkgArgs),
 }
 
 /// Arguments for `actr dlq`
@@ -145,6 +149,13 @@ async fn main() -> Result<()> {
         return dlq_cmd::execute(inner_args).await;
     }
 
+    // pkg 命令不需要 ServiceContainer，提前处理
+    if matches!(&cli.command, Some(Commands::Pkg(_))) {
+        if let Some(Commands::Pkg(args)) = cli.command {
+            return pkg_cmd::execute(args).await;
+        }
+    }
+
     // 构建服务容器并注册组件
     let container = build_container().await?;
 
@@ -207,7 +218,7 @@ async fn main() -> Result<()> {
 
 /// 构建服务容器
 async fn build_container() -> Result<ServiceContainer> {
-    let config_path = std::path::Path::new("Actr.toml");
+    let config_path = std::path::Path::new("actr.toml");
     let mut builder = ContainerBuilder::new();
     let mut config_manager = None;
 
@@ -265,9 +276,9 @@ async fn execute_command(
         }
         Commands::Discovery(cmd) => {
             let command = DiscoveryCommand::from_args(cmd);
-            if !std::path::Path::new("Actr.toml").exists() {
+            if !std::path::Path::new("actr.toml").exists() {
                 return Err(anyhow::anyhow!(
-                    "No Actr.toml found in current directory.\n💡 Hint: Run 'actr init' to initialize a new project first."
+                    "No actr.toml found in current directory.\n💡 Hint: Run 'actr init' to initialize a new project first."
                 ));
             }
             {
@@ -307,6 +318,7 @@ async fn execute_command(
             Err(e) => Err(e.into()),
         },
         Commands::Dlq(_) => unreachable!("dlq is handled before build_container"),
+        Commands::Pkg(_) => unreachable!("pkg is handled before build_container"),
     }
 }
 

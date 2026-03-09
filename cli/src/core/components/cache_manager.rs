@@ -14,7 +14,7 @@ use super::{CacheManager, CacheStats, CachedProto, Fingerprint, ProtoFile};
 /// Caches proto files to `{project_root}/protos/remote/{service_name}/` directory
 /// following the documentation spec.
 pub struct DefaultCacheManager {
-    /// Project root directory (where Actr.toml is located)
+    /// Project root directory (where actr.toml is located)
     project_root: PathBuf,
 }
 

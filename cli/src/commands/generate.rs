@@ -35,8 +35,8 @@ pub struct GenCommand {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Path to Actr.toml config file
-    #[arg(short, long, default_value = "Actr.toml")]
+    /// Path to actr.toml config file
+    #[arg(short, long, default_value = "actr.toml")]
     pub config: PathBuf,
 
     /// Clean generated outputs before regenerating
@@ -80,7 +80,7 @@ impl Command for GenCommand {
             self.language
         );
         let config = ConfigParser::from_file(&self.config)
-            .map_err(|e| ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}")))?;
+            .map_err(|e| ActrCliError::config_error(format!("Failed to parse actr.toml: {e}")))?;
 
         let proto_files = self.preprocess()?;
         let proto_model = ProtoModel::parse(&proto_files, &self.input, &config)?;
@@ -173,7 +173,7 @@ impl GenCommand {
                 "Actr.lock.toml not found\n\n\
                 The lock file is required for code generation. Please run:\n\n\
                 \x20\x20\x20\x20actr install\n\n\
-                This will generate Actr.lock.toml based on your Actr.toml configuration.",
+                This will generate Actr.lock.toml based on your actr.toml configuration.",
             ));
         }
 
@@ -188,7 +188,7 @@ impl GenCommand {
         match self.language {
             SupportedLanguage::Swift => {
                 let config = ConfigParser::from_file(&self.config).map_err(|e| {
-                    ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}"))
+                    ActrCliError::config_error(format!("Failed to parse actr.toml: {e}"))
                 })?;
                 let project_name = &config.package.name;
                 let pascal_name = to_pascal_case(project_name);
@@ -196,7 +196,7 @@ impl GenCommand {
             }
             SupportedLanguage::Kotlin => {
                 let config = ConfigParser::from_file(&self.config).map_err(|e| {
-                    ActrCliError::config_error(format!("Failed to parse Actr.toml: {e}"))
+                    ActrCliError::config_error(format!("Failed to parse actr.toml: {e}"))
                 })?;
                 let clean_name: String = config
                     .package

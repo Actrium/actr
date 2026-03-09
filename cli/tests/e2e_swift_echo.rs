@@ -71,7 +71,7 @@ extension EchoServiceWorkload: Workload where T == EchoServiceHandlerImpl {
 struct EchoServiceCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("Actr.toml")
+        let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
 
         let system = try await ActrSystem.from(tomlConfig: configPath)
         let workload = EchoServiceWorkload(handler: EchoServiceHandlerImpl())
@@ -110,7 +110,7 @@ extension EchoAppWorkload: Workload {
 struct EchoAppCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("Actr.toml")
+        let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
 
         let system = try await ActrSystem.from(tomlConfig: configPath)
         let workload = EchoAppWorkload()

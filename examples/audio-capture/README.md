@@ -26,7 +26,7 @@ The shared actrix config stays at `../actrix-config.toml`.
 If you run the Rust receiver directly, create its local config first:
 
 ```bash
-cp rust-receiver/Actr.example.toml rust-receiver/Actr.toml
+cp rust-receiver/Actr.example.toml rust-receiver/actr.toml
 ```
 
 Initialize the realm and ACL entries before the first run:
@@ -35,7 +35,7 @@ Initialize the realm and ACL entries before the first run:
 cargo run --manifest-path ../rust/Cargo.toml -p realm-setup -- \
   -c ../actrix-config.toml \
   -a rust-receiver/Actr.example.toml \
-  -a AudioCaptureApp/AudioCaptureApp/Actr.toml
+  -a AudioCaptureApp/AudioCaptureApp/actr.toml
 ```
 
 ## Reproduce

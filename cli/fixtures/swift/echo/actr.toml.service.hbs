@@ -1,22 +1,20 @@
 edition = 1
-exports = []
+exports = ["protos/local/echo.proto"]
 
 [package]
 name = "{{PROJECT_NAME}}"
-description = "Data stream client app"
+description = "Actor-RTC Swift EchoService provider"
 authors = ["Actr-Team"]
 license = "Apache-2.0"
-tags = ["dev", "client"]
+tags = ["dev", "service"]
 
 [package.actr_type]
 manufacturer = "{{MANUFACTURER}}"
-name = "StreamEchoClient"
-
-[dependencies]
-stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer" }
+name = "EchoService"
+version = "v1"
 
 [system.signaling]
-url = "{{{SIGNALING_URL}}}"
+url = "{{{SIGNALING_URL}}}/signaling/ws"
 
 [system.deployment]
 realm_id = {{REALM_ID}}
@@ -43,4 +41,4 @@ test = "xcodebuild test"
 
 [[acl.rules]]
 permission = "allow"
-principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer" } }]
+type = "{{MANUFACTURER}}:echo-client-app"

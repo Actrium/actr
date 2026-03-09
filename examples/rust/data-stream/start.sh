@@ -32,12 +32,12 @@ mkdir -p "$LOG_DIR"
 # Ensure required CLI tools
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
-# Ensure Actr.toml files exist
+# Ensure actr.toml files exist
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
-# Ensure Actr.toml files exist for sender and receiver
+# Ensure actr.toml files exist for sender and receiver
 echo ""
-echo "🔍 Checking Actr.toml files..."
+echo "🔍 Checking actr.toml files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 DATA_STREAM_DIR="$WORKSPACE_ROOT/data-stream"
 SENDER_DIR="$DATA_STREAM_DIR/sender"
@@ -244,12 +244,12 @@ if ! cargo build -p realm-setup 2>&1 | tail -5; then
     exit 1
 fi
 
-# Run realm-setup with Actr.toml files from sender and receiver
+# Run realm-setup with actr.toml files from sender and receiver
 REALM_SETUP_OUTPUT="$LOG_DIR/realm-setup.log"
 if ! cargo run -p realm-setup -- \
     --actrix-config "$ACTRIX_CONFIG" \
-    --actr-toml "$SENDER_DIR/Actr.toml" \
-    --actr-toml "$RECEIVER_DIR/Actr.toml" \
+    --actr-toml "$SENDER_DIR/actr.toml" \
+    --actr-toml "$RECEIVER_DIR/actr.toml" \
     > "$REALM_SETUP_OUTPUT" 2>&1; then
     echo -e "${RED}❌ Failed to setup realms in actrix${NC}"
     cat "$REALM_SETUP_OUTPUT"

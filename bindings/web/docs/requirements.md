@@ -443,7 +443,7 @@ actr-cli build --platform web --profile release
 
 ```
 my-web-app/
-├── Actr.toml                   # Actor 配置
+├── actr.toml                   # Actor 配置
 ├── package.json                # npm 配置
 ├── tsconfig.json               # TypeScript 配置
 ├── vite.config.ts              # Vite 配置
@@ -458,7 +458,7 @@ my-web-app/
 
 ### 7.2 配置扩展
 
-#### Actr.toml 新增字段
+#### actr.toml 新增字段
 
 ```toml
 [package]

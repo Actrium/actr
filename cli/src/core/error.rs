@@ -138,7 +138,7 @@ impl ActrCliError {
         match self {
             ActrCliError::Config { message } => {
                 format!(
-                    "⚠️  Config file error: {message}\n💡 Hint: Check Actr.toml syntax and content"
+                    "⚠️  Config file error: {message}\n💡 Hint: Check actr.toml syntax and content"
                 )
             }
             ActrCliError::Network { message } => {
@@ -169,7 +169,7 @@ impl ActrCliError {
     pub fn suggested_actions(&self) -> Vec<String> {
         match self {
             ActrCliError::Config { .. } => vec![
-                "Check Actr.toml file syntax".to_string(),
+                "Check actr.toml file syntax".to_string(),
                 "Run 'actr config test' to validate config".to_string(),
                 "Refer to config examples in documentation".to_string(),
             ],
@@ -205,7 +205,7 @@ impl ActrCliError {
             ActrCliError::Config { .. } => vec![
                 ("Config Docs", "https://docs.actor-rtc.com/config"),
                 (
-                    "Actr.toml Reference",
+                    "actr.toml Reference",
                     "https://docs.actor-rtc.com/actr-toml",
                 ),
             ],

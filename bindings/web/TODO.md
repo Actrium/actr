@@ -370,7 +370,7 @@
   - [ ] Vanilla JS 模板
 
 - [ ] **配置支持** (0%)
-  - [ ] Actr.toml [platform.web] 配置解析
+  - [ ] actr.toml [platform.web] 配置解析
 
 **预计剩余工作量**: 2-3 天（已完成 5-6 天工作）
 

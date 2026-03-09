@@ -14,8 +14,8 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Load configuration from Actr.toml
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Actr.toml");
+    // 1. Load configuration from actr.toml
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config

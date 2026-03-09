@@ -2832,8 +2832,8 @@ async function suiteCrossplatformEnv(browser) {
 
     // 14-0-2 realm_id 对齐检查
     await runTest('14-0-2', 'realm_id 对齐检查', async () => {
-        // Read the Rust server config (Actr.toml) and Web client SW config
-        const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'Actr.toml');
+        // Read the Rust server config (actr.toml) and Web client SW config
+        const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
         const clientSwPath = path.join(SCRIPT_DIR, 'client', 'public', 'actor.sw.js');
 
         let rustRealm = null;
@@ -2860,7 +2860,7 @@ async function suiteCrossplatformEnv(browser) {
 
     // 14-0-3 signaling URL 对齐检查
     await runTest('14-0-3', 'signaling URL 对齐检查', async () => {
-        const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'Actr.toml');
+        const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
         const clientSwPath = path.join(SCRIPT_DIR, 'client', 'public', 'actor.sw.js');
 
         let rustUrl = null;
@@ -3137,7 +3137,7 @@ async function suiteCrossplatformWebrtc(browser) {
         await runTest('14-2-5', '跨端: TURN 不可用 (观测)', async () => {
             // This is an observational test — if force_relay=true in the Rust server config
             // but no TURN server is running, ICE should fail
-            const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'Actr.toml');
+            const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
             let forceRelay = false;
             if (fs.existsSync(rustTomlPath)) {
                 const toml = fs.readFileSync(rustTomlPath, 'utf8');

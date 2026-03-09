@@ -3,8 +3,8 @@ exports = ["protos/local/echo.proto"]
 
 [package]
 name = "{{PROJECT_NAME}}"
-description = "Actor-RTC Swift EchoService provider"
-authors = ["Actr-Team"]
+description = "Actor-RTC TypeScript EchoService provider"
+authors = []
 license = "Apache-2.0"
 tags = ["dev", "service"]
 
@@ -23,8 +23,8 @@ realm_id = {{REALM_ID}}
 visible = true
 
 [system.observability]
-filter_level = "debug"
-tracing_enabled = true
+filter_level = "info"
+tracing_enabled = false
 tracing_endpoint = "http://127.0.0.1:4317"
 tracing_service_name = "{{PROJECT_NAME}}"
 
@@ -34,11 +34,10 @@ stun_urls = {{{STUN_URLS}}}
 turn_urls = {{{TURN_URLS}}}
 
 [scripts]
-dev = "xcodegen generate"
-test = "xcodebuild test"
+dev = "npm run dev"
 
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "echo-client-app" } }]
+type = "{{MANUFACTURER}}:echo-client-app"

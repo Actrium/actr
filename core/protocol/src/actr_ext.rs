@@ -36,32 +36,39 @@ pub enum ActrIdError {
 pub trait ActrTypeExt: Sized {
     /// Convert to stable string representation.
     ///
-    /// With version:    `"manufacturer:name:version"`
-    /// Without version: `"manufacturer:name"`
+    /// With non-empty version: `"manufacturer:name:version"`
+    /// With empty version:     `"manufacturer:name"`
     fn to_string_repr(&self) -> String;
 
     /// Parse from string representation.
     ///
     /// Accepts:
-    /// - `"manufacturer:name"` — no version
-    /// - `"manufacturer:name:version"` — with version
+    /// - `"manufacturer:name:version"` — with version (required)
+    ///
+    /// Returns `Err(ActrIdError::InvalidTypeFormat)` if version is absent,
+    /// as `ActrType.version` is now a required field.
     fn from_string_repr(s: &str) -> Result<Self, ActrIdError>;
 }
 
 impl ActrTypeExt for ActrType {
     fn to_string_repr(&self) -> String {
-        match self.version.as_deref().filter(|v| !v.is_empty()) {
-            Some(v) => format!("{}:{}:{}", self.manufacturer, self.name, v),
-            None => format!("{}:{}", self.manufacturer, self.name),
+        if self.version.is_empty() {
+            format!("{}:{}", self.manufacturer, self.name)
+        } else {
+            format!("{}:{}:{}", self.manufacturer, self.name, self.version)
         }
     }
 
     fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
-        // Allow up to 3 segments: manufacturer, name, optional version
+        // Require exactly 3 segments: manufacturer, name, version
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
-            [m, n] => (*m, *n, None),
-            [m, n, v] => (*m, *n, Some(*v)),
+            [_, _] => {
+                return Err(ActrIdError::InvalidTypeFormat(format!(
+                    "{s} (version is required, expected <manufacturer>:<name>:<version>)"
+                )));
+            }
+            [m, n, v] => (*m, *n, *v),
             _ => return Err(ActrIdError::InvalidTypeFormat(s.to_string())),
         };
 
@@ -73,7 +80,7 @@ impl ActrTypeExt for ActrType {
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),
             name: name.to_string(),
-            version: version.map(|v| v.to_string()),
+            version: version.to_string(),
         })
     }
 }
@@ -140,7 +147,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "echo-service".to_string(),
-                version: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
             },
         };
 
@@ -156,22 +163,14 @@ mod tests {
     }
 
     #[test]
-    fn test_actor_id_roundtrip_without_version() {
-        let original = ActrId {
-            realm: Realm { realm_id: 101 },
-            serial_number: 0x1a2b3c,
-            r#type: ActrType {
-                manufacturer: "acme".to_string(),
-                name: "echo-service".to_string(),
-                version: None,
-            },
-        };
-
-        let s = original.to_string_repr();
-        assert_eq!(s, "1a2b3c@101/acme:echo-service");
-
-        let parsed = ActrId::from_string_repr(&s).unwrap();
-        assert_eq!(parsed.r#type.version, None);
+    fn test_actor_id_roundtrip_without_version_errors() {
+        // Parsing a string without version should now return an error
+        let result = ActrId::from_string_repr("1a2b3c@101/acme:echo-service");
+        assert!(
+            matches!(result, Err(ActrIdError::InvalidTypeFormat(_))),
+            "Expected InvalidTypeFormat error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -198,16 +197,20 @@ mod tests {
         let ty = ActrType::from_string_repr(s).unwrap();
         assert_eq!(ty.manufacturer, "acme");
         assert_eq!(ty.name, "echo");
-        assert_eq!(ty.version.as_deref(), Some("1.2.3"));
+        assert_eq!(ty.version.as_str(), "1.2.3");
         assert_eq!(ty.to_string_repr(), s);
     }
 
     #[test]
-    fn test_actr_type_roundtrip_without_version() {
+    fn test_actr_type_without_version_is_error() {
+        // Version is now required; two-segment strings must fail
         let s = "acme:echo-service";
-        let ty = ActrType::from_string_repr(s).unwrap();
-        assert_eq!(ty.version, None);
-        assert_eq!(ty.to_string_repr(), s);
+        let result = ActrType::from_string_repr(s);
+        assert!(
+            matches!(result, Err(ActrIdError::InvalidTypeFormat(_))),
+            "Expected InvalidTypeFormat, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -224,12 +227,12 @@ mod tests {
         ));
         // Invalid manufacturer
         assert!(matches!(
-            ActrType::from_string_repr("1acme:echo"),
+            ActrType::from_string_repr("1acme:echo:v1"),
             Err(ActrIdError::InvalidComponent(_))
         ));
         // Invalid name
         assert!(matches!(
-            ActrType::from_string_repr("acme:echo!"),
+            ActrType::from_string_repr("acme:echo!:v1"),
             Err(ActrIdError::InvalidComponent(_))
         ));
     }

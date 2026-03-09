@@ -5,7 +5,7 @@
 //! to the plugin's stdin, and reads a [`WebCodegenResponse`] from stdout.
 //!
 //! Generated artifacts (produced by the plugin):
-//! - `src/generated/actr-config.ts`  — Configuration from Actr.toml
+//! - `src/generated/actr-config.ts`  — Configuration from actr.toml
 //! - `src/generated/*.actorref.ts`   — Typed ActorRef wrappers for local services
 //! - `src/generated/index.ts`        — Re-exports
 //! - `wasm/`                         — Rust WASM crate (Cargo.toml, build.sh, src/lib.rs, handlers)

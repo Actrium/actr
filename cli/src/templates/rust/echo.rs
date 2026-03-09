@@ -13,17 +13,17 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
         "Cargo.toml",
     )?;
 
-    // Role-specific fixtures: main.rs, Actr.toml, README.md
+    // Role-specific fixtures: main.rs, actr.toml, README.md
     let (main_hbs, actr_toml_hbs, readme_hbs) = if is_service {
         (
             fixtures_root.join("rust/main.rs.service.hbs"),
-            fixtures_root.join("rust/echo/Actr.toml.service.hbs"),
+            fixtures_root.join("rust/echo/actr.toml.service.hbs"),
             fixtures_root.join("rust/echo/README.md.service.hbs"),
         )
     } else {
         (
             fixtures_root.join("rust/main.rs.hbs"),
-            fixtures_root.join("rust/echo/Actr.toml.hbs"),
+            fixtures_root.join("rust/echo/actr.toml.hbs"),
             fixtures_root.join("rust/echo/README.md.hbs"),
         )
     };
@@ -36,7 +36,7 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
             "src/echo_service.rs",
         )?;
     }
-    ProjectTemplate::load_file(&actr_toml_hbs, files, "Actr.toml")?;
+    ProjectTemplate::load_file(&actr_toml_hbs, files, "actr.toml")?;
 
     // README.md
     ProjectTemplate::load_file(&readme_hbs, files, "README.md")?;

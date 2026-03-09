@@ -27,7 +27,7 @@ final class ActrService: ObservableObject {
         do {
             let bundle = Bundle.main
             guard let configPath = bundle.path(forResource: "Actr", ofType: "toml") else {
-                throw ActrError.StateError(msg: "Actr.toml not found in bundle")
+                throw ActrError.StateError(msg: "actr.toml not found in bundle")
             }
 
             let result = try await Task.detached(priority: .userInitiated) { () throws

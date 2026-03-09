@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Allowed Client starting...");
 
-    let config_path = PathBuf::from("Actr.toml");
+    let config_path = PathBuf::from("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
     let system = ActrSystem::new(config).await?;
     
@@ -99,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "greeter.GreeterService".to_string(),
+        version: "v1".to_string(),
     };
     
     info!("🔍 Discovering greeter.GreeterService...");

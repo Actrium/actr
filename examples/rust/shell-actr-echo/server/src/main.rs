@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 1. 加载配置
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Actr.toml");
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // 初始化可观测性（日志/链路追踪）

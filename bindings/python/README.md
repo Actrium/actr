@@ -37,7 +37,7 @@ class MyWorkload(WorkloadBase):
     async def on_stop(self, ctx):
         pass
 
-system = await ActrSystem.from_toml("Actr.toml")
+system = await ActrSystem.from_toml("actr.toml")
 node = system.attach(MyWorkload(MyHandler()))
 ref = await node.start()
 await ref.wait_for_ctrl_c_and_shutdown()
@@ -201,7 +201,7 @@ stream = DataStream(stream_id="stream-1", sequence=1, payload=b"hello")
 from actr import ActrSystem, ActrRef, Context
 
 # Use high-level API
-system = await ActrSystem.from_toml("Actr.toml")
+system = await ActrSystem.from_toml("actr.toml")
 workload = MyWorkload()
 node = system.attach(workload)
 ref = await node.start()
@@ -223,7 +223,7 @@ except ActrRuntimeError as e:
 from actr.actr_raw import ActrSystem, ActrRef
 
 # Use Rust binding
-system = await ActrSystem.from_toml("Actr.toml")
+system = await ActrSystem.from_toml("actr.toml")
 # Need manual serialization/deserialization of protobuf messages
 ```
 
@@ -253,7 +253,7 @@ class MyWorkload(WorkloadBase):
         pass
 
 async def main():
-    system = await ActrSystem.from_toml("Actr.toml")
+    system = await ActrSystem.from_toml("actr.toml")
     workload = MyWorkload(MyHandler())
     node = system.attach(workload)
     ref = await node.start()
@@ -268,7 +268,7 @@ from actr.actr_raw import ActrSystem, ActrRef, ActrRuntimeError
 
 async def main():
     try:
-        system = await ActrSystem.from_toml("Actr.toml")
+        system = await ActrSystem.from_toml("actr.toml")
         workload = MyWorkload()
         node = system.attach(workload)
         ref = await node.start()  # Directly raises exception, no need to check is_ok()

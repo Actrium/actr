@@ -17,6 +17,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
 
+/// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
+type PendingRequestsMap =
+    Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
+
 /// OutprocOutGate - Outproc transport adapter (outbound)
 ///
 /// # Features
@@ -31,8 +35,7 @@ pub struct OutprocOutGate {
 
     /// Pending requests: request_id → (target_actor_id, oneshot::Sender<Bytes>)
     /// Stores both the target ActorId and response sender for efficient cleanup by peer
-    pending_requests:
-        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>,
+    pending_requests: PendingRequestsMap,
 
     /// WebRTC coordinator (optional, for MediaTrack support)
     webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
@@ -80,9 +83,7 @@ impl OutprocOutGate {
     /// It triggers top-down cleanup by calling transport_manager.close_transport().
     fn spawn_event_listener(
         mut event_rx: broadcast::Receiver<ConnectionEvent>,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
         transport_manager: Arc<OutprocTransportManager>,
     ) {
@@ -246,10 +247,7 @@ impl OutprocOutGate {
     }
 
     /// Get pending_requests reference (for WebRtcGate to share)
-    pub fn get_pending_requests(
-        &self,
-    ) -> Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>
-    {
+    pub fn get_pending_requests(&self) -> PendingRequestsMap {
         self.pending_requests.clone()
     }
 

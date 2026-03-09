@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 
     let stream_id = format!("{}-stream", client_id);
 
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Actr.toml");
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     let _obs_guard = actr_runtime::init_observability(&config.observability)?;

@@ -213,7 +213,7 @@ async fn decode_opus_frame(
 
 fn resolve_config_path() -> PathBuf {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let primary = crate_dir.join("Actr.toml");
+    let primary = crate_dir.join("actr.toml");
     if primary.exists() {
         primary
     } else {

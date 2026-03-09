@@ -11,7 +11,7 @@ fn test_config_parser_loads_valid_config() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    // Create a minimal valid Actr.toml
+    // Create a minimal valid actr.toml
     let actr_toml = r#"edition = 1
 exports = []
 
@@ -37,7 +37,7 @@ visible = true
 dev = "cargo run"
 test = "cargo test"
 "#;
-    let config_path = temp_dir.path().join("Actr.toml");
+    let config_path = temp_dir.path().join("actr.toml");
     fs::write(&config_path, actr_toml).unwrap();
 
     // Load configuration

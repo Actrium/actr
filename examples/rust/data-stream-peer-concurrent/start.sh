@@ -95,12 +95,12 @@ mkdir -p "$LOG_DIR"
 # Ensure required CLI tools
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
-# Ensure Actr.toml files exist
+# Ensure actr.toml files exist
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
-# Ensure Actr.toml files exist for server and client
+# Ensure actr.toml files exist for server and client
 echo ""
-echo "🔍 Checking Actr.toml files..."
+echo "🔍 Checking actr.toml files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ensure_actr_toml "$SCRIPT_DIR/server"
 ensure_actr_toml "$SCRIPT_DIR/client"
