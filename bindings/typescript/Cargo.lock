@@ -4,11 +4,10 @@ version = 4
 
 [[package]]
 name = "actr-config"
-version = "0.1.8"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
- "actr-version",
+ "actr-service-compat",
  "chrono",
  "serde",
  "thiserror 1.0.69",
@@ -18,8 +17,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -31,30 +29,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-mailbox"
-version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
-dependencies = [
- "actr-protocol",
- "anyhow",
- "async-trait",
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "actr-protocol"
-version = "0.1.7"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
+version = "0.2.0"
 dependencies = [
  "anyhow",
- "base122-rs",
  "base64",
  "bytes",
  "chrono",
@@ -71,14 +49,13 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.8"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
+version = "0.2.0"
 dependencies = [
  "actr-config",
  "actr-framework",
- "actr-mailbox",
  "actr-protocol",
- "actr-version",
+ "actr-runtime-mailbox",
+ "actr-service-compat",
  "anyhow",
  "async-trait",
  "base64",
@@ -87,6 +64,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "dotenvy",
+ "ed25519-dalek",
  "either",
  "futures-util",
  "hex",
@@ -111,8 +89,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-runtime-mailbox"
+version = "0.2.0"
+dependencies = [
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "actr-service-compat"
+version = "0.2.0"
+dependencies = [
+ "actr-protocol",
+ "anyhow",
+ "chrono",
+ "proto-fingerprint",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "actr-ts"
-version = "0.1.14"
+version = "0.2.0"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -128,20 +136,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "actr-version"
-version = "0.1.5"
-source = "git+https://github.com/actor-rtc/actr?rev=ee1ccc800ca9a493e08214415d04077e7dc7cf95#ee1ccc800ca9a493e08214415d04077e7dc7cf95"
-dependencies = [
- "actr-protocol",
- "anyhow",
- "chrono",
- "proto-sign",
- "serde",
- "sha2",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -377,12 +371,6 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "base122-rs"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c8ae722b83726dd93247786be3237fc4c30a8c13d8e6c161b61b00a0d32374f"
 
 [[package]]
 name = "base16ct"
@@ -820,6 +808,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "curve25519-dalek-derive",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -982,6 +971,30 @@ dependencies = [
  "rfc6979",
  "signature",
  "spki",
+]
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2174,10 +2187,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "proto-sign"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cf45daf5c0c3525013f93bd52fbe7cd5c96c1f463fabaac08e4ba3752882f91"
+name = "proto-fingerprint"
+version = "0.1.0"
+source = "git+https://github.com/Actrium/proto-kit.git?rev=5649988f2bc67fb1f8f56ec7eedf044422696b5d#5649988f2bc67fb1f8f56ec7eedf044422696b5d"
 dependencies = [
  "anyhow",
  "clap",
@@ -3075,8 +3087,12 @@ checksum = "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.15.5",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 

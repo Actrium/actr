@@ -2,15 +2,8 @@ name: CI (Python)
 
 on:
   push:
-    branches: [main, develop]
-    paths:
-      - 'bindings/python/**'
-      - '.github/workflows/ci-python.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'bindings/python/**'
-      - '.github/workflows/ci-python.yml'
+    tags:
+      - '*'
   workflow_dispatch:
 
 defaults:

@@ -29,6 +29,7 @@ impl From<Realm> for actr_protocol::Realm {
 pub struct ActrType {
     pub manufacturer: String,
     pub name: String,
+    pub version: String,
 }
 
 impl From<actr_protocol::ActrType> for ActrType {
@@ -36,6 +37,7 @@ impl From<actr_protocol::ActrType> for ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
+            version: t.version,
         }
     }
 }
@@ -45,6 +47,7 @@ impl From<ActrType> for actr_protocol::ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
+            version: t.version,
         }
     }
 }

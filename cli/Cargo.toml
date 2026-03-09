@@ -15,25 +15,25 @@ path = "src/main.rs"
 
 [dependencies]
 # Actor-RTC main crate with config feature (includes protocol, config, version)
-actr = { path = "..", version = "0.1", features = ["config"] }
+actr = { path = "..", version = "0.2.0", features = ["config"] }
 
 # DLQ storage (for actr dlq subcommand)
-actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.1" }
+actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.2.0" }
 
 
 # Direct access to config/protocol for CLI-specific types
 # (These have different APIs than actr umbrella re-exports)
-actr-config = { path = "../core/config", version = "0.1" }
-actr-protocol = { path = "../core/protocol", version = "0.1" }
+actr-config = { path = "../core/config", version = "0.2.0" }
+actr-protocol = { path = "../core/protocol", version = "0.2.0" }
 
 # Version / fingerprint utilities
-actr-service-compat = { path = "../core/service-compat", version = "0.1" }
+actr-service-compat = { path = "../core/service-compat", version = "0.2.0" }
 
 # Protoc code generator - CLI specific tool
-actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.1" }
+actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.2.0" }
 
 # Web platform code generator (types + plugin binary)
-actr-web-protoc-codegen = { path = "../tools/protoc-gen/web", version = "0.1" }
+actr-web-protoc-codegen = { path = "../tools/protoc-gen/web", version = "0.2.0" }
 
 # Command line interface
 clap = { version = "4.5", features = ["derive", "cargo"] }

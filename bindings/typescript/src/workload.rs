@@ -103,11 +103,11 @@ impl MessageDispatcher for DynamicDispatcher {
             .dispatch_fn
             .call_async(Ok((ctx_bridge, envelope_bridge)))
             .await
-            .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
+            .map_err(|e| actr_protocol::ActrError::Internal(e.to_string()))?;
 
-        let response = promise
+        let response: Buffer = promise
             .await
-            .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
+            .map_err(|e| actr_protocol::ActrError::Internal(e.to_string()))?;
 
         Ok(bytes::Bytes::from(response.to_vec()))
     }

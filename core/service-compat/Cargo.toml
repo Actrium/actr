@@ -1,6 +1,6 @@
 [package]
 name = "actr-service-compat"
-version = "0.1.5"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ workspace = true
 [dependencies]
 # Core dependencies for service compatibility analysis
 actr-protocol.workspace = true
-proto-fingerprint = { git = "https://github.com/actor-rtc/proto-kit.git", rev = "947af3c" }
+proto-fingerprint = { git = "https://github.com/Actrium/proto-kit.git", rev = "5649988f2bc67fb1f8f56ec7eedf044422696b5d" }
 
 # Serialization support
 serde = { version = "1.0", features = ["derive"] }

@@ -1,6 +1,6 @@
 [package]
 name = "actr"
-version = "0.1.10"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -82,7 +82,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -95,13 +95,13 @@ collapsible_else_if = "allow"
 
 [workspace.dependencies]
 # === Internal Dependencies (内部依赖) ===
-actr-protocol = { path = "core/protocol", version = "0.1.7" }
-actr-service-compat = { path = "core/service-compat", version = "0.1.5" }
-actr-config = { path = "core/config", version = "0.1.8" }
-actr-framework = { path = "core/framework", version = "0.1.5" }
-actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.1.10" }
-actr-runtime = { path = "core/runtime", version = "0.1.8" }
-actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.1.5" }
+actr-protocol = { path = "core/protocol", version = "0.2.0" }
+actr-service-compat = { path = "core/service-compat", version = "0.2.0" }
+actr-config = { path = "core/config", version = "0.2.0" }
+actr-framework = { path = "core/framework", version = "0.2.0" }
+actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.2.0" }
+actr-runtime = { path = "core/runtime", version = "0.2.0" }
+actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.2.0" }
 
 # === Async Runtime (异步运行时) ===
 tokio = { version = "1.48", features = ["full"] }

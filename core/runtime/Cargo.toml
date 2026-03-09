@@ -1,6 +1,6 @@
 [package]
 name = "actr-runtime"
-version = "0.1.8"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Runtime layer for Actor-RTC framework - actor system, scheduler, and orchestration"

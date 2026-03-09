@@ -1,6 +1,6 @@
 # Actor-RTC Framework Demo
 
-![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)
 ![Node.js](https://img.shields.io/badge/node.js-16+-green.svg)
 ![WebRTC](https://img.shields.io/badge/webrtc-enabled-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -62,7 +62,7 @@
 
 ### 前置要求
 
-- **Rust**: 1.70+ ([安装指南](https://rustup.rs/))
+- **Rust**: 1.88+ ([安装指南](https://rustup.rs/))
 - **Node.js**: 16+ ([下载地址](https://nodejs.org/))
 - **protoc**: Protocol Buffer 编译器
   ```bash
