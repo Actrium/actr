@@ -206,6 +206,7 @@ impl ServiceRegistry {
     }
 
     /// 注册服务（完整版本，支持 ServiceSpec 和 ACL）
+    #[allow(clippy::too_many_arguments)]
     pub fn register_service_full(
         &mut self,
         actor_id: ActrId,

@@ -279,23 +279,29 @@ impl LoadBalancer {
         client_location: Option<(f64, f64)>,
     ) -> std::cmp::Ordering {
         // 距离近者排前面，复用 haversine 逻辑
-        if let (Some((clat, clon)), Some(a_loc), Some(b_loc)) = (
+        if let (
+            Some((clat, clon)),
+            Some(a_loc),
+            Some(b_loc),
+            Some(a_lat),
+            Some(a_lon),
+            Some(b_lat),
+            Some(b_lon),
+        ) = (
             client_location,
             &a.geo_location,
             &b.geo_location,
+            a.geo_location.as_ref().and_then(|l| l.latitude),
+            a.geo_location.as_ref().and_then(|l| l.longitude),
+            b.geo_location.as_ref().and_then(|l| l.latitude),
+            b.geo_location.as_ref().and_then(|l| l.longitude),
         ) {
-            if let (Some(a_lat), Some(a_lon), Some(b_lat), Some(b_lon)) = (
-                a_loc.latitude,
-                a_loc.longitude,
-                b_loc.latitude,
-                b_loc.longitude,
-            ) {
-                let dist_a = crate::geo::haversine_distance(clat, clon, a_lat, a_lon);
-                let dist_b = crate::geo::haversine_distance(clat, clon, b_lat, b_lon);
-                return dist_a
-                    .partial_cmp(&dist_b)
-                    .unwrap_or(std::cmp::Ordering::Equal);
-            }
+            let _ = (a_loc, b_loc); // used for presence check above
+            let dist_a = crate::geo::haversine_distance(clat, clon, a_lat, a_lon);
+            let dist_b = crate::geo::haversine_distance(clat, clon, b_lat, b_lon);
+            return dist_a
+                .partial_cmp(&dist_b)
+                .unwrap_or(std::cmp::Ordering::Equal);
         }
         std::cmp::Ordering::Equal
     }

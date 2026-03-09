@@ -34,9 +34,7 @@ impl AIdCredentialValidator {
 
     /// 获取全局 KeyCache 实例
     fn get_cache() -> Result<Arc<KeyCache>, AidError> {
-        KEY_CACHE.get().cloned().ok_or_else(|| {
-            AidError::InvalidFormat
-        })
+        KEY_CACHE.get().cloned().ok_or(AidError::InvalidFormat)
     }
 
     /// 校验 AIdCredential：Ed25519 签名验证 + realm_id 检查
@@ -53,9 +51,7 @@ impl AIdCredentialValidator {
         let (verifying_key, _expires_at) = cache
             .get_cached_key(key_id)
             .await?
-            .ok_or_else(|| {
-                AidError::InvalidFormat // key_id not found in cache
-            })?;
+            .ok_or(AidError::InvalidFormat)?; // key_id not found in cache
 
         let claims = AIdCredentialVerifier::verify(credential, &verifying_key)?;
 
