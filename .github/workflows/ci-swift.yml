@@ -30,7 +30,7 @@ jobs:
       - name: Build local Swift XCFramework
         working-directory: bindings/swift
         env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
         run: |
           ACTR_BINDINGS_PATH=dist/ActrBindings \
           ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
