@@ -9,6 +9,7 @@ use ks::{GrpcClient, GrpcClientConfig, KeyStorage, KsServiceConfig, create_grpc_
 use nonce_auth::storage::MemoryStorage;
 use platform::aid::credential::validator::AIdCredentialValidator;
 use platform::config::ks::KsClientConfig;
+use serial_test::serial;
 use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -144,12 +145,19 @@ fn default_issuer_config(temp_dir: &TempDir) -> IssuerConfig {
         key_storage_file: temp_dir.path().join("issuer_keys.db"),
         enable_periodic_rotation: false,
         key_rotation_interval_secs: 86400,
+        turn_secret: "test-turn-secret".to_string(),
+        sqlite_path: temp_dir.path().join("signaling_key_cache.db"),
     }
 }
 
 #[tokio::test]
+#[serial]
 async fn test_end_to_end_credential_flow() {
     let env = setup_test_environment().await;
+
+    AIdCredentialValidator::init(env.validator_temp_dir.path())
+        .await
+        .expect("Failed to initialize validator");
 
     let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
         .await
@@ -162,24 +170,16 @@ async fn test_end_to_end_credential_flow() {
     .await
     .expect("Failed to create issuer");
 
-    AIdCredentialValidator::init(
-        &env.ks_config,
-        &env.shared_key,
-        env.validator_temp_dir.path(),
-    )
-    .await
-    .expect("Failed to initialize validator");
-
     let request = RegisterRequest {
         actr_type: ActrType {
-            manufacturer: "test-manufacturer".to_string(),
+            manufacturer: "acme".to_string(),
             name: "test-device".to_string(),
-            version: None,
+            version: "v1".to_string(),
         },
         realm: Realm { realm_id: 1001 },
-        service: None,
         service_spec: None,
         acl: None,
+        service: None,
         ws_address: None,
     };
 
@@ -193,7 +193,10 @@ async fn test_end_to_end_credential_flow() {
         register_response::Result::Error(err) => panic!("Expected success but got error: {err:?}"),
     };
 
-    assert!(register_ok.psk.is_some(), "PSK should be present");
+    assert!(
+        !register_ok.turn_credential.username.is_empty(),
+        "TURN credential should be present"
+    );
     assert!(
         register_ok.credential_expires_at.is_some(),
         "Credential expiry should be present"
@@ -218,8 +221,8 @@ async fn test_end_to_end_credential_flow() {
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs();
-    assert!(claims.expr_time > now);
-    assert!(claims.expr_time <= now + 3600);
+    assert!(claims.expires_at > now);
+    assert!(claims.expires_at <= now + 3600);
 
     let wrong_realm_result = AIdCredentialValidator::check(&register_ok.credential, 9999).await;
     assert!(
@@ -231,14 +234,14 @@ async fn test_end_to_end_credential_flow() {
     for idx in 0..5 {
         let req = RegisterRequest {
             actr_type: ActrType {
-                manufacturer: format!("test-manufacturer-{idx}"),
+                manufacturer: "acme".to_string(),
                 name: format!("test-device-{idx}"),
-                version: None,
+                version: "v1".to_string(),
             },
             realm: Realm { realm_id: 1001 },
-            service: None,
             service_spec: None,
             acl: None,
+            service: None,
             ws_address: None,
         };
 
@@ -261,6 +264,7 @@ async fn test_end_to_end_credential_flow() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_issuer_health_checks() {
     let env = setup_test_environment().await;
 
@@ -286,6 +290,7 @@ async fn test_issuer_health_checks() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_issuer_rotate_key_updates_current_key() {
     let env = setup_test_environment().await;
 
@@ -325,6 +330,7 @@ async fn test_issuer_rotate_key_updates_current_key() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_issuer_creation_fails_with_wrong_shared_key() {
     let env = setup_test_environment().await;
 
@@ -344,12 +350,15 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
     // Credential issuance should return an error response due to wrong shared key
     let request = actr_protocol::RegisterRequest {
         actr_type: actr_protocol::ActrType {
-            manufacturer: "test".to_string(),
+            manufacturer: "acme".to_string(),
             name: "bad-key-test".to_string(),
+            version: "v1".to_string(),
         },
         realm: actr_protocol::Realm { realm_id: 1 },
         service_spec: None,
         acl: None,
+        service: None,
+        ws_address: None,
     };
     let resp = issuer
         .issue_credential(&request)
@@ -366,6 +375,7 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
     let mut env = setup_test_environment().await;
 
@@ -404,6 +414,7 @@ async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_issuer_rotate_key_fails_when_ks_is_unavailable() {
     let mut env = setup_test_environment().await;
 

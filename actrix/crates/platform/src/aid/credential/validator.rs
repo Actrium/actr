@@ -8,6 +8,7 @@ use super::error::AidError;
 use super::verifier::AIdCredentialVerifier;
 use crate::aid::key_cache::KeyCache;
 use actr_protocol::{AIdCredential, IdentityClaims};
+use ed25519_dalek::VerifyingKey;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 
@@ -70,6 +71,19 @@ impl AIdCredentialValidator {
         let cache = Self::get_cache()?;
         let result = cache.get_cached_key(key_id).await?;
         Ok(result.map(|(verifying_key, _expires_at)| verifying_key.as_bytes().to_vec()))
+    }
+
+    /// 将 Ed25519 verifying key 写入全局 KeyCache（由 AIS 签发器调用）
+    ///
+    /// AIS 在加载或刷新 signing key 后调用此方法，让 signaling 等服务能验证凭证。
+    /// 若 KeyCache 尚未初始化（`init` 未调用），此方法是无操作（non-fatal）。
+    pub async fn populate_key(
+        key_id: u32,
+        verifying_key: &VerifyingKey,
+        expires_at: u64,
+    ) -> Result<(), AidError> {
+        let cache = Self::get_cache()?;
+        cache.cache_key(key_id, verifying_key, expires_at).await
     }
 
     /// 同步校验（用于非 async 上下文，如 TURN 认证）

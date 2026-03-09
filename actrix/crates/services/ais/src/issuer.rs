@@ -104,6 +104,11 @@ pub struct IssuerConfig {
     pub key_rotation_interval_secs: u64,
     /// TURN 共享密钥（与 TURN 服务器共享，用于生成时效凭证）
     pub turn_secret: String,
+    /// SQLite 数据目录（与 signaling 共享，用于写入 verifying key 供其验证凭证）
+    ///
+    /// AIS 在加载或刷新 signing key 后，会把 verifying key 写入此目录下的
+    /// `signaling_key_cache.db`，让 signaling 的 `AIdCredentialValidator` 能够验证凭证。
+    pub sqlite_path: std::path::PathBuf,
 }
 
 impl Default for IssuerConfig {
@@ -116,6 +121,7 @@ impl Default for IssuerConfig {
             enable_periodic_rotation: false,   // 默认禁用定期轮替
             key_rotation_interval_secs: 86400, // 24 小时
             turn_secret: "actrix-turn-secret-change-in-production".to_string(),
+            sqlite_path: std::path::PathBuf::from("."),
         }
     }
 }
@@ -228,11 +234,29 @@ impl AIdIssuer {
             tolerance_seconds: record.tolerance_seconds,
         };
 
+        let key_id = record.key_id;
+        let expires_at = record.expires_at;
+
         // 同步加载，阻塞等待
         tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async {
                 *self.key_cache.write().await = Some(cache);
+                // 将 verifying key 写入 AIdCredentialValidator 的 KeyCache
+                if let Err(e) =
+                    platform::aid::credential::validator::AIdCredentialValidator::populate_key(
+                        key_id,
+                        &verifying_key,
+                        expires_at,
+                    )
+                    .await
+                {
+                    platform::recording::warn!(
+                        "写入 verifying key 到 KeyCache 失败（非致命，key_id={}）: {}",
+                        key_id,
+                        e
+                    );
+                }
             });
         });
 
@@ -451,6 +475,25 @@ impl AIdIssuer {
             .update_current_key(&record)
             .await
             .map_err(|e| AidError::GenerationFailed(format!("Failed to save key: {e}")))?;
+
+        // 将 verifying key 写入 AIdCredentialValidator 的 KeyCache，
+        // 使 signaling 服务能验证此后签发的凭证。
+        if let Err(e) =
+            platform::aid::credential::validator::AIdCredentialValidator::populate_key(
+                key_id,
+                &verifying_key,
+                expires_at,
+            )
+            .await
+        {
+            platform::recording::warn!(
+                "写入 verifying key 到 KeyCache 失败（非致命，key_id={}）: {}",
+                key_id,
+                e
+            );
+        } else {
+            platform::recording::info!("✅ verifying key 已写入 KeyCache (key_id={})", key_id);
+        }
 
         Ok(())
     }

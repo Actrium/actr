@@ -12,7 +12,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
 
 /// AIS 签名公钥缓存管理器
 ///
@@ -50,7 +49,7 @@ impl KeyCache {
 
         cache.init_tables().await?;
 
-        info!(
+        crate::recording::info!(
             "AIS 公钥缓存初始化完成，数据库：{}",
             cache_db_file.as_ref().display()
         );
@@ -81,7 +80,7 @@ impl KeyCache {
                 AidError::DecodeFailure(format!("failed to create key_cache index: {e}"))
             })?;
 
-        debug!("AIS 公钥缓存数据库表已就绪");
+        crate::recording::debug!("AIS 公钥缓存数据库表已就绪");
         Ok(())
     }
 
@@ -105,7 +104,7 @@ impl KeyCache {
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| {
-                    error!(key_id, "查询 AIS 公钥缓存失败：{}", e);
+                    crate::recording::error!("查询 AIS 公钥缓存失败：key_id={}, error={}", key_id, e);
                     AidError::DecodeFailure(format!("key cache query error: {e}"))
                 })?;
 
@@ -120,7 +119,7 @@ impl KeyCache {
 
                 // 缓存条目已过期，删除并返回 None
                 if expires_at > 0 && (expires_at as u64) <= now {
-                    debug!(key_id, "AIS 公钥缓存已过期，删除");
+                    crate::recording::debug!("AIS 公钥缓存已过期，删除 key_id={}", key_id);
                     let _ = sqlx::query("DELETE FROM key_cache WHERE key_id = ?1")
                         .bind(key_id as i64)
                         .execute(&self.pool)
@@ -145,11 +144,11 @@ impl KeyCache {
                     AidError::DecodeFailure(format!("invalid Ed25519 verifying key: {e}"))
                 })?;
 
-                debug!(key_id, "命中 AIS 公钥缓存");
+                crate::recording::debug!("命中 AIS 公钥缓存 key_id={}", key_id);
                 Ok(Some((verifying_key, expires_at as u64)))
             }
             None => {
-                debug!(key_id, "AIS 公钥缓存未命中");
+                crate::recording::debug!("AIS 公钥缓存未命中 key_id={}", key_id);
                 Ok(None)
             }
         }
@@ -182,7 +181,7 @@ impl KeyCache {
         .await
         .map_err(|e| AidError::DecodeFailure(format!("failed to write key cache: {e}")))?;
 
-        debug!(key_id, expires_at, "AIS 公钥已写入缓存");
+        crate::recording::debug!("AIS 公钥已写入缓存 key_id={}, expires_at={}", key_id, expires_at);
         Ok(())
     }
 
@@ -204,7 +203,7 @@ impl KeyCache {
 
         let deleted = result.rows_affected() as u32;
         if deleted > 0 {
-            info!("AIS 公钥缓存：已清理 {} 条过期记录", deleted);
+            crate::recording::info!("AIS 公钥缓存：已清理 {} 条过期记录", deleted);
         }
         Ok(deleted)
     }
@@ -238,11 +237,11 @@ impl KeyCache {
         };
 
         if should_cleanup {
-            debug!("触发 AIS 公钥缓存定时清理");
+            crate::recording::debug!("触发 AIS 公钥缓存定时清理");
             match self.cleanup_expired_keys().await {
-                Ok(n) if n > 0 => info!("AIS 公钥缓存清理完成，删除 {} 条", n),
+                Ok(n) if n > 0 => crate::recording::info!("AIS 公钥缓存清理完成，删除 {} 条", n),
                 Ok(_) => {}
-                Err(e) => error!("AIS 公钥缓存清理失败：{}", e),
+                Err(e) => crate::recording::error!("AIS 公钥缓存清理失败：{}", e),
             }
             let mut last = self.last_cleanup_time.lock().unwrap();
             *last = now;

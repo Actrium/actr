@@ -399,7 +399,7 @@ mod tests {
         let actr_type = ActrType {
             manufacturer: "apple".to_string(),
             name: "iPhone15".to_string(),
-            version: None,
+            version: String::new(),
         };
 
         let realm = Realm { realm_id: 12345 };
@@ -431,7 +431,7 @@ mod tests {
             actr_type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "actor".to_string(),
-                version: None,
+                version: String::new(),
             },
             realm: Realm { realm_id: 456 },
             service: None,
@@ -463,7 +463,7 @@ mod tests {
                 r#type: ActrType {
                     manufacturer: "test".to_string(),
                     name: "actor".to_string(),
-                    version: None,
+                    version: String::new(),
                 },
             },
             credential: AIdCredential {
