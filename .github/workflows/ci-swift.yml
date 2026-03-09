@@ -15,6 +15,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install UniFFI bindgen
         run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
       - name: Install SwiftLint
