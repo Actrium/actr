@@ -54,7 +54,7 @@ mkdir -p "$LOG_DIR"
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
 echo ""
-echo "🔍 检查 Actr.toml 配置文件..."
+echo "🔍 检查 actr.toml 配置文件..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 函数：从 example.toml 复制配置文件
@@ -72,8 +72,8 @@ ensure_toml() {
     fi
 }
 
-ensure_toml "$SERVER_DIR/Actr.toml"     "$SERVER_DIR/Actr.example.toml"
-ensure_toml "$CLIENT_DIR/Actr.toml"     "$CLIENT_DIR/Actr.example.toml"
+ensure_toml "$SERVER_DIR/actr.toml"     "$SERVER_DIR/Actr.example.toml"
+ensure_toml "$CLIENT_DIR/actr.toml"     "$CLIENT_DIR/Actr.example.toml"
 ensure_toml "$ACTRIX_CONFIG"            "$WS_ECHO_DIR/actrix-config.example.toml"
 
 echo ""
@@ -257,7 +257,7 @@ if ! command -v sqlite3 > /dev/null 2>&1; then
     exit 1
 fi
 
-# 插入 realm 数据（realm_id = 1001，与 Actr.toml 中配置一致）
+# 插入 realm 数据（realm_id = 1001，与 actr.toml 中配置一致）
 REALM_ID=1001
 sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO realm (realm_id, name, status, expires_at, created_at, updated_at) VALUES ($REALM_ID, 'e2e-realm', 'Normal', NULL, strftime('%s','now'), strftime('%s','now'))"
 

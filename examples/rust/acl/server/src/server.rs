@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Greeter Server (ACL Protected) starting...");
 
     // Load configuration
-    let config_path = PathBuf::from("Actr.toml");
+    let config_path = PathBuf::from("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
     info!("✅ Configuration loaded");
 

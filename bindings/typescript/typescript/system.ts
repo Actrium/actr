@@ -18,12 +18,12 @@ export class ActrSystem {
   /**
    * Create ActrSystem from a TOML config file path.
    *
-   * @param configPath - Path to Actr.toml
+   * @param configPath - Path to actr.toml
    * @returns ActrSystem instance
    *
    * @example
    * ```typescript
-   * const system = await ActrSystem.fromConfig('./Actr.toml');
+   * const system = await ActrSystem.fromConfig('./actr.toml');
    * ```
    */
   static async fromConfig(configPath: string): Promise<ActrSystem> {

@@ -30,8 +30,8 @@ ACTRIX*.md
 .demo_logs/
 database/
 
-# Actr.toml files (use Actr.example.toml as template)
-**/Actr.toml
+# actr.toml files (use Actr.example.toml as template)
+**/actr.toml
 
 # Actrix config file (use actrix-config.example.toml as template)
 actrix-config.toml

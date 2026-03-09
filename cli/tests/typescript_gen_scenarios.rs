@@ -129,7 +129,7 @@ fn write_ts_project_files(root: &Path) {
 
 fn write_actr_toml_local_only(root: &Path) {
     fs::write(
-        root.join("Actr.toml"),
+        root.join("actr.toml"),
         r#"edition = 1
 [package]
 name = "local-only"
@@ -150,7 +150,7 @@ realm_id = 1
 
 fn write_actr_toml_with_remote(root: &Path) {
     fs::write(
-        root.join("Actr.toml"),
+        root.join("actr.toml"),
         r#"edition = 1
 [package]
 name = "remote-only"
@@ -172,7 +172,7 @@ realm_id = 1
 
 fn write_actr_toml_both(root: &Path) {
     fs::write(
-        root.join("Actr.toml"),
+        root.join("actr.toml"),
         r#"edition = 1
 [package]
 name = "both"
@@ -194,7 +194,7 @@ realm_id = 1
 
 fn write_actr_toml_both_with_two_remotes(root: &Path) {
     fs::write(
-        root.join("Actr.toml"),
+        root.join("actr.toml"),
         r#"edition = 1
 [package]
 name = "both-two-remotes"
@@ -235,7 +235,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService"
+actr_type = "acme:EchoService:v1"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -255,7 +255,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService"
+actr_type = "acme:EchoService:v1"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -264,7 +264,7 @@ files = [
 
 [[dependency]]
 name = "profile-service"
-actr_type = "acme:ProfileService"
+actr_type = "acme:ProfileService:v1"
 fingerprint = "service_semantic:789"
 cached_at = "2026-03-03T00:00:00Z"
 files = [

@@ -229,12 +229,12 @@ pub use transport::{
 pub use transport::TransportManager;
 
 // Layer 0: Wire Layer
+pub use ais_key_cache::AisKeyCache;
 pub use wire::{
     AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
     SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
     WebSocketConnection, WebSocketGate, WebSocketServer, WebSocketSignalingClient, WsAuthContext,
 };
-pub use ais_key_cache::AisKeyCache;
 
 // Mailbox
 pub use actr_runtime_mailbox::{

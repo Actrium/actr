@@ -45,8 +45,8 @@ actr gen -i ../proto
 3. Copy configs:
 
 ```bash
-cp server/Actr.example.toml server/Actr.toml
-cp client/Actr.example.toml client/Actr.toml
+cp server/Actr.example.toml server/actr.toml
+cp client/Actr.example.toml client/actr.toml
 ```
 
 4. Start the server:

@@ -330,7 +330,7 @@ impl RpcRequest for {input_type} {{
                     let target_type = actr_protocol::ActrType {
                         manufacturer: #manufacturer.to_string(),
                         name: #name.to_string(),
-                        version: None,
+                        version: "v1".to_string(),
                     };
                     let target_id = ctx.discover_route_candidate(&target_type).await?;
                     ctx.call_raw(
@@ -518,7 +518,7 @@ impl {handler_trait} for MyService {{
 ```rust
 #[tokio::main]
 async fn main() -> ActorResult<()> {{
-    let config = actr_config::Config::from_file("Actr.toml")?;
+    let config = actr_config::Config::from_file("actr.toml")?;
     let service = MyService {{ /* ... */ }};
 
     ActorSystem::new(config)?
@@ -730,7 +730,7 @@ mod tests {
             package_name: "echo".to_string(),
             service_name: "EchoService".to_string(),
             methods: vec!["Echo".to_string()],
-            actr_type: "acme:EchoService".to_string(),
+            actr_type: "acme:EchoService:v1".to_string(),
         }];
 
         let code = generator

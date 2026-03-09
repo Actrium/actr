@@ -181,7 +181,7 @@ fn infer_remote_actr_type(
         ActrType {
             manufacturer: default_manufacturer.to_string(),
             name: service_name.to_string(),
-            version: None,
+            version: "v1".to_string(),
         }
         .to_string_repr()
     })

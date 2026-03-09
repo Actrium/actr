@@ -74,7 +74,7 @@ impl ParserV1 {
 
         // 10. 解析 ACL (从顶级 acl 读取，放在最后以避免 partial move)
         let acl = if let Some(acl_value) = raw.acl {
-            Some(self.parse_acl(acl_value)?)
+            Some(self.parse_acl(acl_value, self_realm.realm_id)?)
         } else {
             None
         };
@@ -122,16 +122,10 @@ impl ParserV1 {
             ))
         })?;
 
-        let version = if raw.actr_type.version.is_empty() {
-            None
-        } else {
-            Some(raw.actr_type.version.clone())
-        };
-
         let actr_type = ActrType {
             manufacturer: raw.actr_type.manufacturer.clone(),
             name: raw.actr_type.name.clone(),
-            version,
+            version: raw.actr_type.version.clone(),
         };
 
         Ok(PackageInfo {
@@ -209,15 +203,18 @@ impl ParserV1 {
         })
     }
 
-    /// Parse an ActrType string: `"manufacturer:name"` or `"manufacturer:name:version"`.
+    /// Parse an ActrType string: `"manufacturer:name:version"`.
+    ///
+    /// The version segment is required. For backward compatibility with configs
+    /// that omit it, the empty string is accepted and stored as-is.
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
-            [m, n] => (*m, *n, None),
-            [m, n, v] => (*m, *n, Some(*v)),
+            [m, n] => (*m, *n, ""),
+            [m, n, v] => (*m, *n, *v),
             _ => {
                 return Err(ConfigError::InvalidActrType(format!(
-                    "Invalid actor type '{}': expected 'manufacturer:name' or 'manufacturer:name:version'",
+                    "Invalid actor type '{}': expected 'manufacturer:name:version'",
                     s
                 )));
             }
@@ -236,15 +233,14 @@ impl ParserV1 {
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),
             name: name.to_string(),
-            version: version.map(|v| v.to_string()),
+            version: version.to_string(),
         })
     }
 
-    fn parse_acl(&self, value: toml::Value) -> Result<Acl> {
+    fn parse_acl(&self, value: toml::Value, self_realm_id: u32) -> Result<Acl> {
         use actr_protocol::AclRule;
-        use actr_protocol::acl_rule::{Permission, Principal};
+        use actr_protocol::acl_rule::{Permission, SourceRealm};
 
-        // Parse [[acl.rules]] array
         let rules_array = value
             .get("rules")
             .and_then(|v| v.as_array())
@@ -257,153 +253,61 @@ impl ParserV1 {
                 ConfigError::InvalidAcl(format!("ACL rule {} must be a table", idx))
             })?;
 
-            // Parse permission (required)
+            // permission (required)
             let permission_str = rule_table
                 .get("permission")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     ConfigError::InvalidAcl(format!("ACL rule {} missing 'permission' field", idx))
                 })?;
-
             let permission = match permission_str.to_uppercase().as_str() {
                 "ALLOW" => Permission::Allow as i32,
                 "DENY" => Permission::Deny as i32,
                 _ => {
                     return Err(ConfigError::InvalidAcl(format!(
-                        "Invalid permission '{}' in ACL rule {}, expected 'ALLOW' or 'DENY'",
-                        permission_str, idx
+                        "ACL rule {}: invalid permission '{}', expected 'ALLOW' or 'DENY'",
+                        idx, permission_str
                     )));
                 }
             };
 
-            // Parse principals - support both 'principals' and 'types' format
-            let principals = if let Some(types_value) = rule_table.get("types") {
-                // types = ["acme:allowed-client:1.0.0", "acme:admin:2.0.0"]
-                let types_array = types_value.as_array().ok_or_else(|| {
-                    ConfigError::InvalidAcl(format!("ACL rule {} 'types' must be an array", idx))
+            // type (required): "manufacturer:name:version"
+            let type_str = rule_table
+                .get("type")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ConfigError::InvalidAcl(format!("ACL rule {} missing 'type' field", idx))
                 })?;
+            let from_type = self.parse_actr_type(type_str)?;
 
-                let mut principals_list = Vec::new();
-                for (t_idx, type_value) in types_array.iter().enumerate() {
-                    let type_str = type_value.as_str().ok_or_else(|| {
-                        ConfigError::InvalidAcl(format!(
-                            "ACL rule {} type {} must be a string",
-                            idx, t_idx
-                        ))
-                    })?;
-
-                    // Parse "manufacturer:name:version" format
-                    let actr_type = self.parse_actr_type(type_str)?;
-
-                    principals_list.push(Principal {
-                        realm: None, // No realm specified in types format
-                        actr_type: Some(actr_type),
-                    });
-                }
-                principals_list
-            } else if let Some(principals_value) = rule_table.get("principals") {
-                // Old format: principals = [{ realm = 0, actr_type = ... }]
-                let principals_array = principals_value.as_array().ok_or_else(|| {
-                    ConfigError::InvalidAcl(format!(
-                        "ACL rule {} 'principals' must be an array",
-                        idx
-                    ))
-                })?;
-
-                let mut principals_list = Vec::new();
-                for (p_idx, principal_value) in principals_array.iter().enumerate() {
-                    let principal_table = principal_value.as_table().ok_or_else(|| {
-                        ConfigError::InvalidAcl(format!(
-                            "ACL rule {} principal {} must be a table",
-                            idx, p_idx
-                        ))
-                    })?;
-
-                    // Parse optional realm
-                    let realm = if let Some(realm_value) = principal_table.get("realm") {
-                        let realm_id = realm_value.as_integer().ok_or_else(|| {
-                            ConfigError::InvalidAcl(format!(
-                                "ACL rule {} principal {} realm must be an integer",
-                                idx, p_idx
-                            ))
-                        })? as u32;
-                        Some(actr_protocol::Realm { realm_id })
-                    } else {
-                        None
-                    };
-
-                    // Parse optional actr_type
-                    let actr_type = if let Some(type_value) = principal_table.get("actr_type") {
-                        if let Some(type_str) = type_value.as_str() {
-                            Some(self.parse_actr_type(type_str)?)
-                        } else if let Some(type_table) = type_value.as_table() {
-                            // Support inline table: { manufacturer = "acme", name = "service", version = "v1" }
-                            let manufacturer = type_table
-                                .get("manufacturer")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            // Validate manufacturer name (allow empty string)
-                            if !manufacturer.is_empty() {
-                                Name::new(manufacturer.clone())
-                                    .map_err(|e| ConfigError::InvalidAcl(format!(
-                                        "ACL rule {} principal {} actr_type has invalid manufacturer '{}': {}",
-                                        idx, p_idx, manufacturer, e
-                                    )))?;
-                            }
-
-                            let name = type_table
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .ok_or_else(|| {
-                                    ConfigError::InvalidAcl(format!(
-                                        "ACL rule {} principal {} actr_type must have 'name' field",
-                                        idx, p_idx
-                                    ))
-                                })?
-                                .to_string();
-
-                            // Validate actor type name
-                            Name::new(name.clone()).map_err(|e| {
-                                ConfigError::InvalidAcl(format!(
-                                    "ACL rule {} principal {} actr_type has invalid name '{}': {}",
-                                    idx, p_idx, name, e
-                                ))
-                            })?;
-
-                            let version = type_table
-                                .get("version")
-                                .and_then(|v| v.as_str())
-                                .map(str::trim)
-                                .filter(|version| !version.is_empty())
-                                .map(str::to_string);
-
-                            Some(ActrType {
-                                manufacturer,
-                                name,
-                                version,
-                            })
-                        } else {
+            // realm (optional): omitted/"self" → self_realm_id, "*" → any, integer → specific
+            let source_realm = match rule_table.get("realm") {
+                None => Some(SourceRealm::RealmId(self_realm_id)),
+                Some(v) => match v.as_str() {
+                    Some("self") => Some(SourceRealm::RealmId(self_realm_id)),
+                    Some("*") => Some(SourceRealm::AnyRealm(true)),
+                    Some(other) => {
+                        return Err(ConfigError::InvalidAcl(format!(
+                            "ACL rule {}: invalid realm '{}', expected 'self', '*', or an integer",
+                            idx, other
+                        )));
+                    }
+                    None => match v.as_integer() {
+                        Some(id) => Some(SourceRealm::RealmId(id as u32)),
+                        None => {
                             return Err(ConfigError::InvalidAcl(format!(
-                                "ACL rule {} principal {} actr_type must be a string or table",
-                                idx, p_idx
+                                "ACL rule {}: realm must be 'self', '*', or an integer",
+                                idx
                             )));
                         }
-                    } else {
-                        None
-                    };
-
-                    principals_list.push(Principal { realm, actr_type });
-                }
-                principals_list
-            } else {
-                Vec::new()
+                    },
+                },
             };
 
             rules.push(AclRule {
-                principals,
                 permission,
+                from_type,
+                source_realm,
             });
         }
 
@@ -679,7 +583,7 @@ run = "cargo run"
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("Actr.toml");
+        let config_path = tmpdir.path().join("actr.toml");
 
         // 创建 proto 文件
         let proto_dir = tmpdir.path().join("proto");
@@ -724,7 +628,7 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("Actr.toml");
+        let config_path = tmpdir.path().join("actr.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
@@ -761,7 +665,7 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("Actr.toml");
+        let config_path = tmpdir.path().join("actr.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
@@ -795,7 +699,7 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("Actr.toml");
+        let config_path = tmpdir.path().join("actr.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
@@ -833,7 +737,7 @@ port_range_end = 50000
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("Actr.toml");
+        let config_path = tmpdir.path().join("actr.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Actr.toml 的直接映射（无任何处理）
+/// actr.toml 的直接映射（无任何处理）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawConfig {
     /// 配置文件格式版本（决定使用哪个 Parser）
@@ -127,7 +127,7 @@ pub struct RawSystemConfig {
 
 /// WebSocket 数据传输配置
 ///
-/// 配置示例（Actr.toml）：
+/// 配置示例（actr.toml）：
 /// ```toml
 /// [system.websocket]
 /// listen_port = 9001

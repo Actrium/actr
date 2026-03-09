@@ -15,7 +15,8 @@ use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, GetSigningKeyRequest,
     PeerToSignaling, Ping, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
     RouteCandidatesResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest,
-    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
+    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope,
+    signaling_to_actr,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -35,6 +36,18 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_conf
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use url::Url;
+
+/// WebSocket sink type alias for the split write half of a signaling connection
+type WsSink = Arc<
+    tokio::sync::Mutex<
+        Option<
+            futures_util::stream::SplitSink<
+                WebSocketStream<MaybeTlsStream<TcpStream>>,
+                tokio_tungstenite::tungstenite::Message,
+            >,
+        >,
+    >,
+>;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Constants
@@ -304,16 +317,7 @@ pub struct WebSocketSignalingClient {
     actor_id: tokio::sync::Mutex<Option<ActrId>>,
     credential_state: tokio::sync::Mutex<Option<CredentialState>>,
     /// WebSocket write end （using Mutex Implementation interior mutability ）
-    ws_sink: Arc<
-        tokio::sync::Mutex<
-            Option<
-                futures_util::stream::SplitSink<
-                    WebSocketStream<MaybeTlsStream<TcpStream>>,
-                    tokio_tungstenite::tungstenite::Message,
-                >,
-            >,
-        >,
-    >,
+    ws_sink: WsSink,
     /// WebSocket read end （using Mutex Implementation interior mutability ）
     ws_stream: tokio::sync::Mutex<
         Option<futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,

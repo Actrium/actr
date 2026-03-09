@@ -74,7 +74,7 @@ impl ProjectInitializer for SwiftInitializer {
                 template_context.project_name_pascal
             );
         } else {
-            info!("  actr install  # Install project dependencies from Actr.toml");
+            info!("  actr install  # Install project dependencies from actr.toml");
             info!(
                 "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
                 template_context.project_name_pascal

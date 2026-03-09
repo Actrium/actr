@@ -122,8 +122,8 @@ cd /d/actor-rtc/actr-signaling/signaling-server
 cargo run
 
 # Prepare configs (one-time if running directly)
-cp actr-b/Actr.example.toml actr-b/Actr.toml
-cp actr-a/Actr.example.toml actr-a/Actr.toml
+cp actr-b/Actr.example.toml actr-b/actr.toml
+cp actr-a/Actr.example.toml actr-a/actr.toml
 ```
 
 ### Run actr-b (Receiver)
@@ -179,7 +179,7 @@ media-relay/
 │       ├── lib.rs
 │       └── media_source.rs
 ├── actr-b/                  # ✅ 100% Real Receiver
-│   ├── Actr.example.toml  # Copy to Actr.toml before running
+│   ├── Actr.example.toml  # Copy to actr.toml before running
 │   ├── proto/ (symlink)
 │   ├── src/
 │   │   ├── main.rs
@@ -187,7 +187,7 @@ media-relay/
 │   │   └── generated/
 │   └── Cargo.toml
 ├── actr-a/                  # ⚠️ Framework Ready
-│   ├── Actr.example.toml  # Copy to Actr.toml before running
+│   ├── Actr.example.toml  # Copy to actr.toml before running
 │   ├── proto/ (symlink)
 │   ├── src/
 │   │   ├── main.rs

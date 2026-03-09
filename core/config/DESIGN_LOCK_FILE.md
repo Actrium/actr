@@ -86,9 +86,9 @@ cached_at = "2025-01-15T10:30:00Z"
 
 ## name vs alias 语义说明
 
-Lock 文件中的 `name` 字段与 Actr.toml 中的 `alias` 字段有明确的分工：
+Lock 文件中的 `name` 字段与 actr.toml 中的 `alias` 字段有明确的分工：
 
-### Actr.toml (依赖配置)
+### actr.toml (依赖配置)
 
 ```toml
 [dependencies]
@@ -104,9 +104,9 @@ shared-cache = { name = "redis-proxy", actr_type = "acme+CacheService" }
 
 | 字段 | 位置 | 含义 | 作用 |
 |------|------|------|------|
-| `alias` | Actr.toml | 本地引用名 | 代码中 `use crate::my_echo::*;` 导入生成的模块 |
-| `name` | Actr.toml / Actr.lock.toml | 远程服务唯一标识 | 服务注册表中的服务名称，用于服务发现和指纹验证 |
-| `actr_type` | Actr.toml / Actr.lock.toml | 服务类型标识 | 如 `"acme+EchoService"`，用于代码生成时的模块路径 |
+| `alias` | actr.toml | 本地引用名 | 代码中 `use crate::my_echo::*;` 导入生成的模块 |
+| `name` | actr.toml / Actr.lock.toml | 远程服务唯一标识 | 服务注册表中的服务名称，用于服务发现和指纹验证 |
+| `actr_type` | actr.toml / Actr.lock.toml | 服务类型标识 | 如 `"acme+EchoService"`，用于代码生成时的模块路径 |
 
 ### Actr.lock.toml (锁定的依赖)
 
@@ -140,7 +140,7 @@ pub struct LockFile {
 
 /// A locked dependency entry
 pub struct LockedDependency {
-    /// Service name (identifier in lock file, matches Actr.toml dependency name property)
+    /// Service name (identifier in lock file, matches actr.toml dependency name property)
     pub name: String,
 
     /// Actor type (e.g., "acme+user-service")

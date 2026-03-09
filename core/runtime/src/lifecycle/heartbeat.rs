@@ -79,6 +79,7 @@ async fn get_power_reserve_and_availability(
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats (used for timeout calculation)
 /// * `register_request` - RegisterRequest for re-registration on credential expiry
+///
 /// Returns `Some(new_actor_id)` when re-registration assigns a new ActrId,
 /// so the caller can update its loop variable for subsequent heartbeats.
 async fn send_heartbeat_and_handle_response(
@@ -255,11 +256,7 @@ async fn credential_refresh_task(
 
                     // 更新共享凭证状态，同步更新 TURN 凭证
                     credential_state
-                        .update(
-                            new_credential.clone(),
-                            new_expires_at,
-                            new_turn_credential,
-                        )
+                        .update(new_credential.clone(), new_expires_at, new_turn_credential)
                         .await;
 
                     tracing::info!(
@@ -357,11 +354,7 @@ async fn re_register_task(
 
                 // 更新共享凭证状态，同步更新 TURN 凭证
                 credential_state
-                    .update(
-                        new_credential.clone(),
-                        new_expires_at,
-                        new_turn_credential,
-                    )
+                    .update(new_credential.clone(), new_expires_at, new_turn_credential)
                     .await;
 
                 // 更新 signaling client 身份信息，使后续自动重连携带正确凭证

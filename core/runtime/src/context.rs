@@ -237,10 +237,7 @@ impl RuntimeContext {
 
         dep_type.manufacturer == target_type.manufacturer
             && dep_type.name == target_type.name
-            && target_type
-                .version
-                .as_ref()
-                .is_none_or(|version| dep_type.version.as_ref() == Some(version))
+            && (target_type.version.is_empty() || dep_type.version == target_type.version)
     }
 
     /// Internal: Send discovery request to signaling server
@@ -287,7 +284,6 @@ impl RuntimeContext {
             )),
         }
     }
-
 }
 
 /// Internal discovery result structure

@@ -18,10 +18,10 @@ actr gen --lang python --input=proto --output=generated --no-scaffold
 
 ```bash
 cd server
-python server.py --actr-toml Actr.toml
+python server.py --actr-toml actr.toml
 ```
 
 ```bash
 cd client
-python client.py --actr-toml Actr.toml
+python client.py --actr-toml actr.toml
 ```

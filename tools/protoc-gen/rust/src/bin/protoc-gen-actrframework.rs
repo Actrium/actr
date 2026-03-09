@@ -18,7 +18,7 @@ use actr_protocol::{ActrType, ActrTypeExt, PackageName, ServiceName};
 pub enum ProtoSource {
     /// 本地服务（来自 proto/ 目录）
     Local,
-    /// 远程服务（来自 Actr.toml [dependencies]）
+    /// 远程服务（来自 actr.toml [dependencies]）
     Remote,
 }
 
@@ -228,7 +228,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                     ActrType {
                         manufacturer: manufacturer.to_string(),
                         name: service_name.clone(),
-                        version: None,
+                        version: "v1".to_string(),
                     }
                     .to_string_repr()
                 });
@@ -443,7 +443,7 @@ mod tests {
         let request = CodeGeneratorRequest {
             file_to_generate: vec!["local.proto".to_string(), "remote/echo.proto".to_string()],
             parameter: Some(
-                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias"
+                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias:v1"
                     .to_string(),
             ),
             proto_file: vec![

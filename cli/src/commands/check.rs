@@ -27,7 +27,7 @@ pub struct CheckCommand {
     #[arg(value_name = "SERVICE_NAME")]
     pub packages: Vec<String>,
 
-    /// Configuration file to load services from (defaults to Actr.toml)
+    /// Configuration file to load services from (defaults to actr.toml)
     #[arg(short = 'f', long = "file")]
     pub config_file: Option<String>,
 
@@ -47,7 +47,7 @@ pub struct CheckCommand {
 #[async_trait]
 impl Command for CheckCommand {
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult> {
-        let config_path = self.config_file.as_deref().unwrap_or("Actr.toml");
+        let config_path = self.config_file.as_deref().unwrap_or("actr.toml");
 
         let pipeline = {
             let mut container = context.container.lock().unwrap();

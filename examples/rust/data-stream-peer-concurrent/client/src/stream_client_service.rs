@@ -17,6 +17,7 @@ impl StreamClientService {
             server_type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "DataStreamPeerConcurrentServer".to_string(),
+                version: "v1".to_string(),
             },
         }
     }

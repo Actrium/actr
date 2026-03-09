@@ -1000,9 +1000,9 @@ impl WebRtcCoordinator {
                         );
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
-                        return Err(ActrError::Internal(format!(
-                            "Connection ready channel closed"
-                        )));
+                        return Err(ActrError::Internal(
+                            "Connection ready channel closed".to_string(),
+                        ));
                     }
                     Err(_) => {
                         tracing::warn!(
@@ -1234,7 +1234,7 @@ impl WebRtcCoordinator {
                 .capability
                 .mime_type
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("unknown")
                 .to_uppercase();
             let media_type = match track.kind() {
@@ -1565,7 +1565,7 @@ impl WebRtcCoordinator {
                 .capability
                 .mime_type
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("unknown")
                 .to_uppercase();
             let media_type = match track.kind() {
@@ -2216,9 +2216,9 @@ impl WebRtcCoordinator {
                     tracing::info!("✅ WebRTC connection ready: {}", target.to_string_repr());
                 }
                 Ok(Err(_)) => {
-                    return Err(ActrError::Internal(format!(
-                        "Connection establishment failed (channel closed)"
-                    )));
+                    return Err(ActrError::Internal(
+                        "Connection establishment failed (channel closed)".to_string(),
+                    ));
                 }
                 Err(_) => {
                     return Err(ActrError::TimedOut);
@@ -2300,9 +2300,9 @@ impl WebRtcCoordinator {
         // Check cancellation at entry
         if let Some(ref token) = cancel_token {
             if token.is_cancelled() {
-                return Err(ActrError::Internal(format!(
-                    "Connection creation cancelled before starting"
-                )));
+                return Err(ActrError::Internal(
+                    "Connection creation cancelled before starting".to_string(),
+                ));
             }
         }
 
@@ -2342,9 +2342,9 @@ impl WebRtcCoordinator {
             // Check cancellation before each attempt
             if let Some(ref token) = cancel_token {
                 if token.is_cancelled() {
-                    return Err(ActrError::Internal(format!(
-                        "Connection creation cancelled"
-                    )));
+                    return Err(ActrError::Internal(
+                        "Connection creation cancelled".to_string(),
+                    ));
                 }
             }
 
@@ -2365,9 +2365,9 @@ impl WebRtcCoordinator {
                         biased;
                         _ = token.cancelled() => {
                             self.cleanup_cancelled_connection(target_id).await;
-                            return Err(ActrError::Internal(format!(
-                                "Connection creation cancelled during retry wait"
-                            )));
+                            return Err(ActrError::Internal(
+                                "Connection creation cancelled during retry wait".to_string(),
+                            ));
                         }
                         _ = tokio::time::sleep(delay) => {}
                     }
@@ -2440,9 +2440,9 @@ impl WebRtcCoordinator {
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
                 self.cleanup_cancelled_connection(target_id).await;
-                return Err(ActrError::Internal(format!(
-                    "Connection creation cancelled after initiation"
-                )));
+                return Err(ActrError::Internal(
+                    "Connection creation cancelled after initiation".to_string(),
+                ));
             }
         }
 
@@ -2454,17 +2454,17 @@ impl WebRtcCoordinator {
                 biased;
                 _ = token.cancelled() => {
                     self.cleanup_cancelled_connection(target_id).await;
-                    return Err(ActrError::Internal(format!(
-                        "Connection creation cancelled while waiting"
-                    )));
+                    return Err(ActrError::Internal(
+                        "Connection creation cancelled while waiting".to_string(),
+                    ));
                 }
                 _ = tokio::time::sleep(timeout_duration) => {
                     Err(ActrError::TimedOut)
                 }
                 result = ready_rx => {
-                    result.map_err(|_| ActrError::Internal(format!(
-                        "Connection establishment failed (channel closed)"
-                    )))
+                    result.map_err(|_| ActrError::Internal(
+                        "Connection establishment failed (channel closed)".to_string(),
+                    ))
                 }
             }
         } else {
@@ -2472,7 +2472,9 @@ impl WebRtcCoordinator {
                 .await
                 .map_err(|_| ActrError::TimedOut)?
                 .map_err(|_| {
-                    ActrError::Internal(format!("Connection establishment failed (channel closed)"))
+                    ActrError::Internal(
+                        "Connection establishment failed (channel closed)".to_string(),
+                    )
                 })
         };
 
@@ -2487,9 +2489,9 @@ impl WebRtcCoordinator {
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
                 self.cleanup_cancelled_connection(target_id).await;
-                return Err(ActrError::Internal(format!(
-                    "Connection creation cancelled after ready"
-                )));
+                return Err(ActrError::Internal(
+                    "Connection creation cancelled after ready".to_string(),
+                ));
             }
         }
 
@@ -2499,7 +2501,7 @@ impl WebRtcCoordinator {
             .get(target_id)
             .map(|state| state.webrtc_conn.clone())
             .ok_or_else(|| {
-                ActrError::Internal(format!("Peer not found after connection establishment"))
+                ActrError::Internal("Peer not found after connection establishment".to_string())
             })
     }
 
@@ -3034,6 +3036,7 @@ impl WebRtcCoordinator {
 
     /// Internal ICE restart implementation with retries
     /// Returns Ok(true) if restart succeeded, Ok(false) if all retries exhausted
+    #[allow(clippy::too_many_arguments)]
     async fn do_ice_restart_inner(
         target: &ActrId,
         peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
@@ -3445,7 +3448,7 @@ impl WebRtcCoordinator {
         let (peer_connection, is_offerer) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
-                ActrError::Internal(format!("ICE restart offer received for unknown peer"))
+                ActrError::Internal("ICE restart offer received for unknown peer".to_string())
             })?;
             (state.peer_connection.clone(), state.is_offerer)
         };
@@ -3483,8 +3486,6 @@ impl WebRtcCoordinator {
 
         Ok(())
     }
-
-    /// Remove peer connection and clear associated cached state.
 
     /// Handle role assignment result
     #[cfg_attr(
@@ -3701,7 +3702,7 @@ impl WebRtcCoordinator {
         self.send_actr_relay(target, payload).await?;
 
         rx.await.map_err(|_| {
-            ActrError::Internal(format!("Role negotiation channel closed before assignment"))
+            ActrError::Internal("Role negotiation channel closed before assignment".to_string())
         })
     }
 

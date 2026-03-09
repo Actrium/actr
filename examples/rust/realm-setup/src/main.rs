@@ -1,6 +1,6 @@
 //! realm-setup - CLI tool to setup realms in actrix for actr-examples
 //!
-//! This tool reads realm IDs from Actr.toml configuration files and
+//! This tool reads realm IDs from actr.toml configuration files and
 //! creates them in actrix via the SupervisedService gRPC API.
 
 mod generated {
@@ -24,14 +24,14 @@ use tracing::{debug, error, info, warn};
 /// CLI arguments
 #[derive(Parser, Debug)]
 #[command(name = "realm-setup")]
-#[command(about = "Setup realms in actrix from Actr.toml configuration files")]
+#[command(about = "Setup realms in actrix from actr.toml configuration files")]
 #[command(version)]
 struct Args {
     /// Path to actrix-config.toml file
     #[arg(short = 'c', long, default_value = "actrix-config.toml")]
     actrix_config: PathBuf,
 
-    /// Paths to Actr.toml files to read realm IDs from
+    /// Paths to actr.toml files to read realm IDs from
     #[arg(short = 'a', long = "actr-toml", required = true, num_args = 1..)]
     actr_tomls: Vec<PathBuf>,
 
@@ -85,7 +85,7 @@ struct ClientConfig {
     shared_secret: Option<String>,
 }
 
-/// Partial Actr.toml structure
+/// Partial actr.toml structure
 #[derive(Debug, Deserialize)]
 struct ActrConfig {
     system: Option<SystemSection>,
@@ -124,16 +124,16 @@ fn create_credential(shared_secret: &[u8], payload: &str) -> Result<NonceCredent
     })
 }
 
-/// Parse realm IDs from Actr.toml files
+/// Parse realm IDs from actr.toml files
 fn parse_realm_ids(actr_tomls: &[PathBuf]) -> Result<HashSet<u32>> {
     let mut realm_ids = HashSet::new();
 
     for path in actr_tomls {
         let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read Actr.toml: {}", path.display()))?;
+            .with_context(|| format!("Failed to read actr.toml: {}", path.display()))?;
 
         let config: ActrConfig = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse Actr.toml: {}", path.display()))?;
+            .with_context(|| format!("Failed to parse actr.toml: {}", path.display()))?;
 
         if let Some(system) = config.system {
             if let Some(deployment) = system.deployment {
@@ -272,15 +272,15 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    // Parse realm IDs from Actr.toml files
+    // Parse realm IDs from actr.toml files
     info!(
-        "Parsing realm IDs from {} Actr.toml files...",
+        "Parsing realm IDs from {} actr.toml files...",
         args.actr_tomls.len()
     );
     let realm_ids = parse_realm_ids(&args.actr_tomls)?;
 
     if realm_ids.is_empty() {
-        warn!("No realm IDs found in the provided Actr.toml files");
+        warn!("No realm IDs found in the provided actr.toml files");
         return Ok(());
     }
 

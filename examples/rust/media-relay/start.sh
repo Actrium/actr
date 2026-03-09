@@ -33,12 +33,12 @@ mkdir -p "$LOG_DIR"
 # Ensure required CLI tools
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
-# Ensure Actr.toml files exist
+# Ensure actr.toml files exist
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
-# Ensure Actr.toml files exist for actr-a and actr-b
+# Ensure actr.toml files exist for actr-a and actr-b
 echo ""
-echo "🔍 Checking Actr.toml files..."
+echo "🔍 Checking actr.toml files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ACTR_B_DIR="$WORKSPACE_ROOT/media-relay/actr-b"
 ACTR_A_DIR="$WORKSPACE_ROOT/media-relay/actr-a"
@@ -185,7 +185,7 @@ else
     echo -e "${GREEN}✅ Actrix is running on port 8081${NC}"
 fi
 
-# Step 2.5a: Setup realms in actrix from Actr.toml files
+# Step 2.5a: Setup realms in actrix from actr.toml files
 echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -199,12 +199,12 @@ if ! cargo build -p realm-setup 2>&1 | tail -5; then
     exit 1
 fi
 
-# Run realm-setup with Actr.toml files from actr-a and actr-b
+# Run realm-setup with actr.toml files from actr-a and actr-b
 REALM_SETUP_OUTPUT="$LOG_DIR/realm-setup.log"
 if ! cargo run -p realm-setup -- \
     --actrix-config "$ACTRIX_CONFIG" \
-    --actr-toml "$ACTR_A_DIR/Actr.toml" \
-    --actr-toml "$ACTR_B_DIR/Actr.toml" \
+    --actr-toml "$ACTR_A_DIR/actr.toml" \
+    --actr-toml "$ACTR_B_DIR/actr.toml" \
     > "$REALM_SETUP_OUTPUT" 2>&1; then
     echo -e "${RED}❌ Failed to setup realms in actrix${NC}"
     cat "$REALM_SETUP_OUTPUT"

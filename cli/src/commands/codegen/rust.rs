@@ -20,13 +20,13 @@ impl LanguageGenerator for RustGenerator {
         let plugin_path = self.ensure_protoc_plugin(&context.config_path)?;
 
         let manufacturer = context.config.package.actr_type.manufacturer.clone();
-        debug!("Using manufacturer from Actr.toml: {}", manufacturer);
+        debug!("Using manufacturer from actr.toml: {}", manufacturer);
 
         let output = &context.output;
 
         // Ensure output directory is clean before regeneration
         if output.exists() {
-            self.make_writable_recursive(output)?;
+            make_writable_recursive(output)?;
             std::fs::remove_dir_all(output).map_err(|e| {
                 ActrCliError::command_error(format!("Failed to clean output directory: {e}"))
             })?;
@@ -260,42 +260,6 @@ impl RustGenerator {
         let stdout = String::from_utf8_lossy(&output_cmd.stdout);
         if !stdout.is_empty() {
             debug!("protoc output: {}", stdout);
-        }
-
-        Ok(())
-    }
-
-    fn make_writable_recursive(&self, path: &Path) -> Result<()> {
-        use std::fs;
-
-        if path.is_file() {
-            let metadata = fs::metadata(path).map_err(|e| {
-                ActrCliError::config_error(format!("Failed to read file metadata: {e}"))
-            })?;
-            let mut permissions = metadata.permissions();
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = permissions.mode();
-                permissions.set_mode(mode | 0o222);
-            }
-
-            #[cfg(not(unix))]
-            {
-                permissions.set_readonly(false);
-            }
-
-            fs::set_permissions(path, permissions).map_err(|e| {
-                ActrCliError::config_error(format!("Failed to reset file permissions: {e}"))
-            })?;
-        } else if path.is_dir() {
-            for entry in fs::read_dir(path)
-                .map_err(|e| ActrCliError::config_error(format!("Failed to read directory: {e}")))?
-            {
-                let entry = entry.map_err(|e| ActrCliError::config_error(e.to_string()))?;
-                self.make_writable_recursive(&entry.path())?;
-            }
         }
 
         Ok(())
@@ -1012,6 +976,43 @@ mod tests {{
     }
 }
 
+/// Recursively make all files in a directory (or a file) writable.
+fn make_writable_recursive(path: &Path) -> Result<()> {
+    use std::fs;
+
+    if path.is_file() {
+        let metadata = fs::metadata(path).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to read file metadata: {e}"))
+        })?;
+        let mut permissions = metadata.permissions();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = permissions.mode();
+            permissions.set_mode(mode | 0o222);
+        }
+
+        #[cfg(not(unix))]
+        {
+            permissions.set_readonly(false);
+        }
+
+        fs::set_permissions(path, permissions).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to reset file permissions: {e}"))
+        })?;
+    } else if path.is_dir() {
+        for entry in fs::read_dir(path)
+            .map_err(|e| ActrCliError::config_error(format!("Failed to read directory: {e}")))?
+        {
+            let entry = entry.map_err(|e| ActrCliError::config_error(e.to_string()))?;
+            make_writable_recursive(&entry.path())?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::RustGenerator;
@@ -1042,7 +1043,7 @@ mod tests {
         )
         .unwrap();
 
-        let config_path = tmp.path().join("Actr.toml");
+        let config_path = tmp.path().join("actr.toml");
         std::fs::write(
             &config_path,
             r#"edition = 1

@@ -24,9 +24,9 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
     )?;
     ProjectTemplate::load_file(&fixtures_root.join("kotlin/gitignore"), files, ".gitignore")?;
     ProjectTemplate::load_file(
-        &fixtures_root.join("kotlin/echo/Actr.toml"),
+        &fixtures_root.join("kotlin/echo/actr.toml"),
         files,
-        "Actr.toml",
+        "actr.toml",
     )?;
 
     // Load app module files

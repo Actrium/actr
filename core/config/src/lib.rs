@@ -16,7 +16,7 @@
 //! use actr_config::ConfigParser;
 //!
 //! // Parse configuration from file
-//! let config = ConfigParser::from_file("Actr.toml")?;
+//! let config = ConfigParser::from_file("actr.toml")?;
 //!
 //! // Access parsed values
 //! println!("Package: {}", config.package.name);

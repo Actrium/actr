@@ -165,10 +165,7 @@ impl ConnectionEventBroadcaster {
     /// Returns the number of receivers that received the event.
     /// Returns 0 if there are no active subscribers (not an error).
     pub fn send(&self, event: ConnectionEvent) -> usize {
-        match self.tx.send(event) {
-            Ok(count) => count,
-            Err(_) => 0, // No active receivers
-        }
+        self.tx.send(event).unwrap_or_default()
     }
 
     /// Subscribe to connection events
@@ -213,7 +210,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "device".to_string(),
-                version: None,
+                version: "v1".to_string(),
             },
         }
     }

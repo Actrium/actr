@@ -95,7 +95,7 @@ pub fn align_project_with_local_actrix(project_dir: &Path) -> Result<()> {
 }
 
 pub fn pin_echo_service_dependency_version(project_dir: &Path, manufacturer: &str) -> Result<()> {
-    let actr_toml_path = project_dir.join("Actr.toml");
+    let actr_toml_path = project_dir.join("actr.toml");
     let content = fs::read_to_string(&actr_toml_path)
         .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
     let target = "echo-service = {}";
@@ -618,7 +618,7 @@ impl LocalRustEchoService {
 }
 
 fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
-    let actr_toml_path = project_dir.join("Actr.toml");
+    let actr_toml_path = project_dir.join("actr.toml");
     let content = fs::read_to_string(&actr_toml_path)
         .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
 

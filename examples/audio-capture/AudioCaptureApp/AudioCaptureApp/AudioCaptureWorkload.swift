@@ -26,7 +26,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
         self.mediaSender = MediaSender(encoder: encoder)
 
         guard let configURL = Bundle.module.url(forResource: "Actr", withExtension: "toml") else {
-            throw ActrError.ConfigError(msg: "Missing bundled Actr.toml")
+            throw ActrError.ConfigError(msg: "Missing bundled actr.toml")
         }
 
         let system = try await ActrSystem.from(tomlConfig: configURL)

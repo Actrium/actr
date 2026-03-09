@@ -83,7 +83,7 @@ server/
 ├── package.json         # NPM 配置
 ├── vite.config.ts       # Vite 配置
 ├── tsconfig.json        # TypeScript 配置
-├── Actr.toml            # Actor 配置
+├── actr.toml            # Actor 配置
 ├── proto/
 │   └── echo.proto       # Protobuf 定义
 └── src/

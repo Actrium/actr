@@ -49,7 +49,7 @@ class EchoTwiceServerWorkload implements Workload {
 }
 
 async function main() {
-  const system = await ActrSystem.fromConfig('./Actr.toml');
+  const system = await ActrSystem.fromConfig('./actr.toml');
   const node = system.attach(new EchoTwiceServerWorkload());
   const actorRef = await node.start();
 
@@ -68,7 +68,7 @@ import { ActrSystem, Workload, PayloadType } from '@actor-rtc/actr';
 // ... implement EchoClientWorkload ...
 
 async function main() {
-  const system = await ActrSystem.fromConfig('./Actr.toml');
+  const system = await ActrSystem.fromConfig('./actr.toml');
   const node = system.attach(new EchoClientWorkload());
   const actorRef = await node.start();
 
@@ -96,7 +96,7 @@ main().catch(console.error);
 
 ## 配置
 
-创建 `Actr.toml` 配置文件：
+创建 `actr.toml` 配置文件：
 
 ```toml
 edition = 1
@@ -135,7 +135,7 @@ Language: zh-CN.
 为 echo-client 生成：
 
 ```bash
-npm run codegen -- --config examples/echo-client/Actr.toml
+npm run codegen -- --config examples/echo-client/actr.toml
 ```
 
 注意：

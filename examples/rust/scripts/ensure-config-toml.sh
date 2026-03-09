@@ -1,10 +1,10 @@
 #!/bin/bash
-# Shared helper for start scripts: ensure Actr.toml and actrix-config.toml exist by copying from example files if needed.
+# Shared helper for start scripts: ensure actr.toml and actrix-config.toml exist by copying from example files if needed.
 
-# Function to ensure Actr.toml exists by copying from Actr.example.toml if needed
+# Function to ensure actr.toml exists by copying from Actr.example.toml if needed
 ensure_actr_toml() {
     local dir=$1
-    local actr_toml="$dir/Actr.toml"
+    local actr_toml="$dir/actr.toml"
     local actr_example="$dir/Actr.example.toml"
     
     # Use color variables if defined, otherwise use empty strings

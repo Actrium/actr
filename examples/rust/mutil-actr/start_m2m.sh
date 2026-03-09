@@ -44,12 +44,12 @@ mkdir -p "$LOG_DIR"
 # Ensure required CLI tools
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
-# Ensure Actr.toml files exist
+# Ensure actr.toml files exist
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
-# Ensure Actr.toml files exist for server and client
+# Ensure actr.toml files exist for server and client
 echo ""
-echo "🔍 检查 Actr.toml 文件..."
+echo "🔍 检查 actr.toml 文件..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ensure_actr_toml "$ECHO_SERVER_DIR"
 ensure_actr_toml "$ECHO_CLIENT_DIR"
@@ -240,12 +240,12 @@ if ! cargo build -p realm-setup 2>&1 | tail -5; then
     exit 1
 fi
 
-# Run realm-setup with Actr.toml files from server and client
+# Run realm-setup with actr.toml files from server and client
 REALM_SETUP_OUTPUT="$LOG_DIR/realm-setup.log"
 if ! cargo run -p realm-setup -- \
     --actrix-config "$ACTRIX_CONFIG" \
-    --actr-toml "$ECHO_SERVER_DIR/Actr.toml" \
-    --actr-toml "$ECHO_CLIENT_DIR/Actr.toml" \
+    --actr-toml "$ECHO_SERVER_DIR/actr.toml" \
+    --actr-toml "$ECHO_CLIENT_DIR/actr.toml" \
     > "$REALM_SETUP_OUTPUT" 2>&1; then
     echo -e "${RED}❌ 在 actrix 中设置 realms 失败${NC}"
     cat "$REALM_SETUP_OUTPUT"

@@ -42,7 +42,7 @@ visible = true
 dev = "echo dev"
 "#;
 
-    fs::write(root.join("Actr.toml"), actr_toml).unwrap();
+    fs::write(root.join("actr.toml"), actr_toml).unwrap();
     fs::write(root.join("Actr.lock.toml"), "[metadata]\nversion = 1\n").unwrap();
 }
 

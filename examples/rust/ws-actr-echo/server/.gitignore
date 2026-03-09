@@ -5,4 +5,4 @@
 *.log
 .DS_Store
 /src/generated/
-/Actr.toml
+/actr.toml

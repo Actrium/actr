@@ -20,7 +20,7 @@ use std::path::Path;
 
 #[derive(Args, Clone)]
 pub struct ConfigCommand {
-    /// Configuration file to load (defaults to Actr.toml)
+    /// Configuration file to load (defaults to actr.toml)
     #[arg(short = 'f', long = "file")]
     pub config_file: Option<String>,
 
@@ -73,7 +73,7 @@ pub enum OutputFormat {
 impl ConfigCommand {
     /// Get the configuration file path
     fn config_path(&self) -> &str {
-        self.config_file.as_deref().unwrap_or("Actr.toml")
+        self.config_file.as_deref().unwrap_or("actr.toml")
     }
 }
 

@@ -66,7 +66,7 @@ impl ConfigManager for TomlConfigManager {
 
     async fn save_config(&self, _config: &Config, _path: &Path) -> Result<()> {
         Err(anyhow::anyhow!(
-            "Saving parsed Config is not supported; update Actr.toml directly"
+            "Saving parsed Config is not supported; update actr.toml directly"
         ))
     }
 

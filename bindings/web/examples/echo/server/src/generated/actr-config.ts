@@ -1,16 +1,16 @@
 /**
  * 自动生成的 Actr 配置
- * 来源: Actr.toml
+ * 来源: actr.toml
  *
  * ⚠️  请勿手动编辑此文件
- * 此文件由 actr gen 命令根据 Actr.toml 生成
+ * 此文件由 actr gen 命令根据 actr.toml 生成
  */
 
 import type { ActorClientConfig, SwRuntimeConfig } from '@actr/web';
 
-// ── Actr.toml 完整信息 ──
+// ── actr.toml 完整信息 ──
 
-/** Actr.toml edition */
+/** actr.toml edition */
 export const edition = 1;
 
 /** 导出的 proto 文件 */
@@ -96,7 +96,7 @@ export const runtimeConfig: SwRuntimeConfig = {
 
 /**
  * Actr 配置
- * 从 Actr.toml 的 system 配置中提取
+ * 从 actr.toml 的 system 配置中提取
  */
 export const actrConfig: ActorClientConfig = {
     signalingUrl: system.signaling.url,

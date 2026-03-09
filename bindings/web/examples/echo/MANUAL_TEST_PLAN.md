@@ -200,7 +200,7 @@
 >  
 > **前置条件**：  
 > - 确保 Web Client 与 Rust Server 使用**相同的 `realm_id`** 和**同一 signaling server URL**  
->   - Rust Server 默认 `realm_id=6`（[Actr.toml](../../actr-examples/shell-actr-echo/server/Actr.toml)），Web Client 默认 `realm_id=2368266035`（actor.sw.js）  
+>   - Rust Server 默认 `realm_id=6`（[actr.toml](../../actr-examples/shell-actr-echo/server/actr.toml)），Web Client 默认 `realm_id=2368266035`（actor.sw.js）  
 >   - **测试前需修改其中一端使两者一致**  
 > - Rust Server 配置了 `force_relay = true`，若使用本地 TURN server 需确保其运行  
 > - `actr_type` 已匹配：Server = `acme+EchoService`，Client = `acme+echo-client-app`  
@@ -211,7 +211,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 14-0-1 | Actrix 运行 | 确认 signaling server 在双端可达的地址上运行 | WebSocket 握手成功 |
-| 14-0-2 | realm_id 对齐 | 修改 Rust Server `Actr.toml` 的 `realm_id` 或 Web Client `actor.sw.js` 的 `realm_id`，使两端一致 | 配置值相同 |
+| 14-0-2 | realm_id 对齐 | 修改 Rust Server `actr.toml` 的 `realm_id` 或 Web Client `actor.sw.js` 的 `realm_id`，使两端一致 | 配置值相同 |
 | 14-0-3 | signaling URL 对齐 | 确保两端指向同一 signaling server（注意 `ws://` vs `wss://`） | 双端能连到同一 server |
 | 14-0-4 | TURN/STUN 环境 | 如 Rust Server `force_relay=true`，确保 TURN server 运行；或改为 `false` 并确保两端网络可达 | ICE 候选能匹配 |
 | 14-0-5 | 启动 Rust Server | `cd actr-examples && cargo run -p echo-real-server` | 终端显示 "✅ Echo Server 已完全启动并注册"，打印 Server ID |

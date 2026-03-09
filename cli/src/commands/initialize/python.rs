@@ -40,14 +40,14 @@ impl ProjectInitializer for PythonInitializer {
             info!("  cd {}", context.project_dir.display());
         }
         info!("  cd server");
-        info!("  #First Update Actr.toml with your signaling URL, TURN/STUN server, and realm ID");
-        info!("  actr install  # Install remote protobuf dependencies from Actr.toml");
+        info!("  #First Update actr.toml with your signaling URL, TURN/STUN server, and realm ID");
+        info!("  actr install  # Install remote protobuf dependencies from actr.toml");
         info!("  actr gen -l python -i protos -o generated  # Generate code for server");
-        info!("  python server.py --actr-toml Actr.toml");
+        info!("  python server.py --actr-toml actr.toml");
         info!("  cd ../client");
-        info!("  #First Update Actr.toml with your signaling URL, TURN/STUN server, and realm ID");
-        info!("  actr install  # Install remote protobuf dependencies from Actr.toml");
+        info!("  #First Update actr.toml with your signaling URL, TURN/STUN server, and realm ID");
+        info!("  actr install  # Install remote protobuf dependencies from actr.toml");
         info!("  actr gen -l python -i protos -o generated  # Generate code for client");
-        info!("  python client.py --actr-toml Actr.toml");
+        info!("  python client.py --actr-toml actr.toml");
     }
 }

@@ -14,6 +14,15 @@ use crate::wire::webrtc::{
 };
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 
+/// Network event channels tuple type: (event receiver, result sender, optional debounce config)
+type NetworkEventChannels = std::sync::Mutex<
+    Option<(
+        tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
+        tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+        Option<crate::lifecycle::network_event::DebounceConfig>,
+    )>,
+>;
+
 /// ActrSystem - Runtime infrastructure (generic-free)
 ///
 /// # Design Philosophy
@@ -38,13 +47,7 @@ pub struct ActrSystem {
 
     /// Network event channels (延迟创建，在 create_network_event_handle() 时创建)
     /// attach() 时会 take 这些 channels 传递给 ActrNode
-    network_event_channels: std::sync::Mutex<
-        Option<(
-            tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
-            tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
-            Option<crate::lifecycle::network_event::DebounceConfig>,
-        )>,
-    >,
+    network_event_channels: NetworkEventChannels,
 }
 
 impl ActrSystem {

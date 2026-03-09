@@ -54,7 +54,7 @@ pub struct LockMetadata {
 /// A locked dependency entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockedDependency {
-    /// Service name (identifier in lock file, matches Actr.toml dependency name property)
+    /// Service name (identifier in lock file, matches actr.toml dependency name property)
     pub name: String,
 
     /// Actor type (e.g., "acme+user-service")

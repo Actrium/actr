@@ -14,7 +14,7 @@ use client_workload::ClientWorkload;
 #[tokio::main]
 async fn main() -> Result<()> {
     // 加载配置
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Actr.toml");
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // 初始化可观测性
@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     let target_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "WsEchoService".to_string(),
-        version: Some("1.0.0".to_string()),
+        version: "1.0.0".to_string(),
     };
 
     let node = system.attach(workload.clone());

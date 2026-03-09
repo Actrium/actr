@@ -26,7 +26,7 @@ impl Command for RunCommand {
 
         // Load configuration if available
         let config = if is_actr_project() {
-            Some(ConfigParser::from_file("Actr.toml")?)
+            Some(ConfigParser::from_file("actr.toml")?)
         } else {
             None
         };
@@ -36,7 +36,7 @@ impl Command for RunCommand {
 
         let Some(ref config) = config else {
             return Err(ActrCliError::command_error(
-                "No Actr.toml found. Run 'actr init' to create a project.".to_string(),
+                "No actr.toml found. Run 'actr init' to create a project.".to_string(),
             ));
         };
 
@@ -45,7 +45,7 @@ impl Command for RunCommand {
         let Some(command) = config.get_script(script_name) else {
             if available_scripts.is_empty() {
                 return Err(ActrCliError::command_error(
-                    "No scripts defined in Actr.toml. Add a [scripts] section.".to_string(),
+                    "No scripts defined in actr.toml. Add a [scripts] section.".to_string(),
                 ));
             }
             return Err(ActrCliError::command_error(format!(

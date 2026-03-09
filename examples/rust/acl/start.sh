@@ -27,7 +27,7 @@ source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
 echo ""
-echo "🔍 Checking Actr.toml files..."
+echo "🔍 Checking actr.toml files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ensure_actr_toml "$SERVER_DIR"
 ensure_actr_toml "$ALLOWED_CLIENT_DIR"
@@ -227,7 +227,7 @@ if [ "$ALLOWED_SUCCESS" = true ] && [ "$BLOCKED_FAILED" = true ]; then
     echo "✅ Validated:"
     echo "   • ACL rules correctly allow 'allowed-greeter-client'"
     echo "   • ACL rules correctly block 'blocked-greeter-client'"
-    echo "   • ACL configuration from Actr.toml works"
+    echo "   • ACL configuration from actr.toml works"
     echo "   • Real distributed Actor communication with ACL"
     echo ""
 else

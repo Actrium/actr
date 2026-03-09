@@ -22,7 +22,7 @@ echo-real-server/
 │   │   └── echo_service_actor.rs  # Actor framework code
 │   ├── echo_service.rs  # Business logic implementation
 │   └── main.rs        # Server entry point
-└── Actr.example.toml  # Sample actor configuration (copy to Actr.toml)
+└── Actr.example.toml  # Sample actor configuration (copy to actr.toml)
 
 ```
 
@@ -60,7 +60,7 @@ impl EchoServiceHandler for EchoService {
 cargo build
 
 # Prepare config (one-time if running manually)
-cp Actr.example.toml Actr.toml
+cp Actr.example.toml actr.toml
 
 # Run (requires signaling-server at ws://localhost:8081)
 cargo run

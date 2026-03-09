@@ -118,7 +118,7 @@ class EchoService(echo_service_actor.EchoServiceHandler):
 
 # 2. Create workload and start
 async def main():
-    system = await ActrSystem.from_toml("Actr.toml")
+    system = await ActrSystem.from_toml("actr.toml")
     workload = echo_service_actor.EchoServiceWorkload(EchoService())
     node = system.attach(workload)
     ref = await node.start()
@@ -134,7 +134,7 @@ from generated.remote.echo_server import echo_pb2 as server_pb2
 from generated import client_workload
 
 async def main():
-    system = await ActrSystem.from_toml("Actr.toml")
+    system = await ActrSystem.from_toml("actr.toml")
     workload = client_workload.ClientWorkload()
     node = system.attach(workload)
     ref = await node.start()

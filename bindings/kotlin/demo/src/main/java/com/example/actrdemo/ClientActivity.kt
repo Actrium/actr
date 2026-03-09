@@ -123,7 +123,7 @@ class ClientActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 // Copy config file from assets to internal storage
-                val configPath = copyAssetToInternalStorage("Actr.toml")
+                val configPath = copyAssetToInternalStorage("actr.toml")
                 copyAssetToInternalStorage("Actr.lock.toml")
                 Log.i(TAG, "Config path: $configPath")
 

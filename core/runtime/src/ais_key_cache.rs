@@ -74,20 +74,25 @@ impl AisKeyCache {
                 ActrError::Internal(format!("拉取 signing 公钥失败: {e:?}"))
             })?;
 
-        let verifying_key = VerifyingKey::from_bytes(
-            pubkey_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| ActrError::Internal("拉取到的 signing pubkey 必须为 32 字节".to_string()))?,
-        )
-        .map_err(|e| ActrError::Internal(format!("拉取到的 signing pubkey 无效: {e}")))?;
+        let verifying_key =
+            VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().map_err(|_| {
+                ActrError::Internal("拉取到的 signing pubkey 必须为 32 字节".to_string())
+            })?)
+            .map_err(|e| ActrError::Internal(format!("拉取到的 signing pubkey 无效: {e}")))?;
 
-        self.cache.write().await.insert(returned_key_id, verifying_key);
-        tracing::debug!(key_id = returned_key_id, "AisKeyCache: 已缓存从 signaling 获取的公钥");
+        self.cache
+            .write()
+            .await
+            .insert(returned_key_id, verifying_key);
+        tracing::debug!(
+            key_id = returned_key_id,
+            "AisKeyCache: 已缓存从 signaling 获取的公钥"
+        );
 
         Ok(verifying_key)
     }
-}#[cfg(test)]
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::error::NetworkError;
@@ -102,7 +107,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "node".to_string(),
-                version: None,
+                version: "v1".to_string(),
             },
         }
     }
@@ -133,10 +138,16 @@ mod tests {
 
     impl MockSignaling {
         fn ok(key_id: u32, bytes: Vec<u8>) -> Self {
-            Self { response: Some((key_id, bytes)), calls: Default::default() }
+            Self {
+                response: Some((key_id, bytes)),
+                calls: Default::default(),
+            }
         }
         fn err() -> Self {
-            Self { response: None, calls: Default::default() }
+            Self {
+                response: None,
+                calls: Default::default(),
+            }
         }
         fn calls(&self) -> usize {
             self.calls.load(std::sync::atomic::Ordering::SeqCst)
@@ -145,24 +156,84 @@ mod tests {
 
     #[async_trait]
     impl crate::wire::SignalingClient for MockSignaling {
-        async fn connect(&self) -> crate::transport::error::NetworkResult<()> { Ok(()) }
-        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> { Ok(()) }
-        fn is_connected(&self) -> bool { true }
-        fn get_stats(&self) -> crate::wire::webrtc::SignalingStats { Default::default() }
-        fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<crate::wire::webrtc::SignalingEvent> {
+        async fn connect(&self) -> crate::transport::error::NetworkResult<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> {
+            Ok(())
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn get_stats(&self) -> crate::wire::webrtc::SignalingStats {
+            Default::default()
+        }
+        fn subscribe_events(
+            &self,
+        ) -> tokio::sync::broadcast::Receiver<crate::wire::webrtc::SignalingEvent> {
             tokio::sync::broadcast::channel(1).1
         }
         async fn set_actor_id(&self, _: ActrId) {}
         async fn set_credential_state(&self, _: crate::lifecycle::CredentialState) {}
         async fn clear_identity(&self) {}
-        async fn send_register_request(&self, _: actr_protocol::RegisterRequest) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> { unimplemented!() }
-        async fn send_unregister_request(&self, _: ActrId, _: AIdCredential, _: Option<String>) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> { unimplemented!() }
-        async fn send_heartbeat(&self, _: ActrId, _: AIdCredential, _: actr_protocol::ServiceAvailabilityState, _: f32, _: f32) -> crate::transport::error::NetworkResult<actr_protocol::Pong> { unimplemented!() }
-        async fn send_route_candidates_request(&self, _: ActrId, _: AIdCredential, _: actr_protocol::RouteCandidatesRequest) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse> { unimplemented!() }
-        async fn send_credential_update_request(&self, _: ActrId, _: AIdCredential) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> { unimplemented!() }
-        async fn send_envelope(&self, _: actr_protocol::SignalingEnvelope) -> crate::transport::error::NetworkResult<()> { unimplemented!() }
-        async fn receive_envelope(&self) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>> { unimplemented!() }
-        async fn get_signing_key(&self, _: ActrId, _: AIdCredential, _: u32) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
+        async fn send_register_request(
+            &self,
+            _: actr_protocol::RegisterRequest,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+            unimplemented!()
+        }
+        async fn send_unregister_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: Option<String>,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> {
+            unimplemented!()
+        }
+        async fn send_heartbeat(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: actr_protocol::ServiceAvailabilityState,
+            _: f32,
+            _: f32,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::Pong> {
+            unimplemented!()
+        }
+        async fn send_route_candidates_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: actr_protocol::RouteCandidatesRequest,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse>
+        {
+            unimplemented!()
+        }
+        async fn send_credential_update_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+            unimplemented!()
+        }
+        async fn send_envelope(
+            &self,
+            _: actr_protocol::SignalingEnvelope,
+        ) -> crate::transport::error::NetworkResult<()> {
+            unimplemented!()
+        }
+        async fn receive_envelope(
+            &self,
+        ) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>>
+        {
+            unimplemented!()
+        }
+        async fn get_signing_key(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: u32,
+        ) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             match &self.response {
                 Some(r) => Ok(r.clone()),
@@ -204,7 +275,9 @@ mod tests {
         cache.seed(1, &bytes).await.unwrap();
         cache.seed(1, &bytes).await.unwrap(); // must not error
         let mock = MockSignaling::err();
-        let result = cache.get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock).await;
+        let result = cache
+            .get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock)
+            .await;
         assert!(result.is_ok());
         assert_eq!(mock.calls(), 0, "seeded key must be hit from cache");
     }
@@ -218,7 +291,9 @@ mod tests {
         cache.seed(1, &bytes).await.unwrap();
 
         let mock = MockSignaling::err();
-        let result = cache.get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock).await;
+        let result = cache
+            .get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock)
+            .await;
         assert!(result.is_ok());
         assert_eq!(mock.calls(), 0);
     }
@@ -230,7 +305,10 @@ mod tests {
         cache.seed(7, &bytes).await.unwrap();
 
         let mock = MockSignaling::err();
-        let key = cache.get_or_fetch(7, &test_actor_id(), &dummy_credential(), &mock).await.unwrap();
+        let key = cache
+            .get_or_fetch(7, &test_actor_id(), &dummy_credential(), &mock)
+            .await
+            .unwrap();
         assert_eq!(key.as_bytes(), &bytes);
     }
 
@@ -242,13 +320,17 @@ mod tests {
         let bytes = verifying_key_bytes(5);
         let mock = MockSignaling::ok(5, bytes.to_vec());
 
-        let result = cache.get_or_fetch(5, &test_actor_id(), &dummy_credential(), &mock).await;
+        let result = cache
+            .get_or_fetch(5, &test_actor_id(), &dummy_credential(), &mock)
+            .await;
         assert!(result.is_ok());
         assert_eq!(mock.calls(), 1);
 
         // second call must use cache
         let mock2 = MockSignaling::err();
-        let result2 = cache.get_or_fetch(5, &test_actor_id(), &dummy_credential(), &mock2).await;
+        let result2 = cache
+            .get_or_fetch(5, &test_actor_id(), &dummy_credential(), &mock2)
+            .await;
         assert!(result2.is_ok());
         assert_eq!(mock2.calls(), 0, "second call should be cache hit");
     }
@@ -257,7 +339,9 @@ mod tests {
     async fn cache_miss_signaling_failure_returns_error() {
         let cache = AisKeyCache::new();
         let mock = MockSignaling::err();
-        let result = cache.get_or_fetch(9, &test_actor_id(), &dummy_credential(), &mock).await;
+        let result = cache
+            .get_or_fetch(9, &test_actor_id(), &dummy_credential(), &mock)
+            .await;
         assert!(result.is_err());
         assert_eq!(mock.calls(), 1);
     }
@@ -266,7 +350,9 @@ mod tests {
     async fn cache_miss_signaling_returns_31_byte_pubkey_returns_error() {
         let cache = AisKeyCache::new();
         let mock = MockSignaling::ok(3, vec![0u8; 31]);
-        let result = cache.get_or_fetch(3, &test_actor_id(), &dummy_credential(), &mock).await;
+        let result = cache
+            .get_or_fetch(3, &test_actor_id(), &dummy_credential(), &mock)
+            .await;
         assert!(result.is_err(), "invalid pubkey length should return error");
     }
 
@@ -277,8 +363,14 @@ mod tests {
         cache.seed(2, &verifying_key_bytes(20)).await.unwrap();
 
         let mock = MockSignaling::err();
-        let k1 = cache.get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock).await.unwrap();
-        let k2 = cache.get_or_fetch(2, &test_actor_id(), &dummy_credential(), &mock).await.unwrap();
+        let k1 = cache
+            .get_or_fetch(1, &test_actor_id(), &dummy_credential(), &mock)
+            .await
+            .unwrap();
+        let k2 = cache
+            .get_or_fetch(2, &test_actor_id(), &dummy_credential(), &mock)
+            .await
+            .unwrap();
         assert_ne!(k1.as_bytes(), k2.as_bytes());
         assert_eq!(mock.calls(), 0);
     }

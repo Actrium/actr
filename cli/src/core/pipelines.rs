@@ -139,7 +139,7 @@ impl ValidationPipeline {
             .load_config(
                 self.config_manager
                     .get_project_root()
-                    .join("Actr.toml")
+                    .join("actr.toml")
                     .as_path(),
             )
             .await?;

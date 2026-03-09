@@ -13,15 +13,15 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
     )?;
     if is_service {
         ProjectTemplate::load_file(
-            &fixtures_root.join("swift/echo/Actr.toml.service.hbs"),
+            &fixtures_root.join("swift/echo/actr.toml.service.hbs"),
             files,
-            "Actr.toml",
+            "actr.toml",
         )?;
     } else {
         ProjectTemplate::load_file(
-            &fixtures_root.join("swift/echo/Actr.toml.hbs"),
+            &fixtures_root.join("swift/echo/actr.toml.hbs"),
             files,
-            "Actr.toml",
+            "actr.toml",
         )?;
     }
     ProjectTemplate::load_file(

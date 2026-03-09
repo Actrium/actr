@@ -134,7 +134,7 @@ fn build_remote_service_metadata(service: &ServiceModel) -> RemoteServiceMetadat
             ActrType {
                 manufacturer: "acme".to_string(),
                 name: service.name.clone(),
-                version: None,
+                version: "v1".to_string(),
             }
             .to_string_repr()
         }),

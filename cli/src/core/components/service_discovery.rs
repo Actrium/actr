@@ -362,10 +362,7 @@ impl NetworkServiceDiscovery {
 
         entry.actr_type.manufacturer == lookup_type.manufacturer
             && entry.actr_type.name == lookup_type.name
-            && lookup_type
-                .version
-                .as_ref()
-                .is_none_or(|version| entry.actr_type.version.as_ref() == Some(version))
+            && (lookup_type.version.is_empty() || entry.actr_type.version == lookup_type.version)
     }
 }
 

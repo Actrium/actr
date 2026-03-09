@@ -76,11 +76,11 @@ impl Command for DocCommand {
     async fn execute(&self) -> Result<()> {
         let output_dir = self.output_dir.as_deref().unwrap_or("docs");
 
-        if !Path::new("Actr.toml").exists()
+        if !Path::new("actr.toml").exists()
             && let Some(root) = Self::find_project_root()
         {
             return Err(ActrCliError::InvalidProject(format!(
-                "Actr.toml found at '{}'. Please run 'actr doc' from the project root.",
+                "actr.toml found at '{}'. Please run 'actr doc' from the project root.",
                 root.display()
             )));
         }
@@ -91,8 +91,8 @@ impl Command for DocCommand {
         std::fs::create_dir_all(output_dir)?;
 
         // Load project configuration
-        let config = if Path::new("Actr.toml").exists() {
-            Some(ConfigParser::from_file("Actr.toml")?)
+        let config = if Path::new("actr.toml").exists() {
+            Some(ConfigParser::from_file("actr.toml")?)
         } else {
             None
         };
@@ -246,7 +246,7 @@ impl DocCommand {
         project_type: DetectedProjectLanguage,
     ) -> String {
         let mut tree = format!(
-            "{}/\n├── Actr.toml          # Project configuration\n",
+            "{}/\n├── actr.toml          # Project configuration\n",
             project_name
         );
 
@@ -357,8 +357,8 @@ impl DocCommand {
         debug!("Generating config.html...");
 
         // Generate configuration example
-        let config_example = if Path::new("Actr.toml").exists() {
-            std::fs::read_to_string("Actr.toml").unwrap_or_default()
+        let config_example = if Path::new("actr.toml").exists() {
+            std::fs::read_to_string("actr.toml").unwrap_or_default()
         } else {
             r#"edition = 1
 exports = []
@@ -516,7 +516,7 @@ test = "cargo test""#
     fn find_project_root() -> Option<PathBuf> {
         let cwd = std::env::current_dir().ok()?;
         for ancestor in cwd.ancestors() {
-            if ancestor.join("Actr.toml").exists() {
+            if ancestor.join("actr.toml").exists() {
                 return Some(ancestor.to_path_buf());
             }
         }

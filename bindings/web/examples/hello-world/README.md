@@ -21,7 +21,7 @@ pnpm dev
 
 ```
 hello-world/
-├── Actr.toml              # Actor 配置文件
+├── actr.toml              # Actor 配置文件
 ├── package.json
 ├── vite.config.ts
 ├── index.html
@@ -63,7 +63,7 @@ console.log('Timestamp:', response.timestamp);
 
 ## 配置说明
 
-### Actr.toml
+### actr.toml
 
 ```toml
 [package]
@@ -92,7 +92,7 @@ actr gen -l typescript
 ```
 
 这将生成：
-- `actr-config.ts` - 从 Actr.toml 提取的配置
+- `actr-config.ts` - 从 actr.toml 提取的配置
 - `echo-service.actorref.ts` - 类型安全的 Echo 服务客户端
 - `actor.sw.js` - Service Worker 入口（放入 public/ 目录）
 

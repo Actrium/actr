@@ -341,8 +341,8 @@ mod tests {
 
         // Verify project.yml exists
         assert!(temp_dir.path().join("project.yml").exists());
-        // Verify Actr.toml exists
-        assert!(temp_dir.path().join("Actr.toml").exists());
+        // Verify actr.toml exists
+        assert!(temp_dir.path().join("actr.toml").exists());
         // Verify .gitignore exists
         assert!(temp_dir.path().join(".gitignore").exists());
         // Note: proto files are no longer created during init, they will be pulled via actr install

@@ -60,7 +60,7 @@ pub struct Config {
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 
-    /// Directory containing the configuration file (Actr.toml)
+    /// Directory containing the configuration file (actr.toml)
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 }
@@ -282,7 +282,8 @@ impl Config {
 
         // Calculate service fingerprint
         let fingerprint =
-            actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files).ok()?;
+            actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
+                .ok()?;
 
         // Build Protobuf entries
         let protobufs = self
@@ -397,7 +398,7 @@ mod tests {
                 actr_type: ActrType {
                     manufacturer: "acme".to_string(),
                     name: "test-service".to_string(),
-                    version: Some("1.0.0".to_string()),
+                    version: "1.0.0".to_string(),
                 },
                 description: None,
                 authors: vec![],
@@ -411,7 +412,7 @@ mod tests {
                     actr_type: Some(ActrType {
                         manufacturer: "acme".to_string(),
                         name: "user-service".to_string(),
-                        version: Some("2.1.0".to_string()),
+                        version: "2.1.0".to_string(),
                     }),
                     service: Some(ServiceRef {
                         name: "UserService".to_string(),
@@ -424,7 +425,7 @@ mod tests {
                     actr_type: Some(ActrType {
                         manufacturer: "common".to_string(),
                         name: "logging-service".to_string(),
-                        version: None,
+                        version: "v1".to_string(),
                     }),
                     service: None,
                 },

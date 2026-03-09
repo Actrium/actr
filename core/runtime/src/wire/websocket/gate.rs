@@ -21,12 +21,18 @@ use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::SignalingClient;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
+};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, oneshot};
+
+/// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
+type PendingRequestsMap =
+    Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
 /// WebSocket 身份验证上下文（可选）
 ///
@@ -51,8 +57,7 @@ pub struct WebSocketGate {
 
     /// 待响应请求表（request_id → (caller_id, oneshot::Sender)）
     /// **与 OutprocOutGate 共享**，以便正确路由 Response
-    pending_requests:
-        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>,
+    pending_requests: PendingRequestsMap,
 
     /// DataStream 注册表（fast-path 流消息路由）
     data_stream_registry: Arc<DataStreamRegistry>,
@@ -71,9 +76,7 @@ impl WebSocketGate {
     /// - `auth_ctx`: 身份验证上下文（配置后对所有入站连接强制验签）
     pub fn new(
         conn_rx: mpsc::Receiver<InboundWsConn>,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
         auth_ctx: Option<WsAuthContext>,
     ) -> Self {
@@ -91,9 +94,7 @@ impl WebSocketGate {
         from_bytes: Vec<u8>,
         data: Bytes,
         payload_type: PayloadType,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         mailbox: Arc<dyn Mailbox>,
     ) {
         let request_id = envelope.request_id.clone();
@@ -155,7 +156,8 @@ impl WebSocketGate {
         let local_credential = auth_ctx.credential_state.credential().await;
 
         // 从 AisKeyCache 获取 key_id 对应的 verifying key（本地命中或从 signaling 拉取）
-        let verifying_key = match auth_ctx.ais_key_cache
+        let verifying_key = match auth_ctx
+            .ais_key_cache
             .get_or_fetch(
                 credential.key_id,
                 &auth_ctx.actor_id,
@@ -176,13 +178,16 @@ impl WebSocketGate {
         };
 
         // Ed25519 验签
-        let sig_result = credential.signature[..]
-            .try_into()
-            .ok()
-            .and_then(|sig_bytes: [u8; 64]| {
-                let signature = Signature::from_bytes(&sig_bytes);
-                verifying_key.verify(&credential.claims[..], &signature).ok()
-            });
+        let sig_result =
+            credential.signature[..]
+                .try_into()
+                .ok()
+                .and_then(|sig_bytes: [u8; 64]| {
+                    let signature = Signature::from_bytes(&sig_bytes);
+                    verifying_key
+                        .verify(&credential.claims[..], &signature)
+                        .ok()
+                });
         if sig_result.is_none() {
             tracing::warn!(
                 key_id = credential.key_id,
@@ -247,9 +252,7 @@ impl WebSocketGate {
     fn spawn_connection_tasks(
         conn: WebSocketConnection,
         source_id: Vec<u8>,
-        pending_requests: Arc<
-            RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
-        >,
+        pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
         mailbox: Arc<dyn Mailbox>,
     ) {
@@ -381,10 +384,11 @@ impl WebSocketGate {
                 if let Some(ref ctx) = auth_ctx {
                     match credential_opt {
                         Some(ref credential) => {
-                            if Self::verify_credential(credential, &source_id, ctx).await.is_none() {
-                                tracing::warn!(
-                                    "⚠️ WS 入站连接 credential 验签失败，丢弃连接"
-                                );
+                            if Self::verify_credential(credential, &source_id, ctx)
+                                .await
+                                .is_none()
+                            {
+                                tracing::warn!("⚠️ WS 入站连接 credential 验签失败，丢弃连接");
                                 continue; // 丢弃连接，继续等待下一个
                             }
                         }
@@ -434,7 +438,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "node".to_string(),
-                version: None,
+                version: "v1".to_string(),
             },
         }
     }
@@ -445,7 +449,12 @@ mod tests {
     }
 
     /// 构造一个能通过验签的完整 AIdCredential
-    fn make_valid_credential(sk: &SigningKey, actor_id: &ActrId, expires_at: u64, key_id: u32) -> AIdCredential {
+    fn make_valid_credential(
+        sk: &SigningKey,
+        actor_id: &ActrId,
+        expires_at: u64,
+        key_id: u32,
+    ) -> AIdCredential {
         let claims = IdentityClaims {
             actor_id: actor_id.to_string_repr(),
             expires_at,
@@ -464,14 +473,16 @@ mod tests {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() + 3600
+            .as_secs()
+            + 3600
     }
 
     fn past_ts() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_secs() - 1
+            .as_secs()
+            - 1
     }
 
     // ─── mock SignalingClient (同 ais_key_cache tests，内联以避免模块依赖) ──
@@ -480,25 +491,87 @@ mod tests {
 
     #[async_trait]
     impl crate::wire::SignalingClient for NullSignaling {
-        async fn connect(&self) -> crate::transport::error::NetworkResult<()> { Ok(()) }
-        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> { Ok(()) }
-        fn is_connected(&self) -> bool { false }
-        fn get_stats(&self) -> crate::wire::webrtc::SignalingStats { Default::default() }
-        fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<crate::wire::webrtc::SignalingEvent> {
+        async fn connect(&self) -> crate::transport::error::NetworkResult<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> {
+            Ok(())
+        }
+        fn is_connected(&self) -> bool {
+            false
+        }
+        fn get_stats(&self) -> crate::wire::webrtc::SignalingStats {
+            Default::default()
+        }
+        fn subscribe_events(
+            &self,
+        ) -> tokio::sync::broadcast::Receiver<crate::wire::webrtc::SignalingEvent> {
             tokio::sync::broadcast::channel(1).1
         }
         async fn set_actor_id(&self, _: ActrId) {}
         async fn set_credential_state(&self, _: crate::lifecycle::CredentialState) {}
         async fn clear_identity(&self) {}
-        async fn send_register_request(&self, _: actr_protocol::RegisterRequest) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> { unimplemented!() }
-        async fn send_unregister_request(&self, _: ActrId, _: AIdCredential, _: Option<String>) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> { unimplemented!() }
-        async fn send_heartbeat(&self, _: ActrId, _: AIdCredential, _: actr_protocol::ServiceAvailabilityState, _: f32, _: f32) -> crate::transport::error::NetworkResult<actr_protocol::Pong> { unimplemented!() }
-        async fn send_route_candidates_request(&self, _: ActrId, _: AIdCredential, _: actr_protocol::RouteCandidatesRequest) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse> { unimplemented!() }
-        async fn send_credential_update_request(&self, _: ActrId, _: AIdCredential) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> { unimplemented!() }
-        async fn send_envelope(&self, _: actr_protocol::SignalingEnvelope) -> crate::transport::error::NetworkResult<()> { unimplemented!() }
-        async fn receive_envelope(&self) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>> { unimplemented!() }
-        async fn get_signing_key(&self, _: ActrId, _: AIdCredential, _: u32) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
-            Err(crate::transport::error::NetworkError::ConnectionError("should not be called".into()))
+        async fn send_register_request(
+            &self,
+            _: actr_protocol::RegisterRequest,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+            unimplemented!()
+        }
+        async fn send_unregister_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: Option<String>,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> {
+            unimplemented!()
+        }
+        async fn send_heartbeat(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: actr_protocol::ServiceAvailabilityState,
+            _: f32,
+            _: f32,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::Pong> {
+            unimplemented!()
+        }
+        async fn send_route_candidates_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: actr_protocol::RouteCandidatesRequest,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse>
+        {
+            unimplemented!()
+        }
+        async fn send_credential_update_request(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+            unimplemented!()
+        }
+        async fn send_envelope(
+            &self,
+            _: actr_protocol::SignalingEnvelope,
+        ) -> crate::transport::error::NetworkResult<()> {
+            unimplemented!()
+        }
+        async fn receive_envelope(
+            &self,
+        ) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>>
+        {
+            unimplemented!()
+        }
+        async fn get_signing_key(
+            &self,
+            _: ActrId,
+            _: AIdCredential,
+            _: u32,
+        ) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
+            Err(crate::transport::error::NetworkError::ConnectionError(
+                "should not be called".into(),
+            ))
         }
     }
 
@@ -551,7 +624,11 @@ mod tests {
         credential.signature = sig.into();
 
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none());
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none()
+        );
     }
 
     /// 签名字节数不足 64 字节 → try_into 失败 → None
@@ -565,7 +642,11 @@ mod tests {
         credential.signature = bytes::Bytes::from(vec![0u8; 32]); // too short
 
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none());
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none()
+        );
     }
 
     /// expires_at 在过去 → 已过期 → None
@@ -577,8 +658,12 @@ mod tests {
         let credential = make_valid_credential(&sk, &actor, past_ts(), 1);
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
 
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none(),
-            "expired credential should be rejected");
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none(),
+            "expired credential should be rejected"
+        );
     }
 
     /// claims.actor_id 与 X-Actr-Source-ID 对应的 ActrId 不一致 → None（防身份欺骗）
@@ -593,8 +678,12 @@ mod tests {
         let credential = make_valid_credential(&sk, &claimed_actor, future_ts(), 1);
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actual_source);
 
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none(),
-            "actor_id mismatch should be rejected");
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none(),
+            "actor_id mismatch should be rejected"
+        );
     }
 
     /// IdentityClaims bytes 是非法 protobuf → 解码失败 → None
@@ -614,7 +703,11 @@ mod tests {
         };
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
 
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none());
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none()
+        );
     }
 
     /// source_id_bytes 是非法 protobuf → ActrId 解码失败 → None
@@ -627,7 +720,11 @@ mod tests {
 
         let bad_source_id = b"\xFF\xFF\xFF\xFF"; // 无效 protobuf
 
-        assert!(WebSocketGate::verify_credential(&credential, bad_source_id, &ctx).await.is_none());
+        assert!(
+            WebSocketGate::verify_credential(&credential, bad_source_id, &ctx)
+                .await
+                .is_none()
+        );
     }
 
     /// key_id 不在缓存且 signaling 返回错误 → None（signaling fetch 失败）
@@ -637,7 +734,11 @@ mod tests {
         let actor = test_actor_id(106);
         // key_id=99 不在缓存，NullSignaling 会返回错误
         let cache = AisKeyCache::new();
-        let local_credential = AIdCredential { key_id: 1, claims: bytes::Bytes::new(), signature: bytes::Bytes::from(vec![0u8; 64]) };
+        let local_credential = AIdCredential {
+            key_id: 1,
+            claims: bytes::Bytes::new(),
+            signature: bytes::Bytes::from(vec![0u8; 64]),
+        };
         let ctx = WsAuthContext {
             ais_key_cache: cache,
             actor_id: test_actor_id(999),
@@ -648,7 +749,11 @@ mod tests {
         let credential = make_valid_credential(&sk, &actor, future_ts(), 99); // key_id=99 不存在
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
 
-        assert!(WebSocketGate::verify_credential(&credential, &source_bytes, &ctx).await.is_none());
+        assert!(
+            WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+                .await
+                .is_none()
+        );
     }
 
     // ─── handle_envelope 路由逻辑 ─────────────────────────────────────────────
@@ -669,15 +774,28 @@ mod tests {
 
     #[async_trait]
     impl Mailbox for CapturingMailbox {
-        async fn enqueue(&self, _from: Vec<u8>, _payload: Vec<u8>, priority: MessagePriority) -> StorageResult<Uuid> {
+        async fn enqueue(
+            &self,
+            _from: Vec<u8>,
+            _payload: Vec<u8>,
+            priority: MessagePriority,
+        ) -> StorageResult<Uuid> {
             self.enqueue_count.fetch_add(1, Ordering::SeqCst);
             *self.last_priority.lock().unwrap() = Some(priority);
             Ok(Uuid::new_v4())
         }
-        async fn dequeue(&self) -> StorageResult<Vec<MessageRecord>> { Ok(vec![]) }
-        async fn ack(&self, _: Uuid) -> StorageResult<()> { Ok(()) }
+        async fn dequeue(&self) -> StorageResult<Vec<MessageRecord>> {
+            Ok(vec![])
+        }
+        async fn ack(&self, _: Uuid) -> StorageResult<()> {
+            Ok(())
+        }
         async fn status(&self) -> StorageResult<MailboxStats> {
-            Ok(MailboxStats { queued_messages: 0, inflight_messages: 0, queued_by_priority: Default::default() })
+            Ok(MailboxStats {
+                queued_messages: 0,
+                inflight_messages: 0,
+                queued_by_priority: Default::default(),
+            })
         }
     }
 
@@ -692,7 +810,9 @@ mod tests {
         }
     }
 
-    fn empty_pending() -> Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>> {
+    fn empty_pending()
+    -> Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>
+    {
         Arc::new(RwLock::new(HashMap::new()))
     }
 
@@ -711,10 +831,14 @@ mod tests {
             PayloadType::RpcReliable,
             pending,
             mailbox.clone(),
-        ).await;
+        )
+        .await;
 
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*mailbox.last_priority.lock().unwrap(), Some(MessagePriority::Normal));
+        assert_eq!(
+            *mailbox.last_priority.lock().unwrap(),
+            Some(MessagePriority::Normal)
+        );
     }
 
     /// RpcSignal → 入队 Mailbox，优先级 High
@@ -732,10 +856,14 @@ mod tests {
             PayloadType::RpcSignal,
             pending,
             mailbox.clone(),
-        ).await;
+        )
+        .await;
 
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 1);
-        assert_eq!(*mailbox.last_priority.lock().unwrap(), Some(MessagePriority::High));
+        assert_eq!(
+            *mailbox.last_priority.lock().unwrap(),
+            Some(MessagePriority::High)
+        );
     }
 
     /// RPC Response（pending 中有对应 request_id）→ 唤醒等待方，不入 Mailbox
@@ -746,7 +874,10 @@ mod tests {
         let actor = test_actor_id(1);
 
         let (tx, rx) = oneshot::channel();
-        pending.write().await.insert("req-2".to_string(), (actor, tx));
+        pending
+            .write()
+            .await
+            .insert("req-2".to_string(), (actor, tx));
 
         let mut envelope = make_rpc_envelope("req-2");
         envelope.payload = Some(bytes::Bytes::from("response-payload"));
@@ -759,9 +890,14 @@ mod tests {
             PayloadType::RpcReliable,
             pending.clone(),
             mailbox.clone(),
-        ).await;
+        )
+        .await;
 
-        assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0, "response must not go to mailbox");
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "response must not go to mailbox"
+        );
         let result = rx.await.expect("oneshot must be resolved");
         assert!(result.is_ok(), "response payload should resolve Ok");
     }
@@ -773,11 +909,17 @@ mod tests {
         let pending = empty_pending();
         let actor = test_actor_id(2);
         let (tx, rx) = oneshot::channel();
-        pending.write().await.insert("req-3".to_string(), (actor, tx));
+        pending
+            .write()
+            .await
+            .insert("req-3".to_string(), (actor, tx));
 
         let mut envelope = make_rpc_envelope("req-3");
         envelope.payload = Some(bytes::Bytes::from("x"));
-        envelope.error = Some(actr_protocol::ErrorResponse { code: 500, message: "err".to_string() });
+        envelope.error = Some(actr_protocol::ErrorResponse {
+            code: 500,
+            message: "err".to_string(),
+        });
         let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
 
         WebSocketGate::handle_envelope(
@@ -787,11 +929,14 @@ mod tests {
             PayloadType::RpcReliable,
             pending,
             mailbox.clone(),
-        ).await;
+        )
+        .await;
 
         let result = rx.await.unwrap();
-        assert!(matches!(result, Err(crate::error::ActrError::DecodeFailure(_))),
-            "both payload+error should produce DecodeFailure: {result:?}");
+        assert!(
+            matches!(result, Err(crate::error::ActrError::DecodeFailure(_))),
+            "both payload+error should produce DecodeFailure: {result:?}"
+        );
     }
 
     /// Response 只含 error（无 payload）→ Err(Unavailable) 发给等待方
@@ -801,11 +946,17 @@ mod tests {
         let pending = empty_pending();
         let actor = test_actor_id(3);
         let (tx, rx) = oneshot::channel();
-        pending.write().await.insert("req-4".to_string(), (actor, tx));
+        pending
+            .write()
+            .await
+            .insert("req-4".to_string(), (actor, tx));
 
         let mut envelope = make_rpc_envelope("req-4");
         envelope.payload = None;
-        envelope.error = Some(actr_protocol::ErrorResponse { code: 503, message: "unavailable".to_string() });
+        envelope.error = Some(actr_protocol::ErrorResponse {
+            code: 503,
+            message: "unavailable".to_string(),
+        });
         let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
 
         WebSocketGate::handle_envelope(
@@ -815,11 +966,14 @@ mod tests {
             PayloadType::RpcReliable,
             pending,
             mailbox.clone(),
-        ).await;
+        )
+        .await;
 
         let result = rx.await.unwrap();
-        assert!(matches!(result, Err(crate::error::ActrError::Unavailable(_))),
-            "error-only response should produce Unavailable: {result:?}");
+        assert!(
+            matches!(result, Err(crate::error::ActrError::Unavailable(_))),
+            "error-only response should produce Unavailable: {result:?}"
+        );
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
     }
 
@@ -830,7 +984,10 @@ mod tests {
         let pending = empty_pending();
         let actor = test_actor_id(4);
         let (tx, _rx) = oneshot::channel::<actr_protocol::ActorResult<Bytes>>();
-        pending.write().await.insert("req-5".to_string(), (actor, tx));
+        pending
+            .write()
+            .await
+            .insert("req-5".to_string(), (actor, tx));
 
         let envelope = make_rpc_envelope("req-5");
         let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
@@ -842,8 +999,12 @@ mod tests {
             PayloadType::RpcReliable,
             pending.clone(),
             mailbox,
-        ).await;
+        )
+        .await;
 
-        assert!(!pending.read().await.contains_key("req-5"), "pending entry must be removed after response");
+        assert!(
+            !pending.read().await.contains_key("req-5"),
+            "pending entry must be removed after response"
+        );
     }
 }

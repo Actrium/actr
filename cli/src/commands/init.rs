@@ -103,10 +103,10 @@ impl Command for InitCommand {
             )));
         }
 
-        // Check if current directory already has Actr.toml
-        if project_dir == Path::new(".") && Path::new("Actr.toml").exists() {
+        // Check if current directory already has actr.toml
+        if project_dir == Path::new(".") && Path::new("actr.toml").exists() {
             return Err(ActrCliError::InvalidProject(
-                "Current directory already contains an Actor-RTC project (Actr.toml exists)"
+                "Current directory already contains an Actor-RTC project (actr.toml exists)"
                     .to_string(),
             ));
         }
@@ -253,10 +253,10 @@ impl InitCommand {
             )));
         }
 
-        // Check if current directory already has Actr.toml when using "."
-        if parent_dir == Path::new(".") && Path::new("Actr.toml").exists() {
+        // Check if current directory already has actr.toml when using "."
+        if parent_dir == Path::new(".") && Path::new("actr.toml").exists() {
             return Err(ActrCliError::InvalidProject(
-                "Current directory already contains an Actor-RTC project (Actr.toml exists)"
+                "Current directory already contains an Actor-RTC project (actr.toml exists)"
                     .to_string(),
             ));
         }
