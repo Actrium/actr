@@ -190,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### 3. 健康检查
 
-检查 KS 服务状态和数据库连接。
+检查 Signer 服务状态和数据库连接。
 
 **端点**: `GET /ks/health`
 **认证**: 无需认证

@@ -318,8 +318,8 @@ impl ApplicationLauncher {
         }
 
         // 注册各服务的 metrics
-        if config.is_ks_enabled()
-            && let Err(e) = ks::register_ks_metrics(registry)
+        if config.is_signer_enabled()
+            && let Err(e) = signer::register_signer_metrics(registry)
         {
             platform::recording::warn!(
                 "KS metrics registration warning (may already be registered): {}",
@@ -361,8 +361,8 @@ impl ApplicationLauncher {
             service_manager.add_service(ServiceContainer::ais(ais_service));
         }
 
-        if config.is_ks_enabled() {
-            platform::recording::info!("  - KS Service (gRPC: /ks.v1.KeyServer/<Method>)");
+        if config.is_signer_enabled() {
+            platform::recording::info!("  - Signer Service (gRPC: /signer.v1.Signer/<Method>)");
         }
 
         platform::recording::info!(
@@ -400,8 +400,8 @@ impl ApplicationLauncher {
                 if config.is_signaling_enabled() {
                     platform::recording::info!("  - {}/signaling/ws", _ws_url);
                 }
-                if config.is_ks_enabled() {
-                    platform::recording::info!("  - {}/ks.v1.KeyServer/<Method>", http_url);
+                if config.is_signer_enabled() {
+                    platform::recording::info!("  - {}/signer.v1.Signer/<Method>", http_url);
                 }
                 if config.is_ais_enabled() {
                     platform::recording::info!("  - {}/ais/health", http_url);

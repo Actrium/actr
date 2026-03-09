@@ -1,4 +1,4 @@
-# KS (Key Server) 完全指南
+# Signer 完全指南
 
 **版本**: v0.1.0
 **最后更新**: 2025-11-03
@@ -25,7 +25,7 @@
 
 ### 什么是 KS?
 
-**KS (Key Server)** 是 Actrix 项目中的**椭圆曲线密钥管理服务**，为整个 Actrix 生态系统提供加密密钥的生成、存储和查询能力。
+**Signer** 是 Actrix 项目中的**椭圆曲线密钥管理服务**，为整个 Actrix 生态系统提供加密密钥的生成、存储和查询能力。
 
 ### 核心功能
 
@@ -763,7 +763,7 @@ Host: actrix.example.com
 while true; do
   STATUS=$(curl -s http://localhost:8443/ks/health | jq -r '.status')
   if [ "$STATUS" != "healthy" ]; then
-    echo "KS service unhealthy!" | mail -s "Alert" admin@example.com
+    echo "Signer service unhealthy!" | mail -s "Alert" admin@example.com
   fi
   sleep 60
 done
@@ -964,7 +964,7 @@ fn validate_timestamp(request_ts: i64, server_ts: i64) -> bool {
 完整认证流程图
 ═══════════════════════════════════════════════════
 
-客户端                           KS 服务器
+客户端                           Signer 服务器
   │                                  │
   │ 1. 准备请求数据                  │
   │    • nonce = UUID v4            │
@@ -1195,7 +1195,7 @@ CREATE TABLE nonce (
   {sqlite_path}/ks_keys.db (通过 StorageConfig 配置)
 
 配置方式:
-  [services.ks.storage.sqlite]
+  [services.signer.storage.sqlite]
   path = "ks_keys.db"  # 相对于 sqlite_path 目录，或使用绝对路径
 
 查看数据库信息:
@@ -1425,20 +1425,20 @@ class KSClient {
 
 **配置文件** (`config.toml`):
 ```toml
-# 启用 KS 服务
+# 启用 Signer 服务
 enable = 16  # 或包含 16 的组合，如 22 (KS + STUN + TURN)
 
-# KS 服务配置
-[services.ks]
+# Signer 服务配置
+[services.signer]
 # Note: Service enablement is controlled by the bitmask (enable field)
-# Set ENABLE_KS bit (16) in the enable field to enable this service
+# Set ENABLE_SIGNER bit (16) in the enable field to enable this service
 nonce_db_file = "/var/lib/actrix/nonce.db"  # Optional: Nonce database file path
 
-[services.ks.storage]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600      # 密钥 TTL (秒), 0=永不过期
 
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks_keys.db"  # Relative to sqlite_path, or use absolute path
 
 # 全局配置
@@ -1498,7 +1498,7 @@ RESPONSE=$(curl -s "$ENDPOINT")
 STATUS=$(echo "$RESPONSE" | jq -r '.status')
 
 if [ "$STATUS" != "healthy" ]; then
-    echo "KS service unhealthy: $RESPONSE" | \
+    echo "Signer service unhealthy: $RESPONSE" | \
         mail -s "KS Alert" "$ALERT_EMAIL"
     exit 1
 fi
@@ -1746,7 +1746,7 @@ sqlite3 /var/lib/actrix/ks.db "VACUUM;"
 # 查看最近的错误
 journalctl -u actrix | grep -i error | tail -20
 
-# 查看 KS 密钥生成日志
+# 查看 Signer 密钥生成日志
 journalctl -u actrix | grep "Generated key pair"
 
 # 查看认证失败日志
@@ -1807,8 +1807,8 @@ sqlite3 /var/lib/actrix/ks.db \
 | --------------------------------- | ------ | ------------ | ---------------------------------------- |
 | `ks.ip`                           | String | "127.0.0.1"  | 监听地址                                 |
 | `ks.port`                         | u16    | 8081         | 监听端口                                 |
-| `services.ks.storage.sqlite.path` | String | "ks_keys.db" | 密钥数据库文件路径（相对于 sqlite_path） |
-| `services.ks.nonce_db_file`       | String | None         | Nonce 数据库文件路径（可选）             |
+| `services.signer.storage.sqlite.path` | String | "ks_keys.db" | 密钥数据库文件路径（相对于 sqlite_path） |
+| `services.signer.nonce_db_file`       | String | None         | Nonce 数据库文件路径（可选）             |
 | `ks.key_ttl_seconds`              | u64    | 3600         | 密钥 TTL (0=永不过期)                    |
 | `actrix_shared_key`               | String | -            | PSK (必须配置)                           |
 

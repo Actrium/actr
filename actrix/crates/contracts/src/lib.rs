@@ -5,7 +5,7 @@
 //! # Modules
 //!
 //! - [`admin::v1`]: Admin service definitions (ControlService and NodeAdminService)
-//! - [`ks::v1`]: Key Server service definitions
+//! - [`signer::v1`]: Signer service definitions
 //!
 //! # Usage
 //!
@@ -13,7 +13,7 @@
 //!
 //! ```ignore
 //! use actrix_proto::admin::v1::{RegisterNodeRequest, ReportRequest};
-//! use actrix_proto::ks::v1::{GenerateKeyRequest, KeyServerClient};
+//! use actrix_proto::signer::v1::{GenerateKeyRequest, SignerClient};
 //! ```
 //!
 //! ## Convenience re-exports
@@ -31,8 +31,8 @@
 //!
 //! ## Cross-Package References
 //!
-//! The `ks.v1` package imports `NonceCredential` from `admin.v1` for consistent
-//! authentication across all services. When using KS gRPC types directly, reference
+//! The `signer.v1` package imports `NonceCredential` from `admin.v1` for consistent
+//! authentication across all services. When using Signer gRPC types directly, reference
 //! the credential type via `actrix_proto::admin::v1::NonceCredential`.
 
 /// Admin service protocol definitions.
@@ -45,12 +45,12 @@ pub mod admin {
     }
 }
 
-/// Key Server protocol definitions.
+/// Signer protocol definitions.
 ///
-/// Contains `KeyServer` service for key generation and management.
-pub mod ks {
+/// Contains `Signer` service for key generation and management.
+pub mod signer {
     pub mod v1 {
-        tonic::include_proto!("ks.v1");
+        tonic::include_proto!("signer.v1");
     }
 }
 
@@ -79,7 +79,7 @@ pub use admin::v1::{
 // ============================================================================
 
 pub use admin::v1::{
-    // Health check (aliased to avoid collision with ks::v1)
+    // Health check (aliased to avoid collision with signer::v1)
     HealthCheckRequest as ControlHealthCheckRequest,
     HealthCheckResponse as ControlHealthCheckResponse,
     // Registration
@@ -133,19 +133,19 @@ pub use admin::v1::{
 };
 
 // ============================================================================
-// Re-exports: KeyServer Service
+// Re-exports: Signer Service
 // ============================================================================
 
-pub use ks::v1::{
+pub use signer::v1::{
     // Health check (aliased to avoid collision with admin::v1)
-    HealthCheckRequest as KsHealthCheckRequest,
-    HealthCheckResponse as KsHealthCheckResponse,
+    HealthCheckRequest as SignerHealthCheckRequest,
+    HealthCheckResponse as SignerHealthCheckResponse,
     // Client and server
-    key_server_client::KeyServerClient,
-    key_server_server::{KeyServer, KeyServerServer},
+    signer_client::SignerClient,
+    signer_server::{Signer, SignerServer},
 };
 
-// Note: KS proto message types (GenerateKeyRequest, etc.) are NOT re-exported
-// here because the ks crate defines its own native Rust types with the same
+// Note: Signer proto message types (GenerateKeyRequest, etc.) are NOT re-exported
+// here because the signer crate defines its own native Rust types with the same
 // names for HTTP/JSON API usage. For gRPC usage, access them via:
-//   use actrix_proto::ks::v1::{GenerateKeyRequest, ...};
+//   use actrix_proto::signer::v1::{GenerateKeyRequest, ...};

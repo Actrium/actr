@@ -194,9 +194,9 @@ anyhow::Error      (应用层)
 Internet
     │
     ├─ TCP:8443 (HTTPS)
-    │   ├─ /ks/generate       → KS Service
-    │   ├─ /ks/secret/{id}    → KS Service
-    │   └─ /ks/health         → KS Service
+    │   ├─ /ks/generate       → Signer Service
+    │   ├─ /ks/secret/{id}    → Signer Service
+    │   └─ /ks/health         → Signer Service
     │
     └─ UDP:3478 (ICE)
         ├─ STUN (Binding Request/Response)
@@ -333,13 +333,13 @@ const ENABLE_SIGNALING: u8 = 0b00001;  // 1
 const ENABLE_STUN: u8      = 0b00010;  // 2
 const ENABLE_TURN: u8      = 0b00100;  // 4
 const ENABLE_AIS: u8       = 0b01000;  // 8
-const ENABLE_KS: u8        = 0b10000;  // 16
+const ENABLE_SIGNER: u8        = 0b10000;  // 16
 
 pub fn is_signaling_enabled(&self) -> bool { self.enable & ENABLE_SIGNALING != 0 }
 pub fn is_stun_enabled(&self) -> bool { self.enable & ENABLE_STUN != 0 }
 pub fn is_turn_enabled(&self) -> bool { self.enable & ENABLE_TURN != 0 }
 pub fn is_ais_enabled(&self) -> bool { self.enable & ENABLE_AIS != 0 }
-pub fn is_ks_enabled(&self) -> bool { self.enable & ENABLE_KS != 0 }
+pub fn is_signer_enabled(&self) -> bool { self.enable & ENABLE_SIGNER != 0 }
 ```
 
 **使用示例**:
@@ -509,7 +509,7 @@ static AUTH_KEY_CACHE: Lazy<Mutex<LruCache<u128, Vec<u8>>>> =
 
 ## 数据流
 
-### KS 服务数据流
+### Signer 服务数据流
 
 ```
 客户端请求
@@ -592,7 +592,7 @@ pub struct ActrixConfig {
 ```
 
 **使用位置**:
-- KS 服务: `crates/services/ks/src/auth.rs`
+- Signer 服务: `crates/services/ks/src/auth.rs`
 - 所有内部服务间通信
 
 ### 2. Nonce 防重放攻击
@@ -773,7 +773,7 @@ sink = "otlp+grpc://localhost:4317"
     ├─ if is_stun_enabled(): add StunService
     ├─ if is_signaling_enabled(): add SignalingService
     ├─ if is_ais_enabled(): add AisService
-    └─ if is_ks_enabled(): add KsHttpService
+    └─ if is_signer_enabled(): add KsHttpService
     ↓
 11. service_manager.start_all() -> Vec<JoinHandle<()>>
     ├─ 启动 ICE 服务（每个任务共享 shutdown_tx）
@@ -811,7 +811,7 @@ sink = "otlp+grpc://localhost:4317"
 | **配置系统**    | `crates/platform/src/config/mod.rs` | 18-350   |
 | **错误处理**    | `crates/platform/src/error/mod.rs`  | 1-80     |
 | **数据库**      | `crates/platform/src/storage/db.rs` | 全文     |
-| **KS 服务**     | `crates/services/ks/src/handlers.rs`       | 84-232   |
+| **Signer 服务**     | `crates/services/ks/src/handlers.rs`       | 84-232   |
 | **STUN 实现**   | `crates/services/stun/src/lib.rs`          | 29-176   |
 | **TURN 实现**   | `crates/services/turn/src/lib.rs`          | 全文     |
 | **Trace Layer** | `crates/actrixd/src/service/trace.rs`            | 1-65     |

@@ -24,14 +24,14 @@ actrix_shared_key = "dev-shared-key-change-in-production"
 # 位 0 (1): Signaling, 位 1 (2): STUN, 位 2 (4): TURN, 位 3 (8): AIS, 位 4 (16): KS
 enable = 31  # 1+2+4+8+16 = 所有服务
 
-# KS 服务
-[services.ks]
+# Signer 服务
+[services.signer]
 
-[services.ks.storage]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
 
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks.db"
 
 # AIS 服务（自动使用本地 KS）
@@ -62,27 +62,27 @@ realm = "actrix.local"
 
 ## 分布式部署
 
-### 场景 A: 专用 KS 服务器
+### 场景 A: 专用 Signer 服务器
 
-**KS 服务器** (`ks-server.toml`)
+**Signer 服务器** (`ks-server.toml`)
 
 ```toml
 name = "actrix-ks"
 env = "prod"
 actrix_shared_key = "PROD_SHARED_KEY_32_CHARS_MINIMUM"
 
-# 只启用 KS 服务
-enable = 16  # ENABLE_KS (位 4)
+# 只启用 Signer 服务
+enable = 16  # ENABLE_SIGNER (位 4)
 
-[services.ks]
+[services.signer]
 # Note: Service enablement is controlled by the bitmask (enable field)
-# Set ENABLE_KS bit (16) in the enable field to enable this service
+# Set ENABLE_SIGNER bit (16) in the enable field to enable this service
 
-[services.ks.storage]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 7200  # 2小时
 
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "/var/lib/actrix/ks.db"
 
 [bind.https]
@@ -106,7 +106,7 @@ actrix_shared_key = "PROD_SHARED_KEY_32_CHARS_MINIMUM"  # 与 KS 相同
 enable = 15  # 1+2+4+8
 
 # 本地不运行 KS
-# services.ks 未配置
+# services.signer 未配置
 
 # AIS 服务（连接远程 KS）
 [services.ais]
@@ -190,7 +190,7 @@ timeout_seconds = 10
 │     ↓ 如果存在，直接使用                                 │
 │                                                         │
 │  2️⃣  本地 KS 自动发现                                    │
-│     ↓ 如果 KS 服务已启用（ENABLE_KS 位已设置）          │
+│     ↓ 如果 Signer 服务已启用（ENABLE_SIGNER 位已设置）          │
 │     ↓ 自动生成: http://127.0.0.1:{ks_port}             │
 │                                                         │
 │  3️⃣  配置错误                                           │
@@ -207,11 +207,11 @@ timeout_seconds = 10
 actrix_shared_key = "shared-key"
 
 # 启用 KS 和 AIS 服务（位掩码）
-enable = 24  # ENABLE_KS (16) + ENABLE_AIS (8)
+enable = 24  # ENABLE_SIGNER (16) + ENABLE_AIS (8)
 
-[services.ks]
+[services.signer]
 # Note: Service enablement is controlled by the bitmask (enable field)
-# Set ENABLE_KS bit (16) in the enable field to enable this service
+# Set ENABLE_SIGNER bit (16) in the enable field to enable this service
 
 [services.ais]
 # 不需要配置 dependencies.ks
@@ -221,9 +221,9 @@ enable = 24  # ENABLE_KS (16) + ENABLE_AIS (8)
 **等价于**:
 
 ```toml
-enable = 24  # ENABLE_KS (16) + ENABLE_AIS (8)
+enable = 24  # ENABLE_SIGNER (16) + ENABLE_AIS (8)
 
-[services.ks]
+[services.signer]
 enabled = true
 
 [services.ais]
@@ -236,9 +236,9 @@ timeout_seconds = 30
 
 ```toml
 # 启用 KS 和 AIS 服务（位掩码）
-enable = 24  # ENABLE_KS (16) + ENABLE_AIS (8)
+enable = 24  # ENABLE_SIGNER (16) + ENABLE_AIS (8)
 
-[services.ks]
+[services.signer]
 
 [services.ais]
 # 显式配置优先级更高
@@ -251,11 +251,11 @@ timeout_seconds = 15
 
 ```toml
 # 启用 KS、AIS 和 Signaling 服务（位掩码）
-enable = 25  # ENABLE_KS (16) + ENABLE_AIS (8) + ENABLE_SIGNALING (1)
+enable = 25  # ENABLE_SIGNER (16) + ENABLE_AIS (8) + ENABLE_SIGNALING (1)
 
-[services.ks]
+[services.signer]
 # Note: Service enablement is controlled by the bitmask (enable field)
-# Set ENABLE_KS bit (16) in the enable field to enable this service
+# Set ENABLE_SIGNER bit (16) in the enable field to enable this service
 
 [services.ais]
 # AIS 使用本地 KS（自动发现）
@@ -275,13 +275,13 @@ timeout_seconds = 10
 cargo run --bin actrix -- test --config config.toml
 
 # 成功示例：
-# ✅ KS service is enabled
+# ✅ Signer service is enabled
 # ✅ AIS service will use KS at http://127.0.0.1:8090 (auto-discovered)
 # ✅ Configuration is valid
 
 # 错误示例：
 # ❌ AIS service is enabled but no KS available:
-#    either configure services.ais.dependencies.ks or enable local KS service
+#    either configure services.ais.dependencies.ks or enable local Signer service
 ```
 
 ---
@@ -297,8 +297,8 @@ enable = 8  # ENABLE_AIS (位 3)
 # 既没有本地 KS，也没有显式配置
 
 # ✅ 正确配置 - 方式 1：本地 KS
-enable = 24  # ENABLE_KS (16) + ENABLE_AIS (8)
-[services.ks]
+enable = 24  # ENABLE_SIGNER (16) + ENABLE_AIS (8)
+[services.signer]
 enabled = true
 
 [services.ais]
@@ -349,7 +349,7 @@ endpoint = "http://ks:50052"
 - ✅ 使用强 `actrix_shared_key`（≥32 字符）
 - ✅ 定期轮换密钥
 - ✅ 生产环境使用 HTTPS
-- ✅ 限制 KS 服务的网络访问
+- ✅ 限制 Signer 服务的网络访问
 
 ---
 
@@ -363,7 +363,7 @@ AIS service is enabled but no KS available
 ```
 
 **解决方案**:
-1. 检查是否启用了本地 KS：`enable` 位掩码中设置了 ENABLE_KS 位 (16)
+1. 检查是否启用了本地 KS：`enable` 位掩码中设置了 ENABLE_SIGNER 位 (16)
 2. 或者显式配置远程 KS：`services.ais.dependencies.ks`
 
 ### Q: AIS 连接了错误的 KS

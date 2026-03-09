@@ -1,7 +1,7 @@
 use base64::Engine as _;
-use ks::{
-    GenerateSigningKeyRequest, GenerateSigningKeyResponse, KsServiceConfig,
-    create_ks_state, create_router,
+use signer::{
+    GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignerServiceConfig,
+    create_signer_state, create_router,
     types::SignRequest,
 };
 use nonce_auth::{CredentialBuilder, NonceCredential, storage::MemoryStorage};
@@ -24,8 +24,8 @@ impl Drop for TestServer {
 
 async fn start_test_server(psk: &str) -> TestServer {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let config = KsServiceConfig::default();
-    let state = create_ks_state(&config, MemoryStorage::new(), psk, temp_dir.path())
+    let config = SignerServiceConfig::default();
+    let state = create_signer_state(&config, MemoryStorage::new(), psk, temp_dir.path())
         .await
         .expect("Failed to create KS state");
     let app = create_router(state);

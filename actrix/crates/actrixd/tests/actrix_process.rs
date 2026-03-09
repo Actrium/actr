@@ -1,5 +1,5 @@
 use actrix_sdk::testing::{self, GetNodeInfoRequest, NodeAdminServiceClient, ShutdownRequest};
-use ks::{GrpcClient, GrpcClientConfig};
+use signer::{GrpcClient, GrpcClientConfig};
 use nonce_auth::CredentialBuilder;
 use platform::storage::db::Database;
 use serde_json::Value;
@@ -111,7 +111,7 @@ fn write_minimal_config(dir: &Path, port: u16) -> PathBuf {
         f,
         r#"
 name = "actrix-test"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -135,7 +135,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -162,7 +162,7 @@ fn write_minimal_config_with_recording_sink(dir: &Path, port: u16, sink: &str) -
         f,
         r#"
 name = "actrix-test-otlp"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -186,7 +186,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -206,7 +206,7 @@ sink = "{sink}"
     config_path
 }
 
-fn write_minimal_config_with_ks_kek(dir: &Path, port: u16, kek: &str) -> PathBuf {
+fn write_minimal_config_with_signer_kek(dir: &Path, port: u16, kek: &str) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
     let config_path = dir.join("config.toml");
@@ -214,12 +214,12 @@ fn write_minimal_config_with_ks_kek(dir: &Path, port: u16, kek: &str) -> PathBuf
     writeln!(
         f,
         r#"
-name = "actrix-test-ks-kek"
-enable = 16  # ENABLE_KS
+name = "actrix-test-signer-kek"
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
-location_tag = "local,test,ks-kek"
+location_tag = "local,test,signer-kek"
 pid = "{pid}"
 
 [bind]
@@ -239,7 +239,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 kek = "{kek}"
 
 [control.admin_ui]
@@ -266,7 +266,7 @@ fn write_minimal_config_with_custom_pid_path(dir: &Path, port: u16, pid_path: &s
         f,
         r#"
 name = "actrix-test-custom-pid"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -290,7 +290,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -316,7 +316,7 @@ fn write_minimal_config_without_pid(dir: &Path, port: u16) -> PathBuf {
         f,
         r#"
 name = "actrix-test-no-pid"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -339,7 +339,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -410,7 +410,7 @@ sink = "file://{}"
         f,
         r#"
 name = "actrix-test"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -434,7 +434,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -467,7 +467,7 @@ fn write_minimal_config_with_user_group(dir: &Path, port: u16, user: &str, group
         f,
         r#"
 name = "actrix-test"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -493,7 +493,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -520,7 +520,7 @@ fn write_config_with_sqlite_path(dir: &Path, port: u16, sqlite_path: &str) -> Pa
         f,
         r#"
 name = "actrix-test-invalid-db"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -544,7 +544,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -570,7 +570,7 @@ fn write_config_with_http_bind_ip(dir: &Path, port: u16, bind_ip: &str) -> PathB
         f,
         r#"
 name = "actrix-test-http-bind-ip"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -594,7 +594,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -621,7 +621,7 @@ fn write_config_with_control_grpc(dir: &Path, port: u16) -> PathBuf {
         f,
         r#"
 name = "actrix-test-control-grpc"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -645,7 +645,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control]
@@ -727,12 +727,12 @@ fn write_ks_without_http_or_https_bind_config(dir: &Path, ice_port: u16) -> Path
     writeln!(
         f,
         r#"
-name = "actrix-test-ks-no-http-bind"
-enable = 16  # ENABLE_KS
+name = "actrix-test-signer-no-http-bind"
+enable = 16  # ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
-location_tag = "local,test,ks-no-http-bind"
+location_tag = "local,test,signer-no-http-bind"
 pid = "{pid}"
 
 [bind]
@@ -746,7 +746,7 @@ port = {ice_port}
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -772,7 +772,7 @@ fn write_prod_ks_without_https_bind_config(dir: &Path, port: u16) -> PathBuf {
         f,
         r#"
 name = "actrix-test-prod-no-https"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "prod"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -796,7 +796,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -834,7 +834,7 @@ fn write_ks_https_only_config(
         f,
         r#"
 name = "actrix-test-https-missing-tls"
-enable = 16  # ENABLE_KS
+enable = 16  # ENABLE_SIGNER
 env = "{env}"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "0123456789abcdef0123456789abcdef"
@@ -860,7 +860,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 # defaults
 
 [control.admin_ui]
@@ -906,9 +906,9 @@ fn spawn_actrix_from_workdir(workdir: &Path, log_path: &Path) -> Child {
 async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::new();
     let start = Instant::now();
-    let is_ks_health = url.ends_with("/ks/health");
-    let ks_grpc_endpoint = if is_ks_health {
-        Some(url.trim_end_matches("/ks/health").to_string())
+    let is_signer_health = url.ends_with("/signer/health");
+    let ks_grpc_endpoint = if is_signer_health {
+        Some(url.trim_end_matches("/signer/health").to_string())
     } else {
         None
     };
@@ -918,11 +918,11 @@ async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if is_ks_health {
+        if is_signer_health {
             let config = GrpcClientConfig {
                 endpoint: ks_grpc_endpoint
                     .as_ref()
-                    .expect("ks grpc endpoint should exist")
+                    .expect("signer grpc endpoint should exist")
                     .clone(),
                 actrix_shared_key: TEST_ACTRIX_SHARED_KEY.to_string(),
                 timeout_seconds: 2,
@@ -956,8 +956,8 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
         .danger_accept_invalid_certs(true)
         .build()
         .expect("create insecure https client");
-    let request_url = if url.ends_with("/ks/health") {
-        format!("{}{}", url.trim_end_matches("/ks/health"), "/admin/health")
+    let request_url = if url.ends_with("/signer/health") {
+        format!("{}{}", url.trim_end_matches("/signer/health"), "/admin/health")
     } else {
         url.to_string()
     };
@@ -1194,7 +1194,7 @@ async fn wait_for_ks_grpc_client(
 
         if start.elapsed() > START_TIMEOUT {
             let log = fs::read_to_string(log_path).unwrap_or_default();
-            panic!("ks grpc not ready at {endpoint}\nlogs:\n{log}");
+            panic!("signer grpc not ready at {endpoint}\nlogs:\n{log}");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -1315,7 +1315,7 @@ async fn actrix_starts_serves_health_and_shuts_down() {
     let log_path = tmp.path().join("actrix.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
     let grpc_endpoint = format!("http://127.0.0.1:{port}");
     let mut grpc_client = wait_for_ks_grpc_client(
@@ -1337,10 +1337,10 @@ async fn actrix_ks_grpc_health_and_key_lifecycle() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
     let config_path = write_minimal_config(tmp.path(), port);
-    let log_path = tmp.path().join("actrix-ks-grpc.log");
+    let log_path = tmp.path().join("actrix-signer-grpc.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
     let grpc_endpoint = format!("http://127.0.0.1:{port}");
 
@@ -1387,10 +1387,10 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
     let config_path = write_minimal_config(tmp.path(), port);
-    let log_path = tmp.path().join("actrix-ks-grpc-bad-secret.log");
+    let log_path = tmp.path().join("actrix-signer-grpc-bad-secret.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
     let grpc_endpoint = format!("http://127.0.0.1:{port}");
     let _ready_client = wait_for_ks_grpc_client(
@@ -1441,11 +1441,11 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
 async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config_with_ks_kek(tmp.path(), port, TEST_VALID_KEK_HEX);
-    let log_path = tmp.path().join("actrix-ks-grpc-kek.log");
+    let config_path = write_minimal_config_with_signer_kek(tmp.path(), port, TEST_VALID_KEK_HEX);
+    let log_path = tmp.path().join("actrix-signer-grpc-kek.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
     let grpc_endpoint = format!("http://127.0.0.1:{port}");
 
@@ -1479,7 +1479,7 @@ async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
 async fn actrix_exits_when_ks_kek_is_invalid() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_minimal_config_with_ks_kek(tmp.path(), port, "invalid-kek");
+    let config_path = write_minimal_config_with_signer_kek(tmp.path(), port, "invalid-kek");
     let log_path = tmp.path().join("actrix-invalid-kek.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
@@ -1518,7 +1518,7 @@ async fn actrix_starts_with_default_config_in_working_directory() {
     let log_path = tmp.path().join("actrix-default-cwd.log");
     let mut child = spawn_actrix_from_workdir(tmp.path(), &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     graceful_shutdown(child);
@@ -1533,7 +1533,7 @@ async fn actrix_starts_without_pid_file_configured() {
     let log_path = tmp.path().join("actrix-no-pid.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     assert!(
@@ -1554,7 +1554,7 @@ async fn actrix_writes_pid_file_and_cleans_on_shutdown() {
     let pid_path = tmp.path().join("actrix.pid");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let pid_content = fs::read_to_string(&pid_path).expect("pid file should exist while running");
@@ -1586,7 +1586,7 @@ async fn actrix_shutdown_tolerates_missing_pid_file() {
     let pid_path = tmp.path().join("actrix.pid");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     fs::remove_file(&pid_path).expect("remove pid file before shutdown");
@@ -1607,7 +1607,7 @@ async fn actrix_writes_pid_file_in_nested_directory_and_cleans_on_shutdown() {
     let log_path = tmp.path().join("actrix-nested-pid.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     assert!(
@@ -1640,7 +1640,7 @@ async fn actrix_exposes_prometheus_metrics_endpoint() {
     let log_path = tmp.path().join("actrix-metrics.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{}/ks/health", port);
+    let health_url = format!("http://127.0.0.1:{}/signer/health", port);
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let metrics_url = format!("http://127.0.0.1:{port}/metrics");
@@ -1669,7 +1669,7 @@ async fn actrix_writes_logs_to_file_when_configured() {
     let bootstrap_log_path = tmp.path().join("actrix-bootstrap.log");
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
 
     graceful_shutdown(child);
@@ -1708,7 +1708,7 @@ async fn actrix_writes_per_channel_log_file_when_configured() {
     let bootstrap_log_path = tmp.path().join("actrix-channel-bootstrap.log");
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
 
     graceful_shutdown(child);
@@ -1748,7 +1748,7 @@ async fn actrix_writes_rotated_logs_when_configured() {
     let bootstrap_log_path = tmp.path().join("actrix-rotate-bootstrap.log");
     let mut child = spawn_actrix(&config_path, &bootstrap_log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &bootstrap_log_path).await;
 
     graceful_shutdown(child);
@@ -2426,7 +2426,7 @@ async fn actrix_control_grpc_rejects_bad_shutdown_signature_and_keeps_running() 
     let log_path = tmp.path().join("actrix-control-grpc-bad-shutdown.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");
@@ -2464,7 +2464,7 @@ async fn actrix_control_grpc_rejects_duplicate_nonce_on_node_info_and_keeps_runn
     let log_path = tmp.path().join("actrix-control-grpc-replay.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");
@@ -2507,7 +2507,7 @@ async fn actrix_control_grpc_rejects_stale_node_info_timestamp_and_keeps_running
     let log_path = tmp.path().join("actrix-control-grpc-stale-ts.log");
     let mut child = spawn_actrix(&config_path, &log_path);
 
-    let health_url = format!("http://127.0.0.1:{port}/ks/health");
+    let health_url = format!("http://127.0.0.1:{port}/signer/health");
     wait_for_health(&health_url, &mut child, &log_path).await;
 
     let endpoint = format!("http://127.0.0.1:{port}");

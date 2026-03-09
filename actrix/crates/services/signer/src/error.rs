@@ -1,4 +1,4 @@
-//! KS 服务错误定义
+//! Signer 服务错误定义
 
 use axum::{
     Json,
@@ -8,9 +8,9 @@ use axum::{
 use serde_json::json;
 use thiserror::Error;
 
-/// KS 服务错误类型
+/// Signer 服务错误类型
 #[derive(Error, Debug)]
-pub enum KsError {
+pub enum SignerError {
     /// 数据库错误
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
@@ -64,27 +64,27 @@ pub enum KsError {
     NonceAuth(#[from] nonce_auth::NonceError),
 }
 
-impl IntoResponse for KsError {
+impl IntoResponse for SignerError {
     fn into_response(self) -> Response {
         let (status, error_message) = match &self {
-            KsError::Authentication(_) => (
+            SignerError::Authentication(_) => (
                 StatusCode::UNAUTHORIZED,
                 "Authentication failed".to_string(),
             ),
-            KsError::ReplayAttack(_) => (StatusCode::FORBIDDEN, "Request rejected".to_string()),
-            KsError::NonceAuth(_) => (
+            SignerError::ReplayAttack(_) => (StatusCode::FORBIDDEN, "Request rejected".to_string()),
+            SignerError::NonceAuth(_) => (
                 StatusCode::UNAUTHORIZED,
                 "Authentication failed".to_string(),
             ),
-            KsError::InvalidRequest(_) => (
+            SignerError::InvalidRequest(_) => (
                 StatusCode::BAD_REQUEST,
                 "Invalid request parameters".to_string(),
             ),
-            KsError::KeyNotFound(_) | KsError::NotFound(_) => {
+            SignerError::KeyNotFound(_) | SignerError::NotFound(_) => {
                 // 生产环境不泄露具体的 key_id
                 (StatusCode::NOT_FOUND, "Resource not found".to_string())
             }
-            KsError::Database(_) | KsError::Internal(_) | KsError::Crypto(_) => {
+            SignerError::Database(_) | SignerError::Internal(_) | SignerError::Crypto(_) => {
                 // 不向客户端暴露内部错误详情
                 crate::recording::error!("Internal error: {:?}", self);
                 (
@@ -110,8 +110,8 @@ impl IntoResponse for KsError {
     }
 }
 
-/// KS 结果类型别名
-pub type KsResult<T> = Result<T, KsError>;
+/// Signer 结果类型别名
+pub type SignerResult<T> = Result<T, SignerError>;
 
 // ECIES 错误处理 - 由于 ecies 库的错误类型变化，暂时简化处理
 // 后续可以根据具体需要添加更详细的错误转换

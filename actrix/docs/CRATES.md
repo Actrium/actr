@@ -77,7 +77,7 @@ pub const ENABLE_SIGNALING: u8 = 0b00001;  // 位 0 (1)
 pub const ENABLE_STUN: u8      = 0b00010;  // 位 1 (2)
 pub const ENABLE_TURN: u8      = 0b00100;  // 位 2 (4)
 pub const ENABLE_AIS: u8       = 0b01000;  // 位 3 (8)
-pub const ENABLE_KS: u8        = 0b10000;  // 位 4 (16)
+pub const ENABLE_SIGNER: u8        = 0b10000;  // 位 4 (16)
 ```
 
 **使用示例**:
@@ -110,8 +110,8 @@ impl ActrixConfig {
         self.enable & ENABLE_AIS != 0
     }
 
-    pub fn is_ks_enabled(&self) -> bool {
-        self.enable & ENABLE_KS != 0
+    pub fn is_signer_enabled(&self) -> bool {
+        self.enable & ENABLE_SIGNER != 0
     }
 
     pub fn is_ice_enabled(&self) -> bool {
@@ -376,7 +376,7 @@ fn encrypt_claims(
 
 **文件**: `crates/platform/src/aid/key_cache.rs:20-120`
 
-用于缓存从 KS 服务获取的密钥:
+用于缓存从 Signer 服务获取的密钥:
 
 ```rust
 pub struct KeyCache {
@@ -533,9 +533,9 @@ impl TlsConfigurer {
 **文件**: `crates/services/ks/src/lib.rs:1-8`
 
 ```rust
-//! Key Server (KS) - 椭圆曲线密钥生成和管理服务
+//! Signer - 椭圆曲线密钥生成和管理服务
 //!
-//! KS 服务提供以下功能：
+//! Signer 服务提供以下功能：
 //! 1. 生成椭圆曲线密钥对（使用 ECIES），返回公钥给 Issue 服务
 //! 2. 基于 key_id 查询私钥给验证服务
 //! 3. PSK 签名验证和防重放攻击保护
@@ -1920,7 +1920,7 @@ AIS (Actor Identity Service) 是 Actrix 系统的核心身份服务，负责：
 - **ActrId 注册**：为新 Actor 分配全局唯一的序列号
 - **凭证签发**：生成加密的 AIdCredential Token（ECIES 加密）
 - **PSK 生成**：为 Actor 与 Signaling Server 连接生成预共享密钥
-- **密钥管理**：从 KS 服务获取加密密钥，支持本地缓存和自动刷新
+- **密钥管理**：从 Signer 服务获取加密密钥，支持本地缓存和自动刷新
 
 #### 架构特性
 - **Stateless 设计**：PSK 由客户端保管，服务端无状态
@@ -2158,7 +2158,7 @@ cargo build --release --features opentelemetry
 
 ## 📈 性能特性总结
 
-### KS (Key Server)
+### Signer
 - ✅ AUTOINCREMENT key_id (自动分配,无冲突)
 - ✅ 索引优化 (expires_at 索引)
 - ✅ 自动清理过期密钥

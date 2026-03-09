@@ -896,7 +896,7 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
                 config.clone(),
             )));
         }
-        if config.is_ks_enabled() {
+        if config.is_signer_enabled() {
             manager.add_service(ServiceContainer::ks(KsHttpService::new(config.clone())));
         }
         if config.is_turn_enabled() {
@@ -908,8 +908,8 @@ fn run_application(config_path: &PathBuf) -> Result<()> {
         // 7. 启动所有服务并收集 JoinHandle
         let mut handles = manager.start_all().await?;
 
-        // 8. 附加 KS gRPC 任务（同样监听 shutdown 通道）
-        if config.is_ks_enabled() {
+        // 8. 附加 Signer gRPC 任务（同样监听 shutdown 通道）
+        if config.is_signer_enabled() {
             let mut ks_grpc = KsGrpcService::new(config.clone());
             handles.push(
                 ks_grpc
@@ -957,7 +957,7 @@ pub struct ActrixConfig {
     /// - 位 1 (2): STUN 服务
     /// - 位 2 (4): TURN 服务
     /// - 位 3 (8): AIS 身份认证服务
-    /// - 位 4 (16): KS 密钥服务
+    /// - 位 4 (16): Signer 密钥服务
     pub enable: u8,
     // ... 其他字段
 }
@@ -1005,8 +1005,8 @@ impl ActrixConfig {
     }
 
     // KS uses bitmask only (no secondary switch)
-    pub fn is_ks_enabled(&self) -> bool {
-        self.enable & ENABLE_KS != 0
+    pub fn is_signer_enabled(&self) -> bool {
+        self.enable & ENABLE_SIGNER != 0
     }
 }
 ```
@@ -1063,16 +1063,16 @@ port = 3478
 advertised_ip = "203.0.113.10"  # 公网 IP
 realm = "actrix.example.com"
 
-# KS 服务配置
-[services.ks]
+# Signer 服务配置
+[services.signer]
 # Note: Service enablement is controlled by the bitmask (enable field)
-# Set ENABLE_KS bit (16) in the enable field to enable this service
+# Set ENABLE_SIGNER bit (16) in the enable field to enable this service
 
-[services.ks.storage]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
 
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "/var/lib/actrix/ks.db"
 
 # OpenTelemetry 追踪（通过 recording.sink / recording.<channel>.sink 的 otlp+* URI）
@@ -1111,7 +1111,7 @@ impl ServiceStatus {
 
 ### 6.2 健康检查端点
 
-**KS 服务健康检查**:
+**Signer 服务健康检查**:
 
 **文件**: `crates/services/ks/src/handlers.rs:240-260`
 
@@ -1174,7 +1174,7 @@ if size as f64 / capacity as f64 > 0.9 {
 }
 ```
 
-#### 6.3.2 KS 密钥统计
+#### 6.3.2 Signer 密钥统计
 
 **文件**: `crates/services/ks/src/storage.rs:250-270`
 
@@ -1393,7 +1393,7 @@ sudo journalctl -u actrix -f
 
 /var/lib/actrix/
 ├── actrix.db                     # 主数据库
-├── ks.db                         # KS 密钥数据库
+├── ks.db                         # Signer 密钥数据库
 └── nonce.db                      # Nonce 存储
 
 /var/log/actrix/
@@ -1510,7 +1510,7 @@ info!("TURN auth cache: {}/{} ({}%)",
 let capacity = NonZeroUsize::new(5000).unwrap();  // 从 1000 增加到 5000
 ```
 
-#### 问题 2: KS 密钥查询缓慢
+#### 问题 2: Signer 密钥查询缓慢
 
 **排查**:
 ```bash

@@ -5,7 +5,7 @@
 
 use super::{HttpRouterService, IceService, http::build_control_router};
 use crate::service::container::ServiceContainer;
-use crate::service::grpc::build_ks_grpc_router;
+use crate::service::grpc::build_signer_grpc_router;
 use crate::service::http::{AisService, MfrService, SignalingService};
 use crate::service::ice::{StunService, TurnService};
 use anyhow::Result;
@@ -23,7 +23,7 @@ mod resource_type {
     pub const TURN: i32 = 2;
     pub const SIGNALING: i32 = 3;
     pub const AIS: i32 = 4;
-    pub const KS: i32 = 5;
+    pub const SIGNER: i32 = 5;
     pub const MFR: i32 = 6;
 
     /// Map a ServiceType to its proto ResourceType integer.
@@ -33,7 +33,7 @@ mod resource_type {
             super::ServiceType::Turn => TURN,
             super::ServiceType::Signaling => SIGNALING,
             super::ServiceType::Ais => AIS,
-            super::ServiceType::Ks => KS,
+            super::ServiceType::Ks => SIGNER,
             super::ServiceType::Mfr => MFR,
         }
     }
@@ -153,7 +153,7 @@ impl ServiceManager {
         map.insert(resource_type::TURN, Arc::new(ServiceCounters::new()));
         map.insert(resource_type::SIGNALING, Arc::new(ServiceCounters::new()));
         map.insert(resource_type::AIS, Arc::new(ServiceCounters::new()));
-        map.insert(resource_type::KS, Arc::new(ServiceCounters::new()));
+        map.insert(resource_type::SIGNER, Arc::new(ServiceCounters::new()));
         Arc::new(map)
     }
 
@@ -190,7 +190,7 @@ impl ServiceManager {
                 ServiceType::Ais,
                 self.config.is_ais_enabled(),
             ),
-            ("KS Service", ServiceType::Ks, self.config.is_ks_enabled()),
+            ("Signer Service", ServiceType::Ks, self.config.is_signer_enabled()),
         ];
 
         for (name, svc_type, enabled) in &svc_types {
@@ -338,18 +338,18 @@ impl ServiceManager {
             }
         }
 
-        if self.config.is_ks_enabled() {
-            let ks_counters = self.service_counters.get(&(resource_type::KS)).cloned();
-            match build_ks_grpc_router(&self.config, ks_counters).await {
+        if self.config.is_signer_enabled() {
+            let ks_counters = self.service_counters.get(&(resource_type::SIGNER)).cloned();
+            match build_signer_grpc_router(&self.config, ks_counters).await {
                 Ok(router) => {
                     platform::recording::info!(
-                        "Adding gRPC route '/ks.v1.KeyServer/<Method>' for service 'KS Service'"
+                        "Adding gRPC route '/signer.v1.Signer/<Method>' for service 'Signer Service'"
                     );
                     app = app.merge(router);
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
-                        "Failed to build gRPC router for service 'KS Service': {:?}",
+                        "Failed to build gRPC router for service 'Signer Service': {:?}",
                         e,
                     ));
                 }
@@ -546,12 +546,12 @@ impl ServiceManager {
         }
 
         // Register KS gRPC service as running (it has no on_start callback)
-        if self.config.is_ks_enabled()
-            && let Some(mut info) = self.service_collector.get("KS Service").await
+        if self.config.is_signer_enabled()
+            && let Some(mut info) = self.service_collector.get("Signer Service").await
         {
             info.set_running(public_url.clone());
             self.service_collector
-                .insert("KS Service".to_string(), info)
+                .insert("Signer Service".to_string(), info)
                 .await;
         }
 

@@ -38,7 +38,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 
 [control.admin_ui]
 password = "testpassword123"
@@ -91,7 +91,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
+[services.signer]
 
 [control.admin_ui]
 password = "testpassword123"
@@ -142,7 +142,7 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-# Intentionally no [services.ks] to trigger validation error for ENABLE_KS.
+# Intentionally no [services.signer] to trigger validation error for ENABLE_SIGNER.
 
 [recording]
 
@@ -250,7 +250,7 @@ fn actrix_test_command_fails_for_validation_errors() {
     assert!(
         stderr.contains("配置验证失败")
             || stderr.contains("validation")
-            || stderr.contains("services.ks"),
+            || stderr.contains("services.signer"),
         "unexpected stderr: {stderr}"
     );
 }
@@ -334,7 +334,7 @@ fn actrix_run_mode_fails_for_validation_errors() {
     assert!(!output.status.success(), "run mode should fail");
     assert!(
         stderr.contains("配置验证失败")
-            || stderr.contains("services.ks")
+            || stderr.contains("services.signer")
             || stderr.contains("validation"),
         "unexpected stderr: {stderr}"
     );

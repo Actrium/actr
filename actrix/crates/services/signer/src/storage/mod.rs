@@ -21,7 +21,7 @@ pub mod sqlite;
 pub mod postgres;
 
 use crate::crypto::KeyEncryptor;
-use crate::error::{KsError, KsResult};
+use crate::error::{SignerError, SignerResult};
 use crate::types::{KeyPair, KeyRecord};
 
 pub use backend::KeyStorageBackend;
@@ -67,13 +67,13 @@ impl KeyStorage {
         config: &StorageConfig,
         encryptor: KeyEncryptor,
         db_path: P,
-    ) -> KsResult<Self> {
+    ) -> SignerResult<Self> {
         match config.backend {
             StorageBackend::Sqlite => {
                 let cfg = config
                     .sqlite
                     .as_ref()
-                    .ok_or_else(|| KsError::Config("Missing SQLite config".into()))?;
+                    .ok_or_else(|| SignerError::Config("Missing SQLite config".into()))?;
                 let backend =
                     SqliteBackend::new(cfg, config.key_ttl_seconds, encryptor, db_path.as_ref())
                         .await?;
@@ -85,20 +85,20 @@ impl KeyStorage {
                 let cfg = config
                     .postgres
                     .as_ref()
-                    .ok_or_else(|| KsError::Config("Missing PostgreSQL config".into()))?;
+                    .ok_or_else(|| SignerError::Config("Missing PostgreSQL config".into()))?;
                 let backend = PostgresBackend::new(cfg, config.key_ttl_seconds).await?;
                 Ok(Self::Postgres(backend))
             }
 
             #[cfg(not(feature = "backend-postgres"))]
-            StorageBackend::Postgres => Err(KsError::Config(
+            StorageBackend::Postgres => Err(SignerError::Config(
                 "PostgreSQL backend not enabled. Compile with --features backend-postgres".into(),
             )),
         }
     }
 
     /// 生成并存储新的 Ed25519 签名密钥对
-    pub async fn generate_and_store_key(&self) -> KsResult<KeyPair> {
+    pub async fn generate_and_store_key(&self) -> SignerResult<KeyPair> {
         match self {
             Self::Sqlite(b) => b.generate_and_store_key().await,
 
@@ -108,7 +108,7 @@ impl KeyStorage {
     }
 
     /// 根据 key_id 查询验证公钥
-    pub async fn get_public_key(&self, key_id: u32) -> KsResult<Option<String>> {
+    pub async fn get_public_key(&self, key_id: u32) -> SignerResult<Option<String>> {
         match self {
             Self::Sqlite(b) => b.get_public_key(key_id).await,
 
@@ -120,7 +120,7 @@ impl KeyStorage {
     /// 使用指定密钥对消息进行 Ed25519 签名
     ///
     /// 私钥不离开存储后端，签名在内部完成
-    pub async fn sign(&self, key_id: u32, message: &[u8]) -> KsResult<Vec<u8>> {
+    pub async fn sign(&self, key_id: u32, message: &[u8]) -> SignerResult<Vec<u8>> {
         match self {
             Self::Sqlite(b) => b.sign(key_id, message).await,
 
@@ -130,7 +130,7 @@ impl KeyStorage {
     }
 
     /// 获取完整的密钥记录
-    pub async fn get_key_record(&self, key_id: u32) -> KsResult<Option<KeyRecord>> {
+    pub async fn get_key_record(&self, key_id: u32) -> SignerResult<Option<KeyRecord>> {
         match self {
             Self::Sqlite(b) => b.get_key_record(key_id).await,
 
@@ -140,7 +140,7 @@ impl KeyStorage {
     }
 
     /// 获取密钥总数
-    pub async fn get_key_count(&self) -> KsResult<u32> {
+    pub async fn get_key_count(&self) -> SignerResult<u32> {
         match self {
             Self::Sqlite(b) => b.get_key_count().await,
 
@@ -150,7 +150,7 @@ impl KeyStorage {
     }
 
     /// 清理过期的密钥（仅删除超出容忍期的）
-    pub async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32> {
+    pub async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> SignerResult<u32> {
         match self {
             Self::Sqlite(b) => b.cleanup_expired_keys(tolerance_seconds).await,
 

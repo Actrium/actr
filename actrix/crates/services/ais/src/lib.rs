@@ -39,13 +39,13 @@
 //!
 //! 1. 接收 `RegisterRequest` (protobuf 格式)
 //! 2. 使用 Snowflake 算法生成 54-bit serial_number
-//! 3. 从 KS 获取公钥，加密 Claims 生成 AIdCredential
+//! 3. 从 Signer 获取公钥，加密 Claims 生成 AIdCredential
 //! 4. 生成 256-bit PSK（客户端负责保管）
 //! 5. 返回 `RegisterResponse`（包含 ActrId + Credential + PSK）
 //!
 //! ## 密钥管理
 //!
-//! - **获取**：启动时从本地 SQLite 加载缓存密钥，如果过期则从 KS 获取
+//! - **获取**：启动时从本地 SQLite 加载缓存密钥，如果过期则从 Signer 获取
 //! - **刷新**：后台任务每 10 分钟检查，提前 10 分钟刷新即将过期的密钥
 //! - **容忍**：密钥过期后 24 小时内仍可使用（避免时钟偏差导致服务中断）
 //!
@@ -85,7 +85,7 @@
 
 pub mod handlers;
 pub mod issuer;
-pub mod ks_client_wrapper;
+pub mod signer_client_wrapper;
 pub mod ratelimit;
 mod sn;
 mod storage;
@@ -93,7 +93,7 @@ mod storage;
 pub use issuer::{AIdIssuer, IssuerConfig, KeyCacheInfo};
 
 use crate::handlers::{AISState, create_router};
-use crate::ks_client_wrapper::create_ks_client;
+use crate::signer_client_wrapper::create_signer_client;
 use anyhow::{Context, Result};
 use axum::Router;
 use platform::config::AisConfig;
@@ -118,17 +118,17 @@ pub async fn create_ais_router_with_counters(
 ) -> Result<Router> {
     platform::recording::info!("Creating AIS router with config");
 
-    // 获取 KS 客户端配置
-    let ks_client_config = config
-        .get_ks_client_config(global_config)
-        .context("Failed to get KS client config. Ensure KS is enabled or ais.dependencies.ks is configured.")?;
+    // 获取 Signer 客户端配置
+    let signer_client_config = config
+        .get_signer_client_config(global_config)
+        .context("Failed to get Signer client config. Ensure Signer is enabled or ais.dependencies.signer is configured.")?;
 
     // 创建 KS gRPC 客户端
-    let ks_client = create_ks_client(&ks_client_config, &global_config.actrix_shared_key)
+    let signer_client = create_signer_client(&signer_client_config, &global_config.actrix_shared_key)
         .await
-        .context("Failed to create KS gRPC client")?;
+        .context("Failed to create Signer gRPC client")?;
 
-    platform::recording::info!("KS gRPC client created successfully");
+    platform::recording::info!("Signer gRPC client created successfully");
 
     // 创建 Issuer 配置
     let issuer_config = IssuerConfig {
@@ -143,7 +143,7 @@ pub async fn create_ais_router_with_counters(
     };
 
     // 创建 AId Token 签发器
-    let issuer = AIdIssuer::new(ks_client, issuer_config, cancel)
+    let issuer = AIdIssuer::new(signer_client, issuer_config, cancel)
         .await
         .context("Failed to create AIS issuer")?;
 

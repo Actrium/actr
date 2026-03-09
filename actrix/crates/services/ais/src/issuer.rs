@@ -36,11 +36,11 @@
 //!
 //! ```no_run
 //! use ais::issuer::{AIdIssuer, IssuerConfig};
-//! use ais::ks_client_wrapper::{KsClientWrapper, create_ks_client};
-//! use platform::config::ks::KsClientConfig;
+//! use ais::signer_client_wrapper::{SignerClientWrapper, create_signer_client};
+//! use platform::config::signer::SignerClientConfig;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ks_config = KsClientConfig {
+//! let signer_config = SignerClientConfig {
 //!     endpoint: "http://localhost:8080".to_string(),
 //!     timeout_seconds: 30,
 //!     enable_tls: false,
@@ -49,10 +49,10 @@
 //!     client_cert: None,
 //!     client_key: None,
 //! };
-//! let ks_client = create_ks_client(&ks_config, "shared-key").await?;
+//! let signer_client = create_signer_client(&signer_config, "shared-key").await?;
 //! let config = IssuerConfig::default();
 //!
-//! let issuer = AIdIssuer::new(ks_client, config, tokio_util::sync::CancellationToken::new()).await?;
+//! let issuer = AIdIssuer::new(signer_client, config, tokio_util::sync::CancellationToken::new()).await?;
 //!
 //! // 处理注册请求
 //! // let response = issuer.issue_credential(&request).await?;
@@ -60,7 +60,7 @@
 //! # }
 //! ```
 
-use crate::ks_client_wrapper::KsClientWrapper;
+use crate::signer_client_wrapper::SignerClientWrapper;
 use crate::sn::{AIdSerialNumberIssuer, SerialNumber};
 use crate::storage::{KeyRecord, KeyStorage};
 
@@ -143,7 +143,7 @@ struct KeyCache {
 
 /// AId Token 签发器 - 专注于签发新的 Actor Identity Token
 pub struct AIdIssuer {
-    ks_client: KsClientWrapper,
+    signer_client: SignerClientWrapper,
     key_storage: Arc<KeyStorage>,
     key_cache: Arc<RwLock<Option<KeyCache>>>,
     config: IssuerConfig,
@@ -152,7 +152,7 @@ pub struct AIdIssuer {
 impl AIdIssuer {
     /// 创建新的 AIdIssuer
     pub async fn new(
-        ks_client: KsClientWrapper,
+        signer_client: SignerClientWrapper,
         config: IssuerConfig,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<Self, AidError> {
@@ -163,7 +163,7 @@ impl AIdIssuer {
             })?;
 
         let issuer = Self {
-            ks_client,
+            signer_client,
             key_storage: Arc::new(key_storage),
             key_cache: Arc::new(RwLock::new(None)),
             config,
@@ -276,7 +276,7 @@ impl AIdIssuer {
         platform::recording::info!("Fetching new key from KS");
 
         Self::refresh_key_internal(
-            &self.ks_client,
+            &self.signer_client,
             &self.key_storage,
             &self.key_cache,
             &self.config,
@@ -295,7 +295,7 @@ impl AIdIssuer {
         platform::recording::info!("Manual key rotation triggered");
 
         Self::refresh_key_internal(
-            &self.ks_client,
+            &self.signer_client,
             &self.key_storage,
             &self.key_cache,
             &self.config,
@@ -335,7 +335,7 @@ impl AIdIssuer {
 
     /// 启动后台密钥刷新任务
     fn spawn_key_refresh_task(&self, cancel: tokio_util::sync::CancellationToken) {
-        let ks_client = self.ks_client.clone();
+        let signer_client = self.signer_client.clone();
         let key_storage = self.key_storage.clone();
         let key_cache = self.key_cache.clone();
         let config = self.config.clone();
@@ -394,7 +394,7 @@ impl AIdIssuer {
                 platform::recording::debug!("Background key rotation triggered");
 
                 // 轮替密钥
-                match Self::refresh_key_internal(&ks_client, &key_storage, &key_cache, &config)
+                match Self::refresh_key_internal(&signer_client, &key_storage, &key_cache, &config)
                     .await
                 {
                     Ok(()) => platform::recording::info!("Background key rotation successful"),
@@ -444,13 +444,13 @@ impl AIdIssuer {
     /// 从 KS 生成新 Ed25519 签名密钥对，只保存 verifying key；
     /// 私钥由 KS 保管，AIS 仅通过 Sign RPC 进行签名。
     async fn refresh_key_internal(
-        ks_client: &KsClientWrapper,
+        signer_client: &SignerClientWrapper,
         key_storage: &KeyStorage,
         key_cache: &RwLock<Option<KeyCache>>,
         config: &IssuerConfig,
     ) -> Result<(), AidError> {
         // 从 KS 申请新的 Ed25519 签名密钥（私钥由 KS 保管）
-        let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) = ks_client
+        let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) = signer_client
             .generate_signing_key()
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS unavailable: {e}")))?;
@@ -566,7 +566,7 @@ impl AIdIssuer {
 
         // 通过 KS Sign RPC 签名（私钥不离开 KS）
         let signature_bytes = self
-            .ks_client
+            .signer_client
             .sign(key_id, &claims_bytes)
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS sign failed: {e}")))?;
@@ -691,7 +691,7 @@ impl AIdIssuer {
     ///
     /// 通过 health_check RPC 验证 KS 服务可用性
     pub async fn check_ks_health(&self) -> Result<(), AidError> {
-        self.ks_client
+        self.signer_client
             .health_check()
             .await
             .map(|_| ())

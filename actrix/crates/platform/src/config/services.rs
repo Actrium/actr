@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 /// 所有服务的配置集合
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ServicesConfig {
-    /// KS (Key Server) 服务配置
+    /// Signer 服务配置
     #[serde(default)]
-    pub ks: Option<ks::KsServiceConfig>,
+    pub signer: Option<signer::SignerServiceConfig>,
 
     /// AIS (Actor Identity Service) 服务配置
     #[serde(default)]
@@ -18,5 +18,5 @@ pub struct ServicesConfig {
     /// Signaling 服务配置
     #[serde(default)]
     pub signaling: Option<SignalingConfig>,
-    // 注意：STUN/TURN 不依赖 KS，保持原有配置方式
+    // 注意：STUN/TURN 不依赖 Signer，保持原有配置方式
 }

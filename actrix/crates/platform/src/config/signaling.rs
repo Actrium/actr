@@ -1,6 +1,6 @@
 //! Signaling 服务配置
 
-use crate::config::ks::KsClientConfig;
+use crate::config::signer::SignerClientConfig;
 use serde::{Deserialize, Serialize};
 
 /// Signaling 服务配置
@@ -105,13 +105,13 @@ fn default_message_burst() -> u32 {
 /// Signaling 依赖的外部服务
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SignalingDependencies {
-    /// KS 客户端配置（可选，如果需要加密）
+    /// Signer 客户端配置（可选，如果需要加密）
     ///
-    /// 如果未配置但需要 KS，会自动查找本地 KS 服务：
-    /// - 如果 KS 服务已启用（ENABLE_KS 位已设置），使用 localhost:KS_PORT
-    /// - 否则返回 None（Signaling 可以不依赖 KS）
+    /// 如果未配置但需要 Signer，会自动查找本地 Signer 服务：
+    /// - 如果 Signer 服务已启用（ENABLE_SIGNER 位已设置），使用 localhost:SIGNER_PORT
+    /// - 否则返回 None（Signaling 可以不依赖 Signer）
     #[serde(default)]
-    pub ks: Option<KsClientConfig>,
+    pub signer: Option<SignerClientConfig>,
 
     /// AIS 客户端配置（可选，用于 Credential 刷新）
     ///
@@ -167,25 +167,25 @@ impl Default for MessageRateLimit {
 }
 
 impl SignalingConfig {
-    /// 获取 KS 客户端配置
+    /// 获取 Signer 客户端配置
     ///
     /// 支持智能默认：
-    /// 1. 如果显式配置了 dependencies.ks，直接返回
-    /// 2. 如果本地启用了 KS 服务，返回指向本地 KS 的配置
-    /// 3. 否则返回 None（Signaling 可以不依赖 KS）
-    pub fn get_ks_client_config(
+    /// 1. 如果显式配置了 dependencies.signer，直接返回
+    /// 2. 如果本地启用了 Signer 服务，返回指向本地 Signer 的配置
+    /// 3. 否则返回 None（Signaling 可以不依赖 Signer）
+    pub fn get_signer_client_config(
         &self,
         global_config: &super::ActrixConfig,
-    ) -> Option<KsClientConfig> {
+    ) -> Option<SignerClientConfig> {
         // 优先使用显式配置
-        if let Some(ref ks_config) = self.dependencies.ks {
-            return Some(ks_config.clone());
+        if let Some(ref signer_config) = self.dependencies.signer {
+            return Some(signer_config.clone());
         }
 
-        // 回退：检查是否启用了本地 KS 服务
-        if global_config.is_ks_enabled() && global_config.services.ks.is_some() {
-            // 自动生成指向本地 KS 的客户端配置
-            // KS gRPC 复用实例主 HTTP/HTTPS 端口
+        // 回退：检查是否启用了本地 Signer 服务
+        if global_config.is_signer_enabled() && global_config.services.signer.is_some() {
+            // 自动生成指向本地 Signer 的客户端配置
+            // Signer gRPC 复用实例主 HTTP/HTTPS 端口
             let http_cfg = global_config.bind.http.as_ref();
             let port = http_cfg.map(|h| h.port).unwrap_or(8080);
             let use_tls = http_cfg.is_some_and(|h| h.is_tls());
@@ -196,7 +196,7 @@ impl SignalingConfig {
                 None
             };
 
-            return Some(KsClientConfig {
+            return Some(SignerClientConfig {
                 endpoint: format!("{protocol}://127.0.0.1:{port}"),
                 timeout_seconds: 30,
                 enable_tls: use_tls,

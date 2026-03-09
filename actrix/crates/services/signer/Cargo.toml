@@ -1,10 +1,10 @@
 [package]
-name = "ks"
+name = "signer"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
 keywords.workspace = true
-description = "Key Server (KS) - Ed25519 签名密钥生成和管理服务，私钥永不离开 KS"
+description = "Signer - Ed25519 签名密钥生成和管理服务，私钥永不离开 Signer"
 license.workspace = true
 rust-version.workspace = true
 
@@ -61,7 +61,7 @@ async-trait = "0.1"
 
 # Internal dependencies
 actrix-proto = { path = "../../contracts" }
-# Note: circular dependency avoided - platform depends on ks for client types
+# Note: circular dependency avoided - platform depends on signer for client types
 
 # Monitoring
 prometheus = "0.13"

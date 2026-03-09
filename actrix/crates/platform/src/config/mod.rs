@@ -7,7 +7,7 @@ pub mod ais;
 pub mod bind;
 pub mod config_store;
 pub mod control;
-pub mod ks;
+pub mod signer;
 pub mod registry;
 pub mod resolver;
 pub mod services;
@@ -21,7 +21,7 @@ pub use crate::config::control::{AdminUiConfig, ControlConfig, ControlHead};
 pub use crate::config::services::ServicesConfig;
 pub use crate::config::signaling::SignalingConfig;
 pub use crate::config::turn::TurnConfig;
-use ::ks::storage::StorageBackend;
+use ::signer::storage::StorageBackend;
 use std::path::{Path, PathBuf};
 use url::Url;
 
@@ -41,7 +41,7 @@ pub struct ActrixConfig {
     /// - Bit 1 (2): STUN service
     /// - Bit 2 (4): TURN service
     /// - Bit 3 (8): AIS (Actor Identity Service)
-    /// - Bit 4 (16): KS (Key Server)
+    /// - Bit 4 (16): Signer
     ///
     /// Examples:
     /// - `enable = 31` enables all services (1+2+4+8+16=31)
@@ -123,7 +123,7 @@ pub struct ActrixConfig {
 
     /// Actrix 内部服务通信共享密钥
     ///
-    /// 用于 Actrix 各服务之间的内部通信认证，如 AIS 与 KS 之间的通信。
+    /// 用于 Actrix 各服务之间的内部通信认证，如 AIS 与 Signer 之间的通信。
     /// 这是系统级的内部认证密钥，仅用于服务间通信，不应用于对外业务。
     ///
     /// 注意：
@@ -360,7 +360,7 @@ impl MonitoringConfig {
 }
 
 fn default_enable() -> u8 {
-    31 // Signaling(1) + STUN(2) + TURN(4) + AIS(8) + KS(16)
+    31 // Signaling(1) + STUN(2) + TURN(4) + AIS(8) + Signer(16)
 }
 
 fn default_recording_service_name() -> String {
@@ -409,7 +409,7 @@ pub const ENABLE_SIGNALING: u8 = 0b00001;
 pub const ENABLE_STUN: u8 = 0b00010;
 pub const ENABLE_TURN: u8 = 0b00100;
 pub const ENABLE_AIS: u8 = 0b01000;
-pub const ENABLE_KS: u8 = 0b10000;
+pub const ENABLE_SIGNER: u8 = 0b10000;
 
 impl ActrixConfig {
     /// 检查是否启用了信令服务
@@ -436,11 +436,11 @@ impl ActrixConfig {
         self.enable & ENABLE_AIS != 0
     }
 
-    /// 检查是否启用了 KS (Key Server) 密钥服务
+    /// 检查是否启用了 Signer 密钥服务
     ///
-    /// Service is enabled if the ENABLE_KS bit is set in the enable bitmask.
-    pub fn is_ks_enabled(&self) -> bool {
-        self.enable & ENABLE_KS != 0
+    /// Service is enabled if the ENABLE_SIGNER bit is set in the enable bitmask.
+    pub fn is_signer_enabled(&self) -> bool {
+        self.enable & ENABLE_SIGNER != 0
     }
 
     /// 检查是否启用了 ICE 服务（STUN 或 TURN）
@@ -464,7 +464,7 @@ impl ActrixConfig {
     /// 获取 Actrix 内部服务通信共享密钥
     ///
     /// 此密钥用于 Actrix 系统内部服务间的认证通信，
-    /// 如 AIS 与 KS 之间的服务调用。
+    /// 如 AIS 与 Signer 之间的服务调用。
     ///
     /// 注意：此密钥仅用于内部服务通信，不应用于对外业务
     pub fn get_actrix_shared_key(&self) -> &str {
@@ -684,25 +684,25 @@ impl ActrixConfig {
             errors.push("TURN realm is required when TURN is enabled".to_string());
         }
 
-        // 验证 KS 配置（如果启用）
-        if self.is_ks_enabled() {
-            if let Some(ref ks) = self.services.ks {
+        // 验证 Signer 配置（如果启用）
+        if self.is_signer_enabled() {
+            if let Some(ref signer_cfg) = self.services.signer {
                 // 验证存储配置
-                match ks.storage.backend {
+                match signer_cfg.storage.backend {
                     StorageBackend::Sqlite => {}
                     StorageBackend::Postgres => {
-                        if ks.storage.postgres.is_none() {
+                        if signer_cfg.storage.postgres.is_none() {
                             errors.push(
-                                "KS is configured to use PostgreSQL but postgres config is missing"
+                                "Signer is configured to use PostgreSQL but postgres config is missing"
                                     .to_string(),
                             );
                         }
                     }
                 }
             } else {
-                // KS 位掩码已设置但 services.ks 配置缺失
+                // Signer 位掩码已设置但 services.signer 配置缺失
                 errors.push(
-                    "KS service is enabled (ENABLE_KS bit is set) but services.ks configuration is missing".to_string(),
+                    "Signer service is enabled (ENABLE_SIGNER bit is set) but services.signer configuration is missing".to_string(),
                 );
             }
         }
@@ -711,10 +711,10 @@ impl ActrixConfig {
         if self.is_ais_enabled() {
             // 检查是否能获取 KS 配置（显式配置或自动默认）
             if let Some(ref ais) = self.services.ais {
-                if ais.get_ks_client_config(self).is_none() {
+                if ais.get_signer_client_config(self).is_none() {
                     errors.push(
-                        "AIS service is enabled but no KS available: \
-                        either configure services.ais.dependencies.ks or enable local KS service"
+                        "AIS service is enabled but no Signer available: \
+                        either configure services.ais.dependencies.signer or enable local Signer service"
                             .to_string(),
                     );
                 }
@@ -729,11 +729,11 @@ impl ActrixConfig {
         // 验证 Signaling 配置（如果启用）
         if self.is_signaling_enabled() {
             if let Some(ref signaling) = self.services.signaling {
-                if signaling.dependencies.ks.is_none()
-                    && !(self.is_ks_enabled() && self.services.ks.is_some())
+                if signaling.dependencies.signer.is_none()
+                    && !(self.is_signer_enabled() && self.services.signer.is_some())
                 {
                     errors.push(
-                    "Signaling dependencies.ks is not configured; enable KS (bitmask + services.ks) to use local defaults"
+                    "Signaling dependencies.signer is not configured; enable Signer (bitmask + services.signer) to use local defaults"
                         .to_string(),
                 );
                 }
@@ -788,7 +788,7 @@ impl ActrixConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::ks::KsServiceConfig;
+    use ::signer::SignerServiceConfig;
 
     #[test]
     fn test_default_config() {
@@ -800,7 +800,7 @@ mod tests {
         assert!(config.is_stun_enabled());
         assert!(config.is_turn_enabled());
         assert!(config.is_ais_enabled());
-        assert!(config.is_ks_enabled());
+        assert!(config.is_signer_enabled());
         assert_eq!(config.recording.service_name, "actrix");
         assert!(config.recording.sink.is_none());
         assert_eq!(config.recording.observability.filter, "digest");
@@ -978,24 +978,24 @@ mod tests {
 
         // Test KS service: bitmask-only control
         config.enable = 0;
-        config.services.ks = Some(KsServiceConfig {
+        config.services.signer = Some(SignerServiceConfig {
             ..Default::default()
         });
-        assert!(!config.is_ks_enabled());
+        assert!(!config.is_signer_enabled());
 
         // Case 2: Bitmask set -> enabled (regardless of services.* config)
-        config.enable = ENABLE_KS;
-        assert!(config.is_ks_enabled());
+        config.enable = ENABLE_SIGNER;
+        assert!(config.is_signer_enabled());
 
         // Case 3: Bitmask set, with services.* config -> still enabled
-        config.services.ks = Some(KsServiceConfig {
+        config.services.signer = Some(SignerServiceConfig {
             ..Default::default()
         });
-        assert!(config.is_ks_enabled());
+        assert!(config.is_signer_enabled());
 
         // Case 4: Bitmask set, no services.* config -> enabled
-        config.services.ks = None;
-        assert!(config.is_ks_enabled());
+        config.services.signer = None;
+        assert!(config.is_signer_enabled());
 
         // Test ICE services (STUN/TURN use bitmask only)
         config.enable = ENABLE_STUN;
@@ -1010,19 +1010,19 @@ mod tests {
     #[test]
     fn test_ais_auto_ks_config() {
         let mut config = ActrixConfig {
-            enable: ENABLE_KS | ENABLE_AIS,
+            enable: ENABLE_SIGNER | ENABLE_AIS,
             ..ActrixConfig::default()
         };
 
         // 场景 1: 启用本地 KS，AIS 不配置 KS 客户端，应自动使用本地 KS
-        config.enable = ENABLE_KS | ENABLE_AIS; // Enable both KS and AIS via bitmask
-        config.services.ks = Some(KsServiceConfig {
+        config.enable = ENABLE_SIGNER | ENABLE_AIS; // Enable both KS and AIS via bitmask
+        config.services.signer = Some(SignerServiceConfig {
             ..Default::default()
         });
 
         config.services.ais = Some(AisConfig {
             server: ais::AisServerConfig::default(),
-            dependencies: ais::AisDependencies { ks: None }, // 未配置 KS
+            dependencies: ais::AisDependencies { signer: None }, // 未配置 KS
         });
 
         // 应该能获取到自动生成的 KS 配置
@@ -1031,7 +1031,7 @@ mod tests {
             .ais
             .as_ref()
             .unwrap()
-            .get_ks_client_config(&config);
+            .get_signer_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
         // KS gRPC 复用主 HTTP 端口（默认 8080）
@@ -1041,7 +1041,7 @@ mod tests {
         config.services.ais = Some(AisConfig {
             server: ais::AisServerConfig::default(),
             dependencies: ais::AisDependencies {
-                ks: Some(crate::config::ks::KsClientConfig {
+                signer: Some(crate::config::signer::SignerClientConfig {
                     endpoint: "http://remote-ks:8080".to_string(),
                     timeout_seconds: 10,
                     enable_tls: false,
@@ -1058,16 +1058,16 @@ mod tests {
             .ais
             .as_ref()
             .unwrap()
-            .get_ks_client_config(&config);
+            .get_signer_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
         assert_eq!(ks_config.endpoint, "http://remote-ks:8080"); // 使用显式配置
 
         // 场景 3: 没有本地 KS，也没有显式配置，应返回 None
-        config.services.ks = None;
+        config.services.signer = None;
         config.services.ais = Some(AisConfig {
             server: ais::AisServerConfig::default(),
-            dependencies: ais::AisDependencies { ks: None },
+            dependencies: ais::AisDependencies { signer: None },
         });
         config.enable = ENABLE_AIS; // Enable AIS via bitmask
 
@@ -1076,27 +1076,27 @@ mod tests {
             .ais
             .as_ref()
             .unwrap()
-            .get_ks_client_config(&config);
+            .get_signer_client_config(&config);
         assert!(ks_config.is_none());
     }
 
     #[test]
     fn test_signaling_auto_ks_config() {
         let mut config = ActrixConfig {
-            enable: ENABLE_KS | ENABLE_SIGNALING,
+            enable: ENABLE_SIGNER | ENABLE_SIGNALING,
             ..ActrixConfig::default()
         };
 
         // 启用本地 KS 和 Signaling
-        config.enable = ENABLE_KS | ENABLE_SIGNALING; // Enable both via bitmask
-        config.services.ks = Some(KsServiceConfig {
+        config.enable = ENABLE_SIGNER | ENABLE_SIGNALING; // Enable both via bitmask
+        config.services.signer = Some(SignerServiceConfig {
             ..Default::default()
         });
 
         config.services.signaling = Some(SignalingConfig {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies {
-                ks: None,
+                signer: None,
                 ais: None,
             },
         });
@@ -1107,7 +1107,7 @@ mod tests {
             .signaling
             .as_ref()
             .unwrap()
-            .get_ks_client_config(&config);
+            .get_signer_client_config(&config);
         assert!(ks_config.is_some());
         let ks_config = ks_config.unwrap();
         // KS gRPC 复用主 HTTP 端口（默认 8080）
@@ -1132,22 +1132,22 @@ mod tests {
             "AIS service is enabled (ENABLE_AIS bit is set) but services.ais configuration is missing"
         )));
 
-        // Case 2: KS bitmask set but services.ks config missing - should warn
-        config.enable = ENABLE_KS;
+        // Case 2: Signer bitmask set but services.signer config missing - should warn
+        config.enable = ENABLE_SIGNER;
         config.services.ais = None;
-        config.services.ks = None;
+        config.services.signer = None;
 
         let result = config.validate();
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert!(errors.iter().any(|e| {
-            e.contains("KS service is enabled (ENABLE_KS bit is set) but services.ks configuration is missing")
+            e.contains("Signer service is enabled (ENABLE_SIGNER bit is set) but services.signer configuration is missing")
         }));
 
         // Case 3: Signaling bitmask set but services.signaling config missing - should error
         config.enable = ENABLE_SIGNALING;
         config.services.signaling = None;
-        config.services.ks = None;
+        config.services.signer = None;
 
         let result = config.validate();
         assert!(result.is_err());
@@ -1162,11 +1162,11 @@ mod tests {
         config.services.signaling = Some(SignalingConfig {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies {
-                ks: None,
+                signer: None,
                 ais: None,
             },
         });
-        config.services.ks = None; // No local KS
+        config.services.signer = None; // No local KS
 
         let result = config.validate();
         // Signaling with config should not have bitmask consistency errors
@@ -1185,11 +1185,11 @@ mod tests {
         }
 
         // Case 5: Bitmask set and services.* config present - should pass (if other validations pass)
-        config.enable = ENABLE_AIS | ENABLE_KS;
+        config.enable = ENABLE_AIS | ENABLE_SIGNER;
         config.services.ais = Some(AisConfig {
             server: ais::AisServerConfig::default(),
             dependencies: ais::AisDependencies {
-                ks: Some(crate::config::ks::KsClientConfig {
+                signer: Some(crate::config::signer::SignerClientConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),
                     timeout_seconds: 10,
                     enable_tls: false,
@@ -1200,11 +1200,11 @@ mod tests {
                 }),
             },
         });
-        config.services.ks = Some(KsServiceConfig {
-            storage: ::ks::storage::StorageConfig {
-                backend: ::ks::storage::StorageBackend::Sqlite,
+        config.services.signer = Some(SignerServiceConfig {
+            storage: ::signer::storage::StorageConfig {
+                backend: ::signer::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
-                sqlite: Some(::ks::storage::SqliteConfig {}),
+                sqlite: Some(::signer::storage::SqliteConfig {}),
                 postgres: None,
             },
             kek: None,
@@ -1234,7 +1234,7 @@ mod tests {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies::default(),
         });
-        config.services.ks = None;
+        config.services.signer = None;
         config.services.ais = None;
 
         let result = config.validate();
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("Signaling dependencies.ks is not configured"))
+                .any(|e| e.contains("Signaling dependencies.signer is not configured"))
         );
         assert!(
             errors
@@ -1255,7 +1255,7 @@ mod tests {
     #[test]
     fn test_signaling_dependencies_accept_local_services_when_enabled() {
         let mut config = ActrixConfig {
-            enable: ENABLE_SIGNALING | ENABLE_KS | ENABLE_AIS,
+            enable: ENABLE_SIGNALING | ENABLE_SIGNER | ENABLE_AIS,
             ..ActrixConfig::default()
         };
         config.control.admin_ui.password = "testpassword123".to_string();
@@ -1263,7 +1263,7 @@ mod tests {
             server: signaling::SignalingServerConfig::default(),
             dependencies: signaling::SignalingDependencies::default(),
         });
-        config.services.ks = Some(KsServiceConfig {
+        config.services.signer = Some(SignerServiceConfig {
             ..Default::default()
         });
         config.services.ais = Some(AisConfig {

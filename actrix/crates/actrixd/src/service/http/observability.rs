@@ -22,7 +22,7 @@ use std::sync::Arc;
 const KNOWN_SERVICES: &[&str] = &[
     "signaling",
     "ais",
-    "ks",
+    "signer",
     "control",
     "admin",
     "stun",
@@ -47,7 +47,7 @@ const SERVICES_WITH_OWN_HEALTH: &[&str] = &["signaling", "ais"];
 /// so that concrete routes take priority over nested service routers.
 ///
 /// Services that already define their own `/health` in their nested router
-/// (signaling, ais, ks) keep their own health endpoint; we only register
+/// (signaling, ais, signer) keep their own health endpoint; we only register
 /// `/{service}/metrics` for those.
 pub fn build_observability_router(state: Arc<ObservabilityState>) -> Router {
     let mut router = Router::new()
@@ -314,7 +314,7 @@ async fn resolve_service_status(service: &str, state: &ObservabilityState) -> St
     let enabled = match service {
         "signaling" => cfg.is_signaling_enabled(),
         "ais" => cfg.is_ais_enabled(),
-        "ks" => cfg.is_ks_enabled(),
+        "signer" => cfg.is_signer_enabled(),
         "stun" => cfg.is_stun_enabled(),
         "turn" => cfg.is_turn_enabled(),
         // control, admin, daemon are always enabled
@@ -330,7 +330,7 @@ async fn resolve_service_status(service: &str, state: &ObservabilityState) -> St
     let collector_key = match service {
         "signaling" => Some("Signaling Service"),
         "ais" => Some("AIS Service"),
-        "ks" => Some("KS Service"),
+        "signer" => Some("Signer Service"),
         "stun" => Some("STUN Server"),
         "turn" => Some("TURN Server"),
         // control/admin/daemon don't have collector entries — always healthy

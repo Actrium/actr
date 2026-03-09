@@ -1,17 +1,17 @@
-//! Key Server (KS) 配置
+//! Signer 配置
 //!
-//! KS 服务用于生成和管理加密密钥，为其他服务提供密钥生成和公钥查询功能
+//! Signer 服务用于生成和管理加密密钥，为其他服务提供密钥生成和公钥查询功能
 
 use crate::crypto::KekSource;
 use crate::storage::StorageConfig;
 use serde::{Deserialize, Serialize};
 
-/// KS 服务配置
+/// Signer 服务配置
 ///
 /// Service enable/disable is controlled by the bitmask in ActrixConfig.enable.
-/// The ENABLE_KS bit (bit 4) must be set to enable this service.
+/// The ENABLE_SIGNER bit (bit 4) must be set to enable this service.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KsServiceConfig {
+pub struct SignerServiceConfig {
     /// 存储配置
     #[serde(default)]
     pub storage: StorageConfig,
@@ -52,7 +52,7 @@ fn default_tolerance() -> u64 {
     3600
 }
 
-impl Default for KsServiceConfig {
+impl Default for SignerServiceConfig {
     fn default() -> Self {
         Self {
             storage: Default::default(),
@@ -64,7 +64,7 @@ impl Default for KsServiceConfig {
     }
 }
 
-impl KsServiceConfig {
+impl SignerServiceConfig {
     /// 获取 KEK 源
     ///
     /// 优先级: kek_file > kek_env > kek
@@ -93,13 +93,13 @@ mod tests {
 
     #[test]
     fn test_default_ks_service_config() {
-        let config = KsServiceConfig::default();
+        let config = SignerServiceConfig::default();
         assert_eq!(config.storage.backend, StorageBackend::Sqlite);
     }
 
     #[test]
     fn test_serialize_ks_service_config() {
-        let config = KsServiceConfig {
+        let config = SignerServiceConfig {
             storage: StorageConfig {
                 backend: StorageBackend::Sqlite,
                 key_ttl_seconds: 7200,
@@ -120,11 +120,11 @@ mod tests {
     #[test]
     fn test_kek_source_priority() {
         // 未配置 KEK
-        let config = KsServiceConfig::default();
+        let config = SignerServiceConfig::default();
         assert!(config.get_kek_source().is_none());
 
         // 仅配置 kek
-        let config = KsServiceConfig {
+        let config = SignerServiceConfig {
             kek: Some("test_kek".to_string()),
             ..Default::default()
         };
@@ -134,7 +134,7 @@ mod tests {
         }
 
         // 配置 kek 和 kek_env，优先使用 kek_env
-        let config = KsServiceConfig {
+        let config = SignerServiceConfig {
             kek: Some("test_kek".to_string()),
             kek_env: Some("TEST_ENV".to_string()),
             ..Default::default()
@@ -145,7 +145,7 @@ mod tests {
         }
 
         // 配置所有三个，优先使用 kek_file
-        let config = KsServiceConfig {
+        let config = SignerServiceConfig {
             kek: Some("test_kek".to_string()),
             kek_env: Some("TEST_ENV".to_string()),
             kek_file: Some("/path/to/kek".to_string()),

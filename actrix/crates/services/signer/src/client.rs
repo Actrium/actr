@@ -58,7 +58,7 @@ impl Client {
     /// 私钥保留在 KS 服务端
     pub async fn generate_signing_key(
         &self,
-    ) -> Result<(u32, VerifyingKey, u64), crate::error::KsError> {
+    ) -> Result<(u32, VerifyingKey, u64), crate::error::SignerError> {
         let url = format!("{}/generate-signing-key", self.endpoint);
         let request_data = "generate_signing_key";
 
@@ -74,7 +74,7 @@ impl Client {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(crate::error::KsError::Internal(format!(
+            return Err(crate::error::SignerError::Internal(format!(
                 "KS generate signing key request failed with status {status}: {error_text}"
             )));
         }
@@ -83,11 +83,11 @@ impl Client {
 
         let vk_bytes = BASE64_STANDARD.decode(&response.verifying_key)?;
         let vk_array: [u8; 32] = vk_bytes.try_into().map_err(|_| {
-            crate::error::KsError::Crypto("Invalid verifying key length, expected 32 bytes".to_string())
+            crate::error::SignerError::Crypto("Invalid verifying key length, expected 32 bytes".to_string())
         })?;
 
         let verifying_key = VerifyingKey::from_bytes(&vk_array)
-            .map_err(|e| crate::error::KsError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
+            .map_err(|e| crate::error::SignerError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
 
         crate::recording::info!(
             "Successfully generated Ed25519 signing key with key_id={}, expires_at={}",
@@ -104,7 +104,7 @@ impl Client {
         &self,
         key_id: u32,
         message: &[u8],
-    ) -> Result<Vec<u8>, crate::error::KsError> {
+    ) -> Result<Vec<u8>, crate::error::SignerError> {
         let url = format!("{}/sign/{}", self.endpoint, key_id);
         let request_data = format!("sign:{key_id}");
 
@@ -124,7 +124,7 @@ impl Client {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(crate::error::KsError::Internal(format!(
+            return Err(crate::error::SignerError::Internal(format!(
                 "KS sign request failed with status {status}: {error_text}"
             )));
         }
@@ -132,7 +132,7 @@ impl Client {
         let response: SignResponse = response.json().await?;
 
         if response.signature.len() != 64 {
-            return Err(crate::error::KsError::Crypto(format!(
+            return Err(crate::error::SignerError::Crypto(format!(
                 "Invalid signature length: expected 64 bytes, got {}",
                 response.signature.len()
             )));

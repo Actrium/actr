@@ -1,8 +1,8 @@
-//! KS HTTP 处理器
+//! Signer HTTP 处理器
 
 use crate::{
     crypto::KeyEncryptor,
-    error::KsError,
+    error::SignerError,
     storage::KeyStorage,
     types::{GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignRequest, SignResponse},
 };
@@ -21,7 +21,7 @@ use std::sync::{
 use std::time::Instant;
 
 lazy_static! {
-    /// KS 服务指标
+    /// Signer 服务指标
     static ref KS_KEYS_GENERATED: IntCounterVec = IntCounterVec::new(
         Opts::new("actrix_keys_generated_total", "Total number of keys generated")
             .namespace("actrix"),
@@ -48,8 +48,8 @@ lazy_static! {
     ).unwrap();
 }
 
-/// 注册 KS metrics 到全局 registry
-pub fn register_ks_metrics(registry: &prometheus::Registry) -> Result<(), prometheus::Error> {
+/// 注册 Signer metrics 到全局 registry
+pub fn register_signer_metrics(registry: &prometheus::Registry) -> Result<(), prometheus::Error> {
     registry.register(Box::new(KS_KEYS_GENERATED.clone()))?;
     registry.register(Box::new(KS_REQUEST_DURATION.clone()))?;
     registry.register(Box::new(KS_REQUESTS_TOTAL.clone()))?;
@@ -61,9 +61,9 @@ pub fn register_ks_metrics(registry: &prometheus::Registry) -> Result<(), promet
 const CLEANUP_CHECK_INTERVAL: u32 = 100; // 每 100 次请求检查一次
 const CLEANUP_MIN_KEYS: u32 = 10; // 至少有 10 个密钥时才清理
 
-/// KS 服务状态
+/// Signer 服务状态
 #[derive(Clone)]
-pub struct KSState {
+pub struct SignerState {
     pub storage: KeyStorage,
     pub nonce_storage: Arc<dyn NonceStorage + Send + Sync>,
     pub psk: String,
@@ -73,7 +73,7 @@ pub struct KSState {
     request_counter: Arc<AtomicU32>,
 }
 
-impl KSState {
+impl SignerState {
     pub fn new<N: NonceStorage + Send + Sync + 'static>(
         storage: KeyStorage,
         nonce_storage: N,
@@ -146,38 +146,38 @@ impl KSState {
         &self,
         credential: &nonce_auth::NonceCredential,
         request_payload: &str,
-    ) -> Result<(), KsError> {
+    ) -> Result<(), SignerError> {
         let verify_result = CredentialVerifier::new(self.nonce_storage.clone())
             .with_secret(self.psk.as_bytes())
             .verify(credential, request_payload.as_bytes())
             .await;
 
         verify_result.map_err(|e| match e {
-            NonceError::DuplicateNonce => KsError::ReplayAttack("Nonce already used".to_string()),
+            NonceError::DuplicateNonce => SignerError::ReplayAttack("Nonce already used".to_string()),
             NonceError::TimestampOutOfWindow => {
-                KsError::Authentication("Request timestamp out of range".to_string())
+                SignerError::Authentication("Request timestamp out of range".to_string())
             }
             NonceError::InvalidSignature => {
-                KsError::Authentication("Invalid signature".to_string())
+                SignerError::Authentication("Invalid signature".to_string())
             }
-            _ => KsError::Internal(format!("Authentication error: {e}")),
+            _ => SignerError::Internal(format!("Authentication error: {e}")),
         })?;
 
         Ok(())
     }
 }
 
-/// 从 KS 配置创建 KSState
+/// 从 KS 配置创建 SignerState
 ///
 /// Note: Nonce storage must be provided by the caller to avoid circular dependencies
 /// between ks and platform crates.
-pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
-    service_config: &crate::config::KsServiceConfig,
+pub async fn create_signer_state<N: NonceStorage + Send + Sync + 'static>(
+    service_config: &crate::config::SignerServiceConfig,
     nonce_storage: N,
     actrix_shared_key: &str,
     sqlite_path: &std::path::Path,
-) -> Result<KSState, KsError> {
-    crate::recording::info!("Initializing KS state from KsServiceConfig");
+) -> Result<SignerState, SignerError> {
+    crate::recording::info!("Initializing Signer state from SignerServiceConfig");
 
     // 创建密钥加密器
     let encryptor = match service_config.get_kek_source() {
@@ -195,7 +195,7 @@ pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
     let key_storage =
         KeyStorage::from_config(&service_config.storage, encryptor, sqlite_path).await?;
 
-    Ok(KSState::new(
+    Ok(SignerState::new(
         key_storage,
         nonce_storage,
         actrix_shared_key.to_string(),
@@ -204,7 +204,7 @@ pub async fn create_ks_state<N: NonceStorage + Send + Sync + 'static>(
 }
 
 /// 创建 KS 服务的路由
-pub fn create_router(state: KSState) -> Router {
+pub fn create_router(state: SignerState) -> Router {
     Router::new()
         .route("/generate-signing-key", post(generate_signing_key_handler))
         .route("/sign/{key_id}", post(sign_handler))
@@ -213,7 +213,7 @@ pub fn create_router(state: KSState) -> Router {
 }
 
 /// 获取服务统计信息
-pub async fn get_stats(state: &KSState) -> Result<ServiceStats, KsError> {
+pub async fn get_stats(state: &SignerState) -> Result<ServiceStats, SignerError> {
     let key_count = state.storage.get_key_count().await?;
     Ok(ServiceStats { key_count })
 }
@@ -225,9 +225,9 @@ pub struct ServiceStats {
 }
 
 async fn generate_signing_key_handler(
-    State(app_state): State<KSState>,
+    State(app_state): State<SignerState>,
     Json(request): Json<GenerateSigningKeyRequest>,
-) -> Result<Json<GenerateSigningKeyResponse>, KsError> {
+) -> Result<Json<GenerateSigningKeyResponse>, SignerError> {
     let start_time = Instant::now();
     crate::recording::info!("Received Ed25519 signing key generation request");
 
@@ -240,18 +240,18 @@ async fn generate_signing_key_handler(
     if let Err(ref e) = verify_result {
         // 记录认证失败指标
         let reason = match e {
-            KsError::ReplayAttack(_) => "replay_attack",
-            KsError::Authentication(_) => "invalid_signature",
+            SignerError::ReplayAttack(_) => "replay_attack",
+            SignerError::Authentication(_) => "invalid_signature",
             _ => "unknown",
         };
-        KS_AUTH_FAILURES.with_label_values(&["ks", reason]).inc();
+        KS_AUTH_FAILURES.with_label_values(&["signer", reason]).inc();
 
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
-            .with_label_values(&["ks", "POST", "/generate-signing-key", "401"])
+            .with_label_values(&["signer", "POST", "/generate-signing-key", "401"])
             .observe(duration);
         KS_REQUESTS_TOTAL
-            .with_label_values(&["ks", "POST", "/generate-signing-key", "401"])
+            .with_label_values(&["signer", "POST", "/generate-signing-key", "401"])
             .inc();
 
         return verify_result.map(|_| unreachable!());
@@ -266,7 +266,7 @@ async fn generate_signing_key_handler(
         .storage
         .get_key_record(key_pair.key_id)
         .await?
-        .ok_or_else(|| KsError::Internal("Failed to get key record after creation".into()))?;
+        .ok_or_else(|| SignerError::Internal("Failed to get key record after creation".into()))?;
 
     // 惰性清理
     app_state.maybe_cleanup_expired_keys().await;
@@ -283,10 +283,10 @@ async fn generate_signing_key_handler(
 
     let duration = start_time.elapsed().as_secs_f64();
     KS_REQUEST_DURATION
-        .with_label_values(&["ks", "POST", "/generate-signing-key", "200"])
+        .with_label_values(&["signer", "POST", "/generate-signing-key", "200"])
         .observe(duration);
     KS_REQUESTS_TOTAL
-        .with_label_values(&["ks", "POST", "/generate-signing-key", "200"])
+        .with_label_values(&["signer", "POST", "/generate-signing-key", "200"])
         .inc();
 
     crate::recording::info!("Generated Ed25519 signing key with key_id: {}", key_pair.key_id);
@@ -294,10 +294,10 @@ async fn generate_signing_key_handler(
 }
 
 async fn sign_handler(
-    State(app_state): State<KSState>,
+    State(app_state): State<SignerState>,
     Path(key_id): Path<u32>,
     Json(request): Json<SignRequest>,
-) -> Result<Json<SignResponse>, KsError> {
+) -> Result<Json<SignResponse>, SignerError> {
     let start_time = Instant::now();
     crate::recording::info!("Received sign request for key_id: {}", key_id);
 
@@ -309,18 +309,18 @@ async fn sign_handler(
 
     if let Err(ref e) = verify_result {
         let reason = match e {
-            KsError::ReplayAttack(_) => "replay_attack",
-            KsError::Authentication(_) => "invalid_signature",
+            SignerError::ReplayAttack(_) => "replay_attack",
+            SignerError::Authentication(_) => "invalid_signature",
             _ => "unknown",
         };
-        KS_AUTH_FAILURES.with_label_values(&["ks", reason]).inc();
+        KS_AUTH_FAILURES.with_label_values(&["signer", reason]).inc();
 
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
-            .with_label_values(&["ks", "POST", "/sign", "401"])
+            .with_label_values(&["signer", "POST", "/sign", "401"])
             .observe(duration);
         KS_REQUESTS_TOTAL
-            .with_label_values(&["ks", "POST", "/sign", "401"])
+            .with_label_values(&["signer", "POST", "/sign", "401"])
             .inc();
 
         return verify_result.map(|_| unreachable!());
@@ -332,7 +332,7 @@ async fn sign_handler(
         .storage
         .get_key_record(key_id)
         .await?
-        .ok_or(KsError::KeyNotFound(key_id))?;
+        .ok_or(SignerError::KeyNotFound(key_id))?;
 
     if key_record.expires_at > 0 {
         let now = std::time::SystemTime::now()
@@ -344,12 +344,12 @@ async fn sign_handler(
             crate::recording::warn!("Key {} has expired beyond tolerance period", key_id);
             let duration = start_time.elapsed().as_secs_f64();
             KS_REQUEST_DURATION
-                .with_label_values(&["ks", "POST", "/sign", "404"])
+                .with_label_values(&["signer", "POST", "/sign", "404"])
                 .observe(duration);
             KS_REQUESTS_TOTAL
-                .with_label_values(&["ks", "POST", "/sign", "404"])
+                .with_label_values(&["signer", "POST", "/sign", "404"])
                 .inc();
-            return Err(KsError::KeyNotFound(key_id));
+            return Err(SignerError::KeyNotFound(key_id));
         }
     }
 
@@ -359,7 +359,7 @@ async fn sign_handler(
         .sign(key_id, &request.message)
         .await
         .map_err(|e| match e {
-            KsError::NotFound(_) => KsError::KeyNotFound(key_id),
+            SignerError::NotFound(_) => SignerError::KeyNotFound(key_id),
             other => other,
         })?;
 
@@ -367,10 +367,10 @@ async fn sign_handler(
 
     let duration = start_time.elapsed().as_secs_f64();
     KS_REQUEST_DURATION
-        .with_label_values(&["ks", "POST", "/sign", "200"])
+        .with_label_values(&["signer", "POST", "/sign", "200"])
         .observe(duration);
     KS_REQUESTS_TOTAL
-        .with_label_values(&["ks", "POST", "/sign", "200"])
+        .with_label_values(&["signer", "POST", "/sign", "200"])
         .inc();
 
     crate::recording::info!("Signed message for key_id: {}", key_id);
@@ -378,15 +378,15 @@ async fn sign_handler(
 }
 
 async fn health_check_handler(
-    State(app_state): State<KSState>,
-) -> Result<Json<serde_json::Value>, KsError> {
+    State(app_state): State<SignerState>,
+) -> Result<Json<serde_json::Value>, SignerError> {
     crate::recording::debug!("Health check requested");
 
     let key_count = app_state.storage.get_key_count().await?;
 
     let response = serde_json::json!({
         "status": "healthy",
-        "service": "ks",
+        "service": "signer",
         "backend": app_state.storage.backend_name(),
         "key_count": key_count,
         "timestamp": std::time::SystemTime::now()
@@ -412,7 +412,7 @@ mod tests {
 
     async fn create_test_app() -> (Router, String, tempfile::TempDir) {
         let temp_dir = tempdir().unwrap();
-        let config = crate::config::KsServiceConfig {
+        let config = crate::config::SignerServiceConfig {
             storage: crate::storage::StorageConfig {
                 backend: crate::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
@@ -427,7 +427,7 @@ mod tests {
 
         let psk = "test-psk".to_string();
         let nonce_storage = MemoryStorage::new();
-        let app_state = create_ks_state(&config, nonce_storage, &psk, temp_dir.path())
+        let app_state = create_signer_state(&config, nonce_storage, &psk, temp_dir.path())
             .await
             .unwrap();
 
@@ -449,7 +449,7 @@ mod tests {
     async fn test_service_creation_from_config() {
         let temp_dir = tempdir().unwrap();
 
-        let config = crate::config::KsServiceConfig {
+        let config = crate::config::SignerServiceConfig {
             storage: crate::storage::StorageConfig {
                 backend: crate::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
@@ -463,7 +463,7 @@ mod tests {
         };
 
         let nonce_storage = MemoryStorage::new();
-        let state = create_ks_state(
+        let state = create_signer_state(
             &config,
             nonce_storage,
             "test-shared-key-123",
@@ -480,7 +480,7 @@ mod tests {
     async fn test_router_creation() {
         let temp_dir = tempdir().unwrap();
 
-        let config = crate::config::KsServiceConfig {
+        let config = crate::config::SignerServiceConfig {
             storage: crate::storage::StorageConfig {
                 backend: crate::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
@@ -494,7 +494,7 @@ mod tests {
         };
 
         let nonce_storage = MemoryStorage::new();
-        let state = create_ks_state(&config, nonce_storage, "test-shared-key", temp_dir.path())
+        let state = create_signer_state(&config, nonce_storage, "test-shared-key", temp_dir.path())
             .await
             .unwrap();
 
@@ -506,7 +506,7 @@ mod tests {
     async fn test_service_stats() {
         let temp_dir = tempdir().unwrap();
 
-        let config = crate::config::KsServiceConfig {
+        let config = crate::config::SignerServiceConfig {
             storage: crate::storage::StorageConfig {
                 backend: crate::storage::StorageBackend::Sqlite,
                 key_ttl_seconds: 3600,
@@ -520,7 +520,7 @@ mod tests {
         };
 
         let nonce_storage = MemoryStorage::new();
-        let state = create_ks_state(&config, nonce_storage, "test-shared-key", temp_dir.path())
+        let state = create_signer_state(&config, nonce_storage, "test-shared-key", temp_dir.path())
             .await
             .unwrap();
 

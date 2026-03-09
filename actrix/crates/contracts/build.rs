@@ -3,7 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - common.proto: shared types for admin.v1
     // - admin.proto: ControlService (Node calls Admin)
     // - node_admin.proto: NodeAdminService (Admin calls Node)
-    // - keyserver.proto: KeyServer service (imports common.proto)
+    // - signer.proto: Signer service (imports common.proto)
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "proto/common.proto",
                 "proto/admin.proto",
                 "proto/node_admin.proto",
-                "proto/keyserver.proto",
+                "proto/signer.proto",
             ],
             &["proto/"],
         )?;
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/common.proto");
     println!("cargo:rerun-if-changed=proto/admin.proto");
     println!("cargo:rerun-if-changed=proto/node_admin.proto");
-    println!("cargo:rerun-if-changed=proto/keyserver.proto");
+    println!("cargo:rerun-if-changed=proto/signer.proto");
 
     Ok(())
 }

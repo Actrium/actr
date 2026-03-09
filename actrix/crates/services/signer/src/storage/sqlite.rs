@@ -3,7 +3,7 @@
 //! 使用 sqlx 提供原生异步 SQLite 存储支持
 
 use crate::crypto::KeyEncryptor;
-use crate::error::{KsError, KsResult};
+use crate::error::{SignerError, SignerResult};
 use crate::storage::backend::KeyStorageBackend;
 use crate::storage::config::SqliteConfig;
 use crate::types::{KeyPair, KeyRecord};
@@ -46,12 +46,12 @@ impl SqliteBackend {
         key_ttl: u64,
         encryptor: KeyEncryptor,
         db_path: &Path,
-    ) -> KsResult<Self> {
-        let file = db_path.join("ks_keys.db");
+    ) -> SignerResult<Self> {
+        let file = db_path.join("signer_keys.db");
 
         // 创建连接选项并启用 WAL 模式
         let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", file.display()))
-            .map_err(|e| KsError::Internal(format!("Failed to parse SQLite URL: {e}")))?
+            .map_err(|e| SignerError::Internal(format!("Failed to parse SQLite URL: {e}")))?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
@@ -62,7 +62,7 @@ impl SqliteBackend {
             .max_connections(10)
             .connect_with(options)
             .await
-            .map_err(|e| KsError::Internal(format!("Failed to connect to SQLite: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Failed to connect to SQLite: {e}")))?;
 
         let backend = Self {
             pool,
@@ -86,7 +86,7 @@ impl SqliteBackend {
 
 #[async_trait]
 impl KeyStorageBackend for SqliteBackend {
-    async fn init(&self) -> KsResult<()> {
+    async fn init(&self) -> SignerResult<()> {
         // 创建密钥表（secret_key 列存储加密后的 Ed25519 signing key，public_key 存储 verifying key）
         sqlx::query(
             r#"
@@ -101,19 +101,19 @@ impl KeyStorageBackend for SqliteBackend {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| KsError::Internal(format!("Failed to create keys table: {e}")))?;
+        .map_err(|e| SignerError::Internal(format!("Failed to create keys table: {e}")))?;
 
         // 创建索引
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_keys_expires_at ON keys(expires_at)")
             .execute(&self.pool)
             .await
-            .map_err(|e| KsError::Internal(format!("Failed to create index: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Failed to create index: {e}")))?;
 
         crate::recording::debug!("SQLite tables and indexes initialized");
         Ok(())
     }
 
-    async fn generate_and_store_key(&self) -> KsResult<KeyPair> {
+    async fn generate_and_store_key(&self) -> SignerResult<KeyPair> {
         // 生成 Ed25519 密钥对
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
@@ -148,7 +148,7 @@ impl KeyStorageBackend for SqliteBackend {
         .bind(expires_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| KsError::Internal(format!("Failed to insert key: {e}")))?;
+        .map_err(|e| SignerError::Internal(format!("Failed to insert key: {e}")))?;
 
         let key_id = result.last_insert_rowid() as u32;
 
@@ -160,13 +160,13 @@ impl KeyStorageBackend for SqliteBackend {
         })
     }
 
-    async fn get_public_key(&self, key_id: u32) -> KsResult<Option<String>> {
+    async fn get_public_key(&self, key_id: u32) -> SignerResult<Option<String>> {
         let result = sqlx::query_as::<_, (String,)>("SELECT public_key FROM keys WHERE key_id = ?")
             .bind(key_id as i64)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                KsError::Internal(format!(
+                SignerError::Internal(format!(
                     "Failed to query public key for key_id {key_id}: {e}"
                 ))
             })?;
@@ -180,14 +180,14 @@ impl KeyStorageBackend for SqliteBackend {
         }
     }
 
-    async fn sign(&self, key_id: u32, message: &[u8]) -> KsResult<Vec<u8>> {
+    async fn sign(&self, key_id: u32, message: &[u8]) -> SignerResult<Vec<u8>> {
         // 从数据库读取加密的 signing key
         let result = sqlx::query_as::<_, (String,)>("SELECT secret_key FROM keys WHERE key_id = ?")
             .bind(key_id as i64)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| {
-                KsError::Internal(format!(
+                SignerError::Internal(format!(
                     "Failed to query signing key for key_id {key_id}: {e}"
                 ))
             })?;
@@ -196,7 +196,7 @@ impl KeyStorageBackend for SqliteBackend {
             Some((key,)) => key,
             None => {
                 crate::recording::warn!("Signing key not found for key_id: {}", key_id);
-                return Err(KsError::NotFound(format!("Key not found: {key_id}")));
+                return Err(SignerError::NotFound(format!("Key not found: {key_id}")));
             }
         };
 
@@ -206,10 +206,10 @@ impl KeyStorageBackend for SqliteBackend {
         // Base64 解码
         let signing_key_bytes = BASE64_STANDARD
             .decode(&signing_key_b64)
-            .map_err(|e| KsError::Crypto(format!("Failed to decode signing key: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Failed to decode signing key: {e}")))?;
 
         let signing_key_array: [u8; 32] = signing_key_bytes.try_into().map_err(|_| {
-            KsError::Crypto("Signing key must be exactly 32 bytes".to_string())
+            SignerError::Crypto("Signing key must be exactly 32 bytes".to_string())
         })?;
 
         // 重建 SigningKey 并签名
@@ -221,7 +221,7 @@ impl KeyStorageBackend for SqliteBackend {
         Ok(signature.to_bytes().to_vec())
     }
 
-    async fn get_key_record(&self, key_id: u32) -> KsResult<Option<KeyRecord>> {
+    async fn get_key_record(&self, key_id: u32) -> SignerResult<Option<KeyRecord>> {
         let result = sqlx::query_as::<_, (i64, String, i64, i64)>(
             "SELECT key_id, public_key, created_at, expires_at FROM keys WHERE key_id = ?",
         )
@@ -229,7 +229,7 @@ impl KeyStorageBackend for SqliteBackend {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| {
-            KsError::Internal(format!(
+            SignerError::Internal(format!(
                 "Failed to query key record for key_id {key_id}: {e}"
             ))
         })?;
@@ -248,16 +248,16 @@ impl KeyStorageBackend for SqliteBackend {
         }
     }
 
-    async fn get_key_count(&self) -> KsResult<u32> {
+    async fn get_key_count(&self) -> SignerResult<u32> {
         let result = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM keys")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| KsError::Internal(format!("Failed to get key count: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Failed to get key count: {e}")))?;
 
         Ok(result.0 as u32)
     }
 
-    async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> KsResult<u32> {
+    async fn cleanup_expired_keys(&self, tolerance_seconds: u64) -> SignerResult<u32> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -268,7 +268,7 @@ impl KeyStorageBackend for SqliteBackend {
             .bind(cutoff)
             .execute(&self.pool)
             .await
-            .map_err(|e| KsError::Internal(format!("Failed to cleanup expired keys: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Failed to cleanup expired keys: {e}")))?;
 
         let deleted = result.rows_affected() as u32;
         if deleted > 0 {
@@ -362,7 +362,7 @@ mod tests {
 
         let result = backend.sign(999, b"message").await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), KsError::NotFound(_)));
+        assert!(matches!(result.unwrap_err(), SignerError::NotFound(_)));
     }
 
     #[tokio::test]

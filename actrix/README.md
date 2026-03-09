@@ -1,6 +1,6 @@
 # Actrix Auxiliary Servers
 
-A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Key Server (KS), and service coordination for the Actrix ecosystem.
+A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, Signer, and service coordination for the Actrix ecosystem.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
@@ -10,7 +10,7 @@ A production-ready collection of WebRTC auxiliary servers providing STUN, TURN, 
 ### Core Services
 - **STUN Server**: NAT traversal assistance (UDP 3478)
 - **TURN Server**: Media relay for restricted networks with LRU authentication cache (+40% performance)
-- **Key Server (KS)**: ECIES cryptographic key generation and management
+- **Signer**: ECIES cryptographic key generation and management
 
 ### Infrastructure
 - ⚡ **High Performance**: LRU caching, async runtime, non-blocking I/O
@@ -157,7 +157,7 @@ http://localhost:16686
 
 ## API Endpoints
 
-### KS (Key Server) - `/ks/*`
+### Signer - `/ks/*`
 
 - `POST /ks/generate` - Generate ECIES key pair
 - `GET /ks/secret/{key_id}` - Get private key (authenticated)

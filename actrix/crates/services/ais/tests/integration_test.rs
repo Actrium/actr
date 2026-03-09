@@ -1,14 +1,14 @@
 //! AIS 集成测试（自举式）
 //!
-//! 在测试进程内启动临时 KS gRPC 服务，验证 AIS 的签发与校验链路。
+//! 在测试进程内启动临时 Signer gRPC 服务，验证 AIS 的签发与校验链路。
 
 use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
 use ais::issuer::{AIdIssuer, IssuerConfig};
-use ais::ks_client_wrapper::create_ks_client;
-use ks::{GrpcClient, GrpcClientConfig, KeyStorage, KsServiceConfig, create_grpc_service};
+use ais::signer_client_wrapper::create_signer_client;
+use signer::{GrpcClient, GrpcClientConfig, KeyStorage, SignerServiceConfig, create_grpc_service};
 use nonce_auth::storage::MemoryStorage;
 use platform::aid::credential::validator::AIdCredentialValidator;
-use platform::config::ks::KsClientConfig;
+use platform::config::signer::SignerClientConfig;
 use serial_test::serial;
 use std::net::TcpListener;
 use std::path::Path;
@@ -21,36 +21,36 @@ use tonic::transport::Server;
 struct TestEnv {
     issuer_temp_dir: TempDir,
     validator_temp_dir: TempDir,
-    _ks_temp_dir: TempDir,
-    ks_handle: Option<JoinHandle<()>>,
-    ks_shutdown_tx: Option<oneshot::Sender<()>>,
-    ks_config: KsClientConfig,
+    _signer_temp_dir: TempDir,
+    signer_handle: Option<JoinHandle<()>>,
+    signer_shutdown_tx: Option<oneshot::Sender<()>>,
+    signer_config: SignerClientConfig,
     shared_key: String,
 }
 
 impl TestEnv {
-    async fn shutdown_ks(&mut self) {
-        if let Some(tx) = self.ks_shutdown_tx.take() {
+    async fn shutdown_signer(&mut self) {
+        if let Some(tx) = self.signer_shutdown_tx.take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = self.ks_handle.take() {
+        if let Some(handle) = self.signer_handle.take() {
             let _ = handle.await;
         }
     }
 }
 
-async fn start_embedded_ks(
+async fn start_embedded_signer(
     psk: &str,
     sqlite_path: &Path,
 ) -> (String, JoinHandle<()>, oneshot::Sender<()>) {
-    let service_config = KsServiceConfig::default();
+    let service_config = SignerServiceConfig::default();
     let storage = KeyStorage::from_config(
         &service_config.storage,
-        ks::KeyEncryptor::no_encryption(),
+        signer::KeyEncryptor::no_encryption(),
         sqlite_path,
     )
     .await
-    .expect("Failed to create KS storage");
+    .expect("Failed to create Signer storage");
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind ephemeral port");
     let addr = listener.local_addr().expect("Failed to get local addr");
@@ -73,7 +73,7 @@ async fn start_embedded_ks(
             })
             .await
         {
-            panic!("Embedded KS server failed: {err}");
+            panic!("Embedded Signer server failed: {err}");
         }
     });
 
@@ -96,7 +96,7 @@ async fn start_embedded_ks(
         match GrpcClient::new(&cfg).await {
             Ok(mut client) => match client.health_check().await {
                 Ok(status) if status == "healthy" => return (endpoint, handle, shutdown_tx),
-                Ok(status) => last_error = format!("unexpected KS health status: {status}"),
+                Ok(status) => last_error = format!("unexpected Signer health status: {status}"),
                 Err(err) => last_error = err.to_string(),
             },
             Err(err) => last_error = err.to_string(),
@@ -105,18 +105,18 @@ async fn start_embedded_ks(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    panic!("Embedded KS did not become healthy in time: {last_error}");
+    panic!("Embedded Signer did not become healthy in time: {last_error}");
 }
 
 async fn setup_test_environment() -> TestEnv {
     let issuer_temp_dir = TempDir::new().expect("Failed to create issuer temp dir");
     let validator_temp_dir = TempDir::new().expect("Failed to create validator temp dir");
-    let ks_temp_dir = TempDir::new().expect("Failed to create ks temp dir");
+    let signer_temp_dir = TempDir::new().expect("Failed to create signer temp dir");
     let shared_key = "test-psk-key".to_string();
-    let (endpoint, ks_handle, ks_shutdown_tx) =
-        start_embedded_ks(&shared_key, ks_temp_dir.path()).await;
+    let (endpoint, signer_handle, signer_shutdown_tx) =
+        start_embedded_signer(&shared_key, signer_temp_dir.path()).await;
 
-    let ks_config = KsClientConfig {
+    let signer_config = SignerClientConfig {
         endpoint,
         timeout_seconds: 10,
         enable_tls: false,
@@ -129,10 +129,10 @@ async fn setup_test_environment() -> TestEnv {
     TestEnv {
         issuer_temp_dir,
         validator_temp_dir,
-        _ks_temp_dir: ks_temp_dir,
-        ks_handle: Some(ks_handle),
-        ks_shutdown_tx: Some(ks_shutdown_tx),
-        ks_config,
+        _signer_temp_dir: signer_temp_dir,
+        signer_handle: Some(signer_handle),
+        signer_shutdown_tx: Some(signer_shutdown_tx),
+        signer_config,
         shared_key,
     }
 }
@@ -159,11 +159,11 @@ async fn test_end_to_end_credential_flow() {
         .await
         .expect("Failed to initialize validator");
 
-    let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
-        .expect("Failed to create KS gRPC client");
+        .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -268,11 +268,11 @@ async fn test_end_to_end_credential_flow() {
 async fn test_issuer_health_checks() {
     let env = setup_test_environment().await;
 
-    let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
-        .expect("Failed to create KS gRPC client");
+        .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -294,11 +294,11 @@ async fn test_issuer_health_checks() {
 async fn test_issuer_rotate_key_updates_current_key() {
     let env = setup_test_environment().await;
 
-    let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
-        .expect("Failed to create KS gRPC client");
+        .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -321,7 +321,7 @@ async fn test_issuer_rotate_key_updates_current_key() {
     issuer
         .check_ks_health()
         .await
-        .expect("KS health should still pass after rotation");
+        .expect("Signer health should still pass after rotation");
     let cache = issuer
         .check_key_cache_health()
         .await
@@ -334,18 +334,18 @@ async fn test_issuer_rotate_key_updates_current_key() {
 async fn test_issuer_creation_fails_with_wrong_shared_key() {
     let env = setup_test_environment().await;
 
-    let ks_client = create_ks_client(&env.ks_config, "wrong-shared-key")
+    let signer_client = create_signer_client(&env.signer_config, "wrong-shared-key")
         .await
         .expect("gRPC channel creation should succeed even with wrong secret");
 
-    // With lazy KS connection, issuer creation succeeds — auth failure happens on first use
+    // With lazy Signer connection, issuer creation succeeds — auth failure happens on first use
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
     .await
-    .expect("issuer creation succeeds with lazy KS connection");
+    .expect("issuer creation succeeds with lazy Signer connection");
 
     // Credential issuance should return an error response due to wrong shared key
     let request = actr_protocol::RegisterRequest {
@@ -379,11 +379,11 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
 async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
     let mut env = setup_test_environment().await;
 
-    let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
-        .expect("Failed to create KS gRPC client");
+        .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -398,19 +398,19 @@ async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
             Err(err) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("KS service unhealthy")
+                    msg.contains("Signer service unhealthy")
                         || msg.contains("Failed")
                         || msg.contains("transport")
                         || msg.contains("unavailable")
                         || msg.contains("connection"),
-                    "unexpected KS health error after shutdown: {msg}"
+                    "unexpected Signer health error after shutdown: {msg}"
                 );
                 return;
             }
         }
     }
 
-    panic!("issuer KS health should fail after embedded KS shutdown");
+    panic!("issuer Signer health should fail after embedded Signer shutdown");
 }
 
 #[tokio::test]
@@ -418,11 +418,11 @@ async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
 async fn test_issuer_rotate_key_fails_when_ks_is_unavailable() {
     let mut env = setup_test_environment().await;
 
-    let ks_client = create_ks_client(&env.ks_config, &env.shared_key)
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
         .await
-        .expect("Failed to create KS gRPC client");
+        .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        ks_client,
+        signer_client: signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )

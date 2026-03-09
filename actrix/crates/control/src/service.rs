@@ -352,7 +352,7 @@ impl AdminApiService {
             "turn" => cfg.is_turn_enabled(),
             "signaling" => cfg.is_signaling_enabled(),
             "ais" => cfg.is_ais_enabled(),
-            "ks" => cfg.is_ks_enabled(),
+            "signer" => cfg.is_signer_enabled(),
             _ => false,
         };
 
@@ -404,7 +404,7 @@ impl AdminApiService {
                         }
                     },
                     "dependencies": {
-                        "ks": s.dependencies.ks.as_ref().map(|k| serde_json::json!({"endpoint": k.endpoint})),
+                        "signer": s.dependencies.signer.as_ref().map(|k| serde_json::json!({"endpoint": k.endpoint})),
                         "ais": s.dependencies.ais.as_ref().map(|a| serde_json::json!({"endpoint": a.endpoint})),
                     }
                 })
@@ -414,11 +414,11 @@ impl AdminApiService {
                     "token_ttl_secs": a.server.token_ttl_secs,
                     "signaling_heartbeat_interval_secs": a.server.signaling_heartbeat_interval_secs,
                     "dependencies": {
-                        "ks": a.dependencies.ks.as_ref().map(|k| serde_json::json!({"endpoint": k.endpoint})),
+                        "signer": a.dependencies.signer.as_ref().map(|k| serde_json::json!({"endpoint": k.endpoint})),
                     }
                 })
             }),
-            "ks" => cfg.services.ks.as_ref().map(|k| {
+            "signer" => cfg.services.signer.as_ref().map(|k| {
                 serde_json::json!({
                     "storage_backend": format!("{:?}", k.storage.backend),
                     "key_ttl_seconds": k.storage.key_ttl_seconds,
@@ -524,10 +524,10 @@ impl AdminApiService {
         }
     }
 
-    /// Query KS keys from the SQLite database.
-    pub async fn get_ks_keys_direct(&self) -> GrpcResult<KsKeysResult> {
+    /// Query Signer keys from the SQLite database.
+    pub async fn get_signer_keys_direct(&self) -> GrpcResult<KsKeysResult> {
         let cfg = self.require_running_config()?;
-        let db_path = cfg.sqlite_path.join("ks_keys.db");
+        let db_path = cfg.sqlite_path.join("signer_keys.db");
         if !db_path.exists() {
             return Ok(KsKeysResult {
                 keys: vec![],
@@ -582,10 +582,10 @@ impl AdminApiService {
         Ok(KsKeysResult { keys, total_count })
     }
 
-    /// Cleanup expired KS keys.
-    pub async fn cleanup_ks_keys_direct(&self) -> GrpcResult<KsCleanupResult> {
+    /// Cleanup expired Signer keys.
+    pub async fn cleanup_signer_keys_direct(&self) -> GrpcResult<KsCleanupResult> {
         let cfg = self.require_running_config()?;
-        let db_path = cfg.sqlite_path.join("ks_keys.db");
+        let db_path = cfg.sqlite_path.join("signer_keys.db");
         if !db_path.exists() {
             return Ok(KsCleanupResult {
                 deleted: 0,
@@ -605,7 +605,7 @@ impl AdminApiService {
 
         let tolerance = cfg
             .services
-            .ks
+            .signer
             .as_ref()
             .map(|k| k.tolerance_seconds)
             .unwrap_or(3600);
@@ -1002,7 +1002,7 @@ pub struct ConfigFileContent {
     pub path: String,
 }
 
-/// Key info (shared by KS and AIS).
+/// Key info (shared by Signer and AIS).
 #[derive(Debug, Clone, Serialize)]
 pub struct KeyInfo {
     pub key_id: i64,
@@ -1027,14 +1027,14 @@ pub struct RealmSecretRotationResult {
     pub grace_seconds: u64,
 }
 
-/// KS keys query result.
+/// Signer keys query result.
 #[derive(Debug, Clone, Serialize)]
 pub struct KsKeysResult {
     pub keys: Vec<KeyInfo>,
     pub total_count: i64,
 }
 
-/// KS cleanup result.
+/// Signer cleanup result.
 #[derive(Debug, Clone, Serialize)]
 pub struct KsCleanupResult {
     pub deleted: u64,
@@ -1049,7 +1049,7 @@ fn service_name_to_type_id(name: &str) -> Option<i32> {
         "turn" => Some(2),
         "signaling" => Some(3),
         "ais" => Some(4),
-        "ks" => Some(5),
+        "signer" => Some(5),
         _ => None,
     }
 }

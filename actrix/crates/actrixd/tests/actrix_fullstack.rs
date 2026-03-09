@@ -7,7 +7,7 @@ use actr_protocol::{
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
 use futures::{SinkExt, StreamExt};
-use ks::{GrpcClient, GrpcClientConfig};
+use signer::{GrpcClient, GrpcClientConfig};
 use platform::aid::credential::validator::AIdCredentialValidator;
 use prost::Message;
 use serde_json::{Value, json};
@@ -45,7 +45,7 @@ struct ActrixHarness {
 }
 
 impl ActrixHarness {
-    /// Start actrix with default features (AIS/KS/Signaling) and wait for health
+    /// Start actrix with default features (AIS/Signer/Signaling) and wait for health
     async fn start(token_ttl: u64) -> Self {
         let tmp = tempfile::tempdir().expect("temp dir");
         let port = choose_port();
@@ -56,7 +56,7 @@ impl ActrixHarness {
         let mut child = spawn_actrix(&config_path, &log_path);
 
         let base = format!("http://127.0.0.1:{port}");
-        wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+        wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
         wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
         wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
         ensure_realm(&data_dir, 1001).await;
@@ -104,7 +104,7 @@ fn write_fullstack_config(dir: &Path, port: u16, token_ttl_secs: u64) -> PathBuf
         f,
         r#"
 name = "actrix-fullstack-test"
-enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_KS
+enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "{shared}"
@@ -127,11 +127,11 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
-[services.ks.storage]
+[services.signer]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks.db"
 
 [services.ais]
@@ -176,7 +176,7 @@ fn write_fullstack_config_with_rate_limits(
         f,
         r#"
 name = "actrix-fullstack-test-rate-limit"
-enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_KS
+enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "{shared}"
@@ -199,11 +199,11 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
-[services.ks.storage]
+[services.signer]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks.db"
 
 [services.ais]
@@ -246,11 +246,11 @@ pid = "{pid}"
     config_path
 }
 
-fn write_fullstack_config_with_ais_ks_endpoint(
+fn write_fullstack_config_with_ais_signer_endpoint(
     dir: &Path,
     port: u16,
     token_ttl_secs: u64,
-    ais_ks_endpoint: &str,
+    ais_signer_endpoint: &str,
 ) -> PathBuf {
     let data_dir = dir.join("data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -260,7 +260,7 @@ fn write_fullstack_config_with_ais_ks_endpoint(
         f,
         r#"
 name = "actrix-fullstack-test-ais-dependency"
-enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_KS
+enable = 25  # ENABLE_SIGNALING | ENABLE_AIS | ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "{shared}"
@@ -283,18 +283,18 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
-[services.ks.storage]
+[services.signer]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks.db"
 
 [services.ais]
 [services.ais.server]
 token_ttl_secs = {token_ttl}
-[services.ais.dependencies.ks]
-endpoint = "{ais_ks_endpoint}"
+[services.ais.dependencies.signer]
+endpoint = "{ais_signer_endpoint}"
 timeout_seconds = 1
 enable_tls = false
 
@@ -314,7 +314,7 @@ pid = "{pid}"
         shared = ACTRIX_SHARED_KEY,
         port = port,
         token_ttl = token_ttl_secs,
-        ais_ks_endpoint = ais_ks_endpoint,
+        ais_signer_endpoint = ais_signer_endpoint,
         pid = dir.join("actrix.pid").display()
     )
     .expect("write config");
@@ -331,7 +331,7 @@ fn write_signaling_without_local_ais_config(dir: &Path, port: u16) -> PathBuf {
         f,
         r#"
 name = "actrix-fullstack-signaling-without-ais"
-enable = 17  # ENABLE_SIGNALING | ENABLE_KS
+enable = 17  # ENABLE_SIGNALING | ENABLE_SIGNER
 env = "dev"
 sqlite_path = "{sqlite}"
 actrix_shared_key = "{shared}"
@@ -354,11 +354,11 @@ port = 0
 relay_port_range = "49152-65535"
 realm = "actrix.local"
 
-[services.ks]
-[services.ks.storage]
+[services.signer]
+[services.signer.storage]
 backend = "sqlite"
 key_ttl_seconds = 3600
-[services.ks.storage.sqlite]
+[services.signer.storage.sqlite]
 path = "ks.db"
 
 [services.signaling]
@@ -663,9 +663,9 @@ fn make_service_spec(
 async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
     let client = reqwest::Client::new();
     let start = Instant::now();
-    let is_ks_health = url.ends_with("/ks/health");
-    let ks_grpc_endpoint = if is_ks_health {
-        Some(url.trim_end_matches("/ks/health").to_string())
+    let is_signer_health = url.ends_with("/signer/health");
+    let ks_grpc_endpoint = if is_signer_health {
+        Some(url.trim_end_matches("/signer/health").to_string())
     } else {
         None
     };
@@ -675,7 +675,7 @@ async fn wait_for_health(url: &str, child: &mut Child, log_path: &Path) {
             panic!("actrix exited early: status={status:?}\nlogs:\n{log}");
         }
 
-        if is_ks_health {
+        if is_signer_health {
             let config = GrpcClientConfig {
                 endpoint: ks_grpc_endpoint
                     .as_ref()
@@ -739,7 +739,7 @@ async fn actrix_end_to_end_register_and_health() {
     let signaling_health = format!("{base}/signaling/health");
 
     let log_path = harness.log_path().to_path_buf();
-    wait_for_health(&format!("{base}/ks/health"), &mut harness.child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut harness.child, &log_path).await;
     wait_for_health(&ais_health, &mut harness.child, &log_path).await;
     wait_for_health(&signaling_health, &mut harness.child, &log_path).await;
     ensure_realm(&harness.data_dir, 1001).await;
@@ -1269,7 +1269,7 @@ async fn ais_register_enforces_realm_secret_when_configured() {
 async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let port = choose_port();
-    let config_path = write_fullstack_config_with_ais_ks_endpoint(
+    let config_path = write_fullstack_config_with_ais_signer_endpoint(
         tmp.path(),
         port,
         DEFAULT_TOKEN_TTL,
@@ -1280,7 +1280,7 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
 
     // With lazy KS connection, AIS routes are mounted but degrade at runtime
@@ -1588,7 +1588,7 @@ async fn signaling_connection_rate_limit_rejects_second_concurrent_connection() 
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
 
@@ -1640,7 +1640,7 @@ async fn signaling_message_rate_limit_returns_envelope_error() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
 
@@ -1700,7 +1700,7 @@ async fn signaling_register_and_discovery_acl_allow() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -1770,7 +1770,7 @@ async fn signaling_discovery_acl_denied() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -2027,7 +2027,7 @@ async fn signaling_rejects_expired_credential() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -2196,7 +2196,7 @@ async fn signaling_route_candidates_with_acl() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -2282,7 +2282,7 @@ async fn signaling_route_candidates_acl_denied() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -2595,7 +2595,7 @@ async fn signaling_get_service_spec_returns_spec() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -3145,7 +3145,7 @@ async fn signaling_actr_relay_role_assignment() {
     let mut child = spawn_actrix(&config_path, &log_path);
 
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&tmp.path().join("data"), 1001).await;
@@ -3827,7 +3827,7 @@ async fn service_registry_persists_across_restart() {
     // first run: register a service
     let mut child = spawn_actrix(&config_path, &log_path);
     let base = format!("http://127.0.0.1:{port}");
-    wait_for_health(&format!("{base}/ks/health"), &mut child, &log_path).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child, &log_path).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child, &log_path).await;
     ensure_realm(&data_dir, 1001).await;
@@ -3880,7 +3880,7 @@ async fn service_registry_persists_across_restart() {
     // second run: same data_dir, discovery should restore service from cache
     let log_path2 = tmp.path().join("actrix_persist2.log");
     let mut child2 = spawn_actrix(&config_path, &log_path2);
-    wait_for_health(&format!("{base}/ks/health"), &mut child2, &log_path2).await;
+    wait_for_health(&format!("{base}/signer/health"), &mut child2, &log_path2).await;
     wait_for_health(&format!("{base}/ais/health"), &mut child2, &log_path2).await;
     wait_for_health(&format!("{base}/signaling/health"), &mut child2, &log_path2).await;
     ensure_realm(&data_dir, 1001).await;

@@ -506,15 +506,15 @@ async fn get_service_detail(
     }
 }
 
-async fn get_ks_keys(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
-    match state.service.get_ks_keys_direct().await {
+async fn get_signer_keys(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
+    match state.service.get_signer_keys_direct().await {
         Ok(result) => (StatusCode::OK, Json(serde_json::to_value(result).unwrap())).into_response(),
         Err(status) => grpc_status_to_response(status),
     }
 }
 
-async fn cleanup_ks_keys(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
-    match state.service.cleanup_ks_keys_direct().await {
+async fn cleanup_signer_keys(State(state): State<Arc<AdminApiState>>) -> impl IntoResponse {
+    match state.service.cleanup_signer_keys_direct().await {
         Ok(result) => (StatusCode::OK, Json(serde_json::to_value(result).unwrap())).into_response(),
         Err(status) => grpc_status_to_response(status),
     }
@@ -742,8 +742,8 @@ pub fn build_admin_api_router(state: Arc<AdminApiState>) -> Router {
             put(set_override).delete(delete_override),
         )
         // Service detail routes — specific routes before parameterized
-        .route("/admin/api/services/ks/keys", get(get_ks_keys))
-        .route("/admin/api/services/ks/keys/cleanup", post(cleanup_ks_keys))
+        .route("/admin/api/services/signer/keys", get(get_signer_keys))
+        .route("/admin/api/services/signer/keys/cleanup", post(cleanup_signer_keys))
         .route("/admin/api/services/ais/keys", get(get_ais_keys))
         .route("/admin/api/services/{name}", get(get_service_detail))
         .route("/admin/api/network/probe/{port}", get(probe_port))

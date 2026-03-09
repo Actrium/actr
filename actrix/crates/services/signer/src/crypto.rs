@@ -5,7 +5,7 @@
 // Allow deprecated generic-array::from_slice until aes-gcm upgrades
 #![allow(deprecated)]
 
-use crate::error::{KsError, KsResult};
+use crate::error::{SignerError, SignerResult};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng},
@@ -49,7 +49,7 @@ impl KeyEncryptor {
     }
 
     /// 从 KEK 源创建加密器
-    pub fn from_kek_source(source: &KekSource) -> KsResult<Self> {
+    pub fn from_kek_source(source: &KekSource) -> SignerResult<Self> {
         let kek = match source {
             KekSource::Direct(key) => {
                 crate::recording::debug!("Loading KEK from direct configuration");
@@ -58,7 +58,7 @@ impl KeyEncryptor {
             KekSource::Environment(env_var) => {
                 crate::recording::debug!("Loading KEK from environment variable: {}", env_var);
                 std::env::var(env_var).map_err(|e| {
-                    KsError::Config(format!(
+                    SignerError::Config(format!(
                         "Failed to read KEK from environment variable {env_var}: {e}"
                     ))
                 })?
@@ -66,7 +66,7 @@ impl KeyEncryptor {
             KekSource::File(path) => {
                 crate::recording::debug!("Loading KEK from file: {}", path);
                 std::fs::read_to_string(path).map_err(|e| {
-                    KsError::Config(format!("Failed to read KEK from file {path}: {e}"))
+                    SignerError::Config(format!("Failed to read KEK from file {path}: {e}"))
                 })?
             }
         };
@@ -79,33 +79,33 @@ impl KeyEncryptor {
     /// KEK 可以是:
     /// - 64 字符的十六进制字符串 (32 字节)
     /// - 44 字符的 Base64 字符串 (32 字节)
-    pub fn from_kek(kek: &str) -> KsResult<Self> {
+    pub fn from_kek(kek: &str) -> SignerResult<Self> {
         let kek = kek.trim();
 
         // 尝试解析为十六进制
         let key_bytes = if kek.len() == 64 {
-            hex::decode(kek).map_err(|e| KsError::Config(format!("Invalid KEK hex format: {e}")))?
+            hex::decode(kek).map_err(|e| SignerError::Config(format!("Invalid KEK hex format: {e}")))?
         } else if kek.len() == 44 || kek.len() == 43 {
             // Base64 编码的 32 字节密钥
             BASE64_STANDARD
                 .decode(kek)
-                .map_err(|e| KsError::Config(format!("Invalid KEK base64 format: {e}")))?
+                .map_err(|e| SignerError::Config(format!("Invalid KEK base64 format: {e}")))?
         } else {
-            return Err(KsError::Config(format!(
+            return Err(SignerError::Config(format!(
                 "Invalid KEK length: expected 64 hex chars or 44 base64 chars, got {}",
                 kek.len()
             )));
         };
 
         if key_bytes.len() != 32 {
-            return Err(KsError::Config(format!(
+            return Err(SignerError::Config(format!(
                 "Invalid KEK size: expected 32 bytes, got {}",
                 key_bytes.len()
             )));
         }
 
         let cipher = Aes256Gcm::new_from_slice(&key_bytes)
-            .map_err(|e| KsError::Crypto(format!("Failed to create cipher: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Failed to create cipher: {e}")))?;
 
         crate::recording::info!("KEK loaded successfully");
         Ok(Self {
@@ -119,7 +119,7 @@ impl KeyEncryptor {
     /// 否则使用 AES-256-GCM 加密
     ///
     /// 加密格式: base64(nonce[12] || ciphertext || tag[16])
-    pub fn encrypt(&self, secret_key: &str) -> KsResult<String> {
+    pub fn encrypt(&self, secret_key: &str) -> SignerResult<String> {
         let cipher = match &self.cipher {
             Some(c) => c,
             None => {
@@ -136,7 +136,7 @@ impl KeyEncryptor {
         // 加密
         let ciphertext = cipher
             .encrypt(nonce, secret_key.as_bytes())
-            .map_err(|e| KsError::Crypto(format!("Encryption failed: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Encryption failed: {e}")))?;
 
         // 组合: nonce || ciphertext (包含 tag)
         let mut encrypted = Vec::with_capacity(12 + ciphertext.len());
@@ -151,7 +151,7 @@ impl KeyEncryptor {
     ///
     /// 如果未配置 KEK，直接返回原始数据（向后兼容）
     /// 否则尝试 Base64 解码并使用 AES-256-GCM 解密
-    pub fn decrypt(&self, encrypted_key: &str) -> KsResult<String> {
+    pub fn decrypt(&self, encrypted_key: &str) -> SignerResult<String> {
         let cipher = match &self.cipher {
             Some(c) => c,
             None => {
@@ -163,10 +163,10 @@ impl KeyEncryptor {
         // Base64 解码
         let encrypted_bytes = BASE64_STANDARD
             .decode(encrypted_key)
-            .map_err(|e| KsError::Crypto(format!("Invalid encrypted key format: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Invalid encrypted key format: {e}")))?;
 
         if encrypted_bytes.len() < 12 + 16 {
-            return Err(KsError::Crypto(format!(
+            return Err(SignerError::Crypto(format!(
                 "Invalid encrypted key size: expected at least 28 bytes, got {}",
                 encrypted_bytes.len()
             )));
@@ -179,10 +179,10 @@ impl KeyEncryptor {
         // 解密
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
-            .map_err(|e| KsError::Crypto(format!("Decryption failed: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Decryption failed: {e}")))?;
 
         String::from_utf8(plaintext)
-            .map_err(|e| KsError::Crypto(format!("Invalid UTF-8 after decryption: {e}")))
+            .map_err(|e| SignerError::Crypto(format!("Invalid UTF-8 after decryption: {e}")))
     }
 
     /// 是否启用了加密

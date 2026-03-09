@@ -1,10 +1,10 @@
-//! KS gRPC 客户端
+//! Signer gRPC 客户端
 
-use crate::error::KsError;
+use crate::error::SignerError;
 use actrix_proto::admin::v1::NonceCredential;
-use actrix_proto::ks::v1::{
+use actrix_proto::signer::v1::{
     GenerateSigningKeyRequest, GetVerifyingKeyRequest, HealthCheckRequest, SignRequest,
-    key_server_client::KeyServerClient,
+    signer_client::SignerClient,
 };
 use base64::prelude::*;
 use ed25519_dalek::VerifyingKey;
@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
-/// KS gRPC 客户端配置
+/// Signer gRPC 客户端配置
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GrpcClientConfig {
-    /// KS 服务地址 (gRPC endpoint)
+    /// Signer 服务地址 (gRPC endpoint)
     ///
     /// 例如: "http://127.0.0.1:8080" 或 "https://ks.example.com:8443"
     pub endpoint: String,
@@ -43,17 +43,17 @@ pub struct GrpcClientConfig {
     pub client_key: Option<String>,
 }
 
-/// KS gRPC 客户端
+/// Signer gRPC 客户端
 pub struct GrpcClient {
-    client: KeyServerClient<Channel>,
+    client: SignerClient<Channel>,
     actrix_shared_key: String,
 }
 
 impl GrpcClient {
-    /// 创建新的 KS gRPC 客户端
-    pub async fn new(config: &GrpcClientConfig) -> Result<Self, KsError> {
+    /// 创建新的 Signer gRPC 客户端
+    pub async fn new(config: &GrpcClientConfig) -> Result<Self, SignerError> {
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())
-            .map_err(|e| KsError::Internal(format!("Invalid endpoint: {e}")))?
+            .map_err(|e| SignerError::Internal(format!("Invalid endpoint: {e}")))?
             .timeout(Duration::from_secs(config.timeout_seconds))
             .connect_timeout(Duration::from_secs(config.timeout_seconds));
 
@@ -62,16 +62,16 @@ impl GrpcClient {
             let tls_config = Self::build_tls_config(config)?;
             endpoint = endpoint
                 .tls_config(tls_config)
-                .map_err(|e| KsError::Internal(format!("TLS configuration error: {e}")))?;
-            crate::recording::info!("TLS enabled for KS gRPC client");
+                .map_err(|e| SignerError::Internal(format!("TLS configuration error: {e}")))?;
+            crate::recording::info!("TLS enabled for Signer gRPC client");
         }
 
         let channel = endpoint
             .connect()
             .await
-            .map_err(|e| KsError::Internal(format!("Failed to connect to KS: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Failed to connect to Signer: {e}")))?;
 
-        let client = KeyServerClient::new(channel);
+        let client = SignerClient::new(channel);
 
         Ok(Self {
             client,
@@ -80,9 +80,9 @@ impl GrpcClient {
     }
 
     /// 构建 TLS 配置
-    fn build_tls_config(config: &GrpcClientConfig) -> Result<ClientTlsConfig, KsError> {
+    fn build_tls_config(config: &GrpcClientConfig) -> Result<ClientTlsConfig, SignerError> {
         let tls_domain = config.tls_domain.as_ref().ok_or_else(|| {
-            KsError::Config("tls_domain is required when enable_tls is true".to_string())
+            SignerError::Config("tls_domain is required when enable_tls is true".to_string())
         })?;
 
         let mut tls_config = ClientTlsConfig::new().domain_name(tls_domain);
@@ -93,7 +93,7 @@ impl GrpcClient {
         if let Some(ca_cert_path) = &config.ca_cert {
             crate::recording::debug!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert_pem = std::fs::read(ca_cert_path).map_err(|e| {
-                KsError::Config(format!(
+                SignerError::Config(format!(
                     "Failed to read CA certificate from {ca_cert_path}: {e}"
                 ))
             })?;
@@ -109,13 +109,13 @@ impl GrpcClient {
             crate::recording::debug!("Loading client private key from: {}", key_path);
 
             let client_cert_pem = std::fs::read(cert_path).map_err(|e| {
-                KsError::Config(format!(
+                SignerError::Config(format!(
                     "Failed to read client certificate from {cert_path}: {e}"
                 ))
             })?;
 
             let client_key_pem = std::fs::read(key_path).map_err(|e| {
-                KsError::Config(format!(
+                SignerError::Config(format!(
                     "Failed to read client private key from {key_path}: {e}"
                 ))
             })?;
@@ -124,7 +124,7 @@ impl GrpcClient {
             tls_config = tls_config.identity(identity);
             crate::recording::info!("mTLS enabled: client certificate and key loaded");
         } else if config.client_cert.is_some() || config.client_key.is_some() {
-            return Err(KsError::Config(
+            return Err(SignerError::Config(
                 "Both client_cert and client_key must be provided for mTLS".to_string(),
             ));
         }
@@ -132,13 +132,13 @@ impl GrpcClient {
         Ok(tls_config)
     }
 
-    /// 从 KS 服务生成新的 Ed25519 签名密钥对
+    /// 从 Signer 服务生成新的 Ed25519 签名密钥对
     ///
     /// 返回 (key_id, verifying_key_bytes[32], expires_at, tolerance_seconds)
-    /// 私钥保留在 KS 服务端，不返回给调用方
+    /// 私钥保留在 Signer 服务端，不返回给调用方
     pub async fn generate_signing_key(
         &mut self,
-    ) -> Result<(u32, [u8; 32], u64, u64), KsError> {
+    ) -> Result<(u32, [u8; 32], u64, u64), SignerError> {
         let request_data = "generate_signing_key";
 
         // 创建 nonce credential
@@ -154,23 +154,23 @@ impl GrpcClient {
 
         let request = tonic::Request::new(GenerateSigningKeyRequest { credential });
 
-        crate::recording::debug!("Requesting Ed25519 signing key generation from KS via gRPC");
+        crate::recording::debug!("Requesting Ed25519 signing key generation from Signer via gRPC");
 
         let response = self
             .client
             .generate_signing_key(request)
             .await
-            .map_err(|e| KsError::Internal(format!("gRPC GenerateSigningKey failed: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("gRPC GenerateSigningKey failed: {e}")))?;
 
         let resp = response.into_inner();
 
         // 解码 verifying key（32 字节 Ed25519 公钥）
         let verifying_key_bytes = BASE64_STANDARD
             .decode(&resp.verifying_key)
-            .map_err(|e| KsError::Crypto(format!("Failed to decode verifying key: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Failed to decode verifying key: {e}")))?;
 
         if verifying_key_bytes.len() != 32 {
-            return Err(KsError::Crypto(format!(
+            return Err(SignerError::Crypto(format!(
                 "Invalid verifying key length: expected 32 bytes, got {}",
                 verifying_key_bytes.len()
             )));
@@ -179,10 +179,10 @@ impl GrpcClient {
         // 验证 verifying key 合法性
         let vk_array: [u8; 32] = verifying_key_bytes
             .try_into()
-            .map_err(|_| KsError::Crypto("Failed to convert verifying key to array".to_string()))?;
+            .map_err(|_| SignerError::Crypto("Failed to convert verifying key to array".to_string()))?;
 
         VerifyingKey::from_bytes(&vk_array)
-            .map_err(|e| KsError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
+            .map_err(|e| SignerError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
 
         crate::recording::info!(
             "Successfully generated Ed25519 signing key via gRPC: key_id={}, expires_at={}, tolerance_seconds={}",
@@ -194,11 +194,11 @@ impl GrpcClient {
         Ok((resp.key_id, vk_array, resp.expires_at, resp.tolerance_seconds))
     }
 
-    /// 使用 KS 服务中的密钥对消息进行 Ed25519 签名
+    /// 使用 Signer 服务中的密钥对消息进行 Ed25519 签名
     ///
     /// 返回 64 字节 Ed25519 签名
-    /// 私钥不离开 KS 服务
-    pub async fn sign(&mut self, key_id: u32, message: &[u8]) -> Result<Vec<u8>, KsError> {
+    /// 私钥不离开 Signer 服务
+    pub async fn sign(&mut self, key_id: u32, message: &[u8]) -> Result<Vec<u8>, SignerError> {
         let request_data = format!("sign:{key_id}");
 
         // 创建 nonce credential
@@ -218,18 +218,18 @@ impl GrpcClient {
             credential,
         });
 
-        crate::recording::debug!("Requesting signature for key_id={} from KS via gRPC", key_id);
+        crate::recording::debug!("Requesting signature for key_id={} from Signer via gRPC", key_id);
 
         let response = self
             .client
             .sign(request)
             .await
-            .map_err(|e| KsError::Internal(format!("gRPC Sign failed: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("gRPC Sign failed: {e}")))?;
 
         let resp = response.into_inner();
 
         if resp.signature.len() != 64 {
-            return Err(KsError::Crypto(format!(
+            return Err(SignerError::Crypto(format!(
                 "Invalid signature length: expected 64 bytes, got {}",
                 resp.signature.len()
             )));
@@ -246,7 +246,7 @@ impl GrpcClient {
     pub async fn get_verifying_key(
         &mut self,
         key_id: u32,
-    ) -> Result<([u8; 32], u64, u64), KsError> {
+    ) -> Result<([u8; 32], u64, u64), SignerError> {
         let request_data = format!("get_verifying_key:{key_id}");
         let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
             .sign(request_data.as_bytes())?;
@@ -264,27 +264,27 @@ impl GrpcClient {
             .client
             .get_verifying_key(request)
             .await
-            .map_err(|e| KsError::Internal(format!("gRPC GetVerifyingKey failed: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("gRPC GetVerifyingKey failed: {e}")))?;
 
         let resp = response.into_inner();
 
         let key_bytes = BASE64_STANDARD
             .decode(&resp.verifying_key)
-            .map_err(|e| KsError::Internal(format!("Invalid verifying key base64: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Invalid verifying key base64: {e}")))?;
 
         let key_array: [u8; 32] = key_bytes
             .try_into()
-            .map_err(|_| KsError::Internal("Verifying key must be 32 bytes".to_string()))?;
+            .map_err(|_| SignerError::Internal("Verifying key must be 32 bytes".to_string()))?;
 
         // 验证是有效的 Ed25519 公钥
         VerifyingKey::from_bytes(&key_array)
-            .map_err(|e| KsError::Internal(format!("Invalid verifying key: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("Invalid verifying key: {e}")))?;
 
         Ok((key_array, resp.expires_at, resp.tolerance_seconds))
     }
 
     /// 健康检查
-    pub async fn health_check(&mut self) -> Result<String, KsError> {
+    pub async fn health_check(&mut self) -> Result<String, SignerError> {
         let request_data = "health_check";
         let nonce_credential = CredentialBuilder::new(self.actrix_shared_key.as_bytes())
             .sign(request_data.as_bytes())?;
@@ -301,7 +301,7 @@ impl GrpcClient {
             .client
             .health_check(request)
             .await
-            .map_err(|e| KsError::Internal(format!("gRPC HealthCheck failed: {e}")))?;
+            .map_err(|e| SignerError::Internal(format!("gRPC HealthCheck failed: {e}")))?;
 
         let resp = response.into_inner();
         Ok(resp.status)

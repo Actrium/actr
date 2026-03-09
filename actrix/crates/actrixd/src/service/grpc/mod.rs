@@ -2,6 +2,6 @@
 //!
 //! 管理各种 gRPC 服务的实现
 
-pub mod ks;
+pub mod signer;
 
-pub use ks::build_ks_grpc_router;
+pub use signer::build_signer_grpc_router;

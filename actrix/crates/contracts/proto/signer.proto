@@ -1,13 +1,13 @@
 syntax = "proto2";
 
-package ks.v1;
+package signer.v1;
 
 // Import NonceCredential from admin common definitions
 import "common.proto";
 
-// Key Server 服务定义
-// 负责生成和管理 Ed25519 签名密钥，私钥永不离开 KS
-service KeyServer {
+// Signer 服务定义
+// 负责生成和管理 Ed25519 签名密钥，私钥永不离开 Signer
+service Signer {
   // 生成新的 Ed25519 签名密钥对，返回 key_id 和验证公钥
   rpc GenerateSigningKey(GenerateSigningKeyRequest) returns (GenerateSigningKeyResponse);
 

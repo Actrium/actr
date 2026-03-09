@@ -1,31 +1,31 @@
-//! KS (Key Server) gRPC 路由构建
+//! Signer gRPC 路由构建
 //!
-//! 将 KS gRPC 服务挂载到主 HTTP/HTTPS 监听端口。
+//! 将 Signer gRPC 服务挂载到主 HTTP/HTTPS 监听端口。
 
 use anyhow::Result;
 use axum::Router;
-use ks::{KeyEncryptor, KeyStorage, create_grpc_service};
+use signer::{KeyEncryptor, KeyStorage, create_grpc_service};
 use platform::{
     config::ActrixConfig, monitoring::ServiceCounters, storage::nonce::SqliteNonceStorage,
 };
 use std::sync::Arc;
 
-/// Build KS gRPC router mounted on the main HTTP listener.
+/// Build Signer gRPC router mounted on the main HTTP listener.
 ///
 /// Primary route for tonic clients:
-/// `/ks.v1.KeyServer/<Method>`
+/// `/signer.v1.Signer/<Method>`
 ///
 /// When `counters` is provided, an axum middleware layer records every
 /// request into the shared `ServiceCounters`.
-pub async fn build_ks_grpc_router(
+pub async fn build_signer_grpc_router(
     config: &ActrixConfig,
     counters: Option<Arc<ServiceCounters>>,
 ) -> Result<Router> {
-    let ks_service_config = config
+    let signer_service_config = config
         .services
-        .ks
+        .signer
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("KS service configuration not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("Signer service configuration not found"))?;
 
     // 创建 nonce storage 实例（用于防重放攻击）
     // 使用 sqlite_path 作为目录路径，内部会自动拼接 nonce.db
@@ -34,7 +34,7 @@ pub async fn build_ks_grpc_router(
         .map_err(|e| anyhow::anyhow!("Failed to create nonce storage: {e}"))?;
 
     // 创建密钥加密器
-    let encryptor = match ks_service_config.get_kek_source() {
+    let encryptor = match signer_service_config.get_kek_source() {
         Some(kek_source) => {
             platform::recording::info!("KEK configured, enabling private key encryption");
             KeyEncryptor::from_kek_source(&kek_source)
@@ -48,23 +48,23 @@ pub async fn build_ks_grpc_router(
         }
     };
 
-    // 创建 KS storage
+    // 创建 Signer storage
     let storage =
-        KeyStorage::from_config(&ks_service_config.storage, encryptor, &config.sqlite_path)
+        KeyStorage::from_config(&signer_service_config.storage, encryptor, &config.sqlite_path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create KS storage: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create Signer storage: {e}"))?;
 
     // 创建 gRPC 服务
     let grpc_service = create_grpc_service(
         storage,
         nonce_storage,
         config.actrix_shared_key.clone(),
-        ks_service_config.tolerance_seconds,
+        signer_service_config.tolerance_seconds,
     );
 
-    platform::recording::info!("KS gRPC service mounted on primary HTTP listener");
+    platform::recording::info!("Signer gRPC service mounted on primary HTTP listener");
 
-    let mut router = Router::new().route_service("/ks.v1.KeyServer/{*grpc_method}", grpc_service);
+    let mut router = Router::new().route_service("/signer.v1.Signer/{*grpc_method}", grpc_service);
 
     // Wrap with a metrics middleware when counters are provided
     if let Some(ctr) = counters {

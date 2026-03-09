@@ -1,25 +1,25 @@
-//! KS gRPC 服务实现
+//! Signer gRPC 服务实现
 
-use crate::{error::KsError, storage::KeyStorage};
+use crate::{error::SignerError, storage::KeyStorage};
 use nonce_auth::{CredentialVerifier, NonceError, storage::NonceStorage};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 // 导入生成的 protobuf 代码
 use actrix_proto::admin::v1::NonceCredential;
-use actrix_proto::ks::v1::key_server_server::{KeyServer, KeyServerServer};
-use actrix_proto::ks::v1::*;
+use actrix_proto::signer::v1::signer_server::{Signer, SignerServer};
+use actrix_proto::signer::v1::*;
 
 /// KS gRPC 服务状态
 #[derive(Clone)]
-pub struct KsGrpcService {
+pub struct SignerGrpcService {
     pub storage: KeyStorage,
     pub nonce_storage: Arc<dyn NonceStorage + Send + Sync>,
     pub psk: String,
     pub tolerance_seconds: u64,
 }
 
-impl KsGrpcService {
+impl SignerGrpcService {
     /// 创建新的 gRPC 服务实例
     pub fn new<N: NonceStorage + Send + Sync + 'static>(
         storage: KeyStorage,
@@ -40,7 +40,7 @@ impl KsGrpcService {
         &self,
         credential: &NonceCredential,
         request_payload: &str,
-    ) -> Result<(), KsError> {
+    ) -> Result<(), SignerError> {
         // 将 protobuf NonceCredential 转换为 nonce_auth::NonceCredential
         let nonce_credential = nonce_auth::NonceCredential {
             timestamp: credential.timestamp,
@@ -54,14 +54,14 @@ impl KsGrpcService {
             .await;
 
         verify_result.map_err(|e| match e {
-            NonceError::DuplicateNonce => KsError::ReplayAttack("Nonce already used".to_string()),
+            NonceError::DuplicateNonce => SignerError::ReplayAttack("Nonce already used".to_string()),
             NonceError::TimestampOutOfWindow => {
-                KsError::Authentication("Request timestamp out of range".to_string())
+                SignerError::Authentication("Request timestamp out of range".to_string())
             }
             NonceError::InvalidSignature => {
-                KsError::Authentication("Invalid signature".to_string())
+                SignerError::Authentication("Invalid signature".to_string())
             }
-            _ => KsError::Internal(format!("Authentication error: {e}")),
+            _ => SignerError::Internal(format!("Authentication error: {e}")),
         })?;
 
         Ok(())
@@ -69,7 +69,7 @@ impl KsGrpcService {
 }
 
 #[tonic::async_trait]
-impl KeyServer for KsGrpcService {
+impl Signer for SignerGrpcService {
     /// 生成新的 Ed25519 签名密钥对
     async fn generate_signing_key(
         &self,
@@ -157,7 +157,7 @@ impl KeyServer for KsGrpcService {
             .sign(key_id, &req.message)
             .await
             .map_err(|e| match e {
-                crate::error::KsError::NotFound(_) => {
+                crate::error::SignerError::NotFound(_) => {
                     Status::not_found(format!("Key not found: {key_id}"))
                 }
                 other => Status::internal(format!("Sign failed: {other}")),
@@ -233,7 +233,7 @@ impl KeyServer for KsGrpcService {
 
         let response = HealthCheckResponse {
             status: "healthy".to_string(),
-            service: "ks".to_string(),
+            service: "signer".to_string(),
             backend: self.storage.backend_name().to_string(),
             key_count,
             timestamp: std::time::SystemTime::now()
@@ -252,7 +252,7 @@ pub fn create_grpc_service<N: NonceStorage + Send + Sync + 'static>(
     nonce_storage: N,
     psk: String,
     tolerance_seconds: u64,
-) -> KeyServerServer<KsGrpcService> {
-    let service = KsGrpcService::new(storage, nonce_storage, psk, tolerance_seconds);
-    KeyServerServer::new(service)
+) -> SignerServer<SignerGrpcService> {
+    let service = SignerGrpcService::new(storage, nonce_storage, psk, tolerance_seconds);
+    SignerServer::new(service)
 }

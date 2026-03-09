@@ -357,9 +357,9 @@ max_clock_skew_secs = 300
 **默认值**: `300`  \
 **用途**: nonce-auth 允许的最大时间偏差（秒）
 
-## KS (Key Server) 配置 (可选)
+## Signer 配置 (可选)
 
-**当前状态**: KS 服务可用，配置待完善
+**当前状态**: Signer 服务可用，配置待完善
 
 ```toml
 [ks]

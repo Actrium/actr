@@ -1,13 +1,13 @@
 use actrix_proto::{
     admin::v1::NonceCredential,
-    ks::v1::{
+    signer::v1::{
         GenerateSigningKeyRequest, HealthCheckRequest, SignRequest,
-        key_server_client::KeyServerClient,
+        signer_client::SignerClient,
     },
 };
 use base64::Engine as _;
-use ks::{
-    GrpcClient, GrpcClientConfig, KeyEncryptor, KeyStorage, KsError, KsServiceConfig,
+use signer::{
+    GrpcClient, GrpcClientConfig, KeyEncryptor, KeyStorage, SignerError, SignerServiceConfig,
     create_grpc_service,
 };
 use nonce_auth::{CredentialBuilder, storage::MemoryStorage};
@@ -45,7 +45,7 @@ async fn start_grpc_server(
 ) -> GrpcTestServer {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
 
-    let mut config = KsServiceConfig::default();
+    let mut config = SignerServiceConfig::default();
     config.storage.key_ttl_seconds = key_ttl_seconds;
 
     let storage = KeyStorage::from_config(
@@ -89,10 +89,10 @@ async fn start_grpc_server(
     }
 }
 
-async fn connect_client(endpoint: &str) -> KeyServerClient<tonic::transport::Channel> {
+async fn connect_client(endpoint: &str) -> SignerClient<tonic::transport::Channel> {
     let start = Instant::now();
     loop {
-        if let Ok(client) = KeyServerClient::connect(endpoint.to_string()).await {
+        if let Ok(client) = SignerClient::connect(endpoint.to_string()).await {
             return client;
         }
 
@@ -142,7 +142,7 @@ async fn test_grpc_health_and_key_lifecycle() {
         .expect("health check before generate")
         .into_inner();
     assert_eq!(health_before.status, "healthy");
-    assert_eq!(health_before.service, "ks");
+    assert_eq!(health_before.service, "signer");
     assert_eq!(health_before.key_count, 0);
 
     let generated = client
@@ -357,7 +357,7 @@ async fn test_ks_grpc_client_rejects_wrong_shared_secret() {
         .await
         .expect_err("wrong shared secret should fail");
     match err {
-        KsError::Internal(msg) => {
+        SignerError::Internal(msg) => {
             assert!(
                 msg.contains("valid authentication credentials")
                     || msg.contains("Invalid signature"),
@@ -384,9 +384,9 @@ async fn test_ks_grpc_client_rejects_invalid_endpoint() {
 
     match result {
         Ok(_) => panic!("invalid endpoint should be rejected"),
-        Err(KsError::Internal(msg)) => {
+        Err(SignerError::Internal(msg)) => {
             assert!(
-                msg.contains("Invalid endpoint") || msg.contains("Failed to connect to KS"),
+                msg.contains("Invalid endpoint") || msg.contains("Failed to connect to Signer"),
                 "unexpected error message: {msg}"
             );
         }
@@ -415,9 +415,9 @@ async fn test_ks_grpc_client_fails_when_server_unreachable() {
 
     match result {
         Ok(_) => panic!("unreachable endpoint should fail"),
-        Err(KsError::Internal(msg)) => {
+        Err(SignerError::Internal(msg)) => {
             assert!(
-                msg.contains("Failed to connect to KS"),
+                msg.contains("Failed to connect to Signer"),
                 "unexpected error message: {msg}"
             );
         }

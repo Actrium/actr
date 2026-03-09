@@ -47,7 +47,7 @@ governor = "0.10"
 
 # Internal dependencies
 platform = { path = "../../platform" }
-ks = { path = "../ks" }
+signer = { path = "../signer" }
 actrix-mfr = { path = "../mfr" }
 
 [dev-dependencies]
