@@ -1407,6 +1407,7 @@ async fn handle_route_candidates_request(
     let ranked_actor_ids = LoadBalancer::rank_candidates(
         acl_filtered_candidates,
         req.criteria.as_ref(),
+        req.client_fingerprint.trim(),
         Some(client_id),
         client_location,
     );
