@@ -21,8 +21,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install UniFFI bindgen
         run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
-      - name: Install SwiftLint
-        run: brew install swiftlint
+      - name: Install Swift tools and libraries
+        run: brew install swiftlint opus
       - name: Run SwiftLint
         run: swiftlint lint --strict
       - name: Build local Swift XCFramework
