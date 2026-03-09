@@ -313,6 +313,18 @@ impl AIdIssuer {
             .ok_or_else(|| AidError::GenerationFailed("No key loaded".to_string()))
     }
 
+    /// 返回当前签名公钥（key_id + raw 32-byte verifying key）
+    ///
+    /// 供 `/ais/signing-pubkey` HTTP 端点使用，
+    /// 也可被 signaling 服务在 key_cache miss 时按需拉取。
+    pub async fn get_current_signing_pubkey(&self) -> Result<(u32, Vec<u8>), AidError> {
+        let cache = self.key_cache.read().await;
+        cache
+            .as_ref()
+            .map(|c| (c.key_id, c.verifying_key.as_bytes().to_vec()))
+            .ok_or_else(|| AidError::GenerationFailed("No signing key loaded".to_string()))
+    }
+
     /// 启动后台密钥刷新任务
     fn spawn_key_refresh_task(&self, cancel: tokio_util::sync::CancellationToken) {
         let ks_client = self.ks_client.clone();

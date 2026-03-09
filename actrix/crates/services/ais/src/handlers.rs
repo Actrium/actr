@@ -44,6 +44,7 @@ pub fn create_router(state: AISState) -> Router {
         .route("/health", axum::routing::get(health_check))
         .route("/rotate-key", post(rotate_key))
         .route("/current-key", axum::routing::get(get_current_key))
+        .route("/signing-pubkey", axum::routing::get(get_signing_pubkey))
         .layer(ip_rate_limiter())
         .with_state(state)
 }
@@ -327,6 +328,30 @@ async fn get_current_key(State(state): State<AISState>) -> Json<Value> {
             Json(json!({
                 "status": "error",
                 "message": format!("Failed to get key: {}", e)
+            }))
+        }
+    }
+}
+
+/// 返回当前 AIS 签名公钥（key_id + base64 pubkey）
+///
+/// 供信令服务器或其他服务在 key_cache miss 时按需拉取公钥进行 credential 验签。
+async fn get_signing_pubkey(State(state): State<AISState>) -> Json<Value> {
+    match state.issuer.get_current_signing_pubkey().await {
+        Ok((key_id, pubkey_bytes)) => {
+            use base64::Engine as _;
+            let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(&pubkey_bytes);
+            Json(json!({
+                "status": "success",
+                "key_id": key_id,
+                "pubkey": pubkey_b64
+            }))
+        }
+        Err(e) => {
+            platform::recording::error!("Failed to get signing pubkey: {}", e);
+            Json(json!({
+                "status": "error",
+                "message": format!("Failed to get signing pubkey: {}", e)
             }))
         }
     }
