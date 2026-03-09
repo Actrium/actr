@@ -3,6 +3,7 @@ use actr_runtime::context::RuntimeContext;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
+use std::any::Any;
 use std::sync::Arc;
 
 use crate::types::{ActrId, ActrType, DataStream, PayloadType, StreamSignal};
@@ -16,19 +17,14 @@ impl ContextBridge {
     pub fn try_from_context<C: actr_framework::Context + 'static>(
         ctx: &C,
     ) -> actr_protocol::ActorResult<Self> {
-        use std::any::TypeId;
-
-        if TypeId::of::<C>() != TypeId::of::<actr_runtime::context::RuntimeContext>() {
-            return Err(actr_protocol::ProtocolError::InvalidStateTransition(
-                format!(
+        let runtime_ctx = (ctx as &dyn Any)
+            .downcast_ref::<RuntimeContext>()
+            .ok_or_else(|| {
+                actr_protocol::ActrError::Internal(format!(
                     "Context type mismatch: expected RuntimeContext, got {}",
                     std::any::type_name::<C>()
-                ),
-            ));
-        }
-
-        let runtime_ctx =
-            unsafe { &*(ctx as *const C as *const actr_runtime::context::RuntimeContext) };
+                ))
+            })?;
 
         Ok(Self {
             inner: runtime_ctx.clone(),
@@ -108,9 +104,14 @@ impl ContextBridge {
         let target_id: actr_protocol::ActrId = target.into();
         let chunk: actr_protocol::DataStream = chunk.into();
 
-        Context::send_data_stream(&self.inner, &actr_framework::Dest::Actor(target_id), chunk)
-            .await
-            .map_err(crate::error::protocol_error_to_napi)?;
+        Context::send_data_stream(
+            &self.inner,
+            &actr_framework::Dest::Actor(target_id),
+            chunk,
+            actr_protocol::PayloadType::StreamReliable,
+        )
+        .await
+        .map_err(crate::error::protocol_error_to_napi)?;
 
         Ok(())
     }

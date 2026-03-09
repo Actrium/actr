@@ -1,6 +1,6 @@
 [package]
 name = "actr-ts"
-version = "0.1.14"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -15,11 +15,11 @@ crate-type = ["cdylib"]
 napi = { version = "3.8.2", features = ["async", "tokio_rt"] }
 napi-derive = "3.5.1"
 
-# actr dependencies (git rev)
-actr-protocol = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
-actr-framework = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
-actr-runtime = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
-actr-config = { git = "https://github.com/actor-rtc/actr", rev = "ee1ccc800ca9a493e08214415d04077e7dc7cf95" }
+# actr dependencies
+actr-protocol = { path = "../../core/protocol" }
+actr-framework = { path = "../../core/framework" }
+actr-runtime = { path = "../../core/runtime" }
+actr-config = { path = "../../core/config" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

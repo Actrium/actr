@@ -21,15 +21,16 @@ members = [
 resolver = "2"
 
 [workspace.package]
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
 # Actr Framework Dependencies (used by all members)
-actr-framework = { version = "0.1.5" }
-actr-protocol = { version = "0.1.6" }
-actr-runtime = { version = "0.1.7" }
-actr-config = { version = "0.1.7" }
+actr-framework = { version = "0.2.0" }
+actr-protocol = { version = "0.2.0" }
+actr-runtime = { version = "0.2.0" }
+actr-config = { version = "0.2.0" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

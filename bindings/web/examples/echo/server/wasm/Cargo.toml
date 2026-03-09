@@ -1,6 +1,6 @@
 [package]
 name = "echo-server-wasm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Echo Server WASM - 用户 Workload + SW Runtime 打包成一个 WASM"
