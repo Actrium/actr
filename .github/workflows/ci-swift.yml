@@ -13,13 +13,26 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
       - name: Install SwiftLint
         run: brew install swiftlint
       - name: Run SwiftLint
         run: swiftlint lint --strict
+      - name: Build local Swift XCFramework
+        working-directory: bindings/swift
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          ./build-xcframework.sh
       - name: Build Swift bindings package
         working-directory: bindings/swift
-        run: swift build
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          swift build
       - name: Build Swift codegen package
         working-directory: tools/protoc-gen/swift
         run: swift build
