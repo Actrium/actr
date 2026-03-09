@@ -7,7 +7,6 @@
 //! ## 核心模块
 //! - [`server`]: WebSocket 服务器和协议处理
 //! - [`service_registry`][]: 服务注册与发现
-//! - [`compatibility_cache`][]: 全局兼容性缓存
 //!
 //! ## 扩展模块
 //! - [`presence`] - Presence 订阅管理
@@ -15,7 +14,6 @@
 //! - [`geo`] - 地理位置和距离计算
 #![deny(clippy::disallowed_macros)]
 
-pub mod compatibility_cache;
 pub mod geo;
 pub mod load_balancer;
 pub mod presence;
@@ -35,7 +33,6 @@ pub use axum_router::{
 };
 
 // Re-export commonly used types
-pub use compatibility_cache::GlobalCompatibilityCache;
 pub use load_balancer::LoadBalancer;
 pub use presence::PresenceManager;
 pub use server::{ClientConnection, SignalingServer, SignalingServerHandle};

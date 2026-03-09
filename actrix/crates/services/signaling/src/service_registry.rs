@@ -236,26 +236,9 @@ impl ServiceRegistry {
         // 异步写入 SQLite 缓存（后台任务，不阻塞）
         if let Some(storage) = self.storage.clone() {
             let service_to_save = service_info.clone();
-            let actr_type = actor_id.r#type.clone();
-            let service_spec_to_save = service_to_save.service_spec.clone();
             tokio::spawn(async move {
-                // 保存服务信息
                 if let Err(e) = storage.save_service(&service_to_save).await {
                     platform::recording::error!("保存服务到缓存失败: {}", e);
-                }
-
-                // 保存 Proto spec 到 service_specs 表（用于兼容性协商）
-                if let Some(ref spec) = service_spec_to_save {
-                    if let Err(e) = storage.save_proto_spec(&actr_type, spec).await {
-                        platform::recording::error!("保存 Proto spec 到缓存失败: {}", e);
-                    } else {
-                        platform::recording::info!(
-                            "✅ Proto spec 已保存: {}/{} fingerprint={}",
-                            actr_type.manufacturer,
-                            actr_type.name,
-                            spec.fingerprint
-                        );
-                    }
                 }
             });
         }

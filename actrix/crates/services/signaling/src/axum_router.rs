@@ -179,23 +179,7 @@ pub async fn create_signaling_router_with_config_and_counters(
                             );
                         }
                     }
-                    // 同步清理过期的 proto specs（用于兼容性协商）
-                    match storage_for_cleanup.cleanup_expired_proto_specs().await {
-                        Ok(deleted) => {
-                            if deleted > 0 {
-                                platform::recording::info!(
-                                    "🧹 Cleaned up {} expired proto specs from cache",
-                                    deleted
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            platform::recording::error!(
-                                "Failed to cleanup expired proto specs: {:?}",
-                                e
-                            );
-                        }
-                    }
+
                 }
                 platform::recording::debug!("Signaling storage cleanup task cancelled");
             });
@@ -382,7 +366,6 @@ async fn handle_websocket(
         actor_id_index: state.server.actor_id_index.clone(),
         service_registry: state.server.service_registry.clone(),
         presence_manager: state.server.presence_manager.clone(),
-        compatibility_cache: state.server.compatibility_cache.clone(),
         connection_rate_limiter: state.server.connection_rate_limiter.clone(),
         message_rate_limiter: state.server.message_rate_limiter.clone(),
     };

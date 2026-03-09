@@ -30,7 +30,6 @@
 //! // 返回排序后的候选 ActrId 列表
 //! ```
 
-use crate::compatibility_cache::GlobalCompatibilityCache;
 use crate::service_registry::ServiceInfo;
 use actr_protocol::{
     ActrId, ServiceAvailabilityState, ServiceDependencyState,
@@ -48,24 +47,18 @@ impl LoadBalancer {
     /// - `criteria`: 节点选择标准（包含排序因子、最小健康要求等）
     /// - `client_id`: 可选的客户端 ID（用于 CLIENT_AFFINITY）
     /// - `client_location`: 可选的客户端地理坐标 (latitude, longitude)（用于 NEAREST）
-    /// - `compatibility_cache`: 可选的兼容性缓存（用于 BEST_COMPATIBILITY）
-    /// - `client_fingerprint`: 可选的客户端服务指纹（用于 BEST_COMPATIBILITY）
-    ///
     /// # 返回
     /// 排序后的 ActrId 列表（最多返回 candidate_count 个）
     ///
     /// # 实现逻辑
     /// 1. 应用健康和依赖过滤
-    /// 2. 计算兼容性分数（如果提供了 compatibility_cache 和 client_fingerprint）
-    /// 3. 按排序因子依次排序
-    /// 4. 返回前 N 个候选
+    /// 2. 按排序因子依次排序
+    /// 3. 返回前 N 个候选
     pub fn rank_candidates(
         mut candidates: Vec<ServiceInfo>,
         criteria: Option<&NodeSelectionCriteria>,
         client_id: Option<&str>,
         client_location: Option<(f64, f64)>,
-        compatibility_cache: Option<&GlobalCompatibilityCache>,
-        client_fingerprint: Option<&str>,
     ) -> Vec<ActrId> {
         if candidates.is_empty() {
             return Vec::new();
@@ -103,12 +96,7 @@ impl LoadBalancer {
             return Vec::new();
         }
 
-        // 3. 计算兼容性分数（如果需要 BEST_COMPATIBILITY 排序）
-        if let (Some(cache), Some(client_fp)) = (compatibility_cache, client_fingerprint) {
-            Self::calculate_compatibility_scores(&mut candidates, cache, client_fp);
-        }
-
-        // 4. 按排序因子依次排序
+        // 3. 按排序因子依次排序
         for factor in &criteria.ranking_factors {
             match NodeRankingFactor::try_from(*factor) {
                 Ok(NodeRankingFactor::MaximumPowerReserve) => {
@@ -132,7 +120,7 @@ impl LoadBalancer {
             }
         }
 
-        // 5. 返回前 N 个候选
+        // 4. 返回前 N 个候选
         let limit = criteria.candidate_count as usize;
         candidates
             .into_iter()
@@ -379,93 +367,6 @@ impl LoadBalancer {
         });
     }
 
-    /// 计算候选服务的兼容性分数
-    ///
-    /// 使用 CompatibilityCache 查询客户端指纹到候选服务指纹的兼容性
-    /// 并将结果转换为 0.0-1.0 的分数存储到 protocol_compatibility_score 字段
-    ///
-    /// # 参数
-    /// - `candidates`: 候选服务列表（可变引用，会更新 protocol_compatibility_score 字段）
-    /// - `cache`: 兼容性缓存
-    /// - `client_fingerprint`: 客户端服务指纹
-    ///
-    /// # 评分规则
-    /// - 精确匹配（fingerprint 相同）: 1.0（无需查缓存，直接满分）
-    /// - "compatible": 1.0（完全兼容）
-    /// - "backward_compatible": 0.5（向后兼容）
-    /// - "incompatible": 0.0（不兼容）
-    /// - 未知: None（无缓存结果）
-    ///
-    /// # 性能优化
-    /// 当客户端和候选服务的 fingerprint 完全相同时（刚开发/更新完的满血版本），
-    /// 直接赋予满分 1.0，跳过缓存查询和兼容性计算。只有在没有精确匹配时，
-    /// 才触发兼容性降级计算。
-    fn calculate_compatibility_scores(
-        candidates: &mut [ServiceInfo],
-        cache: &GlobalCompatibilityCache,
-        client_fingerprint: &str,
-    ) {
-        platform::recording::debug!(
-            "计算兼容性分数: client_fingerprint={}, 候选数量={}",
-            client_fingerprint,
-            candidates.len()
-        );
-
-        for candidate in candidates.iter_mut() {
-            // 获取候选服务的指纹
-            let candidate_fingerprint = match &candidate.service_spec {
-                Some(spec) => &spec.fingerprint,
-                None => {
-                    platform::recording::debug!(
-                        "候选服务 {:?} 无 service_spec，跳过兼容性计算",
-                        candidate.actor_id
-                    );
-                    continue;
-                }
-            };
-
-            // 🎯 优化：精确匹配直接满分，无需查缓存
-            if candidate_fingerprint == client_fingerprint {
-                candidate.protocol_compatibility_score = Some(1.0);
-                platform::recording::debug!(
-                    "候选 {:?}: 精确匹配 (fingerprint={})",
-                    candidate.actor_id,
-                    candidate_fingerprint
-                );
-                continue;
-            }
-
-            // 非精确匹配：查缓存或触发兼容性计算
-            let cache_key = GlobalCompatibilityCache::build_cache_key(
-                &candidate.service_name,
-                client_fingerprint,
-                candidate_fingerprint,
-            );
-
-            // 查询缓存
-            let response = cache.query_readonly(&cache_key);
-
-            // 转换为分数
-            candidate.protocol_compatibility_score = if let Some(result) = response.analysis_result
-            {
-                let score = match result.level {
-                    actr_version::CompatibilityLevel::FullyCompatible => 1.0,
-                    actr_version::CompatibilityLevel::BackwardCompatible => 0.5,
-                    actr_version::CompatibilityLevel::BreakingChanges => 0.0,
-                };
-                platform::recording::debug!(
-                    "候选 {:?}: 兼容性={:?}, 分数={}",
-                    candidate.actor_id,
-                    result.level,
-                    score
-                );
-                Some(score)
-            } else {
-                platform::recording::debug!("候选 {:?}: 无兼容性缓存数据", candidate.actor_id);
-                None
-            };
-        }
-    }
 }
 
 #[cfg(test)]
@@ -509,7 +410,7 @@ mod tests {
             create_test_service(2, "service-2"),
         ];
 
-        let ranked = LoadBalancer::rank_candidates(candidates, None, None, None, None, None);
+        let ranked = LoadBalancer::rank_candidates(candidates, None, None, None);
         assert_eq!(ranked.len(), 2);
     }
 
@@ -529,14 +430,14 @@ mod tests {
         };
 
         let ranked =
-            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None, None, None);
+            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None);
         assert_eq!(ranked.len(), 2);
     }
 
     #[test]
     fn test_empty_candidates() {
         let candidates = vec![];
-        let ranked = LoadBalancer::rank_candidates(candidates, None, None, None, None, None);
+        let ranked = LoadBalancer::rank_candidates(candidates, None, None, None);
         assert_eq!(ranked.len(), 0);
     }
 
@@ -718,7 +619,7 @@ mod tests {
         };
 
         let ranked =
-            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None, None, None);
+            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None);
 
         // 注意：依次调用排序，最后一个因子起主要作用（稳定排序特性）
         // 实际执行顺序：先按 power 排序，再按 backlog 排序
@@ -751,7 +652,7 @@ mod tests {
         };
 
         let ranked =
-            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None, None, None);
+            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None);
         assert_eq!(ranked.len(), 3); // 全部保留，顺序不变
     }
 
@@ -789,7 +690,7 @@ mod tests {
         };
 
         let ranked =
-            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None, None, None);
+            LoadBalancer::rank_candidates(candidates, Some(&criteria), None, None);
         assert_eq!(ranked.len(), 0); // 全部被过滤
     }
 
@@ -837,8 +738,6 @@ mod tests {
             Some(&criteria),
             None,
             client_location,
-            None,
-            None,
         );
 
         // 排序结果应该是：北京(0km) < 上海(~1067km) < 深圳(~1943km)，无坐标的在最后
@@ -849,515 +748,4 @@ mod tests {
         assert_eq!(ranked[3].serial_number, 4); // 无坐标
     }
 
-    // ========================================================================
-    // 兼容性评分测试（calculate_compatibility_scores）
-    // ========================================================================
-
-    #[test]
-    fn test_calculate_compatibility_scores_with_cache() {
-        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
-        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
-
-        // 创建缓存并填充测试数据
-        let mut cache = GlobalCompatibilityCache::new();
-
-        // 上报兼容性结果
-        cache.store(CompatibilityReportData {
-            service_type: "test-service".to_string(),
-            from_fingerprint: "client-fp-001".to_string(),
-            to_fingerprint: "server-fp-compatible".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::FullyCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-fp-001".to_string(),
-                candidate_semantic_fingerprint: "server-fp-compatible".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        cache.store(CompatibilityReportData {
-            service_type: "test-service".to_string(),
-            from_fingerprint: "client-fp-001".to_string(),
-            to_fingerprint: "server-fp-backward".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::BackwardCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-fp-001".to_string(),
-                candidate_semantic_fingerprint: "server-fp-backward".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        cache.store(CompatibilityReportData {
-            service_type: "test-service".to_string(),
-            from_fingerprint: "client-fp-001".to_string(),
-            to_fingerprint: "server-fp-incompatible".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::BreakingChanges,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-fp-001".to_string(),
-                candidate_semantic_fingerprint: "server-fp-incompatible".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        // 创建候选服务（带 service_spec）
-        let mut s1 = create_test_service(1, "test-service");
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "test-service".to_string(),
-            fingerprint: "server-fp-compatible".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s2 = create_test_service(2, "test-service");
-        s2.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "test-service".to_string(),
-            fingerprint: "server-fp-backward".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s3 = create_test_service(3, "test-service");
-        s3.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "test-service".to_string(),
-            fingerprint: "server-fp-incompatible".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let s4 = create_test_service(4, "test-service");
-        // s4 没有 service_spec
-
-        let mut candidates = vec![s1, s2, s3, s4];
-
-        // 计算兼容性分数
-        LoadBalancer::calculate_compatibility_scores(&mut candidates, &cache, "client-fp-001");
-
-        // 验证分数
-        assert_eq!(
-            candidates[0].protocol_compatibility_score,
-            Some(1.0),
-            "compatible 应该得 1.0"
-        );
-        assert_eq!(
-            candidates[1].protocol_compatibility_score,
-            Some(0.5),
-            "backward_compatible 应该得 0.5"
-        );
-        assert_eq!(
-            candidates[2].protocol_compatibility_score,
-            Some(0.0),
-            "incompatible 应该得 0.0"
-        );
-        assert_eq!(
-            candidates[3].protocol_compatibility_score, None,
-            "无 service_spec 应该是 None"
-        );
-    }
-
-    #[test]
-    fn test_calculate_compatibility_scores_cache_miss() {
-        use crate::compatibility_cache::GlobalCompatibilityCache;
-
-        let cache = GlobalCompatibilityCache::new(); // 空缓存
-
-        let mut s1 = create_test_service(1, "test-service");
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "test-service".to_string(),
-            fingerprint: "unknown-fingerprint".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut candidates = vec![s1];
-
-        LoadBalancer::calculate_compatibility_scores(&mut candidates, &cache, "client-fp-unknown");
-
-        // 缓存未命中应该保持 None
-        assert_eq!(
-            candidates[0].protocol_compatibility_score, None,
-            "缓存未命中应该是 None"
-        );
-    }
-
-    #[test]
-    fn test_rank_candidates_with_compatibility_cache() {
-        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
-        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
-
-        let mut cache = GlobalCompatibilityCache::new();
-
-        // 填充缓存
-        cache.store(CompatibilityReportData {
-            service_type: "api".to_string(),
-            from_fingerprint: "client-v2".to_string(),
-            to_fingerprint: "server-v2".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::FullyCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-v2".to_string(),
-                candidate_semantic_fingerprint: "server-v2".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        cache.store(CompatibilityReportData {
-            service_type: "api".to_string(),
-            from_fingerprint: "client-v2".to_string(),
-            to_fingerprint: "server-v1".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::BackwardCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-v2".to_string(),
-                candidate_semantic_fingerprint: "server-v1".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        // 创建候选服务
-        let mut s1 = create_test_service(1, "api");
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "api".to_string(),
-            fingerprint: "server-v1".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s2 = create_test_service(2, "api");
-        s2.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "api".to_string(),
-            fingerprint: "server-v2".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let candidates = vec![s1, s2];
-
-        let criteria = NodeSelectionCriteria {
-            candidate_count: 10,
-            ranking_factors: vec![NodeRankingFactor::BestCompatibility as i32],
-            minimal_health_requirement: None,
-            minimal_dependency_requirement: None,
-        };
-
-        let ranked = LoadBalancer::rank_candidates(
-            candidates,
-            Some(&criteria),
-            None,
-            None,
-            Some(&cache),
-            Some("client-v2"),
-        );
-
-        // 应该按兼容性排序：v2(1.0) > v1(0.5)
-        assert_eq!(ranked.len(), 2);
-        assert_eq!(ranked[0].serial_number, 2, "v2 应该排第一（完全兼容）");
-        assert_eq!(ranked[1].serial_number, 1, "v1 应该排第二（向后兼容）");
-    }
-
-    #[test]
-    fn test_rank_candidates_multi_factor_with_compatibility() {
-        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
-        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
-
-        let mut cache = GlobalCompatibilityCache::new();
-
-        cache.store(CompatibilityReportData {
-            service_type: "worker".to_string(),
-            from_fingerprint: "client-1.0".to_string(),
-            to_fingerprint: "worker-1.0".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::FullyCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-1.0".to_string(),
-                candidate_semantic_fingerprint: "worker-1.0".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        cache.store(CompatibilityReportData {
-            service_type: "worker".to_string(),
-            from_fingerprint: "client-1.0".to_string(),
-            to_fingerprint: "worker-0.9".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::BackwardCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-1.0".to_string(),
-                candidate_semantic_fingerprint: "worker-0.9".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        // 创建候选：s1 更快但兼容性低，s2 更慢但兼容性高
-        let mut s1 = create_test_service(1, "worker");
-        s1.power_reserve = Some(0.8);
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "worker".to_string(),
-            fingerprint: "worker-0.9".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s2 = create_test_service(2, "worker");
-        s2.power_reserve = Some(0.3);
-        s2.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "worker".to_string(),
-            fingerprint: "worker-1.0".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let candidates = vec![s1, s2];
-
-        let criteria = NodeSelectionCriteria {
-            candidate_count: 10,
-            ranking_factors: vec![
-                NodeRankingFactor::BestCompatibility as i32,
-                NodeRankingFactor::MaximumPowerReserve as i32,
-            ],
-            minimal_health_requirement: None,
-            minimal_dependency_requirement: None,
-        };
-
-        let ranked = LoadBalancer::rank_candidates(
-            candidates,
-            Some(&criteria),
-            None,
-            None,
-            Some(&cache),
-            Some("client-1.0"),
-        );
-
-        // 最后一个排序因子起主导作用（稳定排序）
-        // 按 power_reserve 降序：s1(0.8) > s2(0.3)
-        assert_eq!(ranked[0].serial_number, 1);
-        assert_eq!(ranked[1].serial_number, 2);
-    }
-
-    // ========================================================================
-    // 精确匹配优化测试
-    // ========================================================================
-
-    #[test]
-    fn test_exact_match_gets_perfect_score() {
-        use crate::compatibility_cache::GlobalCompatibilityCache;
-
-        let cache = GlobalCompatibilityCache::new(); // 空缓存
-
-        // 创建候选服务，fingerprint 与客户端完全相同
-        let mut s1 = create_test_service(1, "user-api");
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "user-api".to_string(),
-            fingerprint: "sha256:exact-match".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut candidates = vec![s1];
-
-        // 计算兼容性分数（精确匹配）
-        LoadBalancer::calculate_compatibility_scores(&mut candidates, &cache, "sha256:exact-match");
-
-        // 精确匹配应该直接得 1.0，无需查缓存
-        assert_eq!(
-            candidates[0].protocol_compatibility_score,
-            Some(1.0),
-            "精确匹配应该直接得满分 1.0"
-        );
-    }
-
-    #[test]
-    fn test_mixed_exact_and_degraded_match() {
-        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
-        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
-
-        let mut cache = GlobalCompatibilityCache::new();
-
-        // 预填充缓存：client-v2 与 server-v1 向后兼容
-        cache.store(CompatibilityReportData {
-            service_type: "payment-api".to_string(),
-            from_fingerprint: "client-v2".to_string(),
-            to_fingerprint: "server-v1".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::BackwardCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-v2".to_string(),
-                candidate_semantic_fingerprint: "server-v1".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        // 创建候选服务
-        let mut s1 = create_test_service(1, "payment-api");
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "payment-api".to_string(),
-            fingerprint: "client-v2".to_string(), // 精确匹配
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s2 = create_test_service(2, "payment-api");
-        s2.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "payment-api".to_string(),
-            fingerprint: "server-v1".to_string(), // 需要降级
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut s3 = create_test_service(3, "payment-api");
-        s3.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "payment-api".to_string(),
-            fingerprint: "server-unknown".to_string(), // 缓存未命中
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let mut candidates = vec![s1, s2, s3];
-
-        LoadBalancer::calculate_compatibility_scores(&mut candidates, &cache, "client-v2");
-
-        // 验证分数
-        assert_eq!(
-            candidates[0].protocol_compatibility_score,
-            Some(1.0),
-            "精确匹配应该得 1.0"
-        );
-        assert_eq!(
-            candidates[1].protocol_compatibility_score,
-            Some(0.5),
-            "向后兼容应该得 0.5"
-        );
-        assert_eq!(
-            candidates[2].protocol_compatibility_score, None,
-            "缓存未命中应该是 None"
-        );
-    }
-
-    #[test]
-    fn test_exact_match_ranking_priority() {
-        use crate::compatibility_cache::{CompatibilityReportData, GlobalCompatibilityCache};
-        use actr_version::{CompatibilityAnalysisResult, CompatibilityLevel};
-
-        let mut cache = GlobalCompatibilityCache::new();
-
-        cache.store(CompatibilityReportData {
-            service_type: "auth".to_string(),
-            from_fingerprint: "client-v3".to_string(),
-            to_fingerprint: "server-v2".to_string(),
-            analysis_result: CompatibilityAnalysisResult {
-                level: CompatibilityLevel::FullyCompatible,
-                changes: vec![],
-                breaking_changes: vec![],
-                base_semantic_fingerprint: "client-v3".to_string(),
-                candidate_semantic_fingerprint: "server-v2".to_string(),
-                analyzed_at: chrono::Utc::now(),
-            },
-        });
-
-        // s1: 精确匹配，但 power_reserve 较低
-        let mut s1 = create_test_service(1, "auth");
-        s1.power_reserve = Some(0.3);
-        s1.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "auth".to_string(),
-            fingerprint: "client-v3".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        // s2: 降级兼容，但 power_reserve 较高
-        let mut s2 = create_test_service(2, "auth");
-        s2.power_reserve = Some(0.9);
-        s2.service_spec = Some(actr_protocol::ServiceSpec {
-            name: "auth".to_string(),
-            fingerprint: "server-v2".to_string(),
-            description: None,
-            protobufs: vec![],
-            published_at: None,
-            tags: vec![],
-        });
-
-        let candidates = vec![s1, s2];
-
-        let criteria = NodeSelectionCriteria {
-            candidate_count: 10,
-            ranking_factors: vec![
-                NodeRankingFactor::BestCompatibility as i32,
-                NodeRankingFactor::MaximumPowerReserve as i32,
-            ],
-            minimal_health_requirement: None,
-            minimal_dependency_requirement: None,
-        };
-
-        let ranked = LoadBalancer::rank_candidates(
-            candidates,
-            Some(&criteria),
-            None,
-            None,
-            Some(&cache),
-            Some("client-v3"),
-        );
-
-        // 两者兼容性分数都是 1.0，最后按 power_reserve 排序
-        // 但精确匹配确保了 s1 也得到 1.0 分
-        assert_eq!(ranked.len(), 2);
-        // 按 power_reserve 降序：s2(0.9) > s1(0.3)
-        assert_eq!(ranked[0].serial_number, 2);
-        assert_eq!(ranked[1].serial_number, 1);
-    }
-
-    #[test]
-    fn test_no_service_spec_skipped() {
-        use crate::compatibility_cache::GlobalCompatibilityCache;
-
-        let cache = GlobalCompatibilityCache::new();
-
-        // 创建没有 service_spec 的候选
-        let s1 = create_test_service(1, "legacy-service");
-        // s1.service_spec 是 None
-
-        let mut candidates = vec![s1];
-
-        LoadBalancer::calculate_compatibility_scores(&mut candidates, &cache, "client-v1");
-
-        // 无 service_spec 的候选应该跳过，分数保持为 None
-        assert_eq!(
-            candidates[0].protocol_compatibility_score, None,
-            "无 service_spec 应该跳过计算"
-        );
-    }
 }

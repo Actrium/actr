@@ -32,8 +32,6 @@ axum = { workspace = true, features = ["ws"] }
 
 # Actrix Protocol
 actr-protocol = { workspace = true }
-actr-version = { workspace = true }
-
 # Protobuf
 prost = { workspace = true }
 prost-types = { workspace = true }
