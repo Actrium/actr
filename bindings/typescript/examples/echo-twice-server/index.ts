@@ -1,4 +1,9 @@
-import { ActrSystem, Workload, Context, RpcEnvelope } from '../../dist/index.js';
+import {
+  ActrSystem,
+  Workload,
+  Context,
+  RpcEnvelope,
+} from '../../dist/index.js';
 
 const ECHO_TWICE_ROUTE_KEY = 'echo_twice.EchoTwiceService.EchoTwice';
 
@@ -91,7 +96,10 @@ function encodeVarintBigint(value: bigint): Buffer {
   return Buffer.from(bytes);
 }
 
-function decodeVarint(buffer: Buffer, offset: number): { value: bigint; length: number } {
+function decodeVarint(
+  buffer: Buffer,
+  offset: number,
+): { value: bigint; length: number } {
   let result = 0n;
   let shift = 0n;
   let i = 0;
@@ -117,11 +125,11 @@ function varintToNumber(value: bigint, label: string): number {
 }
 
 class EchoTwiceServerWorkload implements Workload {
-  async onStart(ctx: Context): Promise<void> {
+  async onStart(_ctx: Context): Promise<void> {
     console.log('EchoTwice server started');
   }
 
-  async onStop(ctx: Context): Promise<void> {
+  async onStop(_ctx: Context): Promise<void> {
     console.log('EchoTwice server stopped');
   }
 

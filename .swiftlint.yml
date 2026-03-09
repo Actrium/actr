@@ -1,0 +1,24 @@
+included:
+  - bindings/swift
+  - tools/protoc-gen/swift
+  - examples/audio-capture/AudioCaptureApp
+
+excluded:
+  - bindings/swift/.build
+  - bindings/swift/ActrBindings
+  - bindings/swift/ActrFFI.xcframework
+  - tools/protoc-gen/swift/.build
+  - examples/audio-capture/AudioCaptureApp/.build
+
+disabled_rules:
+  - closure_parameter_position
+  - cyclomatic_complexity
+  - file_length
+  - function_body_length
+  - identifier_name
+  - line_length
+  - opening_brace
+  - trailing_comma
+  - type_body_length
+
+reporter: github-actions-logging

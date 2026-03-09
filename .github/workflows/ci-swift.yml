@@ -3,22 +3,23 @@ name: CI (Swift)
 on:
   push:
     branches: [main, develop]
-    paths:
-      - 'bindings/swift/**'
-      - 'tools/protoc-gen/swift/**'
   pull_request:
     branches: [main]
-    paths:
-      - 'bindings/swift/**'
-      - 'tools/protoc-gen/swift/**'
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Swift Binding Test
+  lint-and-build:
+    name: Swift Lint And Build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Build Swift package
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Run SwiftLint
+        run: swiftlint lint --strict
+      - name: Build Swift bindings package
         working-directory: bindings/swift
+        run: swift build
+      - name: Build Swift codegen package
+        working-directory: tools/protoc-gen/swift
         run: swift build

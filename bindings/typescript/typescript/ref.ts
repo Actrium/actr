@@ -1,4 +1,9 @@
-import { ActrRef as NativeActrRef, ActrId, ActrType, PayloadType } from '../index';
+import {
+  ActrRef as NativeActrRef,
+  ActrId,
+  ActrType,
+  PayloadType,
+} from '../index';
 
 /**
  * ActrRef – reference to a running actor.
@@ -6,7 +11,7 @@ import { ActrRef as NativeActrRef, ActrId, ActrType, PayloadType } from '../inde
  * Provides methods to interact with the actor: RPC calls, messaging, discovery, etc.
  */
 export class ActrRef {
-  constructor(private native: NativeActrRef) { }
+  constructor(private native: NativeActrRef) {}
 
   /**
    * Get the actor ID.
@@ -60,9 +65,14 @@ export class ActrRef {
     routeKey: string,
     payloadType: PayloadType,
     requestPayload: Buffer,
-    timeoutMs: number = 30000
+    timeoutMs: number = 30000,
   ): Promise<Buffer> {
-    return await this.native.call(routeKey, payloadType, requestPayload, timeoutMs);
+    return await this.native.call(
+      routeKey,
+      payloadType,
+      requestPayload,
+      timeoutMs,
+    );
   }
 
   /**
@@ -92,13 +102,18 @@ export class ActrRef {
    */
   async callTyped<Req, Res>(
     routeKey: string,
-    request: Req,
+    request: Req & EncodableRequest,
     responseType: { decode: (buf: Buffer) => Res },
     payloadType: PayloadType = PayloadType.RpcReliable,
-    timeoutMs: number = 30000
+    timeoutMs: number = 30000,
   ): Promise<Res> {
-    const requestBuf = (request as any).encode();
-    const responseBuf = await this.call(routeKey, payloadType, requestBuf, timeoutMs);
+    const requestBuf = request.encode();
+    const responseBuf = await this.call(
+      routeKey,
+      payloadType,
+      requestBuf,
+      timeoutMs,
+    );
     return responseType.decode(responseBuf);
   }
 
@@ -121,7 +136,7 @@ export class ActrRef {
   async tell(
     routeKey: string,
     payloadType: PayloadType,
-    messagePayload: Buffer
+    messagePayload: Buffer,
   ): Promise<void> {
     await this.native.tell(routeKey, payloadType, messagePayload);
   }
@@ -169,3 +184,7 @@ export class ActrRef {
     await this.waitForShutdown();
   }
 }
+
+type EncodableRequest = {
+  encode(): Buffer;
+};
