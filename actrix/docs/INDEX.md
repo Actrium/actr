@@ -245,7 +245,7 @@
 
 - **GitHub Issues**: https://github.com/Actrium/actrix/issues
 - **讨论区**: https://github.com/Actrium/actrix/discussions
-- **项目主页**: https://github.com/Actrium/actrix
+- **项目主页**: https://actor-rtc.github.io
 
 ---
 
