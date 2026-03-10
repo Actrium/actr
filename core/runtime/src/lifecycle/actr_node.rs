@@ -1004,6 +1004,7 @@ impl<W: Workload> ActrNode<W> {
             acl: self.config.acl.clone(),
             service: None,
             ws_address,
+            ..Default::default()
         };
 
         tracing::info!("📤 Registering actor with signaling server (protobuf)");
@@ -1217,7 +1218,7 @@ impl<W: Workload> ActrNode<W> {
                         "🔌 WebSocket direct-connect mode enabled, binding port {}",
                         listen_port
                     );
-                    use crate::ais_key_cache::AisKeyCache;
+                    use actr_hyper::key_cache::AisKeyCache;
                     use crate::wire::websocket::gate::WsAuthContext;
                     use crate::wire::websocket::{WebSocketGate, WebSocketServer};
 

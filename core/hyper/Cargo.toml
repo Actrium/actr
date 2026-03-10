@@ -1,0 +1,54 @@
+[package]
+name = "actr-hyper"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Hyper — Actor 运行平台层：sandbox、签名验证、AIS 注册引导、持久化与加密原语"
+keywords = ["actor", "sandbox", "webassembly", "signing", "platform"]
+categories = ["asynchronous", "cryptography", "embedded"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Internal ===
+actr-protocol.workspace = true
+
+# === Storage ===
+rusqlite = { workspace = true }
+
+# === Async ===
+tokio.workspace = true
+async-trait.workspace = true
+
+# === Serialization ===
+serde.workspace = true
+serde_json.workspace = true
+prost.workspace = true
+
+# === Cryptography ===
+ed25519-dalek.workspace = true
+sha2.workspace = true
+
+# === Utilities ===
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+base64.workspace = true
+tokio-util = "0.7"
+tempfile.workspace = true
+
+# === HTTP Client ===
+reqwest = { version = "0.12", features = ["json"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true }
+rand = "0.8"
+mockito = "1.4"

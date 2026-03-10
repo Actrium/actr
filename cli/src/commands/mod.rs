@@ -4,6 +4,7 @@ pub mod build;
 pub mod check;
 pub mod codegen;
 pub mod config;
+pub mod dev;
 pub mod discovery;
 pub mod dlq;
 pub mod doc;

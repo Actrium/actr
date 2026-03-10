@@ -12,6 +12,7 @@ categories = ["asynchronous", "concurrency", "development-tools"]
 [dependencies]
 actr-config.workspace = true
 actr-framework.workspace = true
+actr-hyper.workspace = true
 # === Foundation Layer (基础层) ===
 actr-protocol.workspace = true
 # === Runtime 子 crate ===

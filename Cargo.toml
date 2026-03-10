@@ -52,6 +52,7 @@ members = [
     "core/service-compat",
     "core/config",
     "core/framework",
+    "core/hyper",
     "core/runtime",
     "core/runtime-mailbox",
     # === Developer Tools (开发者工具) ===
@@ -138,6 +139,11 @@ tracing-opentelemetry = "0.31"
 
 # === WebRTC (WebRTC) ===
 webrtc = "0.14"
+
+# === Cryptography (加密) ===
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
 
 # === Storage (存储) ===
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }

@@ -19,6 +19,7 @@ use actr_cli::core::{
 };
 
 // 导入命令实现
+use actr_cli::commands::dev as dev_cmd;
 use actr_cli::commands::dlq as dlq_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
@@ -77,6 +78,9 @@ enum Commands {
 
     /// Manage actor packages (signing, publishing)
     Pkg(pkg_cmd::PkgArgs),
+
+    /// Development tools (keygen, sign)
+    Dev(dev_cmd::DevArgs),
 }
 
 /// Arguments for `actr dlq`
@@ -153,6 +157,13 @@ async fn main() -> Result<()> {
     if matches!(&cli.command, Some(Commands::Pkg(_))) {
         if let Some(Commands::Pkg(args)) = cli.command {
             return pkg_cmd::execute(args).await;
+        }
+    }
+
+    // dev 命令不需要 ServiceContainer，提前处理
+    if matches!(&cli.command, Some(Commands::Dev(_))) {
+        if let Some(Commands::Dev(args)) = cli.command {
+            return dev_cmd::execute(args).await;
         }
     }
 
@@ -319,6 +330,7 @@ async fn execute_command(
         },
         Commands::Dlq(_) => unreachable!("dlq is handled before build_container"),
         Commands::Pkg(_) => unreachable!("pkg is handled before build_container"),
+        Commands::Dev(_) => unreachable!("dev is handled before build_container"),
     }
 }
 

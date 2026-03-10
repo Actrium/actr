@@ -158,9 +158,6 @@
 //! This is a low-level runtime library. For application development, use the high-level
 //! framework APIs provided by `actr-framework` which builds on top of this runtime.
 
-// AIS signing 公钥缓存（按 key_id 索引，miss 时通过 signaling 拉取）
-pub mod ais_key_cache;
-
 // Lifecycle management layer (not architectural layering)
 pub mod lifecycle;
 
@@ -229,7 +226,7 @@ pub use transport::{
 pub use transport::TransportManager;
 
 // Layer 0: Wire Layer
-pub use ais_key_cache::AisKeyCache;
+pub use actr_hyper::key_cache::AisKeyCache;
 pub use wire::{
     AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
     SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,

@@ -17,6 +17,12 @@ path = "src/main.rs"
 # Actor-RTC main crate with config feature (includes protocol, config, version)
 actr = { path = "..", version = "0.2.0", features = ["config"] }
 
+# Hyper layer - binary hash computation and manifest embed for dev tooling
+actr-hyper = { path = "../core/hyper", version = "0.1.0" }
+
+# Key generation for actr dev keygen
+rand.workspace = true
+
 # DLQ storage (for actr dlq subcommand)
 actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.2.0" }
 

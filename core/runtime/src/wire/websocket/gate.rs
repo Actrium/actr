@@ -14,12 +14,13 @@
 
 use super::connection::WebSocketConnection;
 use super::server::InboundWsConn;
-use crate::ais_key_cache::AisKeyCache;
 use crate::error::{ActorResult, ActrError};
 use crate::inbound::DataStreamRegistry;
 use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::SignalingClient;
+use crate::wire::SignalingKeyFetcher;
 use actr_framework::Bytes;
+use actr_hyper::key_cache::AisKeyCache;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
@@ -152,18 +153,20 @@ impl WebSocketGate {
         source_id_bytes: &[u8],
         auth_ctx: &WsAuthContext,
     ) -> Option<()> {
-        // 取得 actor B 自身的 ActrId 和 credential（用于 cache miss 拉取公钥时向 signaling 认证）
+        // 取得本机凭证（用于 cache miss 时向 signaling 认证）
         let local_credential = auth_ctx.credential_state.credential().await;
+
+        // 构造 SignalingKeyFetcher 适配器，将 signaling 客户端包装为 KeyFetcher
+        let fetcher = SignalingKeyFetcher {
+            client: auth_ctx.signaling_client.clone(),
+            actor_id: auth_ctx.actor_id.clone(),
+            credential: local_credential,
+        };
 
         // 从 AisKeyCache 获取 key_id 对应的 verifying key（本地命中或从 signaling 拉取）
         let verifying_key = match auth_ctx
             .ais_key_cache
-            .get_or_fetch(
-                credential.key_id,
-                &auth_ctx.actor_id,
-                &local_credential,
-                auth_ctx.signaling_client.as_ref(),
-            )
+            .get_or_fetch(credential.key_id, &fetcher)
             .await
         {
             Ok(k) => k,

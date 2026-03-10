@@ -165,6 +165,14 @@ message RegisterRequest {
   // direct connections. The signaling server stores this and returns it to
   // clients via RouteCandidatesResponse so they can connect without a relay.
   optional string ws_address = 6;
+
+  // MFR manifest 首次注册认证（无 PSK 时使用）
+  // manifest_json: JSON 序列化的 PackageManifest（含 manufacturer, actr_name, version, binary_hash, capabilities）
+  optional bytes manifest_json = 10;
+  // MFR 对 manifest 内容的 Ed25519 签名（64 字节）
+  optional bytes mfr_signature = 11;
+  // 续期时的 PSK（已有 PSK 时使用，替代 manifest 认证）
+  optional bytes psk_token = 12;
 }
 
 message RegisterResponse {
@@ -178,6 +186,10 @@ message RegisterResponse {
     required uint32        signaling_heartbeat_interval_secs = 5;
     required bytes         signing_pubkey                   = 6;   // AIS Ed25519 verifying key，32 bytes
     required uint32        signing_key_id                   = 7;
+    // 首次注册时下发的 PSK（后续续期使用）
+    optional bytes         psk                              = 10;
+    // PSK 过期 Unix 时间戳（秒）
+    optional int64         psk_expires_at                   = 11;
   }
   oneof result {
     RegisterOk success = 1;

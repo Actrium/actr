@@ -138,6 +138,7 @@ impl NetworkServiceDiscovery {
             service: None,
             acl: None,
             ws_address: None,
+            ..Default::default()
         };
 
         let envelope =
