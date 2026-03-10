@@ -128,6 +128,8 @@ if [ ! -d "$PROTO_DIR" ]; then
 fi
 
 cd "$ACL_DEMO_DIR"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
+
 if ! $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$LOG_DIR/actr-gen.log" 2>&1; then
     echo -e "${RED}❌ Code generation failed${NC}"
     cat "$LOG_DIR/actr-gen.log"

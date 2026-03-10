@@ -115,6 +115,8 @@ fi
 
 cd "$ECHO_SERVER_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-echo-server.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
+
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed${NC}"
     cat "$OUTPUT_FILE"
@@ -131,6 +133,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 cd "$ECHO_CLIENT_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-echo-client.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
+
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean --no-scaffold > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed${NC}"
     cat "$OUTPUT_FILE"
