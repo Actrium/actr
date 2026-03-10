@@ -3,8 +3,24 @@ name: CI (Swift)
 on:
   push:
     branches: [main, develop]
+    paths:
+      - '.github/workflows/ci-swift.yml'
+      - 'bindings/swift/**'
+      - 'bindings/ffi/**'
+      - 'tools/protoc-gen/swift/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     branches: [main]
+    paths:
+      - '.github/workflows/ci-swift.yml'
+      - 'bindings/swift/**'
+      - 'bindings/ffi/**'
+      - 'tools/protoc-gen/swift/**'
+      - 'core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 jobs:
@@ -17,6 +33,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -30,6 +47,7 @@ jobs:
       - name: Build local Swift XCFramework
         working-directory: bindings/swift
         env:
+          ACTR_BUILD_PROFILE: debug
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           ACTR_BINDINGS_PATH=dist/ActrBindings \
