@@ -120,7 +120,7 @@ toml = "0.8"
 
 # === Utilities (工具库) ===
 uuid = { version = "1.18", features = ["v4", "serde"] }
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"

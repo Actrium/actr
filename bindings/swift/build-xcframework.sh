@@ -20,6 +20,25 @@ FRAMEWORK_NAME="ActrFFI"
 TARGET_DIR="${WORKSPACE_ROOT}/target"
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+BUILD_PROFILE="${ACTR_BUILD_PROFILE:-release}"
+declare -a CARGO_PROFILE_ARGS
+declare -a HOST_FEATURE_ARGS
+
+case "${BUILD_PROFILE}" in
+  debug)
+    CARGO_PROFILE_ARGS=()
+    CARGO_PROFILE_DIR="debug"
+    ;;
+  release)
+    CARGO_PROFILE_ARGS=(--release)
+    CARGO_PROFILE_DIR="release"
+    ;;
+  *)
+    echo "error: unsupported ACTR_BUILD_PROFILE: ${BUILD_PROFILE}" >&2
+    echo "hint: use ACTR_BUILD_PROFILE=debug or ACTR_BUILD_PROFILE=release" >&2
+    exit 1
+    ;;
+esac
 
 resolve_root_path() {
   local path="$1"
@@ -55,6 +74,7 @@ require_cmd rustc
 
 echo "Checking libactr crate..."
 echo "Using libactr crate at: ${CRATE_DIR}"
+echo "Using cargo profile: ${BUILD_PROFILE}"
 
 require_file "${CRATE_DIR}/Cargo.toml"
 require_file "${CRATE_DIR}/uniffi.toml"
@@ -64,6 +84,13 @@ if [[ -z "${HOST_TARGET}" ]]; then
   echo "error: failed to detect host target triple from rustc" >&2
   exit 1
 fi
+
+cargo_build_libactr() {
+  local target="$1"
+  shift
+
+  (cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"}" --target "${target}" "$@")
+}
 
 echo "[1/4] Preparing bindings output directory"
 mkdir -p "${HEADERS_DIR}"
@@ -83,9 +110,15 @@ rm -f \
   "${HEADERS_DIR}/actrFFI.h"
 
 echo "[2/4] Generating Swift bindings (host: ${HOST_TARGET})"
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${HOST_TARGET}")
+REUSE_HOST_MACOS_STATICLIB=0
+if [[ "${HOST_TARGET}" == "aarch64-apple-darwin" ]]; then
+  HOST_FEATURE_ARGS=(--features macos-oslog)
+  REUSE_HOST_MACOS_STATICLIB=1
+fi
 
-DYLIB_PATH="${TARGET_DIR}/${HOST_TARGET}/release/lib${CRATE_LIB_NAME}.dylib"
+cargo_build_libactr "${HOST_TARGET}" "${HOST_FEATURE_ARGS[@]+"${HOST_FEATURE_ARGS[@]}"}"
+
+DYLIB_PATH="${TARGET_DIR}/${HOST_TARGET}/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.dylib"
 if [[ ! -f "${DYLIB_PATH}" ]]; then
   echo "error: expected host dylib not found: ${DYLIB_PATH}" >&2
   echo "hint: ensure Cargo.toml has crate-type = [\"cdylib\", \"staticlib\"]" >&2
@@ -151,19 +184,23 @@ if [[ -f "${MODULEMAP_FILE}" ]]; then
 fi
 
 echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-ios)
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-ios-sim)
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-apple-darwin --features macos-oslog)
+cargo_build_libactr aarch64-apple-ios
+cargo_build_libactr aarch64-apple-ios-sim
+if [[ "${REUSE_HOST_MACOS_STATICLIB}" -eq 1 ]]; then
+  echo "Reusing host build for aarch64-apple-darwin static library"
+else
+  cargo_build_libactr aarch64-apple-darwin --features macos-oslog
+fi
 
 echo "[4/4] Creating XCFramework"
 rm -rf "${XCFRAMEWORK_DIR}"
 
 xcodebuild -create-xcframework \
-  -library "${TARGET_DIR}/aarch64-apple-ios/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
-  -library "${TARGET_DIR}/aarch64-apple-ios-sim/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
-  -library "${TARGET_DIR}/aarch64-apple-darwin/release/lib${CRATE_LIB_NAME}.a" \
+  -library "${TARGET_DIR}/aarch64-apple-darwin/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
   -headers "${HEADERS_DIR}" \
   -output "${XCFRAMEWORK_DIR}"
 
