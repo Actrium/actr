@@ -21,6 +21,8 @@ TARGET_DIR="${WORKSPACE_ROOT}/target"
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 BUILD_PROFILE="${ACTR_BUILD_PROFILE:-release}"
+declare -a CARGO_PROFILE_ARGS
+declare -a HOST_FEATURE_ARGS
 
 case "${BUILD_PROFILE}" in
   debug)
@@ -83,6 +85,13 @@ if [[ -z "${HOST_TARGET}" ]]; then
   exit 1
 fi
 
+cargo_build_libactr() {
+  local target="$1"
+  shift
+
+  (cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"}" --target "${target}" "$@")
+}
+
 echo "[1/4] Preparing bindings output directory"
 mkdir -p "${HEADERS_DIR}"
 
@@ -101,14 +110,13 @@ rm -f \
   "${HEADERS_DIR}/actrFFI.h"
 
 echo "[2/4] Generating Swift bindings (host: ${HOST_TARGET})"
-HOST_FEATURE_ARGS=()
 REUSE_HOST_MACOS_STATICLIB=0
 if [[ "${HOST_TARGET}" == "aarch64-apple-darwin" ]]; then
   HOST_FEATURE_ARGS=(--features macos-oslog)
   REUSE_HOST_MACOS_STATICLIB=1
 fi
 
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]}" --target "${HOST_TARGET}" "${HOST_FEATURE_ARGS[@]}")
+cargo_build_libactr "${HOST_TARGET}" "${HOST_FEATURE_ARGS[@]+"${HOST_FEATURE_ARGS[@]}"}"
 
 DYLIB_PATH="${TARGET_DIR}/${HOST_TARGET}/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.dylib"
 if [[ ! -f "${DYLIB_PATH}" ]]; then
@@ -176,12 +184,12 @@ if [[ -f "${MODULEMAP_FILE}" ]]; then
 fi
 
 echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]}" --target aarch64-apple-ios)
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]}" --target aarch64-apple-ios-sim)
+cargo_build_libactr aarch64-apple-ios
+cargo_build_libactr aarch64-apple-ios-sim
 if [[ "${REUSE_HOST_MACOS_STATICLIB}" -eq 1 ]]; then
   echo "Reusing host build for aarch64-apple-darwin static library"
 else
-  (cd "${WORKSPACE_ROOT}" && cargo build -p libactr "${CARGO_PROFILE_ARGS[@]}" --target aarch64-apple-darwin --features macos-oslog)
+  cargo_build_libactr aarch64-apple-darwin --features macos-oslog
 fi
 
 echo "[4/4] Creating XCFramework"
