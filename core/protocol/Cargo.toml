@@ -27,7 +27,7 @@ serde_json = { workspace = true }
 base64 = { workspace = true }
 
 # Error handling
-thiserror = "1.0"
+thiserror.workspace = true
 anyhow = { workspace = true }
 
 # Bytes handling (zero-copy for protobuf bytes fields)

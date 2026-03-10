@@ -27,7 +27,7 @@ proto-fingerprint = { git = "https://github.com/Actrium/proto-kit.git", rev = "5
 serde = { version = "1.0", features = ["derive"] }
 
 # Error handling
-thiserror = "1.0"
+thiserror.workspace = true
 anyhow = "1.0"
 
 # Time handling for fingerprint metadata

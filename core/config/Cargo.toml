@@ -26,7 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 
 # Error handling
-thiserror = "1.0"
+thiserror.workspace = true
 
 # URL handling for proto dependencies
 url = "2.5"
