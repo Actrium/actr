@@ -28,7 +28,7 @@ def generate_empty_local_workload(
     remote_services: List[RemoteServiceInfo],
 ) -> dict:
     """Generate a workload for an empty local proto that proxies remote services."""
-    pkg_name = package_name.replace(".", "_").title() if package_name else "Client"
+    pkg_name = "".join(word.capitalize() for word in package_name.replace(".", "_").split("_")) if package_name else "Client"
     workload_name = f"{pkg_name}Workload"
     dispatcher_name = f"{pkg_name}Dispatcher"  # 动态 Dispatcher 名称
     file_name = f"{to_snake_case(pkg_name)}_workload.py"
@@ -198,9 +198,9 @@ def generate_dispatcher(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
+            remote_manufacturer, remote_name, remote_version = parse_actr_type(remote.actr_type)
             
-            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
+            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\", version=\"{remote_version}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
             lines.append("            return await ctx._rust.call_raw(Dest.actor(target_id), route_key, payload)")
             lines.append("")
@@ -284,9 +284,9 @@ def generate_empty_workload_with_proxy(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
+            remote_manufacturer, remote_name, remote_version = parse_actr_type(remote.actr_type)
             
-            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
+            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\", version=\"{remote_version}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
             lines.append("            return await ctx._rust.call_raw(Dest.actor(target_id), route_key, payload)")
             lines.append("")
@@ -346,9 +346,9 @@ def generate_client_dispatcher(
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
             
-            remote_manufacturer, remote_name = parse_actr_type(remote.actr_type)
+            remote_manufacturer, remote_name, remote_version = parse_actr_type(remote.actr_type)
             
-            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\")")
+            lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\", version=\"{remote_version}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
             lines.append("            return await ctx._rust.call_raw(Dest.actor(target_id), route_key, payload)")
             lines.append("")
@@ -376,15 +376,16 @@ def extract_message_type(full_type: str) -> str:
     return full_type.split(".")[-1]
 
 
-def parse_actr_type(actr_type: str) -> tuple[str, str]:
-    """Parse canonical actr_type and return (manufacturer, name), ignoring optional version."""
+def parse_actr_type(actr_type: str) -> tuple[str, str, str]:
+    """Parse canonical actr_type and return (manufacturer, name, version)."""
     parts = actr_type.split(":")
     if len(parts) < 2 or len(parts) > 3 or not parts[0] or not parts[1]:
         raise ValueError(
             f"Invalid actr_type format: '{actr_type}'. "
             "Expected format: 'manufacturer:name[:version]' (e.g., 'acme:ServiceName')."
         )
-    return parts[0], parts[1]
+    version = parts[2] if len(parts) > 2 else ""
+    return parts[0], parts[1], version
 
 
 def to_snake_case(name: str) -> str:
