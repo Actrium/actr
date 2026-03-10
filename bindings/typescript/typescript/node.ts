@@ -7,7 +7,7 @@ import { ActrRef } from './ref';
  * Created via ActrSystem.attach(); call start() to start the node.
  */
 export class ActrNode {
-  constructor(private native: NativeActrNode) { }
+  constructor(private native: NativeActrNode) {}
 
   /**
    * Start the node and return ActrRef.

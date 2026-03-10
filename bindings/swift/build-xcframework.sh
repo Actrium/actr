@@ -21,9 +21,18 @@ TARGET_DIR="${WORKSPACE_ROOT}/target"
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 
-BINDINGS_DIR="${ACTR_BINDINGS_PATH:-${ROOT_DIR}/ActrBindings}"
+resolve_root_path() {
+  local path="$1"
+  if [[ "${path}" = /* ]]; then
+    printf '%s\n' "${path}"
+  else
+    printf '%s\n' "${ROOT_DIR}/${path}"
+  fi
+}
+
+BINDINGS_DIR="$(resolve_root_path "${ACTR_BINDINGS_PATH:-ActrBindings}")"
 HEADERS_DIR="${BINDINGS_DIR}/include"
-XCFRAMEWORK_DIR="${ACTR_BINARY_PATH:-${ROOT_DIR}/${FRAMEWORK_NAME}.xcframework}"
+XCFRAMEWORK_DIR="$(resolve_root_path "${ACTR_BINARY_PATH:-${FRAMEWORK_NAME}.xcframework}")"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then

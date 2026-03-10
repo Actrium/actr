@@ -62,6 +62,7 @@ export interface ActrId {
 export interface ActrType {
   manufacturer: string
   name: string
+  version: string
 }
 
 export interface DataStream {

@@ -14,8 +14,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
-    name: TypeScript Binding Test
+  lint-and-build:
+    name: TypeScript Format, Lint And Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -29,7 +29,13 @@ jobs:
           sudo apt-get install -y protobuf-compiler
       - name: Install dependencies
         working-directory: bindings/typescript
-        run: npm install
+        run: npm install --no-package-lock
+      - name: Check formatting
+        working-directory: bindings/typescript
+        run: npm run format
+      - name: Run lint
+        working-directory: bindings/typescript
+        run: npm run lint
       - name: Build
         working-directory: bindings/typescript
         run: npm run build

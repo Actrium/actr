@@ -75,7 +75,7 @@ async function main() {
   // Discover server
   const servers = await actorRef.discover(
     { manufacturer: 'acme', name: 'EchoTwiceService' },
-    1
+    1,
   );
 
   // Call RPC
@@ -84,7 +84,7 @@ async function main() {
     'echo_twice.EchoTwiceService.EchoTwice',
     PayloadType.RpcReliable,
     request,
-    5000
+    5000,
   );
 
   console.log('Response:', response.toString());
@@ -130,6 +130,7 @@ Language: zh-CN.
 克隆仓库后，**需要先运行 codegen 脚本生成这些文件**，再运行示例（不需要 Actr CLI）。
 
 前置条件：
+
 - `npm install`（从 devDependencies 安装 `protobufjs` 与 `@iarna/toml`）
 
 为 echo-client 生成：
@@ -139,10 +140,12 @@ npm run codegen -- --config examples/echo-client/actr.toml
 ```
 
 注意：
+
 - 生成器优先读取 `Actr.lock.toml`；请确保包含你想生成的依赖。
 - proto 默认来源为 `examples/echo-client/protos/remote`。
 
 输出包括：
+
 - `<package>.pb.ts` protobuf 编解码
 - `<package>.client.ts` 路由辅助
 - `local.actor.ts` 本地转发逻辑

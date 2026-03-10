@@ -109,7 +109,7 @@ impl ActrTypePy {
             inner: ActrType {
                 manufacturer,
                 name,
-                version,
+                version: version.unwrap_or_default(),
             },
         })
     }
@@ -133,20 +133,21 @@ impl ActrTypePy {
         self.inner.name.clone()
     }
 
-    fn version(&self) -> Option<String> {
+    fn version(&self) -> String {
         self.inner.version.clone()
     }
 
     fn __repr__(&self) -> String {
-        match &self.inner.version {
-            Some(v) => format!(
-                "ActrType(manufacturer={}, name={}, version={})",
-                self.inner.manufacturer, self.inner.name, v
-            ),
-            None => format!(
+        if self.inner.version.is_empty() {
+            format!(
                 "ActrType(manufacturer={}, name={})",
                 self.inner.manufacturer, self.inner.name
-            ),
+            )
+        } else {
+            format!(
+                "ActrType(manufacturer={}, name={}, version={})",
+                self.inner.manufacturer, self.inner.name, self.inner.version
+            )
         }
     }
 }
