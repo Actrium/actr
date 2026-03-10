@@ -29,8 +29,11 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # Determine paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/../.." && pwd)"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
+
+# Optional paths for local source builds (only used if binaries are not in PATH)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd || echo "")"
+ACTRIX_DIR="${ACTRIX_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actrix}}"
+ACTR_CLI_DIR="${ACTR_CLI_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actr}}"
 WS_ECHO_DIR="$SCRIPT_DIR"
 SERVER_DIR="$WS_ECHO_DIR/server"
 CLIENT_DIR="$WS_ECHO_DIR/client"
@@ -119,17 +122,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 ACTR_GEN_CMD=""
 if command -v actr > /dev/null 2>&1; then
     ACTR_GEN_CMD="actr"
-elif [ -x "$ACTOR_RTC_DIR/actr/target/debug/actr" ]; then
-    ACTR_GEN_CMD="$ACTOR_RTC_DIR/actr/target/debug/actr"
-elif [ -x "$ACTOR_RTC_DIR/actr/target/release/actr" ]; then
-    ACTR_GEN_CMD="$ACTOR_RTC_DIR/actr/target/release/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/debug/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/debug/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/release/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/release/actr"
 else
-    echo -e "${RED}❌ 找不到 actr 工具（请确保 'actr' 在 PATH 中或已编译）${NC}"
+    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built locally)${NC}"
+    echo "Please install actr-cli:"
+    echo "  cargo install actr-cli"
     exit 1
 fi
 
 cd "$SERVER_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-ws-echo-server.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen (server) 失败${NC}"
     cat "$OUTPUT_FILE"
@@ -145,6 +151,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 cd "$CLIENT_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-ws-echo-client.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean --no-scaffold > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen (client) 失败${NC}"
     cat "$OUTPUT_FILE"

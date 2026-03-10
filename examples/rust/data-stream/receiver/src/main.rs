@@ -8,7 +8,7 @@ mod file_transfer_service;
 mod generated;
 
 use file_transfer_service::FileTransferService;
-use generated::file_transfer_service_actor::FileTransferServiceWorkload;
+use generated::file_transfer_actor::FileTransferServiceWorkload;
 
 use actr_runtime::prelude::*;
 use std::path::PathBuf;

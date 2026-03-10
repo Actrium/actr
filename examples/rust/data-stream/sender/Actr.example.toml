@@ -30,11 +30,10 @@ turn_urls = ["turn:localhost:3478"]
 
 # ACL configuration - allow file transfer receiver
 [acl]
-
 [[acl.rules]]
 permission = "allow"
-# Allow server with actr_type = "acme+FileTransferService"
-types = ["acme+FileTransferService"]
+# Allow server with actr_type = "acme:FileTransferService"
+types = ["acme:FileTransferService"]
 
 [scripts]
 dev = "cargo run"

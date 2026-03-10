@@ -40,8 +40,8 @@ turn_urls = ["turn:localhost:3478"]
 
 [[acl.rules]]
 permission = "allow"
-# Allow server with actr_type = "acme+EchoService"
-types = ["acme+EchoService"]
+# Allow server with actr_type = "acme:EchoService"
+types = ["acme:EchoService"]
 
 [scripts]
 dev = "cargo run"

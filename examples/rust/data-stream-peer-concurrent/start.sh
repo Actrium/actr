@@ -77,9 +77,13 @@ echo "   Number of concurrent clients: $NUM_CLIENTS"
 echo ""
 
 # Determine paths and switch to workspace root
-WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Optional paths for local source builds (only used if binaries are not in PATH)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd || echo "")"
+ACTRIX_DIR="${ACTRIX_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actrix}}"
+ACTR_CLI_DIR="${ACTR_CLI_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actr}}"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROTO_DIR="$SCRIPT_DIR/proto"
@@ -164,10 +168,25 @@ echo ""
 echo "🔧 Step 0: Generating code with actr gen..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+ACTR_GEN_CMD=""
+if command -v actr > /dev/null 2>&1; then
+    ACTR_GEN_CMD="actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/debug/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/debug/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/release/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/release/actr"
+else
+    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built locally)${NC}"
+    echo "Please install actr-cli:"
+    echo "  cargo install actr-cli"
+    exit 1
+fi
+
 # Generate shared code
 echo "Generating shared code..."
 cd "$SHARED_DIR"
-actr gen --input=../proto --output=src/generated --clean > "$LOG_DIR/actr-gen-peer-concurrent.log" 2>&1
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
+$ACTR_GEN_CMD gen --input=../proto --output=src/generated --clean > "$LOG_DIR/actr-gen-peer-concurrent.log" 2>&1
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✅ Shared code generated${NC}"
 else

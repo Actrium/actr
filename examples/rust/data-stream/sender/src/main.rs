@@ -13,7 +13,7 @@ use tracing::info;
 
 use crate::{
     file_service::MyFileService,
-    generated::{local_file::SendFileRequest, local_file_service_actor::LocalFileServiceWorkload},
+    generated::{file_actor::LocalFileServiceWorkload, local_file::SendFileRequest},
 };
 
 #[tokio::main]

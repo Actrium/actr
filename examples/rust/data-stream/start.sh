@@ -16,11 +16,22 @@ echo "📡 DataStream Example - Using Actrix"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Determine paths and switch to workspace root
-WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
-ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
-PROTO_DIR="$WORKSPACE_ROOT/data-stream/proto"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Optional paths for local source builds (only used if binaries are not in PATH)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd || echo "")"
+ACTRIX_DIR="${ACTRIX_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actrix}}"
+ACTR_CLI_DIR="${ACTR_CLI_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actr}}"
+
+# Allow overriding via environment variables
+ACTRIX_CONFIG="${ACTRIX_CONFIG:-$WORKSPACE_ROOT/config.local.toml}"
+PROTO_DIR="${PROTO_DIR:-$WORKSPACE_ROOT/data-stream/proto}"
+
+# Optional paths for local source builds (only used if binaries are not in PATH)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd || echo "")"
+ACTRIX_DIR="${ACTRIX_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actrix}}"
+ACTR_CLI_DIR="${ACTR_CLI_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actr}}"
 
 # Switch to workspace root and stay there
 cd "$WORKSPACE_ROOT"
@@ -106,12 +117,14 @@ ACTR_GEN_CMD=""
 
 if command -v actr > /dev/null 2>&1; then
     ACTR_GEN_CMD="actr"
-elif [ -x "$ACTOR_RTC_DIR/actr-cli/target/debug/actr" ]; then
-    ACTR_GEN_CMD="$ACTOR_RTC_DIR/actr-cli/target/debug/actr"
-elif [ -x "$ACTOR_RTC_DIR/actr-cli/target/release/actr" ]; then
-    ACTR_GEN_CMD="$ACTOR_RTC_DIR/actr-cli/target/release/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/debug/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/debug/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/release/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/release/actr"
 else
-    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built under $ACTOR_RTC_DIR/actr-cli)${NC}"
+    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built locally)${NC}"
+    echo "Please install actr-cli:"
+    echo "  cargo install actr-cli"
     exit 1
 fi
 
@@ -125,6 +138,7 @@ echo ""
 echo "🛠️ Generating sender code..."
 cd "$SENDER_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-sender.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean --no-scaffold > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed (sender)${NC}"
     cat "$OUTPUT_FILE"
@@ -138,6 +152,7 @@ echo ""
 echo "🛠️ Generating receiver code..."
 cd "$RECEIVER_DIR"
 OUTPUT_FILE="$LOG_DIR/actr-gen-receiver.log"
+$ACTR_GEN_CMD install > /dev/null 2>&1 || true
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed (receiver)${NC}"
     cat "$OUTPUT_FILE"
@@ -152,46 +167,37 @@ echo "🔍 Checking port 8081..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 kill_port 8081
 
-# Step 2: Build and install actrix
+# Step 2: Ensure actrix is available
 echo ""
-echo "📦 Building and installing actrix..."
+echo "📦 Checking actrix installation..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Check if actrix directory exists
-if [ ! -d "$ACTRIX_DIR" ]; then
-    echo -e "${RED}❌ Cannot find actrix directory at $ACTRIX_DIR${NC}"
-    echo "Please ensure actrix project exists at: $ACTRIX_DIR"
+ACTRIX_CMD=""
+
+if command -v actrix > /dev/null 2>&1; then
+    ACTRIX_CMD="actrix"
+    echo -e "${GREEN}✅ Found actrix in PATH: $(which actrix)${NC}"
+elif [ -n "$ACTRIX_DIR" ] && [ -d "$ACTRIX_DIR" ]; then
+    echo "actrix not found in PATH, but source directory found at $ACTRIX_DIR."
+    echo "Building actrix from source..."
+    cd "$ACTRIX_DIR"
+    cargo build 2>&1 | tail -5
+    
+    if [ -f "$ACTRIX_DIR/target/debug/actrix" ]; then
+        ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
+        echo -e "${GREEN}✅ Actrix built successfully: $ACTRIX_CMD${NC}"
+    else
+        echo -e "${RED}❌ Failed to build actrix from source${NC}"
+        exit 1
+    fi
+    cd "$WORKSPACE_ROOT"
+else
+    echo -e "${RED}❌ actrix command not found in PATH and source directory not found.${NC}"
+    echo "Please install actrix first:"
+    echo "  cargo install actrix"
+    echo "Or set ACTRIX_DIR to point to the actrix source code directory."
     exit 1
 fi
-
-# Build actrix
-echo "Building actrix from source..."
-cd "$ACTRIX_DIR"
-cargo build 2>&1 | tail -5
-
-# Check if build was successful
-if [ ! -f "$ACTRIX_DIR/target/debug/actrix" ]; then
-    echo -e "${RED}❌ Failed to build actrix${NC}"
-    exit 1
-fi
-
-# Copy to ~/.cargo/bin
-echo "Installing actrix to ~/.cargo/bin..."
-cp "$ACTRIX_DIR/target/debug/actrix" ~/.cargo/bin/actrix
-chmod +x ~/.cargo/bin/actrix
-
-# Return to workspace root
-cd "$WORKSPACE_ROOT"
-
-# Verify actrix is available in PATH
-if ! command -v actrix > /dev/null 2>&1; then
-    echo -e "${RED}❌ actrix command not found in PATH after installation${NC}"
-    echo "Please ensure ~/.cargo/bin is in your PATH"
-    exit 1
-fi
-
-ACTRIX_CMD="actrix"
-echo -e "${GREEN}✅ Actrix built and installed: $(which actrix)${NC}"
 
 # Step 3: Start actrix
 echo ""
@@ -235,7 +241,7 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Wait a bit for supervisord gRPC service to be ready (port 50055)
+# Wait a bit for sqlite database to be fully initialized by actrix
 sleep 2
 
 # Build realm-setup tool if needed
@@ -253,11 +259,12 @@ if ! cargo run -p realm-setup -- \
     > "$REALM_SETUP_OUTPUT" 2>&1; then
     echo -e "${RED}❌ Failed to setup realms in actrix${NC}"
     cat "$REALM_SETUP_OUTPUT"
+    # Kill the actrix process before exiting
+    kill -9 $ACTRIX_PID 2>/dev/null || true
     exit 1
 fi
 
-echo -e "${GREEN}✅ Realms setup completed${NC}"
-cat "$REALM_SETUP_OUTPUT" | grep -E "(Created|Skipped|Found)" || true
+echo -e "${GREEN}✅ Realms setup completed safely via SQLite${NC}"
 
 # Step 3.6: Build binaries to avoid compilation delay during cargo run
 echo ""

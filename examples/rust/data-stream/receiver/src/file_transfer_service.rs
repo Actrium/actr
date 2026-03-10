@@ -1,7 +1,7 @@
 //! FileTransfer Service Implementation - Receiver
 
 use crate::generated::file_transfer::*;
-use crate::generated::file_transfer_service_actor::FileTransferServiceHandler;
+use crate::generated::file_transfer_actor::FileTransferServiceHandler;
 use actr_protocol::{ActorResult, DataStream};
 use actr_runtime::prelude::*;
 use async_trait::async_trait;

@@ -4,7 +4,7 @@
 //! 请在这里实现您的具体业务逻辑。
 
 use crate::generated::{
-    file_transfer::*, local_file::*, local_file_service_actor::LocalFileServiceHandler,
+    file_actor::LocalFileServiceHandler, file_transfer::*, file_transfer_actor::*, local_file::*,
 };
 use actr_framework::Context;
 use actr_protocol::{ActrIdExt, ActrTypeExt, DataStream};
@@ -89,8 +89,12 @@ impl LocalFileServiceHandler for MyFileService {
                 timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
             };
 
-            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
-                .await?;
+            ctx.send_data_stream(
+                &Dest::Actor(receiver_id.clone()),
+                data_stream,
+                actr_protocol::PayloadType::StreamReliable,
+            )
+            .await?;
 
             let progress = ((i + 1) as f64 / chunks.len() as f64 * 100.0) as u32;
             info!(

@@ -16,10 +16,13 @@ echo "🎬 Media Relay Example - Using Actrix"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Determine paths and switch to workspace root
-WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
-ACTR_DIR="$ACTOR_RTC_DIR/actr"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Optional paths for local source builds (only used if binaries are not in PATH)
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." 2>/dev/null && pwd || echo "")"
+ACTRIX_DIR="${ACTRIX_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actrix}}"
+ACTR_CLI_DIR="${ACTR_CLI_DIR:-${PROJECT_ROOT:+$PROJECT_ROOT/actr}}"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PROTO_DIR="$WORKSPACE_ROOT/media-relay/proto"
 
@@ -95,12 +98,14 @@ ACTR_GEN_CMD=""
 
 if command -v actr > /dev/null 2>&1; then
     ACTR_GEN_CMD="actr"
-elif [ -x "$ACTR_DIR/target/debug/actr" ]; then
-    ACTR_GEN_CMD="$ACTR_DIR/target/debug/actr"
-elif [ -x "$ACTR_DIR/target/release/actr" ]; then
-    ACTR_GEN_CMD="$ACTR_DIR/target/release/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/debug/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/debug/actr"
+elif [ -n "$ACTR_CLI_DIR" ] && [ -x "$ACTR_CLI_DIR/target/release/actr" ]; then
+    ACTR_GEN_CMD="$ACTR_CLI_DIR/target/release/actr"
 else
-    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built under $ACTR_DIR)${NC}"
+    echo -e "${RED}❌ actr generator not found (expected 'actr' in PATH or built locally)${NC}"
+    echo "Please install actr-cli:"
+    echo "  cargo install actr-cli"
     exit 1
 fi
 

@@ -43,7 +43,7 @@ name = "actr-config"
 version = "0.1.8"
 dependencies = [
  "actr-protocol",
- "actr-version",
+ "actr-service-compat",
  "chrono",
  "serde",
  "thiserror 1.0.69",
@@ -69,7 +69,6 @@ name = "actr-protocol"
 version = "0.1.7"
 dependencies = [
  "anyhow",
- "base122-rs",
  "base64",
  "bytes",
  "chrono",
@@ -86,13 +85,13 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "actr-config",
  "actr-framework",
  "actr-protocol",
  "actr-runtime-mailbox",
- "actr-version",
+ "actr-service-compat",
  "anyhow",
  "async-trait",
  "base64",
@@ -101,6 +100,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "dotenvy",
+ "ed25519-dalek",
  "either",
  "futures-util",
  "hex",
@@ -146,7 +146,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-version"
+name = "actr-service-compat"
 version = "0.1.5"
 dependencies = [
  "actr-protocol",
@@ -443,12 +443,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
 ]
-
-[[package]]
-name = "base122-rs"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c8ae722b83726dd93247786be3237fc4c30a8c13d8e6c161b61b00a0d32374f"
 
 [[package]]
 name = "base16ct"
@@ -875,6 +869,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "curve25519-dalek-derive",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -1095,6 +1090,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1134,7 +1153,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1410,6 +1429,12 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
  "ahash",
 ]
+
+[[package]]
+name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 
 [[package]]
 name = "hashbrown"
@@ -1993,7 +2018,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2891,7 +2916,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3324,7 +3349,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3508,8 +3533,12 @@ checksum = "2efa149fe76073d6e8fd97ef4f4eca7b67f599660115591483572e406e165594"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.15.5",
  "pin-project-lite",
+ "slab",
  "tokio",
 ]
 
