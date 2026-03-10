@@ -29,14 +29,9 @@ jobs:
         run: swiftlint lint --strict
       - name: Build local Swift XCFramework
         working-directory: bindings/swift
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
-          CMAKE_WRAPPER_DIR="$(mktemp -d)"
-          REAL_CMAKE="$(command -v cmake)"
-          printf '%s\n' '#!/bin/sh' \
-            "exec \"${REAL_CMAKE}\" -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \"\$@\"" \
-            > "${CMAKE_WRAPPER_DIR}/cmake"
-          chmod +x "${CMAKE_WRAPPER_DIR}/cmake"
-          export PATH="${CMAKE_WRAPPER_DIR}:${PATH}"
           ACTR_BINDINGS_PATH=dist/ActrBindings \
           ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
           ./build-xcframework.sh
