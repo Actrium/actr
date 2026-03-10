@@ -4,10 +4,10 @@
 
 use anyhow::Result;
 use axum::Router;
-use signer::{KeyEncryptor, KeyStorage, create_grpc_service};
 use platform::{
     config::ActrixConfig, monitoring::ServiceCounters, storage::nonce::SqliteNonceStorage,
 };
+use signer::{KeyEncryptor, KeyStorage, create_grpc_service};
 use std::sync::Arc;
 
 /// Build Signer gRPC router mounted on the main HTTP listener.
@@ -49,10 +49,13 @@ pub async fn build_signer_grpc_router(
     };
 
     // 创建 Signer storage
-    let storage =
-        KeyStorage::from_config(&signer_service_config.storage, encryptor, &config.sqlite_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create Signer storage: {e}"))?;
+    let storage = KeyStorage::from_config(
+        &signer_service_config.storage,
+        encryptor,
+        &config.sqlite_path,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create Signer storage: {e}"))?;
 
     // 创建 gRPC 服务
     let grpc_service = create_grpc_service(

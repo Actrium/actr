@@ -1,12 +1,11 @@
 use base64::Engine as _;
-use signer::{
-    GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignerServiceConfig,
-    create_signer_state, create_router,
-    types::SignRequest,
-};
 use nonce_auth::{CredentialBuilder, NonceCredential, storage::MemoryStorage};
 use reqwest::StatusCode;
 use serde_json::Value;
+use signer::{
+    GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignerServiceConfig, create_router,
+    create_signer_state, types::SignRequest,
+};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
@@ -69,7 +68,9 @@ async fn generate_signing_key_via_http(
         .await
         .expect("generate signing key request failed");
     assert_eq!(resp.status(), StatusCode::OK);
-    resp.json().await.expect("generate signing key response should parse")
+    resp.json()
+        .await
+        .expect("generate signing key response should parse")
 }
 
 #[tokio::test]
@@ -108,11 +109,7 @@ async fn test_http_health_and_key_lifecycle() {
     let vk_bytes = base64::engine::general_purpose::STANDARD
         .decode(generated.verifying_key.as_bytes())
         .expect("verifying key should be valid base64");
-    assert_eq!(
-        vk_bytes.len(),
-        32,
-        "Ed25519 verifying key must be 32 bytes"
-    );
+    assert_eq!(vk_bytes.len(), 32, "Ed25519 verifying key must be 32 bytes");
 
     // test sign endpoint
     let message = b"hello, world";

@@ -84,7 +84,8 @@ impl KeyEncryptor {
 
         // 尝试解析为十六进制
         let key_bytes = if kek.len() == 64 {
-            hex::decode(kek).map_err(|e| SignerError::Config(format!("Invalid KEK hex format: {e}")))?
+            hex::decode(kek)
+                .map_err(|e| SignerError::Config(format!("Invalid KEK hex format: {e}")))?
         } else if kek.len() == 44 || kek.len() == 43 {
             // Base64 编码的 32 字节密钥
             BASE64_STANDARD

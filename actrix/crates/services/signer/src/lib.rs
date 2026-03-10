@@ -29,7 +29,9 @@ pub use grpc_client::{GrpcClient, GrpcClientConfig};
 pub use grpc_handlers::{SignerGrpcService, create_grpc_service};
 // Re-export proto types from actrix-proto
 pub use actrix_proto::signer::v1::signer_server::{Signer, SignerServer};
-pub use handlers::{SignerState, create_router, create_signer_state, get_stats, register_signer_metrics};
+pub use handlers::{
+    SignerState, create_router, create_signer_state, get_stats, register_signer_metrics,
+};
 pub use storage::{KeyStorage, StorageConfig};
 pub use types::{
     GenerateSigningKeyRequest, GenerateSigningKeyResponse, KeyPair, KeyRecord, SignRequest,

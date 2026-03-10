@@ -1,16 +1,15 @@
 use actrix_proto::{
     admin::v1::NonceCredential,
     signer::v1::{
-        GenerateSigningKeyRequest, HealthCheckRequest, SignRequest,
-        signer_client::SignerClient,
+        GenerateSigningKeyRequest, HealthCheckRequest, SignRequest, signer_client::SignerClient,
     },
 };
 use base64::Engine as _;
+use nonce_auth::{CredentialBuilder, storage::MemoryStorage};
 use signer::{
     GrpcClient, GrpcClientConfig, KeyEncryptor, KeyStorage, SignerError, SignerServiceConfig,
     create_grpc_service,
 };
-use nonce_auth::{CredentialBuilder, storage::MemoryStorage};
 use tempfile::TempDir;
 use tokio::{
     sync::oneshot,
@@ -159,11 +158,7 @@ async fn test_grpc_health_and_key_lifecycle() {
     let vk_bytes = base64::engine::general_purpose::STANDARD
         .decode(generated.verifying_key.as_bytes())
         .expect("verifying key should be valid base64");
-    assert_eq!(
-        vk_bytes.len(),
-        32,
-        "Ed25519 verifying key must be 32 bytes"
-    );
+    assert_eq!(vk_bytes.len(), 32, "Ed25519 verifying key must be 32 bytes");
 
     // sign a message using the generated key
     let message = b"test message for signing";
@@ -176,7 +171,11 @@ async fn test_grpc_health_and_key_lifecycle() {
         .await
         .expect("sign message")
         .into_inner();
-    assert_eq!(signature.signature.len(), 64, "Ed25519 signature must be 64 bytes");
+    assert_eq!(
+        signature.signature.len(),
+        64,
+        "Ed25519 signature must be 64 bytes"
+    );
 
     // verify signature is valid
     let vk_array: [u8; 32] = vk_bytes.try_into().unwrap();
@@ -184,7 +183,10 @@ async fn test_grpc_health_and_key_lifecycle() {
     let sig_array: [u8; 64] = signature.signature.try_into().unwrap();
     let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
     use ed25519_dalek::Verifier;
-    assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must verify");
+    assert!(
+        verifying_key.verify(message, &sig).is_ok(),
+        "Signature must verify"
+    );
 
     let health_after = client
         .health_check(HealthCheckRequest {
@@ -313,8 +315,10 @@ async fn test_ks_grpc_client_end_to_end() {
     let status = client.health_check().await.expect("health check");
     assert_eq!(status, "healthy");
 
-    let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) =
-        client.generate_signing_key().await.expect("generate signing key");
+    let (key_id, verifying_key_bytes, expires_at, tolerance_seconds) = client
+        .generate_signing_key()
+        .await
+        .expect("generate signing key");
     assert!(key_id > 0);
     assert!(expires_at > 0);
     assert_eq!(tolerance_seconds, 90);
@@ -332,7 +336,10 @@ async fn test_ks_grpc_client_end_to_end() {
     let sig_array: [u8; 64] = signature.try_into().unwrap();
     let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
     use ed25519_dalek::Verifier;
-    assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must verify end-to-end");
+    assert!(
+        verifying_key.verify(message, &sig).is_ok(),
+        "Signature must verify end-to-end"
+    );
 }
 
 #[tokio::test]

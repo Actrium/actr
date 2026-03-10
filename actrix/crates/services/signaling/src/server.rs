@@ -920,8 +920,7 @@ async fn handle_actr_relay(
     }
 
     // Validate credential and retain claims for identity verification below.
-    let claims = match AIdCredentialValidator::check(&relay.credential, source.realm.realm_id)
-        .await
+    let claims = match AIdCredentialValidator::check(&relay.credential, source.realm.realm_id).await
     {
         Ok((claims, _)) => claims,
         Err(e) => {
@@ -1493,13 +1492,12 @@ async fn handle_route_candidates_request(
     let ws_address_map: Vec<actr_protocol::WsAddressEntry> = ranked_actor_ids
         .iter()
         .filter_map(|id| {
-            ws_address_map
-                .iter()
-                .find(|(a, _)| a == id)
-                .map(|(_, ws)| actr_protocol::WsAddressEntry {
+            ws_address_map.iter().find(|(a, _)| a == id).map(|(_, ws)| {
+                actr_protocol::WsAddressEntry {
                     candidate_id: id.clone(),
                     ws_address: ws.clone(),
-                })
+                }
+            })
         })
         .collect();
 

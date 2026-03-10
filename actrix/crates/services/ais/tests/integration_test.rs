@@ -5,11 +5,11 @@
 use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
 use ais::issuer::{AIdIssuer, IssuerConfig};
 use ais::signer_client_wrapper::create_signer_client;
-use signer::{GrpcClient, GrpcClientConfig, KeyStorage, SignerServiceConfig, create_grpc_service};
 use nonce_auth::storage::MemoryStorage;
 use platform::aid::credential::validator::AIdCredentialValidator;
 use platform::config::signer::SignerClientConfig;
 use serial_test::serial;
+use signer::{GrpcClient, GrpcClientConfig, KeyStorage, SignerServiceConfig, create_grpc_service};
 use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -163,7 +163,7 @@ async fn test_end_to_end_credential_flow() {
         .await
         .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -272,7 +272,7 @@ async fn test_issuer_health_checks() {
         .await
         .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -298,7 +298,7 @@ async fn test_issuer_rotate_key_updates_current_key() {
         .await
         .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -340,7 +340,7 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
 
     // With lazy Signer connection, issuer creation succeeds — auth failure happens on first use
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
@@ -383,14 +383,14 @@ async fn test_issuer_check_ks_health_fails_after_ks_shutdown() {
         .await
         .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("Failed to create issuer");
 
-    env.shutdown_ks().await;
+    env.shutdown_signer().await;
 
     for _ in 0..40 {
         match issuer.check_ks_health().await {
@@ -422,14 +422,14 @@ async fn test_issuer_rotate_key_fails_when_ks_is_unavailable() {
         .await
         .expect("Failed to create Signer gRPC client");
     let issuer = AIdIssuer::new(
-        signer_client: signer_client,
+        signer_client,
         default_issuer_config(&env.issuer_temp_dir),
         tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("Failed to create issuer");
 
-    env.shutdown_ks().await;
+    env.shutdown_signer().await;
 
     for _ in 0..40 {
         match issuer.rotate_key().await {

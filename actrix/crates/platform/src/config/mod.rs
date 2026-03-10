@@ -7,11 +7,11 @@ pub mod ais;
 pub mod bind;
 pub mod config_store;
 pub mod control;
-pub mod signer;
 pub mod registry;
 pub mod resolver;
 pub mod services;
 pub mod signaling;
+pub mod signer;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub mod turn;
 

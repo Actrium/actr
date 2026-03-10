@@ -163,7 +163,10 @@ impl KeyStorageBackend for PostgresBackend {
         if result.is_some() {
             crate::recording::debug!("Found verifying key for key_id: {} in PostgreSQL", key_id);
         } else {
-            crate::recording::debug!("No verifying key found for key_id: {} in PostgreSQL", key_id);
+            crate::recording::debug!(
+                "No verifying key found for key_id: {} in PostgreSQL",
+                key_id
+            );
         }
 
         Ok(result)
@@ -185,7 +188,10 @@ impl KeyStorageBackend for PostgresBackend {
         let signing_key_b64 = match result {
             Some(key) => key,
             None => {
-                crate::recording::warn!("Signing key not found for key_id: {} in PostgreSQL", key_id);
+                crate::recording::warn!(
+                    "Signing key not found for key_id: {} in PostgreSQL",
+                    key_id
+                );
                 return Err(SignerError::NotFound(format!("Key not found: {key_id}")));
             }
         };
@@ -195,9 +201,9 @@ impl KeyStorageBackend for PostgresBackend {
             .decode(&signing_key_b64)
             .map_err(|e| SignerError::Crypto(format!("Failed to decode signing key: {e}")))?;
 
-        let signing_key_array: [u8; 32] = signing_key_bytes.try_into().map_err(|_| {
-            SignerError::Crypto("Signing key must be exactly 32 bytes".to_string())
-        })?;
+        let signing_key_array: [u8; 32] = signing_key_bytes
+            .try_into()
+            .map_err(|_| SignerError::Crypto("Signing key must be exactly 32 bytes".to_string()))?;
 
         // 重建 SigningKey 并签名
         let signing_key = SigningKey::from_bytes(&signing_key_array);

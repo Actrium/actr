@@ -92,7 +92,6 @@ impl LoadBalancer {
             }
         }
 
-
         platform::recording::info!(
             "负载均衡排序: 候选数量={}, 排序因子数量={}",
             candidates.len(),

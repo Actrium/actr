@@ -13,6 +13,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +25,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Build admin UI
+        run: npm ci && npm run build
+        working-directory: crates/actrixd/admin/web
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,8 +37,36 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
-        run: cargo test --workspace --all-features
+      - name: Run unit tests
+        run: cargo test --workspace --all-features --lib --bins
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout actr
+        run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Build admin UI
+        run: npm ci && npm run build
+        working-directory: crates/actrixd/admin/web
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run integration tests
+        run: cargo test --workspace --all-features --test '*'
 
   fmt:
     name: Format Check
@@ -60,6 +93,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+
+      - name: Build admin UI
+        run: npm ci && npm run build
+        working-directory: crates/actrixd/admin/web
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,9 +126,19 @@ jobs:
       - name: Checkout actr
         run: git clone --depth=1 https://github.com/Actrium/actr.git ../actr
 
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
+
+      - name: Build admin UI
+        run: npm ci && npm run build
+        working-directory: crates/actrixd/admin/web
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -136,9 +136,7 @@ impl GrpcClient {
     ///
     /// 返回 (key_id, verifying_key_bytes[32], expires_at, tolerance_seconds)
     /// 私钥保留在 Signer 服务端，不返回给调用方
-    pub async fn generate_signing_key(
-        &mut self,
-    ) -> Result<(u32, [u8; 32], u64, u64), SignerError> {
+    pub async fn generate_signing_key(&mut self) -> Result<(u32, [u8; 32], u64, u64), SignerError> {
         let request_data = "generate_signing_key";
 
         // 创建 nonce credential
@@ -177,9 +175,9 @@ impl GrpcClient {
         }
 
         // 验证 verifying key 合法性
-        let vk_array: [u8; 32] = verifying_key_bytes
-            .try_into()
-            .map_err(|_| SignerError::Crypto("Failed to convert verifying key to array".to_string()))?;
+        let vk_array: [u8; 32] = verifying_key_bytes.try_into().map_err(|_| {
+            SignerError::Crypto("Failed to convert verifying key to array".to_string())
+        })?;
 
         VerifyingKey::from_bytes(&vk_array)
             .map_err(|e| SignerError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
@@ -191,7 +189,12 @@ impl GrpcClient {
             resp.tolerance_seconds
         );
 
-        Ok((resp.key_id, vk_array, resp.expires_at, resp.tolerance_seconds))
+        Ok((
+            resp.key_id,
+            vk_array,
+            resp.expires_at,
+            resp.tolerance_seconds,
+        ))
     }
 
     /// 使用 Signer 服务中的密钥对消息进行 Ed25519 签名
@@ -218,7 +221,10 @@ impl GrpcClient {
             credential,
         });
 
-        crate::recording::debug!("Requesting signature for key_id={} from Signer via gRPC", key_id);
+        crate::recording::debug!(
+            "Requesting signature for key_id={} from Signer via gRPC",
+            key_id
+        );
 
         let response = self
             .client
@@ -235,7 +241,10 @@ impl GrpcClient {
             )));
         }
 
-        crate::recording::info!("Successfully obtained signature for key_id={} via gRPC", key_id);
+        crate::recording::info!(
+            "Successfully obtained signature for key_id={} via gRPC",
+            key_id
+        );
 
         Ok(resp.signature)
     }
@@ -257,8 +266,7 @@ impl GrpcClient {
             signature: nonce_credential.signature,
         };
 
-        let request =
-            tonic::Request::new(GetVerifyingKeyRequest { key_id, credential });
+        let request = tonic::Request::new(GetVerifyingKeyRequest { key_id, credential });
 
         let response = self
             .client

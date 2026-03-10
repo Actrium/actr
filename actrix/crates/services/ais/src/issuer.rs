@@ -229,8 +229,9 @@ impl AIdIssuer {
             AidError::GenerationFailed("Verifying key must be exactly 32 bytes".to_string())
         })?;
 
-        let verifying_key = VerifyingKey::from_bytes(&key_array)
-            .map_err(|e| AidError::GenerationFailed(format!("Invalid Ed25519 verifying key: {e}")))?;
+        let verifying_key = VerifyingKey::from_bytes(&key_array).map_err(|e| {
+            AidError::GenerationFailed(format!("Invalid Ed25519 verifying key: {e}"))
+        })?;
 
         let cache = KeyCache {
             key_id: record.key_id,
@@ -455,8 +456,9 @@ impl AIdIssuer {
             .await
             .map_err(|e| AidError::GenerationFailed(format!("KS unavailable: {e}")))?;
 
-        let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes)
-            .map_err(|e| AidError::GenerationFailed(format!("Invalid verifying key from KS: {e}")))?;
+        let verifying_key = VerifyingKey::from_bytes(&verifying_key_bytes).map_err(|e| {
+            AidError::GenerationFailed(format!("Invalid verifying key from KS: {e}"))
+        })?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -489,14 +491,13 @@ impl AIdIssuer {
             .map_err(|e| AidError::GenerationFailed(format!("Failed to save key: {e}")))?;
 
         // 将 verifying key 持久化写入 signaling_key_cache.db（同时更新内存缓存）。
-        if let Err(e) =
-            platform::aid::credential::validator::AIdCredentialValidator::persist_key(
-                &config.sqlite_path,
-                key_id,
-                &verifying_key,
-                expires_at,
-            )
-            .await
+        if let Err(e) = platform::aid::credential::validator::AIdCredentialValidator::persist_key(
+            &config.sqlite_path,
+            key_id,
+            &verifying_key,
+            expires_at,
+        )
+        .await
         {
             platform::recording::warn!(
                 "写入 verifying key 到 key_cache DB 失败（非致命，key_id={}）: {}",

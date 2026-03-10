@@ -1,6 +1,8 @@
 //! KS 客户端 - 简单的 HTTP 客户端（仅用于测试）
 
-use crate::types::{GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignRequest, SignResponse};
+use crate::types::{
+    GenerateSigningKeyRequest, GenerateSigningKeyResponse, SignRequest, SignResponse,
+};
 use base64::prelude::*;
 use ed25519_dalek::VerifyingKey;
 use nonce_auth::CredentialBuilder;
@@ -67,7 +69,10 @@ impl Client {
 
         let request = GenerateSigningKeyRequest { credential };
 
-        crate::recording::debug!("Requesting Ed25519 signing key generation from KS at {}", url);
+        crate::recording::debug!(
+            "Requesting Ed25519 signing key generation from KS at {}",
+            url
+        );
 
         let response = self.client.post(&url).json(&request).send().await?;
 
@@ -83,11 +88,14 @@ impl Client {
 
         let vk_bytes = BASE64_STANDARD.decode(&response.verifying_key)?;
         let vk_array: [u8; 32] = vk_bytes.try_into().map_err(|_| {
-            crate::error::SignerError::Crypto("Invalid verifying key length, expected 32 bytes".to_string())
+            crate::error::SignerError::Crypto(
+                "Invalid verifying key length, expected 32 bytes".to_string(),
+            )
         })?;
 
-        let verifying_key = VerifyingKey::from_bytes(&vk_array)
-            .map_err(|e| crate::error::SignerError::Crypto(format!("Invalid Ed25519 verifying key: {e}")))?;
+        let verifying_key = VerifyingKey::from_bytes(&vk_array).map_err(|e| {
+            crate::error::SignerError::Crypto(format!("Invalid Ed25519 verifying key: {e}"))
+        })?;
 
         crate::recording::info!(
             "Successfully generated Ed25519 signing key with key_id={}, expires_at={}",
@@ -117,7 +125,11 @@ impl Client {
             credential,
         };
 
-        crate::recording::debug!("Requesting signature for key_id={} from KS at {}", key_id, url);
+        crate::recording::debug!(
+            "Requesting signature for key_id={} from KS at {}",
+            key_id,
+            url
+        );
 
         let response = self.client.post(&url).json(&request).send().await?;
 
@@ -138,7 +150,10 @@ impl Client {
             )));
         }
 
-        crate::recording::info!("Successfully obtained signature for key_id={} from KS", key_id);
+        crate::recording::info!(
+            "Successfully obtained signature for key_id={} from KS",
+            key_id
+        );
         Ok(response.signature)
     }
 }

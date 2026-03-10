@@ -85,8 +85,8 @@
 
 pub mod handlers;
 pub mod issuer;
-pub mod signer_client_wrapper;
 pub mod ratelimit;
+pub mod signer_client_wrapper;
 mod sn;
 mod storage;
 
@@ -124,9 +124,10 @@ pub async fn create_ais_router_with_counters(
         .context("Failed to get Signer client config. Ensure Signer is enabled or ais.dependencies.signer is configured.")?;
 
     // 创建 KS gRPC 客户端
-    let signer_client = create_signer_client(&signer_client_config, &global_config.actrix_shared_key)
-        .await
-        .context("Failed to create Signer gRPC client")?;
+    let signer_client =
+        create_signer_client(&signer_client_config, &global_config.actrix_shared_key)
+            .await
+            .context("Failed to create Signer gRPC client")?;
 
     platform::recording::info!("Signer gRPC client created successfully");
 

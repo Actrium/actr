@@ -180,7 +180,6 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
                             allow,
                         );
 
-
                         if let Err(e) = actor_acl.save().await {
                             platform::recording::warn!(
                                 "Failed to save ACL rule ({} -> {}): {}",

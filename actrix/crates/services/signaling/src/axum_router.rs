@@ -159,7 +159,6 @@ pub async fn create_signaling_router_with_config_and_counters(
                             );
                         }
                     }
-
                 }
                 platform::recording::debug!("Signaling storage cleanup task cancelled");
             });

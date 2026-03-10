@@ -54,7 +54,9 @@ impl SignerGrpcService {
             .await;
 
         verify_result.map_err(|e| match e {
-            NonceError::DuplicateNonce => SignerError::ReplayAttack("Nonce already used".to_string()),
+            NonceError::DuplicateNonce => {
+                SignerError::ReplayAttack("Nonce already used".to_string())
+            }
             NonceError::TimestampOutOfWindow => {
                 SignerError::Authentication("Request timestamp out of range".to_string())
             }
@@ -99,7 +101,10 @@ impl Signer for SignerGrpcService {
             .map_err(|e| Status::internal(format!("Failed to get key record: {e}")))?
             .ok_or_else(|| Status::internal("Failed to get key record after creation"))?;
 
-        crate::recording::info!("Generated Ed25519 signing key with key_id: {}", key_pair.key_id);
+        crate::recording::info!(
+            "Generated Ed25519 signing key with key_id: {}",
+            key_pair.key_id
+        );
 
         let response = GenerateSigningKeyResponse {
             key_id: key_pair.key_id,
@@ -112,10 +117,7 @@ impl Signer for SignerGrpcService {
     }
 
     /// 使用指定密钥对消息进行 Ed25519 签名
-    async fn sign(
-        &self,
-        request: Request<SignRequest>,
-    ) -> Result<Response<SignResponse>, Status> {
+    async fn sign(&self, request: Request<SignRequest>) -> Result<Response<SignResponse>, Status> {
         let req = request.into_inner();
         let key_id = req.key_id;
 
@@ -176,7 +178,10 @@ impl Signer for SignerGrpcService {
         let req = request.into_inner();
         let key_id = req.key_id;
 
-        crate::recording::info!("Received gRPC GetVerifyingKey request for key_id: {}", key_id);
+        crate::recording::info!(
+            "Received gRPC GetVerifyingKey request for key_id: {}",
+            key_id
+        );
 
         let request_data = format!("get_verifying_key:{key_id}");
         self.verify_credential(&req.credential, &request_data)

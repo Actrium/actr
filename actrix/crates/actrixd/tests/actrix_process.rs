@@ -1,8 +1,8 @@
 use actrix_sdk::testing::{self, GetNodeInfoRequest, NodeAdminServiceClient, ShutdownRequest};
-use signer::{GrpcClient, GrpcClientConfig};
 use nonce_auth::CredentialBuilder;
 use platform::storage::db::Database;
 use serde_json::Value;
+use signer::{GrpcClient, GrpcClientConfig};
 use std::{
     fs,
     io::Write,
@@ -957,7 +957,11 @@ async fn wait_for_health_https_insecure(url: &str, child: &mut Child, log_path: 
         .build()
         .expect("create insecure https client");
     let request_url = if url.ends_with("/signer/health") {
-        format!("{}{}", url.trim_end_matches("/signer/health"), "/admin/health")
+        format!(
+            "{}{}",
+            url.trim_end_matches("/signer/health"),
+            "/admin/health"
+        )
     } else {
         url.to_string()
     };
@@ -1354,23 +1358,31 @@ async fn actrix_ks_grpc_health_and_key_lifecycle() {
     let grpc_health = grpc_client.health_check().await.expect("grpc health check");
     assert_eq!(grpc_health, "healthy");
 
-    let (key_id, _public_key, expires_at, tolerance_seconds) =
-        grpc_client.generate_key().await.expect("grpc generate key");
+    let (key_id, _public_key, expires_at, tolerance_seconds) = grpc_client
+        .generate_signing_key()
+        .await
+        .expect("grpc generate key");
     assert!(key_id > 0, "generated key_id should be positive");
     assert!(expires_at > 0, "generated key should have expiration");
     assert!(tolerance_seconds > 0, "tolerance should be positive");
 
-    let (_secret_key, secret_expires_at, secret_tolerance_seconds) = grpc_client
-        .fetch_secret_key(key_id)
+    let signature = grpc_client
+        .sign(key_id, b"test-message")
         .await
-        .expect("grpc fetch secret key");
-    assert_eq!(secret_expires_at, expires_at);
-    assert_eq!(secret_tolerance_seconds, tolerance_seconds);
+        .expect("grpc sign with generated key");
+    assert_eq!(signature.len(), 64, "Ed25519 signature should be 64 bytes");
+
+    let (_, sign_expires_at, sign_tolerance_seconds) = grpc_client
+        .get_verifying_key(key_id)
+        .await
+        .expect("grpc get verifying key");
+    assert_eq!(sign_expires_at, expires_at);
+    assert_eq!(sign_tolerance_seconds, tolerance_seconds);
 
     let missing_key_err = grpc_client
-        .fetch_secret_key(key_id.saturating_add(1_000_000))
+        .sign(key_id.saturating_add(1_000_000), b"test")
         .await
-        .expect_err("fetching non-existent key should fail");
+        .expect_err("signing with non-existent key should fail");
     let missing_key_text = missing_key_err.to_string();
     assert!(
         missing_key_text.contains("NotFound")
@@ -1415,13 +1427,13 @@ async fn actrix_ks_grpc_rejects_invalid_shared_secret() {
         .await
         .expect("grpc client should connect before auth checks");
     let err = bad_client
-        .generate_key()
+        .generate_signing_key()
         .await
         .expect_err("invalid shared secret should be rejected");
     let err_text = err.to_string();
     assert!(
         err_text.contains("Unauthenticated") || err_text.to_lowercase().contains("authentication"),
-        "expected authentication failure from grpc generate_key, got: {err_text}"
+        "expected authentication failure from grpc generate_signing_key, got: {err_text}"
     );
 
     let admin_health_url = format!("http://127.0.0.1:{port}/admin/health");
@@ -1457,17 +1469,23 @@ async fn actrix_ks_grpc_health_and_key_lifecycle_with_valid_kek() {
     )
     .await;
     let (key_id, _public_key, expires_at, tolerance_seconds) = grpc_client
-        .generate_key()
+        .generate_signing_key()
         .await
         .expect("grpc generate key with kek");
     assert!(key_id > 0);
     assert!(expires_at > 0);
     assert!(tolerance_seconds > 0);
 
-    let (_secret_key, fetched_expires_at, fetched_tolerance) = grpc_client
-        .fetch_secret_key(key_id)
+    let signature = grpc_client
+        .sign(key_id, b"test-message")
         .await
-        .expect("grpc fetch secret key with kek");
+        .expect("grpc sign with kek");
+    assert_eq!(signature.len(), 64);
+
+    let (_, fetched_expires_at, fetched_tolerance) = grpc_client
+        .get_verifying_key(key_id)
+        .await
+        .expect("grpc get verifying key with kek");
     assert_eq!(fetched_expires_at, expires_at);
     assert_eq!(fetched_tolerance, tolerance_seconds);
 

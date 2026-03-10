@@ -2,8 +2,8 @@
 //!
 //! 提供统一的 KS 客户端接口，支持 gRPC 客户端（需要 &mut self）
 
-use signer::{GrpcClient, GrpcClientConfig};
 use platform::aid::AidError;
+use signer::{GrpcClient, GrpcClientConfig};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -25,7 +25,9 @@ impl SignerClientWrapper {
 
     /// 从 KS 申请新的 Ed25519 签名密钥，返回 (key_id, verifying_key_bytes[32], expires_at, tolerance_secs)
     /// 私钥保留在 KS 服务端
-    pub async fn generate_signing_key(&self) -> Result<(u32, [u8; 32], u64, u64), signer::SignerError> {
+    pub async fn generate_signing_key(
+        &self,
+    ) -> Result<(u32, [u8; 32], u64, u64), signer::SignerError> {
         let mut guard = self.inner.write().await;
         if guard.is_none() {
             let client = GrpcClient::new(&self.grpc_config).await?;

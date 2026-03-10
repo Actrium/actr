@@ -98,7 +98,9 @@ impl AIdCredentialValidator {
 
         // 如果全局缓存已初始化，同步更新内存
         if let Some(global_cache) = KEY_CACHE.get() {
-            let _ = global_cache.cache_key(key_id, verifying_key, expires_at).await;
+            let _ = global_cache
+                .cache_key(key_id, verifying_key, expires_at)
+                .await;
         }
 
         Ok(())

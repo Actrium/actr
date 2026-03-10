@@ -208,9 +208,9 @@ impl KeyStorageBackend for SqliteBackend {
             .decode(&signing_key_b64)
             .map_err(|e| SignerError::Crypto(format!("Failed to decode signing key: {e}")))?;
 
-        let signing_key_array: [u8; 32] = signing_key_bytes.try_into().map_err(|_| {
-            SignerError::Crypto("Signing key must be exactly 32 bytes".to_string())
-        })?;
+        let signing_key_array: [u8; 32] = signing_key_bytes
+            .try_into()
+            .map_err(|_| SignerError::Crypto("Signing key must be exactly 32 bytes".to_string()))?;
 
         // 重建 SigningKey 并签名
         let signing_key = SigningKey::from_bytes(&signing_key_array);
@@ -352,7 +352,10 @@ mod tests {
         let sig_array: [u8; 64] = signature.try_into().unwrap();
         let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
         use ed25519_dalek::Verifier;
-        assert!(verifying_key.verify(message, &sig).is_ok(), "Signature must be valid");
+        assert!(
+            verifying_key.verify(message, &sig).is_ok(),
+            "Signature must be valid"
+        );
     }
 
     #[tokio::test]

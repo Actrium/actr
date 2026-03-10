@@ -7,10 +7,10 @@ use actr_protocol::{
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
 use futures::{SinkExt, StreamExt};
-use signer::{GrpcClient, GrpcClientConfig};
 use platform::aid::credential::validator::AIdCredentialValidator;
 use prost::Message;
 use serde_json::{Value, json};
+use signer::{GrpcClient, GrpcClientConfig};
 use std::{
     collections::HashSet,
     fs,
@@ -739,7 +739,12 @@ async fn actrix_end_to_end_register_and_health() {
     let signaling_health = format!("{base}/signaling/health");
 
     let log_path = harness.log_path().to_path_buf();
-    wait_for_health(&format!("{base}/signer/health"), &mut harness.child, &log_path).await;
+    wait_for_health(
+        &format!("{base}/signer/health"),
+        &mut harness.child,
+        &log_path,
+    )
+    .await;
     wait_for_health(&ais_health, &mut harness.child, &log_path).await;
     wait_for_health(&signaling_health, &mut harness.child, &log_path).await;
     ensure_realm(&harness.data_dir, 1001).await;
@@ -1601,10 +1606,8 @@ async fn signaling_connection_rate_limit_rejects_second_concurrent_connection() 
 
     // 第二个连接应被 concurrent limit 拒绝
     let actor_id_str = ok2.actr_id.to_string_repr();
-    let signature_b64 =
-        base64::engine::general_purpose::STANDARD.encode(&ok2.credential.signature);
-    let claims_b64_2 =
-        base64::engine::general_purpose::STANDARD.encode(&ok2.credential.claims);
+    let signature_b64 = base64::engine::general_purpose::STANDARD.encode(&ok2.credential.signature);
+    let claims_b64_2 = base64::engine::general_purpose::STANDARD.encode(&ok2.credential.claims);
     let ws_url2 = format!(
         "ws://127.0.0.1:{port}/signaling/ws?actor_id={}&key_id={}&claims={}&signature={}",
         urlencoding::encode(&actor_id_str),

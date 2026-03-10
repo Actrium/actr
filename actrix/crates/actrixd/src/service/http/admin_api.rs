@@ -743,7 +743,10 @@ pub fn build_admin_api_router(state: Arc<AdminApiState>) -> Router {
         )
         // Service detail routes — specific routes before parameterized
         .route("/admin/api/services/signer/keys", get(get_signer_keys))
-        .route("/admin/api/services/signer/keys/cleanup", post(cleanup_signer_keys))
+        .route(
+            "/admin/api/services/signer/keys/cleanup",
+            post(cleanup_signer_keys),
+        )
         .route("/admin/api/services/ais/keys", get(get_ais_keys))
         .route("/admin/api/services/{name}", get(get_service_detail))
         .route("/admin/api/network/probe/{port}", get(probe_port))

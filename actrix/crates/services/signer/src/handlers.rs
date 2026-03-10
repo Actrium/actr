@@ -153,7 +153,9 @@ impl SignerState {
             .await;
 
         verify_result.map_err(|e| match e {
-            NonceError::DuplicateNonce => SignerError::ReplayAttack("Nonce already used".to_string()),
+            NonceError::DuplicateNonce => {
+                SignerError::ReplayAttack("Nonce already used".to_string())
+            }
             NonceError::TimestampOutOfWindow => {
                 SignerError::Authentication("Request timestamp out of range".to_string())
             }
@@ -244,7 +246,9 @@ async fn generate_signing_key_handler(
             SignerError::Authentication(_) => "invalid_signature",
             _ => "unknown",
         };
-        KS_AUTH_FAILURES.with_label_values(&["signer", reason]).inc();
+        KS_AUTH_FAILURES
+            .with_label_values(&["signer", reason])
+            .inc();
 
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION
@@ -289,7 +293,10 @@ async fn generate_signing_key_handler(
         .with_label_values(&["signer", "POST", "/generate-signing-key", "200"])
         .inc();
 
-    crate::recording::info!("Generated Ed25519 signing key with key_id: {}", key_pair.key_id);
+    crate::recording::info!(
+        "Generated Ed25519 signing key with key_id: {}",
+        key_pair.key_id
+    );
     Ok(Json(response))
 }
 
@@ -313,7 +320,9 @@ async fn sign_handler(
             SignerError::Authentication(_) => "invalid_signature",
             _ => "unknown",
         };
-        KS_AUTH_FAILURES.with_label_values(&["signer", reason]).inc();
+        KS_AUTH_FAILURES
+            .with_label_values(&["signer", reason])
+            .inc();
 
         let duration = start_time.elapsed().as_secs_f64();
         KS_REQUEST_DURATION

@@ -190,7 +190,11 @@ impl ServiceManager {
                 ServiceType::Ais,
                 self.config.is_ais_enabled(),
             ),
-            ("Signer Service", ServiceType::Ks, self.config.is_signer_enabled()),
+            (
+                "Signer Service",
+                ServiceType::Ks,
+                self.config.is_signer_enabled(),
+            ),
         ];
 
         for (name, svc_type, enabled) in &svc_types {
