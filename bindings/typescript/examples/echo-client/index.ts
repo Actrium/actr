@@ -1,6 +1,10 @@
 import { ActrSystem, Context, RpcEnvelope } from '../../dist/index.js';
 import type { PayloadType } from '../../dist/index.js';
-import { decodeEchoResponse, encodeEchoRequest, ECHO_ROUTE_KEY } from './generated/echo.client';
+import {
+  decodeEchoResponse,
+  encodeEchoRequest,
+  ECHO_ROUTE_KEY,
+} from './generated/echo.client';
 import {
   decodeEchoTwiceResponse,
   encodeEchoTwiceRequest,
@@ -12,11 +16,11 @@ const RPC_TIMEOUT_MS = 15000;
 const RPC_PAYLOAD_TYPE: PayloadType = 0;
 
 class EchoClientWorkload {
-  async onStart(ctx: Context): Promise<void> {
+  async onStart(_ctx: Context): Promise<void> {
     console.log('Echo client started');
   }
 
-  async onStop(ctx: Context): Promise<void> {
+  async onStop(_ctx: Context): Promise<void> {
     console.log('Echo client stopped');
   }
 
@@ -38,7 +42,7 @@ async function main() {
       ECHO_ROUTE_KEY,
       RPC_PAYLOAD_TYPE,
       echoRequest,
-      RPC_TIMEOUT_MS
+      RPC_TIMEOUT_MS,
     );
     const echoResponse = decodeEchoResponse(echoResponseBytes);
     console.log('Echo response:', echoResponse.reply);
@@ -48,7 +52,7 @@ async function main() {
       ECHOTWICE_ROUTE_KEY,
       RPC_PAYLOAD_TYPE,
       echoTwiceRequest,
-      RPC_TIMEOUT_MS
+      RPC_TIMEOUT_MS,
     );
     const echoTwiceResponse = decodeEchoTwiceResponse(echoTwiceResponseBytes);
     console.log('EchoTwice response:', echoTwiceResponse.reply);

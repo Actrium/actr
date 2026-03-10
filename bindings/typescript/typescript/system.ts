@@ -64,11 +64,7 @@ export class ActrSystem {
         this.wrapContext(ctx);
         await workload.onStop(ctx);
       },
-      dispatch: async (
-        err: unknown,
-        ctx: Context,
-        envelope: RpcEnvelope
-      ) => {
+      dispatch: async (err: unknown, ctx: Context, envelope: RpcEnvelope) => {
         if (err) {
           throw err;
         }
@@ -82,7 +78,13 @@ export class ActrSystem {
   private wrapContext(ctx: Context): void {
     if (!ctx.call) {
       ctx.call = (target: ActrId, routeKey: string, payload: Buffer) => {
-        return ctx.callRaw(target, routeKey, PayloadType.RpcReliable, payload, 30000);
+        return ctx.callRaw(
+          target,
+          routeKey,
+          PayloadType.RpcReliable,
+          payload,
+          30000,
+        );
       };
     }
   }

@@ -1,8 +1,8 @@
-//! Re-exported UniFFI bindings and high-level API wrappers.
-//!
-//! This file provides a clean interface to the auto-generated UniFFI bindings
-//! from `ActrBindings/Actr.swift`. Only the types and functions actually used
-//! by the high-level Swift API are re-exported here.
+/// Re-exported UniFFI bindings and high-level API wrappers.
+///
+/// This file provides a clean interface to the auto-generated UniFFI bindings
+/// from `ActrBindings/Actr.swift`. Only the types and functions actually used
+/// by the high-level Swift API are re-exported here.
 
 import ActrBindings
 import Foundation

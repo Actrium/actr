@@ -134,7 +134,10 @@ function getPackageName(obj) {
   let node = obj.parent;
   const parts = [];
   while (node && !(node instanceof protobuf.Root)) {
-    if (node instanceof protobuf.Namespace && !(node instanceof protobuf.Type)) {
+    if (
+      node instanceof protobuf.Namespace &&
+      !(node instanceof protobuf.Type)
+    ) {
       if (node.name) parts.unshift(node.name);
     }
     node = node.parent;
@@ -192,7 +195,9 @@ function collectPackages(root) {
 }
 
 function tsFieldType(field, typeNameMap) {
-  const fieldType = field.resolvedType ? typeNameMap.get(field.resolvedType.fullName) : field.type;
+  const fieldType = field.resolvedType
+    ? typeNameMap.get(field.resolvedType.fullName)
+    : field.type;
   const scalar = field.resolvedType ? fieldType : null;
   let base;
   switch (scalar || field.type) {
@@ -277,13 +282,16 @@ function fieldWireType(field) {
     case 'sfixed32':
       return 5;
     default:
-      if (field.resolvedType && field.resolvedType instanceof protobuf.Type) return 2;
+      if (field.resolvedType && field.resolvedType instanceof protobuf.Type)
+        return 2;
       return 0;
   }
 }
 
 function encodeExpression(field, valueExpr, typeNameMap) {
-  const typeName = field.resolvedType ? typeNameMap.get(field.resolvedType.fullName) : null;
+  const typeName = field.resolvedType
+    ? typeNameMap.get(field.resolvedType.fullName)
+    : null;
   const bytesVar = `${valueExpr.replace(/[^a-zA-Z0-9_]/g, '_')}Bytes`;
   switch (field.type) {
     case 'string':
@@ -362,19 +370,21 @@ function encodeExpression(field, valueExpr, typeNameMap) {
 }
 
 function decodeValueExpression(field, typeNameMap) {
-  const typeName = field.resolvedType ? typeNameMap.get(field.resolvedType.fullName) : null;
+  const typeName = field.resolvedType
+    ? typeNameMap.get(field.resolvedType.fullName)
+    : null;
   switch (field.type) {
     case 'string':
-      return 'value.toString(\'utf8\')';
+      return "value.toString('utf8')";
     case 'bytes':
       return 'value';
     case 'bool':
-      return 'varintToNumber(valueResult.value, \'bool\') !== 0';
+      return "varintToNumber(valueResult.value, 'bool') !== 0";
     case 'int32':
     case 'uint32':
-      return 'varintToNumber(valueResult.value, \'int32\')';
+      return "varintToNumber(valueResult.value, 'int32')";
     case 'sint32':
-      return 'decodeZigZag32(varintToNumber(valueResult.value, \'sint32\'))';
+      return "decodeZigZag32(varintToNumber(valueResult.value, 'sint32'))";
     case 'int64':
     case 'uint64':
       return 'valueResult.value';
@@ -434,7 +444,9 @@ function renderPbTs(pkg, types, typeNameMap, protoLabel) {
         lines.push('    }');
         lines.push('');
       } else {
-        lines.push(`    if (message.${field.name} !== undefined && message.${field.name} !== null) {`);
+        lines.push(
+          `    if (message.${field.name} !== undefined && message.${field.name} !== null) {`,
+        );
         lines.push(`      const tag = ${tag};`);
         const encodeLines = encodeExpression(field, valueExpr, typeNameMap);
         for (const line of encodeLines) {
@@ -465,15 +477,25 @@ function renderPbTs(pkg, types, typeNameMap, protoLabel) {
     lines.push('      const wireType = tag & 0x07;');
     lines.push('');
 
-    const lengthDelimited = type.fieldsArray.filter((field) => fieldWireType(field) === 2);
-    const varintFields = type.fieldsArray.filter((field) => fieldWireType(field) === 0);
-    const fixed32Fields = type.fieldsArray.filter((field) => fieldWireType(field) === 5);
-    const fixed64Fields = type.fieldsArray.filter((field) => fieldWireType(field) === 1);
+    const lengthDelimited = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 2,
+    );
+    const varintFields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 0,
+    );
+    const fixed32Fields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 5,
+    );
+    const fixed64Fields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 1,
+    );
 
     if (lengthDelimited.length > 0) {
       lines.push('      if (wireType === 2) {');
       lines.push('        const lengthResult = decodeVarint(buffer, offset);');
-      lines.push('        const length = varintToNumber(lengthResult.value, \'length\');');
+      lines.push(
+        "        const length = varintToNumber(lengthResult.value, 'length');",
+      );
       lines.push('        offset += lengthResult.length;');
       lines.push('');
       lines.push('        const end = offset + length;');
@@ -630,7 +652,9 @@ function renderPbTs(pkg, types, typeNameMap, protoLabel) {
   lines.push('');
   lines.push('function varintToNumber(value, label) {');
   lines.push('  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {');
-  lines.push('    throw new Error(`Varint ${label} exceeds safe integer range`);');
+  lines.push(
+    '    throw new Error(`Varint ${label} exceeds safe integer range`);',
+  );
   lines.push('  }');
   lines.push('  return Number(value);');
   lines.push('}');
@@ -734,7 +758,9 @@ function renderPbJs(pkg, types, typeNameMap, protoLabel) {
         lines.push('    }');
         lines.push('');
       } else {
-        lines.push(`    if (message.${field.name} !== undefined && message.${field.name} !== null) {`);
+        lines.push(
+          `    if (message.${field.name} !== undefined && message.${field.name} !== null) {`,
+        );
         lines.push(`      const tag = ${tag};`);
         const encodeLines = encodeExpression(field, valueExpr, typeNameMap);
         for (const line of encodeLines) {
@@ -765,15 +791,25 @@ function renderPbJs(pkg, types, typeNameMap, protoLabel) {
     lines.push('      const wireType = tag & 0x07;');
     lines.push('');
 
-    const lengthDelimited = type.fieldsArray.filter((field) => fieldWireType(field) === 2);
-    const varintFields = type.fieldsArray.filter((field) => fieldWireType(field) === 0);
-    const fixed32Fields = type.fieldsArray.filter((field) => fieldWireType(field) === 5);
-    const fixed64Fields = type.fieldsArray.filter((field) => fieldWireType(field) === 1);
+    const lengthDelimited = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 2,
+    );
+    const varintFields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 0,
+    );
+    const fixed32Fields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 5,
+    );
+    const fixed64Fields = type.fieldsArray.filter(
+      (field) => fieldWireType(field) === 1,
+    );
 
     if (lengthDelimited.length > 0) {
       lines.push('      if (wireType === 2) {');
       lines.push('        const lengthResult = decodeVarint(buffer, offset);');
-      lines.push('        const length = varintToNumber(lengthResult.value, "length");');
+      lines.push(
+        '        const length = varintToNumber(lengthResult.value, "length");',
+      );
       lines.push('        offset += lengthResult.length;');
       lines.push('');
       lines.push('        const end = offset + length;');
@@ -932,7 +968,9 @@ function renderPbJs(pkg, types, typeNameMap, protoLabel) {
   lines.push('');
   lines.push('function varintToNumber(value, label) {');
   lines.push('  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {');
-  lines.push('    throw new Error(`Varint ${label} exceeds safe integer range`);');
+  lines.push(
+    '    throw new Error(`Varint ${label} exceeds safe integer range`);',
+  );
   lines.push('  }');
   lines.push('  return Number(value);');
   lines.push('}');
@@ -1019,7 +1057,9 @@ function renderClientTs(pkg, services, typeNameMap) {
   for (const service of services) {
     for (const method of service.methodsArray) {
       const routeKey = `${pkg}.${service.name}.${method.name}`;
-      const constBase = hasDuplicateMethod ? `${service.name}_${method.name}` : method.name;
+      const constBase = hasDuplicateMethod
+        ? `${service.name}_${method.name}`
+        : method.name;
       const constName = `${constBase.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_ROUTE_KEY`;
       routeKeys.push({ constName, routeKey, method });
       const reqType = method.resolvedRequestType;
@@ -1069,7 +1109,9 @@ function renderClientTs(pkg, services, typeNameMap) {
   lines.push('// Generated by actr-ts-codegen.');
   lines.push('');
   if (imports.length > 0) {
-    lines.push(`import { ${imports.join(', ')} } from './${pkg.replace(/\./g, '-')}.pb';`);
+    lines.push(
+      `import { ${imports.join(', ')} } from './${pkg.replace(/\./g, '-')}.pb';`,
+    );
     lines.push('');
   }
 
@@ -1080,14 +1122,18 @@ function renderClientTs(pkg, services, typeNameMap) {
 
   for (const fn of encodeFns) {
     const paramName = fn.paramName || 'value';
-    lines.push(`export function ${fn.name}(${paramName}: ${fn.paramType}): Buffer {`);
+    lines.push(
+      `export function ${fn.name}(${paramName}: ${fn.paramType}): Buffer {`,
+    );
     lines.push(`  ${fn.body}`);
     lines.push('}');
     lines.push('');
   }
 
   for (const fn of decodeFns) {
-    lines.push(`export function ${fn.name}(buffer: Buffer): ${fn.returnType} {`);
+    lines.push(
+      `export function ${fn.name}(buffer: Buffer): ${fn.returnType} {`,
+    );
     lines.push(`  ${fn.body}`);
     lines.push('}');
     lines.push('');
@@ -1113,7 +1159,9 @@ function renderClientJs(pkg, services, typeNameMap) {
   for (const service of services) {
     for (const method of service.methodsArray) {
       const routeKey = `${pkg}.${service.name}.${method.name}`;
-      const constBase = hasDuplicateMethod ? `${service.name}_${method.name}` : method.name;
+      const constBase = hasDuplicateMethod
+        ? `${service.name}_${method.name}`
+        : method.name;
       const constName = `${constBase.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_ROUTE_KEY`;
       routeKeys.push({ constName, routeKey, method });
       const reqType = method.resolvedRequestType;
@@ -1230,7 +1278,9 @@ function renderLocalActorTs(routeEntries, distImport) {
   lines.push('  ctx: Context,');
   lines.push('  envelope: RpcEnvelope');
   lines.push('): Promise<Buffer> {');
-  lines.push('  const match = ROUTES.find((route) => route.routeKey === envelope.routeKey);');
+  lines.push(
+    '  const match = ROUTES.find((route) => route.routeKey === envelope.routeKey);',
+  );
   lines.push('  if (!match) {');
   lines.push('    throw new Error(`Unknown route: ${envelope.routeKey}`);');
   lines.push('  }');
@@ -1277,7 +1327,9 @@ function renderLocalActorJs(routeEntries, distImport) {
   lines.push('];');
   lines.push('');
   lines.push('async function dispatchLocalActor(ctx, envelope) {');
-  lines.push('  const match = ROUTES.find((route) => route.routeKey === envelope.routeKey);');
+  lines.push(
+    '  const match = ROUTES.find((route) => route.routeKey === envelope.routeKey);',
+  );
   lines.push('  if (!match) {');
   lines.push('    throw new Error(`Unknown route: ${envelope.routeKey}`);');
   lines.push('  }');
@@ -1297,7 +1349,9 @@ function renderLocalActorJs(routeEntries, distImport) {
 }
 
 function resolveTargetType(service, dependencies) {
-  const byServiceName = dependencies.find((dep) => dep.actrType && dep.actrType.name === service.name);
+  const byServiceName = dependencies.find(
+    (dep) => dep.actrType && dep.actrType.name === service.name,
+  );
   if (byServiceName) return byServiceName.actrType;
 
   const uniqueTypes = dependencies.map((dep) => dep.actrType).filter(Boolean);
@@ -1316,10 +1370,19 @@ async function main() {
   const configPath = path.resolve(args.config);
   const configDir = path.dirname(configPath);
   const outDir = path.resolve(args.out || path.join(configDir, 'generated'));
-  const protoRoot = path.resolve(args['proto-root'] || args.protoRoot || path.join(configDir, 'protos', 'remote'));
-  const lockPath = path.resolve(args.lock || path.join(configDir, 'Actr.lock.toml'));
+  const protoRoot = path.resolve(
+    args['proto-root'] ||
+      args.protoRoot ||
+      path.join(configDir, 'protos', 'remote'),
+  );
+  const lockPath = path.resolve(
+    args.lock || path.join(configDir, 'Actr.lock.toml'),
+  );
   const repoRoot = findRepoRoot(configDir);
-  const distImport = args['dist-import'] || args.distImport || toRelativeImport(outDir, path.join(repoRoot, 'dist', 'index.js'));
+  const distImport =
+    args['dist-import'] ||
+    args.distImport ||
+    toRelativeImport(outDir, path.join(repoRoot, 'dist', 'index.js'));
 
   const dependencies = loadDependencies(lockPath, configPath);
   const protoFiles = collectProtoFiles(protoRoot, dependencies);
@@ -1341,7 +1404,9 @@ async function main() {
     if (data.types.length === 0 && data.services.length === 0) continue;
 
     const fileBase = pkg ? pkg.replace(/\./g, '-') : 'root';
-    const protoLabel = protoFiles.map((file) => toPosix(path.relative(configDir, file))).join(', ');
+    const protoLabel = protoFiles
+      .map((file) => toPosix(path.relative(configDir, file)))
+      .join(', ');
 
     const pbTs = renderPbTs(pkg, data.types, typeNameMap, protoLabel);
     fs.writeFileSync(path.join(outDir, `${fileBase}.pb.ts`), pbTs);
@@ -1356,10 +1421,15 @@ async function main() {
           throw new Error(`No actr_type found for service ${service.name}`);
         }
 
-        const methodNames = data.services.flatMap((svc) => svc.methodsArray.map((method) => method.name));
-        const hasDuplicateMethod = methodNames.length !== new Set(methodNames).size;
+        const methodNames = data.services.flatMap((svc) =>
+          svc.methodsArray.map((method) => method.name),
+        );
+        const hasDuplicateMethod =
+          methodNames.length !== new Set(methodNames).size;
         for (const method of service.methodsArray) {
-          const constBase = hasDuplicateMethod ? `${service.name}_${method.name}` : method.name;
+          const constBase = hasDuplicateMethod
+            ? `${service.name}_${method.name}`
+            : method.name;
           const constName = `${constBase.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_ROUTE_KEY`;
           const importFrom = `import { ${constName} } from './${fileBase}.client';`;
           const requireFrom = `const ${constName} = require('./${fileBase}.client').${constName};`;

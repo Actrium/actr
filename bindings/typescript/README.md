@@ -74,7 +74,7 @@ async function main() {
   // Discover server
   const servers = await actorRef.discover(
     { manufacturer: 'acme', name: 'EchoTwiceService' },
-    1
+    1,
   );
 
   // Call RPC
@@ -83,7 +83,7 @@ async function main() {
     'echo_twice.EchoTwiceService.EchoTwice',
     PayloadType.RpcReliable,
     request,
-    5000
+    5000,
   );
 
   console.log('Response:', response.toString());
@@ -127,6 +127,7 @@ The example clients use generated files under `examples/**/generated`, which are
 After cloning the repository, you **must run the codegen script** before running the examples.
 
 Prerequisites:
+
 - `npm install` (installs `protobufjs` and `@iarna/toml` from devDependencies)
 
 Generate for echo-client:
@@ -136,9 +137,10 @@ npm run codegen -- --config examples/echo-client/actr.toml
 ```
 
 Notes:
+
 - The generator reads `Actr.lock.toml` first; ensure it includes all dependencies you want emitted.
 - Proto sources default to `examples/echo-client/protos/remote`.
-Outputs include:
+  Outputs include:
 - `<package>.pb.ts` protobuf codecs
 - `<package>.client.ts` route helpers
 - `local.actor.ts` local forwarding glue

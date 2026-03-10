@@ -5,6 +5,8 @@ dist/
 
 # Build outputs
 *.node
+index.js
+index.d.ts
 
 # Lock files
 Actr.lock.toml
