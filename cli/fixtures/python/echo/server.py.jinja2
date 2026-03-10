@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 from generated.local import {{PROJECT_NAME_SNAKE}}_pb2 as pb2
-from generated import {{PROJECT_NAME_SNAKE}}_service_actor as server_actor
+from generated import echo_service_actor as server_actor
 
 
 class {{PROJECT_NAME_PASCAL}}Service(server_actor.EchoServiceHandler):
