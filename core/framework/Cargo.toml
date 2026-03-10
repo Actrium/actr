@@ -15,7 +15,7 @@ actr-protocol.workspace = true
 async-trait = "0.1"
 bytes = "1.10"
 futures-util = "0.3"
-uuid = { version = "1.18", features = ["v4"] }
+uuid = { version = "1.18" }
 
 # Optional dependencies for utilities
 anyhow = "1.0"
@@ -27,6 +27,8 @@ tar = { version = "0.4", optional = true }
 
 [features]
 default = []
+# test-utils: 启用 DummyContext 等测试辅助工具（包含 uuid v4 生成，不兼容 wasm32）
+test-utils = ["uuid/v4"]
 geoip = [
     "maxminddb",
     "reqwest",

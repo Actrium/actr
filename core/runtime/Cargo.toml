@@ -56,9 +56,12 @@ tracing-subscriber.workspace = true
 url = "2.5"
 # === 工具库 ===
 uuid.workspace = true
+# === WASM Runtime (可选，feature = "wasm-engine") ===
+wasmtime = { workspace = true, optional = true }
 webrtc = "0.14"
 
 [dev-dependencies]
+wat = "1"
 actr-runtime = { path = ".", features = ["test-utils"] }
 prost = "0.14"
 tempfile = "3.23"
@@ -68,6 +71,7 @@ webrtc-util = "0.12"
 
 [features]
 default = []
+wasm-engine = ["dep:wasmtime"]
 opentelemetry = [
   "actr-config/opentelemetry",
   "dep:opentelemetry",

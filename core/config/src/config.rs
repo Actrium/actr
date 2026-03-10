@@ -5,6 +5,43 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
 
+/// Actor 执行模式
+///
+/// 决定 ActrSystem 如何获取凭证，以及与 Hyper 宿主层的协作方式。
+/// 在 `actr.toml` 的 `[system.deployment]` 小节中通过 `mode` 字段指定。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ActrMode {
+    /// 原生进程模式（默认）
+    ///
+    /// ActrSystem 在独立进程中运行，自行向信令服务器注册并获取凭证。
+    /// 适用于开发/调试或无需 Hyper 管理的部署场景。
+    #[default]
+    Native,
+
+    /// 子进程模式
+    ///
+    /// ActrSystem 由 Hyper 层作为子进程启动。
+    /// 凭证由 Hyper 通过 `inject_credential()` 或 `ACTR_REGISTER_OK` 环境变量注入，
+    /// 启动时跳过信令注册步骤，直接使用已颁发的凭证。
+    Process,
+
+    /// WASM 模块模式
+    ///
+    /// ActrSystem 以 WASM 模块形式在 Hyper 宿主内执行。
+    /// 凭证通过宿主函数（host function）或 `inject_credential()` 注入（实现待定）。
+    Wasm,
+}
+
+impl std::fmt::Display for ActrMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActrMode::Native => write!(f, "native"),
+            ActrMode::Process => write!(f, "process"),
+            ActrMode::Wasm => write!(f, "wasm"),
+        }
+    }
+}
+
 /// 最终配置（已处理继承、默认值、验证、类型转换）
 /// 注意：没有 edition 字段，edition 只作用于解析阶段
 #[derive(Debug, Clone)]
@@ -63,6 +100,11 @@ pub struct Config {
     /// Directory containing the configuration file (actr.toml)
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
+
+    /// Actor 执行模式（影响凭证获取与 Hyper 协作策略）
+    ///
+    /// 对应 `[system.deployment] mode = "native" | "process" | "wasm"`，默认为 `Native`。
+    pub execution_mode: ActrMode,
 }
 
 /// 包信息
@@ -447,6 +489,7 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
+            execution_mode: ActrMode::Native,
         };
 
         // 测试依赖查找

@@ -35,7 +35,7 @@ bytes = "1.10"
 
 # Time and UUID for signaling protocol
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.18", features = ["v4", "serde"] }
+uuid = { version = "1.18", features = ["serde"] }
 
 # UniFFI for cross-language bindings
 uniffi = { version = "0.30.0", optional = true }

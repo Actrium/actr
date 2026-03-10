@@ -280,6 +280,9 @@ impl ActrSystem {
             discovered_ws_addresses: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            injected_registration: None, // Set by inject_credential() before start() in Process/Wasm mode
+            #[cfg(feature = "wasm-engine")]
+            wasm_instance: None, // Set by with_wasm_instance() after build()
         }
     }
 }

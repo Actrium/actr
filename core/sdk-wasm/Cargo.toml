@@ -1,0 +1,18 @@
+[package]
+name = "actr-sdk-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Actor WASM guest SDK — 供 wasm32 actor 开发者使用的抽象层，屏蔽 ABI 细节"
+keywords = ["actor", "webassembly", "wasm", "sdk", "guest"]
+categories = ["wasm", "embedded"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

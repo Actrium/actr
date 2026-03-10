@@ -179,6 +179,9 @@ pub mod wire;
 pub mod context;
 pub mod context_factory;
 pub mod error;
+
+#[cfg(feature = "wasm-engine")]
+pub mod wasm;
 pub mod monitoring;
 pub mod observability;
 pub mod resource;

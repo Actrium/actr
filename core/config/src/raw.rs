@@ -161,6 +161,10 @@ pub struct RawSignalingConfig {
 pub struct RawDeploymentConfig {
     #[serde(default)]
     pub realm_id: Option<u32>,
+
+    /// 执行模式：`"native"`（默认）| `"process"` | `"wasm"`
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "wasm-actor-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+actr-runtime-wasm = { path = "../../../../core/runtime-wasm" }
+actr-protocol = { path = "../../../../core/protocol" }
+actr-framework = { path = "../../../../core/framework" }
+async-trait = "0.1"
+bytes = "1.10"
+prost = "0.14"
+
+[profile.release]
+opt-level = "s"

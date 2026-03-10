@@ -2,8 +2,8 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile, ServiceRef,
-    WebRtcAdvancedConfig, WebRtcConfig,
+    ActrMode, Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile,
+    ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::error::{ConfigError, Result};
@@ -56,6 +56,9 @@ impl ParserV1 {
                 .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
         };
 
+        // 5.1. 解析执行模式
+        let execution_mode = parse_actr_mode(raw.system.deployment.mode.as_deref())?;
+
         // 6. 解析 dependencies
         let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
 
@@ -104,6 +107,7 @@ impl ParserV1 {
             websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
             config_dir,
+            execution_mode,
         })
     }
 
@@ -464,6 +468,7 @@ impl ParserV1 {
             },
             deployment: crate::raw::RawDeploymentConfig {
                 realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
+                mode: child.deployment.mode.or(parent.deployment.mode),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),
@@ -546,6 +551,20 @@ impl ParserV1 {
             return Err(ConfigError::MissingField("system.deployment.realm"));
         }
         Ok(())
+    }
+}
+
+/// 将 TOML 中的 mode 字符串转换为 `ActrMode` 枚举
+///
+/// 合法值：`"native"`（默认）、`"process"`、`"wasm"`。
+fn parse_actr_mode(s: Option<&str>) -> Result<ActrMode> {
+    match s.unwrap_or("native") {
+        "native" => Ok(ActrMode::Native),
+        "process" => Ok(ActrMode::Process),
+        "wasm" => Ok(ActrMode::Wasm),
+        other => Err(ConfigError::InvalidConfig(format!(
+            "system.deployment.mode 值 '{other}' 无效，合法值为 native | process | wasm"
+        ))),
     }
 }
 
@@ -745,5 +764,47 @@ port_range_end = 50000
         let result = parser.parse(raw);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn test_parse_execution_mode() {
+        let base_toml = |mode_line: &str| {
+            format!(
+                r#"edition = 1
+[package]
+name = "test"
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+[system.signaling]
+url = "ws://localhost:8081"
+[system.deployment]
+realm_id = 1001
+{mode_line}"#
+            )
+        };
+
+        let tmpdir = TempDir::new().unwrap();
+
+        // 默认（无 mode 字段）→ Native
+        let path = tmpdir.path().join("actr.toml");
+        fs::write(&path, base_toml("")).unwrap();
+        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
+
+        // mode = "process"
+        fs::write(&path, base_toml("mode = \"process\"")).unwrap();
+        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
+
+        // mode = "wasm"
+        fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
+        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
+
+        // 非法值 → 错误
+        fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
+        let result = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap());
+        assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 }

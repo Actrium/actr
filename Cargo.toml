@@ -55,6 +55,7 @@ members = [
     "core/hyper",
     "core/runtime",
     "core/runtime-mailbox",
+    "core/runtime-wasm",
     # === Developer Tools (开发者工具) ===
     "tools/protoc-gen/rust",
     "tools/protoc-gen/web",
@@ -147,6 +148,9 @@ rand = "0.8"
 
 # === Storage (存储) ===
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
+
+# === WASM Runtime (WASM 运行时) ===
+wasmtime = { version = "29", default-features = false, features = ["runtime", "cranelift", "component-model"] }
 
 # === Networking (网络) ===
 tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }

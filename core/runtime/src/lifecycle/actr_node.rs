@@ -122,6 +122,14 @@ pub struct ActrNode<W: Workload> {
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 
+    /// Hyper 层预注入的注册结果（Process / Wasm 模式使用）
+    ///
+    /// 当 `execution_mode` 为 `Process` 或 `Wasm` 时，Hyper 层通过 `inject_credential()`
+    /// 将已颁发的注册凭证写入此字段。`start()` 检测到此字段非 `None` 时，
+    /// 跳过信令注册步骤，直接使用注入的凭证完成初始化。
+    pub(crate) injected_registration:
+        Option<actr_protocol::register_response::RegisterOk>,
+
     /// Shared WebSocket direct-connect address map populated by `discover_route_candidates`.
     ///
     /// This Arc is shared with `DefaultWireBuilder` so that when a connection to a discovered
@@ -129,6 +137,13 @@ pub struct ActrNode<W: Workload> {
     /// relying on a static url_template.  The map is keyed by `ActrId`.
     pub(crate) discovered_ws_addresses:
         Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
+
+    /// WASM actor 实例（仅 `wasm-engine` feature 启用时存在）
+    ///
+    /// 当此字段为 `Some` 时，`handle_incoming` 使用 WASM asyncify 驱动路径，
+    /// 而不是原生 `W::Dispatcher::dispatch`。
+    #[cfg(feature = "wasm-engine")]
+    pub(crate) wasm_instance: Option<Mutex<crate::wasm::WasmInstance>>,
 }
 
 /// Credential state for shared access between tasks
@@ -188,6 +203,143 @@ impl CredentialState {
         guard.expires_at = expires_at;
         if turn_credential.is_some() {
             guard.turn_credential = turn_credential;
+        }
+    }
+}
+
+/// 从 panic payload 提取可读信息
+fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "Unknown panic payload".to_string()
+    }
+}
+
+/// WASM PendingCall 执行器 — 将 WASM guest 发出的调用路由到 RuntimeContext
+///
+/// 由 `handle_incoming` 的 WASM dispatch 路径调用，为每次 asyncify unwind 提供真实 IO。
+#[cfg(feature = "wasm-engine")]
+async fn wasm_call_executor(
+    ctx: crate::context::RuntimeContext,
+    pending: crate::wasm::PendingCall,
+) -> crate::wasm::IoResult {
+    use actr_framework::{Context as _, Dest};
+    use actr_protocol::{ActrId, ActrType, PayloadType};
+    use actr_protocol::prost::Message as ProstMessage;
+    use crate::wasm::{IoResult, PendingCall};
+    use crate::wasm::abi::code;
+
+    /// 将 WASM guest 编码的 dest_bytes 解码回 `Dest`
+    ///
+    /// 格式与 `actr-runtime-wasm` 中 `encode_dest()` 对应：
+    /// - `0x00` = Shell
+    /// - `0x01` = Local
+    /// - `0x02` + protobuf ActrId bytes = Actor(id)
+    fn decode_dest(bytes: &[u8]) -> Option<Dest> {
+        match bytes.first()? {
+            0x00 => Some(Dest::Shell),
+            0x01 => Some(Dest::Local),
+            0x02 => ActrId::decode(&bytes[1..]).ok().map(Dest::Actor),
+            tag => {
+                tracing::warn!(tag, "WASM dest_bytes 中未知 tag");
+                None
+            }
+        }
+    }
+
+    /// 将 `ActrError` 映射到 ABI error code，保留语义供 guest 侧区分
+    fn actr_error_to_code(err: &ActrError) -> i32 {
+        match err {
+            ActrError::DecodeFailure(_) | ActrError::InvalidArgument(_) => code::PROTOCOL_ERROR,
+            _ => code::GENERIC_ERROR,
+        }
+    }
+
+    match pending {
+        PendingCall::CallRaw { route_key, target_bytes, payload } => {
+            let target = match ActrId::decode(target_bytes.as_slice()) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!("WASM call_raw: target_bytes decode 失败: {e}");
+                    return IoResult::Error(code::PROTOCOL_ERROR);
+                }
+            };
+            match ctx
+                .call_raw(
+                    &Dest::Actor(target),
+                    route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(payload),
+                    0,
+                )
+                .await
+            {
+                Ok(resp) => IoResult::Bytes(resp.to_vec()),
+                Err(e) => {
+                    tracing::error!("WASM call_raw 路由失败: {e:?}");
+                    IoResult::Error(actr_error_to_code(&e))
+                }
+            }
+        }
+
+        PendingCall::Call { route_key, dest_bytes, payload } => {
+            let dest = match decode_dest(&dest_bytes) {
+                Some(d) => d,
+                None => {
+                    tracing::error!(route_key, "WASM call: dest_bytes decode 失败");
+                    return IoResult::Error(code::PROTOCOL_ERROR);
+                }
+            };
+            match ctx
+                .call_raw(&dest, route_key, PayloadType::RpcReliable, bytes::Bytes::from(payload), 0)
+                .await
+            {
+                Ok(resp) => IoResult::Bytes(resp.to_vec()),
+                Err(e) => {
+                    tracing::error!("WASM call 路由失败: {e:?}");
+                    IoResult::Error(actr_error_to_code(&e))
+                }
+            }
+        }
+
+        PendingCall::Tell { route_key, dest_bytes, payload } => {
+            let dest = match decode_dest(&dest_bytes) {
+                Some(d) => d,
+                None => {
+                    tracing::error!(route_key, "WASM tell: dest_bytes decode 失败");
+                    return IoResult::Error(code::PROTOCOL_ERROR);
+                }
+            };
+            match ctx
+                .tell_raw(&dest, route_key, PayloadType::RpcReliable, bytes::Bytes::from(payload))
+                .await
+            {
+                Ok(()) => IoResult::Done,
+                Err(e) => {
+                    tracing::error!("WASM tell 路由失败: {e:?}");
+                    IoResult::Error(actr_error_to_code(&e))
+                }
+            }
+        }
+
+        PendingCall::Discover { type_bytes } => {
+            let actr_type = match ActrType::decode(type_bytes.as_slice()) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("WASM discover: type_bytes decode 失败: {e}");
+                    return IoResult::Error(code::PROTOCOL_ERROR);
+                }
+            };
+            match ctx.discover_route_candidate(&actr_type).await {
+                Ok(id) => IoResult::Bytes(id.encode_to_vec()),
+                Err(e) => {
+                    tracing::error!("WASM discover 失败: {e:?}");
+                    IoResult::Error(actr_error_to_code(&e))
+                }
+            }
         }
     }
 }
@@ -318,6 +470,16 @@ fn matches_rule(caller: &ActrId, rule: &actr_protocol::AclRule) -> bool {
 }
 
 impl<W: Workload> ActrNode<W> {
+    /// 配置 WASM actor 实例，启用 WASM dispatch 路径
+    ///
+    /// 调用后，`handle_incoming` 将使用 WASM asyncify 驱动路径而非原生 dispatch。
+    /// 在 `build()` 之后、`start()` 之前调用。
+    #[cfg(feature = "wasm-engine")]
+    pub fn with_wasm_instance(mut self, instance: crate::wasm::WasmInstance) -> Self {
+        self.wasm_instance = Some(Mutex::new(instance));
+        self
+    }
+
     /// Get Inproc Transport Manager
     ///
     /// # Returns
@@ -755,6 +917,43 @@ impl<W: Workload> ActrNode<W> {
     /// - `trace_id`: Distributed tracing across entire call chain (A → B → C)
     /// - `request_id`: Unique identifier for each request-response pair
     /// - Both kept for flexibility in complex scenarios
+    /// 原生 dispatch：静态 MessageRouter + panic catching
+    async fn native_dispatch(
+        &self,
+        envelope: &RpcEnvelope,
+        ctx: &crate::context::RuntimeContext,
+    ) -> ActorResult<Bytes> {
+        use actr_framework::MessageDispatcher;
+
+        let r = std::panic::AssertUnwindSafe(W::Dispatcher::dispatch(
+            &self.workload,
+            envelope.clone(),
+            ctx,
+        ))
+        .catch_unwind()
+        .await;
+        match r {
+            Ok(h) => h,
+            Err(p) => {
+                let pi = extract_panic_info(p);
+                tracing::error!(
+                    severity = 8,
+                    error_category = "handler_panic",
+                    route_key = envelope.route_key,
+                    request_id = %envelope.request_id,
+                    "❌ Handler panicked: {}", pi
+                );
+                let _ = self
+                    .workload
+                    .on_error(ctx, format!("Handler panicked: {pi}"))
+                    .await;
+                Err(ActrError::DecodeFailure(format!(
+                    "Handler panicked: {pi}"
+                )))
+            }
+        }
+    }
+
     /// - Single-hop calls: effectively identical
     /// - Multi-hop calls: trace_id spans all hops, request_id per hop
     #[cfg_attr(
@@ -766,8 +965,6 @@ impl<W: Workload> ActrNode<W> {
         envelope: RpcEnvelope,
         caller_id: Option<&ActrId>,
     ) -> ActorResult<Bytes> {
-        use actr_framework::MessageDispatcher;
-
         // Log received message
         if let Some(caller) = caller_id {
             tracing::debug!(
@@ -861,50 +1058,41 @@ impl<W: Workload> ActrNode<W> {
                 &credential_state.credential().await,
             );
 
-        // 2. Static MessageRouter dispatch (zero-cost abstraction)
-        // Compiler will inline entire call chain, generating code close to hand-written match
-        //
-        // Wrap dispatch in panic catching to prevent handler panics from crashing the runtime
-        let result = std::panic::AssertUnwindSafe(W::Dispatcher::dispatch(
-            &self.workload,
-            envelope.clone(),
-            &ctx,
-        ))
-        .catch_unwind()
-        .await;
+        // 2. Dispatch（WASM asyncify 路径 or 原生静态路径）
 
-        let result = match result {
-            Ok(handler_result) => handler_result,
-            Err(panic_payload) => {
-                // Handler panicked - extract panic info
-                let panic_info = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Unknown panic payload".to_string()
-                };
-
-                tracing::error!(
-                    severity = 8,
-                    error_category = "handler_panic",
-                    route_key = envelope.route_key,
-                    request_id = %envelope.request_id,
-                    "❌ Handler panicked: {}",
-                    panic_info
-                );
-
-                // Notify workload about the panic (best-effort, ignore hook errors)
-                let error_msg = format!("Handler panicked: {panic_info}");
-                let _ = self.workload.on_error(&ctx, error_msg).await;
-
-                // Return DecodeFailure error with panic info
-                // (using DecodeFailure as a proxy for "cannot process message")
-                Err(ActrError::DecodeFailure(format!(
-                    "Handler panicked: {panic_info}"
-                )))
-            }
+        #[cfg(feature = "wasm-engine")]
+        let result: ActorResult<Bytes> = if let Some(wasm) = &self.wasm_instance {
+            let envelope_bytes = envelope.encode_to_vec();
+            let dispatch_ctx = crate::wasm::DispatchContext {
+                self_id: actor_id.clone(),
+                caller_id: caller_id.cloned(),
+                request_id: envelope.request_id.clone(),
+            };
+            let ctx_for_executor = ctx.clone();
+            let mut guard = wasm.lock().await;
+            guard
+                .dispatch(&envelope_bytes, dispatch_ctx, |pending| {
+                    let ctx = ctx_for_executor.clone();
+                    async move { wasm_call_executor(ctx, pending).await }
+                })
+                .await
+                .map(Bytes::from)
+                .map_err(|e| {
+                    tracing::error!(
+                        severity = 7,
+                        error_category = "wasm_dispatch_error",
+                        route_key = envelope.route_key,
+                        request_id = %envelope.request_id,
+                        "❌ WASM dispatch 失败: {:?}", e
+                    );
+                    ActrError::Internal(format!("WASM dispatch 失败: {e:?}"))
+                })
+        } else {
+            self.native_dispatch(&envelope, &ctx).await
         };
+
+        #[cfg(not(feature = "wasm-engine"))]
+        let result: ActorResult<Bytes> = self.native_dispatch(&envelope, &ctx).await;
 
         // 3. Log result
         match &result {
@@ -929,6 +1117,25 @@ impl<W: Workload> ActrNode<W> {
             .complete(&envelope.request_id, result.clone());
 
         result
+    }
+
+    /// 注入预颁发的注册凭证（Process / Wasm 模式）
+    ///
+    /// 由 Hyper 层在调用 `start()` 之前调用，将 AIS 已颁发的 `RegisterOk`
+    /// 写入 ActrNode，使 `start()` 跳过信令注册步骤。
+    ///
+    /// 适用场景：
+    /// - **Process 模式**：Hyper 以子进程启动 ActrSystem，凭证提前由 Hyper 获取
+    /// - **Wasm 模式**：Hyper 宿主将凭证通过宿主函数注入 WASM 实例
+    pub fn inject_credential(
+        &mut self,
+        register_ok: actr_protocol::register_response::RegisterOk,
+    ) {
+        tracing::debug!(
+            execution_mode = %self.config.execution_mode,
+            "🔑 注入预注册凭证，start() 将跳过信令注册步骤"
+        );
+        self.injected_registration = Some(register_ok);
     }
 
     /// Start the system
@@ -1007,27 +1214,65 @@ impl<W: Workload> ActrNode<W> {
             ..Default::default()
         };
 
-        tracing::info!("📤 Registering actor with signaling server (protobuf)");
-
-        // Use send_register_request to send and wait for response
-        let register_response = self
-            .signaling_client
-            .send_register_request(register_request.clone())
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Actor registration failed: {e}")))?;
-
-        // Handle RegisterResponse oneof result
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 1. 获取注册信息（Hyper 预注入 或 信令服务器）
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         //
-        // Collect background task handles (including unregister task) so they can be managed
-        // by ActrRefShared later.
+        // - Process / Wasm 模式：Hyper 已提前完成 AIS 注册并注入 RegisterOk，跳过信令注册
+        // - Native 模式（默认）：通过信令服务器完成注册，获取 ActrId 和 AID 凭证
+        let register_ok = if let Some(injected) = self.injected_registration.take() {
+            tracing::info!(
+                execution_mode = %self.config.execution_mode,
+                "🔑 使用 Hyper 层预注入的注册凭证，跳过信令注册步骤"
+            );
+            injected
+        } else {
+            tracing::info!("📤 向信令服务器注册 actor");
+            let resp = self
+                .signaling_client
+                .send_register_request(register_request.clone())
+                .await
+                .map_err(|e| ActrError::Unavailable(format!("Actor registration failed: {e}")))?;
+
+            match resp.result {
+                Some(register_response::Result::Success(ok)) => {
+                    tracing::info!("✅ Registration successful");
+                    ok
+                }
+                Some(register_response::Result::Error(error)) => {
+                    tracing::error!(
+                        severity = 10,
+                        error_category = "registration_error",
+                        error_code = error.code,
+                        "❌ Registration failed: code={}, message={}",
+                        error.code,
+                        error.message
+                    );
+                    return Err(ActrError::Unavailable(format!(
+                        "Registration rejected: {} (code: {})",
+                        error.message, error.code
+                    )));
+                }
+                None => {
+                    tracing::error!(
+                        severity = 10,
+                        error_category = "registration_error",
+                        "❌ Registration response missing result"
+                    );
+                    return Err(ActrError::Unavailable(
+                        "Invalid registration response: missing result".to_string(),
+                    ));
+                }
+            }
+        };
+
+        // Collect background task handles so they can be managed by ActrRefShared later.
         let mut task_handles = Vec::new();
 
-        match register_response.result {
-            Some(register_response::Result::Success(register_ok)) => {
-                let actor_id = register_ok.actr_id;
-                let credential = register_ok.credential;
+        {
+            let actor_id = register_ok.actr_id;
+            let credential = register_ok.credential;
 
-                tracing::info!("✅ Registration successful");
                 tracing::info!(
                     "🆔 Assigned ActrId: {}",
                     actr_protocol::ActrIdExt::to_string_repr(&actor_id)
@@ -1432,32 +1677,7 @@ impl<W: Workload> ActrNode<W> {
 
                     task_handles.push(unregister_handle);
                 }
-            }
-            Some(register_response::Result::Error(error)) => {
-                tracing::error!(
-                    severity = 10,
-                    error_category = "registration_error",
-                    error_code = error.code,
-                    "❌ Registration failed: code={}, message={}",
-                    error.code,
-                    error.message
-                );
-                return Err(ActrError::Unavailable(format!(
-                    "Registration rejected: {} (code: {})",
-                    error.message, error.code
-                )));
-            }
-            None => {
-                tracing::error!(
-                    severity = 10,
-                    error_category = "registration_error",
-                    "❌ Registration response missing result"
-                );
-                return Err(ActrError::Unavailable(
-                    "Invalid registration response: missing result".to_string(),
-                ));
-            }
-        }
+        } // end registration setup block
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 2. Transport layer initialization (completed via WebRTC infrastructure)

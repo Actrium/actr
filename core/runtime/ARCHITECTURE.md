@@ -2,7 +2,7 @@
 
 **文档目的**：为贡献者和高级用户提供 runtime crate 的内部架构视图
 
-**最后更新**：2025-11-07
+**最后更新**：2026-03-10
 **对应版本**：actr v0.9.x
 
 ---
@@ -77,7 +77,7 @@ runtime 采用 4 层架构设计：
 
 1. **层次分离**：每层只依赖下一层，不跨层调用
 2. **统一抽象**：通过 DataLane 统一 Inproc 和 Outproc 路径
-3. **PayloadType 路由**：编译时确定消息路由策略
+3. **语义与能力分离**：PayloadType 决定顶层语义，具体执行策略由 resolver 根据语义和后端能力共同决议
 4. **零成本抽象**：Inproc 路径零序列化，Outproc 路径零拷贝
 
 ---
@@ -101,7 +101,7 @@ runtime 采用 4 层架构设计：
 **WebRtcGate**：
 - 职责：消费 `WebRtcCoordinator` 聚合的入站数据，直接根据 PayloadType 分发
 - 路由规则：
-  - RpcReliable/RpcSignal → Mailbox（按优先级入队，同时处理 pending_requests）
+  - RpcReliable/RpcSignal → 先检查 pending_requests；命中则视为 Response 并唤醒 continuation，否则按优先级入 Mailbox
   - StreamReliable/StreamLatencyFirst → DataStreamRegistry（快车道回调）
   - MediaRtp → 直接丢弃并提示应走 WebRTC Track（MediaFrameRegistry 由 PeerConnection 注册）
 
@@ -119,6 +119,71 @@ runtime 采用 4 层架构设计：
 - 职责：管理 MediaTrack 回调注册表（track_id → callback）
 - 并发安全：使用 DashMap
 - 回调签名：`FnMut(MediaSample, ActrId) -> BoxFuture<ActorResult<()>>`
+
+#### 语义决策模型（当前约束与演进方向）
+
+> 注：本节描述 runtime 内部推荐的统一决策模型，用于解释当前实现并指导后续 `wasm` / `StateSync` 扩展；其中 `StateSync` 和部分 backend-specific policy 仍属于设计方向，尚未完全落地到代码。
+
+- `PayloadType` 负责表达顶层数据语义，不单独决定本地执行方式：
+  - `RpcReliable`
+  - `RpcSignal`
+  - `StreamReliable`
+  - `StreamLatencyFirst`
+  - `MediaRtp`
+  - `StateSync`（planned）
+- `MessageRole` 负责表达交互角色：
+  - `Request`
+  - `Response`
+  - `Notify`
+  - `Data`
+  - `Snapshot`
+  - `Delta`
+- 后端能力拆成两个正交维度，而不是混成单一 `BackendProfile`：
+  - `RuntimeKind`: `native` | `wasm`
+  - `TransportKind`: `inproc` | `webrtc` | `websocket`
+- `ExecutionPolicy` 是 resolver 的输出，而不是输入维度：
+  - `Mailbox`
+  - `PendingContinuation`
+  - `OrderedStreamQueue`
+  - `CoalescingQueue`
+  - `MediaPipeline`
+  - `LatestValueStore`
+
+推荐求解形式：
+
+```rust
+ExecutionPlan = resolve(payload_type, message_role, runtime_kind, transport_kind, hints)
+```
+
+- `hints` 只用于调参，不应用来覆写核心语义。典型字段包括：
+  - `priority`
+  - `queue_depth`
+  - `batch_size`
+  - `ttl/deadline`
+  - `drop_policy`
+  - `persistence`
+- resolver 需要先做组合合法性检查；并非所有组合都有效，例如：
+  - `MediaRtp + Response`：通常无效
+  - `RpcReliable + Data`：通常无效
+  - `StateSync + Request`：通常不应作为默认组合
+
+推荐默认映射：
+
+| 语义组合 | 默认 ExecutionPolicy | 备注 |
+| --- | --- | --- |
+| `RpcReliable + Request/Notify` | `Mailbox` | 正常优先级，进入 actor 状态路径 |
+| `RpcSignal + Request/Notify` | `Mailbox` | 高优先级控制消息 |
+| `RpcReliable/RpcSignal + Response` | `PendingContinuation` | 默认服务于 `call().await`；若需要“晚点按 actor event 处理”，应建模为显式 split-phase API，而不是改写普通 response 语义 |
+| `StreamReliable + Data` | `OrderedStreamQueue` | 当前实现近似为 `DataStreamRegistry` fast path，后续可补齐 bounded queue / batching |
+| `StreamLatencyFirst + Data` | `CoalescingQueue` | 当前实现与 `StreamReliable` 共用 registry，目标语义应是 latest-first / coalescing |
+| `MediaRtp + Data` | `MediaPipeline` | 应走 WebRTC Track fast path；`websocket` 通常不是合法承载路径 |
+| `StateSync + Snapshot/Delta` | `LatestValueStore` | planned；旧值可被新值覆盖，不应强行复用 RPC/mailbox 语义 |
+
+设计约束：
+
+- `Response -> PendingContinuation` 是普通 `call().await` 的默认语义，不是绝对禁止 split-phase。
+- 如果业务需要“response 到达后延后处理 / 排队处理 / 持久化处理”，应使用显式 split-phase API（例如 response 转 self-notify / workflow event），而不是把普通 RPC response 全部改为 Mailbox 事件。
+- `wasm` 与 `native` 的差异应体现在 resolver 产出的 `ExecutionPlan` 上，而不是体现在开发者 API 或 `PayloadType` 分叉上。特别是 `wasm` 后端应优先减少 host/guest crossing 次数，倾向 batch / coalescing，而不是复制 native 的细粒度调度。
 
 ### 3.3 出站处理（outbound/）
 
@@ -149,6 +214,7 @@ runtime 采用 4 层架构设计：
 - 核心方法：`data_lane_types() -> &'static [DataLaneType]`
 - 作用：提供 PayloadType 到 DataLaneType 的静态路由表
 - 优势：编译时确定，零运行时开销
+- 注意：`PayloadTypeExt` 只解决“走哪条 lane”，不单独决定本地 `Mailbox / PendingContinuation / Registry / MediaPipeline` 执行策略；后者由上面的语义 resolver 决定
 
 **TransportManager** trait：
 - 职责：管理传输通道的生命周期（创建、缓存、复用）
@@ -169,7 +235,7 @@ runtime 采用 4 层架构设计：
 - 职责：WebRTC 入站消息路由（Coordinator → Mailbox/Registry）
 - 路由逻辑：
   - 根据 PayloadType 分发消息
-  - RPC 消息检查 pending_requests（响应匹配）
+  - RPC 消息先检查 pending_requests：命中则完成 continuation，否则按优先级进入 Mailbox
   - DataStream 消息直接派发到 DataStreamRegistry
 
 **WebRtcConnection**：

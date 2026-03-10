@@ -1,0 +1,26 @@
+[package]
+name = "actr-runtime-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "WASM guest-side runtime for Actor-RTC (wasm32 target)"
+repository = "https://github.com/actor-rtc/actr"
+keywords = ["actor", "wasm", "runtime", "webassembly", "guest"]
+categories = ["wasm", "asynchronous"]
+
+[lib]
+# cdylib  = WASM 动态库（最终产物）
+# rlib    = Rust 静态库（供集成测试使用）
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+actr-protocol.workspace = true
+actr-framework.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+prost.workspace = true
+
+[lints]
+workspace = true
