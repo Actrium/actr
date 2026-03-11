@@ -20,7 +20,7 @@ actr-ts provides native Node.js bindings for the ACTR framework, enabling TypeSc
 ## Installation
 
 ```bash
-npm install @actor-rtc/actr
+npm install @actrium/actr
 ```
 
 ## Quick Start
@@ -28,7 +28,7 @@ npm install @actor-rtc/actr
 ### EchoTwice Server
 
 ```typescript
-import { ActrSystem, Workload, Context, RpcEnvelope } from '@actor-rtc/actr';
+import { ActrSystem, Workload, Context, RpcEnvelope } from '@actrium/actr';
 
 class EchoTwiceServerWorkload implements Workload {
   async onStart(ctx: Context): Promise<void> {
@@ -62,7 +62,7 @@ main().catch(console.error);
 ### Echo Client
 
 ```typescript
-import { ActrSystem, Workload, PayloadType } from '@actor-rtc/actr';
+import { ActrSystem, Workload, PayloadType } from '@actrium/actr';
 
 // ... implement EchoClientWorkload ...
 
@@ -215,6 +215,18 @@ node --import tsx examples/echo-twice-server/index.ts
 node --import tsx examples/echo-client/index.ts
 ```
 
+## Publishing (Maintainers)
+
+TypeScript package releases are managed from this monorepo through the manual
+GitHub Actions workflow `Publish TypeScript Package`.
+
+- Package name: `@actrium/actr`
+- Workflow file: `.github/workflows/publish-typescript.yml`
+- Authentication: npm trusted publishing via GitHub Actions OIDC
+- Required workflow permission: `id-token: write`
+- Initial release requirement: publish `@actrium/actr` once manually before
+  adding the npm trusted publisher for this workflow
+
 ## Examples
 
 See the [examples](./examples) directory for complete examples:
@@ -245,7 +257,7 @@ Apache-2.0
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or pull request on the [GitHub repository](https://github.com/actor-rtc/actr-ts).
+Contributions are welcome! Please open an issue or pull request on the [GitHub repository](https://github.com/Actrium/actr).
 
 ## Links
 

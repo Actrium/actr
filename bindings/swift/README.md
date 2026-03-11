@@ -47,7 +47,6 @@ Prerequisites:
 Steps:
 
 ```bash
-git submodule update --init --recursive
 ./build-xcframework.sh
 ```
 
@@ -66,7 +65,7 @@ This generates Swift bindings and the multi-platform XCFramework at `ActrFFI.xcf
 
 ## Project Structure
 
-- `libactr/`: Rust library (submodule)
+- `../ffi/`: Rust FFI crate used to build the XCFramework and generate UniFFI bindings
 - `ActrBindings/`: UniFFI-generated Swift bindings (Swift + headers/modulemap)
 - `build-xcframework.sh`: Build script
 - `scripts/package-binary.sh`: Zip + checksum helper for Release assets
@@ -75,7 +74,7 @@ This generates Swift bindings and the multi-platform XCFramework at `ActrFFI.xcf
 
 ## Configuration
 
-UniFFI configuration lives in `libactr/uniffi.toml`.
+UniFFI configuration lives in `../ffi/uniffi.toml`.
 
 ## Documentation
 

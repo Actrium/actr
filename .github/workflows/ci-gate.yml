@@ -1,0 +1,350 @@
+name: CI Gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_run:
+        description: Run every domain workflow instead of affected-only detection
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  determine:
+    name: Determine Affected Targets
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.targets.outputs.mode }}
+      changed_files_json: ${{ steps.targets.outputs.changed_files_json }}
+      reasons_json: ${{ steps.targets.outputs.reasons_json }}
+      rust_core: ${{ steps.targets.outputs.rust_core }}
+      ts_binding: ${{ steps.targets.outputs.ts_binding }}
+      python_binding: ${{ steps.targets.outputs.python_binding }}
+      python_codegen: ${{ steps.targets.outputs.python_codegen }}
+      swift_binding: ${{ steps.targets.outputs.swift_binding }}
+      kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
+      web_binding: ${{ steps.targets.outputs.web_binding }}
+      release_related: ${{ steps.targets.outputs.release_related }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - id: targets
+        name: Compute targets
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          MANUAL_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full_run || false }}
+        run: |
+          python .github/scripts/ci_targets.py \
+            --event-name "$EVENT_NAME" \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --manual-full "$MANUAL_FULL"
+
+  rust:
+    name: Rust
+    needs: determine
+    if: needs.determine.outputs.rust_core == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Build workspace
+        run: cargo build --verbose --all-features
+      - name: Build release
+        run: cargo build --release --verbose --all-features
+      - name: Run tests
+        run: cargo test --workspace --verbose --all-features
+
+  typescript:
+    name: TypeScript
+    needs: determine
+    if: needs.determine.outputs.ts_binding == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/package-lock.json
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        working-directory: bindings/typescript
+        run: npm ci
+      - name: Check formatting
+        working-directory: bindings/typescript
+        run: npm run format
+      - name: Run lint
+        working-directory: bindings/typescript
+        run: npm run lint
+      - name: Build
+        working-directory: bindings/typescript
+        run: npm run build
+      - name: Cargo check
+        working-directory: bindings/typescript
+        run: cargo check --locked --manifest-path Cargo.toml
+
+  python_binding:
+    name: Python Binding
+    needs: determine
+    if: needs.determine.outputs.python_binding == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: bindings/python
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: bindings/python/pyproject.toml
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install maturin
+        run: python -m pip install -U maturin
+      - name: Build Python binding
+        run: maturin build --manifest-path Cargo.toml
+
+  python_codegen:
+    name: Python Codegen
+    needs: determine
+    if: needs.determine.outputs.python_codegen == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tools/protoc-gen/python
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: tools/protoc-gen/python/pyproject.toml
+      - name: Install package
+        run: pip install -e .
+      - name: Build package
+        run: |
+          python -m pip install -U build
+          python -m build
+
+  swift:
+    name: Swift
+    needs: determine
+    if: needs.determine.outputs.swift_binding == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+      - name: Install Swift tools and libraries
+        run: brew install swiftlint opus
+      - name: Run SwiftLint
+        run: swiftlint lint --strict
+      - name: Build local Swift XCFramework
+        working-directory: bindings/swift
+        env:
+          ACTR_BUILD_PROFILE: debug
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          ./build-xcframework.sh
+      - name: Build Swift bindings package
+        working-directory: bindings/swift
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          swift build
+      - name: Build Swift codegen package
+        working-directory: tools/protoc-gen/swift
+        run: swift build
+
+  kotlin:
+    name: Kotlin
+    needs: determine
+    if: needs.determine.outputs.kotlin_binding == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+      - name: Build Kotlin binding
+        working-directory: bindings/kotlin
+        run: ./gradlew :actr-kotlin:build --no-daemon
+
+  web:
+    name: Web
+    needs: determine
+    if: needs.determine.outputs.web_binding == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        working-directory: bindings/web
+        run: cargo fmt --all -- --check
+      - name: Check web workspace
+        working-directory: bindings/web
+        run: cargo check --workspace --target wasm32-unknown-unknown --locked
+
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - determine
+      - rust
+      - typescript
+      - python_binding
+      - python_codegen
+      - swift
+      - kotlin
+      - web
+    env:
+      MODE: ${{ needs.determine.outputs.mode }}
+      CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
+      REASONS_JSON: ${{ needs.determine.outputs.reasons_json }}
+      RUST_RESULT: ${{ needs.rust.result }}
+      TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
+      PYTHON_BINDING_RESULT: ${{ needs.python_binding.result }}
+      PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
+      SWIFT_RESULT: ${{ needs.swift.result }}
+      KOTLIN_RESULT: ${{ needs.kotlin.result }}
+      WEB_RESULT: ${{ needs.web.result }}
+    steps:
+      - name: Summarize gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          results = {
+              "rust": os.environ["RUST_RESULT"],
+              "typescript": os.environ["TYPESCRIPT_RESULT"],
+              "python_binding": os.environ["PYTHON_BINDING_RESULT"],
+              "python_codegen": os.environ["PYTHON_CODEGEN_RESULT"],
+              "swift": os.environ["SWIFT_RESULT"],
+              "kotlin": os.environ["KOTLIN_RESULT"],
+              "web": os.environ["WEB_RESULT"],
+          }
+
+          changed_files = json.loads(os.environ["CHANGED_FILES_JSON"])
+          reasons = json.loads(os.environ["REASONS_JSON"])
+          mode = os.environ["MODE"]
+
+          summary_lines = [
+              "## CI Gate",
+              "",
+              f"- Mode: `{mode}`",
+              f"- Changed files: `{len(changed_files)}`",
+              "",
+              "### Domain Results",
+          ]
+          summary_lines.extend([f"- `{name}`: `{result}`" for name, result in results.items()])
+
+          if reasons:
+              summary_lines.append("")
+              summary_lines.append("### Trigger Reasons")
+              summary_lines.extend([f"- `{reason}`" for reason in reasons])
+
+          if changed_files:
+              summary_lines.append("")
+              summary_lines.append("### Changed Files")
+              summary_lines.extend([f"- `{path}`" for path in changed_files])
+
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+                  fh.write("\n".join(summary_lines) + "\n")
+
+          failed = [name for name, result in results.items() if result not in {"success", "skipped"}]
+          if failed:
+              print(f"CI gate failed because these domains did not pass: {', '.join(failed)}", file=sys.stderr)
+              sys.exit(1)
+          PY

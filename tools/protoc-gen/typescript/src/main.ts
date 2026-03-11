@@ -525,7 +525,7 @@ function parseOptions(
   const localFiles = new Set<string>();
   const remoteFiles = new Set<string>();
   const remoteFileMapping = new Map<string, string>();
-  let distImport = "@actor-rtc/actr";
+  let distImport = "@actrium/actr";
   let emitLocalActor = true;
 
   for (const { key, value } of rawOptions) {

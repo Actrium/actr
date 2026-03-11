@@ -532,25 +532,21 @@ impl SwRuntime {
         let acl = if config.acl_allow_types.is_empty() {
             None
         } else {
-            let principals: Vec<acl_rule::Principal> = config
+            let rules: Vec<AclRule> = config
                 .acl_allow_types
                 .iter()
                 .map(|type_str| {
                     let actr_type = ActrType::from_string_repr(type_str).map_err(|e| {
                         JsValue::from_str(&format!("Invalid ACL type '{}': {}", type_str, e))
                     })?;
-                    Ok(acl_rule::Principal {
-                        realm: None,
-                        actr_type: Some(actr_type),
+                    Ok(AclRule {
+                        permission: acl_rule::Permission::Allow as i32,
+                        from_type: actr_type,
+                        source_realm: Some(acl_rule::SourceRealm::AnyRealm(true)),
                     })
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;
-            Some(Acl {
-                rules: vec![AclRule {
-                    principals,
-                    permission: acl_rule::Permission::Allow as i32,
-                }],
-            })
+            Some(Acl { rules })
         };
 
         Ok(Self {

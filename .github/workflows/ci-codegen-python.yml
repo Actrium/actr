@@ -1,17 +1,11 @@
 name: CI (Python Codegen)
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'tools/protoc-gen/python/**'
-      - '.github/workflows/ci-codegen-python.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'tools/protoc-gen/python/**'
-      - '.github/workflows/ci-codegen-python.yml'
+  workflow_call:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 defaults:
   run:
@@ -29,6 +23,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: tools/protoc-gen/python/pyproject.toml
 
       - name: Install package
         run: pip install -e .

@@ -96,6 +96,7 @@ collapsible_else_if = "allow"
 [workspace.dependencies]
 # === Internal Dependencies (内部依赖) ===
 actr-protocol = { path = "core/protocol", version = "0.2.0" }
+proto-fingerprint = "0.1.0"
 actr-service-compat = { path = "core/service-compat", version = "0.2.0" }
 actr-config = { path = "core/config", version = "0.2.0" }
 actr-framework = { path = "core/framework", version = "0.2.0" }

@@ -1,17 +1,11 @@
 name: CI (Kotlin)
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'bindings/kotlin/**'
-      - 'tools/protoc-gen/kotlin/**'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'bindings/kotlin/**'
-      - 'tools/protoc-gen/kotlin/**'
+  workflow_call:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -24,6 +18,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
-        run: ./gradlew build
+        run: ./gradlew :actr-kotlin:build --no-daemon

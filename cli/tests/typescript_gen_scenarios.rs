@@ -106,7 +106,7 @@ fn write_ts_project_files(root: &Path) {
         r#"{
   "name": "test-gen",
   "dependencies": {
-    "@actor-rtc/actr": "*"
+    "@actrium/actr": "*"
   }
 }"#,
     )

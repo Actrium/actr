@@ -158,7 +158,7 @@ impl LanguageGenerator for TypeScriptGenerator {
             sorted_mapping.sort();
             options.push(format!("RemoteFileMapping={}", sorted_mapping.join(";")));
         }
-        options.push("DistImport=@actor-rtc/actr".to_string());
+        options.push("DistImport=@actrium/actr".to_string());
         let option_str = options.join(",");
 
         let mut cmd = StdCommand::new(PROTOC);
@@ -667,7 +667,7 @@ impl TypeScriptGenerator {
         output.push('\n');
         output.push_str(SCAFFOLD_HINT);
         output.push_str(
-            "\n\nimport {\n  ActrSystem,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actor-rtc/actr';\n",
+            "\n\nimport {\n  ActrSystem,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actrium/actr';\n",
         );
 
         if has_dispatcher {

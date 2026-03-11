@@ -4,7 +4,7 @@ set -euo pipefail
 # Build the Rust library as an XCFramework and generate UniFFI Swift bindings.
 #
 # Inputs:
-# - ./libactr (git submodule with Rust sources + uniffi.toml)
+# - ../ffi (Rust FFI crate with the UniFFI configuration)
 #
 # Outputs:
 # - ./ActrBindings/** (Actr.swift + headers + modulemap)
