@@ -557,7 +557,7 @@ mod tests {{
     }
 
     fn ensure_protoc_plugin(&self, config_path: &Path) -> Result<PathBuf> {
-        const EXPECTED_VERSION: &str = "0.1.10";
+        const EXPECTED_VERSION: &str = "0.2.0";
         const PLUGIN_NAME: &str = "protoc-gen-actrframework";
 
         if let Some(plugin_path) = self.try_use_local_workspace_plugin()? {
