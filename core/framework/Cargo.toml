@@ -15,6 +15,7 @@ actr-protocol.workspace = true
 async-trait = "0.1"
 bytes = "1.10"
 futures-util = "0.3"
+prost = "0.14"
 uuid = { version = "1.18" }
 
 # Optional dependencies for utilities
@@ -27,6 +28,8 @@ tar = { version = "0.4", optional = true }
 
 [features]
 default = []
+# `cdylib`: enable native shared-library guest runtime (dynclib ABI)
+cdylib = []
 # `test-utils`: enable testing helpers such as `DummyContext` (includes UUID v4 generation and is not compatible with `wasm32`)
 test-utils = ["uuid/v4"]
 geoip = [

@@ -54,8 +54,6 @@ members = [
     "core/hyper",
     "core/runtime",
     "core/runtime-mailbox",
-    "core/runtime-wasm",
-    "core/runtime-dynclib",
     # === Developer Tools ===
     "tools/protoc-gen/rust",
     "tools/protoc-gen/web",
@@ -106,7 +104,6 @@ actr-framework = { path = "core/framework", version = "0.2.0" }
 actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.2.0" }
 actr-runtime = { path = "core/runtime", version = "0.2.0" }
 actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.2.0" }
-actr-runtime-dynclib = { path = "core/runtime-dynclib", version = "0.2.0" }
 actr-hyper = { path = "core/hyper", version = "0.1.0" }
 actr-mock-signaling = { path = "testing/mock-signaling", version = "0.2.0" }
 

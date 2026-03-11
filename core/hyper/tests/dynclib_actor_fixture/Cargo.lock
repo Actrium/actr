@@ -11,6 +11,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures-util",
+ "prost",
  "tracing",
  "uuid",
 ]
@@ -32,31 +33,6 @@ dependencies = [
  "thiserror",
  "uniffi",
  "uuid",
-]
-
-[[package]]
-name = "actr-runtime"
-version = "0.2.0"
-dependencies = [
- "actr-framework",
- "actr-protocol",
- "async-trait",
- "bytes",
- "futures-util",
- "tracing",
-]
-
-[[package]]
-name = "actr-runtime-dynclib"
-version = "0.2.0"
-dependencies = [
- "actr-framework",
- "actr-protocol",
- "actr-runtime",
- "async-trait",
- "bytes",
- "futures-util",
- "prost",
 ]
 
 [[package]]
@@ -249,11 +225,8 @@ version = "0.1.0"
 dependencies = [
  "actr-framework",
  "actr-protocol",
- "actr-runtime",
- "actr-runtime-dynclib",
  "async-trait",
  "bytes",
- "prost",
 ]
 
 [[package]]

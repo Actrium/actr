@@ -9,14 +9,13 @@
 //! - `call/tell` communication methods directly call vtable function pointers
 //! - WebRTC media-related methods are not supported in dynclib environment, returning `NotImplemented`
 
-use actr_framework::{Context, Dest, MediaSample};
+use crate::guest::vtable::HostVTable;
+use crate::{Context, Dest, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
-
-use crate::vtable::HostVTable;
 
 /// cdylib guest-side actor execution context
 ///
@@ -374,7 +373,7 @@ impl Context for DynclibContext {
 
 /// Convert ABI error code to `ActrError`
 fn abi_error_to_actr(code: i32) -> ActrError {
-    use crate::abi::code as c;
+    use crate::guest::abi::code as c;
     match code {
         c::GENERIC_ERROR => ActrError::Internal("host returned generic error".into()),
         c::INIT_FAILED => ActrError::Internal("host initialization failed".into()),

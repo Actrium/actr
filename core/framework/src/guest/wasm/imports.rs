@@ -38,12 +38,12 @@ unsafe extern "C" {
     ///
     /// Arguments:
     /// - `route_key_ptr/len`: route key (UTF-8)
-    /// - `dest_ptr/len`: target Dest encoding (see [`crate::context::encode_dest`])
+    /// - `dest_ptr/len`: target Dest encoding (see [`super::context::encode_dest`])
     /// - `payload_ptr/len`: protobuf encoded request payload
     /// - `out_ptr/out_max`: response output buffer (guest pre-allocated)
     /// - `out_len_ptr`: address where host writes actual response length (i32*)
     ///
-    /// Returns: 0 on success, < 0 see [`crate::abi::code`]
+    /// Returns: 0 on success, < 0 see [`crate::guest::abi::code`]
     pub fn actr_host_call(
         route_key_ptr: i32,
         route_key_len: i32,
@@ -58,7 +58,7 @@ unsafe extern "C" {
 
     /// Send one-way message (fire-and-forget, no response)
     ///
-    /// Returns: 0 on success, < 0 see [`crate::abi::code`]
+    /// Returns: 0 on success, < 0 see [`crate::guest::abi::code`]
     pub fn actr_host_tell(
         route_key_ptr: i32,
         route_key_len: i32,
@@ -70,7 +70,7 @@ unsafe extern "C" {
 
     /// Raw RPC call (routed by ActrId, bypasses Dest resolution)
     ///
-    /// Returns: 0 on success, < 0 see [`crate::abi::code`]
+    /// Returns: 0 on success, < 0 see [`crate::guest::abi::code`]
     pub fn actr_host_call_raw(
         route_key_ptr: i32,
         route_key_len: i32,

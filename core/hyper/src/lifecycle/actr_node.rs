@@ -230,7 +230,7 @@ async fn executor_call_handler(
 
     /// Decode guest-encoded dest_bytes back to `Dest`
     ///
-    /// Format corresponds to `encode_dest()` in `actr-runtime-wasm`:
+    /// Format corresponds to `encode_dest()` in `actr-framework::guest`:
     /// - `0x00` = Shell
     /// - `0x01` = Local
     /// - `0x02` + protobuf ActrId bytes = Actor(id)

@@ -100,6 +100,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "maxminddb",
+ "prost 0.14.3",
  "reqwest",
  "tar",
  "tokio",
@@ -237,19 +238,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-runtime-dynclib"
-version = "0.2.0"
-dependencies = [
- "actr-framework",
- "actr-protocol",
- "actr-runtime",
- "async-trait",
- "bytes",
- "futures-util",
- "prost 0.14.3",
-]
-
-[[package]]
 name = "actr-runtime-mailbox"
 version = "0.2.0"
 dependencies = [
@@ -266,18 +254,6 @@ dependencies = [
  "tokio-test",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "actr-runtime-wasm"
-version = "0.1.0"
-dependencies = [
- "actr-framework",
- "actr-protocol",
- "async-trait",
- "bytes",
- "futures-util",
- "prost 0.14.3",
 ]
 
 [[package]]

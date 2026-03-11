@@ -8,11 +8,12 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["cdylib"]
+cdylib = ["actr-framework/cdylib"]
+
 [dependencies]
-actr-runtime-dynclib = { path = "../../../../core/runtime-dynclib" }
 actr-framework = { path = "../../../../core/framework" }
 actr-protocol = { path = "../../../../core/protocol" }
-actr-runtime = { path = "../../../../core/runtime" }
 async-trait = "0.1"
 bytes = "1.10"
-prost = "0.14"

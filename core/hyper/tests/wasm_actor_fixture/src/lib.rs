@@ -1,7 +1,7 @@
 //! WASM actor end-to-end test fixture
 //!
 //! Verification target: a real wasm32 actor that implements the `Context` trait
-//! via `actr-runtime-wasm`, calls `ctx.call_raw()` inside the handler to trigger
+//! via `actr-framework` guest module, calls `ctx.call_raw()` inside the handler to trigger
 //! asyncify suspend/resume, and returns the host's response as its own response.
 //!
 //! # Test protocol
@@ -15,12 +15,10 @@
 //!
 //! host calls `actr_handle(request=5_i32_le)` and eventually gets response `10_i32_le`
 
-use actr_framework::{Context, MessageDispatcher, Workload};
+use actr_framework::{Context, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
-use actr_runtime_wasm::entry;
 use async_trait::async_trait;
 use bytes::Bytes;
-use prost::Message as ProstMessage;
 
 // ── Workload ──────────────────────────────────────────────────────────────────
 

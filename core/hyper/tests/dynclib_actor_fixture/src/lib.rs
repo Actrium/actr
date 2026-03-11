@@ -5,9 +5,8 @@
 //! - "test/echo": returns payload as-is (no outbound calls)
 //! - unknown route: returns error
 
-use actr_framework::{Context, MessageDispatcher, Workload};
+use actr_framework::{Context, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
-use actr_runtime_dynclib::entry_dynclib;
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -55,4 +54,4 @@ impl Workload for DoubleActor {
     type Dispatcher = DoubleDispatcher;
 }
 
-entry_dynclib!(DoubleActor);
+entry!(DoubleActor);

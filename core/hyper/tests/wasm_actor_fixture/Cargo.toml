@@ -9,12 +9,13 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-actr-runtime-wasm = { path = "../../../../core/runtime-wasm" }
-actr-protocol = { path = "../../../../core/protocol" }
 actr-framework = { path = "../../../../core/framework" }
+actr-protocol = { path = "../../../../core/protocol" }
 async-trait = "0.1"
 bytes = "1.10"
-prost = "0.14"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
 
 [profile.release]
 opt-level = "s"

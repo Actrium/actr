@@ -34,6 +34,8 @@ impl<T> SendPtr<T> {
     }
 }
 
+use actr_framework::guest::vtable::HostVTable;
+
 use crate::executor::{self, CallExecutorFn, DispatchContext, IoResult, PendingCall, error_code};
 
 use super::error::{DynclibError, DynclibResult};
@@ -56,51 +58,6 @@ type HandleFn = unsafe extern "C" fn(
 
 /// `actr_free_response(ptr: *mut u8, len: usize)`
 type FreeResponseFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HostVTable — C-compatible function-pointer table passed to the guest SO
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Host-side function table exposed to the guest shared library.
-///
-/// The guest receives a pointer to this struct during `actr_init` and uses it
-/// for all host callbacks (RPC call, tell, discover, context queries).
-///
-/// All function pointers use the C calling convention and operate on raw byte
-/// buffers. Pointer/length pairs follow `(ptr, len)` ordering. Output buffers
-/// are host-allocated; the guest must call `free_host_buf` to release them.
-#[repr(C)]
-pub struct HostVTable {
-    /// Synchronous RPC call: `(route_key_ptr, route_key_len, dest_ptr, dest_len, payload_ptr, payload_len, resp_ptr_out, resp_len_out) -> i32`
-    pub call: unsafe extern "C" fn(
-        *const u8,
-        usize,
-        *const u8,
-        usize,
-        *const u8,
-        usize,
-        *mut *mut u8,
-        *mut usize,
-    ) -> i32,
-
-    /// Fire-and-forget tell: `(route_key_ptr, route_key_len, dest_ptr, dest_len, payload_ptr, payload_len) -> i32`
-    pub tell: unsafe extern "C" fn(*const u8, usize, *const u8, usize, *const u8, usize) -> i32,
-
-    /// Service discovery: `(type_ptr, type_len, resp_ptr_out, resp_len_out) -> i32`
-    pub discover: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32,
-
-    /// Query own ActrId: `(out_ptr, out_len) -> i32`
-    pub self_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
-
-    /// Query caller ActrId: `(out_ptr, out_len) -> i32` (-1 if absent)
-    pub caller_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
-
-    /// Query request id: `(out_ptr, out_len) -> i32`
-    pub request_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
-
-    /// Free a host-allocated buffer returned by call/discover/self_id/etc.
-    pub free_host_buf: unsafe extern "C" fn(*mut u8, usize),
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Thread-local state for VTable trampolines

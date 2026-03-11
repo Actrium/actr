@@ -128,6 +128,9 @@ mod workload;
 // Optional utilities module
 pub mod util;
 
+// Guest-side runtime module (WASM and dynclib ABI)
+pub mod guest;
+
 // Test helpers (lightweight Context implementation)
 // Only compiled under the test-utils feature (includes uuid v4, incompatible with wasm32 target)
 #[cfg(feature = "test-utils")]

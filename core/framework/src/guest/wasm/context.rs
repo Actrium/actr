@@ -9,14 +9,14 @@
 //! - `call/tell` communication methods implemented via host imports; asyncify ensures transparency to upper layers
 //! - WebRTC media-related methods are not supported in WASM environment, returning `NotImplemented`
 
-use actr_framework::{Context, Dest, MediaSample};
+use crate::{Context, Dest, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
 
-use crate::imports;
+use super::imports;
 
 /// WASM guest-side actor execution context
 ///
@@ -312,7 +312,7 @@ impl Context for WasmContext {
 
 /// Convert ABI error code (from host import return value) to `ActrError`
 fn abi_error_to_actr(code: i32) -> ActrError {
-    use crate::abi::code;
+    use crate::guest::abi::code;
     match code {
         code::GENERIC_ERROR => ActrError::Internal("WASM host returned generic error".into()),
         code::INIT_FAILED => ActrError::Internal("WASM host initialization failed".into()),
