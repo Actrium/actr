@@ -1,31 +1,32 @@
-//! ACL (Access Control List) 权限检查
+//! ACL (Access Control List) permission checking
 //!
-//! 从入站消息的 caller_id 和目标 actor_id 出发，依据配置的 ACL 规则
-//! 判定是否允许本次调用。本模块是纯函数，无任何 IO 依赖，适用于
-//! native 和 wasm32 两种运行目标。
+//! Starting from the caller_id of an inbound message and the target actor_id,
+//! determines whether the call is permitted based on configured ACL rules.
+//! This module is pure functions with no IO dependencies, suitable for
+//! both native and wasm32 targets.
 
 use actr_protocol::{Acl, AclRule, ActrId, ActrIdExt as _};
 
-/// 检查调用方是否有权限访问目标 Actor
+/// Check whether the caller has permission to access the target Actor
 ///
-/// # 返回值
-/// - `Ok(true)`: 允许
-/// - `Ok(false)`: 拒绝
-/// - `Err(String)`: 检查过程异常（应视为拒绝）
+/// # Returns
+/// - `Ok(true)`: allowed
+/// - `Ok(false)`: denied
+/// - `Err(String)`: check error (should be treated as denied)
 ///
-/// # 评估逻辑
-/// 1. 无 caller_id（本地调用）——始终放行
-/// 2. 未配置 ACL——默认放行（兼容旧版配置）
-/// 3. ACL 已配置但规则列表为空——全部拒绝（安全默认）
-/// 4. Deny-first: 任何命中 DENY 的规则立即拒绝
-/// 5. 存在至少一条 ALLOW 命中——放行
-/// 6. 无规则命中——拒绝
+/// # Evaluation logic
+/// 1. No caller_id (local call) -- always allow
+/// 2. No ACL configured -- allow by default (backward compatibility)
+/// 3. ACL configured but rules list empty -- deny all (secure default)
+/// 4. Deny-first: any matching DENY rule immediately denies
+/// 5. At least one matching ALLOW rule -- allow
+/// 6. No rule matches -- deny
 pub fn check_acl_permission(
     caller_id: Option<&ActrId>,
     target_id: &ActrId,
     acl: Option<&Acl>,
 ) -> Result<bool, String> {
-    // 1. 本地调用始终放行
+    // 1. Local calls are always allowed
     if caller_id.is_none() {
         tracing::trace!("ACL: local call, allowing");
         return Ok(true);
@@ -33,7 +34,7 @@ pub fn check_acl_permission(
 
     let caller = caller_id.unwrap();
 
-    // 2. 未配置 ACL——默认放行
+    // 2. No ACL configured -- allow by default
     let acl = match acl {
         Some(a) => a,
         None => {
@@ -46,7 +47,7 @@ pub fn check_acl_permission(
         }
     };
 
-    // 3. 规则列表为空——全部拒绝
+    // 3. Empty rules list -- deny all
     if acl.rules.is_empty() {
         tracing::warn!(
             "ACL: empty rule set, denying {} -> {} (default deny)",
@@ -56,7 +57,7 @@ pub fn check_acl_permission(
         return Ok(false);
     }
 
-    // 4 & 5. Deny-first 评估
+    // 4 & 5. Deny-first evaluation
     let mut any_allow = false;
     for rule in &acl.rules {
         if !matches_rule(caller, rule) {
@@ -83,7 +84,7 @@ pub fn check_acl_permission(
         return Ok(true);
     }
 
-    // 6. 无规则命中——拒绝
+    // 6. No rule matches -- deny
     tracing::warn!(
         "ACL: no matching rule, denying {} -> {} (default deny)",
         caller.to_string_repr(),
@@ -92,11 +93,11 @@ pub fn check_acl_permission(
     Ok(false)
 }
 
-/// 判断单条 ACL 规则是否匹配给定 caller
+/// Check whether a single ACL rule matches the given caller
 fn matches_rule(caller: &ActrId, rule: &AclRule) -> bool {
     use actr_protocol::acl_rule::SourceRealm;
 
-    // 类型精确匹配（manufacturer + name + version）
+    // Exact type match (manufacturer + name + version)
     if caller.r#type.manufacturer != rule.from_type.manufacturer
         || caller.r#type.name != rule.from_type.name
         || caller.r#type.version != rule.from_type.version
@@ -104,7 +105,7 @@ fn matches_rule(caller: &ActrId, rule: &AclRule) -> bool {
         return false;
     }
 
-    // Realm 匹配
+    // Realm match
     match &rule.source_realm {
         None | Some(SourceRealm::AnyRealm(_)) => true,
         Some(SourceRealm::RealmId(id)) => caller.realm.realm_id == *id,

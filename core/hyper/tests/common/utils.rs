@@ -2,12 +2,12 @@
 //!
 //! Helper functions for creating test actors, credentials, and peers
 
-use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm, TurnCredential};
-use actr_hyper::inbound::MediaFrameRegistry;
-use actr_hyper::lifecycle::CredentialState;
-use actr_hyper::wire::webrtc::{
+use crate::inbound::MediaFrameRegistry;
+use crate::lifecycle::CredentialState;
+use crate::wire::webrtc::{
     SignalingClient, WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
 };
+use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm};
 use std::sync::Arc;
 
 /// Create a test ActrId with the given serial number
@@ -34,21 +34,7 @@ pub fn dummy_credential() -> AIdCredential {
 
 /// Create a credential state for testing
 pub fn create_credential_state_for_test(credential: AIdCredential) -> CredentialState {
-    #[derive(Clone)]
-    #[allow(dead_code)]
-    struct CredentialStateInner {
-        credential: AIdCredential,
-        expires_at: Option<prost_types::Timestamp>,
-        turn_credential: Option<TurnCredential>,
-    }
-
-    let inner = Arc::new(tokio::sync::RwLock::new(CredentialStateInner {
-        credential,
-        expires_at: None,
-        turn_credential: None,
-    }));
-
-    unsafe { std::mem::transmute(inner) }
+    CredentialState::new(credential, None, None)
 }
 
 /// Create a WebRTC peer with WebSocket signaling
@@ -58,8 +44,7 @@ pub async fn create_peer_with_websocket(
     id: ActrId,
     server_url: &str,
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
-    let credential = dummy_credential();
-    let credential_state = create_credential_state_for_test(credential.clone());
+    let credential_state = create_credential_state_for_test(dummy_credential());
 
     let signaling_client = WebSocketSignalingClient::connect_to(server_url)
         .await
@@ -104,8 +89,7 @@ pub async fn create_peer_with_vnet(
     server_url: &str,
     vnet: Arc<webrtc_util::vnet::net::Net>,
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
-    let credential = dummy_credential();
-    let credential_state = create_credential_state_for_test(credential.clone());
+    let credential_state = create_credential_state_for_test(dummy_credential());
 
     let signaling_client = WebSocketSignalingClient::connect_to(server_url)
         .await
@@ -148,7 +132,7 @@ pub async fn create_peer_with_vnet(
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_response_receiver(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_hyper::outbound::PeerGate>,
+    gate: Arc<crate::outbound::PeerGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();
@@ -157,16 +141,7 @@ pub fn spawn_response_receiver(
         tracing::info!("🎯 {} response receiver task started", peer_name);
         loop {
             match coordinator.receive_message().await {
-                Ok(Some((sender_id_bytes, message_data, _payload_type))) => {
-                    // Parse sender ID
-                    let sender_id = match ActrId::decode(&sender_id_bytes[..]) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            tracing::error!("{}: Failed to decode sender ID: {}", peer_name, e);
-                            continue;
-                        }
-                    };
-
+                Ok(Some((_sender_id_bytes, message_data, _payload_type))) => {
                     // Parse response envelope
                     match actr_protocol::RpcEnvelope::decode(message_data.as_ref()) {
                         Ok(envelope) => {
@@ -243,7 +218,7 @@ pub fn spawn_response_receiver(
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_echo_responder(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_hyper::outbound::PeerGate>,
+    gate: Arc<crate::outbound::PeerGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();

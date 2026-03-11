@@ -7,7 +7,7 @@
 
 **Actor-RTC Web** is the browser implementation of the Actor-RTC framework, providing an Actor model programming experience consistent with the native version through WebAssembly technology.
 
-[中文文档](./README.zh.md)
+[Chinese Documentation](./README.zh.md)
 
 ---
 
@@ -47,7 +47,7 @@
 - ⏳ Service Worker integration
 - ⏳ More examples (react-echo, todo-app, chat-app)
 
-See: [Completion Status](./docs/architecture/completion-status.md)
+See: [Completion Status](./docs/architecture/completion-status.zh.md)
 
 ---
 
@@ -109,10 +109,10 @@ Project requirements, goals and planning:
 
 For framework contributors and developers seeking deep understanding:
 
-- [Architecture Documentation Index](./docs/architecture/README.md)
-- [Architecture Overview](./docs/architecture/overview.md) - Dual-process model and core components
-- [Technical Decision Records](./docs/architecture/decisions.md) - 9 TDRs
-- [Completion Assessment](./docs/architecture/completion-status.md) - Completion relative to actr Native (78%)
+- [Architecture Documentation Index](./docs/architecture/README.zh.md)
+- [Architecture Overview](./docs/architecture/overview.zh.md) - Dual-process model and core components
+- [Technical Decision Records](./docs/architecture/decisions.zh.md) - 9 TDRs
+- [Completion Assessment](./docs/architecture/completion-status.zh.md) - Completion relative to actr Native (78%)
 
 ---
 

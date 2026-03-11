@@ -2,19 +2,19 @@
 set -euo pipefail
 
 # actr-cli Release Script
-# 用于自动化发布 actr-cli 到 crates.io
+# Automate publishing actr-cli to crates.io
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 颜色输出
+# Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 日志函数
+# Logging helpers
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $*"
 }
@@ -31,37 +31,37 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $*"
 }
 
-# 显示使用方法
+# Show usage
 usage() {
     cat <<EOF
-用法: $0 <版本类型> --actr-version <actr版本> [选项]
+Usage: $0 <version-type> --actr-version <actr-version> [options]
 
-版本类型:
-  patch    递增补丁版本 (0.1.0 -> 0.1.1)
-  minor    递增次版本 (0.1.0 -> 0.2.0)
-  major    递增主版本 (0.1.0 -> 1.0.0)
-  <版本号> 直接指定版本号 (如 1.2.3)
+Version types:
+  patch    Increment the patch version (0.1.0 -> 0.1.1)
+  minor    Increment the minor version (0.1.0 -> 0.2.0)
+  major    Increment the major version (0.1.0 -> 1.0.0)
+  <version> Specify the version directly (for example 1.2.3)
 
-必需参数:
-  --actr-version <版本>  指定依赖的 actr 版本（必须已发布到 crates.io）
+Required arguments:
+  --actr-version <version>  Specify the dependent actr version (it must already be published to crates.io)
 
-选项:
-  --dry-run    只执行验证，不实际发布
-  --no-verify  跳过测试（不推荐）
-  --help       显示此帮助信息
+Options:
+  --dry-run    Validate only, do not publish
+  --no-verify  Skip tests (not recommended)
+  --help       Show this help message
 
-示例:
-  $0 patch --actr-version 0.1.0           # 发布补丁版本
-  $0 minor --actr-version 0.2.0 --dry-run # 测试次版本发布
-  $0 1.0.0 --actr-version 1.0.0           # 直接发布 1.0.0
+Examples:
+  $0 patch --actr-version 0.1.0           # Publish a patch release
+  $0 minor --actr-version 0.2.0 --dry-run # Test a minor release
+  $0 1.0.0 --actr-version 1.0.0           # Publish 1.0.0 directly
 
-注意:
-  发布前请确保对应的 actr 版本已成功发布到 crates.io
+Notes:
+  Before publishing, make sure the corresponding actr version has already been published to crates.io
 EOF
     exit 1
 }
 
-# 解析参数
+# Parse arguments
 VERSION_TYPE=""
 ACTR_VERSION=""
 DRY_RUN=false
@@ -93,28 +93,28 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            log_error "未知参数: $1"
+            log_error "Unknown argument: $1"
             usage
             ;;
     esac
 done
 
 if [[ -z "$VERSION_TYPE" ]]; then
-    log_error "请指定版本类型"
+    log_error "Please specify a version type"
     usage
 fi
 
 if [[ -z "$ACTR_VERSION" ]]; then
-    log_error "请指定 actr 版本（--actr-version）"
+    log_error "Please specify the actr version (--actr-version)"
     usage
 fi
 
-# 获取当前版本
+# Get the current version
 get_current_version() {
     grep '^version = ' Cargo.toml | head -n1 | sed -E 's/version = "(.*)"/\1/'
 }
 
-# 递增版本号
+# Increment the version number
 increment_version() {
     local version=$1
     local type=$2
@@ -137,60 +137,60 @@ increment_version() {
     esac
 }
 
-# 检查 Git 状态
+# Check git status
 check_git_status() {
-    log_info "检查 Git 状态..."
+    log_info "Checking git status..."
 
     if [[ -n $(git status --porcelain) ]]; then
-        log_error "工作目录不干净，请先提交或暂存更改"
+        log_error "Working tree is not clean; commit or stash your changes first"
         git status --short
         exit 1
     fi
 
     local branch=$(git rev-parse --abbrev-ref HEAD)
     if [[ "$branch" != "main" ]]; then
-        log_warn "当前分支不是 main (当前: $branch)"
-        read -p "是否继续? [y/N] " -n 1 -r
+        log_warn "Current branch is not main (current: $branch)"
+        read -p "Continue? [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
     fi
 
-    log_success "Git 状态检查通过"
+    log_success "Git status check passed"
 }
 
-# 更新版本号
+# Update the version number
 update_version() {
     local new_version=$1
 
-    log_info "更新版本号: $CURRENT_VERSION -> $new_version"
+    log_info "Updating version: $CURRENT_VERSION -> $new_version"
 
     sed -i.bak "s/^version = \"$CURRENT_VERSION\"/version = \"$new_version\"/" Cargo.toml
     rm -f Cargo.toml.bak
 
-    log_success "版本号已更新"
+    log_success "Version updated"
 }
 
-# 备份 Cargo.toml
+# Back up Cargo.toml
 backup_cargo_toml() {
-    log_info "备份 Cargo.toml..."
+    log_info "Backing up Cargo.toml..."
     cp Cargo.toml Cargo.toml.release-backup
 }
 
-# 恢复 Cargo.toml
+# Restore Cargo.toml
 restore_cargo_toml() {
     if [[ -f Cargo.toml.release-backup ]]; then
-        log_info "恢复 Cargo.toml..."
+        log_info "Restoring Cargo.toml..."
         mv Cargo.toml.release-backup Cargo.toml
     fi
 }
 
-# 替换 path 依赖为 version 依赖
+# Replace path dependencies with version dependencies
 replace_path_with_version() {
     local actr_version=$1
 
-    log_info "替换 actr path 依赖为 version $actr_version..."
+    log_info "Replacing actr path dependencies with version $actr_version..."
 
     sed -i.tmp \
         -e "s|actr-config = { path = \"../actr/crates/config\" }|actr-config = \"$actr_version\"|g" \
@@ -200,109 +200,109 @@ replace_path_with_version() {
         Cargo.toml
     rm -f Cargo.toml.tmp
 
-    log_success "依赖替换完成"
+    log_success "Dependency replacement completed"
 }
 
-# 运行测试
+# Run tests
 run_tests() {
     if [[ "$NO_VERIFY" == true ]]; then
-        log_warn "跳过测试（--no-verify）"
+        log_warn "Skipping tests (--no-verify)"
         return
     fi
 
-    log_info "运行测试..."
+    log_info "Running tests..."
     cargo test --all-features
-    log_success "测试通过"
+    log_success "Tests passed"
 }
 
-# 验证发布
+# Verify release settings
 verify_publish() {
-    log_info "验证发布配置..."
+    log_info "Verifying release configuration..."
     cargo publish --dry-run --allow-dirty
-    log_success "发布验证通过"
+    log_success "Release verification passed"
 }
 
-# 发布到 crates.io
+# Publish to crates.io
 publish_crate() {
     if [[ "$DRY_RUN" == true ]]; then
-        log_warn "Dry-run 模式，跳过实际发布"
+        log_warn "Dry-run mode: skipping the actual publish"
         return
     fi
 
-    log_info "发布到 crates.io..."
+    log_info "Publishing to crates.io..."
     cargo publish
-    log_success "已发布到 crates.io"
+    log_success "Published to crates.io"
 }
 
-# 创建 Git 标签
+# Create the git tag
 create_git_tag() {
     local version=$1
     local tag="v$version"
 
     if [[ "$DRY_RUN" == true ]]; then
-        log_warn "Dry-run 模式，跳过 Git 标签"
+        log_warn "Dry-run mode: skipping the git tag"
         return
     fi
 
-    log_info "创建 Git 标签: $tag"
+    log_info "Creating git tag: $tag"
 
-    # 提交版本变更
+    # Commit version changes
     git add Cargo.toml Cargo.lock
     git commit -m "Release version $version"
 
-    # 创建标签
+    # Create tag
     git tag -a "$tag" -m "Release $version"
 
-    # 推送到远程
+    # Push to remote
     git push origin HEAD
     git push origin "$tag"
 
-    log_success "Git 标签已创建并推送: $tag"
+    log_success "Git tag created and pushed: $tag"
 }
 
-# 主流程
+# Main flow
 main() {
     log_info "========================================"
     log_info "  actr-cli Release"
     log_info "========================================"
     echo
 
-    # 获取版本信息
+    # Get version information
     CURRENT_VERSION=$(get_current_version)
     NEW_VERSION=$(increment_version "$CURRENT_VERSION" "$VERSION_TYPE")
 
-    log_info "当前版本: $CURRENT_VERSION"
-    log_info "目标版本: $NEW_VERSION"
-    log_info "actr 依赖版本: $ACTR_VERSION"
+    log_info "Current version: $CURRENT_VERSION"
+    log_info "Target version: $NEW_VERSION"
+    log_info "actr dependency version: $ACTR_VERSION"
 
     if [[ "$DRY_RUN" == true ]]; then
-        log_warn "Dry-run 模式：只验证，不实际发布"
+        log_warn "Dry-run mode: validate only, do not publish"
     fi
 
     echo
-    read -p "确认发布 actr-cli v$NEW_VERSION (依赖 actr $ACTR_VERSION)? [y/N] " -n 1 -r
+    read -p "Confirm publishing actr-cli v$NEW_VERSION (depending on actr $ACTR_VERSION)? [y/N] " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_warn "已取消发布"
+        log_warn "Release cancelled"
         exit 0
     fi
 
-    # 执行发布流程
+    # Execute the release flow
     trap restore_cargo_toml ERR EXIT
 
     check_git_status
     backup_cargo_toml
     update_version "$NEW_VERSION"
 
-    log_info "更新 Cargo.lock..."
+    log_info "Updating Cargo.lock..."
     cargo update -p actr-cli
 
-    # Dry-run 模式：使用 path 依赖验证
-    # 实际发布模式：替换为 version 依赖
+    # Dry-run mode: validate with path dependencies
+    # Publish mode: replace them with version dependencies
     if [[ "$DRY_RUN" == false ]]; then
         replace_path_with_version "$ACTR_VERSION"
 
-        log_info "重新更新 Cargo.lock（使用 crates.io 依赖）..."
+        log_info "Updating Cargo.lock again (using crates.io dependencies)..."
         cargo update
     fi
 
@@ -310,11 +310,11 @@ main() {
     verify_publish
     publish_crate
 
-    # 恢复 Cargo.toml（但保留版本号）
+    # Restore Cargo.toml (while keeping the version number)
     restore_cargo_toml
     update_version "$NEW_VERSION"
 
-    log_info "更新最终 Cargo.lock..."
+    log_info "Updating the final Cargo.lock..."
     cargo update -p actr-cli
 
     create_git_tag "$NEW_VERSION"
@@ -323,13 +323,13 @@ main() {
 
     echo
     log_success "========================================"
-    log_success "  actr-cli $NEW_VERSION 发布完成！"
+    log_success "  actr-cli $NEW_VERSION release completed!"
     log_success "========================================"
     echo
 
     if [[ "$DRY_RUN" == false ]]; then
         log_info "Crates.io: https://crates.io/crates/actr-cli"
-        log_info "稍等几分钟后即可使用新版本"
+        log_info "The new version should be available in a few minutes"
     fi
 }
 

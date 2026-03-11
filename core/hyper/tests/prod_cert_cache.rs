@@ -1,36 +1,35 @@
-//! 集成测试：生产模式 MFR 证书缓存 + verify_package 全流程
+//! Integration tests: production mode MFR certificate cache + verify_package full flow
 //!
-//! 覆盖场景：
-//! 1. 缓存 miss → HTTP 拉取 MFR 公钥 → 验证通过
-//! 2. 缓存 hit → 不触发 HTTP → 验证通过
-//! 3. MFR 未注册 → AIS 返回 404 → UntrustedManufacturer
-//! 4. 不同 MFR → 各自独立缓存
-//! 5. HTTP 请求体与响应格式验证
+//! Covered scenarios:
+//! 1. Cache miss -> HTTP fetch MFR public key -> verification passes
+//! 2. Cache hit -> no HTTP triggered -> verification passes
+//! 3. MFR not registered -> AIS returns 404 -> UntrustedManufacturer
+//! 4. Different MFRs -> independent caches
+//! 5. HTTP request body and response format validation
 
 use actr_hyper::{
-    HyperConfig, HyperError, TrustMode, Hyper, MfrCertCache,
-    embed_wasm_manifest, manifest_signed_bytes, PackageManifest,
-    verify::manifest::wasm_binary_hash_excluding_manifest,
+    Hyper, HyperConfig, HyperError, MfrCertCache, PackageManifest, TrustMode, embed_wasm_manifest,
+    manifest_signed_bytes, verify::manifest::wasm_binary_hash_excluding_manifest,
 };
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
-// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn minimal_wasm() -> Vec<u8> {
     b"\0asm\x01\x00\x00\x00".to_vec()
 }
 
-/// 生产模式 HyperConfig，指向 mock AIS 端点
+/// Production mode HyperConfig pointing to a mock AIS endpoint
 fn prod_config(dir: &TempDir, ais_endpoint: &str) -> HyperConfig {
     HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Production {
         ais_endpoint: ais_endpoint.to_string(),
     })
 }
 
-/// 为指定 manufacturer 构建已签名的 WASM，返回 (embedded_wasm, signing_key)
+/// Build a signed WASM for the given manufacturer, returns (embedded_wasm, signing_key)
 fn make_signed_wasm(
     manufacturer: &str,
     actr_name: &str,
@@ -67,16 +66,15 @@ fn make_signed_wasm(
     embed_wasm_manifest(&wasm, &json).unwrap()
 }
 
-/// 构建 actrix MFR verifying_key 响应 body
+/// Build actrix MFR verifying_key response body
 fn verifying_key_response(verifying_key: &ed25519_dalek::VerifyingKey) -> String {
-    let key_b64 = base64::engine::general_purpose::STANDARD
-        .encode(verifying_key.to_bytes());
+    let key_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
     format!(r#"{{"public_key":"{key_b64}"}}"#)
 }
 
-// ─── 测试用例 ─────────────────────────────────────────────────────────────────
+// ─── Test cases ─────────────────────────────────────────────────────────────────
 
-/// 场景 1：生产模式，首次验证 → 从 AIS 拉取 MFR 公钥 → 验证通过
+/// Scenario 1: production mode, first verification -> fetch MFR public key from AIS -> passes
 #[tokio::test]
 async fn production_mode_fetches_mfr_key_and_verifies() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -88,16 +86,14 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&verifying_key))
-        .expect(1) // 只调用一次
+        .expect(1) // called exactly once
         .create_async()
         .await;
 
     let signed_wasm = make_signed_wasm("acme", "Sensor", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     let manifest = hyper.verify_package(&signed_wasm).await.unwrap();
 
@@ -107,7 +103,7 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     assert_eq!(manifest.version, "1.0.0");
 }
 
-/// 场景 2：连续两次验证同一 manufacturer → 第二次使用缓存，不触发 HTTP
+/// Scenario 2: two consecutive verifications for the same manufacturer -> second uses cache, no HTTP
 #[tokio::test]
 async fn production_mode_caches_mfr_key_on_second_verify() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -119,26 +115,24 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&verifying_key))
-        .expect(1) // 只调用一次，第二次走缓存
+        .expect(1) // called exactly once; second time uses cache
         .create_async()
         .await;
 
     let signed_wasm = make_signed_wasm("cached-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    // 第一次：miss → HTTP
+    // First: miss -> HTTP
     hyper.verify_package(&signed_wasm).await.unwrap();
-    // 第二次：hit → no HTTP
+    // Second: hit -> no HTTP
     hyper.verify_package(&signed_wasm).await.unwrap();
 
-    mock.assert_async().await; // 验证只调用了一次
+    mock.assert_async().await; // verify it was called only once
 }
 
-/// 场景 3：MFR 未注册（AIS 返回 404）→ UntrustedManufacturer
+/// Scenario 3: MFR not registered (AIS returns 404) -> UntrustedManufacturer
 #[tokio::test]
 async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -153,27 +147,25 @@ async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let signed_wasm = make_signed_wasm("unknown-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&signed_wasm).await;
 
     assert!(
         matches!(result, Err(HyperError::UntrustedManufacturer(_))),
-        "未知 MFR 应返回 UntrustedManufacturer，实际: {result:?}"
+        "unknown MFR should return UntrustedManufacturer, got: {result:?}"
     );
 }
 
-/// 场景 4：正确 MFR 公钥 → 验证通过；错误公钥（已缓存）→ 签名不匹配
+/// Scenario 4: correct MFR public key -> passes; wrong key (cached) -> signature mismatch
 #[tokio::test]
 async fn production_mode_rejects_wrong_cached_key() {
     let real_signing_key = SigningKey::generate(&mut OsRng);
-    let wrong_key = SigningKey::generate(&mut OsRng); // 不同密钥
+    let wrong_key = SigningKey::generate(&mut OsRng); // different key
 
     let mut server = mockito::Server::new_async().await;
 
-    // AIS 返回 wrong_key 的公钥
+    // AIS returns wrong_key's public key
     server
         .mock("GET", "/mfr/mfr-x/verifying_key")
         .with_status(200)
@@ -182,23 +174,21 @@ async fn production_mode_rejects_wrong_cached_key() {
         .create_async()
         .await;
 
-    // WASM 用 real_signing_key 签名
+    // WASM signed with real_signing_key
     let signed_wasm = make_signed_wasm("mfr-x", "X", "1.0.0", &real_signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&signed_wasm).await;
 
     assert!(
         matches!(result, Err(HyperError::SignatureVerificationFailed(_))),
-        "错误公钥应返回 SignatureVerificationFailed，实际: {result:?}"
+        "wrong public key should return SignatureVerificationFailed, got: {result:?}"
     );
 }
 
-/// 场景 5：两个不同 MFR，各自有独立密钥 → 各自验证通过
+/// Scenario 5: two different MFRs with independent keys -> each verifies independently
 #[tokio::test]
 async fn production_mode_independent_caches_per_manufacturer() {
     let key_a = SigningKey::generate(&mut OsRng);
@@ -224,9 +214,7 @@ async fn production_mode_independent_caches_per_manufacturer() {
     let wasm_b = make_signed_wasm("mfr-b", "ActorB", "1.0.0", &key_b);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     let manifest_a = hyper.verify_package(&wasm_a).await.unwrap();
     let manifest_b = hyper.verify_package(&wasm_b).await.unwrap();
@@ -235,7 +223,7 @@ async fn production_mode_independent_caches_per_manufacturer() {
     assert_eq!(manifest_b.manufacturer, "mfr-b");
 }
 
-/// 独立测试 MfrCertCache：get_from_cache 在预取后同步可读
+/// Standalone MfrCertCache test: get_from_cache is synchronously readable after prefetch
 #[tokio::test]
 async fn cert_cache_get_from_cache_after_prefetch() {
     use ed25519_dalek::VerifyingKey;
@@ -254,39 +242,37 @@ async fn cert_cache_get_from_cache_after_prefetch() {
 
     let cache = MfrCertCache::new(server.url());
 
-    // get_from_cache 在预取前返回 None
+    // get_from_cache returns None before prefetch
     let before = cache.get_from_cache("sync-mfr");
-    assert!(before.is_none(), "预取前缓存应为空");
+    assert!(before.is_none(), "cache should be empty before prefetch");
 
-    // 预取
+    // prefetch
     cache.get_or_fetch("sync-mfr").await.unwrap();
 
-    // get_from_cache 现在同步返回公钥
+    // get_from_cache now synchronously returns the public key
     let after: Option<VerifyingKey> = cache.get_from_cache("sync-mfr");
-    assert!(after.is_some(), "预取后缓存应命中");
+    assert!(after.is_some(), "cache should hit after prefetch");
     assert_eq!(
         after.unwrap().to_bytes(),
         verifying_key.to_bytes(),
-        "缓存公钥应与签名密钥对应"
+        "cached public key should match the signing key"
     );
 }
 
-/// 无 manifest section 的 WASM 在生产模式下不触发 HTTP（quick_extract 返回 None）
+/// WASM without manifest section does not trigger HTTP in production mode (quick_extract returns None)
 #[tokio::test]
 async fn production_mode_no_http_for_unsigned_wasm() {
-    let mut server = mockito::Server::new_async().await;
-    // 不设置任何 mock endpoint，若触发 HTTP 则测试失败
+    let server = mockito::Server::new_async().await;
+    // No mock endpoints set; if HTTP is triggered, the test fails
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url()))
-        .await
-        .unwrap();
+    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    // 无 manifest section 的 WASM → 不会触发 HTTP（quick_extract 返回 None）
-    // 直接进入 verify，返回 ManifestNotFound
+    // WASM without manifest section -> no HTTP triggered (quick_extract returns None)
+    // Goes directly to verify, returns ManifestNotFound
     let result = hyper.verify_package(b"\0asm\x01\x00\x00\x00").await;
     assert!(
         matches!(result, Err(HyperError::ManifestNotFound)),
-        "无 manifest 应返回 ManifestNotFound，实际: {result:?}"
+        "no manifest should return ManifestNotFound, got: {result:?}"
     );
 }

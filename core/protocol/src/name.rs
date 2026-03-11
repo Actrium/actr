@@ -4,25 +4,25 @@ use std::str::FromStr;
 use thiserror::Error;
 
 // Protobuf Package name
-// 语法要求：由字母、数字和下划线组成，各部分用 . 分隔（类似 Java 包名）
-// 命名规范：
-// - 全小写
-// - 建议采用反向域名形式（如 com.example.project）避免冲突
-// - 不能以数字开头，不能包含除 . 和 _ 外的特殊字符
+// Syntax: composed of letters, digits and underscores, segments separated by '.' (similar to Java package names)
+// Naming conventions:
+// - All lowercase
+// - Reverse domain name form recommended (e.g. com.example.project) to avoid conflicts
+// - Must not start with a digit, no special characters other than '.' and '_'
 
 // Protobuf Service name
-// 语法要求：由字母、数字和下划线组成
-// 命名规范：
-// - 采用 PascalCase（帕斯卡命名法，首字母大写）
-// - 通常使用名词或名词短语
-// - 不能以数字开头，不能包含特殊字符
+// Syntax: composed of letters, digits and underscores
+// Naming conventions:
+// - PascalCase (first letter uppercase)
+// - Typically nouns or noun phrases
+// - Must not start with a digit, no special characters
 
 // Protobuf Method name
-// 语法要求：由字母、数字和下划线组成
-// 命名规范：
-// - 采用 camelCase（驼峰命名法，首字母小写）
-// - 通常使用动词或动词短语
-// - 不能以数字开头，不能包含特殊字符
+// Syntax: composed of letters, digits and underscores
+// Naming conventions:
+// - camelCase (first letter lowercase)
+// - Typically verbs or verb phrases
+// - Must not start with a digit, no special characters
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct PackageName(String);

@@ -251,10 +251,10 @@ async fn credential_refresh_task(
                 Some(actr_protocol::register_response::Result::Success(register_ok)) => {
                     let new_credential = register_ok.credential;
                     let new_expires_at = register_ok.credential_expires_at;
-                    // TurnCredential 为 required proto 字段，直接包装为 Some
+                    // TurnCredential is a required proto field; wrap as Some directly
                     let new_turn_credential = Some(register_ok.turn_credential);
 
-                    // 更新共享凭证状态，同步更新 TURN 凭证
+                    // Update shared credential state, synchronously updating TURN credential
                     credential_state
                         .update(new_credential.clone(), new_expires_at, new_turn_credential)
                         .await;
@@ -264,7 +264,7 @@ async fn credential_refresh_task(
                         actor_id.serial_number,
                     );
 
-                    tracing::debug!("🔑 TurnCredential 已更新，TURN 认证就绪");
+                    tracing::debug!("TurnCredential updated, TURN authentication ready");
 
                     if let Some(expires_at) = &new_expires_at {
                         tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
@@ -349,15 +349,15 @@ async fn re_register_task(
                 let new_actor_id = register_ok.actr_id.clone();
                 let new_credential = register_ok.credential;
                 let new_expires_at = register_ok.credential_expires_at;
-                // TurnCredential 为 required proto 字段，直接包装为 Some
+                // TurnCredential is a required proto field; wrap as Some directly
                 let new_turn_credential = Some(register_ok.turn_credential);
 
-                // 更新共享凭证状态，同步更新 TURN 凭证
+                // Update shared credential state, synchronously updating TURN credential
                 credential_state
                     .update(new_credential.clone(), new_expires_at, new_turn_credential)
                     .await;
 
-                // 更新 signaling client 身份信息，使后续自动重连携带正确凭证
+                // Update signaling client identity info so subsequent auto-reconnects carry correct credentials
                 client.set_actor_id(new_actor_id.clone()).await;
                 client.set_credential_state(credential_state.clone()).await;
 
@@ -366,7 +366,7 @@ async fn re_register_task(
                     new_actor_id.to_string_repr(),
                 );
 
-                tracing::debug!("🔑 TurnCredential 已更新，TURN 认证就绪");
+                tracing::debug!("TurnCredential updated, TURN authentication ready");
 
                 if let Some(expires_at) = &new_expires_at {
                     tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);

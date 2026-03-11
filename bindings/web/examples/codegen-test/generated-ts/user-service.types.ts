@@ -1,27 +1,27 @@
 /**
- * 自动生成的类型定义
- * 服务: UserService
- * 包: example.user.v1
+ * 
+ * : UserService
+ * : example.user.v1
  *
- * ⚠️  请勿手动编辑此文件
+ * ⚠️  
  */
 
 /**
- * GetUserRequest 消息
+ * GetUserRequest 
  */
 export interface GetUserRequest {
   user_id: string;
 }
 
 /**
- * GetUserResponse 消息
+ * GetUserResponse 
  */
 export interface GetUserResponse {
   user: User;
 }
 
 /**
- * CreateUserRequest 消息
+ * CreateUserRequest 
  */
 export interface CreateUserRequest {
   name: string;
@@ -31,14 +31,14 @@ export interface CreateUserRequest {
 }
 
 /**
- * CreateUserResponse 消息
+ * CreateUserResponse 
  */
 export interface CreateUserResponse {
   user: User;
 }
 
 /**
- * UpdateUserRequest 消息
+ * UpdateUserRequest 
  */
 export interface UpdateUserRequest {
   user_id: string;
@@ -48,7 +48,7 @@ export interface UpdateUserRequest {
 }
 
 /**
- * UpdateUserResponse 消息
+ * UpdateUserResponse 
  */
 export interface UpdateUserResponse {
   user: User;
@@ -56,21 +56,21 @@ export interface UpdateUserResponse {
 }
 
 /**
- * DeleteUserRequest 消息
+ * DeleteUserRequest 
  */
 export interface DeleteUserRequest {
   user_id: string;
 }
 
 /**
- * DeleteUserResponse 消息
+ * DeleteUserResponse 
  */
 export interface DeleteUserResponse {
   deleted: boolean;
 }
 
 /**
- * ListUsersRequest 消息
+ * ListUsersRequest 
  */
 export interface ListUsersRequest {
   page: number;
@@ -79,14 +79,14 @@ export interface ListUsersRequest {
 }
 
 /**
- * WatchUsersRequest 消息
+ * WatchUsersRequest 
  */
 export interface WatchUsersRequest {
   user_ids: string[];
 }
 
 /**
- * User 消息
+ * User 
  */
 export interface User {
   id: string;
@@ -100,7 +100,7 @@ export interface User {
 }
 
 /**
- * UserEvent 消息
+ * UserEvent 
  */
 export interface UserEvent {
   event_type: string;

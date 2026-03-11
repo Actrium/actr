@@ -1,13 +1,13 @@
-//! WasmContext - WASM 客体侧 Context 实现
+//! WasmContext - WASM guest-side Context implementation
 //!
-//! 通过 host imports 实现 `Context` trait，使 actor 业务代码在 wasm32 目标下
-//! 以与 native 完全相同的接口运行。
+//! Implements the `Context` trait via host imports, allowing actor business code
+//! to run with the exact same interface on the wasm32 target as on native.
 //!
-//! # 设计要点
+//! # Design notes
 //!
-//! - 在 `actr_handle` 入口处构建，通过 host import 获取并缓存上下文数据
-//! - `call/tell` 等通信方法通过 host import 实现，asyncify 保证调用对上层透明
-//! - WebRTC 媒体相关方法在 WASM 环境下不支持，返回 `NotImplemented`
+//! - Constructed at `actr_handle` entry point, obtains and caches context data via host imports
+//! - `call/tell` communication methods implemented via host imports; asyncify ensures transparency to upper layers
+//! - WebRTC media-related methods are not supported in WASM environment, returning `NotImplemented`
 
 use actr_framework::{Context, Dest, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType};
@@ -18,10 +18,10 @@ use prost::Message as ProstMessage;
 
 use crate::imports;
 
-/// WASM 客体侧 actor 执行上下文
+/// WASM guest-side actor execution context
 ///
-/// 在每次 `actr_handle` 调用时构建，持有本次调用的上下文数据。
-/// 实现 `Context` trait，actor 业务代码无需感知底层 WASM 环境。
+/// Constructed on each `actr_handle` call, holds context data for the current invocation.
+/// Implements `Context` trait so actor business code need not be aware of the underlying WASM environment.
 #[derive(Clone)]
 pub struct WasmContext {
     self_id: ActrId,
@@ -30,7 +30,7 @@ pub struct WasmContext {
 }
 
 impl WasmContext {
-    /// 在 `actr_handle` 入口处调用，通过 host import 获取本次调用的上下文数据
+    /// Called at `actr_handle` entry to obtain current call context data via host imports
     pub fn from_host() -> Result<Self, ActrError> {
         let self_id = fetch_self_id()?;
         let caller_id = fetch_caller_id()?;
@@ -43,30 +43,32 @@ impl WasmContext {
     }
 }
 
-// ── 上下文数据获取辅助函数 ────────────────────────────────────────────────────
+// -- Context data fetch helper functions ------------------------------------------
 
 fn fetch_self_id() -> Result<ActrId, ActrError> {
     let mut buf = vec![0u8; 256];
     let n = unsafe { imports::actr_host_self_id(buf.as_mut_ptr() as i32, buf.len() as i32) };
     if n <= 0 {
-        return Err(ActrError::Internal("actr_host_self_id 返回空".into()));
+        return Err(ActrError::Internal(
+            "actr_host_self_id returned empty".into(),
+        ));
     }
     ActrId::decode(&buf[..n as usize])
-        .map_err(|e| ActrError::Internal(format!("self_id decode 失败: {e}")))
+        .map_err(|e| ActrError::Internal(format!("self_id decode failed: {e}")))
 }
 
 fn fetch_caller_id() -> Result<Option<ActrId>, ActrError> {
     let mut buf = vec![0u8; 256];
     let n = unsafe { imports::actr_host_caller_id(buf.as_mut_ptr() as i32, buf.len() as i32) };
     if n < 0 {
-        // -1 表示无调用方（系统内部调用，如生命周期钩子）
+        // -1 means no caller (internal system call, e.g., lifecycle hooks)
         return Ok(None);
     }
     if n == 0 {
-        return Err(ActrError::Internal("actr_host_caller_id 返回 0".into()));
+        return Err(ActrError::Internal("actr_host_caller_id returned 0".into()));
     }
     let id = ActrId::decode(&buf[..n as usize])
-        .map_err(|e| ActrError::Internal(format!("caller_id decode 失败: {e}")))?;
+        .map_err(|e| ActrError::Internal(format!("caller_id decode failed: {e}")))?;
     Ok(Some(id))
 }
 
@@ -77,14 +79,14 @@ fn fetch_request_id() -> Result<String, ActrError> {
         return Ok(String::new());
     }
     String::from_utf8(buf[..n as usize].to_vec())
-        .map_err(|e| ActrError::Internal(format!("request_id UTF-8 解码失败: {e}")))
+        .map_err(|e| ActrError::Internal(format!("request_id UTF-8 decode failed: {e}")))
 }
 
-// ── Dest 序列化 ───────────────────────────────────────────────────────────────
+// -- Dest serialization -----------------------------------------------------------
 
-/// 将 Dest 编码为字节序列，供 host import 使用
+/// Encode Dest as a byte sequence for host import use
 ///
-/// 格式：`[tag: u8] [ActrId protobuf bytes (仅 Actor 变体)]`
+/// Format: `[tag: u8] [ActrId protobuf bytes (Actor variant only)]`
 /// - `0x00` = Shell
 /// - `0x01` = Local
 /// - `0x02` + protobuf ActrId bytes = Actor(id)
@@ -100,7 +102,7 @@ pub fn encode_dest(dest: &Dest) -> Vec<u8> {
     }
 }
 
-// ── Context impl ─────────────────────────────────────────────────────────────
+// -- Context impl -----------------------------------------------------------------
 
 #[async_trait]
 impl Context for WasmContext {
@@ -125,7 +127,7 @@ impl Context for WasmContext {
         let payload = request.encode_to_vec();
         let dest_bytes = encode_dest(target);
 
-        // 预分配响应缓冲区（最大 64 KB，足够绝大多数 RPC 响应）
+        // Pre-allocate response buffer (max 64 KB, sufficient for most RPC responses)
         let mut resp_buf = vec![0u8; 64 * 1024];
         let mut resp_len: i32 = 0;
 
@@ -149,7 +151,7 @@ impl Context for WasmContext {
 
         resp_buf.truncate(resp_len as usize);
         R::Response::decode(resp_buf.as_slice())
-            .map_err(|e| ActrError::DecodeFailure(format!("响应 decode 失败: {e}")))
+            .map_err(|e| ActrError::DecodeFailure(format!("response decode failed: {e}")))
     }
 
     async fn tell<R: actr_protocol::RpcRequest>(
@@ -182,16 +184,16 @@ impl Context for WasmContext {
     where
         F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
-        // DataStream 回调注册在 WASM 环境下暂不支持
-        // 需要宿主侧额外协议支持，待后续版本实现
+        // DataStream callback registration is not yet supported in WASM environment
+        // Requires additional host-side protocol support, to be implemented in future versions
         Err(ActrError::NotImplemented(
-            "register_stream 在 WASM 环境下暂不支持".into(),
+            "register_stream is not supported in WASM environment".into(),
         ))
     }
 
     async fn unregister_stream(&self, _stream_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "unregister_stream 在 WASM 环境下暂不支持".into(),
+            "unregister_stream is not supported in WASM environment".into(),
         ))
     }
 
@@ -202,7 +204,7 @@ impl Context for WasmContext {
         _payload_type: PayloadType,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "send_data_stream 在 WASM 环境下暂不支持".into(),
+            "send_data_stream is not supported in WASM environment".into(),
         ))
     }
 
@@ -224,7 +226,7 @@ impl Context for WasmContext {
         }
 
         ActrId::decode(&out_buf[..n as usize])
-            .map_err(|e| ActrError::DecodeFailure(format!("discover 结果 decode 失败: {e}")))
+            .map_err(|e| ActrError::DecodeFailure(format!("discover result decode failed: {e}")))
     }
 
     async fn call_raw(
@@ -259,20 +261,20 @@ impl Context for WasmContext {
         Ok(Bytes::from(resp_buf))
     }
 
-    // ── WebRTC 媒体方法（WASM 环境不支持）──────────────────────────────────────
+    // -- WebRTC media methods (not supported in WASM environment) -----------------
 
     async fn register_media_track<F>(&self, _track_id: String, _callback: F) -> ActorResult<()>
     where
         F: Fn(MediaSample, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 WASM 环境下不支持".into(),
+            "WebRTC media tracks are not supported in WASM environment".into(),
         ))
     }
 
     async fn unregister_media_track(&self, _track_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 WASM 环境下不支持".into(),
+            "WebRTC media tracks are not supported in WASM environment".into(),
         ))
     }
 
@@ -283,7 +285,7 @@ impl Context for WasmContext {
         _sample: MediaSample,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 WASM 环境下不支持".into(),
+            "WebRTC media tracks are not supported in WASM environment".into(),
         ))
     }
 
@@ -295,30 +297,30 @@ impl Context for WasmContext {
         _media_type: &str,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 WASM 环境下不支持".into(),
+            "WebRTC media tracks are not supported in WASM environment".into(),
         ))
     }
 
     async fn remove_media_track(&self, _target: &Dest, _track_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 WASM 环境下不支持".into(),
+            "WebRTC media tracks are not supported in WASM environment".into(),
         ))
     }
 }
 
-// ── 错误码转换 ────────────────────────────────────────────────────────────────
+// -- Error code conversion --------------------------------------------------------
 
-/// 将 ABI 错误码（来自 host import 返回值）转换为 `ActrError`
+/// Convert ABI error code (from host import return value) to `ActrError`
 fn abi_error_to_actr(code: i32) -> ActrError {
     use crate::abi::code;
     match code {
-        code::GENERIC_ERROR => ActrError::Internal("WASM host 返回通用错误".into()),
-        code::INIT_FAILED => ActrError::Internal("WASM host 初始化失败".into()),
-        code::HANDLE_FAILED => ActrError::Internal("WASM host 消息处理失败".into()),
-        code::ALLOC_FAILED => ActrError::Internal("WASM host 内存分配失败".into()),
-        code::PROTOCOL_ERROR => ActrError::DecodeFailure("WASM host 协议错误".into()),
-        // discover 相关：返回 0 或负值均表示未找到
-        n if n <= 0 => ActrError::NotFound(format!("discover 无可用候选（code={n}）")),
-        _ => ActrError::Internal(format!("WASM host 未知错误码 {code}")),
+        code::GENERIC_ERROR => ActrError::Internal("WASM host returned generic error".into()),
+        code::INIT_FAILED => ActrError::Internal("WASM host initialization failed".into()),
+        code::HANDLE_FAILED => ActrError::Internal("WASM host message handling failed".into()),
+        code::ALLOC_FAILED => ActrError::Internal("WASM host memory allocation failed".into()),
+        code::PROTOCOL_ERROR => ActrError::DecodeFailure("WASM host protocol error".into()),
+        // discover: 0 or negative means not found
+        n if n <= 0 => ActrError::NotFound(format!("discover found no candidates (code={n})")),
+        _ => ActrError::Internal(format!("WASM host unknown error code {code}")),
     }
 }

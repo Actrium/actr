@@ -31,10 +31,10 @@ tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
 tracing_service_name = "ws-echo-client-app"
 
-# 客户端不需要配置 websocket listen_port（不作为服务端）
-# 服务端的 ws_address 会通过信令服务发现，客户端自动使用 WebSocket 直连
+# The client does not need websocket listen_port (it does not act as a server)
+# The server ws_address is discovered through the signaling service, and the client connects to it directly over WebSocket
 
-# ACL 配置 - 允许 WsEchoService 服务器响应
+# ACL configuration - allow responses from the WsEchoService server
 [acl]
 
 [[acl.rules]]

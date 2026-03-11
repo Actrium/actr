@@ -135,17 +135,17 @@ cargo run
 
 **Expected output**:
 ```
-🚀 Actr B (Receiver) 启动
-⚙️  创建配置...
-✅ 配置已创建
-🏗️  创建 ActrSystem...
-✅ ActrSystem 创建成功
-📦 创建 RelayService...
-✅ RelayService 已附加
-🚀 启动 ActrNode...
-✅ ActrNode 启动成功！
-🎉 Actr B 已完全启动并注册到 signaling server
-📥 等待 Actr A 发送媒体帧...
+🚀 Actr B (Receiver) started
+⚙️  Creating configuration...
+✅ Configuration created
+🏗️  Creating ActrSystem...
+✅ ActrSystem created successfully
+📦 Creating RelayService...
+✅ RelayService attached
+🚀 Starting ActrNode...
+✅ ActrNode started successfully
+🎉 Actr B is fully started and registered with the signaling server
+📥 Waiting for media frames from Actr A...
 ```
 
 ### Run actr-a (Relay) - Mock Mode
@@ -157,15 +157,15 @@ cargo run
 
 **Expected output**:
 ```
-🚀 Actr A (Relay/Shell Client) 启动
-📝 使用真实的 ActrRef Shell API
-📡 将通过 WebRTC P2P 发送媒体帧到 Actr B
-⏳ 等待 5 秒，确保 Actr B 已启动...
-📤 开始发送媒体帧...
-📹 帧 #0: 230400 bytes, ts=0, codec=VP8
-   [TODO] 需要真实的 ActrRef 才能发送
+🚀 Actr A (Relay/Shell Client) started
+📝 Using the real ActrRef Shell API
+📡 Media frames will be sent to Actr B over WebRTC P2P
+⏳ Waiting 5 seconds to ensure Actr B is ready...
+📤 Starting media frame transmission...
+📹 Frame #0: 230400 bytes, ts=0, codec=VP8
+   [TODO] Requires a real ActrRef to send
 ...
-✅ Actr A 完成发送 10 帧
+✅ Actr A finished sending 10 frames
 ```
 
 ## Files Overview

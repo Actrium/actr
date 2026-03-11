@@ -1,6 +1,6 @@
-//! HostGate - 进程内传输适配器（出站）
+//! HostGate - in-process outbound transport adapter.
 //!
-//! Web 版本的 HostGate，用于 SW 内部 Actor 之间的通信
+//! Web-specific HostGate for communication between actors inside the Service Worker.
 
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
@@ -10,43 +10,43 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use actr_framework::MediaSample;
-/// HostGate - 进程内传输适配器
+/// HostGate - in-process transport adapter.
 ///
-/// # 设计说明
+/// # Design notes
 ///
-/// Web 版本的 HostGate 与 actr 版本类似，但有以下区别：
-/// - 使用 JS 环境的异步原语（futures::channel）
-/// - 不需要 mpsc channel（因为 SW 是单线程的）
-/// - 通过 request_id 映射实现请求-响应模式
+/// The Web version of HostGate is similar to the core actr version, but differs in that it:
+/// - Uses JS/WASM-friendly async primitives (`futures::channel`)
+/// - Does not require an mpsc channel because the SW environment is single-threaded
+/// - Implements request/response matching through `request_id`
 ///
-/// # 通信模式
+/// # Communication modes
 ///
-/// 1. **请求-响应（send_request）**：
-///    - 创建 oneshot channel
-///    - 将 request_id → sender 注册到 pending_requests
-///    - 发送请求到目标 Actor
-///    - 等待响应
+/// 1. **Request/response (`send_request`)**
+///    - Create a oneshot channel
+///    - Register `request_id -> sender` in `pending_requests`
+///    - Send the request to the target actor
+///    - Wait for the response
 ///
-/// 2. **单向消息（send_message）**：
-///    - 直接发送，不等待响应
+/// 2. **One-way message (`send_message`)**
+///    - Send directly without waiting for a response
 ///
-/// 3. **DataStream（Fast Path）**：
-///    - 绕过序列化，直接传递 bytes
+/// 3. **DataStream (Fast Path)**
+///    - Bypass serialization and pass bytes directly
 pub struct HostGate {
     /// Pending requests: request_id → oneshot sender
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Bytes>>>>,
 
-    /// 消息处理回调（由 System 设置）
-    /// 接收 (target_id, envelope) 并将其路由到目标 Actor
+    /// Message handling callback installed by System.
+    /// Receives `(target_id, envelope)` and routes it to the target actor.
     message_handler: Arc<Mutex<Option<MessageHandler>>>,
 }
 
-/// 消息处理回调类型
-/// 注意：WASM/Service Worker 是单线程环境，不需要 Send + Sync
+/// Message handling callback type.
+/// No `Send + Sync` is required in the single-threaded WASM/Service Worker environment.
 pub type MessageHandler = Box<dyn Fn(ActrId, RpcEnvelope)>;
 
 impl HostGate {
-    /// 创建新的 HostGate
+    /// Create a new HostGate.
     pub fn new() -> Self {
         Self {
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -54,13 +54,13 @@ impl HostGate {
         }
     }
 
-    /// 设置消息处理回调
+    /// Set the message handling callback.
     ///
-    /// # 参数
-    /// - `handler`: 接收 (target_id, envelope) 的回调函数
+    /// # Parameters
+    /// - `handler`: Callback receiving `(target_id, envelope)`
     ///
-    /// # 用途
-    /// System 初始化时调用，将消息路由到对应的 Actor
+    /// # Purpose
+    /// Called during System initialization to route messages to the appropriate actor.
     pub fn set_message_handler<F>(&self, handler: F)
     where
         F: Fn(ActrId, RpcEnvelope) + 'static,
@@ -69,13 +69,13 @@ impl HostGate {
         *guard = Some(Box::new(handler));
     }
 
-    /// 发送请求并等待响应
+    /// Send a request and wait for the response.
     ///
-    /// # 实现说明
-    /// 1. 创建 oneshot channel
-    /// 2. 注册 pending request
-    /// 3. 调用 message_handler 发送请求
-    /// 4. 等待响应
+    /// # Implementation
+    /// 1. Create a oneshot channel
+    /// 2. Register the pending request
+    /// 3. Invoke `message_handler` to deliver the request
+    /// 4. Wait for the response
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         log::debug!(
             "HostGate::send_request to {:?}, request_id={}",
@@ -83,16 +83,16 @@ impl HostGate {
             envelope.request_id
         );
 
-        // 1. 创建 oneshot channel
+        // 1. Create a oneshot channel.
         let (tx, rx) = oneshot::channel();
 
-        // 2. 注册 pending request
+        // 2. Register the pending request.
         {
             let mut pending = self.pending_requests.lock();
             pending.insert(envelope.request_id.clone(), tx);
         }
 
-        // 3. 发送请求到目标 Actor
+        // 3. Send the request to the target actor.
         {
             let guard = self.message_handler.lock();
             match guard.as_ref() {
@@ -100,8 +100,8 @@ impl HostGate {
                     handler(target.clone(), envelope);
                 }
                 None => {
-                    // 清理 pending request
-                    drop(guard); // 释放锁
+                    // Clean up the pending request.
+                    drop(guard); // Release the lock.
                     self.pending_requests.lock().remove(&envelope.request_id);
 
                     return Err(ActrError::Unavailable(
@@ -111,7 +111,7 @@ impl HostGate {
             }
         }
 
-        // 4. 等待响应
+        // 4. Wait for the response.
         let response = rx
             .await
             .map_err(|_| ActrError::Unavailable("Response channel closed".to_string()))?;
@@ -119,7 +119,7 @@ impl HostGate {
         Ok(response)
     }
 
-    /// 发送单向消息（不等待响应）
+    /// Send a one-way message without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         log::debug!(
             "HostGate::send_message to {:?}, request_id={}",
@@ -127,7 +127,7 @@ impl HostGate {
             envelope.request_id
         );
 
-        // 获取 message_handler 并调用
+        // Fetch and invoke the message_handler.
         let guard = self.message_handler.lock();
         match guard.as_ref() {
             Some(handler) => {
@@ -140,12 +140,12 @@ impl HostGate {
         }
     }
 
-    /// 发送 DataStream（Fast Path）
+    /// Send a DataStream through the Fast Path.
     ///
-    /// # 参数
-    /// - `target`: 目标 Actor ID
-    /// - `payload_type`: PayloadType (StreamReliable 或 StreamLatencyFirst)
-    /// - `data`: 序列化后的 DataStream bytes
+    /// # Parameters
+    /// - `target`: Target actor ID
+    /// - `payload_type`: PayloadType (`StreamReliable` or `StreamLatencyFirst`)
+    /// - `data`: Serialized DataStream bytes
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -158,7 +158,7 @@ impl HostGate {
             data.len()
         );
 
-        // 暂时通过 RpcEnvelope 发送（未来可优化为 Fast Path）
+        // Temporarily send through RpcEnvelope. This can be optimized further later.
         let envelope = RpcEnvelope {
             route_key: "__fast_path_data_stream__".to_string(),
             payload: Some(data),
@@ -173,10 +173,10 @@ impl HostGate {
         self.send_message(target, envelope).await
     }
 
-    /// 发送 MediaSample（Fast Path）
+    /// Send a MediaSample through the Fast Path.
     ///
-    /// # 参数
-    /// - `target`: 目标 Actor ID
+    /// # Parameters
+    /// - `target`: Target actor ID
     /// - `track_id`: Track ID
     /// - `sample`: Media sample
     pub async fn send_media_sample(
@@ -196,14 +196,14 @@ impl HostGate {
         ))
     }
 
-    /// 处理接收到的响应
+    /// Handle a received response.
     ///
-    /// # 用途
-    /// System 收到响应时调用，匹配 pending request 并发送响应
+    /// # Purpose
+    /// Called by System when a response arrives so it can resolve the matching pending request.
     pub fn handle_response(&self, request_id: &str, response: Bytes) {
         let mut pending = self.pending_requests.lock();
         if let Some(tx) = pending.remove(request_id) {
-            let _ = tx.send(response); // 忽略错误（接收方可能已取消）
+            let _ = tx.send(response); // Ignore send failure if the receiver was dropped.
         } else {
             log::warn!("Received response for unknown request_id: {}", request_id);
         }
@@ -229,6 +229,6 @@ mod tests {
     fn test_handle_response_unknown_request() {
         let gate = HostGate::new();
         gate.handle_response("unknown-id", Bytes::from("test"));
-        // 应该只输出 warning，不应该 panic
+        // This should only log a warning and must not panic.
     }
 }

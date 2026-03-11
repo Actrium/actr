@@ -1,11 +1,11 @@
-//! 集成测试：PSK Bootstrap 两阶段全流程
+//! Integration tests: PSK Bootstrap two-phase full flow
 //!
-//! 覆盖场景：
-//! 1. 首次注册：无 PSK → manifest auth → AIS 下发 credential + PSK → 存储
-//! 2. PSK 续期：有效 PSK → PSK auth → AIS 下发新 credential（无新 PSK）
-//! 3. PSK 过期：PSK 过期 → 回落到 manifest auth → AIS 下发 credential + 新 PSK
-//! 4. PSK 更新：首次注册后再次注册 → 使用新拿到的 PSK
-//! 5. AIS 错误：AIS 返回错误 → 正确传播 HyperError
+//! Covered scenarios:
+//! 1. First registration: no PSK -> manifest auth -> AIS issues credential + PSK -> stored
+//! 2. PSK renewal: valid PSK -> PSK auth -> AIS issues new credential (no new PSK)
+//! 3. PSK expired: PSK expired -> fallback to manifest auth -> AIS issues credential + new PSK
+//! 4. PSK update: after first registration, register again -> uses newly obtained PSK
+//! 5. AIS error: AIS returns error -> correctly propagates HyperError
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +15,7 @@ use prost::Message;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
-// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn dev_config(dir: &TempDir) -> HyperConfig {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -43,7 +43,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// 构建合法的 RegisterResponse protobuf bytes
+/// Build valid RegisterResponse protobuf bytes
 fn make_register_response(with_psk: bool, psk_bytes: Option<&[u8]>) -> Vec<u8> {
     use actr_protocol::{
         AIdCredential, ActrId, ActrType, IdentityClaims, Realm, RegisterResponse, TurnCredential,
@@ -90,7 +90,7 @@ fn make_register_response(with_psk: bool, psk_bytes: Option<&[u8]>) -> Vec<u8> {
     if with_psk {
         let psk = psk_bytes.unwrap_or(b"server-generated-psk");
         ok.psk = Some(psk.to_vec().into());
-        ok.psk_expires_at = Some((now_secs() + 86400) as i64); // 24 小时后过期
+        ok.psk_expires_at = Some((now_secs() + 86400) as i64); // expires in 24 hours
     }
 
     RegisterResponse {
@@ -110,9 +110,9 @@ fn make_error_response(code: u32, message: &str) -> Vec<u8> {
     .encode_to_vec()
 }
 
-// ─── 测试用例 ─────────────────────────────────────────────────────────────────
+// ─── Test cases ─────────────────────────────────────────────────────────────────
 
-/// 场景 1：首次注册（ActorStore 无 PSK）→ manifest auth → 收到 credential + PSK → 存储
+/// Scenario 1: first registration (no PSK in ActorStore) -> manifest auth -> receives credential + PSK -> stored
 #[tokio::test]
 async fn first_registration_uses_manifest_auth_and_stores_psk() {
     let psk = b"initial-psk-token";
@@ -138,26 +138,22 @@ async fn first_registration_uses_manifest_auth_and_stores_psk() {
         .unwrap();
 
     mock.assert_async().await;
-    assert!(!credential.is_empty(), "credential 不应为空");
+    assert!(!credential.is_empty(), "credential should not be empty");
 
-    // PSK 应已写入 ActorStore
+    // PSK should be written to ActorStore
     let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     let stored_psk = store.kv_get("hyper:psk:token").await.unwrap();
-    assert_eq!(
-        stored_psk,
-        Some(psk.to_vec()),
-        "PSK 应已持久化"
-    );
+    assert_eq!(stored_psk, Some(psk.to_vec()), "PSK should be persisted");
 
-    // expires_at 也应有效
+    // expires_at should also be valid
     let expires = store.kv_get("hyper:psk:expires_at").await.unwrap();
-    assert!(expires.is_some(), "PSK expires_at 应已持久化");
+    assert!(expires.is_some(), "PSK expires_at should be persisted");
     let expires_secs = u64::from_le_bytes(expires.unwrap().try_into().unwrap());
-    assert!(expires_secs > now_secs(), "PSK 应未过期");
+    assert!(expires_secs > now_secs(), "PSK should not be expired");
 }
 
-/// 场景 2：有有效 PSK → PSK auth → 仅发一次 /register → 无新 PSK 下发
+/// Scenario 2: valid PSK -> PSK auth -> only one /register call -> no new PSK issued
 #[tokio::test]
 async fn valid_psk_uses_psk_auth_without_new_psk() {
     let resp_body = make_register_response(false, None);
@@ -168,7 +164,7 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
         .with_status(200)
         .with_header("content-type", "application/x-protobuf")
         .with_body(resp_body)
-        .expect(1) // 恰好调用一次
+        .expect(1) // called exactly once
         .create_async()
         .await;
 
@@ -176,7 +172,7 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
     let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
-    // 预先写入有效 PSK
+    // Pre-populate valid PSK
     let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     let valid_psk = b"existing-valid-psk";
@@ -194,12 +190,16 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
     mock.assert_async().await;
     assert!(!credential.is_empty());
 
-    // PSK 应保持不变（无新 PSK 下发）
+    // PSK should remain unchanged (no new PSK issued)
     let stored = store.kv_get("hyper:psk:token").await.unwrap();
-    assert_eq!(stored, Some(valid_psk.to_vec()), "PSK 应保持原值");
+    assert_eq!(
+        stored,
+        Some(valid_psk.to_vec()),
+        "PSK should remain unchanged"
+    );
 }
 
-/// 场景 3：PSK 过期 → 回落到 manifest auth → 收到新 PSK
+/// Scenario 3: PSK expired -> fallback to manifest auth -> receives new PSK
 #[tokio::test]
 async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
     let new_psk = b"renewed-psk-after-expiry";
@@ -219,7 +219,7 @@ async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
     let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
-    // 预先写入过期 PSK（10 秒前）
+    // Pre-populate expired PSK (10 seconds ago)
     let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     store
@@ -241,16 +241,16 @@ async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
 
     mock.assert_async().await;
 
-    // 新 PSK 应覆盖旧的
+    // New PSK should overwrite the old one
     let stored = store.kv_get("hyper:psk:token").await.unwrap();
     assert_eq!(
         stored,
         Some(new_psk.to_vec()),
-        "过期后应收到并存储新 PSK"
+        "should receive and store new PSK after expiry"
     );
 }
 
-/// 场景 4：连续两次注册（首次 + 续期）→ 第一次用 manifest，第二次用 PSK
+/// Scenario 4: two sequential registrations (first + renewal) -> first uses manifest, second uses PSK
 #[tokio::test]
 async fn sequential_registrations_switch_from_manifest_to_psk() {
     let psk = b"sequential-psk";
@@ -259,7 +259,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
 
     let mut server = mockito::Server::new_async().await;
 
-    // 第一次：返回 PSK
+    // First: returns PSK
     let mock1 = server
         .mock("POST", "/register")
         .with_status(200)
@@ -273,14 +273,14 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
     let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
-    // 第一次注册（manifest auth）
+    // First registration (manifest auth)
     hyper
         .bootstrap_credential(&manifest, &server.url(), 1)
         .await
         .unwrap();
     mock1.assert_async().await;
 
-    // 第二次：返回 credential，无新 PSK
+    // Second: returns credential, no new PSK
     let mock2 = server
         .mock("POST", "/register")
         .with_status(200)
@@ -290,7 +290,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
         .create_async()
         .await;
 
-    // 第二次注册（PSK auth，因为第一次已存储 PSK）
+    // Second registration (PSK auth, since first already stored PSK)
     hyper
         .bootstrap_credential(&manifest, &server.url(), 1)
         .await
@@ -298,7 +298,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
     mock2.assert_async().await;
 }
 
-/// 场景 5：AIS 返回 403 → 传播 HyperError::AisBootstrapFailed
+/// Scenario 5: AIS returns 403 -> propagates as HyperError::AisBootstrapFailed
 #[tokio::test]
 async fn ais_error_propagates_as_bootstrap_failed() {
     let error_resp = make_error_response(403u32, "manufacturer not registered");
@@ -321,28 +321,28 @@ async fn ais_error_propagates_as_bootstrap_failed() {
 
     assert!(
         matches!(result, Err(HyperError::AisBootstrapFailed(_))),
-        "AIS 错误应传播为 AisBootstrapFailed，实际: {result:?}"
+        "AIS error should propagate as AisBootstrapFailed, got: {result:?}"
     );
 }
 
-/// 场景 6：AIS 不可达（连接被拒）→ 传播 HyperError::AisBootstrapFailed（网络错误）
+/// Scenario 6: AIS unreachable (connection refused) -> propagates as HyperError::AisBootstrapFailed (network error)
 #[tokio::test]
 async fn ais_unreachable_propagates_error() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
 
-    // 使用无效端口
+    // Use invalid port
     let result = hyper
         .bootstrap_credential(&fake_manifest(), "http://127.0.0.1:19999", 1)
         .await;
 
     assert!(
         result.is_err(),
-        "AIS 不可达时应返回错误，实际: {result:?}"
+        "should return error when AIS is unreachable, got: {result:?}"
     );
 }
 
-/// PSK 和 signing_pubkey 都应在首次注册后持久化
+/// PSK and signing_pubkey should both be persisted after first registration
 #[tokio::test]
 async fn first_registration_persists_signing_pubkey() {
     let resp_body = make_register_response(true, Some(b"my-psk"));
@@ -369,9 +369,13 @@ async fn first_registration_persists_signing_pubkey() {
     let store = ActorStore::open(&storage_path).await.unwrap();
 
     let pubkey = store.kv_get("hyper:ais:signing_pubkey").await.unwrap();
-    assert!(pubkey.is_some(), "signing_pubkey 应已持久化");
-    assert_eq!(pubkey.unwrap().len(), 32, "Ed25519 pubkey 应为 32 字节");
+    assert!(pubkey.is_some(), "signing_pubkey should be persisted");
+    assert_eq!(
+        pubkey.unwrap().len(),
+        32,
+        "Ed25519 pubkey should be 32 bytes"
+    );
 
     let key_id = store.kv_get("hyper:ais:signing_key_id").await.unwrap();
-    assert!(key_id.is_some(), "signing_key_id 应已持久化");
+    assert!(key_id.is_some(), "signing_key_id should be persisted");
 }

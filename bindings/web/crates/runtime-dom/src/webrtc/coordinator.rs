@@ -1,9 +1,9 @@
-//! WebRTC Coordinator - WebRTC 连接协调器（DOM 端辅助）
+//! WebRTC coordinator for the DOM side.
 //!
-//! 负责：
-//! - 接收 SW 的 P2P 创建请求
-//! - 调用 WebRTC API 创建 PeerConnection
-//! - 完成后通知 SW
+//! Responsibilities:
+//! - Receive P2P creation requests from the Service Worker
+//! - Create PeerConnections through the WebRTC APIs
+//! - Notify the Service Worker when setup completes
 
 use crate::error_reporter::get_global_error_reporter;
 use actr_web_common::{
@@ -16,22 +16,23 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{RtcConfiguration, RtcDataChannel, RtcDataChannelInit, RtcPeerConnection};
 
-/// WebRTC Coordinator - DOM 端的 WebRTC 协调器
+/// WebRTC coordinator for the DOM side.
 ///
-/// **纯辅助角色**，不管理连接，只负责创建并通知 SW
+/// This is a pure helper role: it does not manage live connections and only
+/// creates them before notifying the Service Worker.
 pub struct WebRtcCoordinator {
-    /// SW 通道（接收请求，发送就绪事件）
+    /// Service Worker channel used to receive requests and send ready events.
     sw_channel: Arc<Mutex<Option<super::super::transport::lane::DataLane>>>,
 
-    /// 活跃的 PeerConnection（peer_id → RtcPeerConnection）
+    /// Active PeerConnections keyed by peer ID.
     peer_connections: Arc<DashMap<String, RtcPeerConnection>>,
 
-    /// ICE 服务器配置
+    /// ICE server configuration.
     ice_servers: Vec<String>,
 }
 
 impl WebRtcCoordinator {
-    /// 创建新的 WebRTC Coordinator
+    /// Create a new WebRTC coordinator.
     pub fn new(ice_servers: Vec<String>) -> Self {
         Self {
             sw_channel: Arc::new(Mutex::new(None)),
@@ -40,14 +41,14 @@ impl WebRtcCoordinator {
         }
     }
 
-    /// 设置 SW 通道
+    /// Set the Service Worker channel.
     pub fn set_sw_channel(&self, channel: super::super::transport::lane::DataLane) {
         let mut sw = self.sw_channel.lock();
         *sw = Some(channel);
         log::info!("[WebRtcCoordinator] SW channel set");
     }
 
-    /// 启动事件循环（接收 SW 请求）
+    /// Start the event loop that receives Service Worker requests.
     pub fn start(&self) {
         let sw_channel = Arc::clone(&self.sw_channel);
         let peer_connections = Arc::clone(&self.peer_connections);
@@ -57,7 +58,7 @@ impl WebRtcCoordinator {
             log::info!("[WebRtcCoordinator] Event loop started");
 
             loop {
-                // 获取通道
+                // Acquire the channel.
                 let channel = {
                     let sw = sw_channel.lock();
                     sw.as_ref().cloned()
@@ -66,7 +67,7 @@ impl WebRtcCoordinator {
                 if let Some(lane) = channel {
                     match lane.recv().await {
                         Some(data) => {
-                            // 解析控制消息
+                            // Parse the control message.
                             match ControlMessage::deserialize(&data) {
                                 Ok(ControlMessage::CreateP2P(request)) => {
                                     log::info!(
@@ -74,7 +75,7 @@ impl WebRtcCoordinator {
                                         request.dest
                                     );
 
-                                    // 处理请求（异步）
+                                    // Handle the request asynchronously.
                                     Self::handle_create_p2p(
                                         request,
                                         peer_connections.clone(),
@@ -83,11 +84,11 @@ impl WebRtcCoordinator {
                                     );
                                 }
                                 Ok(ControlMessage::P2PReady(_)) => {
-                                    // SW 发来的就绪事件，忽略（这是 SW→DOM 方向）
+                                    // Ignore SW-originated ready events; they are for the opposite direction.
                                     log::trace!("[WebRtcCoordinator] Ignoring P2PReady from SW");
                                 }
                                 Ok(ControlMessage::ErrorReport(_)) => {
-                                    // SW 发来的错误报告，忽略（这是 DOM→SW 方向）
+                                    // Ignore SW-originated error reports; they are for the opposite direction.
                                     log::trace!("[WebRtcCoordinator] Ignoring ErrorReport from SW");
                                 }
                                 Err(e) => {
@@ -113,7 +114,7 @@ impl WebRtcCoordinator {
         });
     }
 
-    /// 处理 P2P 创建请求（异步）
+    /// Handle a P2P creation request asynchronously.
     fn handle_create_p2p(
         request: CreateP2PRequest,
         peer_connections: Arc<DashMap<String, RtcPeerConnection>>,
@@ -143,12 +144,12 @@ impl WebRtcCoordinator {
 
             match Self::create_peer_connection(&peer_id, ice_servers).await {
                 Ok(pc) => {
-                    // 保存 PeerConnection
+                    // Store the PeerConnection.
                     peer_connections.insert(peer_id.clone(), pc);
 
                     log::info!("[WebRtcCoordinator] P2P created successfully: {}", peer_id);
 
-                    // 发送成功事件
+                    // Send a success event.
                     Self::send_success(request.request_id, request.dest, sw_channel).await;
                 }
                 Err(e) => {
@@ -158,7 +159,7 @@ impl WebRtcCoordinator {
                         e
                     );
 
-                    // 报告错误
+                    // Report the error.
                     if let Some(reporter) = get_global_error_reporter() {
                         reporter.report_webrtc_error(
                             &request.dest,
@@ -167,7 +168,7 @@ impl WebRtcCoordinator {
                         );
                     }
 
-                    // 发送失败事件
+                    // Send a failure event.
                     Self::send_failure(request.request_id, request.dest, e.to_string(), sw_channel)
                         .await;
                 }
@@ -175,28 +176,28 @@ impl WebRtcCoordinator {
         });
     }
 
-    /// 创建 PeerConnection
+    /// Create a PeerConnection.
     async fn create_peer_connection(
         peer_id: &str,
         ice_servers: Vec<String>,
     ) -> WebResult<RtcPeerConnection> {
-        // 1. 创建配置
+        // 1. Build the configuration.
         let config = RtcConfiguration::new();
 
-        // 设置 ICE 服务器（简化：使用公共 STUN）
+        // Configure ICE servers. The current implementation only logs them.
         if !ice_servers.is_empty() {
-            // TODO: 实际设置 ICE 服务器
+            // TODO: Apply the actual ICE server configuration.
             log::debug!("[WebRtcCoordinator] ICE servers: {:?}", ice_servers);
         }
 
-        // 2. 创建 PeerConnection
+        // 2. Create the PeerConnection.
         let pc = RtcPeerConnection::new_with_configuration(&config).map_err(|e| {
             WebError::Transport(format!("Failed to create PeerConnection: {:?}", e))
         })?;
 
         log::debug!("[WebRtcCoordinator] PeerConnection created: {}", peer_id);
 
-        // 3. 创建 DataChannel
+        // 3. Create the DataChannel.
         let dc_config = RtcDataChannelInit::new();
         dc_config.set_ordered(true);
 
@@ -204,17 +205,17 @@ impl WebRtcCoordinator {
 
         log::debug!("[WebRtcCoordinator] DataChannel created: {}", peer_id);
 
-        // 4. 设置事件处理器
+        // 4. Install event handlers.
         Self::setup_datachannel_handlers(&dc, peer_id);
 
-        // 5. 创建 Offer（简化实现：实际需要信令交换）
-        // TODO: 实际的 SDP 交换需要通过信令服务器
+        // 5. Create the offer. Real SDP exchange still needs a signaling server.
+        // TODO: Implement actual SDP exchange through signaling.
         log::warn!("[WebRtcCoordinator] SDP exchange not implemented yet (Phase 4)");
 
         Ok(pc)
     }
 
-    /// 设置 DataChannel 事件处理器
+    /// Set DataChannel event handlers.
     fn setup_datachannel_handlers(dc: &RtcDataChannel, peer_id: &str) {
         let peer_id = peer_id.to_string();
 
@@ -236,7 +237,7 @@ impl WebRtcCoordinator {
                 error_msg
             );
 
-            // 报告错误
+            // Report the error.
             if let Some(reporter) = get_global_error_reporter() {
                 reporter.report_webrtc_error(
                     &Dest::Peer(peer_id_clone.clone()),
@@ -256,7 +257,7 @@ impl WebRtcCoordinator {
         onclose.forget();
     }
 
-    /// 发送成功事件到 SW
+    /// Send a success event to the Service Worker.
     async fn send_success(
         request_id: String,
         dest: Dest,
@@ -280,7 +281,7 @@ impl WebRtcCoordinator {
         }
     }
 
-    /// 发送失败事件到 SW
+    /// Send a failure event to the Service Worker.
     async fn send_failure(
         request_id: String,
         dest: Dest,
@@ -295,7 +296,7 @@ impl WebRtcCoordinator {
                 if let Err(e) = sw_channel.send(data).await {
                     log::error!("[WebRtcCoordinator] Failed to send failure event: {}", e);
 
-                    // 报告 MessagePort 错误
+                    // Report the MessagePort error.
                     if let Some(reporter) = get_global_error_reporter() {
                         reporter.report_messageport_error(
                             format!("Failed to send P2P failure event: {}", e),
@@ -310,7 +311,7 @@ impl WebRtcCoordinator {
                     e
                 );
 
-                // 报告序列化错误
+                // Report the serialization error.
                 if let Some(reporter) = get_global_error_reporter() {
                     reporter.report_messageport_error(
                         format!("Failed to serialize P2P failure event: {}", e),
@@ -321,7 +322,7 @@ impl WebRtcCoordinator {
         }
     }
 
-    /// 关闭指定对等端的连接
+    /// Close the connection for the given peer.
     pub fn close_peer(&self, peer_id: &str) -> WebResult<()> {
         if let Some((_, pc)) = self.peer_connections.remove(peer_id) {
             pc.close();
@@ -330,7 +331,7 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    /// 关闭所有连接
+    /// Close all connections.
     pub fn close_all(&self) -> WebResult<()> {
         log::info!(
             "[WebRtcCoordinator] Closing all peer connections (count: {})",

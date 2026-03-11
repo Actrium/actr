@@ -3,12 +3,10 @@
 //! These tests run against a local Actrix instance and local Swift projects only.
 //! Run with: `cargo test --test e2e_swift_echo -- --ignored --test-threads=1`
 
-mod e2e_support;
-
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use e2e_support::{
+use actr_cli::test_support::{
     LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
     ensure_local_swift_xcframework, pin_echo_service_dependency_version, run_actr,
 };

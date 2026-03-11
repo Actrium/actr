@@ -334,6 +334,6 @@ pnpm test
 
 如果在实现过程中遇到问题：
 1. 检查本文档的"注意事项"部分
-2. 查看 `tests/e2e/README.md` 基础说明
-3. 参考 `tests/e2e/TESTING_LOGIC.md` 测试架构
+2. 查看 `tests/e2e/README.zh.md` 基础说明
+3. 参考 `tests/e2e/TESTING_LOGIC.zh.md` 测试架构
 4. 提交 Issue 到项目仓库

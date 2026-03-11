@@ -1,13 +1,13 @@
-//! DynclibContext — cdylib guest 侧 Context 实现
+//! DynclibContext -- cdylib guest-side Context implementation
 //!
-//! 通过 HostVTable 函数指针实现 `Context` trait，使 actor 业务代码在
-//! native cdylib 中以与 WASM / mailbox 完全相同的接口运行。
+//! Implements the `Context` trait via HostVTable function pointers, allowing actor
+//! business code in native cdylib to run with the exact same interface as WASM / mailbox.
 //!
-//! # 设计要点
+//! # Design notes
 //!
-//! - 在每次 `actr_handle` 入口处构建，通过 vtable 获取并缓存上下文数据
-//! - `call/tell` 等通信方法直接调用 vtable 函数指针
-//! - WebRTC 媒体相关方法在 dynclib 环境下不支持，返回 `NotImplemented`
+//! - Constructed at each `actr_handle` entry, obtains and caches context data via vtable
+//! - `call/tell` communication methods directly call vtable function pointers
+//! - WebRTC media-related methods are not supported in dynclib environment, returning `NotImplemented`
 
 use actr_framework::{Context, Dest, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType};
@@ -18,10 +18,10 @@ use prost::Message as ProstMessage;
 
 use crate::vtable::HostVTable;
 
-/// cdylib guest 侧 actor 执行上下文
+/// cdylib guest-side actor execution context
 ///
-/// 在每次 `actr_handle` 调用时构建，持有本次调用的上下文数据。
-/// 实现 `Context` trait，actor 业务代码无需感知底层 dynclib 环境。
+/// Constructed on each `actr_handle` call, holds context data for the current invocation.
+/// Implements `Context` trait so actor business code need not be aware of the underlying dynclib environment.
 #[derive(Clone)]
 pub struct DynclibContext {
     vtable: *const HostVTable,
@@ -30,17 +30,17 @@ pub struct DynclibContext {
     request_id: String,
 }
 
-// Safety: DynclibContext 仅在同一线程内使用（宿主保证同一 actor 实例不会被并发调用），
-// vtable 指针在 actor 生命周期内有效。Send + Sync 是 Context trait 的约束。
+// Safety: DynclibContext is only used within the same thread (host guarantees no concurrent calls to the same actor instance),
+// vtable pointer is valid for the actor's lifetime. Send + Sync are required by the Context trait.
 unsafe impl Send for DynclibContext {}
 unsafe impl Sync for DynclibContext {}
 
 impl DynclibContext {
-    /// 从 HostVTable 获取上下文数据，构建 DynclibContext
+    /// Obtain context data from HostVTable, construct DynclibContext
     ///
     /// # Safety
     ///
-    /// `vtable` 必须指向有效的 HostVTable，且在返回的 DynclibContext 生命周期内有效。
+    /// `vtable` must point to a valid HostVTable and remain valid for the returned DynclibContext's lifetime.
     pub unsafe fn from_vtable(vtable: *const HostVTable) -> Result<Self, ActrError> {
         let vt = unsafe { &*vtable };
         let self_id = fetch_self_id(vt)?;
@@ -54,13 +54,13 @@ impl DynclibContext {
         })
     }
 
-    /// 获取 vtable 引用
+    /// Get vtable reference
     fn vt(&self) -> &HostVTable {
         unsafe { &*self.vtable }
     }
 }
 
-// ── 上下文数据获取辅助函数 ────────────────────────────────────────────────────
+// -- Context data fetch helper functions ------------------------------------------
 
 fn fetch_self_id(vt: &HostVTable) -> Result<ActrId, ActrError> {
     let mut ptr: *mut u8 = std::ptr::null_mut();
@@ -68,15 +68,17 @@ fn fetch_self_id(vt: &HostVTable) -> Result<ActrId, ActrError> {
     let err = unsafe { (vt.self_id)(&mut ptr, &mut len) };
     if err != 0 {
         return Err(ActrError::Internal(format!(
-            "actr_host_self_id 返回错误码 {err}"
+            "actr_host_self_id returned error code {err}"
         )));
     }
     if ptr.is_null() || len == 0 {
-        return Err(ActrError::Internal("actr_host_self_id 返回空".into()));
+        return Err(ActrError::Internal(
+            "actr_host_self_id returned empty".into(),
+        ));
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let result = ActrId::decode(bytes)
-        .map_err(|e| ActrError::Internal(format!("self_id decode 失败: {e}")));
+        .map_err(|e| ActrError::Internal(format!("self_id decode failed: {e}")));
     unsafe { (vt.free_host_buf)(ptr, len) };
     result
 }
@@ -86,17 +88,17 @@ fn fetch_caller_id(vt: &HostVTable) -> Result<Option<ActrId>, ActrError> {
     let mut len: usize = 0;
     let code = unsafe { (vt.caller_id)(&mut ptr, &mut len) };
     if code == 1 {
-        // 无调用方（系统内部调用，如生命周期钩子）
+        // No caller (internal system call, e.g., lifecycle hooks)
         return Ok(None);
     }
     if ptr.is_null() || len == 0 {
         return Err(ActrError::Internal(
-            "actr_host_caller_id 返回空缓冲区".into(),
+            "actr_host_caller_id returned empty buffer".into(),
         ));
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let result = ActrId::decode(bytes)
-        .map_err(|e| ActrError::Internal(format!("caller_id decode 失败: {e}")));
+        .map_err(|e| ActrError::Internal(format!("caller_id decode failed: {e}")));
     unsafe { (vt.free_host_buf)(ptr, len) };
     result.map(Some)
 }
@@ -107,25 +109,25 @@ fn fetch_request_id(vt: &HostVTable) -> Result<String, ActrError> {
     let err = unsafe { (vt.request_id)(&mut ptr, &mut len) };
     if err != 0 {
         return Err(ActrError::Internal(format!(
-            "actr_host_request_id 返回错误码 {err}"
+            "actr_host_request_id returned error code {err}"
         )));
     }
     if ptr.is_null() || len == 0 {
-        // request_id 可以为空
+        // request_id can be empty
         return Ok(String::new());
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let result = String::from_utf8(bytes.to_vec())
-        .map_err(|e| ActrError::Internal(format!("request_id UTF-8 解码失败: {e}")));
+        .map_err(|e| ActrError::Internal(format!("request_id UTF-8 decode failed: {e}")));
     unsafe { (vt.free_host_buf)(ptr, len) };
     result
 }
 
-// ── Dest 序列化 ───────────────────────────────────────────────────────────────
+// -- Dest serialization -----------------------------------------------------------
 
-/// 将 Dest 编码为字节序列，供 vtable 函数指针使用
+/// Encode Dest as a byte sequence for vtable function pointer use
 ///
-/// 格式与 WASM guest 完全一致：
+/// Format is identical to WASM guest:
 /// - `0x00` = Shell
 /// - `0x01` = Local
 /// - `0x02` + protobuf ActrId bytes = Actor(id)
@@ -141,7 +143,7 @@ fn encode_dest(dest: &Dest) -> Vec<u8> {
     }
 }
 
-// ── Context impl ─────────────────────────────────────────────────────────────
+// -- Context impl -----------------------------------------------------------------
 
 #[async_trait]
 impl Context for DynclibContext {
@@ -187,12 +189,12 @@ impl Context for DynclibContext {
         }
 
         if resp_ptr.is_null() {
-            return Err(ActrError::Internal("call 返回空响应".into()));
+            return Err(ActrError::Internal("call returned empty response".into()));
         }
 
         let resp_bytes = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len) };
         let result = R::Response::decode(resp_bytes)
-            .map_err(|e| ActrError::DecodeFailure(format!("响应 decode 失败: {e}")));
+            .map_err(|e| ActrError::DecodeFailure(format!("response decode failed: {e}")));
         unsafe { (self.vt().free_host_buf)(resp_ptr, resp_len) };
         result
     }
@@ -228,13 +230,13 @@ impl Context for DynclibContext {
         F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         Err(ActrError::NotImplemented(
-            "register_stream 在 dynclib 环境下暂不支持".into(),
+            "register_stream is not supported in dynclib environment".into(),
         ))
     }
 
     async fn unregister_stream(&self, _stream_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "unregister_stream 在 dynclib 环境下暂不支持".into(),
+            "unregister_stream is not supported in dynclib environment".into(),
         ))
     }
 
@@ -245,7 +247,7 @@ impl Context for DynclibContext {
         _payload_type: PayloadType,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "send_data_stream 在 dynclib 环境下暂不支持".into(),
+            "send_data_stream is not supported in dynclib environment".into(),
         ))
     }
 
@@ -269,13 +271,13 @@ impl Context for DynclibContext {
 
         if out_ptr.is_null() || out_len == 0 {
             return Err(ActrError::NotFound(
-                "discover 未返回候选节点".into(),
+                "discover returned no candidate node".into(),
             ));
         }
 
         let bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len) };
         let result = ActrId::decode(bytes)
-            .map_err(|e| ActrError::DecodeFailure(format!("discover 结果 decode 失败: {e}")));
+            .map_err(|e| ActrError::DecodeFailure(format!("discover result decode failed: {e}")));
         unsafe { (self.vt().free_host_buf)(out_ptr, out_len) };
         result
     }
@@ -286,7 +288,7 @@ impl Context for DynclibContext {
         route_key: &str,
         payload: Bytes,
     ) -> ActorResult<Bytes> {
-        // call_raw 使用 Dest::Actor 编码将 ActrId 作为目标传递
+        // call_raw uses Dest::Actor encoding to pass ActrId as target
         let dest_bytes = encode_dest(&Dest::Actor(target.clone()));
 
         let mut resp_ptr: *mut u8 = std::ptr::null_mut();
@@ -310,7 +312,9 @@ impl Context for DynclibContext {
         }
 
         if resp_ptr.is_null() {
-            return Err(ActrError::Internal("call_raw 返回空响应".into()));
+            return Err(ActrError::Internal(
+                "call_raw returned empty response".into(),
+            ));
         }
 
         let resp_bytes = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len) };
@@ -319,20 +323,20 @@ impl Context for DynclibContext {
         Ok(result)
     }
 
-    // ── WebRTC 媒体方法（dynclib 环境不支持）────────────────────────────────────
+    // -- WebRTC media methods (not supported in dynclib environment) ---------------
 
     async fn register_media_track<F>(&self, _track_id: String, _callback: F) -> ActorResult<()>
     where
         F: Fn(MediaSample, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 dynclib 环境下不支持".into(),
+            "WebRTC media tracks are not supported in dynclib environment".into(),
         ))
     }
 
     async fn unregister_media_track(&self, _track_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 dynclib 环境下不支持".into(),
+            "WebRTC media tracks are not supported in dynclib environment".into(),
         ))
     }
 
@@ -343,7 +347,7 @@ impl Context for DynclibContext {
         _sample: MediaSample,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 dynclib 环境下不支持".into(),
+            "WebRTC media tracks are not supported in dynclib environment".into(),
         ))
     }
 
@@ -355,28 +359,28 @@ impl Context for DynclibContext {
         _media_type: &str,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 dynclib 环境下不支持".into(),
+            "WebRTC media tracks are not supported in dynclib environment".into(),
         ))
     }
 
     async fn remove_media_track(&self, _target: &Dest, _track_id: &str) -> ActorResult<()> {
         Err(ActrError::NotImplemented(
-            "WebRTC 媒体轨道在 dynclib 环境下不支持".into(),
+            "WebRTC media tracks are not supported in dynclib environment".into(),
         ))
     }
 }
 
-// ── 错误码转换 ────────────────────────────────────────────────────────────────
+// -- Error code conversion --------------------------------------------------------
 
-/// 将 ABI 错误码转换为 `ActrError`
+/// Convert ABI error code to `ActrError`
 fn abi_error_to_actr(code: i32) -> ActrError {
     use crate::abi::code as c;
     match code {
-        c::GENERIC_ERROR => ActrError::Internal("host 返回通用错误".into()),
-        c::INIT_FAILED => ActrError::Internal("host 初始化失败".into()),
-        c::HANDLE_FAILED => ActrError::Internal("host 消息处理失败".into()),
-        c::PROTOCOL_ERROR => ActrError::DecodeFailure("host 协议错误".into()),
-        n if n < 0 => ActrError::Internal(format!("host 未知错误码 {n}")),
-        _ => ActrError::Internal(format!("host 未知错误码 {code}")),
+        c::GENERIC_ERROR => ActrError::Internal("host returned generic error".into()),
+        c::INIT_FAILED => ActrError::Internal("host initialization failed".into()),
+        c::HANDLE_FAILED => ActrError::Internal("host message handling failed".into()),
+        c::PROTOCOL_ERROR => ActrError::DecodeFailure("host protocol error".into()),
+        n if n < 0 => ActrError::Internal(format!("host unknown error code {n}")),
+        _ => ActrError::Internal(format!("host unknown error code {code}")),
     }
 }

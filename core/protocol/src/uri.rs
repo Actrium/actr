@@ -1,16 +1,16 @@
-//! # Actor-RTC URI 解析库
+//! # Actor-RTC URI parsing library
 //!
-//! 提供 actr:// 协议的标准 URI 解析功能，不包含业务逻辑。
+//! Provides standard URI parsing for the actr:// protocol, without business logic.
 //!
-//! URI 格式: actr://<realm>:<manufacturer>+<name>@<version>
-//! 例如: actr://101:acme+echo-service@v1
+//! URI format: actr://<realm>:<manufacturer>+<name>@<version>
+//! Example: actr://101:acme+echo-service@v1
 
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Actor-RTC URI 解析错误
+/// Actor-RTC URI parse error
 #[derive(Error, Debug)]
 pub enum ActrUriError {
     #[error("Invalid URI scheme, expected 'actr' but got '{0}'")]
@@ -32,8 +32,8 @@ pub enum ActrUriError {
     ParseError(String),
 }
 
-/// Actor-RTC URI 结构
-/// 格式: actr://<realm>:<manufacturer>+<name>@<version>
+/// Actor-RTC URI structure
+/// Format: actr://<realm>:<manufacturer>+<name>@<version>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActrUri {
     /// Realm ID (u32)
@@ -47,7 +47,7 @@ pub struct ActrUri {
 }
 
 impl ActrUri {
-    /// 创建新的 Actor-RTC URI
+    /// Create a new Actor-RTC URI
     pub fn new(realm: u32, manufacturer: String, name: String, version: String) -> Self {
         Self {
             realm,
@@ -57,12 +57,12 @@ impl ActrUri {
         }
     }
 
-    /// 获取 scheme 信息
+    /// Get scheme info
     pub fn scheme(&self) -> &'static str {
         "actr"
     }
 
-    /// 获取 actor type 字符串表示 (manufacturer+name)
+    /// Get actor type string representation (manufacturer+name)
     pub fn actor_type(&self) -> String {
         format!("{}+{}", self.manufacturer, self.name)
     }
@@ -124,7 +124,7 @@ impl FromStr for ActrUri {
     }
 }
 
-/// Actor-RTC URI 构建器
+/// Actor-RTC URI builder
 #[derive(Debug, Default)]
 pub struct ActrUriBuilder {
     realm: Option<u32>,
@@ -134,36 +134,36 @@ pub struct ActrUriBuilder {
 }
 
 impl ActrUriBuilder {
-    /// 创建新的构建器
+    /// Create a new builder
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 设置 Realm ID
+    /// Set Realm ID
     pub fn realm(mut self, realm: u32) -> Self {
         self.realm = Some(realm);
         self
     }
 
-    /// 设置 Manufacturer
+    /// Set Manufacturer
     pub fn manufacturer<S: Into<String>>(mut self, manufacturer: S) -> Self {
         self.manufacturer = Some(manufacturer.into());
         self
     }
 
-    /// 设置 Actor 类型名称
+    /// Set Actor type name
     pub fn name<S: Into<String>>(mut self, name: S) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    /// 设置版本
+    /// Set version
     pub fn version<S: Into<String>>(mut self, version: S) -> Self {
         self.version = Some(version.into());
         self
     }
 
-    /// 构建 URI
+    /// Build the URI
     pub fn build(self) -> Result<ActrUri, ActrUriError> {
         let realm = self.realm.ok_or(ActrUriError::MissingAuthority)?;
         let manufacturer = self

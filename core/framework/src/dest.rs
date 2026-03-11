@@ -15,13 +15,13 @@
 //!
 //! # Usage
 //!
-//! **Shell 侧 (App)**:
+//! **Shell side (App)**:
 //! ```rust,ignore
-//! // Call local Workload (隐含 Dest::Local)
+//! // Call local Workload (implies Dest::Local)
 //! running_node.call(request).await?;  // No target parameter
 //! ```
 //!
-//! **Actr 侧 (Workload)**:
+//! **Actr side (Workload)**:
 //! ```rust,ignore
 //! // Call App
 //! ctx.call(&Dest::Shell, request).await?;
@@ -50,7 +50,7 @@ use std::hash::{Hash, Hasher};
 ///
 /// # Semantics
 ///
-/// - **`Dest::Shell`**: Workload → App (inproc 反向通道)
+/// - **`Dest::Shell`**: Workload -> App (inproc reverse channel)
 ///   - Used by Workload to call App side
 ///   - Routed through `HostGate` (zero serialization)
 ///   - Example: Workload pushing notifications to App
@@ -66,13 +66,13 @@ use std::hash::{Hash, Hasher};
 ///   - Example: ClientWorkload calling RemoteServer
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dest {
-    /// Local Shell - Workload 调用 App 侧 (inproc 反向通道)
+    /// Local Shell - Workload calls App side (inproc reverse channel)
     Shell,
 
-    /// Local Workload - 调用本地 Workload (从 App: inproc, 从 Workload: outproc 短接)
+    /// Local Workload - calls local Workload (from App: inproc, from Workload: outproc short-circuit)
     Local,
 
-    /// Remote Actor - 跨进程通信 (WebRTC/WebSocket)
+    /// Remote Actor - cross-process communication (WebRTC/WebSocket)
     Actor(ActrId),
 }
 
@@ -178,8 +178,10 @@ mod tests {
         use std::collections::HashMap;
 
         let id1 = ActrId::default();
-        let mut id2 = ActrId::default();
-        id2.serial_number = 1; // Ensure different ID
+        let id2 = ActrId {
+            serial_number: 1,
+            ..Default::default()
+        };
 
         let mut map = HashMap::new();
         map.insert(Dest::shell(), "shell");

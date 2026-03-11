@@ -1,27 +1,27 @@
 //! Transport abstraction for Web environment
 //!
-//! 提供统一的传输层接口，封装 SW 和 DOM 的协作细节
+//! Provides a unified transport interface and hides SW/DOM coordination details.
 
 use crate::{PayloadType, WebError, WebResult};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-/// 目标地址
+/// Destination address.
 ///
-/// 可以是：
-/// - Peer ID（P2P 连接）
-/// - Server URL（WebSocket 连接）
+/// It can be:
+/// - A peer ID for P2P transport
+/// - A server URL for WebSocket transport
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dest {
-    /// P2P 对等节点
+    /// P2P peer.
     Peer(String),
 
-    /// 服务器地址
+    /// Server address.
     Server(String),
 }
 
 impl Dest {
-    /// 转换为 WebSocket URL
+    /// Convert the destination into a WebSocket URL.
     pub fn to_websocket_url(&self) -> WebResult<String> {
         match self {
             Dest::Server(url) => Ok(url.clone()),
@@ -31,7 +31,7 @@ impl Dest {
         }
     }
 
-    /// 获取 Peer ID
+    /// Return the peer ID, if this is a peer destination.
     pub fn peer_id(&self) -> Option<&str> {
         match self {
             Dest::Peer(id) => Some(id),
@@ -40,65 +40,65 @@ impl Dest {
     }
 }
 
-/// 连接状态
+/// Connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
-    /// 未连接
+    /// Not connected.
     Disconnected,
-    /// 连接中
+    /// Connecting.
     Connecting,
-    /// 已连接
+    /// Connected.
     Connected,
-    /// 连接失败
+    /// Connection failed.
     Failed,
 }
 
-/// 传输统计信息
+/// Transport statistics.
 #[derive(Debug, Clone, Default)]
 pub struct TransportStats {
-    /// 发送字节数
+    /// Number of bytes sent.
     pub bytes_sent: u64,
-    /// 接收字节数
+    /// Number of bytes received.
     pub bytes_received: u64,
-    /// 发送消息数
+    /// Number of messages sent.
     pub messages_sent: u64,
-    /// 接收消息数
+    /// Number of messages received.
     pub messages_received: u64,
-    /// 连接重试次数
+    /// Number of reconnection attempts.
     pub reconnect_count: u32,
 }
 
-/// 连接策略
+/// Connection strategy.
 #[derive(Debug, Clone)]
 pub struct ConnectionStrategy {
-    /// 是否并发尝试多种连接方式
+    /// Whether to try multiple connection methods concurrently.
     pub concurrent_attempts: bool,
 
-    /// P2P 优先级（值越大优先级越高）
+    /// P2P priority. Larger values mean higher priority.
     pub p2p_priority: u8,
 
-    /// WebSocket 优先级
+    /// WebSocket priority.
     pub websocket_priority: u8,
 
-    /// 最大重试次数
+    /// Maximum number of retries.
     pub max_retries: u32,
 
-    /// 初始重试延迟（毫秒）
+    /// Initial retry delay in milliseconds.
     pub initial_retry_delay_ms: u64,
 
-    /// 最大重试延迟（毫秒）
+    /// Maximum retry delay in milliseconds.
     pub max_retry_delay_ms: u64,
 
-    /// 连接超时（毫秒）
+    /// Connection timeout in milliseconds.
     pub connection_timeout_ms: u64,
 }
 
 impl Default for ConnectionStrategy {
     fn default() -> Self {
         Self {
-            concurrent_attempts: true, // 默认并发尝试
-            p2p_priority: 100,         // P2P 优先级高
-            websocket_priority: 50,    // WebSocket 作为 fallback
+            concurrent_attempts: true, // Try transports concurrently by default.
+            p2p_priority: 100,         // Prefer P2P transport.
+            websocket_priority: 50,    // Use WebSocket as fallback.
             max_retries: 5,
             initial_retry_delay_ms: 1000,
             max_retry_delay_ms: 30000,
@@ -107,9 +107,9 @@ impl Default for ConnectionStrategy {
     }
 }
 
-/// 转发消息格式（SW ↔ DOM 内部通信）
+/// Forwarded message format used for internal SW <-> DOM communication.
 ///
-/// 格式：[Dest(序列化) | PayloadType(1) | Data(N)]
+/// Format: `[Dest(serialized) | PayloadType(1) | Data(N)]`
 #[derive(Debug, Clone)]
 pub struct ForwardMessage {
     pub dest: Dest,
@@ -118,7 +118,7 @@ pub struct ForwardMessage {
 }
 
 impl ForwardMessage {
-    /// 创建转发消息
+    /// Create a forwarded message.
     pub fn new(dest: Dest, payload_type: PayloadType, data: Bytes) -> Self {
         Self {
             dest,
@@ -127,9 +127,9 @@ impl ForwardMessage {
         }
     }
 
-    /// 序列化为字节流
+    /// Serialize into bytes.
     pub fn serialize(&self) -> WebResult<Bytes> {
-        // [Dest JSON 长度(4) | Dest JSON(N) | PayloadType(1) | Data(M)]
+        // [Dest JSON length(4) | Dest JSON(N) | PayloadType(1) | Data(M)]
         let dest_json = serde_json::to_vec(&self.dest)?;
         let dest_len = dest_json.len() as u32;
 
@@ -142,7 +142,7 @@ impl ForwardMessage {
         Ok(Bytes::from(buf))
     }
 
-    /// 从字节流反序列化
+    /// Deserialize from bytes.
     pub fn deserialize(data: &[u8]) -> WebResult<Self> {
         if data.len() < 5 {
             return Err(WebError::Protocol("ForwardMessage too short".to_string()));

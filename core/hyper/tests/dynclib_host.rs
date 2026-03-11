@@ -10,9 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_protocol::{prost::Message as ProstMessage, ActrId, ActrType, Realm, RpcEnvelope};
 use actr_hyper::dynclib::{DynclibError, DynclibHost};
 use actr_hyper::executor::{CallExecutorFn, DispatchContext, IoResult, PendingCall};
+use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -100,9 +100,7 @@ async fn test_basic_echo_dispatch() {
     let payload = b"hello dynclib".to_vec();
     let req_bytes = make_envelope("test/echo", payload.clone());
 
-    let executor: CallExecutorFn = Box::new(|_| {
-        Box::pin(async { IoResult::Error(-1) })
-    });
+    let executor: CallExecutorFn = Box::new(|_| Box::pin(async { IoResult::Error(-1) }));
 
     let result = instance
         .dispatch(&req_bytes, test_ctx(), &executor)
@@ -127,9 +125,7 @@ async fn test_basic_double_dispatch() {
         Box::pin(async move {
             match pending {
                 PendingCall::Call { payload, .. } => {
-                    let val = i32::from_le_bytes([
-                        payload[0], payload[1], payload[2], payload[3],
-                    ]);
+                    let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                     IoResult::Bytes((val * 2).to_le_bytes().to_vec())
                 }
                 _ => IoResult::Error(-1),

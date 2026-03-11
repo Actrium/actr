@@ -1,11 +1,11 @@
 /**
- * Echo Client - Actor-RTC Web 浏览器客户端示例
+ * Echo Client - Actor-RTC Web browser client sample
  *
- * 演示如何使用 @actr/web 统一 Actor API + Local Handler 调用远程 Echo 服务：
- * 1. 创建 Actor（统一 P2P 实例，自动加载含 Local Handler 的 WASM）
- * 2. DOM 通过 callRaw 发送请求
- * 3. Local Handler (WASM) 通过 ctx.discover() 发现远端 Echo Server
- * 4. Local Handler 通过 ctx.call_raw() 转发请求到远端并返回响应
+ * Demonstrates how to use the @actr/web unified Actor API + Local Handler to call a remote Echo service:
+ * 1. Create an Actor (shared P2P instance with the Local Handler WASM automatically loaded)
+ * 2. The DOM sends requests via callRaw
+ * 3. The Local Handler (WASM) discovers the remote Echo Server using ctx.discover()
+ * 4. The Local Handler forwards requests via ctx.call_raw() to the remote peer and returns responses
  */
 
 import { createActor, Actor } from '@actr/web';
@@ -22,10 +22,10 @@ let actor: Actor | null = null;
 let sendEcho: SendEchoActorRef | null = null;
 
 /**
- * 在 Echo 结果区显示日志
+ * Display logs in the Echo results area
  */
 function log(level: 'info' | 'ok' | 'err', message: string): void {
-    const time = new Date().toLocaleTimeString('zh-CN', {
+    const time = new Date().toLocaleTimeString('en-US', {
         hour12: false,
         hour: '2-digit',
         minute: '2-digit',
@@ -44,10 +44,10 @@ function log(level: 'info' | 'ok' | 'err', message: string): void {
 }
 
 /**
- * 在 SW Runtime 日志面板显示日志
+ * Display logs in the SW runtime log panel
  */
 function swLog(level: 'info' | 'success' | 'warn' | 'error', message: string): void {
-    const time = new Date().toLocaleTimeString('zh-CN', {
+    const time = new Date().toLocaleTimeString('en-US', {
         hour12: false,
         hour: '2-digit',
         minute: '2-digit',
@@ -71,58 +71,58 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * 初始化客户端
+ * Initialize the client
  */
 async function init(): Promise<void> {
     try {
-        statusEl.textContent = '连接中...';
+        statusEl.textContent = 'Connecting...';
         statusEl.className = 'status connecting';
 
-        log('info', '🚀 正在初始化 Echo Client...');
+        log('info', '🚀 Initializing Echo Client...');
 
-        // 使用统一 Actor API 创建实例
-        // Service Worker 中的 WASM 已包含 Local Handler，
-        // 它会自动处理 discover + call_raw 转发
+        // Create an actor via the unified Actor API.
+        // The SW-side WASM already contains the Local Handler and automatically
+        // handles discover + call_raw forwarding.
         actor = await createActor({
             ...actrConfig,
             serviceWorkerPath: '/actor.sw.js',
             debug: true,
         });
 
-        // 创建类型安全的 SendEcho 服务引用
+        // Create the type-safe SendEcho ActorRef
         sendEcho = new SendEchoActorRef(actor);
 
-        statusEl.textContent = '✅ 已连接';
+        statusEl.textContent = '✅ Connected';
         statusEl.className = 'status connected';
         sendBtn.disabled = false;
 
-        // 监听连接状态
+        // Monitor connection state
         actor.on('stateChange', (state) => {
-            log('info', `连接状态: ${state}`);
+            log('info', `Connection state: ${state}`);
         });
 
-        log('ok', '✅ 客户端初始化成功');
-        log('info', '⏳ 将在 5 秒后自动发送 Echo 测试消息...');
+        log('ok', '✅ Client initialized successfully');
+        log('info', '⏳ Will automatically send an Echo test message in 5s...');
 
-        // 自动测试
+        // Auto test
         setTimeout(async () => {
-            log('info', '🚀 自动发送 Echo 测试消息...');
+            log('info', '🚀 Automatically sending Echo test message...');
             await doSendEcho();
         }, 5000);
     } catch (error) {
         console.error('Failed to initialize client:', error);
-        statusEl.textContent = `❌ 连接失败: ${(error as Error).message}`;
+        statusEl.textContent = `❌ Connection failed: ${(error as Error).message}`;
         statusEl.className = 'status error';
-        log('err', `❌ 初始化失败: ${(error as Error).message}`);
+        log('err', `❌ Initialization failed: ${(error as Error).message}`);
     }
 }
 
 /**
- * 发送 Echo 消息
+ * Send an Echo message
  */
 async function doSendEcho(): Promise<void> {
     if (!actor || !sendEcho) {
-        log('err', '❌ 客户端未初始化');
+        log('err', '❌ Client is not initialized');
         return;
     }
 
@@ -130,15 +130,15 @@ async function doSendEcho(): Promise<void> {
 
     try {
         sendBtn.disabled = true;
-        log('info', `📤 发送: "${message}"`);
+        log('info', `📤 Sending: "${message}"`);
 
         const response = await sendEcho.sendEcho({ message });
 
-        log('ok', `📥 回复: "${response.reply}"`);
-        log('info', `⏱️ 时间戳: ${new Date(Number(response.timestamp) * 1000).toLocaleString()}`);
+        log('ok', `📥 Reply: "${response.reply}"`);
+        log('info', `⏱️ Timestamp: ${new Date(Number(response.timestamp) * 1000).toLocaleString()}`);
     } catch (error) {
         console.error('Echo failed:', error);
-        log('err', `❌ 请求失败: ${(error as Error).message}`);
+        log('err', `❌ Request failed: ${(error as Error).message}`);
     } finally {
         sendBtn.disabled = false;
     }
@@ -161,7 +161,7 @@ window.addEventListener('beforeunload', async () => {
 });
 
 /**
- * 监听来自 Service Worker 的运行时日志
+ * Listen for runtime logs from the Service Worker
  */
 function setupSwLogListener(): void {
     navigator.serviceWorker.addEventListener('message', (event) => {
@@ -184,8 +184,8 @@ function setupSwLogListener(): void {
     });
 }
 
-// 尽早设置 SW 日志监听（在 init 之前，以捕获初始化日志）
+// Set up the SW log listener early (before init) to capture startup logs
 setupSwLogListener();
 
-// 启动
+// Start
 init();

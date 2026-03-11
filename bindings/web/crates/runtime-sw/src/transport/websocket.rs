@@ -1,7 +1,7 @@
-//! WebSocket Lane - Service Worker 端的 WebSocket 传输通道
+//! WebSocket transport lane for the Service Worker runtime.
 //!
-//! WebSocket Lane 用于 Service Worker 端通过 WebSocket 连接传输消息。
-//! 支持的 PayloadType：RPC_*, STREAM_* (不支持 MEDIA_RTP)
+//! This lane carries messages over WebSocket on the Service Worker side.
+//! Supported payload types: `RPC_*`, `STREAM_*` (but not `MEDIA_RTP`).
 
 use super::lane::{DataLane, LaneResult};
 use actr_web_common::zero_copy::{
@@ -16,9 +16,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
-/// WebSocket Lane 构建器
+/// Builder for a WebSocket lane.
 ///
-/// 用于创建和配置 WebSocket Lane
+/// Creates and configures a `WebSocket`-backed `DataLane`.
 pub struct WebSocketLaneBuilder {
     url: String,
     payload_type: PayloadType,
@@ -26,70 +26,70 @@ pub struct WebSocketLaneBuilder {
 }
 
 impl WebSocketLaneBuilder {
-    /// 创建新的 WebSocket Lane 构建器
+    /// Create a new WebSocket lane builder.
     ///
-    /// # 参数
-    /// - `url`: WebSocket 服务器 URL (ws:// 或 wss://)
-    /// - `payload_type`: 该 Lane 传输的 PayloadType
+    /// # Parameters
+    /// - `url`: WebSocket server URL (`ws://` or `wss://`)
+    /// - `payload_type`: payload type carried by this lane
     pub fn new(url: impl Into<String>, payload_type: PayloadType) -> Self {
         Self {
             url: url.into(),
             payload_type,
-            buffer_size: 256, // 默认缓冲区大小
+            buffer_size: 256, // Default buffer size.
         }
     }
 
-    /// 设置接收缓冲区大小
+    /// Set the receive buffer size.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
 
-    /// 构建 WebSocket Lane
+    /// Build the WebSocket lane.
     ///
-    /// # 错误
-    /// - 如果 PayloadType 不支持（MEDIA_RTP）
-    /// - 如果 WebSocket 创建失败
+    /// # Errors
+    /// - If the payload type is unsupported (`MEDIA_RTP`)
+    /// - If creating the WebSocket fails
     pub async fn build(self) -> LaneResult<DataLane> {
-        // 验证 PayloadType
+        // Validate the payload type.
         if matches!(self.payload_type, PayloadType::MediaRtp) {
             return Err(WebError::Transport(
-                "WebSocket Lane 不支持 MEDIA_RTP，请使用 MediaTrack Lane".to_string(),
+                "WebSocket lanes do not support MEDIA_RTP; use a MediaTrack lane".to_string(),
             ));
         }
 
-        // 创建 WebSocket 连接
+        // Create the WebSocket connection.
         let ws = WebSocket::new(&self.url)
-            .map_err(|e| WebError::Transport(format!("WebSocket 创建失败: {:?}", e)))?;
+            .map_err(|e| WebError::Transport(format!("Failed to create WebSocket: {:?}", e)))?;
 
-        // 设置为二进制模式
+        // Use binary mode.
         ws.set_binary_type(BinaryType::Arraybuffer);
 
-        // 创建接收通道
+        // Create the receive channel.
         let (tx, rx) = mpsc::unbounded();
         let rx = Arc::new(Mutex::new(rx));
 
-        // 设置 onmessage 回调（零拷贝优化）
+        // Install the `onmessage` callback using zero-copy helpers.
         let tx_clone = tx.clone();
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
             if let Ok(array_buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
                 let uint8_array = js_sys::Uint8Array::new(&array_buffer);
 
-                // ✅ 零拷贝接收：1 次拷贝（JS → WASM 线性内存）
+                // Zero-copy receive with a single copy from JS into WASM memory.
                 let data = receive_zero_copy(&uint8_array);
 
-                // 解析消息头部
+                // Parse the message header.
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "WebSocket Lane 接收消息: payload_type={}, size={} bytes",
+                        "WebSocket lane received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload：转移 Vec 所有权到 Bytes
+                    // Extract the payload by transferring Vec ownership into Bytes.
                     let payload_data = extract_payload_zero_copy(data, 5);
 
-                    // 发送到通道（忽略发送失败，可能是接收端已关闭）
+                    // Ignore send failures because the receiver may already be closed.
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
             }
@@ -98,19 +98,19 @@ impl WebSocketLaneBuilder {
         ws.set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
         onmessage_callback.forget();
 
-        // 设置 onerror 回调
-        // 注意：WebSocket 的 error 事件是 Event 类型（非 ErrorEvent），没有 .message 属性
+        // Install the `onerror` callback.
+        // The WebSocket `error` event is an `Event`, not an `ErrorEvent`.
         let onerror_callback = Closure::wrap(Box::new(move |_e: web_sys::Event| {
-            log::error!("WebSocket 连接错误");
+            log::error!("WebSocket connection error");
         }) as Box<dyn FnMut(web_sys::Event)>);
 
         ws.set_onerror(Some(onerror_callback.as_ref().unchecked_ref()));
         onerror_callback.forget();
 
-        // 设置 onclose 回调
+        // Install the `onclose` callback.
         let onclose_callback = Closure::wrap(Box::new(move |e: CloseEvent| {
             log::info!(
-                "WebSocket 连接关闭: code={}, reason={}, clean={}",
+                "WebSocket connection closed: code={}, reason={}, clean={}",
                 e.code(),
                 e.reason(),
                 e.was_clean()
@@ -120,12 +120,12 @@ impl WebSocketLaneBuilder {
         ws.set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
         onclose_callback.forget();
 
-        // 设置 onopen 回调
+        // Install the `onopen` callback.
         let ws_clone = ws.clone();
         let payload_type = self.payload_type;
         let onopen_callback = Closure::wrap(Box::new(move |_e: JsValue| {
             log::info!(
-                "WebSocket 连接已建立: url={}, payload_type={:?}",
+                "WebSocket connection established: url={}, payload_type={:?}",
                 ws_clone.url(),
                 payload_type
             );
@@ -134,7 +134,7 @@ impl WebSocketLaneBuilder {
         ws.set_onopen(Some(onopen_callback.as_ref().unchecked_ref()));
         onopen_callback.forget();
 
-        // 等待连接建立（最多 5 秒）
+        // Wait for the connection to open, up to 5 seconds.
         let ws_clone = ws.clone();
         let connect_future = async move {
             let start = js_sys::Date::now();
@@ -147,15 +147,15 @@ impl WebSocketLaneBuilder {
                     || ws_clone.ready_state() == WebSocket::CLOSING
                 {
                     return Err(WebError::Transport(
-                        "WebSocket 连接失败或已关闭".to_string(),
+                        "WebSocket connection failed or closed".to_string(),
                     ));
                 }
 
                 if js_sys::Date::now() - start > 5000.0 {
-                    return Err(WebError::Transport("WebSocket 连接超时（5秒）".to_string()));
+                    return Err(WebError::Transport("WebSocket connection timed out (5s)".to_string()));
                 }
 
-                // 等待 10ms 后重试（使用 gloo_timers，兼容 Service Worker 环境）
+                // Retry after 10 ms with `gloo_timers`, which works in Service Workers.
                 gloo_timers::future::TimeoutFuture::new(10).await;
             }
         };
@@ -163,7 +163,7 @@ impl WebSocketLaneBuilder {
         connect_future.await?;
 
         log::info!(
-            "WebSocket Lane 创建成功: url={}, payload_type={:?}",
+            "WebSocket lane created: url={}, payload_type={:?}",
             self.url,
             self.payload_type
         );
@@ -190,13 +190,18 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("不支持 MEDIA_RTP"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("do not support MEDIA_RTP")
+        );
     }
 
     #[wasm_bindgen_test]
     async fn test_websocket_lane_accepts_rpc_types() {
-        // 注意：这个测试需要实际的 WebSocket 服务器
-        // 在真实测试环境中应该使用 mock 服务器
+        // This test would require a real WebSocket server.
+        // A mock server should be used in a full integration environment.
         let payload_types = vec![
             PayloadType::RpcReliable,
             PayloadType::RpcSignal,
@@ -206,12 +211,12 @@ mod tests {
 
         for payload_type in payload_types {
             let builder = WebSocketLaneBuilder::new("ws://localhost:8080", payload_type);
-            // 由于没有实际服务器，这里只验证 builder 的创建
+            // Without a real server, this only verifies builder construction.
             assert_eq!(builder.payload_type, payload_type);
         }
     }
 
-    // ===== WebSocketLaneBuilder 基本测试 =====
+    // ===== Basic WebSocketLaneBuilder tests =====
 
     #[test]
     fn test_websocket_lane_builder_new() {
@@ -255,7 +260,7 @@ mod tests {
         assert_eq!(builder.buffer_size, 256);
     }
 
-    // ===== PayloadType 支持测试 =====
+    // ===== PayloadType support tests =====
 
     #[test]
     fn test_websocket_lane_builder_rpc_reliable() {
@@ -281,7 +286,7 @@ mod tests {
         assert_eq!(builder.payload_type, PayloadType::StreamLatencyFirst);
     }
 
-    // ===== URL 格式测试 =====
+    // ===== URL format tests =====
 
     #[test]
     fn test_websocket_lane_builder_url_formats() {
@@ -316,7 +321,7 @@ mod tests {
         assert_eq!(builder.url, "ws://test.com");
     }
 
-    // ===== Buffer Size 变化测试 =====
+    // ===== Buffer-size variation tests =====
 
     #[test]
     fn test_websocket_lane_builder_multiple_buffer_sizes() {
@@ -338,14 +343,14 @@ mod tests {
         assert_eq!(builder.buffer_size, 0);
     }
 
-    // ===== Builder 模式完整性测试 =====
+    // ===== Builder-pattern integrity tests =====
 
     #[test]
     fn test_websocket_lane_builder_immutability() {
         let builder1 = WebSocketLaneBuilder::new("ws://test.com", PayloadType::RpcReliable);
         let builder2 = builder1.buffer_size(512);
 
-        // builder2 是一个新的 builder，因为 buffer_size 消费了 builder1
+        // `builder2` is a new builder because `buffer_size` consumes `builder1`.
         assert_eq!(builder2.buffer_size, 512);
     }
 }

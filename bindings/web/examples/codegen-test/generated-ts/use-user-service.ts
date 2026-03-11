@@ -1,8 +1,8 @@
 /**
- * 自动生成的 React Hook
- * 服务: UserService
+ *  React Hook
+ * : UserService
  *
- * ⚠️  请勿手动编辑此文件
+ * ⚠️  
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -16,7 +16,7 @@ export function useUserService(actorId: string) {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    // 监听连接状态
+    // 
     const unlisten = actorRef.on('connection-state-changed', (state) => {
       setIsConnected(state === 'connected');
     });
@@ -27,7 +27,7 @@ export function useUserService(actorId: string) {
   }, [actorRef]);
 
   /**
-   * GetUser 方法的便捷调用
+   * GetUser 
    */
   const getUser = useCallback(
     async (request: GetUserRequest) => {
@@ -37,7 +37,7 @@ export function useUserService(actorId: string) {
   );
 
   /**
-   * CreateUser 方法的便捷调用
+   * CreateUser 
    */
   const createUser = useCallback(
     async (request: CreateUserRequest) => {
@@ -47,7 +47,7 @@ export function useUserService(actorId: string) {
   );
 
   /**
-   * UpdateUser 方法的便捷调用
+   * UpdateUser 
    */
   const updateUser = useCallback(
     async (request: UpdateUserRequest) => {
@@ -57,7 +57,7 @@ export function useUserService(actorId: string) {
   );
 
   /**
-   * DeleteUser 方法的便捷调用
+   * DeleteUser 
    */
   const deleteUser = useCallback(
     async (request: DeleteUserRequest) => {

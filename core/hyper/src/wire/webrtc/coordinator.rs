@@ -933,7 +933,7 @@ impl WebRtcCoordinator {
         self.start_offer_connection(target, true).await
     }
 
-    /// Create and send an offer (offerer path). If `skip_negotiation` is true, assumes角色已确定。
+    /// Create and send an offer (offerer path). If `skip_negotiation` is true, assumes role is already determined.
     /// This method includes retry logic for initial connection failures.
     #[cfg_attr(
         feature = "opentelemetry",
@@ -2824,7 +2824,7 @@ impl WebRtcCoordinator {
 
             // 3. Check if we are the offerer
             if !state.is_offerer {
-                // 方案 A: Answerer sends IceRestartRequest to Offerer
+                // Approach A: Answerer sends IceRestartRequest to Offerer
                 // instead of silently skipping. This notifies the Offerer
                 // to immediately interrupt its backoff and retry ICE restart.
                 tracing::info!(
@@ -2966,7 +2966,7 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    /// Handle incoming IceRestartRequest from Answerer (方案 A).
+    /// Handle incoming IceRestartRequest from Answerer (Approach A).
     ///
     /// Three scenarios:
     /// 1. Restart already in-flight & task running → wake up backoff via `notify_one()`
@@ -3555,7 +3555,7 @@ impl WebRtcCoordinator {
         tracing::debug!("End role change check ");
         // ========== End role change check ==========
 
-        // 先尝试唤醒等待的协商
+        // First try to wake up pending negotiation
         let role_sender = {
             let mut neg = self.peer_negotiation.lock().await;
             neg.get_mut(&peer).and_then(|s| s.role_tx.take())
@@ -3571,7 +3571,7 @@ impl WebRtcCoordinator {
             ?peer,
             "handle_role_assignment: no pending negotiation"
         );
-        // 如果目前还没有连接，根据角色立即行动，避免依赖 send_message 才触发
+        // If no connection exists yet, act immediately based on role to avoid waiting for send_message to trigger
         let has_connection = self.peers.read().await.contains_key(&peer);
         if has_connection {
             tracing::warn!(
@@ -3625,7 +3625,7 @@ impl WebRtcCoordinator {
                 .or_default()
                 .ready_tx = Some(tx);
 
-            // 防止长时间等不到 offer：超时后主动重新协商/建链
+            // Prevent waiting indefinitely for offer: force re-negotiation after timeout
             let weak = Arc::downgrade(self);
             let peer_clone = peer.clone();
             #[cfg(feature = "opentelemetry")]
@@ -3633,7 +3633,7 @@ impl WebRtcCoordinator {
             tokio::spawn(async move {
                 tokio::time::sleep(ROLE_WAIT_TIMEOUT).await;
                 if let Some(coord) = weak.upgrade() {
-                    // 如果已经有连接或 ready 被消费则退出
+                    // Exit if connection already exists or ready has been consumed
                     if coord.peers.read().await.contains_key(&peer_clone) {
                         return;
                     }
@@ -3681,7 +3681,7 @@ impl WebRtcCoordinator {
     )]
     async fn negotiate_role(&self, target: &ActrId) -> ActorResult<bool> {
         let (tx, rx) = oneshot::channel();
-        // 按目标 ActorId 记录等待的角色分配
+        // Record pending role assignment by target ActorId
         self.peer_negotiation
             .lock()
             .await

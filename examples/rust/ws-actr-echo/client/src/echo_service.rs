@@ -1,58 +1,58 @@
-//! # Echo 用户业务逻辑实现
+//! # Echo [...]
 //!
-//! 这个文件是由 `actr gen` 命令自动生成的用户代码框架。
-//! 请在这里实现您的具体业务逻辑。
+//! [...] `actr gen` [...]。
+//! [...]。
 
 use crate::generated::{EchoHandler, EchoActor};
-// 只导入必要的类型，避免拉入不需要的依赖如 sqlite
+// [...]，[...]need/require[...] sqlite
 // use actr_framework::prelude::*;
 use std::sync::Arc;
 
-/// Echo 服务的具体实现
+/// Echo service[...]
 /// 
-/// TODO: 添加您需要的状态字段，例如：
-/// - 数据库连接池
-/// - 配置信息
-/// - 缓存客户端
-/// - 日志记录器等
+/// TODO: [...]need/require[...]，[...]：
+/// - data[...]connection[...]
+/// - config[...]
+/// - [...]client
+/// - log[...]
 pub struct MyEchoService {
-    // TODO: 添加您的服务状态字段
-    // 例如：
+    // TODO: [...]service[...]
+    // [...]：
     // pub db_pool: Arc<DatabasePool>,
     // pub config: Arc<ServiceConfig>,
     // pub metrics: Arc<Metrics>,
 }
 
 impl MyEchoService {
-    /// 创建新的服务实例
+    /// create[...]service[...]
     /// 
-    /// TODO: 根据您的需要修改构造函数参数
-    pub fn new(/* TODO: 添加必要的依赖 */) -> Self {
+    /// TODO: [...]need/require[...]
+    pub fn new(/* TODO: [...] */) -> Self {
         Self {
-            // TODO: 初始化您的字段
+            // TODO: initialize[...]
         }
     }
     
-    /// 使用默认配置创建服务实例（用于测试）
+    /// using/use[...]configcreateservice[...]（[...]）
     pub fn default_for_testing() -> Self {
         Self {
-            // TODO: 提供测试用的默认值
+            // TODO: [...]
         }
     }
 }
 
-// TODO: 实现 EchoHandler trait 的所有方法
-// 注意：impl_user_code_scaffold! 宏已经为您生成了基础框架，
-// 您需要将其替换为真实的业务逻辑实现。
+// TODO: [...] EchoHandler trait [...]
+// [...]：impl_user_code_scaffold! [...]already[...]，
+// [...]need/requirewill[...]real[...]。
 //
-// 示例：
+// [...]：
 // #[async_trait]
 // impl EchoHandler for MyEchoService {
 //     async fn method_name(&self, req: RequestType) -> ActorResult<ResponseType> {
-//         // 1. 验证输入
-//         // 2. 执行业务逻辑
-//         // 3. 返回结果
-//         todo!("实现您的业务逻辑")
+//         // 1. [...]
+//         // 2. [...]
+//         // 3. [...]
+//         todo!("[...]")
 //     }
 // }
 
@@ -63,31 +63,31 @@ mod tests {
     #[tokio::test]
     async fn test_service_creation() {
         let _service = MyEchoService::default_for_testing();
-        // TODO: 添加您的测试
+        // TODO: [...]
     }
     
-    // TODO: 添加更多测试用例
+    // TODO: [...]
 }
 
 /*
-📚 使用指南
+📚 using/use[...]
 
-## 🚀 快速开始
+## 🚀 [...]
 
-1. **实现业务逻辑**：
-   在 `MyEchoService` 中实现 `EchoHandler` trait 的所有方法
+1. **[...]**：
+   [...] `MyEchoService` [...] `EchoHandler` trait [...]
 
-2. **添加依赖**：
-   在 `Cargo.toml` 中添加您需要的依赖，例如数据库客户端、HTTP 客户端等
+2. **[...]**：
+   [...] `Cargo.toml` [...]need/require[...]，[...]data[...]client、HTTP client[...]
 
-3. **配置服务**：
-   修改 `new()` 构造函数，注入必要的依赖
+3. **configservice**：
+   [...] `new()` [...]，[...]
 
-4. **启动服务**：
+4. **startservice**：
    ```rust
    #[tokio::main]
    async fn main() -> ActorResult<()> {
-       let service = MyEchoService::new(/* 依赖 */);
+       let service = MyEchoService::new(/* [...] */);
        
        ActorSystem::new()
            .attach(service)
@@ -96,17 +96,17 @@ mod tests {
    }
    ```
 
-## 🔧 开发提示
+## 🔧 [...]tip/hint
 
-- 使用 `tracing` crate 进行日志记录
-- 实现错误处理和重试逻辑
-- 添加单元测试和集成测试
-- 考虑使用配置文件管理环境变量
-- 实现健康检查和指标收集
+- using/use `tracing` crate [...]log[...]
+- [...]error[...]
+- [...]
+- [...]using/useconfig[...]
+- [...]
 
-## 📖 更多资源
+## 📖 [...]
 
-- Actor-RTC 文档: [链接]
-- API 参考: [链接]
-- 示例项目: [链接]
+- Actor-RTC [...]: [[...]]
+- API [...]: [[...]]
+- [...]: [[...]]
 */

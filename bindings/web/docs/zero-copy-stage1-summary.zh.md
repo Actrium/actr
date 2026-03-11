@@ -67,8 +67,8 @@
 ```
 新增：
   crates/common/src/zero_copy.rs            (467 行)
-  docs/zero-copy-phase3-analysis.md         (技术分析文档)
-  docs/zero-copy-stage1-summary.md          (本文档)
+  docs/zero-copy-phase3-analysis.zh.md      (technical analysis document)
+  docs/zero-copy-stage1-summary.zh.md       (this document)
 
 修改：
   crates/common/src/lib.rs                  (+1 行，添加模块)

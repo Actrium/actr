@@ -61,14 +61,14 @@ message ServiceLocation {
 // AId Credential
 // ============================================================================
 
-// Actor 身份声明，明文 proto 编码后由 AIS 用 Ed25519 签名
+// Actor identity claims, encoded as plaintext protobuf and signed by AIS with Ed25519.
 message IdentityClaims {
   required uint32 realm_id   = 1;
   required string actor_id   = 2;
   required uint64 expires_at = 3;
 }
 
-// HMAC 时效 TURN 认证凭证（coturn --use-auth-secret 兼容格式）
+// Time-limited HMAC TURN credential in the format compatible with `coturn --use-auth-secret`.
 message TurnCredential {
   required string username   = 1;   // "<expires_at>:<actor_id>"
   required string password   = 2;   // base64(HMAC-SHA1(turn_secret, username))
@@ -78,8 +78,8 @@ message TurnCredential {
 // Credential structure for ActrId authentication
 message AIdCredential {
   required uint32 key_id    = 1;
-  required bytes  claims    = 2;   // proto_encode(IdentityClaims)，明文
-  required bytes  signature = 3;   // Ed25519 签名，64 bytes
+  required bytes  claims    = 2;   // `proto_encode(IdentityClaims)` in plaintext
+  required bytes  signature = 3;   // Ed25519 signature, 64 bytes
 }
 
 // ============================================================================
@@ -166,12 +166,12 @@ message RegisterRequest {
   // clients via RouteCandidatesResponse so they can connect without a relay.
   optional string ws_address = 6;
 
-  // MFR manifest 首次注册认证（无 PSK 时使用）
-  // manifest_json: JSON 序列化的 PackageManifest（含 manufacturer, actr_name, version, binary_hash, capabilities）
+  // Initial registration with an MFR manifest, used when no PSK is available.
+  // `manifest_json`: JSON-serialized `PackageManifest` containing manufacturer, actr_name, version, binary_hash, and capabilities.
   optional bytes manifest_json = 10;
-  // MFR 对 manifest 内容的 Ed25519 签名（64 字节）
+  // Ed25519 signature over the manifest contents produced by the MFR, 64 bytes.
   optional bytes mfr_signature = 11;
-  // 续期时的 PSK（已有 PSK 时使用，替代 manifest 认证）
+  // PSK used during renewal when an existing PSK is available, replacing manifest authentication.
   optional bytes psk_token = 12;
 }
 
@@ -186,9 +186,9 @@ message RegisterResponse {
     required uint32        signaling_heartbeat_interval_secs = 5;
     required bytes         signing_pubkey                   = 6;   // AIS Ed25519 verifying key，32 bytes
     required uint32        signing_key_id                   = 7;
-    // 首次注册时下发的 PSK（后续续期使用）
+    // PSK issued during initial registration and used for later renewals.
     optional bytes         psk                              = 10;
-    // PSK 过期 Unix 时间戳（秒）
+    // PSK expiration timestamp in Unix seconds.
     optional int64         psk_expires_at                   = 11;
   }
   oneof result {
@@ -245,7 +245,7 @@ message Ping {
 message Pong {
   required uint64 seq = 1;
   optional uint32 suggest_interval_secs = 2; // advisory
-  optional CredentialWarning credential_warning = 3; // 凭证警告（如密钥在容忍期）
+  optional CredentialWarning credential_warning = 3; // Credential warning, for example when a key is in its tolerance period.
 }
 
 // =========================================================================
@@ -392,7 +392,7 @@ message RoleAssignment {
 }
 
 // =========================================================================
-// ICE Restart Notification (方案 A: Answerer → Offerer)
+// ICE Restart Notification (Plan A: Answerer -> Offerer)
 // =========================================================================
 
 // Answerer notifies Offerer that its network has recovered,
@@ -406,10 +406,10 @@ message IceRestartRequest {
 // Credential Warning
 // =========================================================================
 
-// 凭证警告信息（用于通知客户端凭证状态异常）
+// Credential warning used to notify clients about abnormal credential state.
 message CredentialWarning {
   enum WarningType {
-    KEY_IN_TOLERANCE_PERIOD = 0; // 密钥在容忍期内（已过期但仍可用）
+    KEY_IN_TOLERANCE_PERIOD = 0; // The key is in its tolerance period: expired but still usable.
   }
   required WarningType type = 1;
   required string message = 2;

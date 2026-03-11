@@ -1,6 +1,6 @@
-//! DeadLetterQueue - 死信队列
+//! DeadLetterQueue
 //!
-//! 存储处理失败的消息，用于后续分析或重试
+//! Stores messages that failed processing for later analysis or retry.
 
 use crate::{MailboxError, MessageRecord, Result};
 use rexie::{ObjectStore, Rexie, TransactionMode};
@@ -11,32 +11,32 @@ const DLQ_DB_NAME: &str = "actr_dead_letter_queue";
 const DLQ_STORE_NAME: &str = "dead_letters";
 const DLQ_DB_VERSION: u32 = 1;
 
-/// 死信记录
+/// Dead letter record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeadLetterRecord {
-    /// 原始消息
+    /// Original message.
     pub message: MessageRecord,
 
-    /// 失败原因
+    /// Failure reason.
     pub reason: String,
 
-    /// 失败时间戳
+    /// Failure timestamp.
     pub failed_at: u64,
 
-    /// 重试次数
+    /// Retry count.
     pub retry_count: u32,
 
-    /// 最后一次重试时间
+    /// Time of the last retry.
     pub last_retry_at: Option<u64>,
 }
 
-/// 死信队列
+/// Dead letter queue.
 pub struct DeadLetterQueue {
     db: Rexie,
 }
 
 impl DeadLetterQueue {
-    /// 创建新的死信队列
+    /// Create a new dead letter queue.
     pub async fn new() -> Result<Self> {
         let db = Rexie::builder(DLQ_DB_NAME)
             .version(DLQ_DB_VERSION)
@@ -49,7 +49,7 @@ impl DeadLetterQueue {
         Ok(Self { db })
     }
 
-    /// 添加死信
+    /// Add a dead letter.
     pub async fn add(&self, message: MessageRecord, reason: String) -> Result<()> {
         let record = DeadLetterRecord {
             message,
@@ -90,7 +90,7 @@ impl DeadLetterQueue {
         Ok(())
     }
 
-    /// 获取所有死信
+    /// Get all dead letters.
     pub async fn get_all(&self) -> Result<Vec<DeadLetterRecord>> {
         let transaction = self
             .db
@@ -116,9 +116,9 @@ impl DeadLetterQueue {
         Ok(records)
     }
 
-    /// 重试死信
+    /// Retry a dead letter.
     ///
-    /// 返回消息记录供重新处理
+    /// Returns the message record for reprocessing.
     pub async fn retry(&self, message_id: Uuid) -> Result<MessageRecord> {
         let transaction = self
             .db
@@ -144,7 +144,7 @@ impl DeadLetterQueue {
         let mut record: DeadLetterRecord = serde_wasm_bindgen::from_value(js_value)
             .map_err(|e| MailboxError::DeserializationError(e.to_string()))?;
 
-        // 更新重试信息
+        // Update retry metadata.
         record.retry_count += 1;
         record.last_retry_at = Some(js_sys::Date::now() as u64);
 
@@ -170,7 +170,7 @@ impl DeadLetterQueue {
         Ok(record.message)
     }
 
-    /// 删除死信
+    /// Remove a dead letter.
     pub async fn remove(&self, message_id: Uuid) -> Result<()> {
         let transaction = self
             .db
@@ -199,7 +199,7 @@ impl DeadLetterQueue {
         Ok(())
     }
 
-    /// 清空所有死信
+    /// Clear all dead letters.
     pub async fn clear(&self) -> Result<()> {
         let transaction = self
             .db
@@ -225,7 +225,7 @@ impl DeadLetterQueue {
         Ok(())
     }
 
-    /// 获取死信数量
+    /// Get the number of dead letters.
     pub async fn count(&self) -> Result<usize> {
         let transaction = self
             .db
@@ -247,5 +247,5 @@ impl DeadLetterQueue {
 
 #[cfg(test)]
 mod tests {
-    // 测试需要在浏览器环境中运行
+    // Tests must run in a browser environment.
 }

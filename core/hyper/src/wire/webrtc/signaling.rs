@@ -192,10 +192,10 @@ pub trait SignalingClient: Send + Sync {
         request: RouteCandidatesRequest,
     ) -> NetworkResult<RouteCandidatesResponse>;
 
-    /// 向 signaling 查询 AIS 的 Ed25519 signing 公钥
+    /// Query AIS Ed25519 signing public key via signaling
     ///
-    /// 返回 `(key_id, pubkey_bytes)`，其中 pubkey_bytes 为 32 字节原始公钥。
-    /// 通常由 AisKeyCache 在缓存 miss 时调用，不应在热路径中直接使用。
+    /// Returns `(key_id, pubkey_bytes)` where pubkey_bytes is the 32-byte raw public key.
+    /// Typically called by AisKeyCache on cache miss; should not be used directly in hot paths.
     async fn get_signing_key(
         &self,
         actor_id: ActrId,
@@ -564,10 +564,16 @@ impl WebSocketSignalingClient {
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
     async fn establish_connection_once(&self) -> NetworkResult<()> {
+        // Guard: Check if already connected (handles rare TOCTOU scenarios)
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Connection already established, skipping establish_connection_once()");
+            return Ok(());
+        }
+
         let url = self.build_url_with_identity().await;
         let timeout_secs = self.config.connection_timeout;
         tracing::debug!("Establishing connection to URL: {}", url.as_str());
-        // 断网后，写入到缓冲区的数据，网络恢复后会继续发送
+        // After disconnection, data written to the buffer will continue to be sent once the network recovers
         let config = WebSocketConfig::default().write_buffer_size(0);
         // Connect with an optional timeout. A timeout of 0 means "no timeout".
         let connect_result = if timeout_secs == 0 {
@@ -625,7 +631,7 @@ impl WebSocketSignalingClient {
 
         let mut last_err = None;
 
-        // 首次立即尝试（delay = 0），后续由 backoff 产生退避延迟
+        // First attempt immediately (delay = 0), subsequent delays from backoff
         for (attempt, delay) in std::iter::once(std::time::Duration::ZERO)
             .chain(backoff)
             .enumerate()
@@ -647,7 +653,7 @@ impl WebSocketSignalingClient {
             }
         }
 
-        let total = cfg.max_attempts + 1; // backoff max_retries + 首次
+        let total = cfg.max_attempts + 1; // backoff max_retries + first attempt
         tracing::error!("Signaling connect failed after {total} attempts, giving up");
         Err(last_err.unwrap_or_else(|| {
             NetworkError::ConnectionError("All connection attempts failed".to_string())
@@ -932,25 +938,44 @@ impl WebSocketSignalingClient {
 #[async_trait]
 impl SignalingClient for WebSocketSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
-        // 🔐 Fast path: Check if already connected
+        // 🔐 Try to acquire "connecting" lock using compare-and-swap
+        // This is the first checkpoint - moving the fast-path check after lock acquisition
+        // eliminates the TOCTOU window where another task could have established a connection
+        // between our fast-path check and lock acquisition.
+        match self
+            .connecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {
+                // We successfully acquired the lock (CAS changed false → true)
+                // Now we hold exclusive access to the connection establishment
+            }
+            Err(_) => {
+                // CAS failed - either another task holds the lock, or a connection exists
+                // Check if already connected before waiting
+                if self.connected.load(Ordering::Acquire) {
+                    tracing::debug!("Already connected, skipping connect()");
+                    return Ok(());
+                }
+
+                // Another task is connecting, wait for state change using broadcast channel
+                tracing::debug!(
+                    "Another connection attempt in progress, waiting for state change..."
+                );
+                return self.wait_for_connection_result().await;
+            }
+        }
+
+        // 🔐 We now hold the "connecting" lock exclusively
+        // Re-check connected: another task may have finished connecting between our
+        // CAS and this load (the AcqRel fence on CAS guarantees we see the latest
+        // `connected` store from whoever last released `connecting`).
         if self.connected.load(Ordering::Acquire) {
-            tracing::debug!("Already connected, skipping connect()");
+            tracing::debug!("Connection completed by another task while acquiring lock");
+            self.connecting.store(false, Ordering::Release);
             return Ok(());
         }
 
-        // 🔐 Try to acquire "connecting" lock using compare-and-swap
-        if self
-            .connecting
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            // Another task is connecting, wait for state change using watch channel
-            tracing::debug!("Another connection attempt in progress, waiting for state change...");
-
-            return self.wait_for_connection_result().await;
-        }
-
-        // 🔐 We now hold the "connecting" lock, proceed with connection
         tracing::debug!("Acquired connection lock, establishing connection...");
 
         // Perform actual connection
@@ -1223,7 +1248,7 @@ impl SignalingClient for WebSocketSignalingClient {
         }
 
         Err(NetworkError::ConnectionError(
-            "get_signing_key: 无效响应".to_string(),
+            "get_signing_key: invalid response".to_string(),
         ))
     }
 
@@ -1553,14 +1578,13 @@ mod tests {
 
     fn make_fake_client() -> Arc<FakeSignalingClient> {
         let (event_tx, _erx) = broadcast::channel(64);
-        let client = Arc::new(FakeSignalingClient {
+        Arc::new(FakeSignalingClient {
             event_tx,
             connected: AtomicBool::new(false),
             connect_calls: Arc::new(AtomicUsize::new(0)),
             actor_id: tokio::sync::Mutex::new(None),
             credential_state: tokio::sync::Mutex::new(None),
-        });
-        client
+        })
     }
 
     /// Helper: create a minimal SignalingConfig with an unreachable URL.
@@ -1581,7 +1605,7 @@ mod tests {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. 配置默认值
+    // 1. Configuration defaults
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[test]
@@ -1595,20 +1619,23 @@ mod tests {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. 初始状态
+    // 2. Initial state
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[test]
     fn test_websocket_signaling_client_initial_state_disconnected() {
         let client = WebSocketSignalingClient::new(make_config());
-        assert!(!client.is_connected(), "新创建的客户端应为 Disconnected");
+        assert!(
+            !client.is_connected(),
+            "newly created client should be Disconnected"
+        );
         assert!(
             !client.connecting.load(Ordering::Acquire),
-            "新创建的客户端不应处于 connecting 状态"
+            "newly created client should not be in connecting state"
         );
         assert!(
             !client.reconnector_started.load(Ordering::Acquire),
-            "reconnect manager 不应被自动启动"
+            "reconnect manager should not be started automatically"
         );
     }
 
@@ -1624,23 +1651,23 @@ mod tests {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. 重连管理器幂等性
+    // 3. Reconnect manager idempotency
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
     async fn test_reconnect_manager_idempotent() {
         let client = make_ws_client(make_config());
 
-        // 第一次启动应该成功
+        // First start should succeed
         client.start_reconnect_manager();
         assert!(
             client.reconnector_started.load(Ordering::Acquire),
-            "首次调用后 reconnector_started 应为 true"
+            "reconnector_started should be true after first call"
         );
 
-        // 第二次调用不应启动新的 manager（CAS 失败）
+        // Second call should not start a new manager (CAS fails)
         client.start_reconnect_manager();
-        // 如果出现多个 manager，后续测试会因为重复重连而 flaky，这里主要验证标志位
+        // Multiple managers would cause flaky tests due to duplicate reconnections; mainly verify the flag
         assert!(client.reconnector_started.load(Ordering::Acquire));
     }
 
@@ -1653,45 +1680,51 @@ mod tests {
         client.start_reconnect_manager();
         assert!(
             !client.reconnector_started.load(Ordering::Acquire),
-            "当 reconnect 配置为 disabled 时，不应启动 reconnect manager"
+            "reconnect manager should not start when reconnect config is disabled"
         );
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. connect() 并发互斥
+    // 4. connect() concurrency exclusion
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
     async fn test_connect_fast_path_when_already_connected() {
         let client = make_ws_client(make_config());
-        // 手动设置为已连接
+        // Manually set as connected
         client.connected.store(true, Ordering::Release);
 
-        // connect() 应该直接返回 Ok 而不建立新连接
+        // connect() should return Ok immediately without establishing a new connection
         let result = client.connect().await;
-        assert!(result.is_ok(), "已连接时 connect() 应返回 Ok");
-        // 不应改变 connecting 标志
+        assert!(
+            result.is_ok(),
+            "connect() should return Ok when already connected"
+        );
+        // Should not change connecting flag
         assert!(!client.connecting.load(Ordering::Acquire));
     }
 
     #[tokio::test]
     async fn test_connect_sets_connecting_flag() {
         let mut config = make_config();
-        config.reconnect_config.enabled = false; // 禁用重试，快速失败
+        config.reconnect_config.enabled = false; // disable retry, fail fast
         config.connection_timeout = 1;
         let client = make_ws_client(config);
 
-        // 连接会失败（不可达的地址），但应该正确清理 connecting 标志
+        // Connection will fail (unreachable address), but should properly clean up connecting flag
         let result = client.connect().await;
-        assert!(result.is_err(), "连接不可达地址应该失败");
+        assert!(
+            result.is_err(),
+            "connecting to unreachable address should fail"
+        );
         assert!(
             !client.connecting.load(Ordering::Acquire),
-            "连接失败后 connecting 标志应被清除"
+            "connecting flag should be cleared after connection failure"
         );
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. 事件广播
+    // 5. Event broadcast
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1699,12 +1732,12 @@ mod tests {
         let client = make_ws_client(make_config());
         let mut rx = client.subscribe_events();
 
-        // 手动发送事件
+        // Manually send event
         let _ = client.event_tx.send(SignalingEvent::Connected);
 
         match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
-            Ok(Ok(SignalingEvent::Connected)) => {} // 期望收到 Connected 事件
-            other => panic!("期望收到 Connected 事件，但得到 {:?}", other),
+            Ok(Ok(SignalingEvent::Connected)) => {} // expect Connected event
+            other => panic!("expected Connected event, but got {:?}", other),
         }
     }
 
@@ -1716,35 +1749,38 @@ mod tests {
         let client = make_ws_client(config);
         let mut rx = client.subscribe_events();
 
-        // 连接失败
+        // Connection fails
         let _ = client.connect().await;
 
-        // 应该收到 Disconnected(ConnectionFailed) 事件
+        // Should receive Disconnected(ConnectionFailed) event
         match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
             Ok(Ok(SignalingEvent::Disconnected {
                 reason: DisconnectReason::ConnectionFailed(_),
-            })) => {} // 期望
+            })) => {} // expected
             other => panic!(
-                "期望收到 Disconnected(ConnectionFailed) 事件，但得到 {:?}",
+                "expected Disconnected(ConnectionFailed) event, but got {:?}",
                 other
             ),
         }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 6. disconnect() 状态清理
+    // 6. disconnect() state cleanup
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
     async fn test_disconnect_clears_connected_flag() {
         let client = make_ws_client(make_config());
-        // 模拟已连接状态
+        // Simulate connected state
         client.connected.store(true, Ordering::Release);
         assert!(client.is_connected());
 
         let result = client.disconnect().await;
         assert!(result.is_ok());
-        assert!(!client.is_connected(), "disconnect() 后应该为 Disconnected");
+        assert!(
+            !client.is_connected(),
+            "should be Disconnected after disconnect()"
+        );
     }
 
     #[tokio::test]
@@ -1758,7 +1794,7 @@ mod tests {
         assert_eq!(
             stats_after,
             stats_before + 1,
-            "disconnect() 应该增加断连计数"
+            "disconnect() should increment disconnection count"
         );
     }
 
@@ -1766,7 +1802,7 @@ mod tests {
     async fn test_disconnect_idempotent() {
         let client = make_ws_client(make_config());
 
-        // 即使在未连接状态下调用 disconnect() 也不应 panic
+        // Calling disconnect() while not connected should not panic
         let r1 = client.disconnect().await;
         let r2 = client.disconnect().await;
         assert!(r1.is_ok());
@@ -1775,7 +1811,7 @@ mod tests {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 7. reconnect notify 机制
+    // 7. Reconnect notify mechanism
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1790,20 +1826,26 @@ mod tests {
             woken_clone.store(true, Ordering::Release);
         });
 
-        // 确保 waiter 已经注册
+        // Ensure waiter has registered
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(!woken.load(Ordering::Acquire), "尚未通知前不应被唤醒");
+        assert!(
+            !woken.load(Ordering::Acquire),
+            "should not be woken before notification"
+        );
 
-        // 触发通知
+        // Trigger notification
         notify.notify_one();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(woken.load(Ordering::Acquire), "通知后应被唤醒");
+        assert!(
+            woken.load(Ordering::Acquire),
+            "should be woken after notification"
+        );
 
         handle.abort();
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 8. URL 构建测试
+    // 8. URL construction tests
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1816,7 +1858,7 @@ mod tests {
         assert_eq!(
             url.to_string(),
             expected_base,
-            "没有设置 actor_id 时 URL 不应包含身份参数"
+            "URL should not contain identity parameters when actor_id is not set"
         );
     }
 
@@ -1829,36 +1871,39 @@ mod tests {
         let url = client.build_url_with_identity().await;
         assert!(
             url.query().unwrap_or("").contains("webrtc_role=answer"),
-            "URL 应包含 webrtc_role 参数，实际 URL: {}",
+            "URL should contain webrtc_role parameter, actual URL: {}",
             url
         );
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 9. inbound channel 重置
+    // 9. Inbound channel reset
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
     async fn test_reset_inbound_channel_creates_fresh_channel() {
         let client = WebSocketSignalingClient::new(make_config());
 
-        // 获取旧 tx，发送一条消息
+        // Get old tx and send a message
         {
             let tx = client.inbound_tx.lock().await;
             let _ = tx.send(SignalingEnvelope::default());
         }
 
-        // 重置 channel
+        // Reset channel
         client.reset_inbound_channel().await;
 
-        // 旧消息不应在新 channel 中可见
+        // Old messages should not be visible in the new channel
         let mut rx = client.inbound_rx.lock().await;
         let result = rx.try_recv();
-        assert!(result.is_err(), "重置后旧消息不应在新 channel 中可见");
+        assert!(
+            result.is_err(),
+            "old messages should not be visible in the new channel after reset"
+        );
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 10. envelope ID 递增
+    // 10. Envelope ID incrementing
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1875,7 +1920,7 @@ mod tests {
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 11. send_envelope 未连接时应返回错误
+    // 11. send_envelope should return error when not connected
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1884,21 +1929,24 @@ mod tests {
         let envelope = SignalingEnvelope::default();
 
         let result = client.send_envelope(envelope).await;
-        assert!(result.is_err(), "未连接时 send_envelope 应返回错误");
+        assert!(
+            result.is_err(),
+            "send_envelope should return error when not connected"
+        );
         match result {
             Err(NetworkError::ConnectionError(msg)) => {
                 assert!(
                     msg.contains("not connected") || msg.contains("Not connected"),
-                    "错误信息应包含 'not connected'，实际: {}",
+                    "error message should contain 'not connected', actual: {}",
                     msg
                 );
             }
-            other => panic!("期望 ConnectionError，得到 {:?}", other),
+            other => panic!("expected ConnectionError, got {:?}", other),
         }
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 12. FakeSignalingClient trait 实现验证
+    // 12. FakeSignalingClient trait implementation verification
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     #[tokio::test]
@@ -1913,7 +1961,7 @@ mod tests {
         assert_eq!(
             client.connect_calls.load(UsizeOrdering::SeqCst),
             3,
-            "FakeSignalingClient 应准确记录 connect 调用次数"
+            "FakeSignalingClient should accurately track connect call count"
         );
     }
 }

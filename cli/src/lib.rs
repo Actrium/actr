@@ -1,6 +1,6 @@
 //! ACTR-CLI Library
 //!
-//! 提供 Actor-RTC CLI 工具的核心功能模块
+//! Provides core functionality modules for the Actor-RTC CLI tool
 
 pub mod assets;
 pub mod commands;
@@ -9,6 +9,8 @@ pub mod error;
 pub mod plugin_config;
 pub mod project_language;
 pub mod templates;
+#[cfg(feature = "test-utils")]
+pub mod test_support;
 pub use templates as template;
 pub mod utils;
 

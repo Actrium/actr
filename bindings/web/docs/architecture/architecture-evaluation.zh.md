@@ -316,7 +316,7 @@ impl Actor {
 
 ## 📊 与设计目标的对比
 
-从 `wasm-dom-integration.md` 文档：
+从 `wasm-dom-integration.zh.md` 文档：
 
 ### 目标 1：用户代码全部 WASM 化 ✅
 
@@ -469,11 +469,11 @@ ActorSystem::full_mode();
 
 ### A. 数据来源
 
-- [架构总览](./overview.md)
-- [完成度评估](./completion-status.md)
-- [WASM-DOM 集成架构](./wasm-dom-integration.md)
-- [消息流全览图](./message-flow-visual.md)
-- [SW WebRTC 设计](./sw-webrtc-design.md)
+- [架构总览](./overview.zh.md)
+- [完成度评估](./completion-status.zh.md)
+- [WASM-DOM 集成架构](./wasm-dom-integration.zh.md)
+- [消息流全览图](./message-flow-visual.zh.md)
+- [SW WebRTC 设计](./sw-webrtc-design.zh.md)
 - **代码实现**：
   - `crates/runtime-dom/src/fastpath.rs` - Registry 实现
   - `crates/runtime-sw/src/inbound/dispatcher.rs` - SW 转发逻辑

@@ -1,24 +1,24 @@
 //! Client Runtime for Service Worker
 //!
-//! 按照文档架构实现的 Service Worker 客户端运行时：
-//! - State Path：Mailbox + MailboxProcessor（可靠消息处理）
-//! - Fast Path：Stream/Media 直接回调（低延迟）
-//! - WebRTC signaling relay（通过 DOM coordinator）
+//! Service Worker client runtime implemented according to the documented architecture:
+//! - State path: `Mailbox` + `MailboxProcessor` for reliable message handling
+//! - Fast path: direct callbacks for stream/media traffic with low latency
+//! - WebRTC signaling relay coordinated through the DOM side
 //!
-//! # 消息流
+//! # Message Flow
 //!
-//! ## 发送请求（DOM → Remote）
+//! ## Sending Requests (DOM -> Remote)
 //! ```text
 //! DOM → handle_dom_control → SERVICE_HANDLER (UnifiedDispatcher)
 //!     → local route: handler(route_key, payload, ctx) → response
 //!     → remote route: ctx.call_raw() → Gate → WebRTC DataChannel
 //! ```
 //!
-//! ## 接收响应/请求（Remote → SW）
+//! ## Receiving Responses/Requests (Remote -> SW)
 //! ```text
 //! WebRTC → handle_fast_path → InboundPacketDispatcher.dispatch()
-//!   → RPC 响应: 直接匹配 pending request → DOM
-//!   → RPC 请求: Mailbox → MailboxProcessor → Actor 处理
+//!   -> RPC response: match the pending request directly and return to the DOM
+//!   -> RPC request: `Mailbox` -> `MailboxProcessor` -> actor handling
 //! ```
 
 use std::cell::RefCell;
@@ -819,9 +819,10 @@ impl SwRuntime {
         }
     }
 
-    /// 使用指定的 ActrType 发现目标 Actor
+    /// Discover a target actor using an explicit `ActrType`.
     ///
-    /// 与 `discover_target` 类似，但允许指定目标类型而非使用配置中的默认类型
+    /// Similar to `discover_target`, but allows the caller to provide the
+    /// target type instead of relying on the configured default.
     async fn discover_target_for_type(
         &mut self,
         target_type: &ActrType,
@@ -1094,15 +1095,15 @@ impl SwRuntime {
         self.pending_rpcs.insert(request_id, target);
     }
 
-    /// 处理来自远程的 RPC 响应
+    /// Handle an RPC response received from a remote peer.
     ///
-    /// 按照文档 6.1 消息流：
-    /// 远程响应 → handle_fast_path → handle_rpc_response → System.handle_remote_response
-    /// → HostGate.handle_response → DOM 收到响应
+    /// Documented flow:
+    /// `remote response -> handle_fast_path -> handle_rpc_response`
+    /// `-> System.handle_remote_response -> HostGate.handle_response -> DOM response`
     fn handle_rpc_response(&mut self, envelope: RpcEnvelope) -> Result<(), JsValue> {
         let request_id = envelope.request_id.clone();
 
-        // 检查是否是我们发送的请求
+        // Check whether this response belongs to a request we sent.
         let Some(rpc_target) = self.pending_rpcs.remove(&request_id) else {
             log::warn!(
                 "[SW] Received response for unknown request_id: {}",
@@ -1117,15 +1118,15 @@ impl SwRuntime {
             rpc_target
         );
 
-        // 提取 payload 用于后续处理
+        // Extract the payload for downstream handling.
         let payload_bytes = envelope
             .payload
             .as_ref()
             .map(|p| p.to_vec())
             .unwrap_or_default();
 
-        // 通过 System 处理响应
-        // 这将触发 HostGate.handle_response()
+        // Let `System` process the response.
+        // This triggers `HostGate.handle_response()`.
         CLIENTS.with(|cell| {
             if let Some(ctx) = cell.borrow().get(&self.client_id) {
                 ctx.system
@@ -1625,35 +1626,36 @@ impl SwRuntime {
         Ok(())
     }
 
-    /// 处理 Fast Path 数据
+    /// Handle fast-path data.
     ///
-    /// 按照文档架构：
-    /// - RPC 响应（有 pending request）→ 直接处理（Fast Path ~1-3ms）
-    /// - RPC 请求（入站请求）→ Mailbox → MailboxProcessor（State Path ~30-40ms）
+    /// Architectural split:
+    /// - RPC responses with a pending request -> handled directly (fast path, about 1-3 ms)
+    /// - Inbound RPC requests -> `Mailbox` -> `MailboxProcessor` (state path, about 30-40 ms)
     fn handle_fast_path(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
         let envelope = RpcEnvelope::decode(&payload.data[..])
             .map_err(|e| JsValue::from_str(&format!("Failed to decode RpcEnvelope: {e}")))?;
 
-        // 检查是否是我们发送的请求的响应
+        // Check whether this is a response to one of our outbound requests.
         let is_response = self.pending_rpcs.contains_key(&envelope.request_id);
 
         if is_response {
-            // Fast Path：直接处理响应
+            // Fast path: process the response directly.
             log::debug!(
                 "[SW] Fast Path: response for request_id={}",
                 envelope.request_id
             );
             self.handle_rpc_response(envelope)
         } else {
-            // State Path：通过 Dispatcher 进入 Mailbox → MailboxProcessor → ServiceHandler
-            // 按照文档架构，所有入站 RPC 请求必须经过 Mailbox 持久化和串行调度
+            // State path: route through `Dispatcher -> Mailbox -> MailboxProcessor -> ServiceHandler`.
+            // By design, all inbound RPC requests must be persisted in the mailbox
+            // and processed through serialized scheduling.
             log::info!(
                 "[SW] State Path: request route_key={} request_id={} → Mailbox",
                 envelope.route_key,
                 envelope.request_id
             );
 
-            // 将 stream_id 作为 from 传递给 Mailbox，以便 MailboxProcessor 知道响应目标
+            // Pass `stream_id` as `from` so `MailboxProcessor` knows the response target.
             let stream_id_bytes = payload.stream_id.as_bytes().to_vec();
             let message = MessageFormat::new(PayloadType::RpcReliable, Bytes::from(payload.data));
 
@@ -1944,16 +1946,17 @@ struct ClientContext {
     runtime: Rc<Mutex<SwRuntime>>,
     system: Rc<crate::System>,
     dispatcher: Rc<InboundPacketDispatcher>,
-    /// PeerGate — 跨节点传输适配器
+    /// `PeerGate`, the cross-node transport adapter.
     peer_gate: Arc<crate::outbound::PeerGate>,
-    /// PeerTransport — 管理每个 Dest 的 DestTransport
+    /// `PeerTransport`, which manages one `DestTransport` per destination.
     transport_manager: Arc<crate::transport::PeerTransport>,
 }
 
-/// SwRuntimeBridge - RuntimeBridge 的实现
+/// `SwRuntimeBridge`, the `RuntimeBridge` implementation.
 ///
-/// 连接 RuntimeContext 和 SwRuntime / System / PeerGate，
-/// 为 handler 内的 `ctx.call_raw()` / `ctx.discover()` 提供底层能力。
+/// Connects `RuntimeContext` with `SwRuntime`, `System`, and `PeerGate`,
+/// providing the lower-level capabilities behind `ctx.call_raw()` and
+/// `ctx.discover()` inside handlers.
 struct SwRuntimeBridge {
     runtime: Rc<Mutex<SwRuntime>>,
     peer_gate: Arc<crate::outbound::PeerGate>,
@@ -1962,8 +1965,8 @@ struct SwRuntimeBridge {
 #[async_trait::async_trait(?Send)]
 impl RuntimeBridge for SwRuntimeBridge {
     fn register_pending_rpc(&self, request_id: String) {
-        // 同步注册：使用 futures::lock::Mutex::try_lock
-        // 在 WASM 单线程环境中，如果锁不可用说明存在 bug
+        // Register synchronously via `futures::lock::Mutex::try_lock`.
+        // In single-threaded WASM, lock contention here indicates a bug.
         if let Some(mut rt) = self.runtime.try_lock() {
             rt.register_pending_rpc(request_id, PendingRpcTarget::Internal);
         } else {
@@ -2035,13 +2038,13 @@ pub fn init_global() -> Result<(), JsValue> {
     });
 
     if first_init {
-        // 设置 panic hook，确保 panic 信息输出到控制台
+        // Install the panic hook so panic details reach the console.
         console_error_panic_hook::set_once();
 
-        // 初始化日志
+        // Initialize logging.
         wasm_logger::init(wasm_logger::Config::default());
 
-        // 初始化生命周期管理
+        // Initialize lifecycle management.
         let lifecycle = crate::SwLifecycleManager::new();
         if let Err(e) = lifecycle.init() {
             log::error!("Failed to initialize lifecycle manager: {:?}", e);
@@ -2081,44 +2084,44 @@ pub async fn register_client(
     // Set DOM port
     runtime.dom_port = Some(port);
 
-    // 获取 actor_id 用于 System
+    // Fetch `actor_id` for the `System`.
     let actor_id = runtime.actor_id.clone();
 
     let runtime = Rc::new(Mutex::new(runtime));
 
-    // ==================== State Path 初始化 ====================
-    // 按照文档架构: InboundDispatcher → Mailbox → MailboxProcessor → Scheduler → Actor
+    // ==================== State Path Initialization ====================
+    // Documented architecture: `InboundDispatcher -> Mailbox -> MailboxProcessor -> Scheduler -> Actor`
     log::info!("[SW] [{}] Initializing State Path components...", client_id);
 
-    // 1. 创建 Mailbox（IndexedDB）
+    // 1. Create the mailbox (`IndexedDB`).
     let mailbox: Rc<dyn Mailbox> = Rc::new(
         IndexedDbMailbox::new()
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to create Mailbox: {}", e)))?,
     );
 
-    // 2. 创建 MailboxProcessor（同时获取事件驱动的 notifier）
+    // 2. Create the `MailboxProcessor` and its event-driven notifier.
     let (mut processor, notifier) = MailboxProcessor::new(mailbox.clone(), 10);
 
-    // 3. 创建 InboundPacketDispatcher（复用 IndexedDB 后端，附带 notifier）
+    // 3. Create the `InboundPacketDispatcher` with the shared IndexedDB backend and notifier.
     let mailbox_arc: Arc<dyn Mailbox> = Arc::from(IndexedDbMailbox::new().await.map_err(|e| {
         JsValue::from_str(&format!("Failed to create Mailbox for dispatcher: {}", e))
     })?);
     let dispatcher =
         Rc::new(InboundPacketDispatcher::new(mailbox_arc.clone()).with_notifier(notifier));
 
-    // 4. 创建 Scheduler（串行调度器，保证同一 Actor 消息顺序执行）
+    // 4. Create the `Scheduler`, which serializes execution per actor.
     let scheduler = Scheduler::new();
 
-    // 5. 设置 Scheduler 的 Actor 处理回调
-    //    按照文档：Scheduler → Actor 业务逻辑 → 响应返回
+    // 5. Install the scheduler's actor-processing callback.
+    //    Documented flow: `Scheduler -> actor business logic -> response`
     let runtime_for_scheduler = Rc::clone(&runtime);
     let client_id_for_scheduler = client_id.clone();
     scheduler.set_handler(Rc::new(move |record: MessageRecord| {
         let runtime = Rc::clone(&runtime_for_scheduler);
         let client_id = client_id_for_scheduler.clone();
         Box::pin(async move {
-            // 解析消息（所有进入 Mailbox 的消息都是入站 RPC 请求）
+            // Decode the message. Every mailbox entry here is an inbound RPC request.
             let envelope = RpcEnvelope::decode(&record.payload[..])
                 .map_err(|e| actr_web_common::WebError::Protocol(format!("Failed to decode RpcEnvelope: {}", e)))?;
 
@@ -2128,13 +2131,13 @@ pub async fn register_client(
                 envelope.route_key
             );
 
-            // 获取已注册的全局 service handler
+            // Fetch the registered global service handler.
             let handler = SERVICE_HANDLER.with(|cell| cell.borrow().as_ref().map(Rc::clone));
 
             if let Some(handler) = handler {
                 let route_key = envelope.route_key.clone();
                 let request_id = envelope.request_id.clone();
-                let is_tell = envelope.timeout_ms == 0; // tell() 设置 timeout_ms=0，表示单向消息
+                let is_tell = envelope.timeout_ms == 0; // `tell()` sets `timeout_ms=0`, meaning one-way messaging.
                 let request_bytes = envelope
                     .payload
                     .as_ref()
@@ -2194,10 +2197,10 @@ pub async fn register_client(
                     .with_bridge(bridge),
                 );
 
-                // 调用 Actor 业务逻辑
+                // Execute the actor business logic.
                 let result = handler(&route_key, &request_bytes, handler_ctx).await;
 
-                // tell() 是单向消息（fire-and-forget），无需构建或发送响应
+                // `tell()` is fire-and-forget, so no response is built or sent.
                 if is_tell {
                     match result {
                         Ok(_) => log::debug!(
@@ -2211,7 +2214,7 @@ pub async fn register_client(
                         ),
                     }
                 } else {
-                    // call() 请求-响应模式：构建并发送响应
+                    // `call()` uses request-response semantics, so build and send a response.
                     let response_envelope = match result {
                         Ok(response_bytes) => {
                             log::info!(
@@ -2254,7 +2257,7 @@ pub async fn register_client(
 
                     let data = response_envelope.encode_to_vec();
 
-                    // 解析发送方的 peer_id 和 channel_id（从 stream_id 中提取）
+                    // Parse the sender's `peer_id` and `channel_id` from `stream_id`.
                     let (peer_id, channel_id) = if let Some(last_colon) = stream_id.rfind(':') {
                         let peer = &stream_id[..last_colon];
                         let ch = stream_id[last_colon + 1..].parse::<u32>().unwrap_or(0);
@@ -2271,7 +2274,7 @@ pub async fn register_client(
                         data.len()
                     );
 
-                    // 通过 SwRuntime 发送响应回远程 peer
+                    // Send the response back to the remote peer through `SwRuntime`.
                     let rt = runtime.lock().await;
                     if let Err(e) = rt.send_channel_data(&peer_id, channel_id, &data) {
                         log::error!(
@@ -2292,8 +2295,8 @@ pub async fn register_client(
         })
     }));
 
-    // 6. 设置 MailboxProcessor 的处理回调
-    //    按照文档：MailboxProcessor → Scheduler（路由到对应 Actor 的串行队列）
+    // 6. Install the `MailboxProcessor` callback.
+    //    Documented flow: `MailboxProcessor -> Scheduler` into the actor's serialized queue.
     let scheduler_for_processor = scheduler.clone();
     let local_actor_id_for_processor = actor_id.clone().unwrap_or_else(|| {
         log::warn!("[SW] actor_id not set after register, using default for Scheduler");
@@ -2308,18 +2311,18 @@ pub async fn register_client(
         })
     }));
 
-    // 7. 启动 Scheduler 和 MailboxProcessor
+    // 7. Start the scheduler and mailbox processor.
     scheduler.start();
     processor.start();
 
-    // ==================== System 初始化 ====================
+    // ==================== System Initialization ====================
 
     let system = Rc::new(crate::System::new());
     if let Some(actor_id) = actor_id {
         system.set_local_actor_id(actor_id);
     }
 
-    // 创建完整传输栈：PeerGate → PeerTransport → DestTransport → WirePool
+    // Build the full transport stack: `PeerGate -> PeerTransport -> DestTransport -> WirePool`.
     let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
     let transport_manager = Arc::new(crate::transport::PeerTransport::new(
         client_id.clone(),
@@ -2468,13 +2471,13 @@ pub async fn unregister_client(client_id: String) {
     }
 }
 
-/// 处理来自 DOM 的 RPC 控制请求
+/// Handle an RPC control request originating from the DOM side.
 ///
-/// 消息流（Unified Dispatcher 模式）：
-/// - 有 SERVICE_HANDLER: DOM → handler(route_key, payload, ctx) → response
-///   - local route: handler 本地处理，可通过 ctx.call_raw() 调远程
-///   - remote route: handler 通过 ctx.call_raw() 转发到远程 Actor
-/// - 无 SERVICE_HANDLER: DOM → HostGate → Gate → WebRTC（旧路径，向后兼容）
+/// Message flow in unified-dispatcher mode:
+/// - With `SERVICE_HANDLER`: `DOM -> handler(route_key, payload, ctx) -> response`
+///   - Local route: the handler processes locally and may call remote targets via `ctx.call_raw()`
+///   - Remote route: the handler forwards to a remote actor via `ctx.call_raw()`
+/// - Without `SERVICE_HANDLER`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
 #[wasm_bindgen]
 pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(), JsValue> {
     let call: DomRpcCall = serde_wasm_bindgen::from_value(payload)?;
@@ -2483,7 +2486,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
         return Ok(());
     }
 
-    // 获取 ClientContext
+    // Fetch the client context.
     let ctx = CLIENTS.with(|cell| cell.borrow().get(&client_id).map(Rc::clone));
 
     let Some(ctx) = ctx else {
@@ -2604,13 +2607,13 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             request_id
         );
 
-        // 获取目标 ActrId（从 Runtime 的 target_id）
+        // Get the target `ActrId` from the runtime's `target_id`.
         let target_id = {
             let rt = runtime.lock().await;
             rt.target_id.clone()
         };
 
-        // 如果还没有 target_id，需要先发现目标
+        // If `target_id` is still missing, discover the target first.
         let target_id = match target_id {
             Some(id) => id,
             None => {
@@ -2622,7 +2625,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             }
         };
 
-        // 确保 P2P 连接已建立，并注册 ActrId → Dest 映射
+        // Ensure the P2P connection exists and register the `ActrId -> Dest` mapping.
         {
             let mut rt = runtime.lock().await;
             let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
@@ -2635,7 +2638,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
                 .insert(request_id.clone(), PendingRpcTarget::Dom);
         }
 
-        // 通过 HostGate 发送请求
+        // Send the request through `HostGate`.
         let host_gate = Arc::clone(system.host_gate());
 
         wasm_bindgen_futures::spawn_local({
@@ -2681,15 +2684,15 @@ pub async fn handle_dom_webrtc_event(client_id: String, payload: JsValue) -> Res
     Ok(())
 }
 
-/// 注册来自 DOM 的专用 DataChannel MessagePort
+/// Register a dedicated DataChannel `MessagePort` received from the DOM side.
 ///
-/// DOM 在 DataChannel 建立后创建 MessageChannel 桥接：
-/// 1. DOM: `port1 ↔ DataChannel` (双向转发)
-/// 2. DOM: 将 `port2` 通过 Transferable 转移给 SW
-/// 3. SW: 此函数接收 `port2`，创建 `WebRtcConnection`，注入到 `WirePool`
+/// After the DOM creates the DataChannel bridge:
+/// 1. DOM: `port1 <-> DataChannel` for bidirectional forwarding
+/// 2. DOM: transfers `port2` to the SW via a transferable object
+/// 3. SW: this function receives `port2`, builds `WebRtcConnection`, and injects it into `WirePool`
 ///
-/// 注入后 DestTransport 的 send 循环通过 ReadyWatcher 被唤醒，
-/// 后续出站数据直接经 `DataLane::PostMessage(port)` 零拷贝发送。
+/// After injection, `DestTransport` is awakened through `ReadyWatcher`, and
+/// subsequent outbound traffic is sent zero-copy through `DataLane::PostMessage(port)`.
 #[wasm_bindgen]
 pub async fn register_datachannel_port(
     client_id: String,
@@ -2712,15 +2715,15 @@ pub async fn register_datachannel_port(
         return Err(JsValue::from_str("Client not registered"));
     };
 
-    // 创建 WebRtcConnection 并设置 MessagePort
+    // Create the `WebRtcConnection` and attach the `MessagePort`.
     let mut rtc_conn = crate::transport::WebRtcConnection::new(peer_id.clone());
     rtc_conn.set_datachannel_port(port);
 
     let wire_handle = crate::transport::WireHandle::WebRTC(rtc_conn);
     let dest = actr_web_common::Dest::Peer(peer_id.clone());
 
-    // 注入到 PeerTransport 对应的 WirePool
-    // 如果 DestTransport 尚不存在，会自动创建一个空的
+    // Inject it into the corresponding `WirePool` owned by `PeerTransport`.
+    // If the `DestTransport` does not exist yet, an empty one is created automatically.
     ctx.transport_manager
         .inject_connection(&dest, wire_handle)
         .await

@@ -186,6 +186,6 @@ sequenceDiagram
 ---
 
 **相关文档**:
-- [架构总览](./overview.md) - 整体架构设计
-- [API 层设计](./api-layer.md) - Gate/Context/ActrRef
-- [完成度评估](./completion-status.md) - 详细进度分析
+- [架构总览](./overview.zh.md) - 整体架构设计
+- [API 层设计](./api-layer.zh.md) - Gate/Context/ActrRef
+- [完成度评估](./completion-status.zh.md) - 详细进度分析

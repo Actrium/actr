@@ -14,7 +14,7 @@ name = "EchoService"
 
 [dependencies]
 
-# Web 平台特定配置
+# Web platform specific configuration
 [platform.web]
 generate_types = true
 types_output = "./src/generated"

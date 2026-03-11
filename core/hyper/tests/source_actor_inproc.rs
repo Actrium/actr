@@ -44,9 +44,10 @@ impl MessageDispatcher for DoubleDispatcher {
     ) -> ActorResult<Bytes> {
         match envelope.route_key.as_str() {
             "test/double" => {
-                let payload = envelope.payload.as_ref().ok_or_else(|| {
-                    ActrError::InvalidArgument("missing payload".to_string())
-                })?;
+                let payload = envelope
+                    .payload
+                    .as_ref()
+                    .ok_or_else(|| ActrError::InvalidArgument("missing payload".to_string()))?;
                 if payload.len() != 4 {
                     return Err(ActrError::InvalidArgument(format!(
                         "expected 4 bytes, got {}",
@@ -58,18 +59,17 @@ impl MessageDispatcher for DoubleDispatcher {
                 Ok(Bytes::from(doubled))
             }
             "test/uppercase" => {
-                let payload = envelope.payload.as_ref().ok_or_else(|| {
-                    ActrError::InvalidArgument("missing payload".to_string())
-                })?;
+                let payload = envelope
+                    .payload
+                    .as_ref()
+                    .ok_or_else(|| ActrError::InvalidArgument("missing payload".to_string()))?;
                 let s = String::from_utf8_lossy(payload).to_uppercase();
                 Ok(Bytes::from(s.into_bytes()))
             }
-            "test/error" => {
-                Err(ActrError::Internal("intentional test error".to_string()))
-            }
-            other => {
-                Err(ActrError::InvalidArgument(format!("unknown route: {other}")))
-            }
+            "test/error" => Err(ActrError::Internal("intentional test error".to_string())),
+            other => Err(ActrError::InvalidArgument(format!(
+                "unknown route: {other}"
+            ))),
         }
     }
 }
@@ -316,7 +316,10 @@ impl Context for MockContext {
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(actr_protocol::DataStream, ActrId) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
+        F: Fn(
+                actr_protocol::DataStream,
+                ActrId,
+            ) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
             + Send
             + Sync
             + 'static,
@@ -355,7 +358,10 @@ impl Context for MockContext {
 
     async fn register_media_track<F>(&self, _track_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(actr_framework::MediaSample, ActrId) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
+        F: Fn(
+                actr_framework::MediaSample,
+                ActrId,
+            ) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
             + Send
             + Sync
             + 'static,
@@ -430,7 +436,9 @@ async fn shell_to_workload_double() {
     let harness = InprocTestHarness::build().await;
 
     let x: i32 = 21;
-    let result = harness.call_raw("test/double", x.to_le_bytes().to_vec()).await;
+    let result = harness
+        .call_raw("test/double", x.to_le_bytes().to_vec())
+        .await;
 
     let resp = result.expect("RPC call should succeed");
     assert_eq!(resp.len(), 4, "response should be 4 bytes");
@@ -445,7 +453,9 @@ async fn shell_to_workload_double() {
 async fn shell_to_workload_uppercase() {
     let harness = InprocTestHarness::build().await;
 
-    let result = harness.call_raw("test/uppercase", b"hello world".to_vec()).await;
+    let result = harness
+        .call_raw("test/uppercase", b"hello world".to_vec())
+        .await;
 
     let resp = result.expect("RPC call should succeed");
     let s = String::from_utf8(resp.to_vec()).expect("valid utf8");
@@ -494,7 +504,9 @@ async fn multiple_sequential_calls() {
     let harness = InprocTestHarness::build().await;
 
     for x in [1i32, 5, 42, -7, 0, 1000] {
-        let result = harness.call_raw("test/double", x.to_le_bytes().to_vec()).await;
+        let result = harness
+            .call_raw("test/double", x.to_le_bytes().to_vec())
+            .await;
 
         let resp = result.unwrap_or_else(|e| panic!("call for x={x} failed: {e}"));
         let val = i32::from_le_bytes([resp[0], resp[1], resp[2], resp[3]]);

@@ -80,9 +80,9 @@ type WsSink = Arc<Mutex<Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStrea
 pub struct WebSocketConnection {
     /// URL
     url: String,
-    /// 本地节点身份（hex-encoded protobuf ActrId bytes），直连模式下在握手请求中发送为 X-Actr-Source-ID
+    /// Local node identity (hex-encoded protobuf ActrId bytes), sent as X-Actr-Source-ID in handshake request for direct-connect mode
     local_id_hex: Option<String>,
-    /// 本地 AIdCredential（base64 编码），握手时随 X-Actr-Credential 头发送，供对端验签
+    /// Local AIdCredential (base64-encoded), sent with X-Actr-Credential header during handshake for peer verification
     credential_b64: Option<String>,
     /// Write end (Sink) - using Option to avoid initialization issues
     sink: WsSink,
@@ -121,25 +121,25 @@ impl WebSocketConnection {
         }
     }
 
-    /// 设置本地节点身份，握手时自动附加 X-Actr-Source-ID 请求头（直连模式使用）
+    /// Set local node identity; automatically appends X-Actr-Source-ID header during handshake (used in direct-connect mode)
     pub fn with_local_id(mut self, id_hex: String) -> Self {
         self.local_id_hex = Some(id_hex);
         self
     }
 
-    /// 设置本地节点 AIdCredential（base64 编码），握手时随 X-Actr-Credential 头发送
+    /// Set local node AIdCredential (base64-encoded), sent with X-Actr-Credential header during handshake
     pub fn with_credential_b64(mut self, credential_b64: String) -> Self {
         self.credential_b64 = Some(credential_b64);
         self
     }
 
-    /// 从服务端已完成握手的 WebSocket 流创建连接（直连模式入站使用）
+    /// Create connection from a server-side WebSocket stream with completed handshake (used for direct-connect inbound)
     ///
-    /// 与 `new()` + `connect()` 不同，此方法用于已接受的服务端连接，
-    /// 握手已由 `WebSocketServer` 完成，直接进入 Ready 状态。
+    /// Unlike `new()` + `connect()`, this method is for already-accepted server connections
+    /// where the handshake has been completed by `WebSocketServer`, entering Ready state directly.
     ///
-    /// `server.rs` 通过 `accept_hdr_async(MaybeTlsStream::Plain(stream), ...)` 生成
-    /// `WebSocketStream<MaybeTlsStream<TcpStream>>`，与客户端类型完全一致，无需转换。
+    /// `server.rs` uses `accept_hdr_async(MaybeTlsStream::Plain(stream), ...)` to produce
+    /// `WebSocketStream<MaybeTlsStream<TcpStream>>`, identical to the client type, no conversion needed.
     pub fn from_server_stream(ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
         let (sink, stream) = ws_stream.split();
 
@@ -164,11 +164,11 @@ impl WebSocketConnection {
 
     /// establish Connect
     pub async fn connect(&self) -> NetworkResult<()> {
-        // 1. establish WebSocket Connect（直连模式携带 X-Actr-Source-ID 请求头）
+        // 1. Establish WebSocket connection (direct-connect mode carries X-Actr-Source-ID header)
         let (ws_stream, _) = if let Some(ref hex_id) = self.local_id_hex {
-            // tungstenite 不会自动补全 WebSocket 升级头，必须全部手动填写。
-            // 缺少任何一个（Host/Connection/Upgrade/Sec-WebSocket-Version/Sec-WebSocket-Key）
-            // 都会导致握手失败。
+            // tungstenite does not auto-complete WebSocket upgrade headers; all must be specified manually.
+            // Missing any of (Host/Connection/Upgrade/Sec-WebSocket-Version/Sec-WebSocket-Key)
+            // will cause the handshake to fail.
             let uri: WsUri = self
                 .url
                 .parse()

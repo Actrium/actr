@@ -1,69 +1,70 @@
-//! WASM Host-Guest ABI 定义
+//! WASM Host-Guest ABI definition
 //!
-//! 本 ABI 设计为**与运行时无关**，兼容 Wasmtime（桌面/服务端）和 WAMR（移动/嵌入式），
-//! 仅使用 WASM 核心规范（线性内存 + 函数调用），不依赖 Component Model。
+//! This ABI is designed to be **runtime-agnostic**, compatible with Wasmtime (desktop/server)
+//! and WAMR (mobile/embedded), using only WASM core spec (linear memory + function calls),
+//! without depending on the Component Model.
 //!
-//! # Guest 必须实现的导出函数
+//! # Guest must implement these exported functions
 //!
 //! ```text
-//! /// 初始化 actor（接收 JSON 编码的配置，见 WasmActorConfig）
+//! /// Initialize the actor (receives JSON-encoded config, see WasmActorConfig)
 //! actr_init(config_ptr: i32, config_len: i32) -> i32
 //!
-//! /// 处理一条请求消息（protobuf 编码的 RpcEnvelope）
-//! /// - req_ptr / req_len：请求数据在线性内存中的起始地址和长度
-//! /// - resp_ptr_out：Host 分配的 i32 指针，WASM 在此写入响应数据的地址
-//! /// - resp_len_out：Host 分配的 i32 指针，WASM 在此写入响应数据的长度
-//! /// Host 读完响应后调用 actr_free(resp_ptr, resp_len) 释放 WASM 分配的内存
+//! /// Handle one request message (protobuf-encoded RpcEnvelope)
+//! /// - req_ptr / req_len: start address and length of request data in linear memory
+//! /// - resp_ptr_out: Host-allocated i32 pointer where WASM writes the response data address
+//! /// - resp_len_out: Host-allocated i32 pointer where WASM writes the response data length
+//! /// Host calls actr_free(resp_ptr, resp_len) after reading the response to free WASM-allocated memory
 //! actr_handle(req_ptr: i32, req_len: i32,
 //!             resp_ptr_out: i32, resp_len_out: i32) -> i32
 //!
-//! /// 在 WASM 线性内存中分配内存（供 Host 写入数据前调用）
-//! /// 返回分配的指针，0 表示分配失败
+//! /// Allocate memory in WASM linear memory (called by Host before writing data)
+//! /// Returns the allocated pointer, 0 indicates allocation failure
 //! actr_alloc(size: i32) -> i32
 //!
-//! /// 释放 WASM 线性内存（Host 完成读写后调用）
+//! /// Free WASM linear memory (called by Host after completing read/write)
 //! actr_free(ptr: i32, size: i32)
 //! ```
 //!
-//! # 数据写入协议（Host → WASM）
+//! # Data write protocol (Host -> WASM)
 //!
 //! ```text
-//! 1. host 调用 actr_alloc(size) → ptr
-//! 2. host 将数据写入 wasm_memory[ptr..ptr+size]
-//! 3. host 调用目标函数并传入 ptr, size
-//! 4. host 调用 actr_free(ptr, size) 释放内存
+//! 1. host calls actr_alloc(size) -> ptr
+//! 2. host writes data to wasm_memory[ptr..ptr+size]
+//! 3. host calls target function with ptr, size
+//! 4. host calls actr_free(ptr, size) to free memory
 //! ```
 //!
-//! # 数据读取协议（WASM → Host）
+//! # Data read protocol (WASM -> Host)
 //!
 //! ```text
-//! 1. host 在自身栈上分配两个 i32 变量：resp_ptr_out, resp_len_out
-//! 2. host 将它们的地址通过 actr_alloc 分配的临时区写入 WASM 内存，
-//!    并把地址传给 actr_handle
-//! 3. WASM 在 actr_handle 内部分配响应内存，将 ptr/len 写入 resp_ptr_out/resp_len_out
-//! 4. host 读取 resp_ptr_out/resp_len_out，从 WASM 内存取出响应数据
-//! 5. host 调用 actr_free(resp_ptr, resp_len) 释放 WASM 响应内存
+//! 1. host allocates two i32 variables on its stack: resp_ptr_out, resp_len_out
+//! 2. host writes their addresses to WASM memory via actr_alloc temporary area,
+//!    and passes the addresses to actr_handle
+//! 3. WASM allocates response memory inside actr_handle, writes ptr/len to resp_ptr_out/resp_len_out
+//! 4. host reads resp_ptr_out/resp_len_out, retrieves response data from WASM memory
+//! 5. host calls actr_free(resp_ptr, resp_len) to free WASM response memory
 //! ```
 //!
-//! # 错误码（所有返回 i32 的函数）
+//! # Error codes (all functions returning i32)
 //!
-//! | 值   | 含义                     |
-//! |-----|--------------------------|
-//! | 0   | 成功                     |
-//! | -1  | 通用错误                 |
-//! | -2  | 初始化失败               |
-//! | -3  | 消息处理失败             |
-//! | -4  | 内存分配失败             |
-//! | -5  | 协议错误（消息格式非法） |
+//! | Value | Meaning                         |
+//! |-------|---------------------------------|
+//! | 0     | Success                         |
+//! | -1    | Generic error                   |
+//! | -2    | Initialization failed           |
+//! | -3    | Message handling failed          |
+//! | -4    | Memory allocation failed         |
+//! | -5    | Protocol error (malformed message) |
 
-/// WASM 导出函数名
+/// WASM exported function names
 pub const EXPORT_INIT: &str = "actr_init";
 pub const EXPORT_HANDLE: &str = "actr_handle";
 pub const EXPORT_ALLOC: &str = "actr_alloc";
 pub const EXPORT_FREE: &str = "actr_free";
 pub const EXPORT_MEMORY: &str = "memory";
 
-/// ABI 错误码
+/// ABI error codes
 pub mod code {
     pub const SUCCESS: i32 = 0;
     pub const GENERIC_ERROR: i32 = -1;
@@ -73,7 +74,7 @@ pub mod code {
     pub const PROTOCOL_ERROR: i32 = -5;
 }
 
-/// 将 ABI 错误码转换为可读描述
+/// Convert an ABI error code to a human-readable description
 pub fn describe_error_code(code: i32) -> &'static str {
     match code {
         self::code::SUCCESS => "success",
@@ -86,18 +87,18 @@ pub fn describe_error_code(code: i32) -> &'static str {
     }
 }
 
-/// WasmActorConfig - 初始化时传给 actr_init 的 JSON 结构
+/// WasmActorConfig - JSON structure passed to actr_init during initialization
 ///
-/// Guest 端收到后解析并初始化内部状态。
+/// The guest side parses this and initializes its internal state.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WasmActorConfig {
-    /// Actor 类型（manufacturer:name:version）
+    /// Actor type (manufacturer:name:version)
     pub actr_type: String,
 
-    /// AID 凭证（protobuf bytes，base64 编码）
+    /// AID credential (protobuf bytes, base64-encoded)
     pub credential_b64: String,
 
-    /// Actor ID（protobuf bytes，base64 编码）
+    /// Actor ID (protobuf bytes, base64-encoded)
     pub actor_id_b64: String,
 
     /// Realm ID

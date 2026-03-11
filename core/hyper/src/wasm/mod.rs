@@ -1,6 +1,6 @@
-//! WASM actor 执行引擎（feature = "wasm-engine"）
+//! WASM actor execution engine (feature = "wasm-engine")
 //!
-//! 提供 [`WasmHost`] 和 [`WasmInstance`]，与 native actor 的 tokio 执行引擎并列。
+//! Provides [`WasmHost`] and [`WasmInstance`], alongside the native actor's tokio execution engine.
 
 pub mod abi;
 pub mod error;

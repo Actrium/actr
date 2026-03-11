@@ -16,9 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_protocol::{prost::Message as ProstMessage, ActrId, ActrType, Realm, RpcEnvelope};
 use actr_hyper::dynclib::DynclibHost;
 use actr_hyper::executor::{CallExecutorFn, DispatchContext, IoResult, PendingCall};
+use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -74,9 +74,7 @@ fn test_ctx() -> DispatchContext {
 }
 
 fn noop_executor() -> CallExecutorFn {
-    Box::new(|_pending| {
-        Box::pin(async { IoResult::Error(-1) })
-    })
+    Box::new(|_pending| Box::pin(async { IoResult::Error(-1) }))
 }
 
 // ---- tests -----------------------------------------------------------------
@@ -92,9 +90,7 @@ async fn dynclib_unknown_route_returns_error() {
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
     let executor = noop_executor();
 
-    let result = instance
-        .dispatch(&req_bytes, test_ctx(), &executor)
-        .await;
+    let result = instance.dispatch(&req_bytes, test_ctx(), &executor).await;
 
     assert!(result.is_err(), "unknown route should return error");
 }
@@ -136,13 +132,13 @@ async fn dynclib_double_dispatch() {
     let executor: CallExecutorFn = Box::new(|pending| {
         Box::pin(async move {
             match pending {
-                PendingCall::Call { route_key, payload, .. } => {
+                PendingCall::Call {
+                    route_key, payload, ..
+                } => {
                     assert_eq!(route_key, "test/double_impl", "route_key mismatch");
                     assert_eq!(payload.len(), 4, "payload should be 4 bytes");
 
-                    let val = i32::from_le_bytes([
-                        payload[0], payload[1], payload[2], payload[3],
-                    ]);
+                    let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                     assert_eq!(val, 7, "guest should pass x=7");
 
                     // mock: return x * 2
@@ -182,9 +178,8 @@ async fn dynclib_multiple_dispatches() {
             Box::pin(async move {
                 match pending {
                     PendingCall::Call { payload, .. } => {
-                        let val = i32::from_le_bytes([
-                            payload[0], payload[1], payload[2], payload[3],
-                        ]);
+                        let val =
+                            i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
                         IoResult::Bytes((val * 2).to_le_bytes().to_vec())
                     }
                     _ => IoResult::Error(-1),

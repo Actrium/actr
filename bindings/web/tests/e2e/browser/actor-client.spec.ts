@@ -1,14 +1,14 @@
 /**
  * Playwright E2E Tests
  *
- * 端到端测试 ActorClient 功能
+ * End-to-end tests for ActorClient functionality
  */
 
 import { test, expect } from '@playwright/test';
 
 test.describe('ActorClient E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
-    // 导航到测试页面
+    // Navigate to test page
     await page.goto('/');
   });
 
@@ -20,7 +20,7 @@ test.describe('ActorClient E2E Tests', () => {
     const status = page.locator('#status');
     await expect(status).toBeVisible();
 
-    // 应该显示某种连接状态
+    // Should display some kind of connection status
     const statusText = await status.textContent();
     expect(statusText).toBeTruthy();
   });
@@ -34,11 +34,11 @@ test.describe('ActorClient E2E Tests', () => {
   test('should enable button when connected', async ({ page }) => {
     const sendBtn = page.locator('#sendBtn');
 
-    // 等待按钮状态更新 (最多 10 秒)
+    // Wait for button status update (max 10 seconds)
     await sendBtn.waitFor({ state: 'visible', timeout: 10000 });
 
-    // 注意: 如果没有实际的信令服务器,按钮会保持禁用状态
-    // 这个测试主要验证按钮存在和响应
+    // Note: Without an actual signaling server, button remains disabled
+    // This test mainly verifies button exists and responds
   });
 
   test('should display result area', async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe('ActorClient E2E Tests', () => {
   });
 
   test('should handle browser APIs', async ({ page }) => {
-    // 检查浏览器 API 支持
+    // Check browser API support
     const hasAPIs = await page.evaluate(() => {
       return {
         wasm: typeof WebAssembly !== 'undefined',
@@ -73,11 +73,11 @@ test.describe('ActorClient E2E Tests', () => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
-    // 应该没有 JavaScript 错误
-    // (注意: 连接失败的错误是预期的,因为没有真实的服务器)
+    // Should have no JavaScript errors
+    // (Note: Connection failure errors are expected since no real server)
     console.log('Page errors:', errors);
 
-    // 检查是否有致命错误
+    // Check for fatal errors
     const hasFatalError = errors.some((err) =>
       err.includes('SyntaxError') || err.includes('ReferenceError')
     );
@@ -90,10 +90,10 @@ test.describe('ActorClient E2E Tests', () => {
 
     const headers = response?.headers();
 
-    // 检查 COOP 和 COEP headers (WASM 需要)
+    // Check COOP and COEP headers (needed for WASM)
     console.log('Response headers:', headers);
 
-    // 如果 headers 存在,验证它们
+    // If headers exist, verify them
     if (headers) {
       expect(
         headers['cross-origin-opener-policy'] ||
@@ -119,7 +119,7 @@ test.describe('ActorClient E2E Tests', () => {
 
     console.log('Performance metrics:', metrics);
 
-    // 验证性能指标
+    // Verify performance metrics
     expect(metrics.domContentLoaded).toBeGreaterThan(0);
     expect(metrics.loadComplete).toBeGreaterThan(0);
     expect(metrics.ttfb).toBeGreaterThan(0);
@@ -127,140 +127,140 @@ test.describe('ActorClient E2E Tests', () => {
 });
 
 // ============================================================================
-// TODO: 多浏览器兼容性和 UI 交互测试 (需要 Mock 服务器)
+// TODO: Cross-browser compatibility and UI interaction tests (needs Mock server)
 // ============================================================================
 
 test.describe.skip('ActorClient - Cross-Browser Integration (TODO)', () => {
   // -------------------------------------------------------------------------
-  // 真实连接测试
+  // Real connection tests
   // -------------------------------------------------------------------------
 
   test.skip('should connect and display connected status', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 启动 Mock 信令服务器
-    // 2. 访问测试页面
-    // 3. 等待连接建立
-    // 4. 验证 #status 显示 "已连接"
-    // 5. 验证 #sendBtn 变为可用状态
+    // TODO: Needs implementation
+    // 1. Start Mock signaling server
+    // 2. Navigate to test page
+    // 3. Wait for connection to establish
+    // 4. Verify #status shows "connected"
+    // 5. Verify #sendBtn becomes enabled
   });
 
   test.skip('should send echo message and receive response', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 等待连接建立
-    // 2. 点击 #sendBtn 按钮
-    // 3. 等待响应
-    // 4. 验证 #result 显示发送的消息
-    // 5. 验证 #result 显示接收到的回复
-    // 6. 验证时间戳正确
+    // TODO: Needs implementation
+    // 1. Wait for connection to establish
+    // 2. Click #sendBtn button
+    // 3. Wait for response
+    // 4. Verify #result displays sent message
+    // 5. Verify #result displays received reply
+    // 6. Verify timestamp is correct
   });
 
   test.skip('should handle send button states correctly', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 验证连接前按钮禁用
-    // 2. 连接后按钮启用
-    // 3. 点击发送时按钮短暂禁用
-    // 4. 发送完成后按钮重新启用
-    // 5. 断开连接后按钮重新禁用
+    // TODO: Needs implementation
+    // 1. Verify button disabled before connection
+    // 2. Button enabled after connection
+    // 3. Button briefly disabled when sending
+    // 4. Button re-enabled after send completes
+    // 5. Button disabled again after disconnect
   });
 
   // -------------------------------------------------------------------------
-  // 跨浏览器特性测试
+  // Cross-browser feature tests
   // -------------------------------------------------------------------------
 
   test.skip('should work correctly in Firefox', async ({ page, browserName }) => {
     test.skip(browserName !== 'firefox', 'Firefox-specific test');
-    // TODO: 需要实现
-    // 验证 Firefox 特定的兼容性问题
-    // - WebRTC 实现差异
-    // - IndexedDB 行为差异
-    // - WebSocket 连接稳定性
+    // TODO: Needs implementation
+    // Verify Firefox-specific compatibility issues
+    // - WebRTC implementation differences
+    // - IndexedDB behavior differences
+    // - WebSocket connection stability
   });
 
   test.skip('should work correctly in Safari/WebKit', async ({ page, browserName }) => {
     test.skip(browserName !== 'webkit', 'Safari-specific test');
-    // TODO: 需要实现
-    // 验证 Safari 特定的兼容性问题
-    // - SharedArrayBuffer 限制
-    // - COOP/COEP headers 要求
-    // - WebRTC 兼容性
+    // TODO: Needs implementation
+    // Verify Safari-specific compatibility issues
+    // - SharedArrayBuffer restrictions
+    // - COOP/COEP headers requirements
+    // - WebRTC compatibility
   });
 
   // -------------------------------------------------------------------------
-  // UI 响应式测试
+  // UI responsive tests
   // -------------------------------------------------------------------------
 
   test.skip('should work on mobile viewport', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 设置移动设备视口 (375x667)
-    // 2. 验证页面布局适配
-    // 3. 验证按钮可点击
-    // 4. 验证消息显示完整
+    // TODO: Needs implementation
+    // 1. Set mobile device viewport (375x667)
+    // 2. Verify page layout adapts
+    // 3. Verify button is clickable
+    // 4. Verify message displays completely
   });
 
   test.skip('should work on tablet viewport', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 设置平板视口 (768x1024)
-    // 2. 验证布局适配
-    // 3. 验证功能完整
+    // TODO: Needs implementation
+    // 1. Set tablet viewport (768x1024)
+    // 2. Verify layout adapts
+    // 3. Verify functionality is complete
   });
 
   // -------------------------------------------------------------------------
-  // 网络条件测试
+  // Network condition tests
   // -------------------------------------------------------------------------
 
   test.skip('should handle slow network conditions', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 模拟 3G 网络 (throttling)
-    // 2. 建立连接
-    // 3. 发送消息
-    // 4. 验证虽然慢但功能正常
-    // 5. 验证有适当的加载提示
+    // TODO: Needs implementation
+    // 1. Simulate 3G network (throttling)
+    // 2. Establish connection
+    // 3. Send message
+    // 4. Verify functionality works despite slowness
+    // 5. Verify appropriate loading indicators
   });
 
   test.skip('should show connection timeout error', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 配置超短的连接超时
-    // 2. 尝试连接到不存在的服务器
-    // 3. 验证超时错误被正确显示
-    // 4. 验证错误消息用户友好
+    // TODO: Needs implementation
+    // 1. Configure very short connection timeout
+    // 2. Try to connect to non-existent server
+    // 3. Verify timeout error displayed correctly
+    // 4. Verify error message is user-friendly
   });
 
   // -------------------------------------------------------------------------
-  // 并发和压力测试
+  // Concurrency and stress tests
   // -------------------------------------------------------------------------
 
   test.skip('should handle rapid button clicks', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 建立连接
-    // 2. 快速连续点击发送按钮多次
-    // 3. 验证所有请求都被处理
-    // 4. 验证没有竞态条件
-    // 5. 验证 UI 状态始终正确
+    // TODO: Needs implementation
+    // 1. Establish connection
+    // 2. Click send button rapidly multiple times
+    // 3. Verify all requests are processed
+    // 4. Verify no race conditions
+    // 5. Verify UI state always correct
   });
 
   test.skip('should handle multiple tabs with same page', async ({ context }) => {
-    // TODO: 需要实现
-    // 1. 在多个 tab 中打开同一页面
-    // 2. 验证每个 tab 都能独立连接
-    // 3. 在不同 tab 中发送消息
-    // 4. 验证不会相互干扰
+    // TODO: Needs implementation
+    // 1. Open same page in multiple tabs
+    // 2. Verify each tab can connect independently
+    // 3. Send messages in different tabs
+    // 4. Verify they do not interfere with each other
   });
 
   // -------------------------------------------------------------------------
-  // 可访问性测试
+  // Accessibility tests
   // -------------------------------------------------------------------------
 
   test.skip('should be keyboard accessible', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 使用 Tab 键导航到按钮
-    // 2. 使用 Enter/Space 触发点击
-    // 3. 验证 focus 样式可见
-    // 4. 验证屏幕阅读器可用
+    // TODO: Needs implementation
+    // 1. Use Tab key to navigate to button
+    // 2. Use Enter/Space to trigger click
+    // 3. Verify focus style is visible
+    // 4. Verify screen reader is usable
   });
 
   test.skip('should have proper ARIA labels', async ({ page }) => {
-    // TODO: 需要实现
-    // 验证所有交互元素都有适当的 ARIA 属性
+    // TODO: Needs implementation
+    // Verify all interactive elements have proper ARIA attributes
     // - aria-label
     // - aria-describedby
     // - role
@@ -268,23 +268,23 @@ test.describe.skip('ActorClient - Cross-Browser Integration (TODO)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 错误场景 UI 测试
+  // Error scenario UI tests
   // -------------------------------------------------------------------------
 
   test.skip('should display user-friendly error messages', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 模拟各种错误场景
-    // 2. 验证错误消息清晰易懂
-    // 3. 验证提供了可操作的建议
-    // 4. 验证错误消息不会暴露技术细节
+    // TODO: Needs implementation
+    // 1. Simulate various error scenarios
+    // 2. Verify error messages are clear and understandable
+    // 3. Verify actionable suggestions provided
+    // 4. Verify error messages do not expose technical details
   });
 
   test.skip('should allow retry after connection failure', async ({ page }) => {
-    // TODO: 需要实现
-    // 1. 模拟连接失败
-    // 2. 显示"重试"按钮
-    // 3. 用户点击重试
-    // 4. 验证重新尝试连接
-    // 5. 成功后更新 UI 状态
+    // TODO: Needs implementation
+    // 1. Simulate connection failure
+    // 2. Display "retry" button
+    // 3. User clicks retry
+    // 4. Verify reconnection attempt
+    // 5. Update UI state after success
   });
 });

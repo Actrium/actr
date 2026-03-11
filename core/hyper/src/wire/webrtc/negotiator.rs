@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[cfg(feature = "test-utils")]
 use webrtc::util::vnet::net::Net;
 
-// 从 actr-config 重新导出类型
+// Re-export types from actr-config
 pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 
 /// WebRTC negotiator
@@ -20,7 +20,7 @@ pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
 pub struct WebRtcNegotiator {
     /// Base WebRTC configuration (URLs + policy)
     config: WebRtcConfig,
-    /// 最新凭证状态（注册/续期时更新，包含 TurnCredential）
+    /// Latest credential state (updated on register/renew, contains TurnCredential)
     credential_state: CredentialState,
     /// Optional virtual network for integration testing.
     /// When set, RTCPeerConnection will use this VNet instead of real OS networking.
@@ -32,7 +32,7 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `config`: WebRTC configuration
-    /// - `credential_state`: 共享凭证状态，包含 TurnCredential
+    /// - `credential_state`: shared credential state containing TurnCredential
     pub fn new(config: WebRtcConfig, credential_state: CredentialState) -> Self {
         Self {
             config,
@@ -135,10 +135,10 @@ impl WebRtcNegotiator {
             RTPCodecType::Audio,
         )?;
 
-        // 获取 TURN 凭证（HMAC 时效凭证，由服务端在注册/续期时下发）
+        // Get TURN credentials (time-limited HMAC credentials issued by server on register/renew)
         let turn_cred = self.credential_state.turn_credential().await;
 
-        // 组装 ICE server 列表；TURN server 使用 TurnCredential，STUN server 使用静态配置
+        // Assemble ICE server list; TURN servers use TurnCredential, STUN servers use static config
         let ice_servers: Vec<RTCIceServer> = self
             .config
             .ice_servers
@@ -157,10 +157,10 @@ impl WebRtcNegotiator {
                             credential: tc.password.clone(),
                         },
                         None => {
-                            // 凭证尚未就绪，跳过该 TURN server（不填凭证会导致 ICE 失败，
-                            // 保留 URL 以便 webrtc-rs 报错时能在日志中看到具体地址）
+                            // Credential not ready yet, skip this TURN server (missing credentials cause ICE failure,
+                            // keep URL so webrtc-rs error logs show the specific address)
                             tracing::warn!(
-                                "⚠️ TurnCredential 未就绪，TURN server {} 将无法认证",
+                                "TurnCredential not ready, TURN server {} will fail authentication",
                                 server.urls.first().cloned().unwrap_or_default()
                             );
                             RTCIceServer {

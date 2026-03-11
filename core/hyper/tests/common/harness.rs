@@ -31,12 +31,10 @@ use super::utils::{
     spawn_response_receiver,
 };
 use super::vnet::VNetPair;
+use crate::outbound::PeerGate;
+use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport};
+use crate::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::{ActrId, RpcEnvelope};
-use actr_hyper::outbound::PeerGate;
-use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
-};
-use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,8 +55,7 @@ impl TestPeer {
     /// Subscribe to connection events from this peer's coordinator
     pub fn subscribe_events(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<actr_hyper::transport::connection_event::ConnectionEvent>
-    {
+    ) -> tokio::sync::broadcast::Receiver<crate::transport::connection_event::ConnectionEvent> {
         self.coordinator.subscribe_events()
     }
 
@@ -101,7 +98,7 @@ impl TestPeer {
     }
 
     /// Send a ConnectionEvent to simulate state changes
-    pub fn send_event(&self, event: actr_hyper::transport::connection_event::ConnectionEvent) {
+    pub fn send_event(&self, event: crate::transport::connection_event::ConnectionEvent) {
         let _ = self.coordinator.event_sender().send(event);
     }
 
@@ -380,7 +377,7 @@ impl TestHarness {
 
     /// Check if network is currently blocked.
     pub fn is_disconnected(&self) -> bool {
-        self.vnet.as_ref().map_or(false, |v| v.is_blocked())
+        self.vnet.as_ref().is_some_and(|v| v.is_blocked())
     }
 
     /// Wait until the signaling server's ICE restart count increases beyond `min_count`.

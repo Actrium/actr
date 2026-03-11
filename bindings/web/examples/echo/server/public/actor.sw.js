@@ -1,10 +1,10 @@
 /* Actor-RTC Service Worker entry for echo-server.
  *
- * 此文件加载用户 WASM (echo_server) 并初始化 SW Runtime
- * 
- * WASM 包含:
- * - actr-runtime-sw (框架代码)
- * - echo-server-wasm (用户 Workload)
+ * This file loads the user WASM bundle (`echo_server`) and initializes the SW runtime.
+ *
+ * The WASM bundle contains:
+ * - `actr-runtime-sw` (framework code)
+ * - `echo-server-wasm` (user workload)
  */
 
 /* global wasm_bindgen */
@@ -69,9 +69,9 @@
     console.error = function (...args) {
         _origError.apply(console, args);
         const msg = extractMessage(args);
-        // All errors are interesting
+        // All errors are relevant here.
         broadcast({ type: 'sw_log', level: 'error', message: msg, ts: Date.now() });
-        // Also count as echo error if related to echo
+        // Also count the event as an Echo error if it is Echo-related.
         if (msg.includes('Echo') || msg.includes('handle_request') || msg.includes('service')) {
             broadcast({ type: 'echo_event', event: 'error', detail: msg, ts: Date.now() });
         }
@@ -149,7 +149,7 @@ async function ensureWasmReady() {
     let runtimeUrl;
     let wasmUrl;
     try {
-        // 加载用户 WASM (包含 SW Runtime + Echo Service)
+        // Load the user WASM bundle, including the SW runtime and Echo service.
         runtimeUrl = new URL('echo_server.js', self.location).toString();
         wasmUrl = new URL('echo_server_bg.wasm', self.location).toString();
 
@@ -211,7 +211,7 @@ async function ensureWasmReady() {
         // Global init (logger, panic hook) — once
         wasm_bindgen.init_global();
 
-        // 注册 Echo Service Workload (shared handler, once)
+        // Register the shared Echo service workload once.
         if (typeof wasm_bindgen.register_echo_service === 'function') {
             wasm_bindgen.register_echo_service();
             emitSwLog('info', 'echo_service_registered', null);
@@ -243,7 +243,7 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-    // 处理 PING 消息
+    // Handle `PING` messages.
     if (event.data && event.data.type === 'PING') {
         if (event.source && event.source.postMessage) {
             event.source.postMessage({ type: 'PONG' });
@@ -251,12 +251,12 @@ self.addEventListener('message', (event) => {
         return;
     }
 
-    // 只处理 DOM_PORT_INIT 消息
+    // Only process `DOM_PORT_INIT` messages.
     if (!event.data || event.data.type !== 'DOM_PORT_INIT') {
         return;
     }
 
-    // 从 transferable 获取端口
+    // Extract the port from the transferable payload.
     const port = event.data.port;
     const clientId = event.data.clientId;
     if (!port || !clientId) return;
@@ -278,7 +278,7 @@ self.addEventListener('message', (event) => {
 
     console.log('[SW] port initialized for client:', clientId, 'total:', clientPorts.size);
 
-    // 发送确认
+    // Send the acknowledgement.
     if (event.source && event.source.postMessage) {
         event.source.postMessage({ type: 'sw_ack', message: 'port_ready' });
     }
@@ -291,7 +291,7 @@ self.addEventListener('message', (event) => {
         totalClients: clientPorts.size,
     });
 
-    // 设置端口消息处理器
+    // Install the port message handler.
     port.onmessage = async (portEvent) => {
         try {
             await ensureWasmReady();
@@ -352,7 +352,7 @@ self.addEventListener('message', (event) => {
         }
     };
 
-    // 激活端口
+    // Activate the port.
     port.start();
 
     // Register this client with its own independent runtime

@@ -1,49 +1,49 @@
-//! # actr-runtime — 业务分发层
+//! # actr-runtime -- Business Dispatch Layer
 //!
-//! 精简后的 `actr-runtime` 仅包含纯业务分发逻辑，
-//! **不依赖** tokio、WebRTC、wasmtime 等平台相关库，
-//! 可在 native 和 `wasm32-unknown-unknown` 目标上编译。
+//! The streamlined `actr-runtime` contains only pure business dispatch logic,
+//! with **no dependency** on tokio, WebRTC, wasmtime or other platform-specific libraries,
+//! and can be compiled for both native and `wasm32-unknown-unknown` targets.
 //!
-//! ## 职责划分
+//! ## Responsibility Separation
 //!
 //! ```text
-//! actr-hyper   ← 基础设施层（transport, wire, signaling, WASM engine …）
-//! actr-runtime ← 业务分发层（ACL + dispatch + lifecycle hooks）  ← 你在这里
-//! actr-framework ← SDK 接口层（trait 定义：Workload, Context, MessageDispatcher）
-//! actr-protocol  ← 数据定义层（protobuf 类型）
+//! actr-hyper   <- Infrastructure layer (transport, wire, signaling, WASM engine ...)
+//! actr-runtime <- Business dispatch layer (ACL + dispatch + lifecycle hooks)  <- you are here
+//! actr-framework <- SDK interface layer (trait definitions: Workload, Context, MessageDispatcher)
+//! actr-protocol  <- Data definition layer (protobuf types)
 //! ```
 //!
-//! ## 核心类型
+//! ## Core Types
 //!
-//! - [`ActrDispatch`] — 持有 `Arc<Workload>` + 可选 ACL，提供 `dispatch()` 入口
-//! - [`check_acl_permission`] — 纯函数 ACL 权限判定
+//! - [`ActrDispatch`] -- Holds `Arc<Workload>` + optional ACL, provides `dispatch()` entry point
+//! - [`check_acl_permission`] -- Pure function for ACL permission evaluation
 //!
-//! ## 使用示例
+//! ## Usage Example
 //!
 //! ```rust,ignore
 //! use actr_runtime::ActrDispatch;
 //!
 //! let dispatch = ActrDispatch::new(Arc::new(workload), acl);
 //!
-//! // 生命周期
+//! // Lifecycle
 //! dispatch.on_start(&ctx).await?;
 //!
-//! // 消息分发
+//! // Message dispatch
 //! let response = dispatch.dispatch(&self_id, caller_id.as_ref(), envelope, &ctx).await?;
 //!
-//! // 关闭
+//! // Shutdown
 //! dispatch.on_stop(&ctx).await?;
 //! ```
 
 pub mod acl;
 pub mod dispatch;
 
-// ── 核心导出 ──
+// -- Core exports --
 pub use acl::check_acl_permission;
 pub use dispatch::ActrDispatch;
 
-// ── 转导出 actr-framework 的核心 trait，方便下游一站式引入 ──
+// -- Re-export actr-framework core traits for convenient downstream imports --
 pub use actr_framework::{Context, MessageDispatcher, Workload};
 
-// ── 转导出 actr-protocol 常用类型 ──
-pub use actr_protocol::{Acl, ActrError, ActrId, ActrType, ActorResult, RpcEnvelope};
+// -- Re-export commonly used actr-protocol types --
+pub use actr_protocol::{Acl, ActorResult, ActrError, ActrId, ActrType, RpcEnvelope};

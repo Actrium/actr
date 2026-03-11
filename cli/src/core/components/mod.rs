@@ -1,6 +1,6 @@
-//! 核心复用组件定义
+//! Core reusable component definitions
 //!
-//! 定义了8个核心组件的trait接口，支持依赖注入和组合使用
+//! Defines trait interfaces for 8 core components, supporting dependency injection and composition
 
 pub mod cache_manager;
 pub mod config_manager;
@@ -28,10 +28,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ============================================================================
-// 核心数据类型
+// Core data types
 // ============================================================================
 
-/// 依赖规范
+/// Dependency specification
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DependencySpec {
     pub alias: String,
@@ -40,7 +40,7 @@ pub struct DependencySpec {
     pub fingerprint: Option<String>,
 }
 
-/// 解析后的依赖信息
+/// Resolved dependency information
 #[derive(Debug, Clone)]
 pub struct ResolvedDependency {
     pub spec: DependencySpec,
@@ -48,7 +48,7 @@ pub struct ResolvedDependency {
     pub proto_files: Vec<ProtoFile>,
 }
 
-/// Proto文件信息
+/// Proto file information
 #[derive(Debug, Clone)]
 pub struct ProtoFile {
     pub name: String,
@@ -57,14 +57,14 @@ pub struct ProtoFile {
     pub services: Vec<ServiceDefinition>,
 }
 
-/// 服务定义
+/// Service definition
 #[derive(Debug, Clone)]
 pub struct ServiceDefinition {
     pub name: String,
     pub methods: Vec<MethodDefinition>,
 }
 
-/// 方法定义
+/// Method definition
 #[derive(Debug, Clone)]
 pub struct MethodDefinition {
     pub name: String,
@@ -72,7 +72,7 @@ pub struct MethodDefinition {
     pub output_type: String,
 }
 
-/// 服务信息
+/// Service information
 #[derive(Debug, Clone)]
 pub struct ServiceInfo {
     /// Service name (package name)
@@ -85,7 +85,7 @@ pub struct ServiceInfo {
     pub methods: Vec<MethodDefinition>,
 }
 
-/// 服务详情
+/// Service details
 #[derive(Debug, Clone)]
 pub struct ServiceDetails {
     pub info: ServiceInfo,
@@ -93,14 +93,14 @@ pub struct ServiceDetails {
     pub dependencies: Vec<String>,
 }
 
-/// 指纹信息
+/// Fingerprint information
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fingerprint {
     pub algorithm: String,
     pub value: String,
 }
 
-/// 验证报告
+/// Validation report
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
     pub is_valid: bool,
@@ -173,34 +173,34 @@ impl ValidationReport {
 }
 
 // ============================================================================
-// 1. 配置管理组件 (ConfigManager)
+// 1. Configuration Management Component (ConfigManager)
 // ============================================================================
 
-/// 统一的配置管理接口
+/// Unified configuration management interface
 #[async_trait]
 pub trait ConfigManager: Send + Sync {
-    /// 加载配置文件
+    /// Load configuration file
     async fn load_config(&self, path: &Path) -> Result<Config>;
 
-    /// 保存配置文件
+    /// Save configuration file
     async fn save_config(&self, config: &Config, path: &Path) -> Result<()>;
 
-    /// 更新依赖配置
+    /// Update dependency configuration
     async fn update_dependency(&self, spec: &DependencySpec) -> Result<()>;
 
-    /// 验证配置文件
+    /// Validate configuration file
     async fn validate_config(&self) -> Result<ConfigValidation>;
 
-    /// 获取项目根目录
+    /// Get project root directory
     fn get_project_root(&self) -> &Path;
 
-    /// 备份当前配置
+    /// Back up current configuration
     async fn backup_config(&self) -> Result<ConfigBackup>;
 
-    /// 恢复配置备份
+    /// Restore configuration backup
     async fn restore_backup(&self, backup: ConfigBackup) -> Result<()>;
 
-    /// 删除配置备份
+    /// Remove configuration backup
     async fn remove_backup(&self, backup: ConfigBackup) -> Result<()>;
 }
 
@@ -212,7 +212,7 @@ pub struct PackageConfig {
     pub package_type: Option<String>,
 }
 
-/// 配置备份
+/// Configuration backup
 #[derive(Debug, Clone)]
 pub struct ConfigBackup {
     pub original_path: PathBuf,
@@ -221,26 +221,26 @@ pub struct ConfigBackup {
 }
 
 // ============================================================================
-// 2. 依赖解析组件 (DependencyResolver)
+// 2. Dependency Resolver Component (DependencyResolver)
 // ============================================================================
 
-/// 依赖解析和冲突检测
+/// Dependency resolution and conflict detection
 #[async_trait]
 pub trait DependencyResolver: Send + Sync {
     /// Parse dependencies from config
     async fn resolve_spec(&self, config: &Config) -> Result<Vec<DependencySpec>>;
 
-    /// 解析依赖并获取 proto 文件
+    /// Resolve dependencies and fetch proto files
     async fn resolve_dependencies(
         &self,
         specs: &[DependencySpec],
         service_details: &[ServiceDetails],
     ) -> Result<Vec<ResolvedDependency>>;
 
-    /// 检查依赖冲突
+    /// Check dependency conflicts
     async fn check_conflicts(&self, deps: &[ResolvedDependency]) -> Result<Vec<ConflictReport>>;
 
-    /// 构建依赖图
+    /// Build dependency graph
     async fn build_dependency_graph(&self, deps: &[ResolvedDependency]) -> Result<DependencyGraph>;
 }
 
@@ -252,22 +252,22 @@ pub struct DependencyGraph {
 }
 
 // ============================================================================
-// 3. 服务发现组件 (ServiceDiscovery)
+// 3. Service Discovery Component (ServiceDiscovery)
 // ============================================================================
 
-/// 服务发现和网络交互
+/// Service discovery and network interaction
 #[async_trait]
 pub trait ServiceDiscovery: Send + Sync {
-    /// 发现网络中的服务
+    /// Discover services in the network
     async fn discover_services(&self, filter: Option<&ServiceFilter>) -> Result<Vec<ServiceInfo>>;
 
-    /// 获取服务详细信息
+    /// Get detailed service information
     async fn get_service_details(&self, name: &str) -> Result<ServiceDetails>;
 
-    /// 检查服务可用性
+    /// Check service availability
     async fn check_service_availability(&self, name: &str) -> Result<AvailabilityStatus>;
 
-    /// 获取服务Proto文件
+    /// Get service proto files
     async fn get_service_proto(&self, name: &str) -> Result<Vec<ProtoFile>>;
 }
 
@@ -294,34 +294,34 @@ pub enum HealthStatus {
 }
 
 // ============================================================================
-// 4. 网络验证组件 (NetworkValidator)
+// 4. Network Validator Component (NetworkValidator)
 // ============================================================================
 
-/// 网络连通性验证
+/// Network connectivity validation
 #[async_trait]
 pub trait NetworkValidator: Send + Sync {
-    /// 检查连通性
+    /// Check connectivity
     async fn check_connectivity(
         &self,
         service_name: &str,
         options: &NetworkCheckOptions,
     ) -> Result<ConnectivityStatus>;
 
-    /// 验证服务健康状态
+    /// Verify service health status
     async fn verify_service_health(
         &self,
         service_name: &str,
         options: &NetworkCheckOptions,
     ) -> Result<HealthStatus>;
 
-    /// 测试延迟
+    /// Test latency
     async fn test_latency(
         &self,
         service_name: &str,
         options: &NetworkCheckOptions,
     ) -> Result<LatencyInfo>;
 
-    /// 批量检查
+    /// Batch check
     async fn batch_check(
         &self,
         service_names: &[String],
@@ -376,46 +376,46 @@ impl Default for NetworkCheckOptions {
 }
 
 // ============================================================================
-// 5. 指纹验证组件 (FingerprintValidator)
+// 5. Fingerprint Validator Component (FingerprintValidator)
 // ============================================================================
 
-/// 指纹计算和验证
+/// Fingerprint computation and validation
 #[async_trait]
 pub trait FingerprintValidator: Send + Sync {
-    /// 计算服务指纹
+    /// Compute service fingerprint
     async fn compute_service_fingerprint(&self, service: &ServiceInfo) -> Result<Fingerprint>;
 
-    /// 验证指纹匹配
+    /// Verify fingerprint match
     async fn verify_fingerprint(
         &self,
         expected: &Fingerprint,
         actual: &Fingerprint,
     ) -> Result<bool>;
 
-    /// 计算项目指纹
+    /// Compute project fingerprint
     async fn compute_project_fingerprint(&self, project_path: &Path) -> Result<Fingerprint>;
 
-    /// 生成锁文件指纹
+    /// Generate lock file fingerprint
     async fn generate_lock_fingerprint(&self, deps: &[ResolvedDependency]) -> Result<Fingerprint>;
 }
 
 // ============================================================================
-// 6. Proto处理组件 (ProtoProcessor)
+// 6. Proto Processor Component (ProtoProcessor)
 // ============================================================================
 
-/// Protocol Buffers 文件处理
+/// Protocol Buffers file processing
 #[async_trait]
 pub trait ProtoProcessor: Send + Sync {
-    /// 发现Proto文件
+    /// Discover proto files
     async fn discover_proto_files(&self, path: &Path) -> Result<Vec<ProtoFile>>;
 
-    /// 解析Proto服务
+    /// Parse proto services
     async fn parse_proto_services(&self, files: &[ProtoFile]) -> Result<Vec<ServiceDefinition>>;
 
-    /// 生成代码
+    /// Generate code
     async fn generate_code(&self, input: &Path, output: &Path) -> Result<GenerationResult>;
 
-    /// 验证Proto语法
+    /// Validate proto syntax
     async fn validate_proto_syntax(&self, files: &[ProtoFile]) -> Result<ValidationReport>;
 }
 
@@ -427,25 +427,25 @@ pub struct GenerationResult {
 }
 
 // ============================================================================
-// 7. 缓存管理组件 (CacheManager)
+// 7. Cache Manager Component (CacheManager)
 // ============================================================================
 
-/// 依赖缓存管理
+/// Dependency cache management
 #[async_trait]
 pub trait CacheManager: Send + Sync {
-    /// 获取缓存的Proto
+    /// Get cached proto
     async fn get_cached_proto(&self, service_name: &str) -> Result<Option<CachedProto>>;
 
-    /// 缓存Proto文件
+    /// Cache proto files
     async fn cache_proto(&self, service_name: &str, proto: &[ProtoFile]) -> Result<()>;
 
-    /// 失效缓存
+    /// Invalidate cache
     async fn invalidate_cache(&self, service_name: &str) -> Result<()>;
 
-    /// 清理缓存
+    /// Clear cache
     async fn clear_cache(&self) -> Result<()>;
 
-    /// 获取缓存统计
+    /// Get cache statistics
     async fn get_cache_stats(&self) -> Result<CacheStats>;
 }
 
@@ -466,22 +466,22 @@ pub struct CacheStats {
 }
 
 // ============================================================================
-// 8. 用户交互组件 (UserInterface)
+// 8. User Interface Component (UserInterface)
 // ============================================================================
 
-/// 用户交互界面
+/// User interaction interface
 #[async_trait]
 pub trait UserInterface: Send + Sync {
-    /// 提示输入
+    /// Prompt for input
     async fn prompt_input(&self, prompt: &str) -> Result<String>;
 
-    /// 确认操作
+    /// Confirm an operation
     async fn confirm(&self, message: &str) -> Result<bool>;
 
-    /// 从列表中选择一项
+    /// Select one item from a list
     async fn select_from_list(&self, items: &[String], prompt: &str) -> Result<usize>;
 
-    /// 显示服务表格
+    /// Display a service table
     async fn display_service_table(
         &self,
         items: &[ServiceInfo],
@@ -489,11 +489,11 @@ pub trait UserInterface: Send + Sync {
         formatter: fn(&ServiceInfo) -> Vec<String>,
     );
 
-    /// 显示进度条
+    /// Show a progress bar
     async fn show_progress(&self, message: &str) -> Result<Box<dyn ProgressBar>>;
 }
 
-/// 进度条接口
+/// Progress bar interface
 pub trait ProgressBar: Send + Sync {
     fn update(&self, progress: f64);
     fn set_message(&self, message: &str);

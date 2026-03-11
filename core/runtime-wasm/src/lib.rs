@@ -1,46 +1,46 @@
 //! # actr-runtime-wasm
 //!
-//! Actor-RTC WASM guest-side runtime，运行在 `wasm32-unknown-unknown` 目标上。
+//! Actor-RTC WASM guest-side runtime, runs on `wasm32-unknown-unknown` target.
 //!
-//! 本 crate 是 `actr-runtime`（native 宿主侧）的 WASM 客体侧对应物：
-//! - **`actr-runtime`**：native 宿主，驱动 WASM 模块执行（Wasmtime / WAMR）
-//! - **`actr-runtime-wasm`**：WASM 客体侧，被编译进 WASM 二进制，提供 `Context` 实现
+//! This crate is the WASM guest-side counterpart of `actr-runtime` (native host-side):
+//! - **`actr-runtime`**: native host, drives WASM module execution (Wasmtime / WAMR)
+//! - **`actr-runtime-wasm`**: WASM guest-side, compiled into WASM binary, provides `Context` impl
 //!
-//! ## 架构位置
+//! ## Architecture position
 //!
 //! ```text
-//! actor 业务代码（actr-framework 接口）
-//!         ↓ 编译为 wasm32
-//! actr-runtime-wasm（本 crate，编译进 WASM 二进制）
-//!         ↓ host imports
-//! actr-runtime（native，宿主侧 WasmHost/WasmInstance）
+//! actor business code (actr-framework interface)
+//!         | compiled to wasm32
+//! actr-runtime-wasm (this crate, compiled into WASM binary)
+//!         | host imports
+//! actr-runtime (native, host-side WasmHost/WasmInstance)
 //! ```
 //!
-//! ## 使用方式
+//! ## Usage
 //!
 //! ```rust,ignore
 //! use actr_runtime_wasm::entry;
 //!
-//! // 1. 实现 Handler（通过 actr-framework 接口）
+//! // 1. Implement Handler (via actr-framework interface)
 //! struct MyService;
 //! // impl EchoServiceHandler for MyService { ... }
 //!
-//! // 2. 注册 Workload，生成 WASM ABI 导出
+//! // 2. Register Workload, generate WASM ABI exports
 //! entry!(EchoServiceWorkload<MyService>);
-//! // 或自定义初始化：
+//! // Or custom initialization:
 //! // entry!(EchoServiceWorkload<MyService>, EchoServiceWorkload(MyService::new()));
 //! ```
 //!
-//! ## asyncify 透明挂起
+//! ## asyncify transparent suspend
 //!
-//! `WasmContext::call(...)` 等通信方法内部调用同步 host import。
-//! WASM 二进制在编译后经 `wasm-opt --asyncify` 转换，使得 host import 调用点
-//! 可被宿主透明地挂起/恢复，无需修改业务代码。
+//! `WasmContext::call(...)` and other communication methods internally call synchronous host imports.
+//! After compilation, the WASM binary is transformed by `wasm-opt --asyncify`, enabling host import
+//! call sites to be transparently suspended/resumed by the host without modifying business code.
 
 pub mod abi;
 pub mod context;
 pub mod executor;
 pub mod imports;
 
-// 便捷重导出
+// Convenience re-exports
 pub use context::WasmContext;

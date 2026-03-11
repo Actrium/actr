@@ -1,11 +1,11 @@
-//! 生产模式 MFR 公钥缓存
+//! Production mode MFR public key cache
 //!
-//! `MfrCertCache` 按需从 AIS `GET /mfr/{name}/verifying_key` 获取 manufacturer
-//! 的 Ed25519 公钥，并在本地缓存（TTL 1 小时）。
+//! `MfrCertCache` fetches manufacturer Ed25519 public keys on demand from
+//! AIS `GET /mfr/{name}/verifying_key`, caching locally (TTL 1 hour).
 //!
-//! 内部使用 `std::sync::RwLock`（非 tokio），因为：
-//! - 缓存读写均为极短的内存操作，不会阻塞 tokio executor
-//! - 提供同步读路径，供 `PackageVerifier::resolve_mfr_pubkey` 直接调用
+//! Uses `std::sync::RwLock` (not tokio) internally because:
+//! - Cache reads/writes are extremely short memory operations that won't block the tokio executor
+//! - Provides a synchronous read path for `PackageVerifier::resolve_mfr_pubkey` to call directly
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -16,16 +16,16 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::error::{HyperError, HyperResult};
 
-/// MFR 公钥缓存条目
+/// MFR public key cache entry
 struct CacheEntry {
     key: VerifyingKey,
     fetched_at: Instant,
 }
 
-/// 生产模式 MFR Ed25519 公钥缓存
+/// Production mode MFR Ed25519 public key cache
 ///
-/// 从 AIS 端点按需获取 manufacturer 公钥，缓存 TTL 默认为 1 小时。
-/// 使用 `Arc<MfrCertCache>` 跨任务共享。
+/// Fetches manufacturer public keys on demand from the AIS endpoint, cache TTL defaults to 1 hour.
+/// Shared across tasks via `Arc<MfrCertCache>`.
 pub struct MfrCertCache {
     ais_endpoint: String,
     http: reqwest::Client,
@@ -43,10 +43,10 @@ impl MfrCertCache {
         })
     }
 
-    /// 仅从内存缓存中查找，不触发 HTTP 拉取（同步）
+    /// Look up from memory cache only, without triggering HTTP fetch (synchronous)
     ///
-    /// 用于 `PackageVerifier::resolve_mfr_pubkey` 同步路径，
-    /// 调用前需保证已通过 `get_or_fetch` 预热。
+    /// Used in `PackageVerifier::resolve_mfr_pubkey` synchronous path;
+    /// caller must ensure the cache has been warmed via `get_or_fetch` beforehand.
     pub fn get_from_cache(&self, manufacturer: &str) -> Option<VerifyingKey> {
         let cache = self.cache.read().expect("cert_cache read lock poisoned");
         cache.get(manufacturer).and_then(|entry| {
@@ -58,22 +58,22 @@ impl MfrCertCache {
         })
     }
 
-    /// 获取指定 manufacturer 的 Ed25519 验证公钥
+    /// Get the Ed25519 verifying key for the specified manufacturer
     ///
-    /// 优先读缓存（未过期），miss 时从 AIS 拉取并更新缓存。
+    /// Reads from cache first (if not expired); on miss, fetches from AIS and updates cache.
     pub async fn get_or_fetch(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
-        // 快路径：读缓存
+        // fast path: read cache
         if let Some(key) = self.get_from_cache(manufacturer) {
-            tracing::debug!(manufacturer, "MFR 公钥缓存命中");
+            tracing::debug!(manufacturer, "MFR pubkey cache hit");
             return Ok(key);
         }
 
-        tracing::debug!(manufacturer, "MFR 公钥缓存未命中，从 AIS 拉取");
+        tracing::debug!(manufacturer, "MFR pubkey cache miss, fetching from AIS");
 
-        // 慢路径：HTTP 拉取
+        // slow path: HTTP fetch
         let key = self.fetch_from_ais(manufacturer).await?;
 
-        // 写入缓存（brief blocking lock，只做 HashMap 插入）
+        // write to cache (brief blocking lock, just a HashMap insert)
         {
             let mut cache = self.cache.write().expect("cert_cache write lock poisoned");
             cache.insert(
@@ -85,18 +85,18 @@ impl MfrCertCache {
             );
         }
 
-        tracing::info!(manufacturer, "MFR 公钥已从 AIS 获取并缓存");
+        tracing::info!(manufacturer, "MFR pubkey fetched from AIS and cached");
         Ok(key)
     }
 
-    /// 从 AIS `GET /mfr/{manufacturer}/verifying_key` 获取公钥
+    /// Fetch public key from AIS `GET /mfr/{manufacturer}/verifying_key`
     async fn fetch_from_ais(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
         let url = format!("{}/mfr/{}/verifying_key", self.ais_endpoint, manufacturer);
-        tracing::debug!(url, "从 AIS 拉取 MFR 公钥");
+        tracing::debug!(url, "fetching MFR pubkey from AIS");
 
         let resp = self.http.get(&url).send().await.map_err(|e| {
             HyperError::UntrustedManufacturer(format!(
-                "获取 MFR 公钥失败（{manufacturer}）: {e}"
+                "failed to fetch MFR pubkey ({manufacturer}): {e}"
             ))
         })?;
 
@@ -107,22 +107,22 @@ impl MfrCertCache {
                 manufacturer,
                 status = status.as_u16(),
                 body,
-                "AIS 返回非 2xx，MFR 公钥获取失败"
+                "AIS returned non-2xx, MFR pubkey fetch failed"
             );
             return Err(HyperError::UntrustedManufacturer(format!(
-                "AIS 拒绝提供 MFR 公钥（{manufacturer}），status={status}"
+                "AIS refused to provide MFR pubkey ({manufacturer}), status={status}"
             )));
         }
 
         #[derive(serde::Deserialize)]
         struct VerifyingKeyResp {
-            /// Base64 编码的 Ed25519 verifying key（32 字节）
+            /// Base64-encoded Ed25519 verifying key (32 bytes)
             public_key: String,
         }
 
         let body: VerifyingKeyResp = resp.json().await.map_err(|e| {
             HyperError::UntrustedManufacturer(format!(
-                "解析 MFR 公钥响应失败（{manufacturer}）: {e}"
+                "failed to parse MFR pubkey response ({manufacturer}): {e}"
             ))
         })?;
 
@@ -130,20 +130,20 @@ impl MfrCertCache {
             .decode(&body.public_key)
             .map_err(|e| {
                 HyperError::UntrustedManufacturer(format!(
-                    "MFR 公钥 base64 解码失败（{manufacturer}）: {e}"
+                    "MFR pubkey base64 decode failed ({manufacturer}): {e}"
                 ))
             })?;
 
         let key_arr: [u8; 32] = key_bytes.try_into().map_err(|v: Vec<u8>| {
             HyperError::UntrustedManufacturer(format!(
-                "MFR 公钥长度不正确（{manufacturer}），期望 32 字节，实际 {} 字节",
+                "MFR pubkey length incorrect ({manufacturer}), expected 32 bytes, got {} bytes",
                 v.len()
             ))
         })?;
 
         VerifyingKey::from_bytes(&key_arr).map_err(|e| {
             HyperError::UntrustedManufacturer(format!(
-                "MFR 公钥格式无效（{manufacturer}）: {e}"
+                "MFR pubkey format invalid ({manufacturer}): {e}"
             ))
         })
     }
@@ -160,8 +160,7 @@ mod tests {
 
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
-        let key_b64 = base64::engine::general_purpose::STANDARD
-            .encode(verifying_key.to_bytes());
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
 
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -169,15 +168,15 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(r#"{{"public_key":"{key_b64}"}}"#))
-            .expect(1) // 只调用一次，第二次走缓存
+            .expect(1) // only called once, second time hits cache
             .create_async()
             .await;
 
         let cache = MfrCertCache::new(server.url());
 
-        // 第一次 miss → 调用 HTTP
+        // first miss -> calls HTTP
         let k1 = cache.get_or_fetch("test-mfr").await.unwrap();
-        // 第二次 hit → 不调用 HTTP
+        // second hit -> no HTTP call
         let k2 = cache.get_or_fetch("test-mfr").await.unwrap();
 
         mock.assert_async().await;
@@ -199,7 +198,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(HyperError::UntrustedManufacturer(_))),
-            "404 应返回 UntrustedManufacturer，实际: {result:?}"
+            "404 should return UntrustedManufacturer, actual: {result:?}"
         );
     }
 }

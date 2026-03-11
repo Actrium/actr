@@ -1,10 +1,10 @@
 /* Actor-RTC Service Worker entry for echo-client.
  *
- * 此文件加载用户 WASM (echo_client) 并初始化 SW Runtime
+ * This file loads the user WASM bundle (`echo_client`) and initializes the SW runtime.
  *
- * WASM 包含:
- * - actr-runtime-sw (框架代码)
- * - echo-client-wasm (Local Handler: 转发 RPC 到远程 Echo Server)
+ * The WASM bundle contains:
+ * - `actr-runtime-sw` (framework code)
+ * - `echo-client-wasm` (local handler that forwards RPC calls to the remote Echo server)
  */
 
 /* global wasm_bindgen */
@@ -133,7 +133,7 @@ async function ensureWasmReady() {
   let runtimeUrl;
   let wasmUrl;
   try {
-    // 加载用户 WASM (包含 SW Runtime + Echo Client Local Handler)
+    // Load the user WASM bundle, including the SW runtime and local Echo client handler.
     runtimeUrl = new URL('echo_client.js', self.location).toString();
     wasmUrl = new URL('echo_client_bg.wasm', self.location).toString();
     emitSwLog('info', 'runtime_url', runtimeUrl);
@@ -188,7 +188,7 @@ async function ensureWasmReady() {
     // Global init (logger, panic hook) — once
     wasm_bindgen.init_global();
 
-    // 注册 Echo Client Local Handler (proxy to remote echo server)
+    // Register the Echo client local handler that proxies requests to the remote Echo server.
     if (typeof wasm_bindgen.register_echo_client_handler === 'function') {
       wasm_bindgen.register_echo_client_handler();
       emitSwLog('info', 'echo_client_handler_registered', null);

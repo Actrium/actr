@@ -18,7 +18,7 @@ use actr_protocol::{
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -124,25 +124,18 @@ impl MockSignalingServer {
 
         let is_running_clone = is_running.clone();
         let cancel_clone = cancel.clone();
+        let (ready_tx, ready_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            Self::run_server(listener, state, is_running_clone, cancel_clone).await;
+            Self::run_server(listener, state, is_running_clone, cancel_clone, ready_tx).await;
         });
 
-        // Wait for server to be ready by attempting a TCP connection
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-                .await
-                .is_ok()
-            {
-                break;
-            }
-            if tokio::time::Instant::now() > deadline {
-                anyhow::bail!("mock signaling server failed to start on port {port}");
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // Use an in-process readiness signal so startup bookkeeping does not
+        // create a synthetic TCP connection and pollute connection_count.
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("mock signaling server failed to start on port {port}"))?
+            .map_err(|_| anyhow::anyhow!("mock signaling server startup task exited early"))?;
 
         Ok(Self {
             port,
@@ -162,7 +155,10 @@ impl MockSignalingServer {
         state: Arc<ServerState>,
         is_running: Arc<AtomicBool>,
         cancel: tokio_util::sync::CancellationToken,
+        ready_tx: oneshot::Sender<()>,
     ) {
+        let _ = ready_tx.send(());
+
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -246,14 +242,8 @@ impl MockSignalingServer {
             let mut registry = state.registry.write().await;
             registry.retain(|a| a.client_id != client_id);
         }
-        state
-            .client_to_actr_id
-            .write()
-            .await
-            .remove(&client_id);
-        state
-            .disconnection_count
-            .fetch_add(1, Ordering::SeqCst);
+        state.client_to_actr_id.write().await.remove(&client_id);
+        state.disconnection_count.fetch_add(1, Ordering::SeqCst);
     }
 
     async fn process_envelope(
@@ -267,22 +257,10 @@ impl MockSignalingServer {
 
         match flow {
             signaling_envelope::Flow::PeerToServer(peer_msg) => {
-                Self::handle_peer_to_server(
-                    &envelope,
-                    peer_msg,
-                    sender_id,
-                    state,
-                )
-                .await;
+                Self::handle_peer_to_server(&envelope, peer_msg, sender_id, state).await;
             }
             signaling_envelope::Flow::ActrToServer(actr_msg) => {
-                Self::handle_actr_to_server(
-                    &envelope,
-                    actr_msg,
-                    sender_id,
-                    state,
-                )
-                .await;
+                Self::handle_actr_to_server(&envelope, actr_msg, sender_id, state).await;
             }
             signaling_envelope::Flow::ActrRelay(relay) => {
                 Self::handle_actr_relay(&envelope, relay, sender_id, state).await;
@@ -307,7 +285,7 @@ impl MockSignalingServer {
                 let serial = state.next_serial.fetch_add(1, Ordering::SeqCst);
 
                 let actr_id = ActrId {
-                    realm: req.realm.clone(),
+                    realm: req.realm,
                     serial_number: serial,
                     r#type: req.actr_type.clone(),
                 };
@@ -331,11 +309,7 @@ impl MockSignalingServer {
                 };
 
                 let turn_credential = TurnCredential {
-                    username: format!(
-                        "{}:{}",
-                        chrono::Utc::now().timestamp() + 86400,
-                        serial
-                    ),
+                    username: format!("{}:{}", chrono::Utc::now().timestamp() + 86400, serial),
                     password: base64_encode_turn_password(serial),
                     expires_at: chrono::Utc::now().timestamp() as u64 + 86400,
                 };
@@ -448,9 +422,7 @@ impl MockSignalingServer {
                         && entry.actr_type.name == req.target_type.name
                     {
                         // Skip self
-                        if entry.actr_id.serial_number
-                            == actr_msg.source.serial_number
-                        {
+                        if entry.actr_id.serial_number == actr_msg.source.serial_number {
                             continue;
                         }
 
@@ -473,10 +445,8 @@ impl MockSignalingServer {
 
                 tracing::info!(
                     count = candidates.len(),
-                    target_type = format!(
-                        "{}.{}",
-                        req.target_type.manufacturer, req.target_type.name
-                    ),
+                    target_type =
+                        format!("{}.{}", req.target_type.manufacturer, req.target_type.name),
                     "mock signaling: route candidates response"
                 );
 
@@ -523,11 +493,9 @@ impl MockSignalingServer {
                         target: actr_msg.source.clone(),
                         payload: Some(signaling_to_actr::Payload::UnregisterResponse(
                             actr_protocol::UnregisterResponse {
-                                result: Some(
-                                    actr_protocol::unregister_response::Result::Success(
-                                        actr_protocol::unregister_response::UnregisterOk {},
-                                    ),
-                                ),
+                                result: Some(actr_protocol::unregister_response::Result::Success(
+                                    actr_protocol::unregister_response::UnregisterOk {},
+                                )),
                             },
                         )),
                     })),
@@ -569,7 +537,7 @@ impl MockSignalingServer {
                     .filter(|e| {
                         req.manufacturer
                             .as_ref()
-                            .map_or(true, |m| &e.actr_type.manufacturer == m)
+                            .is_none_or(|m| &e.actr_type.manufacturer == m)
                     })
                     .map(|e| {
                         let fingerprint = e
@@ -582,13 +550,13 @@ impl MockSignalingServer {
                                 .service_spec
                                 .as_ref()
                                 .map_or(e.actr_type.name.clone(), |s| s.name.clone()),
-                            description: e.service_spec.as_ref().and_then(|s| s.description.clone()),
-                            service_fingerprint: fingerprint,
-                            published_at: e.service_spec.as_ref().and_then(|s| s.published_at),
-                            tags: e
+                            description: e
                                 .service_spec
                                 .as_ref()
-                                .map_or(vec![], |s| s.tags.clone()),
+                                .and_then(|s| s.description.clone()),
+                            service_fingerprint: fingerprint,
+                            published_at: e.service_spec.as_ref().and_then(|s| s.published_at),
+                            tags: e.service_spec.as_ref().map_or(vec![], |s| s.tags.clone()),
                         }
                     })
                     .collect();
@@ -602,13 +570,9 @@ impl MockSignalingServer {
                         target: actr_msg.source.clone(),
                         payload: Some(signaling_to_actr::Payload::DiscoveryResponse(
                             actr_protocol::DiscoveryResponse {
-                                result: Some(
-                                    actr_protocol::discovery_response::Result::Success(
-                                        actr_protocol::discovery_response::DiscoveryOk {
-                                            entries,
-                                        },
-                                    ),
-                                ),
+                                result: Some(actr_protocol::discovery_response::Result::Success(
+                                    actr_protocol::discovery_response::DiscoveryOk { entries },
+                                )),
                             },
                         )),
                     })),
@@ -633,34 +597,23 @@ impl MockSignalingServer {
                 });
 
                 let payload = match spec {
-                    Some(spec) => {
-                        signaling_to_actr::Payload::GetServiceSpecResponse(
-                            actr_protocol::GetServiceSpecResponse {
-                                result: Some(
-                                    actr_protocol::get_service_spec_response::Result::Success(
-                                        spec,
-                                    ),
-                                ),
-                            },
-                        )
-                    }
-                    None => {
-                        signaling_to_actr::Payload::GetServiceSpecResponse(
-                            actr_protocol::GetServiceSpecResponse {
-                                result: Some(
-                                    actr_protocol::get_service_spec_response::Result::Error(
-                                        actr_protocol::ErrorResponse {
-                                            code: 404,
-                                            message: format!(
-                                                "service '{}' not found",
-                                                req.name
-                                            ),
-                                        },
-                                    ),
-                                ),
-                            },
-                        )
-                    }
+                    Some(spec) => signaling_to_actr::Payload::GetServiceSpecResponse(
+                        actr_protocol::GetServiceSpecResponse {
+                            result: Some(
+                                actr_protocol::get_service_spec_response::Result::Success(spec),
+                            ),
+                        },
+                    ),
+                    None => signaling_to_actr::Payload::GetServiceSpecResponse(
+                        actr_protocol::GetServiceSpecResponse {
+                            result: Some(actr_protocol::get_service_spec_response::Result::Error(
+                                actr_protocol::ErrorResponse {
+                                    code: 404,
+                                    message: format!("service '{}' not found", req.name),
+                                },
+                            )),
+                        },
+                    ),
                 };
 
                 let response_envelope = SignalingEnvelope {
@@ -697,9 +650,7 @@ impl MockSignalingServer {
         if let Some(actr_relay::Payload::SessionDescription(sd)) = relay.payload.as_ref() {
             if sd.r#type == 3 {
                 // IceRestartOffer
-                state
-                    .ice_restart_offer_count
-                    .fetch_add(1, Ordering::SeqCst);
+                state.ice_restart_offer_count.fetch_add(1, Ordering::SeqCst);
             }
         }
 
@@ -709,8 +660,7 @@ impl MockSignalingServer {
 
         // Handle RoleNegotiation: server decides roles
         if let Some(actr_relay::Payload::RoleNegotiation(role_neg)) = relay.payload.as_ref() {
-            let from_is_offerer =
-                role_neg.from.serial_number < role_neg.to.serial_number;
+            let from_is_offerer = role_neg.from.serial_number < role_neg.to.serial_number;
 
             let envelope_for_from = SignalingEnvelope {
                 envelope_version: 1,

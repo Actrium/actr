@@ -9,6 +9,10 @@ description = "Command line tool for Actor-RTC framework projects"
 keywords = ["actor", "cli", "codegen", "protobuf", "framework"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+test-utils = ["dep:actr-mock-signaling", "dep:rusqlite"]
+
 [[bin]]
 name = "actr"
 path = "src/main.rs"
@@ -57,6 +61,7 @@ fs_extra = "1.3"
 tempfile = "3.22"
 dirs = "5.0"
 walkdir = "2.5"
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 # Process management
 tokio = { version = "1.48", features = ["full"] }
@@ -113,12 +118,12 @@ tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
 futures-util = "0.3"
 uuid = { version = "1.19.0", features = ["v4"] }
 rust-embed = "8.11.0"
+actr-mock-signaling = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.22"
-rusqlite = { version = "0.32", features = ["bundled"] }
-actr-mock-signaling = { workspace = true }
+actr-cli = { path = ".", features = ["test-utils"] }
 
 [lints.clippy]
 collapsible_if = "allow"

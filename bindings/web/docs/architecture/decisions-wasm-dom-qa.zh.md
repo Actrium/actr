@@ -293,10 +293,10 @@ TinyGo → WASM      rustc → WASM      Emscripten → WASM
 
 ## 相关文档
 
-- **[WASM-DOM 集成架构](./wasm-dom-integration.md)** - 完整技术设计
-- **[技术决策记录](./decisions.md)** - 其他 TDR
-- **[双层架构设计](./dual-layer.md)** - State Path vs Fast Path
-- **[架构总览](./overview.md)** - 整体架构
+- **[WASM-DOM 集成架构](./wasm-dom-integration.zh.md)** - 完整技术设计
+- **[技术决策记录](./decisions.zh.md)** - 其他 TDR
+- **[双层架构设计](./dual-layer.zh.md)** - State Path vs Fast Path
+- **[架构总览](./overview.zh.md)** - 整体架构
 
 ---
 

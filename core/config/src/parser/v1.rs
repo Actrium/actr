@@ -15,7 +15,7 @@ use url::Url;
 
 const DEFAULT_TRACING_ENDPOINT: &str = "http://localhost:4317";
 
-/// Edition 1 格式的解析器
+/// Edition 1 format parser
 pub struct ParserV1 {
     base_dir: PathBuf,
 }
@@ -31,23 +31,23 @@ impl ParserV1 {
     }
 
     pub fn parse(&self, mut raw: RawConfig) -> Result<Config> {
-        // 1. 处理继承
+        // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
         } else {
             raw
         };
 
-        // 2. 验证必需字段
+        // 2. Validate required fields
         self.validate_required_fields(&raw)?;
 
-        // 3. 解析 package
+        // 3. Parse package
         let package = self.parse_package(&raw.package)?;
 
-        // 4. 解析 exports
+        // 4. Parse exports
         let exports = self.parse_exports(&raw.exports)?;
 
-        // 5. 获取 realm
+        // 5. Get realm
         let self_realm = Realm {
             realm_id: raw
                 .system
@@ -56,13 +56,13 @@ impl ParserV1 {
                 .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
         };
 
-        // 5.1. 解析执行模式
+        // 5.1. Parse execution mode
         let execution_mode = parse_actr_mode(raw.system.deployment.mode.as_deref())?;
 
-        // 6. 解析 dependencies
+        // 6. Parse dependencies
         let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
 
-        // 7. 解析 signaling URL
+        // 7. Parse signaling URL
         let signaling_url_str = raw
             .system
             .signaling
@@ -72,25 +72,25 @@ impl ParserV1 {
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
 
-        // 8. 解析 observability 配置
+        // 8. Parse observability config
         let observability = self.parse_observability(&raw.system, &package);
 
-        // 10. 解析 ACL (从顶级 acl 读取，放在最后以避免 partial move)
+        // 10. Parse ACL (read from top-level acl, placed last to avoid partial move)
         let acl = if let Some(acl_value) = raw.acl {
             Some(self.parse_acl(acl_value, self_realm.realm_id)?)
         } else {
             None
         };
 
-        // 11. 确定 config_dir
-        // 如果 raw.config_dir 存在，则相对于当前 base_dir 解析
+        // 11. Determine config_dir
+        // If raw.config_dir exists, resolve it relative to the current base_dir
         let config_dir = if let Some(dir) = raw.config_dir {
             self.base_dir.join(dir)
         } else {
             self.base_dir.clone()
         };
 
-        // 12. 构建最终配置
+        // 12. Build final config
         Ok(Config {
             package,
             exports,
@@ -321,7 +321,7 @@ impl ParserV1 {
     fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> Result<WebRtcConfig> {
         let mut ice_servers = Vec::new();
 
-        // 解析 STUN URLs
+        // Parse STUN URLs
         if !raw.stun_urls.is_empty() {
             ice_servers.push(IceServer {
                 urls: raw.stun_urls.clone(),
@@ -330,7 +330,7 @@ impl ParserV1 {
             });
         }
 
-        // 解析 TURN URLs（凭证在运行时动态生成）
+        // Parse TURN URLs (credentials are dynamically generated at runtime)
         if !raw.turn_urls.is_empty() {
             ice_servers.push(IceServer {
                 urls: raw.turn_urls.clone(),
@@ -339,33 +339,33 @@ impl ParserV1 {
             });
         }
 
-        // 解析 ICE 传输策略
+        // Parse ICE transport policy
         let ice_transport_policy = if raw.force_relay {
             IceTransportPolicy::Relay
         } else {
             IceTransportPolicy::All
         };
 
-        // 解析端口配置
+        // Parse port configuration
         let (udp_ports, public_ips) =
             if let (Some(start), Some(end)) = (raw.port_range_start, raw.port_range_end) {
-                // 配置了端口范围，启用固定端口模式
+                // Port range configured, enable fixed port mode
                 if start >= end {
-                    // 端口范围无效，抛出错误
+                    // Invalid port range, return error
                     return Err(ConfigError::InvalidConfig(format!(
                         "Invalid port range: start ({}) must be less than end ({})",
                         start, end
                     )));
                 } else {
-                    // 端口范围模式
+                    // Port range mode
                     (Some((start, end)), raw.public_ips.clone())
                 }
             } else {
-                // 未配置端口范围，使用默认模式（随机端口）
+                // No port range configured, use default mode (random ports)
                 (None, Vec::new())
             };
 
-        // 解析 ICE 等待时间
+        // Parse ICE acceptance wait times
         let ice_host_acceptance_min_wait = raw.ice_host_acceptance_min_wait.unwrap_or(0);
         let ice_srflx_acceptance_min_wait = raw.ice_srflx_acceptance_min_wait.unwrap_or(20);
         let ice_prflx_acceptance_min_wait = raw.ice_prflx_acceptance_min_wait.unwrap_or(40);
@@ -416,7 +416,7 @@ impl ParserV1 {
         let parent_full_path = self.base_dir.join(&parent_path);
         let mut parent = RawConfig::from_file(&parent_full_path)?;
 
-        // 检查 edition 一致性
+        // Check edition consistency
         if parent.edition != child.edition {
             return Err(ConfigError::EditionMismatch {
                 parent: parent.edition,
@@ -424,19 +424,19 @@ impl ParserV1 {
             });
         }
 
-        // 递归处理父配置的继承
+        // Recursively process parent config inheritance
         let parent = if let Some(grandparent) = parent.inherit.take() {
             self.merge_inheritance(parent, grandparent)?
         } else {
             parent
         };
 
-        // 合并逻辑
+        // Merge logic
         Ok(RawConfig {
-            edition: child.edition, // 已验证一致
+            edition: child.edition, // Verified consistent
             inherit: None,
             config_dir: child.config_dir,
-            package: child.package, // package 不继承
+            package: child.package, // Package is not inherited
             exports: {
                 let mut p = parent.exports;
                 p.extend(child.exports);
@@ -554,16 +554,16 @@ impl ParserV1 {
     }
 }
 
-/// 将 TOML 中的 mode 字符串转换为 `ActrMode` 枚举
+/// Convert mode string from TOML to `ActrMode` enum
 ///
-/// 合法值：`"native"`（默认）、`"process"`、`"wasm"`。
+/// Valid values: `"native"` (default), `"process"`, `"wasm"`.
 fn parse_actr_mode(s: Option<&str>) -> Result<ActrMode> {
     match s.unwrap_or("native") {
         "native" => Ok(ActrMode::Native),
         "process" => Ok(ActrMode::Process),
         "wasm" => Ok(ActrMode::Wasm),
         other => Err(ConfigError::InvalidConfig(format!(
-            "system.deployment.mode 值 '{other}' 无效，合法值为 native | process | wasm"
+            "system.deployment.mode value '{other}' is invalid, valid values are: native | process | wasm"
         ))),
     }
 }
@@ -604,15 +604,15 @@ run = "cargo run"
         let tmpdir = TempDir::new().unwrap();
         let config_path = tmpdir.path().join("actr.toml");
 
-        // 创建 proto 文件
+        // Create proto file
         let proto_dir = tmpdir.path().join("proto");
         fs::create_dir_all(&proto_dir).unwrap();
         fs::write(proto_dir.join("test.proto"), "syntax = \"proto3\";").unwrap();
 
-        // 写入配置
+        // Write config
         fs::write(&config_path, toml_content).unwrap();
 
-        // 解析
+        // Parse
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse(raw).unwrap();
@@ -786,23 +786,29 @@ realm_id = 1001
 
         let tmpdir = TempDir::new().unwrap();
 
-        // 默认（无 mode 字段）→ Native
+        // Default (no mode field) -> Native
         let path = tmpdir.path().join("actr.toml");
         fs::write(&path, base_toml("")).unwrap();
-        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
 
         // mode = "process"
         fs::write(&path, base_toml("mode = \"process\"")).unwrap();
-        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
 
         // mode = "wasm"
         fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
-        let config = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap()).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
 
-        // 非法值 → 错误
+        // Invalid value -> error
         fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
         let result = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap());
         assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));

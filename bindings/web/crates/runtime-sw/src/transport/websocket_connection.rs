@@ -1,6 +1,6 @@
-//! WebSocket Connection - WebSocket 连接封装
+//! WebSocket connection wrapper.
 //!
-//! 提供 WebSocket 连接的生命周期管理和 DataLane 缓存
+//! Provides lifecycle management and `DataLane` caching for WebSocket links.
 
 use super::lane::DataLane;
 use super::websocket::WebSocketLaneBuilder;
@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// WebSocket 连接状态
+/// WebSocket connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Disconnected,
@@ -18,23 +18,23 @@ enum ConnectionState {
     Failed,
 }
 
-/// WebSocket 连接
+/// WebSocket connection.
 ///
-/// 封装 WebSocket 连接，提供统一的连接管理和 Lane 缓存
+/// Wraps a WebSocket and provides unified connection management plus lane caching.
 #[derive(Clone)]
 pub struct WebSocketConnection {
-    /// 连接 URL
+    /// Connection URL.
     url: String,
 
-    /// 连接状态
+    /// Connection state.
     state: Arc<Mutex<ConnectionState>>,
 
-    /// DataLane 缓存（PayloadType → DataLane）
+    /// Cached `DataLane` instances keyed by `PayloadType`.
     lane_cache: Arc<DashMap<PayloadType, DataLane>>,
 }
 
 impl WebSocketConnection {
-    /// 创建新的 WebSocket 连接
+    /// Create a new WebSocket connection wrapper.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -43,7 +43,7 @@ impl WebSocketConnection {
         }
     }
 
-    /// 建立连接
+    /// Connect.
     pub async fn connect(&self) -> WebResult<()> {
         let current_state = *self.state.lock();
 
@@ -62,21 +62,21 @@ impl WebSocketConnection {
         log::info!("[WebSocketConnection] Connecting to: {}", self.url);
         *self.state.lock() = ConnectionState::Connecting;
 
-        // 实际连接会在 get_lane 时创建
-        // 这里只是标记状态
+        // The underlying connection is established lazily in `get_lane`.
+        // This method only updates the state.
         *self.state.lock() = ConnectionState::Connected;
 
         Ok(())
     }
 
-    /// 检查是否已连接
+    /// Check whether the connection is ready.
     pub fn is_connected(&self) -> bool {
         matches!(*self.state.lock(), ConnectionState::Connected)
     }
 
-    /// 获取或创建 DataLane（带缓存）
+    /// Get or create a cached `DataLane`.
     pub async fn get_lane(&self, payload_type: PayloadType) -> WebResult<DataLane> {
-        // 1. 检查缓存
+        // 1. Check the cache.
         if let Some(lane) = self.lane_cache.get(&payload_type) {
             log::trace!(
                 "[WebSocketConnection] Reusing cached lane: {:?}",
@@ -85,7 +85,7 @@ impl WebSocketConnection {
             return Ok(lane.clone());
         }
 
-        // 2. 创建新 Lane
+        // 2. Create a new lane.
         log::debug!(
             "[WebSocketConnection] Creating new lane: url={}, payload_type={:?}",
             self.url,
@@ -96,29 +96,29 @@ impl WebSocketConnection {
             .build()
             .await?;
 
-        // 3. 缓存
+        // 3. Cache the lane.
         self.lane_cache.insert(payload_type, lane.clone());
 
-        // 4. 更新连接状态
+        // 4. Update the connection state.
         *self.state.lock() = ConnectionState::Connected;
 
         Ok(lane)
     }
 
-    /// 关闭连接
+    /// Close the connection.
     pub async fn close(&self) -> WebResult<()> {
         log::info!("[WebSocketConnection] Closing: {}", self.url);
 
-        // 清空缓存
+        // Clear the cache.
         self.lane_cache.clear();
 
-        // 更新状态
+        // Update the state.
         *self.state.lock() = ConnectionState::Disconnected;
 
         Ok(())
     }
 
-    /// 获取连接 URL
+    /// Get the connection URL.
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -208,12 +208,12 @@ mod tests {
     async fn test_websocket_connection_connect_idempotent() {
         let conn = WebSocketConnection::new("ws://localhost:9001");
 
-        // 第一次连接
+        // First connect.
         let result1 = conn.connect().await;
         assert!(result1.is_ok());
         assert!(conn.is_connected());
 
-        // 第二次连接（应该是幂等的）
+        // The second connect should be idempotent.
         let result2 = conn.connect().await;
         assert!(result2.is_ok());
         assert!(conn.is_connected());
@@ -223,20 +223,20 @@ mod tests {
     async fn test_websocket_connection_close() {
         let conn = WebSocketConnection::new("ws://localhost:9002");
 
-        // 先连接
+        // Connect first.
         conn.connect().await.unwrap();
         assert!(conn.is_connected());
 
-        // 关闭连接
+        // Close the connection.
         let result = conn.close().await;
         assert!(result.is_ok());
 
-        // 验证状态
+        // Verify the state.
         assert!(!conn.is_connected());
         let state = *conn.state.lock();
         assert_eq!(state, ConnectionState::Disconnected);
 
-        // 验证缓存已清空
+        // Verify that the cache was cleared.
         assert_eq!(conn.lane_cache.len(), 0);
     }
 
@@ -261,10 +261,10 @@ mod tests {
         let conn1 = WebSocketConnection::new("ws://localhost:8081");
         let conn2 = conn1.clone();
 
-        // 通过 conn1 连接
+        // Connect through `conn1`.
         conn1.connect().await.unwrap();
 
-        // conn2 应该能看到相同的状态
+        // `conn2` should observe the same state.
         assert!(conn2.is_connected());
     }
 
@@ -283,16 +283,16 @@ mod tests {
     async fn test_websocket_connection_state_transitions() {
         let conn = WebSocketConnection::new("ws://localhost:8082");
 
-        // 初始状态：Disconnected
+        // Initial state: disconnected.
         let state = *conn.state.lock();
         assert_eq!(state, ConnectionState::Disconnected);
 
-        // 连接后：Connected
+        // After connect: connected.
         conn.connect().await.unwrap();
         let state = *conn.state.lock();
         assert_eq!(state, ConnectionState::Connected);
 
-        // 关闭后：Disconnected
+        // After close: disconnected.
         conn.close().await.unwrap();
         let state = *conn.state.lock();
         assert_eq!(state, ConnectionState::Disconnected);
@@ -309,8 +309,7 @@ mod tests {
     async fn test_websocket_connection_close_clears_cache() {
         let conn = WebSocketConnection::new("ws://localhost:8084");
 
-        // 模拟添加一些缓存项（虽然我们不能真正创建 DataLane）
-        // 这里只测试 close 方法确实会调用 clear
+        // This test only verifies that `close` clears the cache.
         conn.close().await.unwrap();
 
         assert_eq!(conn.lane_cache.len(), 0);
@@ -334,7 +333,7 @@ mod tests {
         assert_eq!(conn1.url(), "ws://server1.com");
         assert_eq!(conn2.url(), "ws://server2.com");
 
-        // 验证它们是独立的实例
+        // Verify that these are independent instances.
         assert!(!Arc::ptr_eq(&conn1.state, &conn2.state));
         assert!(!Arc::ptr_eq(&conn1.lane_cache, &conn2.lane_cache));
     }
@@ -348,7 +347,7 @@ mod tests {
             ConnectionState::Failed,
         ];
 
-        // 验证所有状态都是唯一的
+        // Verify that each state variant is unique.
         for (i, state1) in states.iter().enumerate() {
             for (j, state2) in states.iter().enumerate() {
                 if i == j {
@@ -364,15 +363,15 @@ mod tests {
     async fn test_websocket_connection_reconnect_after_close() {
         let conn = WebSocketConnection::new("ws://localhost:8085");
 
-        // 第一次连接
+        // First connect.
         conn.connect().await.unwrap();
         assert!(conn.is_connected());
 
-        // 关闭
+        // Close.
         conn.close().await.unwrap();
         assert!(!conn.is_connected());
 
-        // 重新连接
+        // Reconnect.
         conn.connect().await.unwrap();
         assert!(conn.is_connected());
     }

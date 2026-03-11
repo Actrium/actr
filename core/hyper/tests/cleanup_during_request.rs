@@ -6,18 +6,14 @@
 //! 3. New request (PrepareClientStream) is initiated DURING cleanup
 //! 4. Request fails: "Transport error: Channel closed"
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
-use actr_protocol::RpcEnvelope;
 use actr_hyper::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
 use actr_hyper::outbound::PeerGate;
-use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
-};
-use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport};
+use actr_protocol::RpcEnvelope;
 use tokio::sync::Barrier;
 
 /// Test: Request fails during cleanup - REAL reproduction
@@ -220,21 +216,18 @@ async fn test_request_fails_during_cleanup() {
     );
 
     // First request should fail (during cleanup)
-    let first_failed = match first_request_result {
+    match first_request_result {
         Err(_) => {
             tracing::info!("✅ First request timed out (expected during cleanup)");
-            true
         }
         Ok(Err(network_err)) => {
             let err_str = format!("{:?}", network_err);
             tracing::info!("✅ First request failed with error: {}", err_str);
-            true
         }
         Ok(Ok(_)) => {
             tracing::warn!("⚠️ First request succeeded during cleanup (unexpected but OK)");
-            false
         }
-    };
+    }
 
     // Second request should succeed or timeout (but NOT fail with connection error)
     let second_recovered = match second_request_result {
@@ -301,24 +294,13 @@ async fn test_request_succeeds_after_cleanup() {
     let config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), config));
     let transport_manager = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(PeerGate::new(
-        transport_manager,
-        Some(coord_a.clone()),
-    ));
+    let gate_a = Arc::new(PeerGate::new(transport_manager, Some(coord_a.clone())));
 
     // Wait for connection
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Establish connection first
     tracing::info!("📤 Establishing initial connection...");
-    let initial_envelope = RpcEnvelope {
-        request_id: "initial".to_string(),
-        route_key: "test.PrepareClientStream".to_string(),
-        payload: Some(bytes::Bytes::from(vec![1, 2, 3])),
-        timeout_ms: 5000,
-        ..Default::default()
-    };
-
     // Initiate connection
     let ready_rx = coord_a
         .initiate_connection(&id_b)
@@ -489,15 +471,15 @@ async fn test_dest_transport_cache_not_cleaned() {
         .expect("Cleanup should succeed");
     tracing::info!("✅ Cleanup completed");
 
-    // ⚠️ 不等待！立即检查缓存状态
-    // 这样可以在 ready_monitor 清理之前捕获缓存状态
+    // Do NOT wait! Check cache state immediately
+    // This captures the cache state before ready_monitor has a chance to clean up
     let dest_count_after_cleanup = transport_manager.dest_count().await;
     tracing::info!(
         "📊 DestTransport count AFTER cleanup (immediate): {}",
         dest_count_after_cleanup
     );
 
-    // ❌ BUG: 如果缓存还在，说明 ready_monitor 还没来得及清理
+    // BUG: if cache still exists, ready_monitor hasn't cleaned up yet
     if dest_count_after_cleanup > 0 {
         tracing::warn!(
             "❌ BUG CONDITION: DestTransport cache still has {} entries!",
@@ -508,7 +490,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         tracing::info!("✅ DestTransport cache was already cleaned by ready_monitor");
     }
 
-    // Phase 3: 在 reconnect 之前立即发送请求 - 这才是真正的 bug 场景！
+    // Phase 3: send request immediately before reconnect - this is the real bug scenario!
     tracing::info!("📤 Phase 3: Sending request IMMEDIATELY after cleanup (before reconnect)...");
 
     let envelope_immediate = RpcEnvelope {
@@ -519,7 +501,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         ..Default::default()
     };
 
-    // 这个请求应该失败，因为连接已关闭
+    // This request should fail because the connection is already closed
     match tokio::time::timeout(
         Duration::from_secs(2),
         gate_a.send_request(&id_b, envelope_immediate),
@@ -546,7 +528,7 @@ async fn test_dest_transport_cache_not_cleaned() {
         }
     }
 
-    // 现在重连
+    // Now reconnect
     tracing::info!("🔄 Phase 4: Reconnecting WebSocket...");
     processor
         .process_network_available()

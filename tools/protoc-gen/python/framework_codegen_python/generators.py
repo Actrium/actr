@@ -30,7 +30,7 @@ def generate_empty_local_workload(
     """Generate a workload for an empty local proto that proxies remote services."""
     pkg_name = "".join(word.capitalize() for word in package_name.replace(".", "_").split("_")) if package_name else "Client"
     workload_name = f"{pkg_name}Workload"
-    dispatcher_name = f"{pkg_name}Dispatcher"  # 动态 Dispatcher 名称
+    dispatcher_name = f"{pkg_name}Dispatcher"  # Dynamic Dispatcher name
     file_name = f"{to_snake_case(pkg_name)}_workload.py"
     
     # Don't import pb2 module for empty local proto (it won't be generated)
@@ -89,7 +89,7 @@ def generate_remote_extensions_only(
 
 def proto_module_name(proto_name: str) -> str:
     """Convert proto file name to module name (e.g., 'local/foo.proto' -> 'foo_pb2')."""
-    # 只取文件名部分，去掉路径
+    # Extract just the filename part, remove the path
     filename = proto_name.split("/")[-1]
     base = filename.replace(".proto", "")
     return f"{base}_pb2"
@@ -130,8 +130,8 @@ def generate_local_actor_code(
 
 def generate_preamble(proto_module: str, use_relative_import: bool = False, subdir: str = "") -> str:
     """Generate preamble with imports."""
-    # proto_module 已经包含了文件名（如 "echo_pb2"）
-    # subdir 是子目录（如 "local"）
+    # proto_module already contains the filename (e.g. "echo_pb2")
+    # subdir is the subdirectory (e.g. "local")
     if use_relative_import and subdir:
         import_line = f"from .{subdir} import {proto_module} as pb2"
     elif use_relative_import:
@@ -265,37 +265,37 @@ def generate_workload(service_name: str) -> str:
 
 def generate_empty_workload_with_proxy(
     workload_name: str,
-    dispatcher_name: str,  # 新增参数
+    dispatcher_name: str,  # New parameter
     remote_services: List[RemoteServiceInfo],
 ) -> str:
     """Generate a workload for empty local proto that only proxies remote services."""
     lines: List[str] = [
         f"# {workload_name} - automatically generated for empty local proto",
-        f"class {dispatcher_name}:",  # 使用动态名称
+        f"class {dispatcher_name}:",  # Using dynamic name
         "    async def dispatch(self, workload, route_key: str, payload: bytes, ctx: Any) -> bytes:",
         "        if not isinstance(ctx, Context):",
         "            ctx = Context(ctx)",
         "",
     ]
-    
+
     if remote_services:
         lines.append("        # Remote methods (proxying)")
         for remote in remote_services:
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
-            
+
             remote_manufacturer, remote_name, remote_version = parse_actr_type(remote.actr_type)
-            
+
             lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\", version=\"{remote_version}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
             lines.append("            return await ctx._rust.call_raw(Dest.actor(target_id), route_key, payload)")
             lines.append("")
-    
+
     lines.append("        raise RuntimeError(f\"Unknown route_key: {route_key}\")")
     lines.append("")
     lines.append(f"class {workload_name}(WorkloadBase):")
     lines.append("    def __init__(self):")
-    lines.append(f"        super().__init__({dispatcher_name}())")  # 使用动态名称
+    lines.append(f"        super().__init__({dispatcher_name}())")  # Using dynamic name
     
     return "\n".join(lines)
 

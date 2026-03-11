@@ -19,6 +19,7 @@ name = "actr-cli"
 version = "0.2.0"
 dependencies = [
  "actr",
+ "actr-cli",
  "actr-config",
  "actr-framework-protoc-codegen",
  "actr-hyper",

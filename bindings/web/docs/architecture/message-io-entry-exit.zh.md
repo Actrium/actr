@@ -313,7 +313,7 @@ DOM: RtcDataChannel.send()
 6. DOM 在后台透明转发
 ```
 
-**详细设计**：参见 [SW WebRTC 设计](./sw-webrtc-design.md)
+**详细设计**：参见 [SW WebRTC 设计](./sw-webrtc-design.zh.md)
 
 ## 💡 关键洞察
 
@@ -344,6 +344,6 @@ DOM: RtcDataChannel.send()
 ---
 
 **相关文档**：
-- [消息流全览图](./message-flow-visual.md) - 完整流程图
-- [SW WebRTC 设计](./sw-webrtc-design.md) - MessagePort 桥接详解 🔥
-- [架构总览](./overview.md) - 整体设计
+- [消息流全览图](./message-flow-visual.zh.md) - 完整流程图
+- [SW WebRTC 设计](./sw-webrtc-design.zh.md) - MessagePort 桥接详解 🔥
+- [架构总览](./overview.zh.md) - 整体设计

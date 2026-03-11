@@ -19,47 +19,47 @@ use std::sync::Arc;
 
 /// RuntimeContext - Runtime's implementation of Context trait
 ///
-/// # 设计特性
+/// # Design Features
 ///
-/// - **零虚函数**：内部使用 Gate enum dispatch（非 dyn）
-/// - **智能路由**：根据 Dest 自动选择 Host 或 Peer
-/// - **完整实现**：包含 call/tell 的完整逻辑（编码、发送、解码）
-/// - **类型安全**：泛型方法提供编译时类型检查
+/// - **Zero vtable**: internally uses Gate enum dispatch (not dyn)
+/// - **Smart routing**: automatically selects Host or Peer based on Dest
+/// - **Full implementation**: contains complete call/tell logic (encode, send, decode)
+/// - **Type safety**: generic methods provide compile-time type checking
 ///
-/// # 性能
+/// # Performance
 ///
-/// - Gate 是 enum，使用静态分发
-/// - 编译器可完全内联整个调用链
-/// - 零虚函数调用开销
+/// - Gate is an enum, uses static dispatch
+/// - Compiler can fully inline the entire call chain
+/// - Zero virtual function call overhead
 #[derive(Clone)]
 pub struct RuntimeContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
-    inproc_gate: Gate,                          // Shell/Local 调用 - 立即可用
-    outproc_gate: Option<Gate>,                 // 远程 Actor 调用 - 延迟初始化
-    data_stream_registry: Arc<DataStreamRegistry>, // DataStream 回调注册表
-    media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack 回调注册表
+    inproc_gate: Gate,          // Shell/Local calls - immediately available
+    outproc_gate: Option<Gate>, // Remote Actor calls - lazily initialized
+    data_stream_registry: Arc<DataStreamRegistry>, // DataStream callback registry
+    media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
     actr_lock: Option<LockFile>, // Actr.lock.toml for fingerprint lookups
 }
 
 impl RuntimeContext {
-    /// 创建新的 RuntimeContext
+    /// Create a new `RuntimeContext`.
     ///
-    /// # 参数
+    /// # Parameters
     ///
-    /// - `self_id`: 当前 Actor 的 ID
-    /// - `caller_id`: 调用方 Actor ID（可选）
-    /// - `request_id`: 当前请求唯一 ID
-    /// - `inproc_gate`: 进程内通信 gate（立即可用）
-    /// - `outproc_gate`: 跨进程通信 gate（可能为 None，等待 WebRTC 初始化）
-    /// - `data_stream_registry`: DataStream 回调注册表
-    /// - `media_frame_registry`: MediaTrack 回调注册表
-    /// - `signaling_client`: 用于路由发现的信令客户端
-    /// - `credential`: 该 Actor 的凭证（调用信令接口时使用）
-    /// - `actr_lock`: Actr.lock.toml 依赖配置（用于 fingerprint 查找）
+    /// - `self_id`: ID of the current actor
+    /// - `caller_id`: optional caller actor ID
+    /// - `request_id`: unique ID for the current request
+    /// - `inproc_gate`: in-process gate, immediately available
+    /// - `outproc_gate`: cross-process gate, possibly `None` until WebRTC initialization completes
+    /// - `data_stream_registry`: callback registry for `DataStream`
+    /// - `media_frame_registry`: callback registry for `MediaTrack`
+    /// - `signaling_client`: signaling client used for route discovery
+    /// - `credential`: credentials used when calling signaling interfaces
+    /// - `actr_lock`: dependency config from `Actr.lock.toml` used for fingerprint lookup
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub fn new(
         self_id: ActrId,
@@ -87,11 +87,11 @@ impl RuntimeContext {
         }
     }
 
-    /// 根据 Dest 选择合适的 gate
+    /// Select the appropriate gate based on `Dest`.
     ///
-    /// - Dest::Shell → inproc_gate（立即可用）
-    /// - Dest::Local → inproc_gate（立即可用）
-    /// - Dest::Actor(_) → outproc_gate（需要检查是否已初始化）
+    /// - `Dest::Shell` -> `inproc_gate`
+    /// - `Dest::Local` -> `inproc_gate`
+    /// - `Dest::Actor(_)` -> `outproc_gate`, which must already be initialized
     #[inline]
     fn select_gate(&self, dest: &Dest) -> ActorResult<&Gate> {
         match dest {
@@ -104,11 +104,11 @@ impl RuntimeContext {
         }
     }
 
-    /// 从 Dest 提取目标 ActrId
+    /// Extract the target `ActrId` from `Dest`.
     ///
-    /// - Dest::Shell → self_id（Workload → App 反向调用）
-    /// - Dest::Local → self_id（调用本地 Workload）
-    /// - Dest::Actor(id) → id（远程调用）
+    /// - `Dest::Shell` -> `self_id` for reverse Workload-to-App calls
+    /// - `Dest::Local` -> `self_id` for local workload calls
+    /// - `Dest::Actor(id)` -> remote actor ID
     #[inline]
     fn extract_target_id<'a>(&'a self, dest: &'a Dest) -> &'a ActrId {
         match dest {
@@ -293,7 +293,7 @@ struct InternalDiscoveryResult {
 
 #[async_trait]
 impl Context for RuntimeContext {
-    // ========== 数据访问方法 ==========
+    // ========== Data Access Methods ==========
 
     fn self_id(&self) -> &ActrId {
         &self.self_id
@@ -307,7 +307,7 @@ impl Context for RuntimeContext {
         &self.request_id
     }
 
-    // ========== 通信能力方法 ==========
+    // ========== Communication Methods ==========
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "RuntimeContext.call")
@@ -315,13 +315,13 @@ impl Context for RuntimeContext {
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
         use actr_protocol::prost::Message as ProstMessage;
 
-        // 1. 编码请求为 protobuf bytes
+        // 1. Encode the request as protobuf bytes.
         let payload: Bytes = request.encode_to_vec().into();
 
-        // 2. 从 RpcRequest trait 获取 route_key（编译时确定）
+        // 2. Get the compile-time route key from the RpcRequest trait.
         let route_key = R::route_key().to_string();
 
-        // 3. 构造 RpcEnvelope（使用 W3C tracing）
+        // 3. Build the RpcEnvelope with W3C tracing fields.
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
             route_key,
@@ -329,25 +329,25 @@ impl Context for RuntimeContext {
             error: None,
             traceparent: None,
             tracestate: None,
-            request_id: uuid::Uuid::new_v4().to_string(), // 生成新的 request_id
+            request_id: uuid::Uuid::new_v4().to_string(), // Generate a new request_id.
             metadata: vec![],
-            timeout_ms: 30000, // 默认 30 秒超时
+            timeout_ms: 30000, // Default to a 30-second timeout.
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]
         inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
-        // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
+        // 4. Select a gate from Dest and extract the target ActrId.
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 5. 通过 Gate enum dispatch 发送（零虚函数调用！）
+        // 5. Send via Gate enum dispatch without virtual calls.
         // Respect request's declared payload type (lane selection)
         let response_bytes = gate
             .send_request_with_type(target_id, R::payload_type(), envelope)
             .await?;
 
-        // 6. 解码响应（类型安全：R::Response）
+        // 6. Decode the typed response.
         R::Response::decode(&*response_bytes).map_err(|e| {
             ActrError::DecodeFailure(format!(
                 "Failed to decode {}: {}",
@@ -362,13 +362,13 @@ impl Context for RuntimeContext {
         tracing::instrument(skip_all, name = "RuntimeContext.tell")
     )]
     async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
-        // 1. 编码消息
+        // 1. Encode the message.
         let payload: Bytes = message.encode_to_vec().into();
 
-        // 2. 获取 route_key
+        // 2. Get the route key.
         let route_key = R::route_key().to_string();
 
-        // 3. 构造 RpcEnvelope（fire-and-forget 语义）
+        // 3. Build the RpcEnvelope for fire-and-forget delivery.
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
             route_key,
@@ -378,17 +378,17 @@ impl Context for RuntimeContext {
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
             metadata: vec![],
-            timeout_ms: 0, // 0 表示不等待响应
+            timeout_ms: 0, // Zero means no response is expected.
         };
         // Inject tracing context from current span
         #[cfg(feature = "opentelemetry")]
         inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
-        // 4. 根据 Dest 选择 gate 并提取目标 ActrId（Shell/Local 立即可用，Actor 需要检查）
+        // 4. Select a gate from Dest and extract the target ActrId.
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 5. 通过 Gate enum dispatch 发送（respect payload type）
+        // 5. Dispatch through the Gate enum while preserving payload type.
         gate.send_message_with_type(target_id, R::payload_type(), envelope)
             .await
     }
@@ -500,7 +500,7 @@ impl Context for RuntimeContext {
             .await?;
 
         tracing::info!(
-            "服务发现结果 [{}]: {} 个候选",
+            "Discovery result [{}]: {} candidates",
             service_name,
             result.candidates.len(),
         );

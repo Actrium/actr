@@ -428,7 +428,7 @@ impl RustGenerator {
 //! Please implement your specific business logic here.
 
 use crate::generated::{{{service_name_pascal}Handler, {service_name_pascal}Actor}};
-// 只导入必要的类型，避免拉入不需要的依赖如 sqlite
+// Only import necessary types; avoid pulling in unneeded dependencies like sqlite
 // use actr_framework::prelude::*;
 use std::sync::Arc;
 

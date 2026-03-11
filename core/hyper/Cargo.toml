@@ -25,10 +25,10 @@ opentelemetry = [
   "dep:tracing-opentelemetry",
 ]
 # Enable test utilities for integration tests (e.g., force ICE restart on all connections)
-test-utils = []
+test-utils = ["dep:actr-mock-signaling", "dep:webrtc-util"]
 
 [dependencies]
-# === Internal (内部依赖) ===
+# === Internal ===
 actr-protocol.workspace = true
 actr-runtime.workspace = true
 actr-runtime-mailbox.workspace = true
@@ -36,17 +36,17 @@ actr-config.workspace = true
 actr-framework.workspace = true
 actr-service-compat.workspace = true
 
-# === Storage (存储) ===
+# === Storage ===
 rusqlite = { workspace = true }
 
-# === Async Runtime (异步运行时) ===
+# === Async Runtime ===
 tokio.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["full"] }
 
-# === Serialization (序列化) ===
+# === Serialization ===
 serde.workspace = true
 serde_json.workspace = true
 prost.workspace = true
@@ -54,18 +54,18 @@ prost-types.workspace = true
 bytes.workspace = true
 toml.workspace = true
 
-# === Cryptography (加密) ===
+# === Cryptography ===
 ed25519-dalek.workspace = true
 sha2.workspace = true
 rand.workspace = true
 
-# === Networking (网络) ===
+# === Networking ===
 webrtc.workspace = true
 tokio-tungstenite.workspace = true
 reqwest = { version = "0.12", features = ["json"] }
 url.workspace = true
 
-# === Utilities (工具库) ===
+# === Utilities ===
 uuid.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -81,14 +81,16 @@ dotenvy = "0.15"
 either = "1.15"
 hex = "0.4"
 num_cpus = "1.17"
+actr-mock-signaling = { workspace = true, optional = true }
+webrtc-util = { version = "0.12", optional = true }
 
-# === Observability (可观测性, optional) ===
+# === Observability (optional) ===
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
-# === WASM Runtime (WASM 运行时, optional) ===
+# === WASM Runtime (optional) ===
 wasmtime = { workspace = true, optional = true }
 
 # === Dynclib Runtime (native shared library, optional) ===
@@ -106,6 +108,4 @@ prost.workspace = true
 tempfile.workspace = true
 tokio-test = "0.4"
 webrtc-ice = "0.14"
-webrtc-util = "0.12"
 actr-hyper = { path = ".", features = ["test-utils"] }
-actr-mock-signaling = { workspace = true }

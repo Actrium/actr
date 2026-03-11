@@ -1,9 +1,9 @@
 //! Transport Layer - DOM Environment
 //!
-//! DOM 端的传输层实现：
-//! - WebRTC DataChannel Lane：P2P 数据通道
-//! - WebRTC MediaTrack Lane：媒体流通道
-//! - PostMessage Lane：与 Service Worker 的通信通道
+//! Transport implementations for the DOM side:
+//! - WebRTC DataChannel lane for P2P data transport
+//! - WebRTC MediaTrack lane for media transport
+//! - PostMessage lane for communication with the Service Worker
 
 pub mod dom_transport;
 pub mod lane;

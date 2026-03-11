@@ -89,7 +89,7 @@ pub struct ActrNode<W: Workload> {
     /// WebRTC Gate (created after startup)
     pub(crate) webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
 
-    /// WebSocket Gate（直连模式入站，可选）
+    /// WebSocket Gate (direct-connect mode inbound, optional)
     pub(crate) websocket_gate: Option<Arc<crate::wire::websocket::WebSocketGate>>,
 
     /// Shell → Workload Transport Manager
@@ -122,13 +122,12 @@ pub struct ActrNode<W: Workload> {
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 
-    /// Hyper 层预注入的注册结果（Process / Wasm 模式使用）
+    /// Pre-injected registration result from the Hyper layer (used in Process / Wasm mode)
     ///
-    /// 当 `execution_mode` 为 `Process` 或 `Wasm` 时，Hyper 层通过 `inject_credential()`
-    /// 将已颁发的注册凭证写入此字段。`start()` 检测到此字段非 `None` 时，
-    /// 跳过信令注册步骤，直接使用注入的凭证完成初始化。
-    pub(crate) injected_registration:
-        Option<actr_protocol::register_response::RegisterOk>,
+    /// When `execution_mode` is `Process` or `Wasm`, the Hyper layer calls `inject_credential()`
+    /// to write an already-issued registration credential into this field. When `start()` detects
+    /// this field is not `None`, it skips signaling registration and uses the injected credential.
+    pub(crate) injected_registration: Option<actr_protocol::register_response::RegisterOk>,
 
     /// Shared WebSocket direct-connect address map populated by `discover_route_candidates`.
     ///
@@ -155,12 +154,12 @@ pub struct CredentialState {
 struct CredentialStateInner {
     credential: AIdCredential,
     expires_at: Option<prost_types::Timestamp>,
-    /// HMAC 时效 TURN 认证凭证，随 credential 一起在注册/续期时更新
+    /// HMAC time-limited TURN credential, updated together with credential on registration/renewal
     turn_credential: Option<TurnCredential>,
 }
 
 impl CredentialState {
-    /// 创建新的 CredentialState，携带 TURN 凭证
+    /// Create a new CredentialState with TURN credential
     pub fn new(
         credential: AIdCredential,
         expires_at: Option<prost_types::Timestamp>,
@@ -183,14 +182,14 @@ impl CredentialState {
         self.inner.read().await.expires_at
     }
 
-    /// 获取 TURN 认证凭证（HMAC 时效凭证）
+    /// Get TURN credential (HMAC time-limited credential)
     pub async fn turn_credential(&self) -> Option<TurnCredential> {
         self.inner.read().await.turn_credential.clone()
     }
 
-    /// 更新 credential 以及 TURN 凭证
+    /// Update credential and TURN credential
     ///
-    /// 在 credential 续期时调用，新 TURN 凭证不为空时才覆盖旧值
+    /// Called on credential renewal; only overwrites the old TURN credential when the new one is not empty
     pub(crate) async fn update(
         &self,
         credential: AIdCredential,
@@ -206,7 +205,7 @@ impl CredentialState {
     }
 }
 
-/// 从 panic payload 提取可读信息
+/// Extract human-readable info from a panic payload
 fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()
@@ -224,14 +223,14 @@ async fn executor_call_handler(
     ctx: crate::context::RuntimeContext,
     pending: crate::executor::PendingCall,
 ) -> crate::executor::IoResult {
-    use actr_framework::{Context as _, Dest};
-    use actr_protocol::{ActrId, ActrType, PayloadType};
-    use actr_protocol::prost::Message as ProstMessage;
     use crate::executor::{IoResult, PendingCall, error_code as code};
+    use actr_framework::{Context as _, Dest};
+    use actr_protocol::prost::Message as ProstMessage;
+    use actr_protocol::{ActrId, ActrType, PayloadType};
 
-    /// 将 guest 编码的 dest_bytes 解码回 `Dest`
+    /// Decode guest-encoded dest_bytes back to `Dest`
     ///
-    /// 格式与 `actr-runtime-wasm` 中 `encode_dest()` 对应：
+    /// Format corresponds to `encode_dest()` in `actr-runtime-wasm`:
     /// - `0x00` = Shell
     /// - `0x01` = Local
     /// - `0x02` + protobuf ActrId bytes = Actor(id)
@@ -241,13 +240,13 @@ async fn executor_call_handler(
             0x01 => Some(Dest::Local),
             0x02 => ActrId::decode(&bytes[1..]).ok().map(Dest::Actor),
             tag => {
-                tracing::warn!(tag, "WASM dest_bytes 中未知 tag");
+                tracing::warn!(tag, "WASM dest_bytes: unknown tag");
                 None
             }
         }
     }
 
-    /// 将 `ActrError` 映射到 ABI error code，保留语义供 guest 侧区分
+    /// Map `ActrError` to ABI error code, preserving semantics for guest-side discrimination
     fn actr_error_to_code(err: &ActrError) -> i32 {
         match err {
             ActrError::DecodeFailure(_) | ActrError::InvalidArgument(_) => code::PROTOCOL_ERROR,
@@ -256,11 +255,15 @@ async fn executor_call_handler(
     }
 
     match pending {
-        PendingCall::CallRaw { route_key, target_bytes, payload } => {
+        PendingCall::CallRaw {
+            route_key,
+            target_bytes,
+            payload,
+        } => {
             let target = match ActrId::decode(target_bytes.as_slice()) {
                 Ok(id) => id,
                 Err(e) => {
-                    tracing::error!("WASM call_raw: target_bytes decode 失败: {e}");
+                    tracing::error!("WASM call_raw: target_bytes decode failed: {e}");
                     return IoResult::Error(code::PROTOCOL_ERROR);
                 }
             };
@@ -276,47 +279,66 @@ async fn executor_call_handler(
             {
                 Ok(resp) => IoResult::Bytes(resp.to_vec()),
                 Err(e) => {
-                    tracing::error!("WASM call_raw 路由失败: {e:?}");
+                    tracing::error!("WASM call_raw routing failed: {e:?}");
                     IoResult::Error(actr_error_to_code(&e))
                 }
             }
         }
 
-        PendingCall::Call { route_key, dest_bytes, payload } => {
+        PendingCall::Call {
+            route_key,
+            dest_bytes,
+            payload,
+        } => {
             let dest = match decode_dest(&dest_bytes) {
                 Some(d) => d,
                 None => {
-                    tracing::error!(route_key, "WASM call: dest_bytes decode 失败");
+                    tracing::error!(route_key, "WASM call: dest_bytes decode failed");
                     return IoResult::Error(code::PROTOCOL_ERROR);
                 }
             };
             match ctx
-                .call_raw(&dest, route_key, PayloadType::RpcReliable, bytes::Bytes::from(payload), 0)
+                .call_raw(
+                    &dest,
+                    route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(payload),
+                    0,
+                )
                 .await
             {
                 Ok(resp) => IoResult::Bytes(resp.to_vec()),
                 Err(e) => {
-                    tracing::error!("WASM call 路由失败: {e:?}");
+                    tracing::error!("WASM call routing failed: {e:?}");
                     IoResult::Error(actr_error_to_code(&e))
                 }
             }
         }
 
-        PendingCall::Tell { route_key, dest_bytes, payload } => {
+        PendingCall::Tell {
+            route_key,
+            dest_bytes,
+            payload,
+        } => {
             let dest = match decode_dest(&dest_bytes) {
                 Some(d) => d,
                 None => {
-                    tracing::error!(route_key, "WASM tell: dest_bytes decode 失败");
+                    tracing::error!(route_key, "WASM tell: dest_bytes decode failed");
                     return IoResult::Error(code::PROTOCOL_ERROR);
                 }
             };
             match ctx
-                .tell_raw(&dest, route_key, PayloadType::RpcReliable, bytes::Bytes::from(payload))
+                .tell_raw(
+                    &dest,
+                    route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(payload),
+                )
                 .await
             {
                 Ok(()) => IoResult::Done,
                 Err(e) => {
-                    tracing::error!("WASM tell 路由失败: {e:?}");
+                    tracing::error!("WASM tell routing failed: {e:?}");
                     IoResult::Error(actr_error_to_code(&e))
                 }
             }
@@ -326,14 +348,14 @@ async fn executor_call_handler(
             let actr_type = match ActrType::decode(type_bytes.as_slice()) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("WASM discover: type_bytes decode 失败: {e}");
+                    tracing::error!("WASM discover: type_bytes decode failed: {e}");
                     return IoResult::Error(code::PROTOCOL_ERROR);
                 }
             };
             match ctx.discover_route_candidate(&actr_type).await {
                 Ok(id) => IoResult::Bytes(id.encode_to_vec()),
                 Err(e) => {
-                    tracing::error!("WASM discover 失败: {e:?}");
+                    tracing::error!("WASM discover failed: {e:?}");
                     IoResult::Error(actr_error_to_code(&e))
                 }
             }
@@ -595,7 +617,7 @@ impl<W: Workload> ActrNode<W> {
             .await?;
 
         tracing::info!(
-            "服务发现结果 [{}]: {} 个候选",
+            "Discovery result [{}]: {} candidate(s)",
             service_name,
             result.candidates.len(),
         );
@@ -795,12 +817,12 @@ impl<W: Workload> ActrNode<W> {
         hook_cb
     }
 
-    /// 网络事件处理循环（后台任务）
+    /// Network event processing loop (background task)
     ///
-    /// # 职责
-    /// - 从 Channel 接收网络事件
-    /// - 委托给 NetworkEventProcessor 处理
-    /// - 记录处理时间并发送结果
+    /// # Responsibilities
+    /// - Receive network events from Channel
+    /// - Delegate to NetworkEventProcessor for handling
+    /// - Record processing time and send results
     async fn network_event_loop(
         mut event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
         result_tx: tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
@@ -815,13 +837,13 @@ impl<W: Workload> ActrNode<W> {
 
         loop {
             tokio::select! {
-                // 接收网络事件
+                // Receive network events
                 Some(event) = event_rx.recv() => {
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // 队列清理：按类型去重，保留每种类型的最新事件
+                    // Queue cleanup: deduplicate by type, keeping the latest event of each type
                     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-                    // 收集队列中的所有事件
+                    // Collect all events from the queue
                     let mut all_events = vec![event];
                     while let Ok(next_event) = event_rx.try_recv() {
                         all_events.push(next_event);
@@ -829,7 +851,7 @@ impl<W: Workload> ActrNode<W> {
 
                     let total_events = all_events.len();
 
-                    // 按类型去重
+                    // Deduplicate by type
                     let events_to_process = deduplicate_network_events(all_events);
 
                     let processed_count = events_to_process.len();
@@ -846,7 +868,7 @@ impl<W: Workload> ActrNode<W> {
                         );
                     }
 
-                    // 处理去重后的事件
+                    // Process deduplicated events
                     for latest_event in events_to_process {
                         let start = std::time::Instant::now();
 
@@ -867,20 +889,20 @@ impl<W: Workload> ActrNode<W> {
 
                         let duration_ms = start.elapsed().as_millis() as u64;
 
-                        // 构造处理结果
+                        // Construct processing result
                         let event_result = match result {
                             Ok(_) => NetworkEventResult::success(latest_event.clone(), duration_ms),
                             Err(e) => NetworkEventResult::failure(latest_event.clone(), e, duration_ms),
                         };
 
-                        // 发送结果（忽略发送失败，避免阻塞）
+                        // Send result (ignore send failures to avoid blocking)
                         if let Err(e) = result_tx.send(event_result).await {
                             tracing::warn!("Failed to send event result: {}", e);
                         }
                     }
                 }
 
-                // 监听关闭信号
+                // Listen for shutdown signal
                 _ = shutdown_token.cancelled() => {
                     tracing::info!("🛑 Network event loop shutting down");
                     break;
@@ -924,7 +946,8 @@ impl<W: Workload> ActrNode<W> {
     /// - `trace_id`: Distributed tracing across entire call chain (A → B → C)
     /// - `request_id`: Unique identifier for each request-response pair
     /// - Both kept for flexibility in complex scenarios
-    /// 原生 dispatch：静态 MessageRouter + panic catching
+    ///
+    /// Native dispatch: static MessageRouter + panic catching
     async fn native_dispatch(
         &self,
         envelope: &RpcEnvelope,
@@ -954,9 +977,7 @@ impl<W: Workload> ActrNode<W> {
                     .workload
                     .on_error(ctx, format!("Handler panicked: {pi}"))
                     .await;
-                Err(ActrError::DecodeFailure(format!(
-                    "Handler panicked: {pi}"
-                )))
+                Err(ActrError::DecodeFailure(format!("Handler panicked: {pi}")))
             }
         }
     }
@@ -1123,21 +1144,18 @@ impl<W: Workload> ActrNode<W> {
         result
     }
 
-    /// 注入预颁发的注册凭证（Process / Wasm 模式）
+    /// Inject a pre-issued registration credential (Process / Wasm mode)
     ///
-    /// 由 Hyper 层在调用 `start()` 之前调用，将 AIS 已颁发的 `RegisterOk`
-    /// 写入 ActrNode，使 `start()` 跳过信令注册步骤。
+    /// Called by the Hyper layer before `start()`, writing the already-issued `RegisterOk`
+    /// into ActrNode so that `start()` skips the signaling registration step.
     ///
-    /// 适用场景：
-    /// - **Process 模式**：Hyper 以子进程启动 ActrSystem，凭证提前由 Hyper 获取
-    /// - **Wasm 模式**：Hyper 宿主将凭证通过宿主函数注入 WASM 实例
-    pub fn inject_credential(
-        &mut self,
-        register_ok: actr_protocol::register_response::RegisterOk,
-    ) {
+    /// Applicable scenarios:
+    /// - **Process mode**: Hyper launches ActrSystem as a subprocess; credential obtained in advance
+    /// - **Wasm mode**: Hyper host injects the credential into the WASM instance via host functions
+    pub fn inject_credential(&mut self, register_ok: actr_protocol::register_response::RegisterOk) {
         tracing::debug!(
             execution_mode = %self.config.execution_mode,
-            "🔑 注入预注册凭证，start() 将跳过信令注册步骤"
+            "Injected pre-registration credential; start() will skip signaling registration"
         );
         self.injected_registration = Some(register_ok);
     }
@@ -1219,19 +1237,19 @@ impl<W: Workload> ActrNode<W> {
         };
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 1. 获取注册信息（Hyper 预注入 或 信令服务器）
+        // 1. Obtain registration info (Hyper pre-injected or signaling server)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         //
-        // - Process / Wasm 模式：Hyper 已提前完成 AIS 注册并注入 RegisterOk，跳过信令注册
-        // - Native 模式（默认）：通过信令服务器完成注册，获取 ActrId 和 AID 凭证
+        // - Process / Wasm mode: Hyper completed AIS registration in advance and injected RegisterOk; skip signaling registration
+        // - Native mode (default): register via signaling server to obtain ActrId and AID credential
         let register_ok = if let Some(injected) = self.injected_registration.take() {
             tracing::info!(
                 execution_mode = %self.config.execution_mode,
-                "🔑 使用 Hyper 层预注入的注册凭证，跳过信令注册步骤"
+                "Using Hyper pre-injected registration credential; skipping signaling registration"
             );
             injected
         } else {
-            tracing::info!("📤 向信令服务器注册 actor");
+            tracing::info!("Registering actor with signaling server");
             let resp = self
                 .signaling_client
                 .send_register_request(register_request.clone())
@@ -1277,410 +1295,399 @@ impl<W: Workload> ActrNode<W> {
             let actor_id = register_ok.actr_id;
             let credential = register_ok.credential;
 
-                tracing::info!(
-                    "🆔 Assigned ActrId: {}",
-                    actr_protocol::ActrIdExt::to_string_repr(&actor_id)
-                );
-                tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
-                tracing::info!(
-                    "💓 Signaling heartbeat interval: {} seconds",
-                    register_ok.signaling_heartbeat_interval_secs
-                );
+            tracing::info!(
+                "🆔 Assigned ActrId: {}",
+                actr_protocol::ActrIdExt::to_string_repr(&actor_id)
+            );
+            tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
+            tracing::info!(
+                "💓 Signaling heartbeat interval: {} seconds",
+                register_ok.signaling_heartbeat_interval_secs
+            );
 
-                // 记录附加信息：TurnCredential 为 required 字段，正常情况下一定存在
-                tracing::debug!("🔑 收到 TurnCredential，TURN 认证就绪");
+            // TurnCredential is a required field; should always be present under normal conditions
+            tracing::debug!("TurnCredential received, TURN authentication ready");
 
-                if let Some(expires_at) = &register_ok.credential_expires_at {
-                    tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
-                }
+            if let Some(expires_at) = &register_ok.credential_expires_at {
+                tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
+            }
 
-                // 存储 ActrId 与凭证状态
-                self.actor_id = Some(actor_id.clone());
-                let credential_state = CredentialState::new(
-                    credential,
-                    register_ok.credential_expires_at,
-                    Some(register_ok.turn_credential.clone()),
-                );
-                self.credential_state = Some(credential_state.clone());
+            // Store ActrId and credential state
+            self.actor_id = Some(actor_id.clone());
+            let credential_state = CredentialState::new(
+                credential,
+                register_ok.credential_expires_at,
+                Some(register_ok.turn_credential.clone()),
+            );
+            self.credential_state = Some(credential_state.clone());
 
-                // 将身份信息传递给 signaling client，使后续重连 URL 携带正确的认证信息
-                self.signaling_client.set_actor_id(actor_id.clone()).await;
-                self.signaling_client
-                    .set_credential_state(credential_state.clone())
-                    .await;
+            // Pass identity info to signaling client so subsequent reconnect URLs carry correct auth info
+            self.signaling_client.set_actor_id(actor_id.clone()).await;
+            self.signaling_client
+                .set_credential_state(credential_state.clone())
+                .await;
 
-                // Populate hook callback ctx dependencies now that we have actor_id + credential.
-                // After this, all hook invocations will receive Some(ctx) instead of None.
-                let _ = hook_ctx_deps.set((
-                    self.context_factory
-                        .clone()
-                        .expect("ContextFactory must exist"),
-                    actor_id.clone(),
-                    credential_state.clone(),
-                ));
+            // Populate hook callback ctx dependencies now that we have actor_id + credential.
+            // After this, all hook invocations will receive Some(ctx) instead of None.
+            let _ = hook_ctx_deps.set((
+                self.context_factory
+                    .clone()
+                    .expect("ContextFactory must exist"),
+                actor_id.clone(),
+                credential_state.clone(),
+            ));
 
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let Some(actr_lock) = self.actr_lock.clone() {
-                    self.context_factory
-                        .as_mut()
-                        .expect("ContextFactory must exist")
-                        .set_actr_lock(actr_lock);
-                    tracing::info!(
-                        "✅ Actr.lock.toml set in ContextFactory for fingerprint lookups"
-                    );
-                }
-
-                // Persist identity into ContextFactory for later Context creation
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                let shell_to_workload = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .shell_to_workload();
-                let workload_to_shell = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .workload_to_shell();
-                self.inproc_mgr = Some(shell_to_workload); // Workload receives from this
-                self.workload_to_shell_mgr = Some(workload_to_shell); // Workload sends to this
-
-                tracing::info!(
-                    "✅ Inproc infrastructure already ready (created in ActrSystem::new())"
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.5. Create WebRTC infrastructure
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🌐 Initializing WebRTC infrastructure");
-
-                // Get MediaFrameRegistry from ContextFactory
-                let media_frame_registry = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .media_frame_registry
-                    .clone();
-
-                // 创建 WebRtcCoordinator
-                let coordinator =
-                    Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
-                        actor_id.clone(),
-                        credential_state.clone(),
-                        self.signaling_client.clone(),
-                        self.config.webrtc.clone(),
-                        media_frame_registry,
-                    ));
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.6. Create PeerTransport + PeerGate (新架构)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🏗️  Creating PeerTransport with WebRTC support");
-
-                // Create DefaultWireBuilder with WebRTC coordinator
-                use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
-                // WebSocket 通道始终启用：连接目标的 ws:// 地址完全由服务发现
-                // 直连模式：将本地节点 ActrId 编码为 hex，在 WS 握手请求中作为 X-Actr-Source-ID 发送
-                let local_id_hex = hex::encode(actor_id.encode_to_vec());
-                let wire_builder_config = DefaultWireBuilderConfig {
-                    local_id_hex,
-                    enable_webrtc: true,
-                    enable_websocket: true,
-                    // Share the discovered_ws_addresses map so that post-discovery connections
-                    // can use the signaling-provided ws:// URL for this actor node.
-                    discovered_ws_addresses: self.discovered_ws_addresses.clone(),
-                    // 传递 credential_state，使出站 WS 握手携带 X-Actr-Credential 头，
-                    // 供对端 WebSocketGate 进行 Ed25519 签名验证
-                    credential_state: Some(credential_state.clone()),
-                };
-                let wire_builder = Arc::new(DefaultWireBuilder::new(
-                    Some(coordinator.clone()),
-                    wire_builder_config,
-                ));
-
-                // Create PeerTransport
-                use crate::transport::PeerTransport;
-                let transport_manager =
-                    Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
-
-                // Create PeerGate with WebRTC coordinator for MediaTrack support
-                use crate::outbound::{Gate, PeerGate};
-                let outproc_gate = Arc::new(PeerGate::new(
-                    transport_manager,
-                    Some(coordinator.clone()), // Enable MediaTrack support
-                ));
-                let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
-
-                tracing::info!("PeerTransport + PeerGate initialized");
-
-                // Get DataStreamRegistry from ContextFactory
-                let data_stream_registry = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .data_stream_registry
-                    .clone();
-
-                // Create WebRtcGate with shared pending_requests and DataStreamRegistry
-                let pending_requests = outproc_gate.get_pending_requests();
-                let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
-                    coordinator.clone(),
-                    pending_requests,
-                    data_stream_registry.clone(),
-                ));
-
-                // Set local_id
-                gate.set_local_id(actor_id.clone()).await;
-
-                tracing::info!(
-                    "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7. Set outproc_gate in ContextFactory (completing initialization)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🔧 Setting outproc_gate in ContextFactory");
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let Some(actr_lock) = self.actr_lock.clone() {
                 self.context_factory
                     .as_mut()
                     .expect("ContextFactory must exist")
-                    .set_outproc_gate(outproc_gate_enum);
+                    .set_actr_lock(actr_lock);
+                tracing::info!("✅ Actr.lock.toml set in ContextFactory for fingerprint lookups");
+            }
 
+            // Persist identity into ContextFactory for later Context creation
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            let shell_to_workload = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .shell_to_workload();
+            let workload_to_shell = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .workload_to_shell();
+            self.inproc_mgr = Some(shell_to_workload); // Workload receives from this
+            self.workload_to_shell_mgr = Some(workload_to_shell); // Workload sends to this
+
+            tracing::info!("✅ Inproc infrastructure already ready (created in ActrSystem::new())");
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.5. Create WebRTC infrastructure
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🌐 Initializing WebRTC infrastructure");
+
+            // Get MediaFrameRegistry from ContextFactory
+            let media_frame_registry = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .media_frame_registry
+                .clone();
+
+            // Create WebRtcCoordinator
+            let coordinator = Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
+                actor_id.clone(),
+                credential_state.clone(),
+                self.signaling_client.clone(),
+                self.config.webrtc.clone(),
+                media_frame_registry,
+            ));
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.6. Create PeerTransport + PeerGate (new architecture)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🏗️  Creating PeerTransport with WebRTC support");
+
+            // Create DefaultWireBuilder with WebRTC coordinator
+            use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
+            // WebSocket channel always enabled: target ws:// address is fully determined by discovery
+            // Direct-connect mode: encode local node ActrId as hex, sent as X-Actr-Source-ID in WS handshake
+            let local_id_hex = hex::encode(actor_id.encode_to_vec());
+            let wire_builder_config = DefaultWireBuilderConfig {
+                local_id_hex,
+                enable_webrtc: true,
+                enable_websocket: true,
+                // Share the discovered_ws_addresses map so that post-discovery connections
+                // can use the signaling-provided ws:// URL for this actor node.
+                discovered_ws_addresses: self.discovered_ws_addresses.clone(),
+                // Pass credential_state so outbound WS handshake carries X-Actr-Credential header,
+                // enabling peer WebSocketGate to perform Ed25519 signature verification
+                credential_state: Some(credential_state.clone()),
+            };
+            let wire_builder = Arc::new(DefaultWireBuilder::new(
+                Some(coordinator.clone()),
+                wire_builder_config,
+            ));
+
+            // Create PeerTransport
+            use crate::transport::PeerTransport;
+            let transport_manager = Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
+
+            // Create PeerGate with WebRTC coordinator for MediaTrack support
+            use crate::outbound::{Gate, PeerGate};
+            let outproc_gate = Arc::new(PeerGate::new(
+                transport_manager,
+                Some(coordinator.clone()), // Enable MediaTrack support
+            ));
+            let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
+
+            tracing::info!("PeerTransport + PeerGate initialized");
+
+            // Get DataStreamRegistry from ContextFactory
+            let data_stream_registry = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .data_stream_registry
+                .clone();
+
+            // Create WebRtcGate with shared pending_requests and DataStreamRegistry
+            let pending_requests = outproc_gate.get_pending_requests();
+            let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
+                coordinator.clone(),
+                pending_requests,
+                data_stream_registry.clone(),
+            ));
+
+            // Set local_id
+            gate.set_local_id(actor_id.clone()).await;
+
+            tracing::info!(
+                "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
+            );
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7. Set outproc_gate in ContextFactory (completing initialization)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🔧 Setting outproc_gate in ContextFactory");
+            self.context_factory
+                .as_mut()
+                .expect("ContextFactory must exist")
+                .set_outproc_gate(outproc_gate_enum);
+
+            tracing::info!("✅ ContextFactory fully initialized (inproc + outproc gates ready)");
+
+            // Save references (WebRtcGate kept for backward compatibility if needed)
+            self.webrtc_coordinator = Some(coordinator.clone());
+            self.webrtc_gate = Some(gate.clone());
+
+            tracing::info!("✅ WebRTC infrastructure initialized");
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7.6. WebSocket Server (direct-connect mode, optional)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let Some(listen_port) = self.config.websocket_listen_port {
                 tracing::info!(
-                    "✅ ContextFactory fully initialized (inproc + outproc gates ready)"
+                    "🔌 WebSocket direct-connect mode enabled, binding port {}",
+                    listen_port
                 );
+                use crate::key_cache::AisKeyCache;
+                use crate::wire::websocket::gate::WsAuthContext;
+                use crate::wire::websocket::{WebSocketGate, WebSocketServer};
 
-                // Save references (WebRtcGate kept for backward compatibility if needed)
-                self.webrtc_coordinator = Some(coordinator.clone());
-                self.webrtc_gate = Some(gate.clone());
-
-                tracing::info!("✅ WebRTC infrastructure initialized");
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7.6. WebSocket Server（直连模式，可选）
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let Some(listen_port) = self.config.websocket_listen_port {
-                    tracing::info!(
-                        "🔌 WebSocket direct-connect mode enabled, binding port {}",
-                        listen_port
+                // Build AisKeyCache and seed it with the signing key from the registration response
+                let ais_key_cache = AisKeyCache::new();
+                if !register_ok.signing_pubkey.is_empty() {
+                    match ais_key_cache
+                        .seed(register_ok.signing_key_id, &register_ok.signing_pubkey)
+                        .await
+                    {
+                        Ok(()) => tracing::info!(
+                            key_id = register_ok.signing_key_id,
+                            "🔑 AisKeyCache seeded from RegisterOk"
+                        ),
+                        Err(e) => tracing::warn!(
+                            key_id = register_ok.signing_key_id,
+                            error = ?e,
+                            "AisKeyCache seed failed; WebSocket will reject all inbound connections"
+                        ),
+                    }
+                } else {
+                    tracing::warn!(
+                        "RegisterOk missing signing_pubkey; WebSocket credential verification will degrade"
                     );
-                    use crate::key_cache::AisKeyCache;
-                    use crate::wire::websocket::gate::WsAuthContext;
-                    use crate::wire::websocket::{WebSocketGate, WebSocketServer};
+                }
 
-                    // 构建 AisKeyCache，并用注册响应中的 signing key 进行初始化
-                    let ais_key_cache = AisKeyCache::new();
-                    if !register_ok.signing_pubkey.is_empty() {
-                        match ais_key_cache
-                            .seed(register_ok.signing_key_id, &register_ok.signing_pubkey)
-                            .await
-                        {
-                            Ok(()) => tracing::info!(
-                                key_id = register_ok.signing_key_id,
-                                "🔑 AisKeyCache seeded from RegisterOk"
-                            ),
-                            Err(e) => tracing::warn!(
-                                key_id = register_ok.signing_key_id,
-                                error = ?e,
-                                "⚠️ AisKeyCache seed 失败，WebSocket 连接将拒绝所有入站"
-                            ),
+                let auth_ctx = WsAuthContext {
+                    ais_key_cache,
+                    actor_id: actor_id.clone(),
+                    credential_state: credential_state.clone(),
+                    signaling_client: self.signaling_client.clone(),
+                };
+
+                match WebSocketServer::bind(listen_port).await {
+                    Ok((ws_server, conn_rx)) => {
+                        ws_server.start(self.shutdown_token.clone());
+                        let ws_gate = Arc::new(WebSocketGate::new(
+                            conn_rx,
+                            outproc_gate.get_pending_requests(),
+                            data_stream_registry.clone(),
+                            Some(auth_ctx),
+                        ));
+                        self.websocket_gate = Some(ws_gate);
+                        tracing::info!(
+                            "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "❌ Failed to bind WebSocket server on port {}: {:?}",
+                            listen_port,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7.5. Create shared state for credential management
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // Shared credential state initialized above; reused across tasks
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            {
+                let shutdown = self.shutdown_token.clone();
+                let client = self.signaling_client.clone();
+                let actor_id_for_heartbeat = actor_id.clone();
+                let credential_state_for_heartbeat = credential_state.clone();
+                let mailbox_for_heartbeat = self.mailbox.clone();
+                let register_request_for_heartbeat = register_request.clone();
+
+                // Use interval from registration response, default to 30s
+                let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
+                let heartbeat_interval = if heartbeat_interval_secs > 0 {
+                    Duration::from_secs(heartbeat_interval_secs as u64)
+                } else {
+                    Duration::from_secs(30)
+                };
+
+                let heartbeat_handle = tokio::spawn(heartbeat_task(
+                    shutdown,
+                    client,
+                    actor_id_for_heartbeat,
+                    credential_state_for_heartbeat,
+                    mailbox_for_heartbeat,
+                    heartbeat_interval,
+                    register_request_for_heartbeat,
+                ));
+
+                task_handles.push(heartbeat_handle);
+            }
+            tracing::info!(
+                "✅ Heartbeat task started (interval: {}s)",
+                register_ok.signaling_heartbeat_interval_secs
+            );
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.8.5. Spawn network event processing loop
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let (Some(event_rx), Some(result_tx)) = (
+                self.network_event_rx.take(),
+                self.network_event_result_tx.take(),
+            ) {
+                use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
+
+                // Create DefaultNetworkEventProcessor
+                // If debounce config exists, use new_with_debounce
+                let event_processor =
+                    if let Some(config) = self.network_event_debounce_config.clone() {
+                        Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+                            self.signaling_client.clone(),
+                            self.webrtc_coordinator.clone(),
+                            config,
+                        ))
+                    } else {
+                        Arc::new(DefaultNetworkEventProcessor::new(
+                            self.signaling_client.clone(),
+                            self.webrtc_coordinator.clone(),
+                        ))
+                    };
+
+                let shutdown = self.shutdown_token.clone();
+
+                let network_event_handle = tokio::spawn(async move {
+                    Self::network_event_loop(event_rx, result_tx, event_processor, shutdown).await;
+                });
+
+                task_handles.push(network_event_handle);
+                tracing::info!("✅ Network event loop started");
+            }
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            //
+            // This task:
+            // - Waits for shutdown_token to be cancelled (e.g., wait_for_ctrl_c_and_shutdown)
+            // - Then sends UnregisterRequest via signaling client with a timeout
+            //
+            // NOTE: we push its JoinHandle into task_handles so it can be aborted
+            // by ActrRefShared::Drop if needed.
+            {
+                let shutdown = self.shutdown_token.clone();
+                let client = self.signaling_client.clone();
+                let actor_id_for_unreg = actor_id.clone();
+                let credential_state_for_unreg = credential_state.clone();
+                let webrtc_coordinator = self.webrtc_coordinator.clone();
+
+                let unregister_handle = tokio::spawn(async move {
+                    // Wait for shutdown signal
+                    shutdown.cancelled().await;
+                    tracing::info!(
+                        "📡 Shutdown signal received2, sending UnregisterRequest for Actor {:?}",
+                        actor_id_for_unreg
+                    );
+
+                    // 1. Close all WebRTC peer connections first (if any)
+                    if let Some(coord) = webrtc_coordinator {
+                        if let Err(e) = coord.close_all_peers().await {
+                            tracing::warn!(
+                                "⚠️ Failed to close all WebRTC peers before UnregisterRequest: {}",
+                                e
+                            );
+                        } else {
+                            tracing::info!("✅ All WebRTC peers closed before UnregisterRequest");
                         }
                     } else {
-                        tracing::warn!(
-                            "⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级"
+                        tracing::debug!(
+                            "WebRTC coordinator not found before UnregisterRequest (no WebRTC?)"
                         );
                     }
 
-                    let auth_ctx = WsAuthContext {
-                        ais_key_cache,
-                        actor_id: actor_id.clone(),
-                        credential_state: credential_state.clone(),
-                        signaling_client: self.signaling_client.clone(),
-                    };
-
-                    match WebSocketServer::bind(listen_port).await {
-                        Ok((ws_server, conn_rx)) => {
-                            ws_server.start(self.shutdown_token.clone());
-                            let ws_gate = Arc::new(WebSocketGate::new(
-                                conn_rx,
-                                outproc_gate.get_pending_requests(),
-                                data_stream_registry.clone(),
-                                Some(auth_ctx),
-                            ));
-                            self.websocket_gate = Some(ws_gate);
+                    // 2. Then send UnregisterRequest with a timeout (e.g. 5 seconds)
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        client.send_unregister_request(
+                            actor_id_for_unreg.clone(),
+                            credential_state_for_unreg.credential().await,
+                            Some("Graceful shutdown".to_string()),
+                        ),
+                    )
+                    .await;
+                    tracing::info!("UnregisterRequest result: {:?}", result);
+                    match result {
+                        Ok(Ok(_)) => {
                             tracing::info!(
-                                "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
+                                "✅ UnregisterRequest sent to signaling server for Actor {:?}",
+                                actor_id_for_unreg
                             );
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                "❌ Failed to bind WebSocket server on port {}: {:?}",
-                                listen_port,
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "⚠️ Failed to send UnregisterRequest for Actor {:?}: {}",
+                                actor_id_for_unreg,
                                 e
                             );
                         }
-                    }
-                }
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7.5. Create shared state for credential management
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // Shared credential state initialized above; reused across tasks
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                {
-                    let shutdown = self.shutdown_token.clone();
-                    let client = self.signaling_client.clone();
-                    let actor_id_for_heartbeat = actor_id.clone();
-                    let credential_state_for_heartbeat = credential_state.clone();
-                    let mailbox_for_heartbeat = self.mailbox.clone();
-                    let register_request_for_heartbeat = register_request.clone();
-
-                    // Use interval from registration response, default to 30s
-                    let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
-                    let heartbeat_interval = if heartbeat_interval_secs > 0 {
-                        Duration::from_secs(heartbeat_interval_secs as u64)
-                    } else {
-                        Duration::from_secs(30)
-                    };
-
-                    let heartbeat_handle = tokio::spawn(heartbeat_task(
-                        shutdown,
-                        client,
-                        actor_id_for_heartbeat,
-                        credential_state_for_heartbeat,
-                        mailbox_for_heartbeat,
-                        heartbeat_interval,
-                        register_request_for_heartbeat,
-                    ));
-
-                    task_handles.push(heartbeat_handle);
-                }
-                tracing::info!(
-                    "✅ Heartbeat task started (interval: {}s)",
-                    register_ok.signaling_heartbeat_interval_secs
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8.5. Spawn network event processing loop
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let (Some(event_rx), Some(result_tx)) = (
-                    self.network_event_rx.take(),
-                    self.network_event_result_tx.take(),
-                ) {
-                    use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
-
-                    // 创建 DefaultNetworkEventProcessor
-                    // 如果有防抖配置，使用 new_with_debounce
-                    let event_processor =
-                        if let Some(config) = self.network_event_debounce_config.clone() {
-                            Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-                                self.signaling_client.clone(),
-                                self.webrtc_coordinator.clone(),
-                                config,
-                            ))
-                        } else {
-                            Arc::new(DefaultNetworkEventProcessor::new(
-                                self.signaling_client.clone(),
-                                self.webrtc_coordinator.clone(),
-                            ))
-                        };
-
-                    let shutdown = self.shutdown_token.clone();
-
-                    let network_event_handle = tokio::spawn(async move {
-                        Self::network_event_loop(event_rx, result_tx, event_processor, shutdown)
-                            .await;
-                    });
-
-                    task_handles.push(network_event_handle);
-                    tracing::info!("✅ Network event loop started");
-                }
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                //
-                // This task:
-                // - Waits for shutdown_token to be cancelled (e.g., wait_for_ctrl_c_and_shutdown)
-                // - Then sends UnregisterRequest via signaling client with a timeout
-                //
-                // NOTE: we push its JoinHandle into task_handles so it can be aborted
-                // by ActrRefShared::Drop if needed.
-                {
-                    let shutdown = self.shutdown_token.clone();
-                    let client = self.signaling_client.clone();
-                    let actor_id_for_unreg = actor_id.clone();
-                    let credential_state_for_unreg = credential_state.clone();
-                    let webrtc_coordinator = self.webrtc_coordinator.clone();
-
-                    let unregister_handle = tokio::spawn(async move {
-                        // Wait for shutdown signal
-                        shutdown.cancelled().await;
-                        tracing::info!(
-                            "📡 Shutdown signal received2, sending UnregisterRequest for Actor {:?}",
-                            actor_id_for_unreg
-                        );
-
-                        // 1. 先关闭所有 WebRTC peer 连接（如果存在）
-                        if let Some(coord) = webrtc_coordinator {
-                            if let Err(e) = coord.close_all_peers().await {
-                                tracing::warn!(
-                                    "⚠️ Failed to close all WebRTC peers before UnregisterRequest: {}",
-                                    e
-                                );
-                            } else {
-                                tracing::info!(
-                                    "✅ All WebRTC peers closed before UnregisterRequest"
-                                );
-                            }
-                        } else {
-                            tracing::debug!(
-                                "WebRTC coordinator not found before UnregisterRequest (no WebRTC?)"
+                        Err(_) => {
+                            tracing::warn!(
+                                "⚠️ UnregisterRequest timeout (5s) for Actor {:?}",
+                                actor_id_for_unreg
                             );
                         }
+                    }
+                });
 
-                        // 2. 再发送 UnregisterRequest，设置一个超时（例如 5 秒）
-                        let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            client.send_unregister_request(
-                                actor_id_for_unreg.clone(),
-                                credential_state_for_unreg.credential().await,
-                                Some("Graceful shutdown".to_string()),
-                            ),
-                        )
-                        .await;
-                        tracing::info!("UnregisterRequest result: {:?}", result);
-                        match result {
-                            Ok(Ok(_)) => {
-                                tracing::info!(
-                                    "✅ UnregisterRequest sent to signaling server for Actor {:?}",
-                                    actor_id_for_unreg
-                                );
-                            }
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    "⚠️ Failed to send UnregisterRequest for Actor {:?}: {}",
-                                    actor_id_for_unreg,
-                                    e
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    "⚠️ UnregisterRequest timeout (5s) for Actor {:?}",
-                                    actor_id_for_unreg
-                                );
-                            }
-                        }
-                    });
-
-                    task_handles.push(unregister_handle);
-                }
+                task_handles.push(unregister_handle);
+            }
         } // end registration setup block
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1737,7 +1744,7 @@ impl<W: Workload> ActrNode<W> {
             tracing::info!("✅ WebRtcGate → Mailbox routing started");
         }
 
-        // Start WebSocketGate message receive loop (route to Mailbox，直连模式)
+        // Start WebSocketGate message receive loop (route to Mailbox, direct-connect mode)
         if let Some(ws_gate) = &node_ref.websocket_gate {
             ws_gate
                 .start_receive_loop(node_ref.mailbox.clone())

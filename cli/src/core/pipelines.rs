@@ -1,6 +1,6 @@
-//! 操作管道定义
+//! Operation pipeline definitions
 //!
-//! 定义了三个核心操作管道，实现命令间的逻辑复用
+//! Defines three core operation pipelines for cross-command logic reuse
 
 use actr_config::{LockFile, LockedDependency, ProtoFileMeta, ServiceSpecMeta};
 use actr_protocol::ActrTypeExt;
@@ -10,10 +10,10 @@ use std::sync::Arc;
 use super::components::*;
 
 // ============================================================================
-// 管道结果类型
+// Pipeline result types
 // ============================================================================
 
-/// 安装结果
+/// Install result
 #[derive(Debug, Clone)]
 pub struct InstallResult {
     pub installed_dependencies: Vec<ResolvedDependency>,
@@ -43,7 +43,7 @@ impl InstallResult {
     }
 }
 
-/// 安装计划
+/// Install plan
 #[derive(Debug, Clone)]
 pub struct InstallPlan {
     pub dependencies_to_install: Vec<DependencySpec>,
@@ -52,7 +52,7 @@ pub struct InstallPlan {
     pub required_permissions: Vec<String>,
 }
 
-/// 生成选项
+/// Generation options
 #[derive(Debug, Clone)]
 pub struct GenerationOptions {
     pub input_path: std::path::PathBuf,
@@ -64,10 +64,10 @@ pub struct GenerationOptions {
 }
 
 // ============================================================================
-// 1. 验证管道 (ValidationPipeline)
+// 1. Validation Pipeline
 // ============================================================================
 
-/// 核心验证管道 - 被多个命令复用
+/// Core validation pipeline - reused by multiple commands
 #[derive(Clone)]
 pub struct ValidationPipeline {
     config_manager: Arc<dyn ConfigManager>,
@@ -116,12 +116,12 @@ impl ValidationPipeline {
             .unwrap_or_else(|| spec.name.clone())
     }
 
-    /// 完整的项目验证流程
+    /// Full project validation flow
     pub async fn validate_project(&self) -> Result<ValidationReport> {
-        // 1. 配置文件验证
+        // 1. Config file validation
         let config_validation = self.config_manager.validate_config().await?;
 
-        // 如果配置文件都有问题，直接返回
+        // If config file has issues, return immediately
         if !config_validation.is_valid {
             return Ok(ValidationReport {
                 is_valid: false,
@@ -133,7 +133,7 @@ impl ValidationPipeline {
             });
         }
 
-        // 2. 依赖解析和验证
+        // 2. Dependency resolution and validation
         let config = self
             .config_manager
             .load_config(
@@ -165,7 +165,7 @@ impl ValidationPipeline {
             .resolve_dependencies(&dependency_specs, &service_details)
             .await?;
 
-        // 3. 冲突检查
+        // 3. Conflict check
         let conflicts = self
             .dependency_resolver
             .check_conflicts(&resolved_dependencies)
@@ -195,7 +195,7 @@ impl ValidationPipeline {
         })
     }
 
-    /// 验证特定依赖列表
+    /// Validate a specific list of dependencies
     /// Note: Multiple aliases pointing to the same service name will be deduplicated
     pub async fn validate_dependencies(
         &self,
@@ -248,7 +248,7 @@ impl ValidationPipeline {
         Ok(results)
     }
 
-    /// 网络连通性验证
+    /// Network connectivity validation
     pub async fn validate_network_connectivity(
         &self,
         deps: &[ResolvedDependency],
@@ -286,7 +286,7 @@ impl ValidationPipeline {
             .collect())
     }
 
-    /// 指纹验证
+    /// Fingerprint validation
     pub async fn validate_fingerprints(
         &self,
         deps: &[ResolvedDependency],
@@ -300,7 +300,7 @@ impl ValidationPipeline {
                 value: expected_val,
             };
 
-            // 计算实际指纹（如果 resolved_dependencies 中没有指纹，从远程获取）
+            // Compute actual fingerprint (if resolved_dependencies has none, fetch from remote)
             let actual_fp = if dep.fingerprint.is_empty() {
                 let lookup_key = Self::dependency_lookup_key(&dep.spec);
                 match self
@@ -327,7 +327,7 @@ impl ValidationPipeline {
                     }
                 }
             } else {
-                // 已有指纹，无需重新计算
+                // Already has fingerprint, no need to recompute
                 None
             };
 
@@ -339,7 +339,7 @@ impl ValidationPipeline {
                     .await
                     .unwrap_or(false)
             } else {
-                // 指纹已匹配（来自 resolve_dependencies）
+                // Fingerprint already matched (from resolve_dependencies)
                 true
             };
 
@@ -357,10 +357,10 @@ impl ValidationPipeline {
 }
 
 // ============================================================================
-// 2. 安装管道 (InstallPipeline)
+// 2. Install Pipeline
 // ============================================================================
 
-/// 安装管道 - 基于ValidationPipeline构建
+/// Install pipeline - built on top of ValidationPipeline
 pub struct InstallPipeline {
     validation_pipeline: ValidationPipeline,
     config_manager: Arc<dyn ConfigManager>,
@@ -394,15 +394,15 @@ impl InstallPipeline {
         &self.config_manager
     }
 
-    /// Check-First 安装流程
+    /// Check-first install flow
     pub async fn install_dependencies(&self, specs: &[DependencySpec]) -> Result<InstallResult> {
-        // 🔍 阶段1: 完整验证 (复用ValidationPipeline)
+        // Phase 1: Full validation (reuse ValidationPipeline)
         let validation_report = self
             .validation_pipeline
             .validate_dependencies(specs)
             .await?;
 
-        // 检查验证结果
+        // Check validation results
         let failed_validations: Vec<_> = validation_report
             .iter()
             .filter(|v| !v.is_available)
@@ -410,7 +410,7 @@ impl InstallPipeline {
 
         if !failed_validations.is_empty() {
             return Err(anyhow::anyhow!(
-                "依赖验证失败: {}",
+                "Dependency validation failed: {}",
                 failed_validations
                     .iter()
                     .map(|v| format!(
@@ -423,24 +423,24 @@ impl InstallPipeline {
             ));
         }
 
-        // 📝 阶段2: 原子性安装
+        // Phase 2: Atomic install
         let backup = self.config_manager.backup_config().await?;
 
         match self.execute_atomic_install(specs).await {
             Ok(result) => {
-                // 安装成功，清理备份
+                // Install succeeded, clean up backup
                 self.config_manager.remove_backup(backup).await?;
                 Ok(result)
             }
             Err(e) => {
-                // 安装失败，恢复备份
+                // Install failed, restore backup
                 self.config_manager.restore_backup(backup).await?;
                 Err(e)
             }
         }
     }
 
-    /// 原子性安装执行
+    /// Atomic install execution
     /// Note: Multiple aliases pointing to the same service will be deduplicated -
     /// only one entry per unique service name will be installed and recorded in lock file
     async fn execute_atomic_install(&self, specs: &[DependencySpec]) -> Result<InstallResult> {
@@ -461,31 +461,31 @@ impl InstallPipeline {
                 continue;
             }
 
-            // 1. 获取服务详情（在更新配置之前，确保我们有完整的 actr_type）
+            // 1. Get service details (before updating config, ensure we have the full actr_type)
             let service_details = self
                 .validation_pipeline
                 .service_discovery
                 .get_service_details(&lookup_key)
                 .await?;
 
-            // 2. 构建 resolved_spec，使用发现结果中的 canonical actr_type
+            // 2. Build resolved_spec using the canonical actr_type from discovery
             let mut resolved_spec = spec.clone();
             resolved_spec.actr_type = Some(service_details.info.actr_type.clone());
 
-            // 3. 更新配置文件（使用包含 actr_type 的 resolved_spec）
+            // 3. Update config file (using resolved_spec with actr_type)
             self.config_manager
                 .update_dependency(&resolved_spec)
                 .await?;
             result.updated_config = true;
 
-            // 4. 缓存Proto文件
+            // 4. Cache proto files
             self.cache_manager
                 .cache_proto(&spec.name, &service_details.proto_files)
                 .await?;
 
             result.cache_updates += 1;
 
-            // 5. 记录已安装的依赖
+            // 5. Record installed dependency
 
             let resolved_dep = ResolvedDependency {
                 spec: resolved_spec,
@@ -498,7 +498,7 @@ impl InstallPipeline {
             installed_services.insert(lookup_key);
         }
 
-        // 4. 更新锁文件 (lock file also deduplicates by name)
+        // 4. Update lock file (lock file also deduplicates by name)
         self.update_lock_file(&result.installed_dependencies)
             .await?;
         result.updated_lock_file = true;
@@ -570,10 +570,10 @@ impl InstallPipeline {
 }
 
 // ============================================================================
-// 3. 生成管道 (GenerationPipeline)
+// 3. Generation Pipeline
 // ============================================================================
 
-/// 代码生成管道
+/// Code generation pipeline
 pub struct GenerationPipeline {
     #[allow(dead_code)]
     config_manager: Arc<dyn ConfigManager>,
@@ -595,23 +595,23 @@ impl GenerationPipeline {
         }
     }
 
-    /// 执行代码生成
+    /// Execute code generation
     pub async fn generate_code(&self, options: &GenerationOptions) -> Result<GenerationResult> {
-        // 1. 清理输出目录（如果需要）
+        // 1. Clean output directory (if needed)
         if options.clean_before_generate {
             self.clean_output_directory(&options.output_path).await?;
         }
 
-        // 2. 发现本地Proto文件
+        // 2. Discover local proto files
         let local_protos = self
             .proto_processor
             .discover_proto_files(&options.input_path)
             .await?;
 
-        // 3. 加载依赖的Proto文件
+        // 3. Load dependency proto files
         let dependency_protos = self.load_dependency_protos().await?;
 
-        // 4. 验证Proto语法
+        // 4. Validate proto syntax
         let all_protos = [local_protos, dependency_protos].concat();
         let validation = self
             .proto_processor
@@ -622,13 +622,13 @@ impl GenerationPipeline {
             return Err(anyhow::anyhow!("Proto file syntax validation failed"));
         }
 
-        // 5. 执行代码生成
+        // 5. Execute code generation
         let mut generation_result = self
             .proto_processor
             .generate_code(&options.input_path, &options.output_path)
             .await?;
 
-        // 6. 后处理：格式化和检查
+        // 6. Post-processing: format and check
         if options.format_code {
             self.format_generated_code(&generation_result.generated_files)
                 .await?;
@@ -645,7 +645,7 @@ impl GenerationPipeline {
         Ok(generation_result)
     }
 
-    /// 清理输出目录
+    /// Clean the output directory
     async fn clean_output_directory(&self, output_path: &std::path::Path) -> Result<()> {
         if output_path.exists() {
             std::fs::remove_dir_all(output_path)?;
@@ -654,17 +654,17 @@ impl GenerationPipeline {
         Ok(())
     }
 
-    /// 加载依赖的Proto文件
+    /// Load dependency proto files
     async fn load_dependency_protos(&self) -> Result<Vec<ProtoFile>> {
-        // TODO: 从缓存中加载依赖的Proto文件
+        // TODO: Load dependency proto files from cache
         Ok(Vec::new())
     }
 
-    /// 格式化生成的代码
+    /// Format generated code
     async fn format_generated_code(&self, files: &[std::path::PathBuf]) -> Result<()> {
         for file in files {
             if file.extension().and_then(|s| s.to_str()) == Some("rs") {
-                // 运行 rustfmt
+                // Run rustfmt
                 let output = std::process::Command::new("rustfmt").arg(file).output()?;
 
                 if !output.status.success() {
@@ -678,9 +678,9 @@ impl GenerationPipeline {
         Ok(())
     }
 
-    /// 运行代码检查
+    /// Run code checks
     async fn run_code_checks(&self, files: &[std::path::PathBuf]) -> Result<GenerationResult> {
-        // TODO: 运行 cargo check 或其他代码检查工具
+        // TODO: Run cargo check or other code validation tools
         Ok(GenerationResult {
             generated_files: files.to_vec(),
             warnings: vec![],

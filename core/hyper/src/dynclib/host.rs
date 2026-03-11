@@ -34,9 +34,7 @@ impl<T> SendPtr<T> {
     }
 }
 
-use crate::executor::{
-    self, CallExecutorFn, DispatchContext, IoResult, PendingCall, error_code,
-};
+use crate::executor::{self, CallExecutorFn, DispatchContext, IoResult, PendingCall, error_code};
 
 use super::error::{DynclibError, DynclibResult};
 
@@ -45,11 +43,8 @@ use super::error::{DynclibError, DynclibResult};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `actr_init(vtable: *const HostVTable, config_ptr: *const u8, config_len: usize) -> i32`
-type InitFn = unsafe extern "C" fn(
-    vtable: *const HostVTable,
-    config: *const u8,
-    config_len: usize,
-) -> i32;
+type InitFn =
+    unsafe extern "C" fn(vtable: *const HostVTable, config: *const u8, config_len: usize) -> i32;
 
 /// `actr_handle(req_ptr: *const u8, req_len: usize, resp_out: *mut *mut u8, resp_len_out: *mut usize) -> i32`
 type HandleFn = unsafe extern "C" fn(
@@ -78,24 +73,21 @@ type FreeResponseFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 pub struct HostVTable {
     /// Synchronous RPC call: `(route_key_ptr, route_key_len, dest_ptr, dest_len, payload_ptr, payload_len, resp_ptr_out, resp_len_out) -> i32`
     pub call: unsafe extern "C" fn(
-        *const u8, usize,
-        *const u8, usize,
-        *const u8, usize,
-        *mut *mut u8, *mut usize,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *mut *mut u8,
+        *mut usize,
     ) -> i32,
 
     /// Fire-and-forget tell: `(route_key_ptr, route_key_len, dest_ptr, dest_len, payload_ptr, payload_len) -> i32`
-    pub tell: unsafe extern "C" fn(
-        *const u8, usize,
-        *const u8, usize,
-        *const u8, usize,
-    ) -> i32,
+    pub tell: unsafe extern "C" fn(*const u8, usize, *const u8, usize, *const u8, usize) -> i32,
 
     /// Service discovery: `(type_ptr, type_len, resp_ptr_out, resp_len_out) -> i32`
-    pub discover: unsafe extern "C" fn(
-        *const u8, usize,
-        *mut *mut u8, *mut usize,
-    ) -> i32,
+    pub discover: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32,
 
     /// Query own ActrId: `(out_ptr, out_len) -> i32`
     pub self_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
@@ -152,11 +144,7 @@ fn clear_thread_locals() {
 ///
 /// # Safety
 /// `out_ptr` and `out_len` must be valid, aligned, non-null pointers.
-unsafe fn host_alloc_and_write(
-    data: &[u8],
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) {
+unsafe fn host_alloc_and_write(data: &[u8], out_ptr: *mut *mut u8, out_len: *mut usize) {
     let len = data.len();
     let buf = if len > 0 {
         let layout = std::alloc::Layout::from_size_align(len, 1).expect("invalid layout");
@@ -340,10 +328,7 @@ unsafe extern "C" fn vtable_discover(
 
 // ── VTable::self_id ─────────────────────────────────────────────────────────
 
-unsafe extern "C" fn vtable_self_id(
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
+unsafe extern "C" fn vtable_self_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
     if out_ptr.is_null() || out_len.is_null() {
         return error_code::PROTOCOL_ERROR;
     }
@@ -369,10 +354,7 @@ unsafe extern "C" fn vtable_self_id(
 
 // ── VTable::caller_id ───────────────────────────────────────────────────────
 
-unsafe extern "C" fn vtable_caller_id(
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
+unsafe extern "C" fn vtable_caller_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
     if out_ptr.is_null() || out_len.is_null() {
         return error_code::PROTOCOL_ERROR;
     }
@@ -403,10 +385,7 @@ unsafe extern "C" fn vtable_caller_id(
 
 // ── VTable::request_id ──────────────────────────────────────────────────────
 
-unsafe extern "C" fn vtable_request_id(
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
+unsafe extern "C" fn vtable_request_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
     if out_ptr.is_null() || out_len.is_null() {
         return error_code::PROTOCOL_ERROR;
     }
@@ -494,21 +473,21 @@ impl DynclibHost {
         // which is inherently unsafe. The caller must ensure the library is
         // trusted (e.g. verified by Hyper's package verification).
         let library = unsafe {
-            Library::new(path).map_err(|e| {
-                DynclibError::LoadFailed(format!("{}: {e}", path.display()))
-            })?
+            Library::new(path)
+                .map_err(|e| DynclibError::LoadFailed(format!("{}: {e}", path.display())))?
         };
 
         // Safety: we resolve raw symbol pointers and transmute them to typed
         // function pointers. The caller must guarantee that the SO exports
         // these symbols with the correct C ABI signatures.
         let init_fn: InitFn = unsafe {
-            let sym = library.get::<InitFn>(b"actr_init\0").map_err(|e| {
-                DynclibError::MissingSymbol {
-                    symbol: "actr_init".into(),
-                    detail: e.to_string(),
-                }
-            })?;
+            let sym =
+                library
+                    .get::<InitFn>(b"actr_init\0")
+                    .map_err(|e| DynclibError::MissingSymbol {
+                        symbol: "actr_init".into(),
+                        detail: e.to_string(),
+                    })?;
             *sym
         };
 
@@ -650,9 +629,7 @@ impl DynclibInstance {
             let response = if !resp_ptr.is_null() && resp_len > 0 {
                 // Safety: the guest set resp_ptr/resp_len to describe a valid
                 // allocation. We copy before calling free_response_fn.
-                let data = unsafe {
-                    std::slice::from_raw_parts(resp_ptr, resp_len).to_vec()
-                };
+                let data = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len).to_vec() };
 
                 // Safety: free the guest-allocated response buffer with the
                 // guest's own free function.
@@ -682,9 +659,7 @@ impl DynclibInstance {
             Ok(response)
         })
         .await
-        .map_err(|e| {
-            DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}"))
-        })??;
+        .map_err(|e| DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}")))??;
 
         Ok(result)
     }
@@ -700,14 +675,8 @@ impl executor::ExecutorAdapter for DynclibInstance {
         request_bytes: &[u8],
         ctx: DispatchContext,
         call_executor: &'a CallExecutorFn,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
-                > + Send
-                + 'a,
-        >,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
+    {
         let request_bytes = request_bytes.to_vec();
         Box::pin(async move {
             self.dispatch(&request_bytes, ctx, call_executor)

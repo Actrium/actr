@@ -1,21 +1,21 @@
 #!/bin/bash
 set -e
 
-# E2E 测试运行脚本
+# E2E test runner script
 
 echo "🧪 Running E2E Tests..."
 
-# 检查开发服务器是否运行
+# Check whether the dev server is running
 check_server() {
   curl -s http://localhost:5173 > /dev/null 2>&1
   return $?
 }
 
-# 启动开发服务器
+# Start the dev server
 start_server() {
   echo "📦 Starting development server..."
 
-  # 确保根目录依赖已安装
+  # Make sure root-level dependencies are installed
   if [ ! -d "node_modules" ]; then
     echo "Installing dependencies at root..."
     pnpm install
@@ -23,12 +23,12 @@ start_server() {
 
   cd examples/hello-world
 
-  # 后台启动服务器
+  # Start the server in the background
   pnpm run dev > /tmp/vite.log 2>&1 &
   SERVER_PID=$!
   echo "Server PID: $SERVER_PID"
 
-  # 等待服务器启动
+  # Wait for the server to start
   echo "Waiting for server to start..."
   for i in {1..30}; do
     if check_server; then
@@ -44,7 +44,7 @@ start_server() {
   return 1
 }
 
-# 停止服务器
+# Stop the server
 stop_server() {
   if [ ! -z "$SERVER_PID" ]; then
     echo "Stopping server (PID: $SERVER_PID)..."
@@ -53,34 +53,34 @@ stop_server() {
   fi
 }
 
-# 清理函数
+# Cleanup function
 cleanup() {
   echo "🧹 Cleaning up..."
   stop_server
 }
 
-# 注册清理函数
+# Register the cleanup function
 trap cleanup EXIT INT TERM
 
-# 主逻辑
+# Main logic
 main() {
-  # 检查服务器是否已经运行
+  # Check whether the server is already running
   if check_server; then
     echo "✅ Development server already running"
   else
     start_server || exit 1
   fi
 
-  # 进入测试目录
+  # Enter the test directory
   cd tests/e2e
 
-  # 检查依赖
+  # Check dependencies
   if [ ! -d "node_modules" ]; then
     echo "📦 Installing test dependencies..."
     pnpm install
   fi
 
-  # 运行 Puppeteer 测试
+  # Run Puppeteer tests
   echo ""
   echo "🎭 Running Puppeteer tests..."
   pnpm test || {
@@ -88,12 +88,12 @@ main() {
     exit 1
   }
 
-  # 询问是否运行 Playwright 测试
+  # Ask whether to run Playwright tests
   if [ "$RUN_PLAYWRIGHT" = "true" ]; then
     echo ""
     echo "🎭 Running Playwright tests..."
 
-    # 检查 Playwright 是否安装
+    # Check whether Playwright is installed
     if ! npx playwright --version > /dev/null 2>&1; then
       echo "Installing Playwright browsers..."
       npx playwright install chromium
@@ -109,5 +109,5 @@ main() {
   echo "✅ All E2E tests passed!"
 }
 
-# 运行
+# Run
 main

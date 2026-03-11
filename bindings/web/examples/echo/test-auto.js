@@ -2,7 +2,7 @@
 /**
  * Echo Example — A+B+C Category Automated Test Suite
  *
- * Covers test items from MANUAL_TEST_PLAN.md:
+ * Covers test items from MANUAL_TEST_PLAN.zh.md:
  * - A: Direct Puppeteer page operations + console log assertions
  * - B: CDP-enhanced tests (network emulation, request interception)
  * - C: Process orchestration (actrix restart, Rust server management)
@@ -163,7 +163,7 @@ async function openServerReady(browser, timeout = TIMEOUT_LONG, label) {
 }
 
 /**
- * Open client page and wait until status shows connected (✅ 已连接).
+ * Open client page and wait until status shows connected (✅ connected).
  */
 let _clientCounter = 0;
 async function openClientReady(browser, timeout = TIMEOUT_LONG, label) {
@@ -332,7 +332,7 @@ async function waitForEchoWorking(page, timeout = TIMEOUT_LONG) {
     // Fast path: try to catch auto-echo first
     const fastWait = Math.min(25000, timeout);
     try {
-        await waitForClientLog(page, '📥 回复', fastWait);
+        await waitForClientLog(page, '📥 Reply', fastWait);
         return;
     } catch { /* auto-echo did not arrive, try manual echo */ }
 
@@ -409,7 +409,7 @@ function skipTest(id, title, reason) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function suiteBasicFunction(browser) {
-    console.log(C.bold('\n── 一、基本功能测试 ──'));
+    console.log(C.bold('\n── I. Basic Function Tests ──'));
 
     let serverCtx, clientCtx;
     try {
@@ -421,12 +421,12 @@ async function suiteBasicFunction(browser) {
             await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
         } catch (warmupErr) {
             // Record as a failure and return — don't crash subsequent suites
-            record('1-0', '基本 Echo 连通性', 'fail', 0, warmupErr.message);
+            record('1-0', 'Basic Echo Connectivity', 'fail', 0, warmupErr.message);
             return;
         }
 
-        // 1-1 手动发送消息
-        await runTest('1-1', '手动发送消息', async () => {
+        // 1-1 Manual Send
+        await runTest('1-1', 'Manual Send', async () => {
             const logsBefore = await getClientLogs(clientCtx.page);
             await sendEchoMessage(clientCtx.page, 'Test message 1-1');
             const logsAfter = await getClientLogs(clientCtx.page);
@@ -437,8 +437,8 @@ async function suiteBasicFunction(browser) {
             await waitForServerLog(serverCtx.page, '📨.*Test message 1-1', 5000);
         });
 
-        // 1-2 空消息发送
-        await runTest('1-2', '空消息发送', async () => {
+        // 1-2 Empty Message Send
+        await runTest('1-2', 'Empty Message Send', async () => {
             // Clear input
             await clientCtx.page.evaluate(() => {
                 document.getElementById('msgInput').value = '';
@@ -456,8 +456,8 @@ async function suiteBasicFunction(browser) {
             if (!newLogs.includes('📥')) throw new Error('No reply for empty message');
         });
 
-        // 1-3 快速连续发送
-        await runTest('1-3', '快速连续发送', async () => {
+        // 1-3 Rapid Consecutive Sends
+        await runTest('1-3', 'Rapid Consecutive Sends', async () => {
             const statsBefore = await getServerStats(serverCtx.page);
             const sendCount = 5;
             for (let i = 0; i < sendCount; i++) {
@@ -470,8 +470,8 @@ async function suiteBasicFunction(browser) {
             }
         });
 
-        // 1-4 大消息发送
-        await runTest('1-4', '大消息发送', async () => {
+        // 1-4 Large Message Send
+        await runTest('1-4', 'Large Message Send', async () => {
             const bigMsg = 'A'.repeat(10240); // 10KB
             await sendEchoMessage(clientCtx.page, bigMsg, TIMEOUT_ECHO + 5000);
             // Verify reply contains the full big message
@@ -482,15 +482,15 @@ async function suiteBasicFunction(browser) {
             if (!replyLog.includes('AAAA')) throw new Error('Reply does not seem to contain big message');
         });
 
-        // 1-5 特殊字符
-        await runTest('1-5', '特殊字符', async () => {
-            const special = '你好🌍<script>alert(1)</script>';
+        // 1-5 Special Characters
+        await runTest('1-5', 'Special Characters', async () => {
+            const special = 'hello🌍<script>alert(1)</script>';
             await sendEchoMessage(clientCtx.page, special);
             const logs = await getClientLogs(clientCtx.page);
             const replyLog = logs.filter((l) => l.includes('📥')).pop();
             if (!replyLog) throw new Error('No reply for special chars');
             // Verify special characters are preserved in the echo reply
-            if (!replyLog.includes('你好🌍')) throw new Error('Special chars not preserved in reply');
+            if (!replyLog.includes('hello🌍')) throw new Error('Special chars not preserved in reply');
             // Check via innerHTML that <script> tags are properly HTML-escaped (no raw <script> in DOM)
             const hasUnescapedScript = await clientCtx.page.evaluate(() => {
                 const entries = document.querySelectorAll('#result .entry');
@@ -504,8 +504,8 @@ async function suiteBasicFunction(browser) {
             }
         });
 
-        // 1-6 Enter 键发送
-        await runTest('1-6', 'Enter 键发送', async () => {
+        // 1-6 Send with Enter Key
+        await runTest('1-6', 'Send with Enter Key', async () => {
             await clientCtx.page.evaluate(() => {
                 document.getElementById('msgInput').value = '';
             });
@@ -527,10 +527,10 @@ async function suiteBasicFunction(browser) {
 }
 
 async function suitePageRefresh(browser) {
-    console.log(C.bold('\n── 二、页面刷新测试 ──'));
+    console.log(C.bold('\n── II. Page Refresh Tests ──'));
 
-    // 2-1 Client 立即刷新
-    await runTest('2-1', 'Client 立即刷新', async () => {
+    // 2-1 Immediate Client Refresh
+    await runTest('2-1', 'Immediate Client Refresh', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -557,8 +557,8 @@ async function suitePageRefresh(browser) {
         }
     });
 
-    // 2-2 Client 连续刷新
-    await runTest('2-2', 'Client 连续刷新', async () => {
+    // 2-2 Repeated Client Refresh
+    await runTest('2-2', 'Repeated Client Refresh', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -592,8 +592,8 @@ async function suitePageRefresh(browser) {
         }
     });
 
-    // 2-3 Server 立即刷新
-    await runTest('2-3', 'Server 立即刷新', async () => {
+    // 2-3 Immediate Server Refresh
+    await runTest('2-3', 'Immediate Server Refresh', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -632,20 +632,20 @@ async function suitePageRefresh(browser) {
         }
     });
 
-    // 2-4 Server + Client 同时刷新
+    // 2-4 Refresh Server and Client Simultaneously
     // Both endpoints refreshing simultaneously is inherently race-condition-prone.
     // The signaling re-registration timing makes this unreliable.
-    skipTest('2-4', '双端同时刷新', 'Inherently flaky: simultaneous refresh breaks signaling re-registration timing');
+    skipTest('2-4', 'Simultaneous Dual Refresh', 'Inherently flaky: simultaneous refresh breaks signaling re-registration timing');
 }
 
 async function suiteSwLifecycle(browser) {
-    console.log(C.bold('\n── 三、Service Worker 生命周期测试 ──'));
+    console.log(C.bold('\n── III. Service Worker Lifecycle Tests ──'));
 
-    // 3-1 SW 空闲终止（check keep-alive prevents termination）
+    // 3-1 SW Idle Termination（check keep-alive prevents termination）
     if (!SLOW) {
-        skipTest('3-1', 'SW 空闲终止 (keep-alive)', 'Requires SLOW=1 (30-60s wait)');
+        skipTest('3-1', 'SW Idle Termination (keep-alive)', 'Requires SLOW=1 (30-60s wait)');
     } else {
-        await runTest('3-1', 'SW 空闲终止 (keep-alive)', async () => {
+        await runTest('3-1', 'SW Idle Termination (keep-alive)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -673,8 +673,8 @@ async function suiteSwLifecycle(browser) {
         });
     }
 
-    // 3-4 SW 更新 — trigger update() and verify no errors
-    await runTest('3-4', 'SW 更新 (拦截模拟)', async () => {
+    // 3-4 SW update: trigger update() and verify there are no errors
+    await runTest('3-4', 'SW Update (Intercepted Simulation)', async () => {
         const clientCtx = await openClientReady(browser);
         try {
             // Verify initial SW is running
@@ -703,10 +703,10 @@ async function suiteSwLifecycle(browser) {
 }
 
 async function suiteWebrtc(browser) {
-    console.log(C.bold('\n── 五、WebRTC 连接测试（可自动化部分）──'));
+    console.log(C.bold('\n── V. WebRTC Connectivity Tests (Automatable Parts) ──'));
 
-    // 5-1 DataChannel 4 通道验证
-    await runTest('5-1', 'DataChannel 4 通道', async () => {
+    // 5-1 Verify Four DataChannels
+    await runTest('5-1', 'DataChannel Four-Channel Setup', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -745,8 +745,8 @@ async function suiteWebrtc(browser) {
         }
     });
 
-    // 5-4 Peer 状态变化日志
-    await runTest('5-4', 'Peer 状态变化日志', async () => {
+    // 5-4 Peer State Transition Logs
+    await runTest('5-4', 'Peer State Transition Logs', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -779,14 +779,14 @@ async function suiteWebrtc(browser) {
 }
 
 async function suiteMultiTab(browser) {
-    console.log(C.bold('\n── 六、多标签页 / 多客户端测试 ──'));
+    console.log(C.bold('\n── VI. Multi-Tab / Multi-Client Tests ──'));
 
     // Use fresh incognito browser contexts for each multi-client test.
     // This ensures each test gets a clean SW lifecycle — stale peer state
     // from previous tests was causing WebRTC to never establish.
 
-    // 6-1 两个 client 标签页
-    await runTest('6-1', '两个 client 标签页', async () => {
+    // 6-1 Two Client Tabs
+    await runTest('6-1', 'Two Client Tabs', async () => {
         const context = await browser.createBrowserContext();
         try {
             const serverCtx = await openServerReady(context);
@@ -802,8 +802,8 @@ async function suiteMultiTab(browser) {
         }
     });
 
-    // 6-2 多 client 同时发送
-    await runTest('6-2', '多 client 同时发送', async () => {
+    // 6-2 Concurrent Multi-Client Sends
+    await runTest('6-2', 'Concurrent Multi-Client Sends', async () => {
         const context = await browser.createBrowserContext();
         try {
             console.log('  [6-2] opening server...');
@@ -855,8 +855,8 @@ async function suiteMultiTab(browser) {
         }
     });
 
-    // 6-3 关闭一个 client
-    await runTest('6-3', '关闭一个 client', async () => {
+    // 6-3 Close One Client
+    await runTest('6-3', 'Close One Client', async () => {
         const context = await browser.createBrowserContext();
         try {
             const serverCtx = await openServerReady(context);
@@ -881,8 +881,8 @@ async function suiteMultiTab(browser) {
         }
     });
 
-    // 6-4 刷新一个 client
-    await runTest('6-4', '刷新一个 client', async () => {
+    // 6-4 Refresh One Client
+    await runTest('6-4', 'Refresh One Client', async () => {
         const context = await browser.createBrowserContext();
         try {
             const serverCtx = await openServerReady(context);
@@ -920,8 +920,8 @@ async function suiteMultiTab(browser) {
         }
     });
 
-    // 6-5 多 server 实例
-    await runTest('6-5', '多 server 实例', async () => {
+    // 6-5 Multiple Server Instances
+    await runTest('6-5', 'Multiple Server Instances', async () => {
         const context = await browser.createBrowserContext();
         try {
             const server1 = await openServerReady(context);
@@ -938,8 +938,8 @@ async function suiteMultiTab(browser) {
         }
     });
 
-    // 6-6 共享 SW 隔离性
-    await runTest('6-6', '共享 SW 隔离性', async () => {
+    // 6-6 Shared SW Isolation
+    await runTest('6-6', 'Shared SW Isolation', async () => {
         const context = await browser.createBrowserContext();
         try {
             const serverCtx = await openServerReady(context);
@@ -965,10 +965,10 @@ async function suiteMultiTab(browser) {
 }
 
 async function suitePageClose(browser) {
-    console.log(C.bold('\n── 七、页面关闭与 beforeunload 测试 ──'));
+    console.log(C.bold('\n── VII. Page Close and beforeunload Tests ──'));
 
-    // 7-1 正常关闭 client 标签页
-    await runTest('7-1', '正常关闭 client', async () => {
+    // 7-1 Close the Client Tab Normally
+    await runTest('7-1', 'Normal Client Close', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -985,8 +985,8 @@ async function suitePageClose(browser) {
         }
     });
 
-    // 7-2 正常关闭 server 标签页
-    await runTest('7-2', '正常关闭 server', async () => {
+    // 7-2 Close the Server Tab Normally
+    await runTest('7-2', 'Normal Server Close', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1001,8 +1001,8 @@ async function suitePageClose(browser) {
         }
     });
 
-    // 7-4 关闭 server 后 client 发消息
-    await runTest('7-4', '关闭 server 后 client 发消息', async () => {
+    // 7-4 Client Send After Server Close
+    await runTest('7-4', 'Client Send After Server Close', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1028,22 +1028,22 @@ async function suitePageClose(browser) {
         }
     });
 
-    // 7-5 关闭 server 后重开 server
+    // 7-5 Reopen Server After Closing It
     // Requires WASM runtime rebuild with ICE restart / reconnection fixes.
     // Without those fixes, the client never re-discovers the new server.
-    skipTest('7-5', '关闭 server 后重开', 'Requires WASM rebuild with reconnection fixes (client_runtime.rs)');
+    skipTest('7-5', 'Reopen After Server Close', 'Requires WASM rebuild with reconnection fixes (client_runtime.rs)');
 }
 
 async function suiteIdleRecovery(browser) {
-    console.log(C.bold('\n── 九、SW 空闲恢复测试 ──'));
+    console.log(C.bold('\n── IX. SW Idle Recovery Tests ──'));
 
-    // 9-1 短时空闲后操作 (30s)
+    // 9-1 Operate After Short Idle (30s)
     if (!SLOW) {
-        skipTest('9-1', '短时空闲后操作 (30s)', 'Requires SLOW=1');
-        skipTest('9-4', '空闲后刷新 client (60s)', 'Requires SLOW=1');
-        skipTest('9-5', '空闲后刷新 server (60s)', 'Requires SLOW=1');
+        skipTest('9-1', 'Operate After Short Idle (30s)', 'Requires SLOW=1');
+        skipTest('9-4', 'Refresh Client After Idle (60s)', 'Requires SLOW=1');
+        skipTest('9-5', 'Refresh Server After Idle (60s)', 'Requires SLOW=1');
     } else {
-        await runTest('9-1', '短时空闲后操作 (30s)', async () => {
+        await runTest('9-1', 'Operate After Short Idle (30s)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1057,8 +1057,8 @@ async function suiteIdleRecovery(browser) {
             }
         });
 
-        // 9-4 空闲后刷新 client
-        await runTest('9-4', '空闲后刷新 client (60s)', async () => {
+        // 9-4 Refresh Client After Idle
+        await runTest('9-4', 'Refresh Client After Idle (60s)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1076,8 +1076,8 @@ async function suiteIdleRecovery(browser) {
             }
         });
 
-        // 9-5 空闲后刷新 server
-        await runTest('9-5', '空闲后刷新 server (60s)', async () => {
+        // 9-5 Refresh Server After Idle
+        await runTest('9-5', 'Refresh Server After Idle (60s)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1097,12 +1097,12 @@ async function suiteIdleRecovery(browser) {
         });
     }
 
-    // 9-3 长时间空闲后操作 (5min)
+    // 9-3 Operate After Long Idle (5min)
     if (!SLOW) {
-        skipTest('9-3', '长时间空闲 5 分钟', 'Requires SLOW=1 (5min wait)');
+        skipTest('9-3', 'Long Idle for 5 Minutes', 'Requires SLOW=1 (5min wait)');
     } else {
         // 5min sleep + up to 3 send attempts (50s each) + setup overhead → need ~8min timeout
-        await runTest('9-3', '长时间空闲 5 分钟', async () => {
+        await runTest('9-3', 'Long Idle for 5 Minutes', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1138,7 +1138,7 @@ async function suiteIdleRecovery(browser) {
 }
 
 async function suiteBrowserCompat(browser) {
-    console.log(C.bold('\n── 十、浏览器兼容性测试（可自动化部分）──'));
+    console.log(C.bold('\n── X. Browser Compatibility Tests (Automatable Parts) ──'));
 
     // 10-1 Chrome — already implicit; pass if any test above passes
     await runTest('10-1', 'Chrome (headless)', async () => {
@@ -1152,7 +1152,7 @@ async function suiteBrowserCompat(browser) {
         }
     });
 
-    // 10-4 Edge 浏览器
+    // 10-4 Edge Browser
     await runTest('10-4', 'Edge (Chromium)', async () => {
         // Attempt to find Edge executable
         const edgePaths = [
@@ -1194,8 +1194,8 @@ async function suiteBrowserCompat(browser) {
         }
     });
 
-    // 10-5 隐私/无痕模式
-    await runTest('10-5', '隐私/无痕模式', async () => {
+    // 10-5 Private / Incognito Mode
+    await runTest('10-5', 'Private / Incognito Mode', async () => {
         const context = await browser.createBrowserContext();
         try {
             const page = await context.newPage();
@@ -1217,13 +1217,13 @@ async function suiteBrowserCompat(browser) {
 }
 
 async function suiteConcurrency(browser) {
-    console.log(C.bold('\n── 十二、并发与压力测试 ──'));
+    console.log(C.bold('\n── XII. Concurrency and Stress Tests ──'));
 
-    // 12-1 快速连续 100 条 Echo
+    // 12-1 100 Rapid Echo Messages
     if (!SLOW) {
-        skipTest('12-1', '快速连续 100 条 Echo', 'Requires SLOW=1');
+        skipTest('12-1', '100 Rapid Echo Messages', 'Requires SLOW=1');
     } else {
-        await runTest('12-1', '快速连续 100 条 Echo', async () => {
+        await runTest('12-1', '100 Rapid Echo Messages', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1242,8 +1242,8 @@ async function suiteConcurrency(browser) {
         });
     }
 
-    // 12-2 多 client 并发
-    await runTest('12-2', '5 个 client 并发', async () => {
+    // 12-2 Multi-client concurrency
+    await runTest('12-2', 'Five Concurrent Clients', async () => {
         const context = await browser.createBrowserContext();
         try {
             const serverCtx = await openServerReady(context);
@@ -1276,8 +1276,8 @@ async function suiteConcurrency(browser) {
         }
     });
 
-    // 12-3 日志溢出 (200+ entries)
-    await runTest('12-3', '日志溢出 (200 条限制)', async () => {
+    // 12-3 Log overflow (200+ entries)
+    await runTest('12-3', 'Log Overflow (200-entry limit)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1300,11 +1300,11 @@ async function suiteConcurrency(browser) {
         }
     });
 
-    // 12-4 内存泄漏观察
+    // 12-4 Memory Leak Observation
     if (!SLOW) {
-        skipTest('12-4', '内存泄漏观察 (10min)', 'Requires SLOW=1');
+        skipTest('12-4', 'Memory Leak Observation (10min)', 'Requires SLOW=1');
     } else {
-        await runTest('12-4', '内存泄漏观察 (10min)', async () => {
+        await runTest('12-4', 'Memory Leak Observation (10min)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1359,15 +1359,15 @@ async function suiteConcurrency(browser) {
 }
 
 async function suiteErrorRecovery(browser) {
-    console.log(C.bold('\n── 十三、错误恢复与降级测试（可自动化部分）──'));
+    console.log(C.bold('\n── XIII. Error Recovery and Degradation Tests (Automatable Parts) ──'));
 
-    // 13-1 Server 崩溃重建
+    // 13-1 Server Crash Rebuild
     // Requires WASM runtime rebuild with ICE restart / reconnection fixes.
     // Without those fixes, the client never re-discovers the new server.
-    skipTest('13-1', 'Server 崩溃重建', 'Requires WASM rebuild with reconnection fixes (client_runtime.rs)');
+    skipTest('13-1', 'Server Crash Rebuild', 'Requires WASM rebuild with reconnection fixes (client_runtime.rs)');
 
-    // 13-3 DataChannel 断开 — manually close a DataChannel and verify error handling
-    await runTest('13-3', 'DataChannel 断开', async () => {
+    // 13-3 DataChannel Disconnect — manually close a DataChannel and verify error handling
+    await runTest('13-3', 'DataChannel Disconnect', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1493,10 +1493,10 @@ async function disableRequestInterception(page) {
 // ── B-Category Test Suites ──────────────────────────────────────────────────
 
 async function suiteCdpHardRefresh(browser) {
-    console.log(C.bold('\n── B: 硬刷新测试 (CDP) ──'));
+    console.log(C.bold('\n── B: Hard Refresh Tests (CDP) ──'));
 
-    // 2-5 硬刷新（Ctrl+Shift+R）
-    await runTest('2-5', '硬刷新 (cache disabled)', async () => {
+    // 2-5 Hard Refresh (Ctrl+Shift+R)
+    await runTest('2-5', 'Hard Refresh (cache disabled)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1521,8 +1521,8 @@ async function suiteCdpHardRefresh(browser) {
         }
     });
 
-    // 2-6 硬刷新 server
-    await runTest('2-6', '硬刷新 server (cache disabled)', async () => {
+    // 2-6 Hard Refresh Server
+    await runTest('2-6', 'Hard Refresh Server (cache disabled)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1550,10 +1550,10 @@ async function suiteCdpHardRefresh(browser) {
 }
 
 async function suiteCdpSwControl(browser) {
-    console.log(C.bold('\n── B: Service Worker 控制测试 (CDP) ──'));
+    console.log(C.bold('\n── B: Service Worker Control Tests (CDP) ──'));
 
-    // 3-2 手动停止 SW
-    await runTest('3-2', '手动停止 SW (CDP)', async () => {
+    // 3-2 Manually Stop SW
+    await runTest('3-2', 'Manual SW Stop (CDP)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1576,8 +1576,8 @@ async function suiteCdpSwControl(browser) {
         }
     });
 
-    // 3-3 停止 SW 后发消息 - simulated by unregistering
-    await runTest('3-3', '停止 SW 后发消息', async () => {
+    // 3-3 Send After Stopping SW - simulated by unregistering
+    await runTest('3-3', 'Send After Stopping SW', async () => {
         const serverCtx = await openServerReady(browser);
         let clientCtx = await openClientReady(browser);
         try {
@@ -1613,7 +1613,7 @@ async function suiteCdpSwControl(browser) {
     });
 
     // 3-5 SW Unregister
-    await runTest('3-5', 'SW Unregister + 刷新恢复', async () => {
+    await runTest('3-5', 'SW Unregister + Refresh Recovery', async () => {
         const serverCtx = await openServerReady(browser);
         let clientCtx = await openClientReady(browser);
         try {
@@ -1650,10 +1650,10 @@ async function suiteCdpSwControl(browser) {
 }
 
 async function suiteCdpNetwork(browser) {
-    console.log(C.bold('\n── B: 网络模拟测试 (CDP) ──'));
+    console.log(C.bold('\n── B: Network Simulation Tests (CDP) ──'));
 
-    // 4-1 Client 短暂断网
-    await runTest('4-1', 'Client 短暂断网 (5s)', async () => {
+    // 4-1 Temporary Client Disconnect
+    await runTest('4-1', 'Temporary Client Disconnect (5s)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1689,11 +1689,11 @@ async function suiteCdpNetwork(browser) {
         }
     });
 
-    // 4-2 Client 长时间断网
+    // 4-2 Long Client Disconnect
     if (!SLOW) {
-        skipTest('4-2', 'Client 长时间断网 (2min)', 'Requires SLOW=1');
+        skipTest('4-2', 'Long Client Disconnect (2min)', 'Requires SLOW=1');
     } else {
-        await runTest('4-2', 'Client 长时间断网 (2min)', async () => {
+        await runTest('4-2', 'Long Client Disconnect (2min)', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -1730,8 +1730,8 @@ async function suiteCdpNetwork(browser) {
         });
     }
 
-    // 4-3 Server 短暂断网
-    await runTest('4-3', 'Server 短暂断网 (5s)', async () => {
+    // 4-3 Temporary Server Disconnect
+    await runTest('4-3', 'Temporary Server Disconnect (5s)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1768,8 +1768,8 @@ async function suiteCdpNetwork(browser) {
         }
     });
 
-    // 4-4 双端同时断网
-    await runTest('4-4b', '双端同时断网 (10s CDP)', async () => {
+    // 4-4 Simultaneous Dual Disconnect
+    await runTest('4-4b', 'Simultaneous Dual Disconnect (10s CDP)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1812,8 +1812,8 @@ async function suiteCdpNetwork(browser) {
         }
     });
 
-    // 4-5 断网时发消息
-    await runTest('4-5', '断网时发消息', async () => {
+    // 4-5 Send While Disconnected
+    await runTest('4-5', 'Send While Disconnected', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1848,8 +1848,8 @@ async function suiteCdpNetwork(browser) {
         }
     });
 
-    // 4-7 弱网模拟
-    await runTest('4-7', '弱网模拟 (Slow 3G)', async () => {
+    // 4-7 Weak Network Simulation
+    await runTest('4-7', 'Weak Network Simulation (Slow 3G)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -1879,10 +1879,10 @@ async function suiteCdpNetwork(browser) {
 }
 
 async function suiteCdpWasmLoading(browser) {
-    console.log(C.bold('\n── B: WASM 加载测试 (CDP Request Interception) ──'));
+    console.log(C.bold('\n── B: WASM Loading Tests (CDP Request Interception) ──'));
 
-    // 11-1 WASM 文件缺失
-    await runTest('11-1', 'WASM 文件缺失', async () => {
+    // 11-1 Missing WASM File
+    await runTest('11-1', 'Missing WASM File', async () => {
         const page = await browser.newPage();
         instrumentPage(page, 'wasm-miss');
         const consoleLogs = [];
@@ -1922,8 +1922,8 @@ async function suiteCdpWasmLoading(browser) {
         }
     });
 
-    // 11-2 JS glue 文件缺失
-    await runTest('11-2', 'JS glue 文件缺失', async () => {
+    // 11-2 Missing JS Glue File
+    await runTest('11-2', 'Missing JS Glue File', async () => {
         const page = await browser.newPage();
         instrumentPage(page, 'js-glue');
         const consoleLogs = [];
@@ -1952,8 +1952,8 @@ async function suiteCdpWasmLoading(browser) {
         }
     });
 
-    // 11-3 WASM 文件损坏
-    await runTest('11-3', 'WASM 文件损坏', async () => {
+    // 11-3 Corrupted WASM File
+    await runTest('11-3', 'Corrupted WASM File', async () => {
         const page = await browser.newPage();
         instrumentPage(page, 'wasm-corrupt');
         const consoleLogs = [];
@@ -1992,8 +1992,8 @@ async function suiteCdpWasmLoading(browser) {
         }
     });
 
-    // 11-4 WASM MIME type 错误
-    await runTest('11-4', 'WASM MIME type 错误', async () => {
+    // 11-4 Incorrect WASM MIME Type
+    await runTest('11-4', 'Incorrect WASM MIME Type', async () => {
         const page = await browser.newPage();
         instrumentPage(page, 'wasm-mime');
         const consoleLogs = [];
@@ -2018,8 +2018,8 @@ async function suiteCdpWasmLoading(browser) {
         }
     });
 
-    // 11-5 慢网络加载 WASM
-    await runTest('11-5', '慢网络加载 WASM', async () => {
+    // 11-5 Slow-Network WASM Load
+    await runTest('11-5', 'Slow-Network WASM Load', async () => {
         const page = await browser.newPage();
         instrumentPage(page, 'wasm-slow');
         const consoleLogs = [];
@@ -2053,10 +2053,10 @@ async function suiteCdpWasmLoading(browser) {
 }
 
 async function suiteCdpSignalingRecovery(browser) {
-    console.log(C.bold('\n── B: Signaling 重连测试 (CDP) ──'));
+    console.log(C.bold('\n── B: Signaling Reconnect Tests (CDP) ──'));
 
-    // 13-5 Signaling 重连后恢复
-    await runTest('13-5', 'Signaling 重连后恢复', async () => {
+    // 13-5 Recovery After Signaling Reconnect
+    await runTest('13-5', 'Recovery After Signaling Reconnect', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -2094,11 +2094,11 @@ async function suiteCdpSignalingRecovery(browser) {
         }
     });
 
-    // 13-6 Signaling 重连 10 次都失败
+    // 13-6 Signaling reconnect fails 10 times
     if (!SLOW) {
-        skipTest('13-6', 'Signaling 重连 10 次失败', 'Requires SLOW=1 (long test)');
+        skipTest('13-6', 'Signaling Reconnect Fails 10 Times', 'Requires SLOW=1 (long test)');
     } else {
-        await runTest('13-6', 'Signaling 重连 10 次失败', async () => {
+        await runTest('13-6', 'Signaling Reconnect Fails 10 Times', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -2130,13 +2130,13 @@ async function suiteCdpSignalingRecovery(browser) {
 }
 
 async function suiteCdpIdleRecovery(browser) {
-    console.log(C.bold('\n── B: 空闲恢复测试 (CDP) ──'));
+    console.log(C.bold('\n── B: Idle Recovery Tests (CDP) ──'));
 
-    // 9-2 中等空闲 2 分钟
+    // 9-2 Medium Idle for 2 Minutes
     if (!SLOW) {
-        skipTest('9-2', '中等空闲 2 分钟', 'Requires SLOW=1');
+        skipTest('9-2', 'Medium Idle for 2 Minutes', 'Requires SLOW=1');
     } else {
-        await runTest('9-2', '中等空闲 2 分钟', async () => {
+        await runTest('9-2', 'Medium Idle for 2 Minutes', async () => {
             const serverCtx = await openServerReady(browser);
             const clientCtx = await openClientReady(browser);
             try {
@@ -2324,7 +2324,7 @@ async function startRustServer() {
 
         child.stdout.on('data', (data) => {
             output += data.toString();
-            if (output.includes('✅ Echo Server 已完全启动') || output.includes('Echo Server 已完全启动')) {
+            if (output.includes('✅ Echo Server fully started') || output.includes('Echo Server fully started')) {
                 clearTimeout(timeout);
                 resolve(child.pid);
             }
@@ -2332,7 +2332,7 @@ async function startRustServer() {
         child.stderr.on('data', (data) => {
             output += data.toString();
             // Rust server might print info to stderr
-            if (output.includes('✅ Echo Server 已完全启动') || output.includes('Echo Server 已完全启动')) {
+            if (output.includes('✅ Echo Server fully started') || output.includes('Echo Server fully started')) {
                 clearTimeout(timeout);
                 resolve(child.pid);
             }
@@ -2377,16 +2377,16 @@ function stopRustServer(rustServer, signal = 'SIGTERM') {
 // ── C-Category Test Suites ──────────────────────────────────────────────────
 
 async function suiteCActrixRestart(browser) {
-    console.log(C.bold('\n── C: Actrix (Signaling) 服务器生命周期测试 ──'));
+    console.log(C.bold('\n── C: Actrix (Signaling) Server Lifecycle Tests ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('4-8', 'Signaling 服务器重启', 'Requires RUN_C=1');
-        skipTest('14-5-3', 'Signaling 重启 (跨端)', 'Requires RUN_C=1');
+        skipTest('4-8', 'Signaling Server Restart', 'Requires RUN_C=1');
+        skipTest('14-5-3', 'Cross-Platform Signaling Restart', 'Requires RUN_C=1');
         return;
     }
 
-    // 4-8 Signaling 服务器重启
-    await runTest('4-8', 'Signaling 服务器重启', async () => {
+    // 4-8 Signaling Server Restart
+    await runTest('4-8', 'Signaling Server Restart', async () => {
         // This test restarts actrix and verifies both web client and server reconnect
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
@@ -2426,8 +2426,8 @@ async function suiteCActrixRestart(browser) {
         }
     });
 
-    // 14-5-3 Signaling 重启（跨端）- similar but part of cross-platform section
-    await runTest('14-5-3', 'Signaling 重启 (双端重连)', async () => {
+    // 14-5-3 Cross-Platform Signaling Restart- similar but part of cross-platform section
+    await runTest('14-5-3', 'Signaling Restart (dual-end reconnect)', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -2462,16 +2462,16 @@ async function suiteCActrixRestart(browser) {
 }
 
 async function suiteCSignalingEdgeCases(browser) {
-    console.log(C.bold('\n── C: Signaling 边界测试 ──'));
+    console.log(C.bold('\n── C: Signaling Boundary Tests ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('8-1', 'Signaling URL 不可达', 'Requires RUN_C=1');
-        skipTest('8-3', 'Signaling WS 被 server 关闭', 'Requires RUN_C=1');
+        skipTest('8-1', 'Unreachable Signaling URL', 'Requires RUN_C=1');
+        skipTest('8-3', 'Signaling WS Closed by Server', 'Requires RUN_C=1');
         return;
     }
 
-    // 8-1 Signaling URL 不可达 - test with actrix stopped
-    await runTest('8-1', 'Signaling URL 不可达', async () => {
+    // 8-1 Unreachable Signaling URL - test with actrix stopped
+    await runTest('8-1', 'Unreachable Signaling URL', async () => {
         // Stop actrix to make signaling unreachable
         const originalPid = findPidOnPort(8081);
         await stopActrix();
@@ -2508,8 +2508,8 @@ async function suiteCSignalingEdgeCases(browser) {
         }
     });
 
-    // 8-3 Signaling WS 被 server 关闭 - simulate by briefly stopping actrix
-    await runTest('8-3', 'Signaling WS 被 server 主动关闭', async () => {
+    // 8-3 Signaling WS Closed by Server - simulate by briefly stopping actrix
+    await runTest('8-3', 'Signaling WS Closed by Server', async () => {
         const serverCtx = await openServerReady(browser);
         const clientCtx = await openClientReady(browser);
         try {
@@ -2547,33 +2547,33 @@ async function suiteCSignalingEdgeCases(browser) {
 }
 
 async function suiteCRustServerLifecycle(browser) {
-    console.log(C.bold('\n── C: Rust Server 生命周期测试 (跨端) ──'));
+    console.log(C.bold('\n── C: Rust Server Lifecycle Tests (Cross-Platform) ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-0-5', '启动 Rust Server', 'Requires RUN_C=1');
-        skipTest('14-3-1', 'Ctrl+C 停止 Rust Server', 'Requires RUN_C=1');
+        skipTest('14-0-5', 'Start Rust Server', 'Requires RUN_C=1');
+        skipTest('14-3-1', 'Stop Rust Server with Ctrl+C', 'Requires RUN_C=1');
         skipTest('14-3-2', 'kill -9 Rust Server', 'Requires RUN_C=1');
-        skipTest('14-3-3', '重启 Rust Server', 'Requires RUN_C=1');
-        skipTest('14-3-4', 'Server 重启后 Client 恢复', 'Requires RUN_C=1');
-        skipTest('14-3-5', 'Server 长时间运行', 'Requires RUN_C=1 + SLOW=1');
+        skipTest('14-3-3', 'Restart Rust Server', 'Requires RUN_C=1');
+        skipTest('14-3-4', 'Client Recovery After Server Restart', 'Requires RUN_C=1');
+        skipTest('14-3-5', 'Long-Running Server Observation', 'Requires RUN_C=1 + SLOW=1');
         return;
     }
 
     // Check if actr-examples directory exists
     if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
-        skipTest('14-0-5', '启动 Rust Server', `actr-examples not found at ${ACTR_EXAMPLES_DIR}`);
-        skipTest('14-3-1', 'Ctrl+C 停止 Rust Server', 'actr-examples not found');
+        skipTest('14-0-5', 'Start Rust Server', `actr-examples not found at ${ACTR_EXAMPLES_DIR}`);
+        skipTest('14-3-1', 'Stop Rust Server with Ctrl+C', 'actr-examples not found');
         skipTest('14-3-2', 'kill -9 Rust Server', 'actr-examples not found');
-        skipTest('14-3-3', '重启 Rust Server', 'actr-examples not found');
-        skipTest('14-3-4', 'Server 重启后 Client 恢复', 'actr-examples not found');
-        skipTest('14-3-5', 'Server 长时间运行', 'actr-examples not found');
+        skipTest('14-3-3', 'Restart Rust Server', 'actr-examples not found');
+        skipTest('14-3-4', 'Client Recovery After Server Restart', 'actr-examples not found');
+        skipTest('14-3-5', 'Long-Running Server Observation', 'actr-examples not found');
         return;
     }
 
     let rustServer = null;
 
-    // 14-0-5 启动 Rust Server
-    await runTest('14-0-5', '启动 Rust Server', async () => {
+    // 14-0-5 Start Rust Server
+    await runTest('14-0-5', 'Start Rust Server', async () => {
         rustServer = await startRustServer();
         if (!rustServer || !rustServer.pid) {
             throw new Error('Failed to start Rust server');
@@ -2582,8 +2582,8 @@ async function suiteCRustServerLifecycle(browser) {
         await sleep(2000);
     });
 
-    // 14-3-1 Ctrl+C 停止 Server (SIGINT)
-    await runTest('14-3-1', 'Ctrl+C 停止 Rust Server (SIGINT)', async () => {
+    // 14-3-1 Stop the server with Ctrl+C (SIGINT)
+    await runTest('14-3-1', 'Stop Rust Server with Ctrl+C (SIGINT)', async () => {
         if (!rustServer) {
             rustServer = await startRustServer();
         }
@@ -2625,8 +2625,8 @@ async function suiteCRustServerLifecycle(browser) {
         }
     });
 
-    // 14-3-3 重启 Server
-    await runTest('14-3-3', '重启 Rust Server', async () => {
+    // 14-3-3 Restart the server
+    await runTest('14-3-3', 'Restart Rust Server', async () => {
         // Ensure it's stopped
         if (rustServer) {
             stopRustServer(rustServer, 'SIGTERM');
@@ -2652,8 +2652,8 @@ async function suiteCRustServerLifecycle(browser) {
         }
     });
 
-    // 14-3-4 Server 重启后 Client 恢复
-    await runTest('14-3-4', 'Rust Server 重启后 Web Client 观察', async () => {
+    // 14-3-4 Client Recovery After Server Restart
+    await runTest('14-3-4', 'Observe Web Client After Rust Server Restart', async () => {
         if (!rustServer) {
             rustServer = await startRustServer();
         }
@@ -2667,7 +2667,7 @@ async function suiteCRustServerLifecycle(browser) {
 
             // Web client should be unaffected (talks to web server)
             const status = await clientStatus(clientCtx.page);
-            if (!status.includes('✅') && !status.includes('连接')) {
+            if (!status.includes('✅') && !status.includes('Connected')) {
                 throw new Error(`Client status changed unexpectedly: ${status}`);
             }
         } finally {
@@ -2675,11 +2675,11 @@ async function suiteCRustServerLifecycle(browser) {
         }
     });
 
-    // 14-3-5 Server 长时间运行
+    // 14-3-5 Long-Running Server Observation
     if (!SLOW) {
-        skipTest('14-3-5', 'Rust Server 长时间运行 (10min)', 'Requires SLOW=1');
+        skipTest('14-3-5', 'Rust Long-Running Server Observation (10min)', 'Requires SLOW=1');
     } else {
-        await runTest('14-3-5', 'Rust Server 长时间运行 (10min)', async () => {
+        await runTest('14-3-5', 'Rust Long-Running Server Observation (10min)', async () => {
             if (!rustServer) {
                 rustServer = await startRustServer();
             }
@@ -2716,10 +2716,10 @@ async function suiteCRustServerLifecycle(browser) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function suiteSignalingConfig(browser) {
-    console.log(C.bold('\n── 八、Signaling 配置边界测试 ──'));
+    console.log(C.bold('\n── VIII. Signaling Configuration Boundary Tests ──'));
 
-    // 8-4 Realm 不匹配 — verify "No candidates" when realm differs
-    await runTest('8-4', 'Realm 不匹配', async () => {
+    // 8-4 Realm Mismatch — verify "No candidates" when realm differs
+    await runTest('8-4', 'Realm Mismatch', async () => {
         // We can't easily change the running server's realm at runtime,
         // but we CAN check that the client's route_candidates request
         // properly fails when there's no server registered.
@@ -2749,8 +2749,8 @@ async function suiteSignalingConfig(browser) {
         }
     });
 
-    // 8-5 ACL 不匹配 — verify client can't reach server with wrong ACL
-    await runTest('8-5', 'ACL 验证 (间接)', async () => {
+    // 8-5 ACL Mismatch — verify client can't reach server with wrong ACL
+    await runTest('8-5', 'ACL Validation (Indirect)', async () => {
         // We verify ACL is in effect by checking server console logs
         // for ACL-related entries after a successful connection
         const serverCtx = await openServerReady(browser);
@@ -2777,18 +2777,18 @@ async function suiteSignalingConfig(browser) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function suiteCrossplatformEnv(browser) {
-    console.log(C.bold('\n── 十四.0: 跨端环境准备检查 ──'));
+    console.log(C.bold('\n── XIV.0 Cross-Platform Environment Readiness Checks ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-0-1', 'Actrix 运行检查', 'Requires RUN_C=1');
-        skipTest('14-0-2', 'realm_id 对齐检查', 'Requires RUN_C=1');
-        skipTest('14-0-3', 'signaling URL 对齐检查', 'Requires RUN_C=1');
-        skipTest('14-0-6', '启动 Web Client', 'Requires RUN_C=1');
+        skipTest('14-0-1', 'Actrix Availability Check', 'Requires RUN_C=1');
+        skipTest('14-0-2', 'realm_id Alignment Check', 'Requires RUN_C=1');
+        skipTest('14-0-3', 'signaling URL Alignment Check', 'Requires RUN_C=1');
+        skipTest('14-0-6', 'Start Web Client', 'Requires RUN_C=1');
         return;
     }
 
-    // 14-0-1 Actrix 运行检查
-    await runTest('14-0-1', 'Actrix 运行检查', async () => {
+    // 14-0-1 Actrix Availability Check
+    await runTest('14-0-1', 'Actrix Availability Check', async () => {
         const pid = findPidOnPort(8081);
         if (!pid) throw new Error('Actrix not running on port 8081');
         // Verify WebSocket handshake
@@ -2830,8 +2830,8 @@ async function suiteCrossplatformEnv(browser) {
         }
     });
 
-    // 14-0-2 realm_id 对齐检查
-    await runTest('14-0-2', 'realm_id 对齐检查', async () => {
+    // 14-0-2 realm_id Alignment Check
+    await runTest('14-0-2', 'realm_id Alignment Check', async () => {
         // Read the Rust server config (actr.toml) and Web client SW config
         const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
         const clientSwPath = path.join(SCRIPT_DIR, 'client', 'public', 'actor.sw.js');
@@ -2858,8 +2858,8 @@ async function suiteCrossplatformEnv(browser) {
         // If we can't read one, just note it
     });
 
-    // 14-0-3 signaling URL 对齐检查
-    await runTest('14-0-3', 'signaling URL 对齐检查', async () => {
+    // 14-0-3 signaling URL Alignment Check
+    await runTest('14-0-3', 'signaling URL Alignment Check', async () => {
         const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
         const clientSwPath = path.join(SCRIPT_DIR, 'client', 'public', 'actor.sw.js');
 
@@ -2886,8 +2886,8 @@ async function suiteCrossplatformEnv(browser) {
         }
     });
 
-    // 14-0-6 启动 Web Client
-    await runTest('14-0-6', '启动 Web Client', async () => {
+    // 14-0-6 Start Web Client
+    await runTest('14-0-6', 'Start Web Client', async () => {
         const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
         try {
             const status = await clientStatus(clientCtx.page);
@@ -2944,14 +2944,14 @@ async function openCrossplatformPage(browser, maxRetries = 2) {
 }
 
 async function suiteCrossplatformBasic(browser) {
-    console.log(C.bold('\n── 十四.1: 跨端基本功能 ──'));
+    console.log(C.bold('\n── XIV.1 Cross-Platform Basic Function Tests ──'));
 
     const ALL_IDS = [
-        ['14-1-1', '跨端: 自动发送'],
-        ['14-1-2', '跨端: 手动发送'],
-        ['14-1-3', '跨端: 快速连续发送'],
-        ['14-1-4', '跨端: 大消息'],
-        ['14-1-5', '跨端: 中文/Emoji'],
+        ['14-1-1', 'Cross-Platform: Automatic Send'],
+        ['14-1-2', 'Cross-Platform: Manual Send'],
+        ['14-1-3', 'Cross-Platform: Rapid Consecutive Sends'],
+        ['14-1-4', 'Cross-Platform: Large Message'],
+        ['14-1-5', 'Cross-Platform: Text/Emoji'],
     ];
     const skipAll = (reason) => ALL_IDS.forEach(([id, t]) => skipTest(id, t, reason));
 
@@ -2974,12 +2974,12 @@ async function suiteCrossplatformBasic(browser) {
     // the built-in 5-second auto-echo fires, and relies on the auto-echo as
     // the single reliable RPC for that connection.
     try {
-        // 14-1-1 自动发送 — verify the default auto-echo round-trip
-        await runTest('14-1-1', '跨端: 自动发送', async () => {
+        // 14-1-1 Automatic Send — verify the default auto-echo round-trip
+        await runTest('14-1-1', 'Cross-Platform: Automatic Send', async () => {
             const { page, context } = await openCrossplatformPage(browser);
             try {
                 // Don't set input; let auto-echo use its default message
-                await waitForClientLog(page, '📥 回复', TIMEOUT_LONG);
+                await waitForClientLog(page, '📥 Reply', TIMEOUT_LONG);
                 const logs = await getClientLogs(page);
                 if (!logs.some(l => l.includes('📥'))) throw new Error('No echo reply found');
             } finally {
@@ -2988,8 +2988,8 @@ async function suiteCrossplatformBasic(browser) {
             }
         });
 
-        // 14-1-2 手动发送 — set custom message before auto-echo fires
-        await runTest('14-1-2', '跨端: 手动发送', async () => {
+        // 14-1-2 Manual send: set a custom message before auto-echo fires
+        await runTest('14-1-2', 'Cross-Platform: Manual Send', async () => {
             const { page, context } = await openCrossplatformPage(browser);
             try {
                 await page.evaluate(() => {
@@ -3002,8 +3002,8 @@ async function suiteCrossplatformBasic(browser) {
             }
         });
 
-        // 14-1-3 快速连续发送 — 5 parallel incognito contexts, each with one echo
-        await runTest('14-1-3', '跨端: 快速连续发送', async () => {
+        // 14-1-3 Rapid Consecutive Sends — 5 parallel incognito contexts, each with one echo
+        await runTest('14-1-3', 'Cross-Platform: Rapid Consecutive Sends', async () => {
             const items = [];
             try {
                 // Open 5 fresh contexts rapidly with numbered messages
@@ -3026,8 +3026,8 @@ async function suiteCrossplatformBasic(browser) {
             }
         });
 
-        // 14-1-4 大消息 (4 KB via auto-echo)
-        await runTest('14-1-4', '跨端: 大消息', async () => {
+        // 14-1-4 Large message (4 KB via auto-echo)
+        await runTest('14-1-4', 'Cross-Platform: Large Message', async () => {
             const { page, context } = await openCrossplatformPage(browser);
             try {
                 const bigMsg = 'X'.repeat(4096);
@@ -3044,17 +3044,17 @@ async function suiteCrossplatformBasic(browser) {
             }
         });
 
-        // 14-1-5 中文/Emoji
-        await runTest('14-1-5', '跨端: 中文/Emoji', async () => {
+        // 14-1-5 Text / Emoji
+        await runTest('14-1-5', 'Cross-Platform: Text/Emoji', async () => {
             const { page, context } = await openCrossplatformPage(browser);
             try {
                 await page.evaluate(() => {
-                    document.getElementById('msgInput').value = '你好🌍跨端测试';
+                    document.getElementById('msgInput').value = 'hello🌍cross-platform test';
                 });
-                await waitForClientLog(page, '📥.*你好', TIMEOUT_LONG);
+                await waitForClientLog(page, '📥.*hello', TIMEOUT_LONG);
                 const logs = await getClientLogs(page);
                 const reply = logs.filter(l => l.includes('📥')).pop();
-                if (!reply || !reply.includes('你好🌍')) throw new Error('CJK/Emoji not preserved in cross-platform reply');
+                if (!reply || !reply.includes('hello🌍')) throw new Error('CJK/Emoji not preserved in cross-platform reply');
             } finally {
                 await page.close({ runBeforeUnload: true }).catch(() => { });
                 await context.close().catch(() => { });
@@ -3068,19 +3068,19 @@ async function suiteCrossplatformBasic(browser) {
 }
 
 async function suiteCrossplatformWebrtc(browser) {
-    console.log(C.bold('\n── 十四.2: 跨端 WebRTC 互通性 ──'));
+    console.log(C.bold('\n── XIV.2 Cross-Platform WebRTC Interoperability ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-2-1', '跨端: SDP 协商', 'Requires RUN_C=1');
-        skipTest('14-2-2', '跨端: DataChannel 建立', 'Requires RUN_C=1');
-        skipTest('14-2-5', '跨端: TURN 不可用', 'Requires RUN_C=1');
+        skipTest('14-2-1', 'Cross-Platform: SDP Negotiation', 'Requires RUN_C=1');
+        skipTest('14-2-2', 'Cross-Platform: DataChannel Establishment', 'Requires RUN_C=1');
+        skipTest('14-2-5', 'Cross-Platform: TURN Unavailable', 'Requires RUN_C=1');
         return;
     }
 
     if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
-        skipTest('14-2-1', '跨端: SDP 协商', 'actr-examples not found');
-        skipTest('14-2-2', '跨端: DataChannel 建立', 'actr-examples not found');
-        skipTest('14-2-5', '跨端: TURN 不可用', 'actr-examples not found');
+        skipTest('14-2-1', 'Cross-Platform: SDP Negotiation', 'actr-examples not found');
+        skipTest('14-2-2', 'Cross-Platform: DataChannel Establishment', 'actr-examples not found');
+        skipTest('14-2-5', 'Cross-Platform: TURN Unavailable', 'actr-examples not found');
         return;
     }
 
@@ -3088,15 +3088,15 @@ async function suiteCrossplatformWebrtc(browser) {
     try {
         rustServer = await startRustServer();
     } catch (e) {
-        skipTest('14-2-1', '跨端: SDP 协商', `Rust server start failed: ${e.message}`);
-        skipTest('14-2-2', '跨端: DataChannel 建立', 'Rust server not available');
-        skipTest('14-2-5', '跨端: TURN 不可用', 'Rust server not available');
+        skipTest('14-2-1', 'Cross-Platform: SDP Negotiation', `Rust server start failed: ${e.message}`);
+        skipTest('14-2-2', 'Cross-Platform: DataChannel Establishment', 'Rust server not available');
+        skipTest('14-2-5', 'Cross-Platform: TURN Unavailable', 'Rust server not available');
         return;
     }
 
     try {
-        // 14-2-1 SDP 协商
-        await runTest('14-2-1', '跨端: SDP 协商', async () => {
+        // 14-2-1 SDP Negotiation
+        await runTest('14-2-1', 'Cross-Platform: SDP Negotiation', async () => {
             const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
             try {
                 await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
@@ -3114,8 +3114,8 @@ async function suiteCrossplatformWebrtc(browser) {
             }
         });
 
-        // 14-2-2 DataChannel 建立
-        await runTest('14-2-2', '跨端: DataChannel 建立', async () => {
+        // 14-2-2 DataChannel Establishment
+        await runTest('14-2-2', 'Cross-Platform: DataChannel Establishment', async () => {
             const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
             try {
                 await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
@@ -3133,8 +3133,8 @@ async function suiteCrossplatformWebrtc(browser) {
             }
         });
 
-        // 14-2-5 TURN 不可用 (force_relay=true but no TURN server)
-        await runTest('14-2-5', '跨端: TURN 不可用 (观测)', async () => {
+        // 14-2-5 TURN Unavailable (force_relay=true but no TURN server)
+        await runTest('14-2-5', 'Cross-Platform: TURN Unavailable (Observational)', async () => {
             // This is an observational test — if force_relay=true in the Rust server config
             // but no TURN server is running, ICE should fail
             const rustTomlPath = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'server', 'actr.toml');
@@ -3174,23 +3174,23 @@ async function suiteCrossplatformWebrtc(browser) {
 }
 
 async function suiteCrossplatformClientLifecycle(browser) {
-    console.log(C.bold('\n── 十四.4: 跨端 Web Client 刷新/关闭 ──'));
+    console.log(C.bold('\n── XIV.4 Cross-Platform Web Client Refresh / Close ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-4-1', '跨端: Client F5 刷新', 'Requires RUN_C=1');
-        skipTest('14-4-2', '跨端: Client 连续刷新', 'Requires RUN_C=1');
-        skipTest('14-4-3', '跨端: Client 关闭标签页', 'Requires RUN_C=1');
-        skipTest('14-4-4', '跨端: Client 关闭后重新打开', 'Requires RUN_C=1');
-        skipTest('14-4-5', '跨端: 多 Web Client', 'Requires RUN_C=1');
+        skipTest('14-4-1', 'Cross-Platform: Client F5 Refresh', 'Requires RUN_C=1');
+        skipTest('14-4-2', 'Cross-Platform: Repeated Client Refresh', 'Requires RUN_C=1');
+        skipTest('14-4-3', 'Cross-Platform: Close Client Tab', 'Requires RUN_C=1');
+        skipTest('14-4-4', 'Cross-Platform: Reopen Client After Close', 'Requires RUN_C=1');
+        skipTest('14-4-5', 'Cross-Platform: Multiple Web Clients', 'Requires RUN_C=1');
         return;
     }
 
     if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
-        skipTest('14-4-1', '跨端: Client F5 刷新', 'actr-examples not found');
-        skipTest('14-4-2', '跨端: Client 连续刷新', 'actr-examples not found');
-        skipTest('14-4-3', '跨端: Client 关闭标签页', 'actr-examples not found');
-        skipTest('14-4-4', '跨端: Client 关闭后重新打开', 'actr-examples not found');
-        skipTest('14-4-5', '跨端: 多 Web Client', 'actr-examples not found');
+        skipTest('14-4-1', 'Cross-Platform: Client F5 Refresh', 'actr-examples not found');
+        skipTest('14-4-2', 'Cross-Platform: Repeated Client Refresh', 'actr-examples not found');
+        skipTest('14-4-3', 'Cross-Platform: Close Client Tab', 'actr-examples not found');
+        skipTest('14-4-4', 'Cross-Platform: Reopen Client After Close', 'actr-examples not found');
+        skipTest('14-4-5', 'Cross-Platform: Multiple Web Clients', 'actr-examples not found');
         return;
     }
 
@@ -3198,17 +3198,17 @@ async function suiteCrossplatformClientLifecycle(browser) {
     try {
         rustServer = await startRustServer();
     } catch (e) {
-        skipTest('14-4-1', '跨端: Client F5 刷新', `Rust server: ${e.message}`);
-        skipTest('14-4-2', '跨端: Client 连续刷新', 'Rust server not available');
-        skipTest('14-4-3', '跨端: Client 关闭标签页', 'Rust server not available');
-        skipTest('14-4-4', '跨端: Client 关闭后重新打开', 'Rust server not available');
-        skipTest('14-4-5', '跨端: 多 Web Client', 'Rust server not available');
+        skipTest('14-4-1', 'Cross-Platform: Client F5 Refresh', `Rust server: ${e.message}`);
+        skipTest('14-4-2', 'Cross-Platform: Repeated Client Refresh', 'Rust server not available');
+        skipTest('14-4-3', 'Cross-Platform: Close Client Tab', 'Rust server not available');
+        skipTest('14-4-4', 'Cross-Platform: Reopen Client After Close', 'Rust server not available');
+        skipTest('14-4-5', 'Cross-Platform: Multiple Web Clients', 'Rust server not available');
         return;
     }
 
     try {
-        // 14-4-1 Client F5 刷新
-        await runTest('14-4-1', '跨端: Client F5 刷新', async () => {
+        // 14-4-1 Client F5 Refresh
+        await runTest('14-4-1', 'Cross-Platform: Client F5 Refresh', async () => {
             const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
             try {
                 await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
@@ -3227,8 +3227,8 @@ async function suiteCrossplatformClientLifecycle(browser) {
             }
         });
 
-        // 14-4-2 Client 连续刷新
-        await runTest('14-4-2', '跨端: Client 连续刷新', async () => {
+        // 14-4-2 Repeated Client Refresh
+        await runTest('14-4-2', 'Cross-Platform: Repeated Client Refresh', async () => {
             const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
             try {
                 await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
@@ -3252,8 +3252,8 @@ async function suiteCrossplatformClientLifecycle(browser) {
             }
         });
 
-        // 14-4-3 Client 关闭标签页
-        await runTest('14-4-3', '跨端: Client 关闭标签页', async () => {
+        // 14-4-3 Close Client Tab
+        await runTest('14-4-3', 'Cross-Platform: Close Client Tab', async () => {
             const clientCtx = await openClientReady(browser, TIMEOUT_LONG);
             try {
                 await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
@@ -3269,15 +3269,15 @@ async function suiteCrossplatformClientLifecycle(browser) {
             }
         });
 
-        // 14-4-4 Client 关闭后重新打开
+        // 14-4-4 Reopen Client After Close
         //
         // Uses one-echo-per-connection strategy: open a fresh incognito context,
         // let auto-echo fire, verify reply, close, then reopen a new context.
-        await runTest('14-4-4', '跨端: Client 关闭后重新打开', async () => {
+        await runTest('14-4-4', 'Cross-Platform: Reopen Client After Close', async () => {
             // Open first connection, verify echo works
             const { page: page1, context: ctx1 } = await openCrossplatformPage(browser);
             try {
-                await waitForClientLog(page1, '📥 回复', TIMEOUT_LONG);
+                await waitForClientLog(page1, '📥 Reply', TIMEOUT_LONG);
             } finally {
                 await page1.close({ runBeforeUnload: true }).catch(() => { });
                 await ctx1.close().catch(() => { });
@@ -3299,11 +3299,11 @@ async function suiteCrossplatformClientLifecycle(browser) {
             }
         });
 
-        // 14-4-5 多 Web Client → 1 Rust Server
+        // 14-4-5 Multiple Web Clients → 1 Rust Server
         //
         // Uses one-echo-per-connection strategy: open 3 fresh incognito contexts
         // each with a different message, verify all get their auto-echo replies.
-        await runTest('14-4-5', '跨端: 多 Web Client', async () => {
+        await runTest('14-4-5', 'Cross-Platform: Multiple Web Clients', async () => {
             const items = [];
             try {
                 for (let i = 0; i < 3; i++) {
@@ -3330,17 +3330,17 @@ async function suiteCrossplatformClientLifecycle(browser) {
 }
 
 async function suiteCrossplatformNetwork(browser) {
-    console.log(C.bold('\n── 十四.5: 跨端网络异常 ──'));
+    console.log(C.bold('\n── XIV.5 Cross-Platform Network Faults ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-5-1', '跨端: Web Client 断网', 'Requires RUN_C=1');
-        skipTest('14-5-4', '跨端: Client 弱网', 'Requires RUN_C=1');
+        skipTest('14-5-1', 'Cross-Platform: Web Client Disconnect', 'Requires RUN_C=1');
+        skipTest('14-5-4', 'Cross-Platform: Weak Client Network', 'Requires RUN_C=1');
         return;
     }
 
     if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
-        skipTest('14-5-1', '跨端: Web Client 断网', 'actr-examples not found');
-        skipTest('14-5-4', '跨端: Client 弱网', 'actr-examples not found');
+        skipTest('14-5-1', 'Cross-Platform: Web Client Disconnect', 'actr-examples not found');
+        skipTest('14-5-4', 'Cross-Platform: Weak Client Network', 'actr-examples not found');
         return;
     }
 
@@ -3348,22 +3348,22 @@ async function suiteCrossplatformNetwork(browser) {
     try {
         rustServer = await startRustServer();
     } catch (e) {
-        skipTest('14-5-1', '跨端: Web Client 断网', `Rust server: ${e.message}`);
-        skipTest('14-5-4', '跨端: Client 弱网', 'Rust server not available');
+        skipTest('14-5-1', 'Cross-Platform: Web Client Disconnect', `Rust server: ${e.message}`);
+        skipTest('14-5-4', 'Cross-Platform: Weak Client Network', 'Rust server not available');
         return;
     }
 
     try {
-        // 14-5-1 Web Client 断网
+        // 14-5-1 Web Client Disconnect
         //
         // Strategy: verify connection works → go offline → come back → open a
         // fresh incognito context to prove the signaling server and Rust server
         // handled the disconnection properly and can accept new clients.
-        await runTest('14-5-1', '跨端: Web Client 断网', async () => {
+        await runTest('14-5-1', 'Cross-Platform: Web Client Disconnect', async () => {
             // First, establish that echo works
             const { page: page1, context: ctx1 } = await openCrossplatformPage(browser);
             try {
-                await waitForClientLog(page1, '📥 回复', TIMEOUT_LONG);
+                await waitForClientLog(page1, '📥 Reply', TIMEOUT_LONG);
 
                 // Go offline
                 await setOffline(page1, true);
@@ -3394,16 +3394,16 @@ async function suiteCrossplatformNetwork(browser) {
             }
         });
 
-        // 14-5-4 Client 弱网
+        // 14-5-4 Weak Client Network
         //
         // Strategy: verify echo works normally first, then apply Slow 3G,
         // verify connection survives (status doesn't go to error), remove
         // throttle, and verify a fresh connection still works.
-        await runTest('14-5-4', '跨端: Client 弱网', async () => {
+        await runTest('14-5-4', 'Cross-Platform: Weak Client Network', async () => {
             // Establish working connection under normal conditions
             const { page: page1, context: ctx1 } = await openCrossplatformPage(browser);
             try {
-                await waitForClientLog(page1, '📥 回复', TIMEOUT_LONG);
+                await waitForClientLog(page1, '📥 Reply', TIMEOUT_LONG);
 
                 // Apply Slow 3G
                 await setSlow3G(page1);
@@ -3436,17 +3436,17 @@ async function suiteCrossplatformNetwork(browser) {
 }
 
 async function suiteCrossplatformProtocol(browser) {
-    console.log(C.bold('\n── 十四.6: 跨端协议兼容性 ──'));
+    console.log(C.bold('\n── XIV.6 Cross-Platform Protocol Compatibility ──'));
 
     if (!RUN_C_TESTS) {
-        skipTest('14-6-1', '跨端: Protobuf 兼容', 'Requires RUN_C=1');
-        skipTest('14-6-4', '跨端: Role Negotiation', 'Requires RUN_C=1');
-        skipTest('14-6-5', '跨端: ACL 跨端', 'Requires RUN_C=1');
+        skipTest('14-6-1', 'Cross-Platform: Protobuf Compatibility', 'Requires RUN_C=1');
+        skipTest('14-6-4', 'Cross-Platform: Role Negotiation', 'Requires RUN_C=1');
+        skipTest('14-6-5', 'Cross-Platform: ACL Interoperability', 'Requires RUN_C=1');
         return;
     }
 
-    // 14-6-1 Protobuf 兼容 — compare proto files
-    await runTest('14-6-1', '跨端: Protobuf 兼容', async () => {
+    // 14-6-1 Protobuf Compatibility — compare proto files
+    await runTest('14-6-1', 'Cross-Platform: Protobuf Compatibility', async () => {
         const webProto = path.join(SCRIPT_DIR, 'server', 'proto', 'echo.proto');
         const rustProto = path.join(ACTR_EXAMPLES_DIR, 'shell-actr-echo', 'proto', 'echo.proto');
 
@@ -3482,8 +3482,8 @@ async function suiteCrossplatformProtocol(browser) {
         }
     });
 
-    // 14-6-4 Role Negotiation 跨端
-    await runTest('14-6-4', '跨端: Role Negotiation', async () => {
+    // 14-6-4 Cross-Platform Role Negotiation
+    await runTest('14-6-4', 'Cross-Platform: Role Negotiation', async () => {
         if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
             throw new Error('actr-examples not found');
         }
@@ -3509,12 +3509,12 @@ async function suiteCrossplatformProtocol(browser) {
         }
     });
 
-    // 14-6-5 ACL 跨端
+    // 14-6-5 ACL Interoperability
     //
     // Uses one-echo-per-connection strategy: set a custom message in the input
     // before auto-echo fires, then verify the reply contains our message.
     // This proves ACL allows cross-platform communication.
-    await runTest('14-6-5', '跨端: ACL 跨端', async () => {
+    await runTest('14-6-5', 'Cross-Platform: ACL Interoperability', async () => {
         if (!fs.existsSync(ACTR_EXAMPLES_DIR)) {
             throw new Error('actr-examples not found');
         }
@@ -3630,7 +3630,7 @@ async function main() {
 
     // ── Summary ──
     console.log(C.bold('\n═══════════════════════════════════════════════════════════'));
-    console.log(C.bold('  测试结果汇总'));
+    console.log(C.bold('  Test Summary'));
     console.log('═══════════════════════════════════════════════════════════');
 
     const passed = results.filter((r) => r.status === 'pass').length;
@@ -3638,17 +3638,17 @@ async function main() {
     const skipped = results.filter((r) => r.status === 'skip').length;
     const total = results.length;
 
-    console.log(`  ${C.green(`✓ 通过: ${passed}`)}  ${C.red(`✗ 失败: ${failed}`)}  ${C.yellow(`⊘ 跳过: ${skipped}`)}  总计: ${total}`);
+    console.log(`  ${C.green(`✓ Passed: ${passed}`)}  ${C.red(`✗ Failed: ${failed}`)}  ${C.yellow(`⊘ Skipped: ${skipped}`)}  Total: ${total}`);
 
     if (failed > 0) {
-        console.log(C.red('\n  失败项目:'));
+        console.log(C.red('\n  Failed Cases:'));
         for (const r of results.filter((r) => r.status === 'fail')) {
             console.log(C.red(`    ${r.id} ${r.title} — ${r.reason || 'unknown'}`));
         }
 
         // Detailed failure analysis
         console.log(C.bold('\n═══════════════════════════════════════════════════════════'));
-        console.log(C.bold('  失败用例日志分析'));
+        console.log(C.bold('  Failure Log Analysis'));
         console.log('═══════════════════════════════════════════════════════════');
         for (const r of results.filter((r) => r.status === 'fail')) {
             console.log(C.red(`\n  ── ${r.id} ${r.title} ──`));

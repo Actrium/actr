@@ -14,7 +14,7 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# WASM 绑定
+# WASM bindings
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
@@ -26,15 +26,15 @@ web-sys = { workspace = true, features = ["console", "Window"] }
 # IndexedDB - using rexie for easier API
 rexie.workspace = true
 
-# 异步
+# Async
 futures.workspace = true
 async-trait.workspace = true
 
-# 序列化
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 
-# 工具
+# Utilities
 log.workspace = true
 thiserror.workspace = true
 

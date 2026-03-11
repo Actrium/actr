@@ -8,17 +8,17 @@ TMPDIR="${TMPDIR:-$(pwd)/.tmp}"
 export TMPDIR
 mkdir -p "$TMPDIR"
 
-# 清理旧的构建
+# Clean old builds
 rm -rf ../../dist/sw
 
-# 构建 WASM（target: no-modules，适合 Service Worker）
+# Build WASM (target: no-modules, suitable for Service Workers)
 wasm-pack build \
   --target no-modules \
   --out-dir ../../dist/sw \
   --out-name actr_runtime_sw \
   --release
 
-# 生成 npm 包信息
+# Generate npm package metadata
 cat > ../../dist/sw/package.json << EOF
 {
   "name": "@actor-rtc/runtime-sw",

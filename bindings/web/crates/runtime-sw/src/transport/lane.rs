@@ -1,8 +1,8 @@
-//! DataLane - Service Worker 环境的数据传输通道
+//! Data transport lanes for the Service Worker runtime.
 //!
-//! Service Worker 端只包含：
-//! - WebSocket Lane：与服务器通信
-//! - PostMessage Lane：与 DOM 通信
+//! The Service Worker side contains:
+//! - `WebSocket` lanes for server communication
+//! - `PostMessage` lanes for DOM communication
 
 use super::WirePool;
 use actr_web_common::zero_copy::{
@@ -17,12 +17,13 @@ use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{MessagePort, WebSocket};
 
-/// Service Worker 环境传输层操作结果
+/// Transport-layer operation result in the Service Worker runtime.
 pub type LaneResult<T> = WebResult<T>;
 
-/// Port 失效通知器
+/// Notifies the WirePool when a port fails.
 ///
-/// 当 MessagePort 发送失败时，通知 WirePool 标记连接为失效
+/// If sending on a `MessagePort` fails, the notifier marks the associated
+/// connection as failed in the `WirePool`.
 #[derive(Clone)]
 pub struct PortFailureNotifier {
     wire_pool: Arc<WirePool>,
@@ -30,7 +31,7 @@ pub struct PortFailureNotifier {
 }
 
 impl PortFailureNotifier {
-    /// 创建新的失效通知器
+    /// Create a new failure notifier.
     pub fn new(wire_pool: Arc<WirePool>, conn_type: ConnType) -> Self {
         Self {
             wire_pool,
@@ -38,7 +39,7 @@ impl PortFailureNotifier {
         }
     }
 
-    /// 通知 Port 失效
+    /// Report that the port has failed.
     pub fn notify_port_failed(&self) {
         log::warn!(
             "[PortFailureNotifier] Notifying port failure: {:?}",
@@ -49,13 +50,13 @@ impl PortFailureNotifier {
     }
 }
 
-/// DataLane - Service Worker 环境的数据传输通道
+/// Data transport lane used by the Service Worker runtime.
 #[derive(Clone)]
 pub enum DataLane {
     /// WebSocket Lane
     ///
-    /// 与服务器的 WebSocket 连接
-    /// 支持：RPC_*, STREAM_* (不支持 MEDIA_RTP)
+    /// WebSocket connection to the server.
+    /// Supports `RPC_*` and `STREAM_*`, but not `MEDIA_RTP`.
     WebSocket {
         ws: Arc<WebSocket>,
         payload_type: PayloadType,
@@ -64,8 +65,8 @@ pub enum DataLane {
 
     /// PostMessage Lane
     ///
-    /// 与 DOM 的通信通道
-    /// 支持：全部 PayloadType
+    /// Message channel used to communicate with the DOM side.
+    /// Supports all payload types.
     PostMessage {
         port: Arc<MessagePort>,
         payload_type: PayloadType,
@@ -75,22 +76,22 @@ pub enum DataLane {
 }
 
 impl DataLane {
-    /// 发送消息（零拷贝优化）
+    /// Send a message using zero-copy helpers.
     pub async fn send(&self, data: Bytes) -> LaneResult<()> {
         match self {
             DataLane::WebSocket {
                 ws, payload_type, ..
             } => {
-                // ✅ 构造消息：使用零拷贝辅助函数
+                // Build the message with zero-copy helper functions.
                 let header = construct_message_header(*payload_type as u8, data.len());
                 let msg = construct_message_zero_copy(&header, &data);
 
-                // ✅ 直接发送 Bytes slice（WebSocket API 接受 &[u8]）
+                // Send the Bytes slice directly because WebSocket accepts `&[u8]`.
                 ws.send_with_u8_array(&msg)
                     .map_err(|e| WebError::Transport(format!("WebSocket send failed: {:?}", e)))?;
 
                 log::trace!(
-                    "WebSocket Lane 发送消息: payload_type={:?}, size={} bytes",
+                    "WebSocket lane sent message: payload_type={:?}, size={} bytes",
                     payload_type,
                     data.len()
                 );
@@ -104,28 +105,28 @@ impl DataLane {
                 failure_notifier,
                 ..
             } => {
-                // ✅ 构造消息：使用零拷贝辅助函数
+                // Build the message with zero-copy helper functions.
                 let header = construct_message_header(*payload_type as u8, data.len());
                 let msg = construct_message_zero_copy(&header, &data);
 
-                // ✅ 零拷贝发送：创建 WASM 内存视图
+                // Zero-copy send by creating a WASM memory view.
                 let js_view = send_zero_copy(&msg);
 
-                // 尝试发送，捕获失败
+                // Attempt the send and capture failures.
                 match port.post_message(&js_view.into()) {
                     Ok(_) => {
                         log::trace!(
-                            "PostMessage Lane 发送消息: payload_type={:?}, size={} bytes",
+                            "PostMessage lane sent message: payload_type={:?}, size={} bytes",
                             payload_type,
                             data.len()
                         );
                         Ok(())
                     }
                     Err(e) => {
-                        // MessagePort 失效了
+                        // The MessagePort appears to be dead.
                         log::error!("PostMessage send failed (port may be dead): {:?}", e);
 
-                        // 通知 WirePool 连接失效
+                        // Notify the WirePool that the connection failed.
                         if let Some(notifier) = failure_notifier {
                             notifier.notify_port_failed();
                         }
@@ -137,24 +138,24 @@ impl DataLane {
         }
     }
 
-    /// 使用 Transferable Objects 发送消息（仅 PostMessage）
+    /// Send a message with transferable objects (PostMessage only).
     ///
-    /// **Transferable Objects**：
-    /// - 转移 ArrayBuffer 所有权而非拷贝
-    /// - 适用于大数据传输（>10KB）
-    /// - 仅支持 PostMessage Lane（WebSocket 不支持）
+    /// **Transferable objects**:
+    /// - Transfer `ArrayBuffer` ownership instead of copying it
+    /// - Best for large payloads (>10KB)
+    /// - Supported only by `PostMessage` lanes, not `WebSocket`
     ///
-    /// # 参数
-    /// - `data`: 要发送的数据
+    /// # Parameters
+    /// - `data`: data to send
     ///
-    /// # 返回
-    /// - `Ok(())`: 发送成功
-    /// - `Err`: 发送失败或不支持的 Lane 类型
+    /// # Returns
+    /// - `Ok(())` if the send succeeds
+    /// - `Err` if the send fails or the lane type does not support it
     ///
-    /// # 使用建议
-    /// - 大数据（>10KB）使用此方法
-    /// - 小数据（<10KB）使用普通 `send()` 方法
-    /// - 或使用 `send_auto()` 自动选择
+    /// # Guidance
+    /// - Use this for large payloads (>10KB)
+    /// - Use `send()` for smaller payloads (<10KB)
+    /// - Or call `send_auto()` to pick automatically
     pub async fn send_with_transfer(&self, data: Bytes) -> LaneResult<()> {
         match self {
             DataLane::PostMessage {
@@ -163,14 +164,14 @@ impl DataLane {
                 failure_notifier,
                 ..
             } => {
-                // ✅ 构造消息：使用零拷贝辅助函数
+                // Build the message with zero-copy helper functions.
                 let header = construct_message_header(*payload_type as u8, data.len());
                 let msg = construct_message_zero_copy(&header, &data);
 
-                // ✅ 使用 Transferable Objects 发送
+                // Send with transferable objects.
                 let (js_view, transfer_list) = send_with_transfer(&msg);
 
-                // 使用 wasm-bindgen 的底层 API 调用 postMessage(message, transferList)
+                // Call `postMessage(message, transferList)` via the lower-level wasm-bindgen API.
                 let post_message_fn =
                     js_sys::Reflect::get(port.as_ref(), &JsValue::from_str("postMessage"))
                         .map_err(|e| {
@@ -187,20 +188,20 @@ impl DataLane {
                 match result {
                     Ok(_) => {
                         log::trace!(
-                            "PostMessage Lane (SW) 使用 transfer 发送消息: payload_type={:?}, size={} bytes",
+                            "PostMessage lane (SW) sent message with transfer: payload_type={:?}, size={} bytes",
                             payload_type,
                             data.len()
                         );
                         Ok(())
                     }
                     Err(e) => {
-                        // MessagePort 失效了
+                        // The MessagePort appears to be dead.
                         log::error!(
                             "PostMessage with transfer failed (port may be dead): {:?}",
                             e
                         );
 
-                        // 通知 WirePool 连接失效
+                        // Notify the WirePool that the connection failed.
                         if let Some(notifier) = failure_notifier {
                             notifier.notify_port_failed();
                         }
@@ -214,40 +215,42 @@ impl DataLane {
             }
 
             DataLane::WebSocket { .. } => {
-                // WebSocket 不支持 Transferable Objects，回退到普通 send
-                log::warn!("WebSocket 不支持 Transferable Objects，回退到普通 send");
+                // WebSocket does not support transferable objects, so fall back to `send`.
+                log::warn!(
+                    "WebSocket does not support transferable objects; falling back to send"
+                );
                 self.send(data).await
             }
         }
     }
 
-    /// 自动选择发送方式（根据数据大小）
+    /// Pick a send strategy automatically based on payload size.
     ///
-    /// **决策逻辑**：
-    /// - PostMessage + 数据 >= 10KB → 使用 `send_with_transfer()`
-    /// - PostMessage + 数据 < 10KB → 使用普通 `send()`
-    /// - WebSocket → 使用普通 `send()`
+    /// **Decision rules**:
+    /// - `PostMessage` + data >= 10KB -> `send_with_transfer()`
+    /// - `PostMessage` + data < 10KB -> `send()`
+    /// - `WebSocket` -> `send()`
     ///
-    /// # 参数
-    /// - `data`: 要发送的数据
+    /// # Parameters
+    /// - `data`: data to send
     ///
-    /// # 返回
-    /// - `Ok(())`: 发送成功
-    /// - `Err`: 发送失败
+    /// # Returns
+    /// - `Ok(())` if the send succeeds
+    /// - `Err` if the send fails
     pub async fn send_auto(&self, data: Bytes) -> LaneResult<()> {
         match self {
             DataLane::PostMessage { .. } if should_use_transfer(data.len()) => {
-                // 大数据使用 Transferable Objects
+                // Use transferable objects for large payloads.
                 self.send_with_transfer(data).await
             }
             _ => {
-                // 其他情况使用普通 send
+                // Use the regular send path otherwise.
                 self.send(data).await
             }
         }
     }
 
-    /// 接收消息
+    /// Receive a message.
     pub async fn recv(&self) -> Option<Bytes> {
         use futures::StreamExt;
 
@@ -258,7 +261,7 @@ impl DataLane {
                 let mut rx_guard = rx.lock();
                 let data = rx_guard.next().await?;
                 log::trace!(
-                    "WebSocket Lane 接收消息: payload_type={:?}, size={} bytes",
+                    "WebSocket lane received message: payload_type={:?}, size={} bytes",
                     payload_type,
                     data.len()
                 );
@@ -271,7 +274,7 @@ impl DataLane {
                 let mut rx_guard = rx.lock();
                 let data = rx_guard.next().await?;
                 log::trace!(
-                    "PostMessage Lane 接收消息: payload_type={:?}, size={} bytes",
+                    "PostMessage lane received message: payload_type={:?}, size={} bytes",
                     payload_type,
                     data.len()
                 );
@@ -280,7 +283,7 @@ impl DataLane {
         }
     }
 
-    /// 获取 PayloadType
+    /// Get the lane payload type.
     pub fn payload_type(&self) -> PayloadType {
         match self {
             DataLane::WebSocket { payload_type, .. } => *payload_type,
@@ -311,7 +314,7 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // ===== PortFailureNotifier 测试 =====
+    // ===== PortFailureNotifier tests =====
 
     #[test]
     fn test_port_failure_notifier_new() {
@@ -344,7 +347,7 @@ mod tests {
         assert_eq!(rtc_notifier.conn_type, ConnType::WebRTC);
     }
 
-    // ===== DataLane PayloadType 测试 =====
+    // ===== DataLane payload type tests =====
 
     #[wasm_bindgen_test]
     fn test_data_lane_payload_type_websocket() {
@@ -406,7 +409,7 @@ mod tests {
         }
     }
 
-    // ===== DataLane Clone 测试 =====
+    // ===== DataLane clone tests =====
 
     #[wasm_bindgen_test]
     fn test_data_lane_clone_websocket() {
@@ -459,7 +462,7 @@ mod tests {
         }
     }
 
-    // ===== DataLane Debug 测试 =====
+    // ===== DataLane debug tests =====
 
     #[wasm_bindgen_test]
     fn test_data_lane_debug_websocket() {
@@ -503,7 +506,7 @@ mod tests {
         assert!(debug_str.contains("StreamLatencyFirst"));
     }
 
-    // ===== DataLane with PortFailureNotifier 测试 =====
+    // ===== DataLane with PortFailureNotifier tests =====
 
     #[wasm_bindgen_test]
     fn test_data_lane_postmessage_with_notifier() {
@@ -558,7 +561,7 @@ mod tests {
         }
     }
 
-    // ===== DataLane 变体类型检查 =====
+    // ===== DataLane variant checks =====
 
     #[wasm_bindgen_test]
     fn test_data_lane_variant_websocket() {
@@ -604,7 +607,7 @@ mod tests {
         }
     }
 
-    // ===== 不同 PayloadType 组合测试 =====
+    // ===== Different PayloadType combination tests =====
 
     #[wasm_bindgen_test]
     fn test_different_payload_types_websocket() {

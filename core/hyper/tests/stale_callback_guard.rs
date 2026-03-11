@@ -1,6 +1,6 @@
 //! Integration test: Stale callbacks must NOT kill new connections
 //!
-//! Problem scenario (旧回调误杀新连接):
+//! Problem scenario (stale callbacks killing new connections):
 //! 1. Peer A connects to Peer B → connection_1 (session_1)
 //! 2. Network outage → connection_1's DataChannels start closing asynchronously
 //! 3. Network recovers → Peer A reconnects → connection_2 (session_2)
@@ -13,9 +13,7 @@
 //! - Stale events from old sessions are filtered by the coordinator
 //! - Messages can be sent and received on the new connection
 
-mod common;
-
-use common::TestHarness;
+use actr_hyper::test_support::{TestHarness, make_actor_id};
 use std::time::Duration;
 
 /// Initialize tracing for test output
@@ -31,7 +29,7 @@ fn init_tracing() {
 
 /// Test: Stale callback guard prevents old connection from killing new connection
 ///
-/// This is the core test for the "旧回调误杀新连接" bug fix.
+/// This is the core test for the "stale callbacks killing new connections" bug fix.
 ///
 /// Flow:
 /// 1. Connect peer 100 → peer 200 (connection_1, session_1)
@@ -159,7 +157,7 @@ async fn test_stale_callbacks_do_not_kill_new_connection() {
         "║ • ICE restarts: {}                                   ║",
         total_restarts
     );
-    tracing::info!("║ • Bug '旧回调误杀新连接' is FIXED                   ║");
+    tracing::info!("║ • Bug 'stale callbacks killing new conns' is FIXED   ║");
     tracing::info!("╚══════════════════════════════════════════════════════╝");
 
     tracing::info!("✅ test_stale_callbacks_do_not_kill_new_connection passed!");
@@ -190,11 +188,10 @@ async fn test_session_id_filtering_ignores_stale_events() {
     // Inject a STALE ConnectionClosed event with session_id=0 (definitely not current)
     // This simulates what happens when an old connection's close event fires late
     tracing::info!("🧪 Injecting stale ConnectionClosed event (session_id=0)...");
-    let stale_event =
-        actr_hyper::transport::connection_event::ConnectionEvent::ConnectionClosed {
-            peer_id: common::make_actor_id(200),
-            session_id: 0, // Stale session_id — won't match current PeerState.session_id
-        };
+    let stale_event = actr_hyper::transport::connection_event::ConnectionEvent::ConnectionClosed {
+        peer_id: make_actor_id(200),
+        session_id: 0, // Stale session_id — won't match current PeerState.session_id
+    };
     harness.peer(100).send_event(stale_event);
 
     // Wait a bit for the event listener to process

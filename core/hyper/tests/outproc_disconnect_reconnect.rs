@@ -11,14 +11,12 @@
 //! Both tests use a **short outage (8s)** so the connection stays in the
 //! peers map and `do_ice_restart_inner` is still running (in its backoff loop).
 //!
-//! The key difference (方案A implemented):
+//! The key difference (Plan A implemented):
 //! - **Offerer test**: offerer calls `retry_failed()` → `restart_ice()` → already inflight → wakes backoff
 //! - **Answerer test**: answerer calls `retry_failed()` → `restart_ice()` → `!is_offerer`
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
-mod common;
-
-use common::TestHarness;
+use actr_hyper::test_support::TestHarness;
 use std::time::Duration;
 
 /// Initialize tracing for test output
@@ -213,7 +211,7 @@ async fn test_offerer_recovery_latency() {
 
 // ==================== Test 3: Answerer recovery latency ====================
 
-/// Test: answerer-triggered recovery after network outage (方案A).
+/// Test: answerer-triggered recovery after network outage (Plan A).
 ///
 /// Topology: peer 200 → peer 100 (offerer, echo responder on 100)
 ///
@@ -303,7 +301,7 @@ async fn test_answerer_recovery_latency() {
         outage_restart_count,
         total_restart_count
     );
-    tracing::info!("║ 方案A: retry_failed() on answerer → IceRestartRequest");
+    tracing::info!("║ Plan A: retry_failed() on answerer -> IceRestartRequest");
     tracing::info!("║   → Offerer wakes backoff → immediate retry");
     tracing::info!("╚══════════════════════════════════════════════════════╝");
 

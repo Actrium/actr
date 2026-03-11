@@ -1,9 +1,10 @@
 //! Actor WASM guest SDK
 //!
-//! 供编译到 `wasm32-unknown-unknown` 的 actor 使用。屏蔽线性内存 ABI 细节，
-//! 开发者只需实现 [`WasmActor`] trait 并调用 [`entry!`] 宏注册即可。
+//! For actors compiled to `wasm32-unknown-unknown`.
+//! The crate hides linear-memory ABI details so implementers only need
+//! to implement [`WasmActor`] and register it with the [`entry!`] macro.
 //!
-//! # 使用示例
+//! # Example
 //!
 //! ```rust,ignore
 //! use actr_sdk_wasm::{WasmActor, ActorConfig, entry};
@@ -26,36 +27,36 @@
 pub mod config;
 pub use config::ActorConfig;
 
-/// WASM actor 开发者需实现的 trait
+/// Trait implemented by WASM actors.
 ///
-/// 对应 Host 侧调用的两个生命周期：
-/// - `init`：actor 首次启动，接收凭证配置
-/// - `handle`：每条消息到来时被调用，同步处理后返回响应
+/// It matches the two host-side lifecycle entry points:
+/// - `init`: called once when the actor starts and receives credential config
+/// - `handle`: called for every message and returns the synchronous response
 ///
-/// 两个方法均为**同步**——异步 IO 由 Host（Hyper 层）全权管理，
-/// guest 内部只做纯计算。
+/// Both methods are **synchronous**. Async I/O is handled entirely by the
+/// host runtime, while the guest performs pure computation only.
 pub trait WasmActor: Sized + 'static {
-    /// 初始化 actor，返回 actor 实例
+    /// Initialize the actor and return its instance.
     ///
-    /// Host 保证在任何 `handle` 调用之前调用且仅调用一次。
+    /// The host guarantees this is called once before any `handle` invocation.
     fn init(config: ActorConfig) -> Self;
 
-    /// 处理一条请求，返回响应字节
+    /// Handle one request and return the response bytes.
     ///
-    /// - `request`：Host 写入的原始请求字节（通常为 protobuf 编码）
-    /// - 返回值：响应字节，空 `Vec` 表示无响应（fire-and-forget）
+    /// - `request`: raw request bytes written by the host, usually protobuf
+    /// - return value: response bytes; an empty `Vec` means fire-and-forget
     fn handle(&mut self, request: &[u8]) -> Vec<u8>;
 }
 
-/// 注册 actor 类型，生成所有必要的 ABI 导出函数
+/// Register an actor type and generate the required ABI exports.
 ///
-/// 展开后自动生成：
+/// The macro expands to:
 /// - `actr_init(config_ptr, config_len) -> i32`
 /// - `actr_handle(req_ptr, req_len, resp_ptr_out, resp_len_out) -> i32`
 /// - `actr_alloc(size) -> i32`
 /// - `actr_free(ptr, size)`
 ///
-/// # 示例
+/// # Example
 ///
 /// ```rust,ignore
 /// entry!(MyActor);
@@ -63,7 +64,7 @@ pub trait WasmActor: Sized + 'static {
 #[macro_export]
 macro_rules! entry {
     ($actor:ty) => {
-        // ABI 错误码，与 Host 侧 abi::code 保持一致
+        // ABI status codes must stay aligned with the host-side abi::code values.
         const __SUCCESS: i32 = 0;
         const __GENERIC_ERROR: i32 = -1;
         const __INIT_FAILED: i32 = -2;
@@ -72,7 +73,7 @@ macro_rules! entry {
 
         static mut __ACTR_INSTANCE: Option<$actor> = None;
 
-        /// actr_init：Host 调用一次，传入 JSON 编码的 ActorConfig
+        /// `actr_init`: called once by the host with JSON-encoded `ActorConfig`.
         #[no_mangle]
         pub unsafe extern "C" fn actr_init(config_ptr: i32, config_len: i32) -> i32 {
             let bytes = core::slice::from_raw_parts(
@@ -87,7 +88,7 @@ macro_rules! entry {
             __SUCCESS
         }
 
-        /// actr_handle：Host 每次分发消息时调用
+        /// `actr_handle`: called by the host for every dispatched message.
         #[no_mangle]
         pub unsafe extern "C" fn actr_handle(
             req_ptr: i32,
@@ -106,7 +107,8 @@ macro_rules! entry {
             let resp_len = resp.len();
 
             if resp_len > 0 {
-                // 将响应复制到独立分配的缓冲区，由 Host 读取后调用 actr_free 释放
+                // Copy the response into a dedicated allocation that the host
+                // reads and later frees through `actr_free`.
                 let layout =
                     core::alloc::Layout::from_size_align(resp_len, 1).unwrap();
                 let out_ptr = std::alloc::alloc(layout);
@@ -125,7 +127,7 @@ macro_rules! entry {
             __SUCCESS
         }
 
-        /// actr_alloc：Host 调用以在 WASM 线性内存中分配缓冲区
+        /// `actr_alloc`: lets the host allocate a buffer in WASM linear memory.
         #[no_mangle]
         pub unsafe extern "C" fn actr_alloc(size: i32) -> i32 {
             if size <= 0 {
@@ -136,7 +138,7 @@ macro_rules! entry {
             std::alloc::alloc(layout) as i32
         }
 
-        /// actr_free：Host 调用以释放之前分配的缓冲区
+        /// `actr_free`: lets the host free a previously allocated buffer.
         #[no_mangle]
         pub unsafe extern "C" fn actr_free(ptr: i32, size: i32) {
             if ptr != 0 && size > 0 {

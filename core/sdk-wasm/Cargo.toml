@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Actor WASM guest SDK — 供 wasm32 actor 开发者使用的抽象层，屏蔽 ABI 细节"
+description = "Actor WASM guest SDK for wasm32 actor developers, hiding ABI details behind a stable abstraction"
 keywords = ["actor", "webassembly", "wasm", "sdk", "guest"]
 categories = ["wasm", "embedded"]
 

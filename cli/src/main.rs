@@ -1,7 +1,7 @@
-//! ACTR-CLI - Actor-RTC 命令行工具
+//! ACTR-CLI - Actor-RTC Command Line Tool
 //!
-//! 基于复用架构实现的统一CLI工具，通过8个核心组件和3个操作管道
-//! 提供一致的用户体验和高代码复用率。
+//! A unified CLI tool built on reuse architecture with 8 core components
+//! and 3 operation pipelines, providing consistent UX and high code reuse.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-// 导入核心复用组件
+// Import core reuse components
 use actr_cli::core::{
     ActrCliError, Command, CommandContext, ConfigManager, ConsoleUI, ContainerBuilder,
     DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
@@ -18,7 +18,7 @@ use actr_cli::core::{
     ServiceContainer, TomlConfigManager,
 };
 
-// 导入命令实现
+// Import command implementations
 use actr_cli::commands::dev as dev_cmd;
 use actr_cli::commands::dlq as dlq_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
@@ -113,7 +113,7 @@ pub struct DlqArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日志
+    // Initialize logging
     let layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_level(true)
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
         .with(layer)
         .try_init();
 
-    // 使用 clap 解析命令行参数
+    // Parse command-line arguments with clap
     let cli = Cli::parse();
 
     // Handle -vv for version and commit info
@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // dlq 命令不需要 ServiceContainer，提前处理
+    // dlq command does not need ServiceContainer; handle early
     if let Some(Commands::Dlq(args)) = &cli.command {
         let inner_args = dlq_cmd::DlqArgs {
             subcommand: args.subcommand.as_deref().unwrap_or("list").to_string(),
@@ -153,24 +153,24 @@ async fn main() -> Result<()> {
         return dlq_cmd::execute(inner_args).await;
     }
 
-    // pkg 命令不需要 ServiceContainer，提前处理
+    // pkg command does not need ServiceContainer; handle early
     if matches!(&cli.command, Some(Commands::Pkg(_))) {
         if let Some(Commands::Pkg(args)) = cli.command {
             return pkg_cmd::execute(args).await;
         }
     }
 
-    // dev 命令不需要 ServiceContainer，提前处理
+    // dev command does not need ServiceContainer; handle early
     if matches!(&cli.command, Some(Commands::Dev(_))) {
         if let Some(Commands::Dev(args)) = cli.command {
             return dev_cmd::execute(args).await;
         }
     }
 
-    // 构建服务容器并注册组件
+    // Build service container and register components
     let container = build_container().await?;
 
-    // 创建命令执行上下文
+    // Create command execution context
     let context = CommandContext {
         container: Arc::new(std::sync::Mutex::new(container)),
         args: actr_cli::core::CommandArgs {
@@ -182,7 +182,7 @@ async fn main() -> Result<()> {
         working_dir: std::env::current_dir()?,
     };
 
-    // 根据命令分发执行
+    // Dispatch command execution
     if let Some(cmd) = &cli.command {
         match execute_command(cmd, &context).await {
             Ok(result) => match result {
@@ -207,7 +207,7 @@ async fn main() -> Result<()> {
                 }
             },
             Err(e) => {
-                // 统一的错误处理
+                // Unified error handling
                 if let Some(cli_error) = e.downcast_ref::<ActrCliError>() {
                     if matches!(cli_error, ActrCliError::OperationCancelled) {
                         std::process::exit(0);
@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// 构建服务容器
+/// Build the service container
 async fn build_container() -> Result<ServiceContainer> {
     let config_path = std::path::Path::new("actr.toml");
     let mut builder = ContainerBuilder::new();
@@ -264,7 +264,7 @@ async fn build_container() -> Result<ServiceContainer> {
     Ok(container)
 }
 
-/// 执行命令
+/// Execute a command
 async fn execute_command(
     command: &Commands,
     context: &CommandContext,

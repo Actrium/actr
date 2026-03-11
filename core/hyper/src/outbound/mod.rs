@@ -1,12 +1,12 @@
 //! Outbound Layer 2: Outbound gate abstraction layer
 //!
-//! 提供统一的出站消息发送接口，支持进程内和跨进程通信。
+//! Provides a unified outbound message sending interface for both in-process and cross-process communication.
 //!
-//! # 设计特性
+//! # Design Features
 //!
-//! - **Enum Dispatch**：使用枚举而非 trait object，实现零虚函数调用
-//! - **零成本抽象**：编译时确定类型，静态分发
-//! - **统一接口**：Host 和 Peer 共享相同的方法签名
+//! - **Enum dispatch**: use enums instead of trait objects to avoid virtual calls
+//! - **Zero-cost abstraction**: static dispatch with compile-time type selection
+//! - **Unified API**: Host and Peer share the same method signatures
 
 mod host_gate;
 mod peer_gate;
@@ -18,54 +18,54 @@ use actr_framework::{Bytes, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
-/// Gate - 出站消息门枚举
+/// Gate enum for outbound messaging.
 ///
-/// # 设计原则
+/// # Design Principles
 ///
-/// - 使用 **enum dispatch** 而非 trait object，避免虚函数调用
-/// - **零成本抽象**：编译时准确确定类型
-/// - **完全独立**：仅用于出站（Outbound），不包含任何入站路由逻辑
+/// - Use **enum dispatch** instead of trait objects to avoid virtual calls
+/// - Preserve **zero-cost abstraction** with compile-time type selection
+/// - Stay **fully outbound-only** with no inbound routing logic
 ///
-/// # 性能
+/// # Performance
 ///
 /// ```text
-/// Gate::send_request() 内部：
+/// Internal structure of `Gate::send_request()`:
 ///   match self {
-///       Gate::Host(gate) => gate.send_request(...),   // <- 静态分发
-///       Gate::Peer(gate) => gate.send_request(...),   // <- 静态分发
+///       Gate::Host(gate) => gate.send_request(...),   // <- static dispatch
+///       Gate::Peer(gate) => gate.send_request(...),   // <- static dispatch
 ///   }
 ///
-/// 性能：
-///   - 无虚函数表查找
-///   - 编译器完全内联
-///   - CPU 分支预测命中率 >95%
+/// Performance characteristics:
+///   - no vtable lookup
+///   - fully inlineable by the compiler
+///   - CPU branch prediction hit rate above 95%
 /// ```
 #[derive(Clone)]
 pub enum Gate {
-    /// Host - 进程内传输（零序列化，出站）
+    /// Host: in-process outbound transport with zero serialization.
     Host(Arc<HostGate>),
 
-    /// Peer - 跨进程传输（Protobuf 序列化，出站）
+    /// Peer: cross-process outbound transport using Protobuf serialization.
     Peer(Arc<PeerGate>),
 }
 
 impl Gate {
-    /// 发送请求并等待响应
+    /// Send a request and wait for the response.
     ///
-    /// # 参数
+    /// # Parameters
     ///
-    /// - `target`: 目标 Actor ID
-    /// - `envelope`: 消息信封（包含 route_key 和 payload）
+    /// - `target`: target actor ID
+    /// - `envelope`: message envelope containing `route_key` and payload
     ///
-    /// # 返回
+    /// # Returns
     ///
-    /// 返回响应的字节数据
+    /// The response bytes.
     ///
-    /// # 实现
+    /// # Implementation
     ///
-    /// 使用 enum dispatch 静态分发到对应的实现：
-    /// - `Host`: 零序列化，直接传递 RpcEnvelope
-    /// - `Peer`: Protobuf 序列化，通过 Transport 层发送
+    /// Uses enum dispatch to statically dispatch to the concrete implementation:
+    /// - `Host`: zero serialization and direct `RpcEnvelope` passing
+    /// - `Peer`: Protobuf serialization through the transport layer
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "Gate.send_request")
@@ -77,7 +77,7 @@ impl Gate {
         }
     }
 
-    /// 发送请求并等待响应（显式指定 PayloadType）
+    /// Send a request and wait for the response with an explicit `PayloadType`.
     pub async fn send_request_with_type(
         &self,
         target_id: &ActrId,
@@ -96,16 +96,16 @@ impl Gate {
         }
     }
 
-    /// 发送单向消息（不等待响应）
+    /// Send a one-way message without waiting for a response.
     ///
-    /// # 参数
+    /// # Parameters
     ///
-    /// - `target`: 目标 Actor ID
-    /// - `envelope`: 消息信封
+    /// - `target`: target actor ID
+    /// - `envelope`: message envelope
     ///
-    /// # 语义
+    /// # Semantics
     ///
-    /// Fire-and-forget：发送后立即返回，不等待响应
+    /// Fire-and-forget: return immediately after sending.
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "Gate.send_message")
@@ -117,7 +117,7 @@ impl Gate {
         }
     }
 
-    /// 发送单向消息（显式指定 PayloadType）
+    /// Send a one-way message with an explicit `PayloadType`.
     pub async fn send_message_with_type(
         &self,
         target: &ActrId,
@@ -136,19 +136,19 @@ impl Gate {
         }
     }
 
-    /// 发送媒体样本（WebRTC native media）
+    /// Send a media sample over native WebRTC media transport.
     ///
-    /// # 参数
+    /// # Parameters
     ///
-    /// - `target`: 目标 Actor ID
-    /// - `track_id`: Media track 标识符
-    /// - `sample`: 媒体样本数据
+    /// - `target`: target actor ID
+    /// - `track_id`: media track identifier
+    /// - `sample`: media sample data
     ///
-    /// # 语义
+    /// # Semantics
     ///
-    /// - 仅支持 Peer（WebRTC）
-    /// - Host 返回 NotImplemented 错误
-    /// - 使用 WebRTC RTCRtpSender 发送，无 protobuf 开销
+    /// - Supported only for `Peer` (WebRTC)
+    /// - `Host` returns `NotImplemented`
+    /// - Uses `RTCRtpSender` without protobuf overhead
     pub async fn send_media_sample(
         &self,
         target: &ActrId,
@@ -195,18 +195,18 @@ impl Gate {
         }
     }
 
-    /// 发送 DataStream（Fast Path 数据流）
+    /// Send a `DataStream` over the Fast Path.
     ///
-    /// # 参数
+    /// # Parameters
     ///
-    /// - `target`: 目标 Actor ID
-    /// - `payload_type`: PayloadType (StreamReliable 或 StreamLatencyFirst)
-    /// - `data`: 序列化后的 DataStream bytes
+    /// - `target`: target actor ID
+    /// - `payload_type`: `PayloadType` such as `StreamReliable` or `StreamLatencyFirst`
+    /// - `data`: serialized `DataStream` bytes
     ///
-    /// # 语义
+    /// # Semantics
     ///
-    /// - Host: 通过 mpsc channel 发送
-    /// - Peer: 通过 WebRTC DataChannel 或 WebSocket 发送
+    /// - Host: sends through an `mpsc` channel
+    /// - Peer: sends through WebRTC DataChannel or WebSocket
     pub async fn send_data_stream(
         &self,
         target: &ActrId,

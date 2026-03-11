@@ -1,32 +1,32 @@
 //! Service Worker System Module
 //!
-//! Service Worker 端的 ActorSystem 实现
-//! 负责 State Path：Mailbox + Scheduler + Actor 执行
+//! Service Worker-side ActorSystem implementation.
+//! Responsible for the State Path: mailbox, scheduler, and actor execution.
 //!
-//! # 架构设计
+//! # Architecture
 //!
 //! ```text
-//! DOM 侧
-//!   RPC 请求
-//!     ↓
+//! DOM side
+//!   RPC request
+//!     v
 //! ═══════════════════════════════════════════════════════
-//! SW 侧
-//!     ↓
+//! SW side
+//!     v
 //!   HostGate.send_request()
-//!     ↓
-//!   MessageHandler (由 System 设置)
-//!     ↓
+//!     v
+//!   MessageHandler (installed by System)
+//!     v
 //!   ┌─────────────────────────────────────────────────┐
-//!   │ System 判断目标:                                │
-//!   │ - 本地 Actor? → Mailbox → Scheduler → Actor    │
-//!   │ - 远程 Actor? → Gate → Transport → Remote   │
+//!   │ System decides the target:                     │
+//!   │ - Local actor?  -> Mailbox -> Scheduler -> Actor │
+//!   │ - Remote actor? -> Gate -> Transport -> Remote   │
 //!   └─────────────────────────────────────────────────┘
-//!     ↓
-//!   响应返回
-//!     ↓
+//!     v
+//!   Response returns
+//!     v
 //!   HostGate.handle_response()
-//!     ↓
-//!   DOM 侧收到响应
+//!     v
+//!   DOM side receives response
 //! ```
 
 use std::cell::RefCell;
@@ -44,31 +44,32 @@ use crate::outbound::{Gate, HostGate, PeerGate};
 
 /// Service Worker System
 ///
-/// 消息处理的中心枢纽，连接 DOM 和远程 Actor
+/// Central message-processing hub connecting the DOM side and remote actors.
 ///
-/// 注意：WASM/Service Worker 是单线程环境，使用 Rc/RefCell 而不是 Arc/Mutex
+/// Note: WASM/Service Worker runs in a single-threaded environment, so this uses
+/// `Rc`/`RefCell` instead of `Arc`/`Mutex`.
 pub struct System {
-    /// HostGate - 处理来自 DOM 的请求
+    /// HostGate handles requests from the DOM side.
     host_gate: Arc<HostGate>,
 
-    /// Gate - 出站消息路由
+    /// Gate used for outbound routing.
     ///
-    /// Peer（专用 MessagePort + 完整传输栈）
+    /// Peer route through a dedicated MessagePort plus the full transport stack.
     /// PeerGate → PeerTransport → DestTransport → WirePool → DataLane::PostMessage
     outgate: Rc<RefCell<Option<Gate>>>,
 
-    /// DOM 通信端口
+    /// DOM communication port.
     dom_port: Rc<RefCell<Option<MessagePort>>>,
 
-    /// 本地 Actor ID（客户端模式下的自身 ID）
+    /// Local actor ID in client mode.
     local_actor_id: Rc<RefCell<Option<ActrId>>>,
 
-    /// Pending requests 用于响应匹配
+    /// Pending requests used for response matching.
     pending_requests: Rc<RefCell<HashMap<String, oneshot::Sender<Bytes>>>>,
 }
 
 impl System {
-    /// 创建新的 System
+    /// Create a new System.
     pub fn new() -> Self {
         let host_gate = Arc::new(HostGate::new());
 
@@ -81,48 +82,48 @@ impl System {
         }
     }
 
-    /// 获取 HostGate
+    /// Return the HostGate.
     pub fn host_gate(&self) -> &Arc<HostGate> {
         &self.host_gate
     }
 
-    /// 设置 Gate（统一出站路由）
+    /// Set the unified outbound gate.
     pub fn set_outgate(&self, gate: Gate) {
         *self.outgate.borrow_mut() = Some(gate);
     }
 
-    /// 设置 PeerGate（便捷方法，内部转为 Gate::Peer）
+    /// Set PeerGate via a convenience wrapper that converts it into `Gate::Peer`.
     pub fn set_peer_gate(&self, gate: Arc<PeerGate>) {
         self.set_outgate(Gate::peer(gate));
     }
 
-    /// 获取当前 Gate 的克隆
+    /// Return a clone of the current gate.
     pub fn outgate(&self) -> Option<Gate> {
         self.outgate.borrow().clone()
     }
 
-    /// 设置 DOM 端口
+    /// Set the DOM port.
     pub fn set_dom_port(&self, port: MessagePort) {
         *self.dom_port.borrow_mut() = Some(port);
     }
 
-    /// 设置本地 Actor ID
+    /// Set the local actor ID.
     pub fn set_local_actor_id(&self, actor_id: ActrId) {
         *self.local_actor_id.borrow_mut() = Some(actor_id);
     }
 
-    /// 注册一个 pending request
+    /// Register a pending request.
     pub fn register_pending_request(&self, request_id: String, sender: oneshot::Sender<Bytes>) {
         self.pending_requests
             .borrow_mut()
             .insert(request_id, sender);
     }
 
-    /// 初始化消息处理器
+    /// Initialize the message handler.
     ///
-    /// 设置 HostGate 的 MessageHandler，将消息路由到正确的目标：
-    /// - 本地 Actor → TODO (Phase 2)
-    /// - 远程 Actor → Gate.send_message()
+    /// Installs the HostGate message handler and routes messages to the correct target:
+    /// - Local actor -> TODO (Phase 2)
+    /// - Remote actor -> `Gate.send_message()`
     pub fn init_message_handler(&self) {
         let local_actor_id = Rc::clone(&self.local_actor_id);
         let outgate = Rc::clone(&self.outgate);
@@ -140,20 +141,20 @@ impl System {
                 let envelope = envelope.clone();
 
                 wasm_bindgen_futures::spawn_local(async move {
-                    // 判断是本地还是远程调用
+                    // Decide whether this is a local or remote invocation.
                     let is_local = local_id
                         .as_ref()
                         .map(|id| id == &target_id)
                         .unwrap_or(false);
 
                     if is_local {
-                        // TODO: 本地 Actor 调用（Phase 2）
+                        // TODO: local actor calls (Phase 2).
                         log::warn!(
                             "[System] Local actor calls not yet implemented, request_id={}",
                             envelope.request_id
                         );
                     } else {
-                        // 远程调用：通过 Gate 发送
+                        // Remote invocation: send through the gate.
                         match gate {
                             Some(ref g) => {
                                 if let Err(e) = g.send_message(&target_id, envelope.clone()).await {
@@ -171,21 +172,21 @@ impl System {
             });
     }
 
-    /// 处理来自远程的响应
+    /// Handle a response from a remote target.
     ///
-    /// 路由顺序：
-    /// 1. Gate（DomBridge/Peer 的 pending requests，用于 Actor 发起的调用）
+    /// Routing order:
+    /// 1. Gate (DomBridge/Peer pending requests for actor-initiated calls)
     /// 2. System pending_requests
-    /// 3. HostGate（用于 DOM 发起的调用）
+    /// 3. HostGate (for DOM-initiated calls)
     pub fn handle_remote_response(&self, request_id: &str, response: Bytes) {
-        // 1. 尝试 Gate（Actor 主动发起的 call() 的响应）
+        // 1. Try Gate first for actor-initiated call() responses.
         if let Some(ref gate) = *self.outgate.borrow() {
             if gate.try_handle_response(request_id, response.clone()) {
                 return;
             }
         }
 
-        // 2. 尝试 System pending_requests
+        // 2. Try System pending_requests.
         if let Some(tx) = self.pending_requests.borrow_mut().remove(request_id) {
             match tx.send(response.clone()) {
                 Ok(()) => return, // Receiver alive, consumed
@@ -193,11 +194,11 @@ impl System {
             }
         }
 
-        // 3. 转发到 HostGate（DOM 发起的调用）
+        // 3. Forward to HostGate for DOM-initiated calls.
         self.host_gate.handle_response(request_id, response);
     }
 
-    /// 发送消息到 DOM
+    /// Send a message to the DOM side.
     pub fn send_to_dom(&self, msg: &JsValue) -> Result<(), String> {
         let dom_port = self.dom_port.borrow();
         if let Some(ref port) = *dom_port {

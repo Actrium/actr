@@ -12,7 +12,7 @@ export default defineConfig({
         },
     },
     server: {
-        port: 5174, // 不同于 hello-world 的默认端口
+        port: 5174, // Use a different port than the hello-world example
         headers: {
             'Cross-Origin-Opener-Policy': 'same-origin',
             'Cross-Origin-Embedder-Policy': 'require-corp',

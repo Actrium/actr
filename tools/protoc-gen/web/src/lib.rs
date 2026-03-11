@@ -1,17 +1,17 @@
 //! # actr-web-protoc-codegen
 //!
-//! Protoc 代码生成器，用于从 Protobuf 定义生成 actr-web 代码
+//! Protoc code generator for producing actr-web code from Protobuf definitions.
 //!
-//! ## 功能
+//! ## Features
 //!
-//! - 从 `.proto` 文件生成 Rust WASM Actor 代码
-//! - 生成 TypeScript 类型定义
-//! - 生成 TypeScript ActorRef 包装类
-//! - 可选：生成 React Hooks
+//! - Generate Rust WASM actor code from `.proto` files
+//! - Generate TypeScript type definitions
+//! - Generate TypeScript ActorRef wrappers
+//! - Optionally generate React Hooks
 //!
-//! ## 使用方式
+//! ## Usage
 //!
-//! ### 方式 1：在 build.rs 中使用
+//! ### Option 1: use it from `build.rs`
 //!
 //! ```rust,no_run
 //! use actr_web_protoc_codegen::{WebCodegen, WebCodegenConfig};
@@ -31,7 +31,7 @@
 //!     .expect("Failed to generate code");
 //! ```
 //!
-//! ### 方式 2：通过 actr-cli 使用
+//! ### Option 2: use it through `actr-cli`
 //!
 //! ```bash
 //! actr gen --platform web \
@@ -60,65 +60,68 @@ pub use request::{
     WebCodegenRequest, WebCodegenResponse,
 };
 
-/// Web 平台代码生成器
+/// Code generator for the web platform.
 pub struct WebCodegen {
     config: WebCodegenConfig,
 }
 
 impl WebCodegen {
-    /// 创建新的代码生成器实例
+    /// Create a new code generator instance.
     pub fn new(config: WebCodegenConfig) -> Self {
         Self { config }
     }
 
-    /// 生成所有代码（Rust + TypeScript）
+    /// Generate all outputs: Rust and TypeScript.
     pub fn generate(&self) -> Result<GeneratedFiles> {
-        tracing::info!("🚀 开始生成 actr-web 代码");
+        tracing::info!("Starting actr-web code generation");
 
         let mut files = GeneratedFiles::default();
 
-        // 1. 解析 proto 文件
+        // 1. Parse proto files.
         let services = self.parse_proto_files()?;
-        tracing::info!("📁 解析了 {} 个服务", services.len());
+        tracing::info!("Parsed {} services", services.len());
 
-        // 2. 生成 Rust WASM Actor 代码
-        tracing::info!("🦀 生成 Rust WASM 代码...");
+        // 2. Generate Rust WASM actor code.
+        tracing::info!("Generating Rust WASM code");
         files.rust_files = self.generate_rust_actors(&services)?;
 
-        // 3. 生成 TypeScript 类型定义
-        tracing::info!("📘 生成 TypeScript 类型...");
+        // 3. Generate TypeScript types.
+        tracing::info!("Generating TypeScript types");
         files.ts_types = self.generate_typescript_types(&services)?;
 
-        // 4. 生成 TypeScript ActorRef 包装
-        tracing::info!("🎯 生成 ActorRef 包装...");
+        // 4. Generate TypeScript ActorRef wrappers.
+        tracing::info!("Generating ActorRef wrappers");
         files.ts_actor_refs = self.generate_actor_refs(&services)?;
 
-        // 5. 可选：生成 React Hooks
+        // 5. Optionally generate React Hooks.
         if self.config.generate_react_hooks {
-            tracing::info!("⚛️  生成 React Hooks...");
+            tracing::info!("Generating React Hooks");
             files.react_hooks = self.generate_react_hooks(&services)?;
         }
 
-        // 6. 写入文件
+        // 6. Write files.
         files.write_to_disk()?;
 
-        // 7. 格式化代码
+        // 7. Format generated code.
         if self.config.format_code {
             files.format_code()?;
         }
 
-        tracing::info!("✅ 代码生成完成！共生成 {} 个文件", files.total_count());
+        tracing::info!(
+            "Code generation finished. Generated {} files",
+            files.total_count()
+        );
 
         Ok(files)
     }
 
-    /// 仅生成 Rust 代码（供 build.rs 使用）
+    /// Generate Rust output only, intended for `build.rs`.
     pub fn generate_rust_only(&self) -> Result<Vec<GeneratedFile>> {
         let services = self.parse_proto_files()?;
         self.generate_rust_actors(&services)
     }
 
-    /// 仅生成 TypeScript 代码
+    /// Generate TypeScript output only.
     pub fn generate_typescript_only(&self) -> Result<Vec<GeneratedFile>> {
         let services = self.parse_proto_files()?;
         let mut files = Vec::new();
@@ -127,33 +130,33 @@ impl WebCodegen {
         Ok(files)
     }
 
-    /// 解析 proto 文件
+    /// Parse proto files.
     fn parse_proto_files(&self) -> Result<Vec<ProtoService>> {
         generator::parse_proto_files(&self.config)
     }
 
-    /// 生成 Rust Actor 代码
+    /// Generate Rust actor code.
     fn generate_rust_actors(&self, services: &[ProtoService]) -> Result<Vec<GeneratedFile>> {
         generator::generate_rust_actors(&self.config, services)
     }
 
-    /// 生成 TypeScript 类型
+    /// Generate TypeScript types.
     fn generate_typescript_types(&self, services: &[ProtoService]) -> Result<Vec<GeneratedFile>> {
         typescript::generate_types(&self.config, services)
     }
 
-    /// 生成 ActorRef 包装
+    /// Generate ActorRef wrappers.
     fn generate_actor_refs(&self, services: &[ProtoService]) -> Result<Vec<GeneratedFile>> {
         typescript::generate_actor_refs(&self.config, services)
     }
 
-    /// 生成 React Hooks
+    /// Generate React Hooks.
     fn generate_react_hooks(&self, services: &[ProtoService]) -> Result<Vec<GeneratedFile>> {
         typescript::generate_react_hooks(&self.config, services)
     }
 }
 
-/// 生成的所有文件
+/// All files generated in a run.
 #[derive(Default, Debug)]
 pub struct GeneratedFiles {
     pub rust_files: Vec<GeneratedFile>,
@@ -163,7 +166,7 @@ pub struct GeneratedFiles {
 }
 
 impl GeneratedFiles {
-    /// 获取所有文件
+    /// Return an iterator over all generated files.
     pub fn all_files(&self) -> impl Iterator<Item = &GeneratedFile> {
         self.rust_files
             .iter()
@@ -172,7 +175,7 @@ impl GeneratedFiles {
             .chain(self.react_hooks.iter())
     }
 
-    /// 获取文件总数
+    /// Return the total generated file count.
     pub fn total_count(&self) -> usize {
         self.rust_files.len()
             + self.ts_types.len()
@@ -180,7 +183,7 @@ impl GeneratedFiles {
             + self.react_hooks.len()
     }
 
-    /// 写入所有文件到磁盘
+    /// Write all generated files to disk.
     pub fn write_to_disk(&self) -> Result<()> {
         for file in self.all_files() {
             file.write_to_disk()?;
@@ -188,18 +191,18 @@ impl GeneratedFiles {
         Ok(())
     }
 
-    /// 格式化所有生成的代码
+    /// Format all generated code.
     pub fn format_code(&self) -> Result<()> {
-        tracing::info!("🎨 格式化生成的代码...");
+        tracing::info!("Formatting generated code");
 
-        // 格式化 Rust 代码
+        // Format Rust files.
         for file in &self.rust_files {
             if file.path.extension().and_then(|s| s.to_str()) == Some("rs") {
                 format_rust_file(&file.path)?;
             }
         }
 
-        // 格式化 TypeScript 代码
+        // Format TypeScript files.
         let ts_files: Vec<_> = self
             .ts_types
             .iter()
@@ -213,12 +216,12 @@ impl GeneratedFiles {
             }
         }
 
-        tracing::info!("✅ 代码格式化完成");
+        tracing::info!("Generated code formatting completed");
         Ok(())
     }
 }
 
-/// 单个生成的文件
+/// A single generated file.
 #[derive(Debug, Clone)]
 pub struct GeneratedFile {
     pub path: PathBuf,
@@ -226,29 +229,29 @@ pub struct GeneratedFile {
 }
 
 impl GeneratedFile {
-    /// 创建新的生成文件
+    /// Create a new generated file.
     pub fn new(path: PathBuf, content: String) -> Self {
         Self { path, content }
     }
 
-    /// 写入文件到磁盘
+    /// Write the file to disk.
     pub fn write_to_disk(&self) -> Result<()> {
         use std::fs;
 
-        // 创建父目录
+        // Create the parent directory first.
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // 写入文件
+        // Write the file.
         fs::write(&self.path, &self.content)?;
-        tracing::debug!("✅ 写入文件: {}", self.path.display());
+        tracing::debug!("Wrote file: {}", self.path.display());
 
         Ok(())
     }
 }
 
-/// Proto 服务定义
+/// Proto service definition.
 #[derive(Debug, Clone)]
 pub struct ProtoService {
     pub name: String,
@@ -257,7 +260,7 @@ pub struct ProtoService {
     pub messages: Vec<ProtoMessage>,
 }
 
-/// Proto 方法定义
+/// Proto method definition.
 #[derive(Debug, Clone)]
 pub struct ProtoMethod {
     pub name: String,
@@ -266,14 +269,14 @@ pub struct ProtoMethod {
     pub is_streaming: bool,
 }
 
-/// Proto 消息定义
+/// Proto message definition.
 #[derive(Debug, Clone)]
 pub struct ProtoMessage {
     pub name: String,
     pub fields: Vec<ProtoField>,
 }
 
-/// Proto 字段定义
+/// Proto field definition.
 #[derive(Debug, Clone)]
 pub struct ProtoField {
     pub name: String,
@@ -283,7 +286,7 @@ pub struct ProtoField {
     pub is_optional: bool,
 }
 
-/// 格式化 Rust 文件
+/// Format a Rust file.
 fn format_rust_file(path: &std::path::Path) -> Result<()> {
     use std::process::Command;
 
@@ -295,57 +298,57 @@ fn format_rust_file(path: &std::path::Path) -> Result<()> {
 
     match output {
         Ok(output) if output.status.success() => {
-            tracing::debug!("✅ 格式化 Rust 文件: {}", path.display());
+            tracing::debug!("Formatted Rust file: {}", path.display());
             Ok(())
         }
         Ok(output) => {
             tracing::warn!(
-                "⚠️  rustfmt 失败: {}",
+                "rustfmt failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            Ok(()) // 格式化失败不应该阻塞生成流程
+            Ok(()) // Formatting failures must not block code generation.
         }
         Err(e) => {
-            tracing::warn!("⚠️  rustfmt 未找到或执行失败: {}", e);
-            Ok(()) // 格式化失败不应该阻塞生成流程
+            tracing::warn!("rustfmt not found or failed to execute: {}", e);
+            Ok(()) // Formatting failures must not block code generation.
         }
     }
 }
 
-/// 格式化 TypeScript 文件
+/// Format a TypeScript file.
 fn format_typescript_file(path: &std::path::Path) -> Result<()> {
     use std::process::Command;
 
-    // 尝试使用 prettier
+    // Try prettier first.
     let output = Command::new("npx")
         .args(["prettier", "--write", path.to_str().unwrap()])
         .output();
 
     match output {
         Ok(output) if output.status.success() => {
-            tracing::debug!("✅ 格式化 TypeScript 文件: {}", path.display());
+            tracing::debug!("Formatted TypeScript file: {}", path.display());
             Ok(())
         }
         Ok(output) => {
             tracing::warn!(
-                "⚠️  prettier 失败: {}",
+                "prettier failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
             Ok(())
         }
         Err(_) => {
-            // prettier 不可用，尝试 dprint
+            // Fall back to dprint when prettier is unavailable.
             let output = Command::new("dprint")
                 .args(["fmt", path.to_str().unwrap()])
                 .output();
 
             match output {
                 Ok(output) if output.status.success() => {
-                    tracing::debug!("✅ 格式化 TypeScript 文件（dprint）: {}", path.display());
+                    tracing::debug!("Formatted TypeScript file with dprint: {}", path.display());
                     Ok(())
                 }
                 _ => {
-                    tracing::warn!("⚠️  TypeScript 格式化工具未找到（prettier/dprint）");
+                    tracing::warn!("No TypeScript formatter found (prettier/dprint)");
                     Ok(())
                 }
             }

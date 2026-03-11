@@ -1,35 +1,35 @@
 //! # actr-hyper
 //!
-//! Hyper — Actor 运行平台层 + 运行时基础设施
+//! Hyper — Actor platform layer + runtime infrastructure
 //!
-//! ## 定位
+//! ## Positioning
 //!
-//! Hyper 是 Actor 的操作系统：划定边界（Sandbox），提供平台原语，
-//! 并承载完整的运行时基础设施（传输、路由、生命周期管理）。
+//! Hyper is the operating system for Actors: it defines boundaries (Sandbox), provides platform
+//! primitives, and carries the full runtime infrastructure (transport, routing, lifecycle management).
 //!
-//! Actor 不能自己打开数据库，不能自己持有私钥，不能声称自己是某个类型——
-//! 一切都必须经过 Hyper 的受控接口。
+//! An Actor cannot open a database on its own, cannot hold its own private key, and cannot claim
+//! to be a certain type — everything must go through Hyper's controlled interfaces.
 //!
-//! ## 职责
+//! ## Responsibilities
 //!
-//! ### 平台层（原 Hyper）
+//! ### Platform Layer (formerly Hyper)
 //!
-//! - 包签名验证（binary_hash + MFR 签名）
-//! - Actor 启动引导（代表 Actor 向 AIS 发起注册，取得 credential）
-//! - 存储命名空间隔离（每个 Actor 独立的 SQLite 空间）
-//! - 加密原语（Ed25519 签名/验证，Actor 不持有原始私钥）
-//! - 运行时进程管理（三种模式的 ActrSystem 生命周期）
+//! - Package signature verification (binary_hash + MFR signature)
+//! - Actor bootstrap (registers with AIS on behalf of the Actor, obtains credential)
+//! - Storage namespace isolation (independent SQLite space per Actor)
+//! - Cryptographic primitives (Ed25519 sign/verify, Actor does not hold raw private keys)
+//! - Runtime process management (ActrSystem lifecycle across three modes)
 //!
-//! ### 运行时基础设施（原 actr-runtime）
+//! ### Runtime Infrastructure (formerly actr-runtime)
 //!
-//! - **Actor 生命周期**：系统初始化、节点启动/关停 (ActrSystem / ActrNode / ActrRef)
-//! - **消息传输**：多层架构 (Wire -> Transport -> Gate -> Dispatch)
-//! - **通信模式**：进程内（零拷贝）和跨进程（WebRTC / WebSocket）
-//! - **消息持久化**：SQLite 后端的 Mailbox（ACID 保证）
-//! - **可观测性**：日志、分布式追踪（OpenTelemetry，可选 feature）
-//! - **WASM 引擎**：WASM actor 执行（可选 feature）
+//! - **Actor Lifecycle**: system init, node start/stop (ActrSystem / ActrNode / ActrRef)
+//! - **Message Transport**: layered architecture (Wire -> Transport -> Gate -> Dispatch)
+//! - **Communication Modes**: in-process (zero-copy) and cross-process (WebRTC / WebSocket)
+//! - **Message Persistence**: SQLite-backed Mailbox (ACID guarantees)
+//! - **Observability**: logging, distributed tracing (OpenTelemetry, optional feature)
+//! - **WASM Engine**: WASM actor execution (optional feature)
 //!
-//! ## 架构分层
+//! ## Architecture Layers
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────┐
@@ -54,11 +54,12 @@
 //! └─────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## 不做的事
+//! ## Non-Goals
 //!
-//! Hyper 不理解业务，不做业务级消息路由，不知道 Actor 之间的业务关系。
-//! WASM 模式下提供的 `hyper_send`/`hyper_recv` 是网络 I/O 原语，
-//! 路由决策由 WASM 内的 ActrSystem 完成。
+//! Hyper does not understand business logic, does not perform business-level message routing,
+//! and is unaware of business relationships between Actors.
+//! The `hyper_send`/`hyper_recv` provided in WASM mode are network I/O primitives;
+//! routing decisions are made by the ActrSystem running inside the WASM.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Platform modules (original Hyper)
@@ -94,6 +95,10 @@ pub mod transport;
 // Layer 0: Wire layer
 pub mod wire;
 
+// Shared helpers for integration tests
+#[cfg(feature = "test-utils")]
+pub mod test_support;
+
 // Context and context factory
 pub mod context;
 pub mod context_factory;
@@ -127,8 +132,7 @@ pub use error::{HyperError, HyperResult};
 pub use runtime::{ActorRuntime, ActrSystemHandle, ChildProcessHandle, WasmInstanceHandle};
 pub use storage::ActorStore;
 pub use verify::{
-    MfrCertCache, PackageManifest,
-    embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
+    MfrCertCache, PackageManifest, embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
     manifest_signed_bytes,
 };
 
@@ -157,20 +161,10 @@ pub use outbound::{Gate, HostGate, PeerGate};
 
 // Layer 1: Transport layer
 pub use transport::{
-    DataLane,
-    DefaultWireBuilder,
-    DefaultWireBuilderConfig,
-    Dest,
-    DestTransport,
-    ExponentialBackoff,
-    HostTransport,
-    NetworkError,
-    NetworkResult,
-    PeerTransport,
-    WireBuilder,
+    DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport,
+    ExponentialBackoff, HostTransport, NetworkError, NetworkResult, PeerTransport, WireBuilder,
     WireHandle,
 };
-
 
 // Layer 0: Wire layer
 pub use wire::{
@@ -195,7 +189,9 @@ pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfi
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
 
 // Executor adapter
-pub use executor::{CallExecutorFn, DispatchContext, ExecutorAdapter, IoResult, PendingCall};
+pub use executor::{
+    CallExecutorFn, DispatchContext, DispatchResult, ExecutorAdapter, IoResult, PendingCall,
+};
 
 // AIS key cache
 pub use key_cache::AisKeyCache;
@@ -220,9 +216,9 @@ pub mod prelude {
     //! ```
 
     // ── Platform types ──────────────────────────────────────────────────────
-    pub use crate::{Hyper, HyperConfig, HyperError, HyperResult, TrustMode};
     pub use crate::storage::ActorStore;
     pub use crate::verify::PackageManifest;
+    pub use crate::{Hyper, HyperConfig, HyperError, HyperResult, TrustMode};
 
     // ── Core structures ─────────────────────────────────────────────────────
     pub use crate::actr_ref::ActrRef;
@@ -258,17 +254,8 @@ pub mod prelude {
 
     // ── Layer 1: Transport ──────────────────────────────────────────────────
     pub use crate::transport::{
-        DataLane,
-        DefaultWireBuilder,
-        DefaultWireBuilderConfig,
-        Dest,
-        DestTransport,
-        HostTransport,
-        NetworkError,
-        NetworkResult,
-        PeerTransport,
-        WireBuilder,
-        WireHandle,
+        DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport, HostTransport,
+        NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
     };
 
     // ── Error types ─────────────────────────────────────────────────────────
@@ -312,13 +299,13 @@ use prost::Message;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use actr_protocol::{register_response, Realm, RegisterRequest};
+use actr_protocol::{Realm, RegisterRequest, register_response};
 use storage::KvOp;
 
-/// Hyper 运行时实例
+/// Hyper runtime instance
 ///
-/// 进程级单例，通过 `Hyper::init()` 初始化。
-/// 持有已解析的配置、instance_id、命名空间解析器等进程级状态。
+/// Process-level singleton, initialized via `Hyper::init()`.
+/// Holds resolved configuration, instance_id, namespace resolver, and other process-level state.
 #[derive(Clone)]
 pub struct Hyper {
     inner: Arc<HyperInner>,
@@ -326,18 +313,18 @@ pub struct Hyper {
 
 struct HyperInner {
     config: HyperConfig,
-    /// 首次启动时生成并持久化的本地唯一 ID
+    /// Locally unique ID generated and persisted on first startup
     instance_id: String,
-    /// 包签名验证器
+    /// Package signature verifier
     verifier: verify::PackageVerifier,
 }
 
 impl Hyper {
-    /// 初始化 Hyper（进程级，调用一次）
+    /// Initialize Hyper (process-level, call once)
     ///
-    /// - 解析配置
-    /// - 加载或生成 instance_id（持久化到 data_dir）
-    /// - 初始化包验证器
+    /// - Parse configuration
+    /// - Load or generate instance_id (persisted to data_dir)
+    /// - Initialize package verifier
     pub async fn init(config: HyperConfig) -> HyperResult<Self> {
         info!(
             data_dir = %config.data_dir.display(),
@@ -345,20 +332,22 @@ impl Hyper {
                 TrustMode::Production { .. } => "production",
                 TrustMode::Development { .. } => "development",
             },
-            "Hyper 初始化"
+            "Hyper initializing"
         );
 
-        // 确保 data_dir 存在
-        tokio::fs::create_dir_all(&config.data_dir).await.map_err(|e| {
-            HyperError::Config(format!(
-                "无法创建 data_dir `{}`: {e}",
-                config.data_dir.display()
-            ))
-        })?;
+        // ensure data_dir exists
+        tokio::fs::create_dir_all(&config.data_dir)
+            .await
+            .map_err(|e| {
+                HyperError::Config(format!(
+                    "failed to create data_dir `{}`: {e}",
+                    config.data_dir.display()
+                ))
+            })?;
 
-        // 加载或生成 instance_id
+        // load or generate instance_id
         let instance_id = load_or_create_instance_id(&config.data_dir).await?;
-        debug!(instance_id, "Hyper instance_id 已就绪");
+        debug!(instance_id, "Hyper instance_id ready");
 
         let verifier = verify::PackageVerifier::new(config.trust_mode.clone());
 
@@ -371,51 +360,55 @@ impl Hyper {
         })
     }
 
-    /// 验证 ActrPackage 字节流，返回已验证的 manifest
+    /// Verify an ActrPackage byte stream and return the verified manifest
     ///
-    /// 验证通过意味着：
-    /// - binary_hash 与重算结果一致（包未被篡改）
-    /// - MFR 签名合法（来自可信制造商）
+    /// Successful verification means:
+    /// - binary_hash matches the recomputed result (package not tampered with)
+    /// - MFR signature is valid (from a trusted manufacturer)
     ///
-    /// 生产模式下会先异步拉取 MFR 公钥（需要 AIS 可达）；
-    /// 开发模式下无网络调用，完全同步。
+    /// In production mode, the MFR public key is fetched asynchronously first (requires AIS reachability);
+    /// in development mode, there are no network calls and verification is fully synchronous.
     pub async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        // 生产模式：先预取 MFR 公钥（写入 cert_cache），再同步验证
+        // production mode: prefetch MFR public key (write to cert_cache), then verify synchronously
         if matches!(&self.inner.config.trust_mode, TrustMode::Production { .. }) {
             if let Some(manufacturer) = quick_extract_manufacturer(bytes) {
-                debug!(manufacturer, "生产模式：预取 MFR 公钥");
+                debug!(manufacturer, "production mode: prefetching MFR public key");
                 self.inner.verifier.prefetch_mfr_cert(&manufacturer).await?;
             }
         }
         self.inner.verifier.verify(bytes)
     }
 
-    /// 为已验证的 manifest 解析存储命名空间路径
+    /// Resolve the storage namespace path for a verified manifest
     ///
-    /// 路径在此处固定，后续所有存储操作都基于此路径做隔离。
+    /// The path is fixed here; all subsequent storage operations are isolated based on this path.
     pub fn resolve_storage_path(&self, manifest: &PackageManifest) -> HyperResult<PathBuf> {
         let resolver = config::NamespaceResolver::new(&self.inner.config, &self.inner.instance_id)?
-            .with_actor_type(&manifest.manufacturer, &manifest.actr_name, &manifest.version);
+            .with_actor_type(
+                &manifest.manufacturer,
+                &manifest.actr_name,
+                &manifest.version,
+            );
         resolver.resolve(&self.inner.config.storage_path_template)
     }
 
-    /// 向 AIS 发起 credential 注册引导（两阶段流程）
+    /// Bootstrap credential registration with AIS (two-phase flow)
     ///
-    /// Hyper 代表 Actor 完成注册引导，取得 ActrId credential。
-    /// 此 credential 随后传递给 ActrSystem（Mode 1/3）或通过环境变量传递给子进程（Mode 2）。
+    /// Hyper completes registration bootstrap on behalf of the Actor to obtain an ActrId credential.
+    /// This credential is then passed to ActrSystem (Mode 1/3) or via environment variables to the child process (Mode 2).
     ///
-    /// ## 两阶段逻辑
+    /// ## Two-Phase Logic
     ///
-    /// - **阶段 1（首次注册）**：ActorStore 中无有效 PSK →
-    ///   用 MFR 签名 manifest 注册 → AIS 返回 credential + PSK → 存入 ActorStore
-    /// - **阶段 2（PSK 续期）**：ActorStore 中有有效 PSK →
-    ///   直接用 PSK 注册 → AIS 返回新 credential
+    /// - **Phase 1 (first registration)**: no valid PSK in ActorStore ->
+    ///   register with MFR-signed manifest -> AIS returns credential + PSK -> stored in ActorStore
+    /// - **Phase 2 (PSK renewal)**: valid PSK exists in ActorStore ->
+    ///   register directly with PSK -> AIS returns new credential
     ///
-    /// ## 参数
+    /// ## Parameters
     ///
-    /// - `manifest`: 已验证的包 manifest（来自 `verify_package`）
-    /// - `ais_endpoint`: AIS HTTP 地址，例如 `"http://ais.example.com:8080"`
-    /// - `realm_id`: 目标 Realm ID
+    /// - `manifest`: verified package manifest (from `verify_package`)
+    /// - `ais_endpoint`: AIS HTTP address, e.g. `"http://ais.example.com:8080"`
+    /// - `realm_id`: target Realm ID
     pub async fn bootstrap_credential(
         &self,
         manifest: &PackageManifest,
@@ -424,19 +417,17 @@ impl Hyper {
     ) -> HyperResult<Vec<u8>> {
         info!(
             actr_type = manifest.actr_type_str(),
-            ais_endpoint,
-            realm_id,
-            "开始向 AIS 申请 credential"
+            ais_endpoint, realm_id, "starting credential bootstrap with AIS"
         );
 
-        // 1. 打开该 Actor 的 ActorStore（存储命名空间隔离）
+        // 1. Open the Actor's ActorStore (storage namespace isolation)
         let storage_path = self.resolve_storage_path(manifest)?;
         let store = ActorStore::open(&storage_path).await?;
 
-        // 2. 检查 ActorStore 中是否有有效 PSK
+        // 2. Check if there is a valid PSK in ActorStore
         let valid_psk = load_valid_psk(&store).await?;
 
-        // 3. 构造 RegisterRequest 并发送到 AIS
+        // 3. Build RegisterRequest and send to AIS
         let ais = AisClient::new(ais_endpoint);
 
         let actr_type = ActrType {
@@ -447,10 +438,10 @@ impl Hyper {
         let realm = Realm { realm_id };
 
         let response = if let Some(psk_token) = valid_psk {
-            // 阶段 2：PSK 续期
+            // Phase 2: PSK renewal
             debug!(
                 actr_type = manifest.actr_type_str(),
-                "使用 PSK 续期 credential"
+                "renewing credential using PSK"
             );
             let req = RegisterRequest {
                 actr_type,
@@ -465,13 +456,13 @@ impl Hyper {
             };
             ais.register_with_psk(req).await?
         } else {
-            // 阶段 1：首次注册，携带 MFR manifest
+            // Phase 1: first registration, carrying MFR manifest
             info!(
                 actr_type = manifest.actr_type_str(),
-                "首次注册：使用 MFR manifest 向 AIS 注册"
+                "first registration: registering with AIS using MFR manifest"
             );
 
-            // 序列化 manifest 为 JSON
+            // serialize manifest to JSON
             let manifest_json = build_manifest_json(manifest)?;
 
             let req = RegisterRequest {
@@ -488,7 +479,7 @@ impl Hyper {
             ais.register_with_manifest(req).await?
         };
 
-        // 4. 处理 AIS 响应
+        // 4. Process AIS response
         let ok = match response.result {
             Some(register_response::Result::Success(ok)) => ok,
             Some(register_response::Result::Error(e)) => {
@@ -496,30 +487,29 @@ impl Hyper {
                     actr_type = manifest.actr_type_str(),
                     error_code = e.code,
                     error_message = %e.message,
-                    "AIS 注册返回错误"
+                    "AIS registration returned error"
                 );
                 return Err(HyperError::AisBootstrapFailed(format!(
-                    "AIS 拒绝注册 (code={}): {}",
+                    "AIS rejected registration (code={}): {}",
                     e.code, e.message
                 )));
             }
             None => {
                 error!(
                     actr_type = manifest.actr_type_str(),
-                    "AIS 响应中缺少 result 字段"
+                    "AIS response missing result field"
                 );
                 return Err(HyperError::AisBootstrapFailed(
-                    "AIS 响应缺少 result 字段".to_string(),
+                    "AIS response missing result field".to_string(),
                 ));
             }
         };
 
-        // 5a. 若响应中含有 PSK（首次注册场景），存入 ActorStore
+        // 5a. If the response contains a PSK (first registration scenario), store it in ActorStore
         if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
             info!(
                 actr_type = manifest.actr_type_str(),
-                psk_expires_at,
-                "收到 AIS 下发的 PSK，存入 ActorStore"
+                psk_expires_at, "received PSK from AIS, storing in ActorStore"
             );
             let expires_at_bytes = (psk_expires_at as u64).to_le_bytes().to_vec();
             store
@@ -536,11 +526,11 @@ impl Hyper {
                 .await?;
             debug!(
                 actr_type = manifest.actr_type_str(),
-                "PSK 已成功持久化到 ActorStore"
+                "PSK successfully persisted to ActorStore"
             );
         }
 
-        // 5b. 存储 signing_pubkey + signing_key_id（供 AisKeyCache 使用）
+        // 5b. Store signing_pubkey + signing_key_id (for AisKeyCache use)
         let pubkey_bytes = ok.signing_pubkey.to_vec();
         let key_id_bytes = ok.signing_key_id.to_le_bytes().to_vec();
         store
@@ -558,50 +548,50 @@ impl Hyper {
         debug!(
             actr_type = manifest.actr_type_str(),
             signing_key_id = ok.signing_key_id,
-            "AIS 签名公钥已持久化到 ActorStore"
+            "AIS signing public key persisted to ActorStore"
         );
 
-        // 6. 序列化 AIdCredential 并返回（credential 是 required 字段，直接使用）
+        // 6. Serialize AIdCredential and return (credential is a required field, use directly)
         let credential_bytes = ok.credential.encode_to_vec();
         info!(
             actr_type = manifest.actr_type_str(),
             credential_len = credential_bytes.len(),
-            "AIS credential 引导成功"
+            "AIS credential bootstrap succeeded"
         );
 
         Ok(credential_bytes)
     }
 
-    /// 当前 instance_id
+    /// Current instance_id
     pub fn instance_id(&self) -> &str {
         &self.inner.instance_id
     }
 
-    /// 当前配置
+    /// Current configuration
     pub fn config(&self) -> &HyperConfig {
         &self.inner.config
     }
 }
 
-// ─── 辅助函数 ────────────────────────────────────────────────────────────────
+// ─── Helper functions ────────────────────────────────────────────────────────
 
-/// 从 ActorStore 中读取 PSK，若存在且未过期则返回 PSK bytes，否则返回 None
+/// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
 ///
-/// PSK 过期检查：当前 Unix 时间戳（秒）≥ expires_at 时视为已过期。
+/// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
 async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
     let token = store.kv_get("hyper:psk:token").await?;
     let expires_at_raw = store.kv_get("hyper:psk:expires_at").await?;
 
     match (token, expires_at_raw) {
         (Some(token), Some(expires_bytes)) => {
-            // 解析过期时间（u64 little-endian）
+            // parse expiration time (u64 little-endian)
             if expires_bytes.len() != 8 {
-                warn!("PSK expires_at 格式异常，将重走首次注册流程");
+                warn!("PSK expires_at has unexpected format, falling back to first registration");
                 return Ok(None);
             }
             let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
 
-            // 获取当前 Unix 时间戳（秒）
+            // get current Unix timestamp (seconds)
             let now_secs = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -611,7 +601,7 @@ async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
                 warn!(
                     psk_expires_at = expires_at,
                     now = now_secs,
-                    "PSK 已过期，将重走首次注册流程"
+                    "PSK expired, falling back to first registration"
                 );
                 Ok(None)
             } else {
@@ -619,22 +609,22 @@ async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
                     psk_expires_at = expires_at,
                     now = now_secs,
                     remaining_secs = expires_at - now_secs,
-                    "PSK 有效，使用 PSK 续期路径"
+                    "PSK valid, using PSK renewal path"
                 );
                 Ok(Some(token))
             }
         }
         _ => {
-            debug!("ActorStore 中无 PSK，走首次注册流程");
+            debug!("no PSK in ActorStore, proceeding with first registration");
             Ok(None)
         }
     }
 }
 
-/// 将 PackageManifest 序列化为 JSON bytes
+/// Serialize a `PackageManifest` into JSON bytes.
 ///
-/// AIS 侧通过 manifest_json + mfr_signature 验证 MFR 身份。
-/// 包含 signature（base64 编码）和 binary_hash（hex 编码），与原始包格式一致。
+/// AIS verifies the MFR identity using `manifest_json + mfr_signature`.
+/// The JSON includes `signature` encoded as base64 and `binary_hash` encoded as hex, matching the original package format.
 fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
     use base64::Engine;
 
@@ -644,8 +634,7 @@ fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let sig_b64 =
-        base64::engine::general_purpose::STANDARD.encode(&manifest.signature);
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&manifest.signature);
 
     let json = serde_json::json!({
         "manufacturer": manifest.manufacturer,
@@ -657,18 +646,18 @@ fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
     });
 
     serde_json::to_vec(&json).map_err(|e| {
-        HyperError::AisBootstrapFailed(format!("manifest 序列化为 JSON 失败: {e}"))
+        HyperError::AisBootstrapFailed(format!("failed to serialize manifest to JSON: {e}"))
     })
 }
 
-/// 从二进制文件中快速提取 manufacturer 字段（仅用于预取 MFR 公钥，不做完整验证）
+/// Quickly extract the `manufacturer` field from a binary, used only to prefetch the MFR public key without full verification.
 ///
-/// 从 manifest section（WASM/ELF/Mach-O）中解析 JSON，提取 manufacturer 字段。
-/// 解析失败或格式不识别时返回 None（调用方会跳过预取，verify 时再报错）。
+/// Parses JSON from the manifest section in WASM, ELF, or Mach-O binaries and extracts `manufacturer`.
+/// Returns `None` when parsing fails or the format is not recognized. The caller then skips prefetch and lets verification report the error.
 fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
     use verify::manifest::{
-        extract_wasm_manifest, extract_elf_manifest, extract_macho_manifest,
-        is_wasm, is_elf, is_macho,
+        extract_elf_manifest, extract_macho_manifest, extract_wasm_manifest, is_elf, is_macho,
+        is_wasm,
     };
 
     let section = if is_wasm(bytes) {
@@ -685,26 +674,26 @@ fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
     value["manufacturer"].as_str().map(|s| s.to_string())
 }
 
-/// 加载已有 instance_id 或生成新的并持久化
+/// Load an existing `instance_id` or generate and persist a new one.
 async fn load_or_create_instance_id(data_dir: &std::path::Path) -> HyperResult<String> {
     let id_file = data_dir.join(".hyper-instance-id");
 
     if id_file.exists() {
-        let id = tokio::fs::read_to_string(&id_file).await.map_err(|e| {
-            HyperError::Storage(format!("读取 instance_id 文件失败: {e}"))
-        })?;
+        let id = tokio::fs::read_to_string(&id_file)
+            .await
+            .map_err(|e| HyperError::Storage(format!("failed to read instance_id file: {e}")))?;
         let id = id.trim().to_string();
         if !id.is_empty() {
             return Ok(id);
         }
-        warn!("instance_id 文件为空，重新生成");
+        warn!("instance_id file is empty; generating a new one");
     }
 
     let new_id = Uuid::new_v4().to_string();
-    tokio::fs::write(&id_file, &new_id).await.map_err(|e| {
-        HyperError::Storage(format!("写入 instance_id 文件失败: {e}"))
-    })?;
-    info!(instance_id = %new_id, "生成新的 Hyper instance_id");
+    tokio::fs::write(&id_file, &new_id)
+        .await
+        .map_err(|e| HyperError::Storage(format!("failed to write instance_id file: {e}")))?;
+    info!(instance_id = %new_id, "generated a new Hyper instance_id");
     Ok(new_id)
 }
 
@@ -746,7 +735,7 @@ mod tests {
         let hyper2 = Hyper::init(config2).await.unwrap();
         let id2 = hyper2.instance_id().to_string();
 
-        assert_eq!(id1, id2, "重启后 instance_id 应保持不变");
+        assert_eq!(id1, id2, "instance_id should remain stable across restarts");
     }
 
     #[tokio::test]
@@ -762,27 +751,27 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
 
-        // 最小合法 WASM（只有 magic + version，无 section）
+        // Minimal valid WASM with only the magic header and version, no sections.
         let minimal_wasm = b"\0asm\x01\x00\x00\x00";
         let result = hyper.verify_package(minimal_wasm).await;
         assert!(matches!(result, Err(HyperError::ManifestNotFound)));
     }
 
-    // ─── PSK 存取与过期检查单元测试 ──────────────────────────────────────────
+    // ─── PSK storage and expiration unit tests ──────────────────────────────
 
     async fn open_test_store(dir: &TempDir) -> ActorStore {
         let db_path = dir.path().join("test.db");
         ActorStore::open(&db_path).await.unwrap()
     }
 
-    /// 写入有效 PSK，验证 load_valid_psk 返回该 PSK
+    /// Store a valid PSK and verify that load_valid_psk returns it.
     #[tokio::test]
     async fn psk_valid_returns_token() {
         let dir = TempDir::new().unwrap();
         let store = open_test_store(&dir).await;
 
         let psk_token = b"test-psk-secret".to_vec();
-        // 过期时间设为当前时间 + 3600 秒（1小时后）
+        // Set the expiry time to one hour from now.
         let expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -796,17 +785,17 @@ mod tests {
             .unwrap();
 
         let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, Some(psk_token), "有效 PSK 应被返回");
+        assert_eq!(result, Some(psk_token), "A valid PSK should be returned");
     }
 
-    /// 写入已过期 PSK，验证 load_valid_psk 返回 None
+    /// Store an expired PSK and verify that load_valid_psk returns None.
     #[tokio::test]
     async fn psk_expired_returns_none() {
         let dir = TempDir::new().unwrap();
         let store = open_test_store(&dir).await;
 
         let psk_token = b"expired-psk".to_vec();
-        // 过期时间设为过去（1 秒前）
+        // Set the expiry time to one second in the past.
         let expires_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -820,20 +809,20 @@ mod tests {
             .unwrap();
 
         let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "已过期 PSK 应返回 None");
+        assert_eq!(result, None, "An expired PSK should return None");
     }
 
-    /// ActorStore 中无 PSK 时，load_valid_psk 返回 None
+    /// load_valid_psk returns None when ActorStore has no PSK.
     #[tokio::test]
     async fn psk_absent_returns_none() {
         let dir = TempDir::new().unwrap();
         let store = open_test_store(&dir).await;
 
         let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "无 PSK 时应返回 None");
+        assert_eq!(result, None, "Missing PSK should return None");
     }
 
-    /// 仅有 token 没有 expires_at 时，load_valid_psk 返回 None
+    /// load_valid_psk returns None if token exists without expires_at.
     #[tokio::test]
     async fn psk_missing_expires_at_returns_none() {
         let dir = TempDir::new().unwrap();
@@ -843,13 +832,13 @@ mod tests {
             .kv_set("hyper:psk:token", b"orphan-token")
             .await
             .unwrap();
-        // 故意不写 expires_at
+        // Intentionally leave expires_at unset.
 
         let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "缺少 expires_at 时应返回 None");
+        assert_eq!(result, None, "Missing expires_at should return None");
     }
 
-    /// build_manifest_json 产出的 JSON 含必要字段，可被 serde_json 解析
+    /// build_manifest_json should output JSON with the required fields.
     #[test]
     fn build_manifest_json_produces_valid_json() {
         let manifest = PackageManifest {
@@ -867,19 +856,22 @@ mod tests {
         assert_eq!(value["manufacturer"], "acme");
         assert_eq!(value["actr_name"], "Sensor");
         assert_eq!(value["version"], "1.0.0");
-        // binary_hash 应为 64 位 hex 字符串
+        // binary_hash should be a 64-character hex string.
         assert_eq!(
             value["binary_hash"].as_str().unwrap().len(),
             64,
-            "binary_hash 应为 64 字符 hex"
+            "binary_hash should be a 64-character hex string"
         );
         assert!(value["capabilities"].is_array());
-        assert!(value["signature"].is_string(), "signature 应为 base64 字符串");
+        assert!(
+            value["signature"].is_string(),
+            "signature should be a base64 string"
+        );
     }
 
-    // ─── AIS 集成测试（mockito mock server）──────────────────────────────────
+    // ─── AIS integration tests (mockito mock server) ────────────────────────
 
-    /// 辅助函数：构造测试用 PackageManifest
+    /// Helper: build a PackageManifest for tests.
     fn fake_manifest() -> PackageManifest {
         PackageManifest {
             manufacturer: "test-mfr".to_string(),
@@ -891,7 +883,7 @@ mod tests {
         }
     }
 
-    /// 辅助函数：构造合法的 RegisterResponse protobuf bytes（含 credential）
+    /// Helper: build valid RegisterResponse protobuf bytes with credential data.
     fn fake_register_response_bytes(with_psk: bool) -> Vec<u8> {
         use actr_protocol::{
             AIdCredential, ActrId, ActrType, IdentityClaims, Realm, RegisterResponse,
@@ -956,7 +948,7 @@ mod tests {
         .encode_to_vec()
     }
 
-    /// 测试：首次注册（无 PSK）→ AIS 返回 credential + PSK → PSK 被存储
+    /// First registration with no PSK should store the PSK returned by AIS.
     #[tokio::test]
     async fn bootstrap_first_registration_stores_psk() {
         let response_body = fake_register_response_bytes(true);
@@ -980,17 +972,24 @@ mod tests {
             .await;
 
         mock.assert_async().await;
-        assert!(result.is_ok(), "首次注册应成功，错误: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Initial registration should succeed, got: {:?}",
+            result.err()
+        );
 
-        // 验证 PSK 已被写入 ActorStore
+        // Verify the PSK was written to ActorStore.
         let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
         let psk = store.kv_get("hyper:psk:token").await.unwrap();
-        assert!(psk.is_some(), "首次注册后 PSK 应已存储到 ActorStore");
+        assert!(
+            psk.is_some(),
+            "PSK should be stored in ActorStore after initial registration"
+        );
         assert_eq!(psk.unwrap(), b"fresh-psk-from-ais".to_vec());
     }
 
-    /// 测试：有有效 PSK → 跳过 manifest 注册，直接走 PSK 续期路径
+    /// A valid PSK should skip manifest registration and use the renewal path.
     #[tokio::test]
     async fn bootstrap_psk_renewal_skips_manifest() {
         let response_body = fake_register_response_bytes(false);
@@ -1001,7 +1000,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/x-protobuf")
             .with_body(response_body)
-            .expect(1) // 应只调用一次 /register
+            .expect(1) // /register should be called exactly once.
             .create_async()
             .await;
 
@@ -1009,7 +1008,7 @@ mod tests {
         let config = dev_config(&dir);
         let hyper = Hyper::init(config).await.unwrap();
 
-        // 预先在 ActorStore 中写入有效 PSK
+        // Seed ActorStore with a valid PSK.
         let manifest = fake_manifest();
         let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
@@ -1033,10 +1032,14 @@ mod tests {
             .await;
 
         mock.assert_async().await;
-        assert!(result.is_ok(), "PSK 续期应成功，错误: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "PSK renewal should succeed, got: {:?}",
+            result.err()
+        );
     }
 
-    /// 测试：PSK 过期 → 重走 manifest 注册路径
+    /// An expired PSK should fall back to the manifest registration path.
     #[tokio::test]
     async fn bootstrap_expired_psk_falls_back_to_manifest() {
         let response_body = fake_register_response_bytes(true);
@@ -1055,7 +1058,7 @@ mod tests {
         let config = dev_config(&dir);
         let hyper = Hyper::init(config).await.unwrap();
 
-        // 预先写入已过期的 PSK
+        // Seed ActorStore with an expired PSK.
         let manifest = fake_manifest();
         let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
@@ -1064,7 +1067,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            .saturating_sub(10); // 10秒前已过期
+            .saturating_sub(10); // Expired 10 seconds ago.
         store
             .kv_set("hyper:psk:token", b"expired-psk")
             .await
@@ -1081,12 +1084,12 @@ mod tests {
         mock.assert_async().await;
         assert!(
             result.is_ok(),
-            "PSK 过期后走 manifest 路径应成功，错误: {:?}",
+            "Manifest registration should succeed after PSK expiration, got: {:?}",
             result.err()
         );
     }
 
-    /// 测试：AIS 返回错误时正确传播 HyperError::AisBootstrapFailed
+    /// AIS errors should propagate as HyperError::AisBootstrapFailed.
     #[tokio::test]
     async fn bootstrap_ais_error_propagates() {
         use actr_protocol::{ErrorResponse, RegisterResponse, register_response};
@@ -1119,7 +1122,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(HyperError::AisBootstrapFailed(_))),
-            "AIS 返回错误时应传播 AisBootstrapFailed，实际: {:?}",
+            "AIS errors should propagate as AisBootstrapFailed, got: {:?}",
             result
         );
     }

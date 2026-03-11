@@ -1,11 +1,12 @@
 //! Mailbox Processor
 //!
-//! 负责从 Mailbox 中取出消息，处理，然后 ack
-//! 对标 actr 的 mailbox processor 逻辑
+//! Dequeues messages from the Mailbox, processes them, and acknowledges them.
+//! Mirrors actr's mailbox processor logic.
 //!
-//! # 事件驱动
+//! # Event-driven behavior
 //!
-//! 使用 `MailboxNotifier` 通知机制而非轮询，当新消息入队时立即唤醒处理循环。
+//! Uses `MailboxNotifier` instead of polling so the processing loop wakes as soon as
+//! a new message is enqueued.
 
 use actr_mailbox_web::{Mailbox, MessageRecord};
 use actr_web_common::WebResult;
@@ -14,55 +15,55 @@ use futures::channel::mpsc;
 use std::rc::Rc;
 use wasm_bindgen_futures::spawn_local;
 
-/// 消息处理回调类型
+/// Message processing callback type.
 ///
-/// 接收消息记录并处理
-/// 注意：WASM 是单线程环境，不需要 Send + Sync
+/// Receives a message record and processes it.
+/// Note: WASM is single-threaded here, so `Send + Sync` is unnecessary.
 pub type MailboxMessageHandler = Rc<
     dyn Fn(MessageRecord) -> std::pin::Pin<Box<dyn std::future::Future<Output = WebResult<()>>>>,
 >;
 
-/// 通知句柄，用于唤醒 MailboxProcessor
+/// Notification handle used to wake MailboxProcessor.
 ///
-/// 当 `InboundPacketDispatcher` 将新消息写入 Mailbox 后，
-/// 调用 `notify()` 唤醒处理循环，实现事件驱动而非轮询。
+/// After `InboundPacketDispatcher` writes a new message into the Mailbox,
+/// it calls `notify()` to wake the processing loop without polling.
 #[derive(Clone)]
 pub struct MailboxNotifier {
     tx: mpsc::UnboundedSender<()>,
 }
 
 impl MailboxNotifier {
-    /// 通知 MailboxProcessor 有新消息可处理
+    /// Notify MailboxProcessor that new work is available.
     pub fn notify(&self) {
         let _ = self.tx.unbounded_send(());
     }
 }
 
-/// Mailbox 处理器
+/// Mailbox processor.
 ///
-/// 负责 dequeue → process → ack 循环（事件驱动）
+/// Runs the dequeue -> process -> ack loop in an event-driven way.
 pub struct MailboxProcessor {
-    /// Mailbox 实例
+    /// Mailbox instance.
     mailbox: Rc<dyn Mailbox>,
 
-    /// 消息处理回调
+    /// Message processing callback.
     handler: Option<MailboxMessageHandler>,
 
-    /// 每批次处理的消息数
+    /// Number of messages processed per batch.
     batch_size: usize,
 
-    /// 是否正在运行
+    /// Whether the processor is currently running.
     running: Rc<std::cell::RefCell<bool>>,
 
-    /// 通知接收端（事件驱动）
+    /// Notification receiver for event-driven wakeups.
     notify_rx: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 impl MailboxProcessor {
-    /// 创建新的处理器，同时返回配套的 `MailboxNotifier`
+    /// Create a new processor and the corresponding `MailboxNotifier`.
     ///
-    /// `MailboxNotifier` 应传给 `InboundPacketDispatcher`，
-    /// 使其在入队新消息后能唤醒处理循环。
+    /// `MailboxNotifier` should be passed to `InboundPacketDispatcher` so it can
+    /// wake the processing loop after enqueueing new messages.
     pub fn new(mailbox: Rc<dyn Mailbox>, batch_size: usize) -> (Self, MailboxNotifier) {
         let (tx, rx) = mpsc::unbounded();
         (
@@ -77,12 +78,12 @@ impl MailboxProcessor {
         )
     }
 
-    /// 设置消息处理回调
+    /// Set the message processing callback.
     pub fn set_handler(&mut self, handler: MailboxMessageHandler) {
         self.handler = Some(handler);
     }
 
-    /// 启动处理循环
+    /// Start the processing loop.
     pub fn start(&mut self) {
         {
             let mut running = self.running.borrow_mut();
@@ -111,16 +112,15 @@ impl MailboxProcessor {
         });
     }
 
-    /// 停止处理循环
+    /// Stop the processing loop.
     pub fn stop(&self) {
         *self.running.borrow_mut() = false;
         log::info!("[MailboxProcessor] Stopped");
     }
 
-    /// 事件驱动处理循环
+    /// Event-driven processing loop.
     ///
-    /// 当 Mailbox 为空时，等待 `notify_rx` 通知而非轮询，
-    /// 实现零轮询的事件驱动模式。
+    /// When the Mailbox is empty, wait for `notify_rx` instead of polling.
     async fn processing_loop(
         mailbox: Rc<dyn Mailbox>,
         handler: Option<MailboxMessageHandler>,
@@ -129,16 +129,16 @@ impl MailboxProcessor {
         mut notify_rx: mpsc::UnboundedReceiver<()>,
     ) {
         loop {
-            // 检查是否应该继续运行
+            // Check whether processing should continue.
             if !*running.borrow() {
                 break;
             }
 
-            // 1. Dequeue messages
+            // 1. Dequeue messages.
             match mailbox.dequeue(batch_size).await {
                 Ok(messages) => {
                     if messages.is_empty() {
-                        // 事件驱动：等待通知而非轮询
+                        // Event-driven wait instead of polling.
                         if notify_rx.next().await.is_none() {
                             log::info!("[MailboxProcessor] Notify channel closed, stopping");
                             break;
@@ -148,15 +148,15 @@ impl MailboxProcessor {
 
                     log::debug!("[MailboxProcessor] Dequeued {} messages", messages.len());
 
-                    // 2. Process each message
+                    // 2. Process each message.
                     for msg in messages {
                         let msg_id = msg.id;
 
-                        // 调用处理回调
+                        // Invoke the handler callback.
                         if let Some(ref h) = handler {
                             match h(msg).await {
                                 Ok(_) => {
-                                    // 3. Ack successful processing
+                                    // 3. Acknowledge successful processing.
                                     if let Err(e) = mailbox.ack(msg_id).await {
                                         log::error!(
                                             "[MailboxProcessor] Failed to ack message {}: {}",
@@ -173,7 +173,7 @@ impl MailboxProcessor {
                                         msg_id,
                                         e
                                     );
-                                    // 处理失败时，消息不会被 ack，会保留在 Mailbox 中
+                                    // On failure, the message is left unacknowledged in the Mailbox.
                                 }
                             }
                         } else {
@@ -183,11 +183,11 @@ impl MailboxProcessor {
                             );
                         }
                     }
-                    // 处理完一批后立即尝试取下一批（无等待）
+                    // After one batch finishes, immediately try the next batch.
                 }
                 Err(e) => {
                     log::error!("[MailboxProcessor] Failed to dequeue: {}", e);
-                    // 数据库错误，等待更长时间
+                    // On database errors, back off for longer.
                     gloo_timers::future::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
@@ -224,10 +224,10 @@ mod tests {
                 .expect("Failed to create mailbox"),
         );
 
-        // 清空 mailbox
+        // Clear the mailbox.
         mailbox.clear().await.expect("Failed to clear mailbox");
 
-        // 入队一条消息
+        // Enqueue one message.
         let msg_id = mailbox
             .enqueue(
                 b"test-sender".to_vec(),
@@ -239,10 +239,10 @@ mod tests {
 
         log::info!("Enqueued message: {}", msg_id);
 
-        // 创建处理器
+        // Create the processor.
         let (mut processor, _notifier) = MailboxProcessor::new(mailbox.clone(), 10);
 
-        // 设置处理回调
+        // Set the handler callback.
         processor.set_handler(Rc::new(|msg| {
             Box::pin(async move {
                 log::info!("Processing message: {}", msg.id);
@@ -250,23 +250,23 @@ mod tests {
             })
         }));
 
-        // 启动处理器
+        // Start the processor.
         processor.start();
 
-        // 等待处理完成
+        // Wait for processing to complete.
         gloo_timers::future::sleep(std::time::Duration::from_millis(500)).await;
 
-        // 停止处理器
+        // Stop the processor.
         processor.stop();
 
-        // 验证消息已被 ack（应该从 mailbox 中删除）
+        // Verify that the message was acked and removed from the mailbox.
         let stats = mailbox.stats().await.expect("Failed to get stats");
         assert_eq!(stats.pending_messages, 0);
     }
 
-    // 以下是不依赖浏览器环境的标准单元测试
+    // The tests below are standard unit tests that do not depend on a browser.
 
-    // Mock Mailbox 实现用于测试
+    // Mock Mailbox implementation used for testing.
     struct MockMailbox;
 
     use actr_mailbox_web::MailboxError;
@@ -326,10 +326,10 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 初始状态应该是未运行
+        // The initial state should be stopped.
         assert!(!*processor.running.borrow());
 
-        // 初始没有 handler
+        // No handler should be set initially.
         assert!(processor.handler.is_none());
     }
 
@@ -338,7 +338,7 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (mut processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 设置 handler
+        // Install the handler.
         let handler: MailboxMessageHandler = Rc::new(|_msg| Box::pin(async move { Ok(()) }));
 
         processor.set_handler(handler);
@@ -350,13 +350,13 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 手动设置 running 为 true
+        // Manually set `running` to true.
         *processor.running.borrow_mut() = true;
 
-        // 调用 stop
+        // Call `stop`.
         processor.stop();
 
-        // 验证 running 被设置为 false
+        // Verify that `running` becomes false.
         assert!(!*processor.running.borrow());
     }
 
@@ -364,7 +364,7 @@ mod tests {
     fn test_mailbox_processor_with_different_batch_sizes() {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
 
-        // 测试不同的 batch_size 值
+        // Test different `batch_size` values.
         for batch_size in vec![1, 5, 10, 20, 50, 100] {
             let (processor, _notifier) = MailboxProcessor::new(mailbox.clone(), batch_size);
             assert_eq!(processor.batch_size, batch_size);
@@ -376,12 +376,12 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (mut processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 第一次设置
+        // First assignment.
         let handler1: MailboxMessageHandler = Rc::new(|_msg| Box::pin(async move { Ok(()) }));
         processor.set_handler(handler1);
         assert!(processor.handler.is_some());
 
-        // 第二次设置（覆盖）
+        // Second assignment overrides the first one.
         let handler2: MailboxMessageHandler = Rc::new(|_msg| Box::pin(async move { Ok(()) }));
         processor.set_handler(handler2);
         assert!(processor.handler.is_some());
@@ -392,19 +392,19 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 获取 running Rc 的克隆
+        // Clone the shared `running` handle.
         let running_clone = processor.running.clone();
 
-        // 通过 processor 修改状态
+        // Change the state through the processor.
         *processor.running.borrow_mut() = true;
 
-        // 通过克隆的引用应该能看到相同的状态
+        // The cloned reference should observe the same state.
         assert!(*running_clone.borrow());
 
-        // 调用 stop
+        // Call `stop`.
         processor.stop();
 
-        // 两个引用都应该看到 false
+        // Both references should now observe `false`.
         assert!(!*processor.running.borrow());
         assert!(!*running_clone.borrow());
     }
@@ -413,7 +413,7 @@ mod tests {
     fn test_mailbox_processor_with_zero_batch_size() {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
 
-        // 即使是 0 也应该能创建（虽然实际使用中不推荐）
+        // Construction should still succeed with `0`, even if that is not recommended.
         let (processor, _notifier) = MailboxProcessor::new(mailbox, 0);
         assert_eq!(processor.batch_size, 0);
     }
@@ -425,7 +425,7 @@ mod tests {
         let (processor1, _notifier1) = MailboxProcessor::new(mailbox.clone(), 10);
         let (processor2, _notifier2) = MailboxProcessor::new(mailbox.clone(), 20);
 
-        // 两个处理器应该共享相同的 mailbox Rc
+        // Both processors should share the same mailbox `Rc`.
         assert!(Rc::ptr_eq(&processor1.mailbox, &processor2.mailbox));
     }
 
@@ -434,13 +434,13 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
         let (mut processor, _notifier) = MailboxProcessor::new(mailbox, 10);
 
-        // 手动设置为 running
+        // Manually set the processor to running.
         *processor.running.borrow_mut() = true;
 
-        // 第二次调用 start 应该会提前返回（记录警告）
+        // A second `start` call should return early and log a warning.
         processor.start();
 
-        // 状态应该仍然是 running
+        // The state should still be running.
         assert!(*processor.running.borrow());
     }
 }

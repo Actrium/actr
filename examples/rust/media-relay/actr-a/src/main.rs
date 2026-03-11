@@ -24,34 +24,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize observability (logging/tracing) using config
     let _obs_guard = actr_runtime::init_observability(&config.observability)?;
 
-    info!("🚀 Actr A (Relay/Shell Client) 启动");
+    info!("🚀 Actr A (Relay/Shell Client) start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 使用真实的 ActrRef Shell API");
-    info!("📡 将通过 WebRTC P2P 发送媒体帧到 Actr B");
+    info!("📝 using/usereal ActrRef Shell API");
+    info!("📡 willvia/through WebRTC P2P send[...] Actr B");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // 2. Create ActrSystem
-    info!("🏗️  创建 ActrSystem...");
+    info!("🏗️  create ActrSystem...");
 
     let system = ActrSystem::new(config).await?;
 
-    info!("✅ ActrSystem 创建成功");
+    info!("✅ ActrSystem createsuccess");
 
     // 3. Create RelayClientWorkload and set target server
-    info!("📦 创建 RelayClientWorkload...");
+    info!("📦 create RelayClientWorkload...");
 
     let workload = RelayClientWorkload::new();
     let node = system.attach(workload.clone());
 
-    info!("✅ RelayClientWorkload 已附加");
+    info!("✅ RelayClientWorkload attached");
 
     // 4. Start ActrNode
-    info!("🚀 启动 ActrNode...");
+    info!("🚀 start ActrNode...");
 
     let actr_ref = node.start().await?;
 
-    info!("✅ ActrNode 启动成功！");
-    info!("📍 本地 Actor ID: {:?}", actr_ref.actor_id());
+    info!("✅ ActrNode startsuccess！");
+    info!("📍 [...] Actor ID: {:?}", actr_ref.actor_id());
 
     // 4.1 Discover remote actr-b
     let target_type = ActrType {
@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: "media_relay.RelayService".to_string(),
         version: "v1".to_string(),
     };
-    info!("🌐 通过 signaling server 发现 Actr B...");
+    info!("🌐 via/through signaling server discover Actr B...");
     let mut candidates = actr_ref
         .discover_route_candidates(&target_type, 1)
         .await
@@ -68,12 +68,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_id = candidates
         .pop()
         .ok_or_else(|| anyhow!("No Actr B instances available from signaling server"))?;
-    info!("🎯 目标 Actor: {:?}", server_id);
+    info!("🎯 [...] Actor: {:?}", server_id);
     workload.set_server_id(server_id).await;
 
     // 5. Generate and send frames
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📤 开始发送媒体帧 via ActrRef Shell API...");
+    info!("📤 [...]send[...] via ActrRef Shell API...");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     let mut video_source = TestPatternSource::new(30);
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..10 {
         if let Some(sample) = video_source.next_sample() {
             info!(
-                "📹 生成帧 #{}: {} bytes, ts={}, codec={}",
+                "📹 [...] #{}: {} bytes, ts={}, codec={}",
                 i,
                 sample.data.len(),
                 sample.timestamp,
@@ -101,12 +101,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match actr_ref.call(request).await {
                 Ok(response) => {
                     info!(
-                        "   ✅ 帧 #{} 已发送，服务器确认: success={}, received_at={}",
+                        "   ✅ [...] #{} alreadysend，service[...]: success={}, received_at={}",
                         i, response.success, response.received_at
                     );
                 }
                 Err(e) => {
-                    info!("   ❌ 帧 #{} 发送失败: {:?}", i, e);
+                    info!("   ❌ [...] #{} sendfailed: {:?}", i, e);
                 }
             }
 
@@ -115,14 +115,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("✅ Actr A 完成发送 10 帧");
+    info!("✅ Actr A [...]send 10 [...]");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // Keep running to allow shutdown
     info!("Press Ctrl+C to shutdown...");
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
-    info!("✅ Actr A 已关闭");
+    info!("✅ Actr A closed");
 
     Ok(())
 }

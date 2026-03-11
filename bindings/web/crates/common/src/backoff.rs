@@ -1,34 +1,34 @@
-//! Exponential Backoff 重试策略
+//! Exponential Backoff retry strategy
 //!
-//! 用于连接失败后的重试延迟计算
+//! Used for retry delay calculation after connection failures
 
 use std::time::Duration;
 
-/// 指数退避策略
+/// Exponential backoff strategy
 #[derive(Debug, Clone)]
 pub struct ExponentialBackoff {
-    /// 当前重试次数
+    /// Current retry attempt count
     attempt: u32,
 
-    /// 初始延迟（毫秒）
+    /// Initial delay in milliseconds
     initial_delay_ms: u64,
 
-    /// 最大延迟（毫秒）
+    /// Maximum delay in milliseconds
     max_delay_ms: u64,
 
-    /// 倍数因子
+    /// Multiplier factor
     multiplier: f64,
 
-    /// 随机抖动因子 (0.0 - 1.0)
+    /// Random jitter factor (0.0 - 1.0)
     jitter: f64,
 }
 
 impl ExponentialBackoff {
-    /// 创建新的指数退避策略
+    /// Create a new exponential backoff strategy
     ///
-    /// # 参数
-    /// - `initial_delay_ms`: 初始延迟（毫秒）
-    /// - `max_delay_ms`: 最大延迟（毫秒）
+    /// # Parameters
+    /// - `initial_delay_ms`: initial delay in milliseconds
+    /// - `max_delay_ms`: maximum delay in milliseconds
     pub fn new(initial_delay_ms: u64, max_delay_ms: u64) -> Self {
         Self {
             attempt: 0,
@@ -39,26 +39,26 @@ impl ExponentialBackoff {
         }
     }
 
-    /// 设置倍数因子
+    /// Set the multiplier factor
     pub fn with_multiplier(mut self, multiplier: f64) -> Self {
         self.multiplier = multiplier;
         self
     }
 
-    /// 设置抖动因子
+    /// Set the jitter factor
     pub fn with_jitter(mut self, jitter: f64) -> Self {
         self.jitter = jitter.clamp(0.0, 1.0);
         self
     }
 
-    /// 获取下一次重试的延迟
+    /// Get the delay for the next retry
     pub fn next_delay(&mut self) -> Duration {
         let base_delay = (self.initial_delay_ms as f64 * self.multiplier.powi(self.attempt as i32))
             .min(self.max_delay_ms as f64);
 
-        // 添加简单的抖动（基于attempt）
+        // Add simple jitter (based on attempt)
         let jitter_range = base_delay * self.jitter;
-        // 使用 attempt 作为伪随机源
+        // Use attempt as a pseudo-random source
         let pseudo_random = ((self.attempt * 7919) % 100) as f64 / 100.0; // 0.0 - 1.0
         let jitter = (pseudo_random * 2.0 - 1.0) * jitter_range;
         let final_delay = (base_delay + jitter).max(0.0);
@@ -68,12 +68,12 @@ impl ExponentialBackoff {
         Duration::from_millis(final_delay as u64)
     }
 
-    /// 重置重试计数
+    /// Reset the retry counter
     pub fn reset(&mut self) {
         self.attempt = 0;
     }
 
-    /// 获取当前重试次数
+    /// Get the current retry attempt count
     pub fn attempt(&self) -> u32 {
         self.attempt
     }
@@ -102,7 +102,7 @@ mod tests {
         let delay3 = backoff.next_delay();
         assert!(delay3.as_millis() >= 3600 && delay3.as_millis() <= 4400);
 
-        // 重置
+        // Reset
         backoff.reset();
         let delay4 = backoff.next_delay();
         assert!(delay4.as_millis() >= 900 && delay4.as_millis() <= 1100);
@@ -117,6 +117,6 @@ mod tests {
         }
 
         let delay = backoff.next_delay();
-        assert!(delay.as_millis() <= 5500); // 考虑抖动
+        assert!(delay.as_millis() <= 5500); // accounting for jitter
     }
 }

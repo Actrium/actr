@@ -1,20 +1,20 @@
-//! Outbound Layer - 出站消息发送
+//! Outbound layer for sending messages.
 //!
-//! 对标 actr 的 outbound 层，提供统一的发送接口
+//! Mirrors actr's outbound layer and provides a unified sending interface.
 //!
-//! # 出站路径
+//! # Outbound path
 //!
 //! ```text
 //! Actor ctx.call()/tell()
-//!   → Gate::Peer
-//!     → PeerGate (ActrId→Dest 映射 + pending_requests)
-//!       → PeerTransport (Dest→DestTransport 映射)
-//!         → DestTransport (事件驱动发送循环)
-//!           → WirePool (优先级选择: WebRTC > WebSocket)
-//!             → WireHandle::WebRTC.get_lane()
-//!               → DataLane::PostMessage { port: 专用 MessagePort }
-//!                 → port.postMessage(data)  [零拷贝, 无命令协议]
-//!                   → DOM bridge → RtcDataChannel.send() → Remote
+//!   -> Gate::Peer
+//!     -> PeerGate (ActrId->Dest mapping + pending_requests)
+//!       -> PeerTransport (Dest->DestTransport mapping)
+//!         -> DestTransport (event-driven send loop)
+//!           -> WirePool (priority selection: WebRTC > WebSocket)
+//!             -> WireHandle::WebRTC.get_lane()
+//!               -> DataLane::PostMessage { port: dedicated MessagePort }
+//!                 -> port.postMessage(data)  [zero-copy, no command protocol]
+//!                   -> DOM bridge -> RtcDataChannel.send() -> Remote
 //! ```
 
 mod host_gate;
@@ -27,36 +27,36 @@ use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// Gate - 出站消息门枚举
+/// Gate enum for outbound messaging.
 ///
-/// # 变体
+/// # Variants
 ///
-/// - **Host**: SW 内部 Actor 之间的通信（零序列化）
-/// - **Peer**: 跨节点传输（通过专用 MessagePort + 完整传输栈）
+/// - **Host**: communication between actors inside the SW with zero serialization
+/// - **Peer**: cross-node transport through a dedicated MessagePort and the full transport stack
 #[derive(Clone)]
 pub enum Gate {
-    /// Host - SW 内部通信（零序列化）
+    /// Host gate for in-SW communication with zero serialization.
     Host(Arc<HostGate>),
 
-    /// Peer - 跨节点传输
+    /// Peer gate for cross-node transport.
     ///
-    /// PeerGate → PeerTransport → DestTransport
-    ///   → WirePool → WireHandle → DataLane::PostMessage（专用 MessagePort 直接发送）
+    /// PeerGate -> PeerTransport -> DestTransport
+    ///   -> WirePool -> WireHandle -> DataLane::PostMessage (direct send through a dedicated MessagePort)
     Peer(Arc<PeerGate>),
 }
 
 impl Gate {
-    /// 创建 Host gate
+    /// Create a Host gate.
     pub fn host(gate: Arc<HostGate>) -> Self {
         Self::Host(gate)
     }
 
-    /// 创建 Peer gate
+    /// Create a Peer gate.
     pub fn peer(gate: Arc<PeerGate>) -> Self {
         Self::Peer(gate)
     }
 
-    /// 发送请求并等待响应
+    /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         match self {
             Gate::Host(gate) => gate.send_request(target, envelope).await,
@@ -64,7 +64,7 @@ impl Gate {
         }
     }
 
-    /// 发送单向消息（不等待响应）
+    /// Send a one-way message without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
             Gate::Host(gate) => gate.send_message(target, envelope).await,
@@ -72,7 +72,7 @@ impl Gate {
         }
     }
 
-    /// 发送 DataStream（Fast Path）
+    /// Send a DataStream through the Fast Path.
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -85,10 +85,10 @@ impl Gate {
         }
     }
 
-    /// 尝试处理远程响应
+    /// Try to handle a remote response.
     ///
-    /// 检查此 Gate 是否有对应 request_id 的 pending request。
-    /// 如果有，resolve 并返回 true；否则返回 false。
+    /// Checks whether this gate has a pending request for `request_id`.
+    /// If so, resolves it and returns true; otherwise returns false.
     pub fn try_handle_response(&self, request_id: &str, response: Bytes) -> bool {
         match self {
             Gate::Host(_) => false,

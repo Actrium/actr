@@ -1,7 +1,7 @@
 /**
- * ActorRef - Actor 引用
+ * ActorRef - Actor 
  *
- * 基于新架构的实现：通过 @actr/dom 与 Service Worker WASM 交互
+ * ： @actr/dom  Service Worker WASM 
  */
 
 import {
@@ -13,7 +13,7 @@ import {
 import type { SubscriptionCallback, UnsubscribeFn } from './types';
 
 /**
- * RPC 请求
+ * RPC 
  */
 export interface RpcRequest<T = unknown> {
   service: string;
@@ -23,18 +23,18 @@ export interface RpcRequest<T = unknown> {
 }
 
 /**
- * Actor 引用
+ * Actor 
  *
- * 提供三个核心 API：
- * - call(): 请求-响应（State Path，30-40ms）
- * - subscribe(): 订阅数据流（Fast Path，6-13ms）
- * - on(): 系统事件监听（<5ms）
+ *  API：
+ * - call(): -（State Path，30-40ms）
+ * - subscribe(): （Fast Path，6-13ms）
+ * - on(): （<5ms）
  */
 export class ActorRef {
   private domRuntime: ActrDomRuntime;
   private requestId = 0;
 
-  /** 待处理的 RPC 请求 */
+  /**  RPC  */
   private pendingRequests = new Map<
     string,
     {
@@ -44,10 +44,10 @@ export class ActorRef {
     }
   >();
 
-  /** 订阅管理 */
+  /**  */
   private subscriptions = new Map<string, Set<SubscriptionCallback<any>>>();
 
-  /** 事件监听 */
+  /**  */
   private eventListeners = new Map<string, Set<(...args: any[]) => void>>();
 
   constructor(domRuntime: ActrDomRuntime) {
@@ -56,7 +56,7 @@ export class ActorRef {
   }
 
   /**
-   * 设置来自 Service Worker 的消息处理器
+   *  Service Worker 
    */
   private setupMessageHandlers(): void {
     const bridge = this.domRuntime.getSWBridge();
@@ -86,7 +86,7 @@ export class ActorRef {
   }
 
   /**
-   * 处理 RPC 响应
+   *  RPC 
    */
   private handleRpcResponse(payload: RpcResponsePayload): void {
     const { request_id, data, error } = payload;
@@ -108,7 +108,7 @@ export class ActorRef {
   }
 
   /**
-   * 处理订阅数据
+   * 
    */
   private handleSubscriptionData(payload: SubscriptionDataPayload): void {
     const { topic, data } = payload;
@@ -128,7 +128,7 @@ export class ActorRef {
   }
 
   /**
-   * 处理 WebRTC 事件
+   *  WebRTC 
    */
   private handleWebRtcEvent(payload: WebRtcEventPayload): void {
     const { eventType, data } = payload;
@@ -162,12 +162,12 @@ export class ActorRef {
   }
 
   /**
-   * call() - 请求-响应（State Path）
+   * call() - -（State Path）
    *
-   * @param service - 目标服务名称
-   * @param method - 方法名称
-   * @param params - 请求参数
-   * @param timeout - 超时时间（毫秒），默认 30000ms
+   * @param service - 
+   * @param method - 
+   * @param params - 
+   * @param timeout - （）， 30000ms
    */
   async call<TReq = unknown, TRes = unknown>(
     service: string,
@@ -210,7 +210,7 @@ export class ActorRef {
   }
 
   /**
-   * callRaw() - 发送已编码的 RPC payload（Raw bytes）。
+   * callRaw() -  RPC payload（Raw bytes）。
    * TODO: Prefer typed call() once Phase 1 RPC path is fully wired.
    */
   async callRaw(
@@ -251,10 +251,10 @@ export class ActorRef {
   }
 
   /**
-   * subscribe() - 订阅数据流（Fast Path）
+   * subscribe() - （Fast Path）
    *
-   * @param topic - 订阅主题
-   * @param callback - 数据回调函数
+   * @param topic - 
+   * @param callback - 
    */
   async subscribe<T = unknown>(
     topic: string,
@@ -297,10 +297,10 @@ export class ActorRef {
   }
 
   /**
-   * on() - 系统事件监听
+   * on() - 
    *
-   * @param event - 事件类型
-   * @param callback - 事件回调函数
+   * @param event - 
+   * @param callback - 
    */
   on(event: string, callback: (...args: unknown[]) => void): UnsubscribeFn {
     let callbacks = this.eventListeners.get(event);
@@ -324,7 +324,7 @@ export class ActorRef {
   }
 
   /**
-   * emit() - 触发事件（内部使用）
+   * emit() - （）
    */
   private emit(event: string, data: unknown): void {
     const callbacks = this.eventListeners.get(event);
@@ -360,7 +360,7 @@ export class ActorRef {
   }
 
   /**
-   * 清理所有资源
+   * 
    */
   dispose(): void {
     for (const [_requestId, pending] of this.pendingRequests) {

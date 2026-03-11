@@ -1,30 +1,30 @@
-//! WebSocketGate - WebSocket 入站连接的消息路由器
+//! WebSocketGate - message router for inbound WebSocket connections
 //!
-//! 从 `WebSocketServer` 通道接收新建连接（含发送方 ActrId bytes 和 AIdCredential），
-//! 对每个连接先进行 Ed25519 credential 验签（若已配置 `WsAuthContext`），
-//! 验签通过后按 PayloadType 路由消息到 Mailbox 或 DataStreamRegistry。
+//! Receives new connections from the `WebSocketServer` channel (including sender ActrId bytes and AIdCredential),
+//! performs Ed25519 credential verification for each connection (if `WsAuthContext` is configured),
+//! then routes messages by PayloadType to Mailbox or DataStreamRegistry upon successful verification.
 //!
-//! # 设计对比 WebRtcGate
+//! # Design comparison with WebRtcGate
 //!
-//! | 关注点 | WebRtcGate | WebSocketGate |
-//! |--------|-----------|---------------|
-//! | 传输层 | WebRTC DataChannel | WebSocket (TCP) |
-//! | 发送方认证 | actrix 信令验证 credential | 本地 Ed25519 验签（AisKeyCache） |
-//! | 消息聚合 | `WebRtcCoordinator.receive_message()` | 逐连接读取 `DataLane` |
+//! | Concern | WebRtcGate | WebSocketGate |
+//! |---------|-----------|---------------|
+//! | Transport | WebRTC DataChannel | WebSocket (TCP) |
+//! | Sender auth | actrix signaling verifies credential | Local Ed25519 verification (AisKeyCache) |
+//! | Message aggregation | `WebRtcCoordinator.receive_message()` | Per-connection `DataLane` reading |
 
 use super::connection::WebSocketConnection;
 use super::server::InboundWsConn;
-use actr_protocol::{ActorResult, ActrError};
 use crate::inbound::DataStreamRegistry;
-use crate::lifecycle::CredentialState;
-use crate::wire::webrtc::SignalingClient;
-use crate::wire::SignalingKeyFetcher;
-use actr_framework::Bytes;
 use crate::key_cache::AisKeyCache;
+use crate::lifecycle::CredentialState;
+use crate::wire::SignalingKeyFetcher;
+use crate::wire::webrtc::SignalingClient;
+use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
 };
+use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
 use std::collections::HashMap;
@@ -35,46 +35,46 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
-/// WebSocket 身份验证上下文（可选）
+/// WebSocket authentication context (optional)
 ///
-/// 配置后，gate 将对每个入站连接执行 Ed25519 credential 验签：
-/// - 验签失败的连接直接丢弃，不启动 lane reader
-/// - 连接方未携带 credential 时，视同验签失败
+/// When configured, gate will perform Ed25519 credential verification for each inbound connection:
+/// - Connections that fail verification are dropped without starting lane readers
+/// - Connections without credentials are treated as verification failures
 pub struct WsAuthContext {
-    /// AIS signing 公钥缓存（本地命中直接验签，miss 时通过 signaling 拉取）
+    /// AIS signing public key cache (local hit verifies directly, miss fetches via signaling)
     pub ais_key_cache: Arc<AisKeyCache>,
-    /// 本机 ActrId（cache miss 时向 signaling 请求公钥所需）
+    /// Local ActrId (needed when requesting public key from signaling on cache miss)
     pub actor_id: ActrId,
-    /// 本机凭证状态（cache miss 时向 signaling 认证所需）
+    /// Local credential state (needed for signaling authentication on cache miss)
     pub credential_state: CredentialState,
-    /// Signaling 客户端（cache miss 时拉取公钥）
+    /// Signaling client (used to fetch public key on cache miss)
     pub signaling_client: Arc<dyn SignalingClient>,
 }
 
-/// WebSocketGate - 接收并路由入站 WebSocket 消息
+/// WebSocketGate - receives and routes inbound WebSocket messages
 pub struct WebSocketGate {
-    /// 入站连接通道（take 一次后 move 进 background task）
+    /// Inbound connection channel (taken once and moved into background task)
     conn_rx: tokio::sync::Mutex<Option<mpsc::Receiver<InboundWsConn>>>,
 
-    /// 待响应请求表（request_id → (caller_id, oneshot::Sender)）
-    /// **与 PeerGate 共享**，以便正确路由 Response
+    /// Pending requests map (request_id -> (caller_id, oneshot::Sender))
+    /// **Shared with PeerGate** for correct Response routing
     pending_requests: PendingRequestsMap,
 
-    /// DataStream 注册表（fast-path 流消息路由）
+    /// DataStream registry (fast-path stream message routing)
     data_stream_registry: Arc<DataStreamRegistry>,
 
-    /// 入站连接身份验证上下文
+    /// Inbound connection authentication context
     auth_ctx: Option<Arc<WsAuthContext>>,
 }
 
 impl WebSocketGate {
-    /// 创建 WebSocketGate
+    /// Create WebSocketGate
     ///
     /// # Arguments
-    /// - `conn_rx`: 来自 `WebSocketServer::bind()` 的接收端
-    /// - `pending_requests`: 与 PeerGate 共享的待响应表
-    /// - `data_stream_registry`: DataStream 注册表
-    /// - `auth_ctx`: 身份验证上下文（配置后对所有入站连接强制验签）
+    /// - `conn_rx`: receiver end from `WebSocketServer::bind()`
+    /// - `pending_requests`: pending requests map shared with PeerGate
+    /// - `data_stream_registry`: DataStream registry
+    /// - `auth_ctx`: authentication context (when configured, enforces credential verification on all inbound connections)
     pub fn new(
         conn_rx: mpsc::Receiver<InboundWsConn>,
         pending_requests: PendingRequestsMap,
@@ -89,7 +89,7 @@ impl WebSocketGate {
         }
     }
 
-    /// 处理 RpcEnvelope：Response 唤醒等待方，Request 入队 Mailbox
+    /// Handle RpcEnvelope: Response wakes the waiting party, Request enqueues into Mailbox
     async fn handle_envelope(
         envelope: RpcEnvelope,
         from_bytes: Vec<u8>,
@@ -144,26 +144,26 @@ impl WebSocketGate {
         }
     }
 
-    /// 验证入站连接的 AIdCredential Ed25519 签名
+    /// Verify AIdCredential Ed25519 signature of an inbound connection
     ///
-    /// 返回 `Some(verified_actor_id_str)` 表示验签通过，`None` 表示失败（已记录日志）。
-    /// `source_id_bytes` 为 `X-Actr-Source-ID` 提供的 ActrId protobuf bytes。
+    /// Returns `Some(verified_actor_id_str)` on successful verification, `None` on failure (already logged).
+    /// `source_id_bytes` is the ActrId protobuf bytes from `X-Actr-Source-ID`.
     async fn verify_credential(
         credential: &AIdCredential,
         source_id_bytes: &[u8],
         auth_ctx: &WsAuthContext,
     ) -> Option<()> {
-        // 取得本机凭证（用于 cache miss 时向 signaling 认证）
+        // Get local credential (for signaling authentication on cache miss)
         let local_credential = auth_ctx.credential_state.credential().await;
 
-        // 构造 SignalingKeyFetcher 适配器，将 signaling 客户端包装为 KeyFetcher
+        // Construct SignalingKeyFetcher adapter, wrapping signaling client as KeyFetcher
         let fetcher = SignalingKeyFetcher {
             client: auth_ctx.signaling_client.clone(),
             actor_id: auth_ctx.actor_id.clone(),
             credential: local_credential,
         };
 
-        // 从 AisKeyCache 获取 key_id 对应的 verifying key（本地命中或从 signaling 拉取）
+        // Get verifying key for key_id from AisKeyCache (local hit or fetch from signaling)
         let verifying_key = match auth_ctx
             .ais_key_cache
             .get_or_fetch(credential.key_id, &fetcher)
@@ -174,13 +174,13 @@ impl WebSocketGate {
                 tracing::warn!(
                     key_id = credential.key_id,
                     error = ?e,
-                    "⚠️ WS credential 验签失败：无法获取 signing key"
+                    "WS credential verification failed: unable to get signing key"
                 );
                 return None;
             }
         };
 
-        // Ed25519 验签
+        // Ed25519 signature verification
         let sig_result =
             credential.signature[..]
                 .try_into()
@@ -194,21 +194,21 @@ impl WebSocketGate {
         if sig_result.is_none() {
             tracing::warn!(
                 key_id = credential.key_id,
-                "⚠️ WS AIdCredential Ed25519 验签失败"
+                "WS AIdCredential Ed25519 verification failed"
             );
             return None;
         }
 
-        // 解码 IdentityClaims
+        // Decode IdentityClaims
         let claims = match IdentityClaims::decode(&credential.claims[..]) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(key_id = credential.key_id, error = ?e, "⚠️ WS IdentityClaims proto 解码失败");
+                tracing::warn!(key_id = credential.key_id, error = ?e, "WS IdentityClaims proto decode failed");
                 return None;
             }
         };
 
-        // 检查 expires_at
+        // Check expires_at
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -217,12 +217,12 @@ impl WebSocketGate {
             tracing::warn!(
                 key_id = credential.key_id,
                 expires_at = claims.expires_at,
-                "⚠️ WS AIdCredential 已过期"
+                "WS AIdCredential has expired"
             );
             return None;
         }
 
-        // 校验 claims.actor_id 与 X-Actr-Source-ID 一致（防止身份声称不一致）
+        // Verify claims.actor_id matches X-Actr-Source-ID (prevent identity claim mismatch)
         match ActrId::decode(source_id_bytes) {
             Ok(source_actor_id) => {
                 let source_repr = source_actor_id.to_string_repr();
@@ -230,17 +230,17 @@ impl WebSocketGate {
                     tracing::warn!(
                         claimed = %claims.actor_id,
                         source_id = %source_repr,
-                        "⚠️ WS credential actor_id 与 X-Actr-Source-ID 不一致，拒绝连接"
+                        "WS credential actor_id does not match X-Actr-Source-ID, rejecting connection"
                     );
                     return None;
                 }
                 tracing::info!(
                     actor_id = %claims.actor_id,
-                    "✅ WS 入站连接身份验证通过"
+                    "WS inbound connection identity verification passed"
                 );
             }
             Err(e) => {
-                tracing::warn!(error = ?e, "⚠️ WS X-Actr-Source-ID 解码失败，拒绝连接");
+                tracing::warn!(error = ?e, "WS X-Actr-Source-ID decode failed, rejecting connection");
                 return None;
             }
         }
@@ -248,10 +248,10 @@ impl WebSocketGate {
         Some(())
     }
 
-    /// 为单个 WebSocket 连接启动接收任务
+    /// Spawn receive tasks for a single WebSocket connection
     ///
-    /// 逐一读取 `PayloadType::RpcReliable`、`RpcSignal`、`StreamReliable`、
-    /// `StreamLatencyFirst` 四条 lane，对每条 lane 起一个独立 task。
+    /// Reads `PayloadType::RpcReliable`, `RpcSignal`, `StreamReliable`,
+    /// `StreamLatencyFirst` -- four lanes total, spawning an independent task for each.
     fn spawn_connection_tasks(
         conn: WebSocketConnection,
         source_id: Vec<u8>,
@@ -358,11 +358,11 @@ impl WebSocketGate {
         }
     }
 
-    /// 启动连接接受循环（由 ActrNode 调用，只能调用一次）
+    /// Start the connection accept loop (called by ActrNode, can only be called once)
     ///
-    /// 内部 take 出 `conn_rx`，move 进 background task 以无锁接收新连接。
-    /// 若配置了 `auth_ctx`，则对每个入站连接先进行 credential 验签，
-    /// 验签失败则丢弃连接；验签通过后调用 `spawn_connection_tasks`。
+    /// Internally takes `conn_rx` and moves it into a background task for lock-free new connection reception.
+    /// If `auth_ctx` is configured, performs credential verification for each inbound connection;
+    /// drops connections on verification failure, calls `spawn_connection_tasks` on success.
     pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> ActorResult<()> {
         let rx = self.conn_rx.lock().await.take().ok_or_else(|| {
             ActrError::Internal("WebSocketGate: start_receive_loop already called".to_string())
@@ -383,7 +383,7 @@ impl WebSocketGate {
                     credential_opt.is_some()
                 );
 
-                // Credential 验签（若已配置 auth_ctx）
+                // Credential verification (if auth_ctx is configured)
                 if let Some(ref ctx) = auth_ctx {
                     match credential_opt {
                         Some(ref credential) => {
@@ -391,13 +391,15 @@ impl WebSocketGate {
                                 .await
                                 .is_none()
                             {
-                                tracing::warn!("⚠️ WS 入站连接 credential 验签失败，丢弃连接");
-                                continue; // 丢弃连接，继续等待下一个
+                                tracing::warn!(
+                                    "WS inbound connection credential verification failed, dropping connection"
+                                );
+                                continue; // drop connection, wait for next one
                             }
                         }
                         None => {
                             tracing::warn!(
-                                "⚠️ WS 入站连接未携带 X-Actr-Credential，拒绝连接（auth_ctx 已配置）"
+                                "WS inbound connection missing X-Actr-Credential, rejecting connection (auth_ctx configured)"
                             );
                             continue;
                         }
@@ -411,7 +413,9 @@ impl WebSocketGate {
                         mailbox.clone(),
                     );
                 } else {
-                    tracing::error!("❌ WS auth_ctx 未配置，拒绝连接（配置错误）");
+                    tracing::error!(
+                        "WS auth_ctx not configured, rejecting connection (configuration error)"
+                    );
                 }
             }
 
@@ -429,7 +433,6 @@ mod tests {
     use async_trait::async_trait;
     use ed25519_dalek::{Signer, SigningKey};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::mpsc;
     use uuid::Uuid;
 
     // ─── helpers ─────────────────────────────────────────────────────────────
@@ -446,12 +449,12 @@ mod tests {
         }
     }
 
-    /// 用固定种子生成可重复的 Ed25519 密钥对
+    /// Generate reproducible Ed25519 key pair from a fixed seed
     fn signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
 
-    /// 构造一个能通过验签的完整 AIdCredential
+    /// Construct a complete AIdCredential that passes verification
     fn make_valid_credential(
         sk: &SigningKey,
         actor_id: &ActrId,
@@ -488,7 +491,7 @@ mod tests {
             - 1
     }
 
-    // ─── mock SignalingClient (同 ais_key_cache tests，内联以避免模块依赖) ──
+    // --- mock SignalingClient (same as ais_key_cache tests, inlined to avoid module dependency) ---
 
     struct NullSignaling;
 
@@ -578,7 +581,7 @@ mod tests {
         }
     }
 
-    /// 构造带预置公钥的 WsAuthContext（key_id 已在缓存中，无需走 signaling）
+    /// Construct WsAuthContext with pre-seeded public key (key_id already in cache, no signaling needed)
     async fn make_auth_ctx(sk: &SigningKey, key_id: u32, local_actor: ActrId) -> WsAuthContext {
         let pubkey_bytes = sk.verifying_key().as_bytes().to_vec();
         let cache = AisKeyCache::new();
@@ -601,7 +604,7 @@ mod tests {
 
     // ─── verify_credential ────────────────────────────────────────────────────
 
-    /// 正常路径：有效凭证 + actor_id 一致 → Some(())
+    /// Happy path: valid credential + matching actor_id -> Some(())
     #[tokio::test]
     async fn verify_credential_valid_returns_some() {
         let sk = signing_key(1);
@@ -614,7 +617,7 @@ mod tests {
         assert!(result.is_some(), "valid credential should pass");
     }
 
-    /// 签名被翻转 1 bit → 验签失败 → None
+    /// Signature flipped 1 bit -> verification fails -> None
     #[tokio::test]
     async fn verify_credential_tampered_signature_returns_none() {
         let sk = signing_key(2);
@@ -634,7 +637,7 @@ mod tests {
         );
     }
 
-    /// 签名字节数不足 64 字节 → try_into 失败 → None
+    /// Signature less than 64 bytes -> try_into fails -> None
     #[tokio::test]
     async fn verify_credential_short_signature_returns_none() {
         let sk = signing_key(3);
@@ -652,7 +655,7 @@ mod tests {
         );
     }
 
-    /// expires_at 在过去 → 已过期 → None
+    /// expires_at in the past -> expired -> None
     #[tokio::test]
     async fn verify_credential_expired_returns_none() {
         let sk = signing_key(4);
@@ -669,15 +672,15 @@ mod tests {
         );
     }
 
-    /// claims.actor_id 与 X-Actr-Source-ID 对应的 ActrId 不一致 → None（防身份欺骗）
+    /// claims.actor_id does not match ActrId from X-Actr-Source-ID -> None (prevent identity spoofing)
     #[tokio::test]
     async fn verify_credential_actor_id_mismatch_returns_none() {
         let sk = signing_key(5);
-        let claimed_actor = test_actor_id(200); // credential 声称是 200
-        let actual_source = test_actor_id(201); // 实际连接方是 201
+        let claimed_actor = test_actor_id(200); // Credential claims actor 200.
+        let actual_source = test_actor_id(201); // Actual connecting peer is 201.
         let ctx = make_auth_ctx(&sk, 1, test_actor_id(999)).await;
 
-        // credential 签名的是 claimed_actor(200)，但 source_id 是 actual_source(201)
+        // The credential is signed for `claimed_actor(200)`, but the source ID is `actual_source(201)`.
         let credential = make_valid_credential(&sk, &claimed_actor, future_ts(), 1);
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actual_source);
 
@@ -689,14 +692,14 @@ mod tests {
         );
     }
 
-    /// IdentityClaims bytes 是非法 protobuf → 解码失败 → None
+    /// Invalid protobuf bytes in `IdentityClaims` should fail decoding and return `None`.
     #[tokio::test]
     async fn verify_credential_invalid_claims_proto_returns_none() {
         let sk = signing_key(6);
         let actor = test_actor_id(104);
         let ctx = make_auth_ctx(&sk, 1, test_actor_id(999)).await;
 
-        // 构造 claims 为垃圾字节，然后对其签名（签名本身有效，但 claims 无法解码）
+        // Build garbage claim bytes and sign them. The signature is valid, but the claims cannot be decoded.
         let garbage = b"\xFF\xFF\xFF\xFF\xFF";
         let signature = sk.sign(garbage);
         let credential = AIdCredential {
@@ -713,7 +716,7 @@ mod tests {
         );
     }
 
-    /// source_id_bytes 是非法 protobuf → ActrId 解码失败 → None
+    /// Invalid protobuf bytes in `source_id_bytes` should fail `ActrId` decoding and return `None`.
     #[tokio::test]
     async fn verify_credential_invalid_source_id_returns_none() {
         let sk = signing_key(7);
@@ -721,7 +724,7 @@ mod tests {
         let ctx = make_auth_ctx(&sk, 1, test_actor_id(999)).await;
         let credential = make_valid_credential(&sk, &actor, future_ts(), 1);
 
-        let bad_source_id = b"\xFF\xFF\xFF\xFF"; // 无效 protobuf
+        let bad_source_id = b"\xFF\xFF\xFF\xFF"; // Invalid protobuf.
 
         assert!(
             WebSocketGate::verify_credential(&credential, bad_source_id, &ctx)
@@ -730,12 +733,12 @@ mod tests {
         );
     }
 
-    /// key_id 不在缓存且 signaling 返回错误 → None（signaling fetch 失败）
+    /// When `key_id` is missing from cache and signaling returns an error, return `None`.
     #[tokio::test]
     async fn verify_credential_unknown_key_id_returns_none() {
         let sk = signing_key(8);
         let actor = test_actor_id(106);
-        // key_id=99 不在缓存，NullSignaling 会返回错误
+        // `key_id=99` is not in cache, so `NullSignaling` returns an error.
         let cache = AisKeyCache::new();
         let local_credential = AIdCredential {
             key_id: 1,
@@ -749,7 +752,7 @@ mod tests {
             signaling_client: Arc::new(NullSignaling),
         };
 
-        let credential = make_valid_credential(&sk, &actor, future_ts(), 99); // key_id=99 不存在
+        let credential = make_valid_credential(&sk, &actor, future_ts(), 99); // `key_id=99` does not exist.
         let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
 
         assert!(
@@ -759,7 +762,7 @@ mod tests {
         );
     }
 
-    // ─── handle_envelope 路由逻辑 ─────────────────────────────────────────────
+    // ─── handle_envelope routing logic ───────────────────────────────────────
 
     struct CapturingMailbox {
         enqueue_count: AtomicUsize,
@@ -813,13 +816,14 @@ mod tests {
         }
     }
 
-    fn empty_pending()
-    -> Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>
-    {
+    type PendingReplies =
+        Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
+
+    fn empty_pending() -> PendingReplies {
         Arc::new(RwLock::new(HashMap::new()))
     }
 
-    /// RPC Request（无 pending 条目）→ 入队 Mailbox，优先级 Normal
+    /// RPC request with no pending entry should go to the mailbox with normal priority.
     #[tokio::test]
     async fn handle_envelope_request_goes_to_mailbox_with_normal_priority() {
         let mailbox = CapturingMailbox::new();
@@ -844,7 +848,7 @@ mod tests {
         );
     }
 
-    /// RpcSignal → 入队 Mailbox，优先级 High
+    /// `RpcSignal` should go to the mailbox with high priority.
     #[tokio::test]
     async fn handle_envelope_rpc_signal_uses_high_priority() {
         let mailbox = CapturingMailbox::new();
@@ -869,7 +873,7 @@ mod tests {
         );
     }
 
-    /// RPC Response（pending 中有对应 request_id）→ 唤醒等待方，不入 Mailbox
+    /// RPC response with a matching pending request should wake the waiter and not enter the mailbox.
     #[tokio::test]
     async fn handle_envelope_response_resolves_pending_not_mailbox() {
         let mailbox = CapturingMailbox::new();
@@ -905,7 +909,7 @@ mod tests {
         assert!(result.is_ok(), "response payload should resolve Ok");
     }
 
-    /// Response 同时带 payload 和 error → Err(DecodeFailure) 发给等待方
+    /// A response carrying both payload and error should send `Err(DecodeFailure)` to the waiter.
     #[tokio::test]
     async fn handle_envelope_response_both_payload_and_error_gives_decode_failure() {
         let mailbox = CapturingMailbox::new();
@@ -942,7 +946,7 @@ mod tests {
         );
     }
 
-    /// Response 只含 error（无 payload）→ Err(Unavailable) 发给等待方
+    /// A response carrying only `error` and no payload should send `Err(Unavailable)` to the waiter.
     #[tokio::test]
     async fn handle_envelope_response_error_only_gives_unavailable() {
         let mailbox = CapturingMailbox::new();
@@ -980,7 +984,7 @@ mod tests {
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
     }
 
-    /// Response 处理后，pending 中对应条目已被移除
+    /// After response handling, the matching pending entry should be removed.
     #[tokio::test]
     async fn handle_envelope_response_removes_pending_entry() {
         let mailbox = CapturingMailbox::new();

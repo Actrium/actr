@@ -1,8 +1,9 @@
-//! Echo Server WASM - 用户 Workload + SW Runtime
+//! Echo Server WASM - user workload + SW runtime.
 //!
-//! 此 crate 将用户代码（EchoService）与 SW Runtime 框架代码一起编译成 WASM。
+//! This crate compiles the user code (`EchoService`) together with the SW
+//! runtime framework into a single WASM artifact.
 //!
-//! ## 架构
+//! ## Architecture
 //!
 //! ```text
 //! WebRTC DataChannel
@@ -15,13 +16,13 @@
 //! WebRTC DataChannel ← RpcEnvelope (response)
 //! ```
 //!
-//! ## 编译产物
+//! ## Build outputs
 //!
 //! ```text
 //! server/public/
-//! ├── echo_server_bg.wasm   # WASM 主体（用户代码 + 框架）
-//! ├── echo_server.js        # JS 胶水层
-//! └── echo_server.d.ts      # TypeScript 类型
+//! ├── echo_server_bg.wasm   # Main WASM payload (user code + framework)
+//! ├── echo_server.js        # JS glue
+//! └── echo_server.d.ts      # TypeScript types
 //! ```
 
 mod echo_service;
@@ -31,12 +32,12 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 
-// 重新导出 SW Runtime 的公共 API
+// Re-export the public SW runtime API.
 pub use actr_runtime_sw::*;
 
 pub use echo_service::EchoService;
 
-/// WASM 初始化入口
+/// WASM initialization entry point
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
@@ -47,10 +48,10 @@ pub fn init() {
     log::info!("  - User Workload: EchoService");
 }
 
-/// 注册 EchoService handler
+/// Register the `EchoService` handler.
 ///
-/// handler 分发 RPC 请求到 EchoService 的具体方法，
-/// 并将 RuntimeContext 透传给每个方法。
+/// The handler dispatches RPC requests to the concrete `EchoService` methods
+/// and forwards `RuntimeContext` into each method.
 #[wasm_bindgen]
 pub fn register_echo_service() {
     log::info!("Registering EchoService workload...");

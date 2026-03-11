@@ -1,7 +1,7 @@
 //! Actor-RTC Web Common Library
 //!
-//! 共享代码库，被 Service Worker Runtime 和 DOM Runtime 共同使用。
-//! 包含公共类型、错误定义、消息协议等。
+//! Shared code used by both the Service Worker runtime and the DOM runtime.
+//! Includes common types, error definitions, and message protocols.
 
 pub mod backoff;
 pub mod error;

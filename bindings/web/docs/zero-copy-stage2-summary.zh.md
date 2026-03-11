@@ -96,7 +96,7 @@ use wasm_bindgen::{JsCast, JsValue};
   crates/runtime-sw/src/transport/lane.rs         (+80 行，新增 2 个方法 + 修改导入)
 
 新增：
-  docs/zero-copy-stage2-summary.md                (本文档)
+  docs/zero-copy-stage2-summary.zh.md             (this document)
 ```
 
 ### 代码行数变化

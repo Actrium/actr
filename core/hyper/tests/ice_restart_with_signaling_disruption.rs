@@ -3,8 +3,7 @@
 /// This test uses a real WebSocket connection with a controllable test server
 /// to simulate signaling disruption and recovery scenarios, including full
 /// WebRTC peer connection establishment and ICE restart.
-mod common;
-use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 

@@ -13,23 +13,23 @@ use client_workload::ClientWorkload;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 加载配置
+    // loadconfig
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
-    // 初始化可观测性
+    // initialize[...]
     let _obs_guard = actr_runtime::init_observability(&config.observability)?;
 
     info!("🚀 WS Echo Client App");
-    info!("   通过信令服务器发现服务端 WebSocket 地址后直连");
+    info!("   via/throughsignalingservice[...]discoverserver WebSocket address[...]direct connection");
 
     let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem 创建成功");
+    info!("✅ ActrSystem createsuccess");
 
-    // 准备 workload
+    // [...] workload
     let workload = ClientWorkload::new();
 
-    // 通过信令服务器发现 WsEchoService
+    // via/throughsignalingservice[...]discover WsEchoService
     let target_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "WsEchoService".to_string(),
@@ -38,32 +38,32 @@ async fn main() -> Result<()> {
 
     let node = system.attach(workload.clone());
 
-    info!("🚀 启动 ActrNode...");
+    info!("🚀 start ActrNode...");
     let actr_ref = node.start().await?;
 
-    info!("🌐 通过信令服务器发现 WsEchoService...");
+    info!("🌐 via/throughsignalingservice[...]discover WsEchoService...");
     let mut candidates = actr_ref
         .discover_route_candidates(&target_type, 1)
         .await
-        .context("无法从信令服务器发现 WsEchoService 实例")?;
+        .context("[...]signalingservice[...]discover WsEchoService [...]")?;
 
     let server_id = candidates
         .pop()
-        .ok_or_else(|| anyhow::anyhow!("未找到可用的 WsEchoService 实例"))?;
+        .ok_or_else(|| anyhow::anyhow!("[...] WsEchoService [...]"))?;
 
-    info!("🎯 目标服务器: {:?}", server_id);
-    info!("🔌 已通过信令发现 WebSocket 地址，后续通信将使用 WebSocket 直连");
+    info!("🎯 [...]service[...]: {:?}", server_id);
+    info!("🔌 alreadyvia/throughsignalingdiscover WebSocket address，[...]willusing/use WebSocket direct connection");
     workload.set_server_id(server_id).await;
 
     let local_id = actr_ref.actor_id().clone();
-    info!("✅ ActrNode 启动成功，ID: {:?}", local_id);
+    info!("✅ ActrNode startsuccess，ID: {:?}", local_id);
 
-    // 运行交互式应用
+    // [...]
     let app_side = AppSide {
         actr_ref: actr_ref.clone(),
     };
     app_side.run().await;
 
-    info!("👋 应用已退出");
+    info!("👋 [...]already[...]");
     Ok(())
 }

@@ -46,7 +46,7 @@ async function main() {
         pages.push(serverPage);
         serverPage.on('console', (msg) => console.log('[server]', msg.text()));
         await serverPage.goto(SERVER_URL, { waitUntil: 'networkidle2' });
-        await waitForText(serverPage, '#status', '运行中');
+        await waitForText(serverPage, '#status', 'Server running');
 
         for (let i = 1; i <= CLIENT_COUNT; i += 1) {
             const page = await browser.newPage();
@@ -55,7 +55,7 @@ async function main() {
             page.on('console', (msg) => console.log(`[client-${i}]`, msg.text()));
             const url = `${CLIENT_URL}?autoStart=1&clientId=client-${i}&messageCount=${MESSAGE_COUNT}`;
             await page.goto(url, { waitUntil: 'networkidle2' });
-            await waitForText(page, '#status', '已连接');
+            await waitForText(page, '#status', 'Connected');
         }
 
         await new Promise((resolve) => setTimeout(resolve, 12000));

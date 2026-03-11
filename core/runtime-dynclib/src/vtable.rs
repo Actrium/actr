@@ -1,27 +1,27 @@
-//! HostVTable — 宿主回调函数指针表
+//! HostVTable -- Host callback function pointer table
 //!
-//! 宿主 (Hyper) 在 `actr_init` 时传入此表，guest 将其缓存到 thread-local
-//! 中，后续 `DynclibContext` 通过函数指针完成 RPC、发现等操作。
+//! The host (Hyper) passes this table at `actr_init` time; the guest caches it in
+//! a thread-local, and `DynclibContext` uses the function pointers for RPC, discovery, etc.
 //!
-//! 与 WASM 的 host imports 不同，dynclib 与宿主共享地址空间，
-//! 因此不需要 alloc/free 中转——直接传递指针即可。
+//! Unlike WASM host imports, dynclib shares the address space with the host,
+//! so no alloc/free intermediary is needed -- pointers are passed directly.
 
-/// 宿主回调函数指针表
+/// Host callback function pointer table
 ///
 /// # Safety
 ///
-/// - 所有函数指针在 `actr_init` 到进程退出期间保持有效
-/// - 宿主保证线程安全性：同一 actor 实例不会被并发调用
-/// - `*mut *mut u8` 输出指针指向宿主分配的内存，guest 必须通过 `free_host_buf` 释放
+/// - All function pointers remain valid from `actr_init` until process exit
+/// - The host guarantees thread safety: the same actor instance is never called concurrently
+/// - `*mut *mut u8` output pointers refer to host-allocated memory; the guest must free them via `free_host_buf`
 #[repr(C)]
 pub struct HostVTable {
-    /// RPC 调用并等待响应
+    /// RPC call and wait for response
     ///
     /// `call(route_key_ptr, route_key_len, dest_ptr, dest_len,
     ///       payload_ptr, payload_len, resp_ptr_out, resp_len_out) -> error_code`
     ///
-    /// 宿主在 `resp_ptr_out` / `resp_len_out` 写入响应缓冲区地址和长度。
-    /// guest 使用完毕后必须调用 `free_host_buf` 释放。
+    /// Host writes response buffer address and length at `resp_ptr_out` / `resp_len_out`.
+    /// Guest must call `free_host_buf` after use.
     pub call: unsafe extern "C" fn(
         *const u8,
         usize,
@@ -33,47 +33,46 @@ pub struct HostVTable {
         *mut usize,
     ) -> i32,
 
-    /// 单向消息 (fire-and-forget)
+    /// One-way message (fire-and-forget)
     ///
     /// `tell(route_key_ptr, route_key_len, dest_ptr, dest_len,
     ///       payload_ptr, payload_len) -> error_code`
-    pub tell:
-        unsafe extern "C" fn(*const u8, usize, *const u8, usize, *const u8, usize) -> i32,
+    pub tell: unsafe extern "C" fn(*const u8, usize, *const u8, usize, *const u8, usize) -> i32,
 
-    /// 服务发现
+    /// Service discovery
     ///
     /// `discover(type_ptr, type_len, resp_ptr_out, resp_len_out) -> error_code`
     ///
-    /// 宿主在 `resp_ptr_out` / `resp_len_out` 写入 ActrId protobuf 编码。
-    /// guest 使用完毕后必须调用 `free_host_buf` 释放。
+    /// Host writes protobuf-encoded ActrId at `resp_ptr_out` / `resp_len_out`.
+    /// Guest must call `free_host_buf` after use.
     pub discover: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32,
 
-    /// 获取当前 actor 的 ActrId
+    /// Get current actor's ActrId
     ///
     /// `self_id(buf_ptr_out, buf_len_out) -> error_code`
     ///
-    /// 宿主写入 protobuf 编码的 ActrId，guest 通过 `free_host_buf` 释放。
+    /// Host writes protobuf-encoded ActrId; guest frees via `free_host_buf`.
     pub self_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
 
-    /// 获取调用方 ActrId
+    /// Get caller's ActrId
     ///
     /// `caller_id(buf_ptr_out, buf_len_out) -> i32`
     ///
-    /// 返回 0 表示有调用方，1 表示无调用方（系统内部调用）。
-    /// 有调用方时宿主写入 protobuf 编码的 ActrId，guest 通过 `free_host_buf` 释放。
+    /// Returns 0 when caller exists, 1 when no caller (internal system call).
+    /// When caller exists, host writes protobuf-encoded ActrId; guest frees via `free_host_buf`.
     pub caller_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
 
-    /// 获取当前请求 ID
+    /// Get current request ID
     ///
     /// `request_id(buf_ptr_out, buf_len_out) -> error_code`
     ///
-    /// 宿主写入 UTF-8 编码的请求 ID，guest 通过 `free_host_buf` 释放。
+    /// Host writes UTF-8 encoded request ID; guest frees via `free_host_buf`.
     pub request_id: unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32,
 
-    /// 释放宿主分配的缓冲区
+    /// Free host-allocated buffer
     ///
     /// `free_host_buf(ptr, len)`
     ///
-    /// 所有由宿主通过 `*_out` 指针返回的缓冲区，guest 使用完毕后必须调用此函数释放。
+    /// All buffers returned by the host via `*_out` pointers must be freed by the guest using this function.
     pub free_host_buf: unsafe extern "C" fn(*mut u8, usize),
 }

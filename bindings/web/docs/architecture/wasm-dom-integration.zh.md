@@ -601,6 +601,6 @@ pub trait ActorInterface {
 **文档维护**: 本文档记录了 WASM + DOM 集成的核心技术决策，应随架构演进持续更新。
 
 **相关文档**:
-- [架构总览](./overview.md)
-- [双层架构设计](./dual-layer.md)
-- [技术决策记录](./decisions.md)
+- [架构总览](./overview.zh.md)
+- [双层架构设计](./dual-layer.zh.md)
+- [技术决策记录](./decisions.zh.md)

@@ -5,9 +5,7 @@
 //! - Rapid repeated ICE restart calls (de-duplication)
 //! - Network state change scenarios
 
-mod common;
-
-use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 use std::time::Duration;
 
 // ==================== Tests ====================

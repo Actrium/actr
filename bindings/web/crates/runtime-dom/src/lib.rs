@@ -1,10 +1,10 @@
 //! Actor-RTC DOM Runtime
 //!
-//! DOM 端的 Actor 运行时，负责：
-//! - Fast Path：Stream Handler Registry + MediaFrame Handler Registry
-//! - WebRTC Lanes：DataChannel + MediaTrack
-//! - PostMessage Lane：与 Service Worker 的通信通道
-//! - Keepalive：防止 Service Worker 被浏览器回收
+//! Actor runtime for the DOM side. It is responsible for:
+//! - Fast path support through the stream handler and media frame registries
+//! - WebRTC lanes for DataChannel and MediaTrack
+//! - The PostMessage lane used to communicate with the Service Worker
+//! - Keepalive logic so the browser does not reclaim the Service Worker
 
 use wasm_bindgen::prelude::*;
 use web_sys::console;
@@ -33,22 +33,22 @@ pub use system::DomSystem;
 pub use transport::{DataLane, DomTransport, PostMessageLaneBuilder};
 pub use webrtc::WebRtcCoordinator;
 
-/// 初始化 DOM Runtime
+/// Initialize the DOM runtime.
 ///
-/// 应该在页面加载时调用一次
+/// Call this once when the page loads.
 #[wasm_bindgen]
 pub fn init_dom_runtime() {
-    // 设置 panic hook
+    // Install the panic hook.
     console_error_panic_hook::set_once();
 
-    // 初始化日志
+    // Initialize logging.
     wasm_logger::init(wasm_logger::Config::default());
 
-    // 初始化错误报告器
+    // Initialize the error reporter.
     let _error_reporter = init_global_error_reporter();
     log::info!("Error reporter initialized");
 
-    // 初始化生命周期管理
+    // Initialize lifecycle management.
     let lifecycle = DomLifecycleManager::new();
     if let Err(e) = lifecycle.init() {
         log::error!("Failed to initialize lifecycle manager: {:?}", e);

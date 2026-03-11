@@ -1,23 +1,24 @@
-//! compat.lock.toml - 运行时兼容性协商缓存
+//! compat.lock.toml - Runtime compatibility negotiation cache
 //!
-//! 当服务发现无法找到精确匹配但找到兼容匹配时，会创建此文件。
-//! 此文件的存在表示系统处于亚健康状态 (SUB-HEALTHY)。
+//! This file is created when service discovery cannot find an exact match
+//! but finds a compatible match. Its existence indicates the system is in
+//! SUB-HEALTHY state.
 //!
-//! ## 功能
-//! - 缓存协商结果，避免重复进行兼容性检查
-//! - 记录系统健康状态，方便运维监控
-//! - 提供快速启动路径，优先尝试已知兼容版本
+//! ## Features
+//! - Cache negotiation results to avoid repeated compatibility checks
+//! - Record system health state for operations monitoring
+//! - Provide a fast startup path by trying known compatible versions first
 //!
-//! ## 存储位置
-//! 此文件存储在操作系统的临时目录中，而非项目目录：
+//! ## Storage Location
+//! This file is stored in the OS temporary directory, not the project directory:
 //! - Linux/macOS: `/tmp/actr/<project_hash>/compat.lock.toml`
 //! - Windows: `%TEMP%\actr\<project_hash>\compat.lock.toml`
 //!
-//! `project_hash` 是根据项目根目录绝对路径计算的唯一哈希值，
-//! 确保同一机器上多个 Actor 实例各有独立的缓存。
+//! `project_hash` is a unique hash computed from the project root absolute path,
+//! ensuring each Actor instance on the same machine has its own independent cache.
 //!
-//! ## 注意
-//! 此文件不应提交到版本控制，因为它反映的是运行时状态。
+//! ## Note
+//! This file should not be committed to version control as it reflects runtime state.
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,18 +27,18 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-/// 文件名常量
+/// Filename constant
 const COMPAT_LOCK_FILENAME: &str = "compat.lock.toml";
 
-/// 临时目录下的子目录名称
+/// Subdirectory name under the temp directory
 const ACTR_TEMP_DIR: &str = "actr";
 
-/// 默认缓存过期时间（24小时）
+/// Default cache expiration time (24 hours)
 const DEFAULT_TTL_HOURS: i64 = 24;
 
-/// 根据项目根目录路径计算唯一哈希值
+/// Compute a unique hash from the project root directory path
 ///
-/// 返回一个短哈希字符串（16个字符），用于创建临时目录子路径
+/// Returns a short hash string (16 characters) used to create temp directory subpaths
 fn compute_project_hash(project_root: &Path) -> String {
     let canonical = project_root
         .canonicalize()
@@ -46,50 +47,50 @@ fn compute_project_hash(project_root: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path_str.as_bytes());
     let result = hasher.finalize();
-    // 取前8字节（16个十六进制字符）作为哈希
+    // Take the first 8 bytes (16 hex characters) as the hash
     hex::encode(&result[..8])
 }
 
-/// 获取 compat.lock.toml 的存储目录
+/// Get the storage directory for compat.lock.toml
 ///
-/// 路径格式：`<temp_dir>/actr/<project_hash>/`
+/// Path format: `<temp_dir>/actr/<project_hash>/`
 fn get_compat_lock_dir(project_root: &Path) -> PathBuf {
     let temp_dir = std::env::temp_dir();
     let project_hash = compute_project_hash(project_root);
     temp_dir.join(ACTR_TEMP_DIR).join(project_hash)
 }
 
-/// 兼容性协商记录
+/// Compatibility negotiation entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NegotiationEntry {
-    /// 服务名称（例如 "user-service"）
+    /// Service name (e.g. "user-service")
     pub service_name: String,
 
-    /// 请求的指纹（客户端期望的版本）
+    /// Requested fingerprint (version expected by the client)
     pub requested_fingerprint: String,
 
-    /// 实际解析的指纹（服务端提供的版本）
+    /// Actually resolved fingerprint (version provided by the server)
     pub resolved_fingerprint: String,
 
-    /// 兼容性检查结果
+    /// Compatibility check result
     pub compatibility_check: CompatibilityCheck,
 
-    /// 协商时间
+    /// Negotiation time
     pub negotiated_at: DateTime<Utc>,
 
-    /// 过期时间
+    /// Expiration time
     pub expires_at: DateTime<Utc>,
 }
 
-/// 兼容性检查结果
+/// Compatibility check result
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompatibilityCheck {
-    /// 完全兼容（精确匹配）
+    /// Fully compatible (exact match)
     ExactMatch,
-    /// 向后兼容
+    /// Backward compatible
     BackwardCompatible,
-    /// 破坏性变更（不应该出现在 lock 文件中）
+    /// Breaking changes (should not appear in lock file)
     BreakingChanges,
 }
 
@@ -103,20 +104,20 @@ impl std::fmt::Display for CompatibilityCheck {
     }
 }
 
-/// compat.lock.toml 文件结构
+/// compat.lock.toml file structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompatLockFile {
-    /// 文件头注释信息
+    /// File header comment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _comment: Option<String>,
 
-    /// 协商记录列表
+    /// Negotiation entry list
     #[serde(default)]
     pub negotiation: Vec<NegotiationEntry>,
 }
 
 impl CompatLockFile {
-    /// 创建新的空 lock 文件
+    /// Create a new empty lock file
     pub fn new() -> Self {
         Self {
             _comment: Some(
@@ -128,7 +129,7 @@ impl CompatLockFile {
         }
     }
 
-    /// 从文件加载
+    /// Load from file
     pub async fn load(base_path: &Path) -> Result<Option<Self>, CompatLockError> {
         let file_path = base_path.join(COMPAT_LOCK_FILENAME);
 
@@ -153,9 +154,9 @@ impl CompatLockFile {
         Ok(Some(lock_file))
     }
 
-    /// 保存到文件
+    /// Save to file
     pub async fn save(&self, base_path: &Path) -> Result<(), CompatLockError> {
-        // 确保目录存在（临时目录可能不存在）
+        // Ensure directory exists (temp directory may not exist)
         if !base_path.exists() {
             fs::create_dir_all(base_path)
                 .await
@@ -174,9 +175,9 @@ impl CompatLockFile {
         let content = toml::to_string_pretty(self)
             .map_err(|e| CompatLockError::SerializeError { source: e })?;
 
-        // 添加文件头注释
+        // Add file header comment
         let full_content = format!(
-            "# compat.lock.toml - 兼容性协商缓存\n\
+            "# compat.lock.toml - Compatibility negotiation cache\n\
              # This file indicates the system is in SUB-HEALTHY state.\n\
              # Consider running 'actr install --force-update' to update dependencies.\n\
              # Location: {}\n\n\
@@ -194,7 +195,7 @@ impl CompatLockFile {
         Ok(())
     }
 
-    /// 删除 lock 文件（系统恢复健康时调用）
+    /// Remove lock file (called when system recovers to healthy state)
     pub async fn remove(base_path: &Path) -> Result<bool, CompatLockError> {
         let file_path = base_path.join(COMPAT_LOCK_FILENAME);
 
@@ -211,14 +212,14 @@ impl CompatLockFile {
         }
     }
 
-    /// 查找服务的协商记录
+    /// Find negotiation entry for a service
     pub fn find_entry(&self, service_name: &str) -> Option<&NegotiationEntry> {
         self.negotiation
             .iter()
             .find(|e| e.service_name == service_name)
     }
 
-    /// 查找未过期的协商记录
+    /// Find a non-expired negotiation entry
     pub fn find_valid_entry(&self, service_name: &str) -> Option<&NegotiationEntry> {
         let now = Utc::now();
         self.negotiation
@@ -226,16 +227,16 @@ impl CompatLockFile {
             .find(|e| e.service_name == service_name && e.expires_at > now)
     }
 
-    /// 添加或更新协商记录
+    /// Add or update a negotiation entry
     pub fn upsert_entry(&mut self, entry: NegotiationEntry) {
-        // 移除已存在的同名记录
+        // Remove existing entry with the same name
         self.negotiation
             .retain(|e| e.service_name != entry.service_name);
-        // 添加新记录
+        // Add the new entry
         self.negotiation.push(entry);
     }
 
-    /// 清理过期的记录
+    /// Clean up expired entries
     pub fn cleanup_expired(&mut self) -> usize {
         let now = Utc::now();
         let before = self.negotiation.len();
@@ -243,12 +244,12 @@ impl CompatLockFile {
         before - self.negotiation.len()
     }
 
-    /// 检查文件是否存在（即系统是否处于亚健康状态）
+    /// Check whether the file exists (i.e. whether the system is in sub-healthy state)
     pub async fn exists(base_path: &Path) -> bool {
         base_path.join(COMPAT_LOCK_FILENAME).exists()
     }
 
-    /// 检查是否有任何有效的非精确匹配记录（亚健康状态）
+    /// Check whether there are any valid non-exact-match entries (sub-healthy state)
     pub fn is_sub_healthy(&self) -> bool {
         let now = Utc::now();
         self.negotiation.iter().any(|e| {
@@ -258,7 +259,7 @@ impl CompatLockFile {
 }
 
 impl NegotiationEntry {
-    /// 创建新的协商记录
+    /// Create a new negotiation entry
     pub fn new(
         service_name: String,
         requested_fingerprint: String,
@@ -276,13 +277,13 @@ impl NegotiationEntry {
         }
     }
 
-    /// 检查是否已过期
+    /// Check whether this entry has expired
     pub fn is_expired(&self) -> bool {
         Utc::now() > self.expires_at
     }
 }
 
-/// compat.lock 相关错误
+/// compat.lock related errors
 #[derive(Debug, thiserror::Error)]
 pub enum CompatLockError {
     #[error("IO error at {path}: {source}")]
@@ -306,25 +307,25 @@ pub enum CompatLockError {
     },
 }
 
-/// 兼容性协商管理器 - 运行时使用
+/// Compatibility negotiation manager - used at runtime
 pub struct CompatLockManager {
-    /// lock 文件所在目录（计算得出的临时目录路径）
+    /// Lock file directory (computed temp directory path)
     base_path: PathBuf,
-    /// 项目根目录（用于日志记录）
+    /// Project root directory (used for logging)
     #[allow(dead_code)]
     project_root: PathBuf,
-    /// 缓存的 lock 文件内容
+    /// Cached lock file contents
     cached: Option<CompatLockFile>,
 }
 
 impl CompatLockManager {
-    /// 创建新的管理器
+    /// Create a new manager
     ///
     /// # Arguments
-    /// * `project_root` - 项目根目录的路径，用于计算唯一的缓存目录
+    /// * `project_root` - Path to the project root directory, used to compute a unique cache directory
     ///
-    /// # 存储位置
-    /// 文件将存储在 `<temp_dir>/actr/<project_hash>/compat.lock.toml`
+    /// # Storage Location
+    /// Files will be stored at `<temp_dir>/actr/<project_hash>/compat.lock.toml`
     pub fn new(project_root: PathBuf) -> Self {
         let base_path = get_compat_lock_dir(&project_root);
         debug!(
@@ -339,27 +340,27 @@ impl CompatLockManager {
         }
     }
 
-    /// 获取 compat.lock 文件的存储目录
+    /// Get the storage directory of the compat.lock file
     pub fn cache_dir(&self) -> &Path {
         &self.base_path
     }
 
-    /// 加载 lock 文件
+    /// Load the lock file
     pub async fn load(&mut self) -> Result<Option<&CompatLockFile>, CompatLockError> {
         self.cached = CompatLockFile::load(&self.base_path).await?;
         Ok(self.cached.as_ref())
     }
 
-    /// 获取缓存的 lock 文件
+    /// Get the cached lock file
     pub fn get_cached(&self) -> Option<&CompatLockFile> {
         self.cached.as_ref()
     }
 
-    /// 记录协商结果
+    /// Record a negotiation result
     ///
-    /// 当发现服务时调用：
-    /// - 如果是精确匹配，尝试删除对应的协商记录
-    /// - 如果是兼容匹配，添加/更新协商记录
+    /// Called when a service is discovered:
+    /// - If exact match, try to remove the corresponding negotiation entry
+    /// - If compatible match, add/update the negotiation entry
     pub async fn record_negotiation(
         &mut self,
         service_name: &str,
@@ -369,23 +370,25 @@ impl CompatLockManager {
         compatibility_check: CompatibilityCheck,
     ) -> Result<(), CompatLockError> {
         if is_exact_match {
-            // 精确匹配：尝试删除旧的协商记录
+            // Exact match: try to remove the old negotiation entry
             if let Some(ref mut lock_file) = self.cached {
                 lock_file
                     .negotiation
                     .retain(|e| e.service_name != service_name);
 
-                // 如果所有记录都被清除，删除文件
+                // If all entries have been cleared, remove the file
                 if lock_file.negotiation.is_empty() {
                     CompatLockFile::remove(&self.base_path).await?;
                     self.cached = None;
-                    info!("✅ SYSTEM HEALTHY: 所有依赖精确匹配，已删除 compat.lock.toml");
+                    info!(
+                        "SYSTEM HEALTHY: all dependencies are exact matches, removed compat.lock.toml"
+                    );
                 } else {
                     lock_file.save(&self.base_path).await?;
                 }
             }
         } else {
-            // 兼容匹配：记录到 lock 文件
+            // Compatible match: record to lock file
             let entry = NegotiationEntry::new(
                 service_name.to_string(),
                 requested_fingerprint.to_string(),
@@ -409,7 +412,7 @@ impl CompatLockManager {
         Ok(())
     }
 
-    /// 查找已缓存的兼容版本（用于快速启动）
+    /// Find a cached compatible version (for fast startup)
     pub fn find_cached_compatible(
         &self,
         service_name: &str,
@@ -433,7 +436,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path();
 
-        // 创建并保存
+        // Create and save
         let mut lock_file = CompatLockFile::new();
         lock_file.upsert_entry(NegotiationEntry::new(
             "user-service".to_string(),
@@ -443,10 +446,10 @@ mod tests {
         ));
         lock_file.save(base_path).await.unwrap();
 
-        // 验证文件存在
+        // Verify file exists
         assert!(CompatLockFile::exists(base_path).await);
 
-        // 重新加载
+        // Reload
         let loaded = CompatLockFile::load(base_path).await.unwrap().unwrap();
         assert_eq!(loaded.negotiation.len(), 1);
         assert_eq!(loaded.negotiation[0].service_name, "user-service");
@@ -456,17 +459,17 @@ mod tests {
     #[tokio::test]
     async fn test_compat_lock_manager() {
         let temp_dir = TempDir::new().unwrap();
-        // 使用临时目录作为项目根目录
+        // Use temp directory as project root
         let project_root = temp_dir.path().to_path_buf();
 
         let mut manager = CompatLockManager::new(project_root.clone());
 
-        // 验证缓存目录在系统临时目录下
+        // Verify cache directory is under the system temp directory
         let cache_dir = manager.cache_dir().to_path_buf();
         assert!(cache_dir.starts_with(std::env::temp_dir()));
         assert!(cache_dir.to_string_lossy().contains("actr"));
 
-        // 记录兼容匹配
+        // Record a compatible match
         manager
             .record_negotiation(
                 "user-service",
@@ -478,17 +481,17 @@ mod tests {
             .await
             .unwrap();
 
-        // 验证文件存在于计算出的缓存目录
+        // Verify file exists in the computed cache directory
         assert!(CompatLockFile::exists(&cache_dir).await);
 
-        // 验证文件不在项目目录中
+        // Verify file is not in the project directory
         assert!(!project_root.join(COMPAT_LOCK_FILENAME).exists());
 
-        // 查找缓存
+        // Find cached entry
         let entry = manager.find_cached_compatible("user-service", "sha256:old");
         assert!(entry.is_some());
 
-        // 精确匹配后应该删除记录
+        // After exact match, the entry should be removed
         manager
             .record_negotiation(
                 "user-service",
@@ -500,7 +503,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 文件应该被删除（因为没有其他记录）
+        // File should be removed (no other entries remain)
         assert!(!CompatLockFile::exists(&cache_dir).await);
     }
 
@@ -514,11 +517,11 @@ mod tests {
         let hash2 = compute_project_hash(&path2);
         let hash3 = compute_project_hash(&path3);
 
-        // 相同路径应该产生相同哈希
+        // Same path should produce the same hash
         assert_eq!(hash1, hash2);
-        // 不同路径应该产生不同哈希
+        // Different paths should produce different hashes
         assert_ne!(hash1, hash3);
-        // 哈希应该是16个十六进制字符
+        // Hash should be 16 hex characters
         assert_eq!(hash1.len(), 16);
     }
 }

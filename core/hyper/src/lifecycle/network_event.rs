@@ -74,40 +74,40 @@ use std::time::{Duration, Instant};
 
 use crate::wire::webrtc::{SignalingClient, coordinator::WebRtcCoordinator};
 
-/// 网络事件类型
+/// Network event type
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NetworkEvent {
-    /// 网络可用（从断网恢复）
+    /// Network available (recovered from disconnection)
     Available,
 
-    /// 网络丢失（断网）
+    /// Network lost (disconnected)
     Lost,
 
-    /// 网络类型变化（WiFi ↔ Cellular）
+    /// Network type changed (WiFi <-> Cellular)
     TypeChanged { is_wifi: bool, is_cellular: bool },
 
-    /// 主动清理所有连接
+    /// Proactively clean up all connections
     ///
-    /// 用于应用生命周期管理场景：
-    /// - 应用进入后台
-    /// - 用户主动登出
-    /// - 应用即将退出
+    /// Used for app lifecycle management scenarios:
+    /// - App entering background
+    /// - User actively logging out
+    /// - App about to exit
     CleanupConnections,
 }
 
-/// 网络事件处理结果
+/// Network event processing result
 #[derive(Debug, Clone)]
 pub struct NetworkEventResult {
-    /// 事件类型
+    /// Event type
     pub event: NetworkEvent,
 
-    /// 处理是否成功
+    /// Whether processing succeeded
     pub success: bool,
 
-    /// 错误信息（如果失败）
+    /// Error message (if failed)
     pub error: Option<String>,
 
-    /// 处理耗时（毫秒）
+    /// Processing duration (milliseconds)
     pub duration_ms: u64,
 }
 
@@ -131,77 +131,78 @@ impl NetworkEventResult {
     }
 }
 
-/// 网络事件处理器 Trait
+/// Network event processor trait
 ///
-/// 定义网络事件的处理逻辑，可由用户自定义实现
+/// Defines the processing logic for network events; can be custom-implemented by users
 #[async_trait::async_trait]
 pub trait NetworkEventProcessor: Send + Sync {
-    /// 处理网络可用事件
+    /// Process network available event
     ///
     /// # Returns
-    /// - `Ok(())`: 处理成功
-    /// - `Err(String)`: 处理失败，包含错误信息
+    /// - `Ok(())`: processing succeeded
+    /// - `Err(String)`: processing failed, contains error message
     async fn process_network_available(&self) -> Result<(), String>;
 
-    /// 处理网络丢失事件
+    /// Process network lost event
     ///
     /// # Returns
-    /// - `Ok(())`: 处理成功
-    /// - `Err(String)`: 处理失败，包含错误信息
+    /// - `Ok(())`: processing succeeded
+    /// - `Err(String)`: processing failed, contains error message
     async fn process_network_lost(&self) -> Result<(), String>;
 
-    /// 处理网络类型变化事件
+    /// Process network type changed event
     ///
     /// # Returns
-    /// - `Ok(())`: 处理成功
-    /// - `Err(String)`: 处理失败，包含错误信息
+    /// - `Ok(())`: processing succeeded
+    /// - `Err(String)`: processing failed, contains error message
     async fn process_network_type_changed(
         &self,
         is_wifi: bool,
         is_cellular: bool,
     ) -> Result<(), String>;
 
-    /// 主动清理所有连接
+    /// Proactively clean up all connections
     ///
-    /// 此方法用于主动清理所有网络连接，适用于以下场景：
-    /// - 应用进入后台（iOS/Android）
-    /// - 用户主动登出
-    /// - 应用即将退出
-    /// - 需要重置网络状态
+    /// This method proactively cleans up all network connections. Applicable scenarios:
+    /// - App entering background (iOS/Android)
+    /// - User actively logging out
+    /// - App about to exit
+    /// - Need to reset network state
     ///
-    /// # FFI Binding 说明
+    /// # FFI Binding Note
     ///
-    /// 此方法专门设计用于 FFI binding，允许上层平台代码（Swift/Kotlin）
-    /// 通过统一的 `NetworkEventProcessor` 接口主动管理连接生命周期。
+    /// This method is specifically designed for FFI bindings, allowing upper-layer
+    /// platform code (Swift/Kotlin) to proactively manage connection lifecycle
+    /// through the unified `NetworkEventProcessor` interface.
     ///
-    /// # 与事件响应的区别
+    /// # Difference from Event Response
     ///
-    /// - `process_network_lost()`: 被动响应网络断开事件
-    /// - `cleanup_connections()`: 主动清理连接（不依赖网络事件）
+    /// - `process_network_lost()`: passively responds to network disconnection events
+    /// - `cleanup_connections()`: proactively cleans up connections (independent of network events)
     ///
     /// # Returns
-    /// - `Ok(())`: 清理成功
-    /// - `Err(String)`: 清理失败，包含错误信息
+    /// - `Ok(())`: cleanup succeeded
+    /// - `Err(String)`: cleanup failed, contains error message
     async fn cleanup_connections(&self) -> Result<(), String>;
 }
 
-/// 防抖配置
+/// Debounce configuration
 #[derive(Debug, Clone)]
 pub struct DebounceConfig {
-    /// 防抖时间窗口（同一事件在此时间内重复触发会被忽略）
+    /// Debounce time window (duplicate events within this window are ignored)
     pub window: Duration,
 }
 
 impl Default for DebounceConfig {
     fn default() -> Self {
         Self {
-            // 默认 1 秒防抖窗口
+            // Default debounce window
             window: Duration::from_secs(2),
         }
     }
 }
 
-/// 防抖状态跟踪
+/// Debounce state tracking
 #[derive(Debug)]
 struct DebounceState {
     last_available: tokio::sync::Mutex<Option<Instant>>,
@@ -219,7 +220,7 @@ impl DebounceState {
     }
 }
 
-/// 默认网络事件处理器实现
+/// Default network event processor implementation
 pub struct DefaultNetworkEventProcessor {
     signaling_client: Arc<dyn SignalingClient>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
@@ -252,11 +253,11 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
-    /// 检查事件是否应该被防抖过滤
+    /// Check whether an event should be filtered by debounce
     ///
     /// # Returns
-    /// - `true`: 事件应该被处理
-    /// - `false`: 事件在防抖窗口内，应该被忽略
+    /// - `true`: the event should be processed
+    /// - `false`: the event is within the debounce window and should be ignored
     async fn should_process_event(&self, event: &NetworkEvent) -> bool {
         let now = Instant::now();
 
@@ -303,7 +304,7 @@ impl DefaultNetworkEventProcessor {
                 *last = Some(now);
                 true
             }
-            // CleanupConnections 不进行防抖检查，主动清理总是立即执行
+            // CleanupConnections skips debounce check; proactive cleanup always executes immediately
             NetworkEvent::CleanupConnections => {
                 tracing::debug!(
                     "🧹 CleanupConnections event - no debouncing (always execute immediately)"
@@ -313,25 +314,25 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
-    /// 内部重连方法（不进行防抖检查）
+    /// Internal reconnect method (no debounce check)
     ///
-    /// 用于 `process_network_type_changed()` 等需要确保重连的场景
-    /// 与 `process_network_available()` 的区别：
-    /// - 不进行防抖检查（内部调用总是执行）
-    /// - 适用于已经通过防抖检查的复合操作
+    /// Used in scenarios like `process_network_type_changed()` that must ensure reconnection.
+    /// Differs from `process_network_available()`:
+    /// - No debounce check (internal calls always execute)
+    /// - Suitable for compound operations that have already passed debounce checks
     async fn reconnect_internal(&self) -> Result<(), String> {
         tracing::info!("🔄 Internal reconnect (bypassing debounce)");
 
-        // Step 1: 强制断开现有连接（避免"僵尸连接"）
+        // Step 1: Force disconnect existing connections (avoid "zombie connections")
         if self.signaling_client.is_connected() {
             tracing::info!("🔌 Disconnecting existing connection to ensure fresh state...");
             let _ = self.signaling_client.disconnect().await;
         }
 
-        // Step 2: 延迟等待网络稳定
+        // Step 2: Wait briefly for network stabilization
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Step 3: 建立新的 WebSocket 连接
+        // Step 3: Establish new WebSocket connection
         tracing::info!("🔄 Reconnecting WebSocket...");
         match self.signaling_client.connect().await {
             Ok(_) => {
@@ -344,7 +345,7 @@ impl DefaultNetworkEventProcessor {
             }
         }
 
-        // Step 4: 触发 ICE 重启（如果 WebRTC 已初始化）
+        // Step 4: Trigger ICE restart (if WebRTC is initialized)
         let coordinator = self.webrtc_coordinator.clone();
 
         if let Some(coordinator) = coordinator {
@@ -358,26 +359,26 @@ impl DefaultNetworkEventProcessor {
 
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
-    /// 处理网络可用事件
+    /// Process network available event
     async fn process_network_available(&self) -> Result<(), String> {
-        // 防抖检查
+        // Debounce check
         if !self.should_process_event(&NetworkEvent::Available).await {
             return Ok(());
         }
 
         tracing::info!("📱 Processing: Network available");
 
-        // Step 1: 强制断开现有连接（避免"僵尸连接"）
+        // Step 1: Force disconnect existing connections (avoid "zombie connections")
         if self.signaling_client.is_connected() {
             tracing::info!("🔌 Disconnecting existing connection to ensure fresh state...");
             let _ = self.signaling_client.disconnect().await;
         }
 
-        // Step 2: 延迟等待网络稳定
-        // 注意：此延迟必须小于防抖窗口，否则会导致防抖失效
+        // Step 2: Wait briefly for network stabilization
+        // Note: this delay must be shorter than the debounce window, otherwise debounce becomes ineffective
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Step 3: 建立新的 WebSocket 连接
+        // Step 3: Establish new WebSocket connection
         tracing::info!("🔄 Reconnecting WebSocket...");
         match self.signaling_client.connect().await {
             Ok(_) => {
@@ -390,7 +391,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             }
         }
 
-        // Step 4: 触发 ICE 重启（如果 WebRTC 已初始化）
+        // Step 4: Trigger ICE restart (if WebRTC is initialized)
         let coordinator = self.webrtc_coordinator.clone();
 
         if let Some(coordinator) = coordinator {
@@ -401,22 +402,22 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         Ok(())
     }
 
-    /// 处理网络丢失事件
+    /// Process network lost event
     async fn process_network_lost(&self) -> Result<(), String> {
-        // 防抖检查
+        // Debounce check
         if !self.should_process_event(&NetworkEvent::Lost).await {
             return Ok(());
         }
 
         tracing::info!("📱 Processing: Network lost");
 
-        // Step 1: 清理待处理的 ICE 重启尝试
+        // Step 1: Clear pending ICE restart attempts
         if let Some(ref coordinator) = self.webrtc_coordinator {
             tracing::info!("🧹 Clearing pending ICE restart attempts...");
             coordinator.clear_pending_restarts().await;
         }
 
-        // Step 2: 主动断开 WebSocket
+        // Step 2: Proactively disconnect WebSocket
         if self.signaling_client.is_connected() {
             tracing::info!("🔌 Disconnecting WebSocket...");
             let _ = self.signaling_client.disconnect().await;
@@ -425,13 +426,13 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         Ok(())
     }
 
-    /// 处理网络类型变化事件
+    /// Process network type changed event
     async fn process_network_type_changed(
         &self,
         is_wifi: bool,
         is_cellular: bool,
     ) -> Result<(), String> {
-        // 防抖检查
+        // Debounce check
         if !self
             .should_process_event(&NetworkEvent::TypeChanged {
                 is_wifi,
@@ -448,10 +449,10 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             is_cellular
         );
 
-        // 网络类型变化通常意味着 IP 地址变化
-        // 视为断网 + 恢复序列
+        // Network type change usually implies IP address change
+        // Treat as disconnect + recovery sequence
 
-        // Step 1: 清理现有连接
+        // Step 1: Clean up existing connections
         if let Some(ref coordinator) = self.webrtc_coordinator {
             tracing::info!("🧹 Clearing pending ICE restart attempts...");
             coordinator.clear_pending_restarts().await;
@@ -462,40 +463,40 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             let _ = self.signaling_client.disconnect().await;
         }
 
-        // Step 2: 等待网络稳定
+        // Step 2: Wait for network stabilization
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // Step 3: 使用内部重连方法（绕过防抖检查）
+        // Step 3: Use internal reconnect method (bypassing debounce check)
         self.reconnect_internal().await?;
 
         Ok(())
     }
 
-    /// 主动清理所有连接
+    /// Proactively clean up all connections
     ///
-    /// 与 `process_network_lost()` 的区别：
-    /// - 不进行防抖检查（主动调用总是执行）
-    /// - 适用于应用生命周期管理，而非网络事件响应
+    /// Differs from `process_network_lost()`:
+    /// - No debounce check (proactive calls always execute)
+    /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
         tracing::info!("🧹 Manually cleaning up all connections...");
 
-        // Step 1: 清理待处理的 ICE 重启尝试
+        // Step 1: Clear pending ICE restart attempts
         if let Some(ref coordinator) = self.webrtc_coordinator {
             tracing::info!("♻️  Clearing pending ICE restart attempts...");
             coordinator.clear_pending_restarts().await;
 
-            // Step 2: 关闭所有 WebRTC peer connections
+            // Step 2: Close all WebRTC peer connections
             tracing::info!("🔻 Closing all WebRTC peer connections...");
             if let Err(e) = coordinator.close_all_peers().await {
                 let err_msg = format!("Failed to close all peers: {}", e);
                 tracing::warn!("⚠️  {}", err_msg);
-                // 不返回错误，继续清理其他资源
+                // Do not fail the whole cleanup; continue releasing other resources.
             } else {
                 tracing::info!("✅ All WebRTC peer connections closed");
             }
         }
 
-        // Step 3: 主动断开 WebSocket
+        // Step 3: Proactively disconnect the WebSocket.
         if self.signaling_client.is_connected() {
             tracing::info!("🔌 Disconnecting WebSocket...");
             match self.signaling_client.disconnect().await {
@@ -505,15 +506,15 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
                 Err(e) => {
                     let err_msg = format!("Failed to disconnect WebSocket: {}", e);
                     tracing::warn!("⚠️  {}", err_msg);
-                    // 不返回错误，继续清理其他资源
+                    // Do not fail the whole cleanup; continue releasing other resources.
                 }
             }
         }
 
         tracing::info!("✅ Connection cleanup completed");
 
-        // Step 4: 立即重新建立信令连接
-        // 确保 App 回到前台后立即可用，不需要等待自动重连
+        // Step 4: Re-establish signaling immediately.
+        // This keeps the app usable as soon as it returns to the foreground.
         tracing::info!("🔌 Re-establishing signaling connection...");
         match self.signaling_client.connect().await {
             Ok(_) => {
@@ -592,13 +593,13 @@ impl NetworkEventHandle {
         .await
     }
 
-    /// 主动清理所有连接
+    /// Proactively clean up all connections.
     ///
-    /// 此方法用于主动清理所有网络连接，适用于以下场景：
-    /// - 应用进入后台（iOS/Android）
-    /// - 用户主动登出
-    /// - 应用即将退出
-    /// - 需要重置网络状态
+    /// Use this to proactively clean up all network connections in cases such as:
+    /// - App entering the background (iOS/Android)
+    /// - User logging out
+    /// - App preparing to exit
+    /// - Network state reset
     ///
     /// # Returns
     /// - `Ok(NetworkEventResult)`: Processing result
@@ -636,24 +637,25 @@ impl Clone for NetworkEventHandle {
     }
 }
 
-/// 去重网络事件：按类型去重，保留每种类型的最新事件，并保持原始顺序
+/// Deduplicate network events by type while keeping the newest event of each type
+/// and preserving original ordering.
 ///
-/// # 算法
+/// # Algorithm
 ///
-/// 1. 遍历所有事件，按类型分组
-/// 2. 对于每种类型，只保留最后出现的事件（最新的）
-/// 3. 按原始索引排序，保持事件的时序关系
+/// 1. Walk all events and group them by type.
+/// 2. Keep only the last occurrence for each type.
+/// 3. Sort by original index to preserve event ordering.
 ///
-/// # 为什么需要去重？
+/// # Why deduplicate?
 ///
-/// 在后台恢复或网络频繁变化时，事件队列可能积压大量事件。
-/// 对于网络状态事件，只有最新的状态才有意义，旧的状态已经过时。
-/// 但是不同类型的事件代表不同的状态变化，都需要保留。
+/// During foreground recovery or frequent network changes, the queue can fill up
+/// with stale events. For a given network event type, only the newest state matters.
+/// Different event types still represent distinct transitions and must be kept.
 ///
-/// - `[Available, Lost, Available]` → 如果只保留最后的 `Available`，会丢失中间的 `Lost`
-/// - `[Lost, Available, Lost]` → 如果只保留最后的 `Lost`，会丢失中间的 `Available`
+/// - `[Available, Lost, Available]` -> keeping only the last `Available` would lose the `Lost`
+/// - `[Lost, Available, Lost]` -> keeping only the last `Lost` would lose the `Available`
 ///
-/// 按类型去重可以确保每种状态变化都被处理。
+/// Deduplicating by type ensures each kind of state transition is still processed.
 pub fn deduplicate_network_events(events: Vec<NetworkEvent>) -> Vec<NetworkEvent> {
     use std::collections::HashMap;
     use std::mem::discriminant;
@@ -662,8 +664,7 @@ pub fn deduplicate_network_events(events: Vec<NetworkEvent>) -> Vec<NetworkEvent
         return vec![];
     }
 
-    // 按类型分组，保留每种类型的最新事件（最大索引）
-    // 使用 discriminant 作为 key，可以区分枚举的不同变体
+    // Group by event type and keep the newest event for each discriminant.
     let mut latest_by_type: HashMap<std::mem::Discriminant<NetworkEvent>, (usize, NetworkEvent)> =
         HashMap::new();
 
@@ -672,18 +673,18 @@ pub fn deduplicate_network_events(events: Vec<NetworkEvent>) -> Vec<NetworkEvent
         latest_by_type
             .entry(event_discriminant)
             .and_modify(|(idx, e)| {
-                // 更新为更新的事件
+                // Replace with the newer event.
                 *idx = index;
                 *e = event.clone();
             })
             .or_insert((index, event));
     }
 
-    // 按原始索引排序，保持事件的时序关系
+    // Sort by original index to preserve temporal ordering.
     let mut deduplicated: Vec<_> = latest_by_type.into_values().collect();
     deduplicated.sort_by_key(|(index, _)| *index);
 
-    // 提取事件
+    // Extract the event payloads.
     deduplicated.into_iter().map(|(_, event)| event).collect()
 }
 
@@ -742,21 +743,21 @@ mod tests {
         let events = vec![
             NetworkEvent::Available, // #0
             NetworkEvent::Lost,      // #1
-            NetworkEvent::Available, // #2 (覆盖 #0)
+            NetworkEvent::Available, // #2 (replaces #0)
             NetworkEvent::TypeChanged {
                 // #3
                 is_wifi: true,
                 is_cellular: false,
             },
-            NetworkEvent::Lost,      // #4 (覆盖 #1)
-            NetworkEvent::Available, // #5 (覆盖 #2)
+            NetworkEvent::Lost,      // #4 (replaces #1)
+            NetworkEvent::Available, // #5 (replaces #2)
         ];
         let result = deduplicate_network_events(events);
 
-        // 应该保留：TypeChanged (#3), Lost (#4), Available (#5)
+        // Expected result: TypeChanged (#3), Lost (#4), Available (#5).
         assert_eq!(result.len(), 3);
 
-        // 验证顺序（按原始索引排序）
+        // Verify order by original index.
         assert!(matches!(result[0], NetworkEvent::TypeChanged { .. }));
         assert!(matches!(result[1], NetworkEvent::Lost));
         assert!(matches!(result[2], NetworkEvent::Available));
@@ -772,14 +773,14 @@ mod tests {
                 is_cellular: false,
             },
             NetworkEvent::Available, // #2
-            NetworkEvent::Lost,      // #3 (覆盖 #0)
+            NetworkEvent::Lost,      // #3 (replaces #0)
         ];
         let result = deduplicate_network_events(events);
 
-        // 应该保留：TypeChanged (#1), Available (#2), Lost (#3)
+        // Expected result: TypeChanged (#1), Available (#2), Lost (#3).
         assert_eq!(result.len(), 3);
 
-        // 验证顺序
+        // Verify order.
         assert!(matches!(result[0], NetworkEvent::TypeChanged { .. }));
         assert!(matches!(result[1], NetworkEvent::Available));
         assert!(matches!(result[2], NetworkEvent::Lost));

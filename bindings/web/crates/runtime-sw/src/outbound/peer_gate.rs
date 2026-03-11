@@ -1,6 +1,6 @@
-//! PeerGate - 跨节点传输适配器（出站）
+//! PeerGate - outbound cross-node transport adapter.
 //!
-//! 封装 PeerTransport，提供标准的 Actor 发送接口
+//! Wraps PeerTransport and exposes the standard actor sending interface.
 
 use crate::transport::PeerTransport;
 use actr_protocol::prost::Message as ProstMessage;
@@ -11,18 +11,17 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// PeerGate - 跨节点传输适配器
+/// PeerGate - cross-node transport adapter.
 ///
-/// # 职责
-/// - 封装 PeerTransport
-/// - 提供 ActrId → Dest 映射
-/// - 实现请求-响应模式（oneshot channel）
+/// # Responsibilities
+/// - Wrap PeerTransport
+/// - Maintain `ActrId -> Dest` mappings
+/// - Implement request/response flow via oneshot channels
 pub struct PeerGate {
     /// Transport manager
     transport: Arc<PeerTransport>,
 
-    /// ActrId → Dest 映射
-    /// 用于将 ActrId 转换为网络目标
+    /// `ActrId -> Dest` mapping used to resolve network targets.
     actor_dest_map: Arc<Mutex<HashMap<ActrId, Dest>>>,
 
     /// Pending requests: request_id → oneshot sender
@@ -30,7 +29,7 @@ pub struct PeerGate {
 }
 
 impl PeerGate {
-    /// 创建新的 PeerGate
+    /// Create a new PeerGate.
     pub fn new(transport: Arc<PeerTransport>) -> Self {
         Self {
             transport,
@@ -39,17 +38,17 @@ impl PeerGate {
         }
     }
 
-    /// 注册 ActrId → Dest 映射
+    /// Register an `ActrId -> Dest` mapping.
     ///
-    /// # 用途
-    /// 在知道 Actor 的网络位置时调用
+    /// # Purpose
+    /// Called when the actor's network location is known.
     pub fn register_actor(&self, actor_id: ActrId, dest: Dest) {
         let mut map = self.actor_dest_map.lock();
         log::debug!("Registering actor mapping: {:?} → {:?}", &actor_id, &dest);
         map.insert(actor_id, dest);
     }
 
-    /// 获取 ActrId 对应的 Dest
+    /// Resolve the Dest for an ActrId.
     fn get_dest(&self, actor_id: &ActrId) -> ActorResult<Dest> {
         let map = self.actor_dest_map.lock();
         map.get(actor_id)
@@ -57,7 +56,7 @@ impl PeerGate {
             .ok_or_else(|| ActrError::NotFound(format!("Actor not found: {:?}", actor_id)))
     }
 
-    /// 发送请求并等待响应
+    /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         log::debug!(
             "PeerGate::send_request to {:?}, request_id={}",
@@ -65,26 +64,26 @@ impl PeerGate {
             envelope.request_id
         );
 
-        // 1. 获取目标 Dest
+        // 1. Resolve the target destination.
         let dest = self.get_dest(target)?;
 
-        // 2. 创建 oneshot channel
+        // 2. Create a oneshot channel.
         let (tx, rx) = futures::channel::oneshot::channel();
 
-        // 3. 注册 pending request
+        // 3. Register the pending request.
         {
             let mut pending = self.pending_requests.lock();
             pending.insert(envelope.request_id.clone(), tx);
         }
 
-        // 4. 序列化 envelope 并发送
+        // 4. Serialize the envelope and send it.
         let payload = envelope.encode_to_vec();
         self.transport
             .send(&dest, PayloadType::RpcReliable, &payload)
             .await
             .map_err(|e| ActrError::Unavailable(format!("Send failed: {}", e)))?;
 
-        // 5. 等待响应
+        // 5. Wait for the response.
         let response = rx
             .await
             .map_err(|_| ActrError::Unavailable("Response channel closed".to_string()))?;
@@ -92,7 +91,7 @@ impl PeerGate {
         Ok(response)
     }
 
-    /// 发送单向消息（不等待响应）
+    /// Send a one-way message without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         log::debug!(
             "PeerGate::send_message to {:?}, request_id={}",
@@ -100,10 +99,10 @@ impl PeerGate {
             envelope.request_id
         );
 
-        // 1. 获取目标 Dest
+        // 1. Resolve the target destination.
         let dest = self.get_dest(target)?;
 
-        // 2. 序列化 envelope 并发送（使用 RpcSignal 表示单向）
+        // 2. Serialize the envelope and send it with RpcSignal as a one-way payload type.
         let payload = envelope.encode_to_vec();
         self.transport
             .send(&dest, PayloadType::RpcSignal, &payload)
@@ -113,7 +112,7 @@ impl PeerGate {
         Ok(())
     }
 
-    /// 发送 DataStream（Fast Path）
+    /// Send a DataStream through the Fast Path.
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -126,10 +125,10 @@ impl PeerGate {
             payload_type
         );
 
-        // 1. 获取目标 Dest
+        // 1. Resolve the target destination.
         let dest = self.get_dest(target)?;
 
-        // 2. 直接发送 DataStream
+        // 2. Send the DataStream directly.
         self.transport
             .send(&dest, payload_type, &data)
             .await
@@ -138,16 +137,16 @@ impl PeerGate {
         Ok(())
     }
 
-    /// 处理接收到的响应
+    /// Handle a received response.
     ///
-    /// # 用途
-    /// InboundPacketDispatcher 收到响应时调用
+    /// # Purpose
+    /// Called by InboundPacketDispatcher when a response is received.
     ///
-    /// 返回 `true` 表示该 request_id 已被成功匹配并处理
+    /// Returns `true` if the request_id matched and was handled.
     pub fn handle_response(&self, request_id: String, response: Bytes) -> bool {
         let mut pending = self.pending_requests.lock();
         if let Some(tx) = pending.remove(&request_id) {
-            let _ = tx.send(response); // 忽略错误（接收方可能已取消）
+            let _ = tx.send(response); // Ignore send failures if the receiver was dropped.
             true
         } else {
             false

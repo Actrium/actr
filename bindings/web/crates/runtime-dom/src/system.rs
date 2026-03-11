@@ -1,13 +1,13 @@
 //! DOM System Module
 //!
-//! DOM 端的运行时系统
-//! 负责 Fast Path：Stream Handler Registry + MediaFrame Handler Registry
+//! Runtime system for the DOM side.
+//! Owns the Fast Path registries for stream handlers and media frame handlers.
 //!
-//! # SW ↔ DOM 连接
+//! # SW <-> DOM connection
 //!
-//! DomSystem 通过 PostMessage 与 Service Worker 通信：
-//! - SW → DOM: Fast Path 数据 (STREAM_*, MEDIA_RTP)
-//! - DOM → SW: RPC 消息转发
+//! `DomSystem` talks to the Service Worker via PostMessage:
+//! - SW -> DOM: Fast Path data (`STREAM_*`, `MEDIA_RTP`)
+//! - DOM -> SW: RPC forwarding
 
 use crate::fastpath::{
     MediaFrameCallback, MediaFrameHandlerRegistry, StreamCallback, StreamHandlerRegistry,
@@ -17,24 +17,24 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// DOM 运行时系统
+/// DOM runtime system.
 ///
-/// 管理 DOM 端的 Fast Path 注册表：
-/// - Stream Handler Registry：处理流数据（STREAM_*）
-/// - Media Frame Handler Registry：处理媒体帧（MEDIA_RTP）
+/// Manages the DOM-side Fast Path registries:
+/// - Stream handler registry for stream data (`STREAM_*`)
+/// - Media frame handler registry for media frames (`MEDIA_RTP`)
 pub struct DomSystem {
-    /// 流处理器注册表
+    /// Stream handler registry.
     stream_registry: Arc<StreamHandlerRegistry>,
 
-    /// 媒体帧处理器注册表
+    /// Media frame handler registry.
     media_registry: Arc<MediaFrameHandlerRegistry>,
 
-    /// SW 通信通道
+    /// Service Worker communication lane.
     sw_lane: Arc<Mutex<Option<DataLane>>>,
 }
 
 impl DomSystem {
-    /// 创建新的 DOM 系统
+    /// Create a new DOM system.
     pub fn new() -> Self {
         Self {
             stream_registry: Arc::new(StreamHandlerRegistry::new()),
@@ -43,20 +43,20 @@ impl DomSystem {
         }
     }
 
-    // ========== SW 连接管理 ==========
+    // ========== Service Worker Connection Management ==========
 
-    /// 设置 SW 通信通道
+    /// Set the Service Worker communication lane.
     ///
-    /// 用于向 SW 转发 RPC 消息
+    /// Used to forward RPC messages to the Service Worker.
     pub fn set_sw_lane(&self, lane: DataLane) {
         let mut sw_lane = self.sw_lane.lock();
         *sw_lane = Some(lane);
         log::info!("[DomSystem] SW lane connected");
     }
 
-    /// 向 SW 发送消息
+    /// Send a message to the Service Worker.
     ///
-    /// 用于转发 RPC 消息到 SW 的 Mailbox
+    /// Used to forward RPC messages into the Service Worker mailbox.
     pub async fn send_to_sw(&self, data: Bytes) -> Result<(), String> {
         let sw_lane = self.sw_lane.lock();
         if let Some(ref lane) = *sw_lane {
@@ -68,78 +68,78 @@ impl DomSystem {
         }
     }
 
-    // ========== Stream 处理器管理 ==========
+    // ========== Stream Handler Management ==========
 
-    /// 注册流处理器
+    /// Register a stream handler.
     ///
-    /// # 参数
-    /// - `stream_id`: 流 ID
-    /// - `callback`: 处理回调函数
+    /// # Parameters
+    /// - `stream_id`: Stream ID
+    /// - `callback`: Handler callback
     ///
-    /// # 示例
+    /// # Example
     /// ```ignore
     /// system.register_stream_handler("video_stream".to_string(), Arc::new(|data| {
-    ///     // 处理流数据
+    ///     // Process stream data
     /// }));
     /// ```
     pub fn register_stream_handler(&self, stream_id: String, callback: StreamCallback) {
         self.stream_registry.register(stream_id, callback);
     }
 
-    /// 注销流处理器
+    /// Unregister a stream handler.
     pub fn unregister_stream_handler(&self, stream_id: &str) {
         self.stream_registry.unregister(stream_id);
     }
 
-    /// 派发流数据
+    /// Dispatch stream data.
     ///
-    /// 由 Transport 层调用，将接收到的流数据派发给注册的回调
+    /// Called by the transport layer to dispatch received stream data.
     pub fn dispatch_stream(&self, stream_id: &str, data: Bytes) {
         self.stream_registry.dispatch(stream_id, data);
     }
 
-    // ========== Media 处理器管理 ==========
+    // ========== Media Handler Management ==========
 
-    /// 注册媒体帧处理器
+    /// Register a media frame handler.
     ///
-    /// # 参数
+    /// # Parameters
     /// - `track_id`: Track ID
-    /// - `callback`: 处理回调函数
+    /// - `callback`: Handler callback
     ///
-    /// # 示例
+    /// # Example
     /// ```ignore
     /// system.register_media_handler("audio_track".to_string(), Arc::new(|frame| {
-    ///     // 处理媒体帧
+    ///     // Process media frames
     /// }));
     /// ```
     pub fn register_media_handler(&self, track_id: String, callback: MediaFrameCallback) {
         self.media_registry.register(track_id, callback);
     }
 
-    /// 注销媒体帧处理器
+    /// Unregister a media frame handler.
     pub fn unregister_media_handler(&self, track_id: &str) {
         self.media_registry.unregister(track_id);
     }
 
-    /// 派发媒体帧
+    /// Dispatch a media frame.
     ///
-    /// 由 Transport 层调用，将接收到的媒体帧派发给注册的回调
+    /// Called by the transport layer to dispatch received media frames.
     pub fn dispatch_media_frame(&self, track_id: &str, frame: Bytes) {
         self.media_registry.dispatch(track_id, frame);
     }
 
-    // ========== 获取注册表引用 ==========
+    // ========== Registry Accessors ==========
 
-    /// 获取流处理器注册表的引用
+    /// Get the stream handler registry.
     ///
-    /// 供 Transport 层使用
+    /// Used by the transport layer.
     pub fn stream_registry(&self) -> Arc<StreamHandlerRegistry> {
         Arc::clone(&self.stream_registry)
     }
 
-    /// 获取媒体帧处理器注册表的引用
+    /// Get the media frame handler registry.
     ///
-    /// 供 Transport 层使用
+    /// Used by the transport layer.
     pub fn media_registry(&self) -> Arc<MediaFrameHandlerRegistry> {
         Arc::clone(&self.media_registry)
     }

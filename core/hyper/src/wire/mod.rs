@@ -13,10 +13,11 @@ use crate::key_cache::KeyFetcher;
 use actr_protocol::{AIdCredential, ActrId};
 use async_trait::async_trait;
 
-/// SignalingClient 到 KeyFetcher 的适配器
+/// Adapter from SignalingClient to KeyFetcher
 ///
-/// `KeyFetcher::fetch_key` 只接受 `key_id`，而 `SignalingClient::get_signing_key` 还需要
-/// `actor_id` 和 `credential`。此适配器持有上下文，将调用转发给底层 signaling 客户端。
+/// `KeyFetcher::fetch_key` only accepts `key_id`, while `SignalingClient::get_signing_key` also
+/// requires `actor_id` and `credential`. This adapter holds the context and forwards calls to the
+/// underlying signaling client.
 pub struct SignalingKeyFetcher {
     pub client: std::sync::Arc<dyn webrtc::SignalingClient>,
     pub actor_id: ActrId,
@@ -30,9 +31,9 @@ impl KeyFetcher for SignalingKeyFetcher {
             .get_signing_key(self.actor_id.clone(), self.credential.clone(), key_id)
             .await
             .map_err(|e| {
-                tracing::warn!(key_id, error = ?e, "SignalingKeyFetcher: 通过 signaling 拉取 AIS 公钥失败");
+                tracing::warn!(key_id, error = ?e, "SignalingKeyFetcher: failed to fetch AIS public key via signaling");
                 crate::error::HyperError::AisBootstrapFailed(format!(
-                    "signaling get_signing_key 失败: {e:?}"
+                    "signaling get_signing_key failed: {e:?}"
                 ))
             })
     }

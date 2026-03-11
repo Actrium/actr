@@ -55,7 +55,7 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
-    // 1. 读取 keychain JSON
+    // 1. Read keychain JSON
     debug!("reading keychain file: {:?}", args.keychain);
     let keychain_content = std::fs::read_to_string(&args.keychain)
         .map_err(|e| anyhow::anyhow!("failed to read keychain file {:?}: {}", args.keychain, e))?;
@@ -65,7 +65,7 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("keychain missing 'private_key' field"))?;
 
-    // 2. 解码私钥（Ed25519，32 字节）
+    // 2. Decode private key (Ed25519, 32 bytes)
     let private_key_bytes = base64::engine::general_purpose::STANDARD
         .decode(private_key_b64)
         .map_err(|e| anyhow::anyhow!("invalid private key base64 encoding: {}", e))?;
@@ -75,7 +75,7 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
     let signing_key = SigningKey::from_bytes(&key_array);
     debug!("signing key loaded");
 
-    // 3. 读取 actr.toml
+    // 3. Read actr.toml
     let config_path = &args.config;
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
@@ -87,7 +87,7 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to read {:?}: {}", config_path, e))?;
     debug!("loaded config: {} bytes", config_content.len());
 
-    // 4. 如果指定了 binary，计算 sha256 并写入 actr.toml
+    // 4. If binary is specified, compute sha256 and write to actr.toml
     let final_config = if let Some(binary_path) = &args.binary {
         info!("computing sha256 for binary: {}", binary_path.display());
         let binary_data = std::fs::read(binary_path)
@@ -109,13 +109,13 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
         config_content
     };
 
-    // 5. 对 actr.toml 内容做 Ed25519 签名
+    // 5. Ed25519 sign the actr.toml content
     let manifest_bytes = final_config.as_bytes();
     let signature = signing_key.sign(manifest_bytes);
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     debug!("signature computed ({} bytes)", signature.to_bytes().len());
 
-    // 6. 写出签名文件
+    // 6. Write signature file
     let sig_path = args.output.unwrap_or_else(|| {
         let mut p = args.config.clone();
         let new_name = format!(
@@ -133,10 +133,10 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
     }
     info!("signature written to {}", sig_path.display());
 
-    // 7. 提取 type_str 供展示
+    // 7. Extract type_str for display
     let type_str = extract_type_str(&final_config);
 
-    // 8. 计算 manifest sha256 供展示
+    // 8. Compute manifest sha256 for display
     let mut manifest_hasher = Sha256::new();
     manifest_hasher.update(manifest_bytes);
     let manifest_hash = hex::encode(manifest_hasher.finalize());
@@ -160,7 +160,7 @@ async fn execute_sign(args: PkgSignArgs) -> anyhow::Result<()> {
 fn insert_binary_hash(content: &str, binary_hash: &str) -> anyhow::Result<String> {
     let hash_line = format!("binary_hash = \"{}\"", binary_hash);
 
-    // 已存在 binary_hash：逐行替换
+    // binary_hash already exists: replace line by line
     if content.contains("binary_hash") {
         let replaced = content
             .lines()
@@ -173,12 +173,12 @@ fn insert_binary_hash(content: &str, binary_hash: &str) -> anyhow::Result<String
             })
             .collect::<Vec<_>>()
             .join("\n");
-        // 保留尾部换行（若原文件有的话）
+        // Preserve trailing newline (if the original file had one)
         let trailing_newline = if content.ends_with('\n') { "\n" } else { "" };
         return Ok(format!("{}{}", replaced, trailing_newline));
     }
 
-    // 不存在：追加到 [package] section 末尾（在下一个 section 之前或文件末尾）
+    // Not present: append at the end of [package] section (before the next section or EOF)
     let mut result = String::with_capacity(content.len() + hash_line.len() + 2);
     let mut in_package = false;
     let mut inserted = false;
@@ -188,7 +188,7 @@ fn insert_binary_hash(content: &str, binary_hash: &str) -> anyhow::Result<String
             if trimmed == "[package]" {
                 in_package = true;
             } else if in_package && (trimmed.starts_with('[') && trimmed.ends_with(']')) {
-                // 即将进入下一个 section，在此之前插入
+                // About to enter the next section; insert before it
                 result.push_str(&hash_line);
                 result.push('\n');
                 inserted = true;
@@ -199,7 +199,7 @@ fn insert_binary_hash(content: &str, binary_hash: &str) -> anyhow::Result<String
         result.push('\n');
     }
     if !inserted {
-        // 文件末尾插入
+        // Insert at end of file
         result.push_str(&hash_line);
         result.push('\n');
     }
@@ -237,7 +237,7 @@ fn extract_type_str(content: &str) -> Option<String> {
 }
 
 fn extract_toml_str_value(line: &str, key: &str) -> Option<String> {
-    // 匹配 `key = "value"` 或 `key="value"`
+    // Match `key = "value"` or `key="value"`
     let prefix = format!("{} =", key);
     let prefix_nospace = format!("{}=", key);
     let rest = if line.starts_with(&prefix) {
@@ -264,7 +264,7 @@ mod tests {
         let content = "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n\n[dependencies]\n";
         let result = insert_binary_hash(content, "sha256:abc123").unwrap();
         assert!(result.contains("binary_hash = \"sha256:abc123\""));
-        // 应在 [dependencies] 之前
+        // Should be before [dependencies]
         let hash_pos = result.find("binary_hash").unwrap();
         let dep_pos = result.find("[dependencies]").unwrap();
         assert!(hash_pos < dep_pos);

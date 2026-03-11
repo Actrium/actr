@@ -1,16 +1,17 @@
-//! WasmHost — Wasmtime 宿主引擎
+//! WasmHost — Wasmtime host engine
 //!
-//! 实现了从 WASM 字节加载、编译、实例化到消息分发的完整生命周期。
-//! 单个 `WasmHost` 对应一个 WASM 模块（编译一次），可派生多个 `WasmInstance`。
+//! Implements the full lifecycle from WASM byte loading, compilation, instantiation to
+//! message dispatch. A single `WasmHost` corresponds to one WASM module (compiled once),
+//! from which multiple `WasmInstance`s can be derived.
 //!
-//! # Asyncify 驱动
+//! # Asyncify driver
 //!
-//! `dispatch()` 使用 asyncify unwind/rewind 协议：
-//! 1. 调用 `actr_handle`
-//! 2. 若 WASM 触发 host import（如 `actr_host_call`），import 内发起 unwind 并挂起
-//! 3. drive 循环检测到 Unwinding，执行真实异步 IO
-//! 4. 将结果存入 `HostData`，发起 rewind，重新调用 `actr_handle`
-//! 5. Import 在 Rewinding 模式下返回真实结果，WASM 继续执行
+//! `dispatch()` uses the asyncify unwind/rewind protocol:
+//! 1. Call `actr_handle`
+//! 2. If WASM triggers a host import (e.g. `actr_host_call`), the import initiates unwind and suspends
+//! 3. Drive loop detects Unwinding, executes real async IO
+//! 4. Stores result in `HostData`, initiates rewind, re-calls `actr_handle`
+//! 5. Import returns real result in Rewinding mode, WASM continues execution
 
 use actr_protocol::prost::Message as ProstMessage;
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
@@ -21,10 +22,10 @@ use crate::wasm::error::{WasmError, WasmResult};
 use super::abi::{self, WasmActorConfig};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HostData — Store 内保存的运行时状态
+// HostData — runtime state stored in Store
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Asyncify 状态机
+/// Asyncify state machine
 #[derive(Debug, Clone, PartialEq, Default)]
 enum AsyncifyMode {
     #[default]
@@ -33,21 +34,21 @@ enum AsyncifyMode {
     Rewinding,
 }
 
-/// Wasmtime Store 内部数据
+/// Wasmtime Store internal data
 #[derive(Debug, Default)]
 struct HostData {
-    // ── asyncify 协议 ──────────────────────────────────────────────────────
+    // ── asyncify protocol ─────────────────────────────────────────────────
     asyncify_mode: AsyncifyMode,
     asyncify_data_ptr: i32,
-    // ── 当前请求上下文（dispatch 开始时设置）────────────────────────────────
+    // ── current request context (set at dispatch start) ───────────────────
     ctx: DispatchContext,
-    // ── host import 挂起时保存的待执行 IO ───────────────────────────────────
+    // ── pending IO saved when host import suspends ────────────────────────
     pending_call: Option<PendingCall>,
-    // ── drive 循环将 IO 结果写回此处，rewind 时 host import 读取 ───────────
+    // ── drive loop writes IO result here, host import reads during rewind ─
     io_result: Option<IoResult>,
 }
 
-// asyncify data buffer 布局（固定地址，WASM page 0 内）
+// asyncify data buffer layout (fixed address, WASM page 0)
 const ASYNCIFY_DATA_PTR: i32 = 0x8000; // 32 KB
 const ASYNCIFY_STACK_START: i32 = ASYNCIFY_DATA_PTR + 8;
 const ASYNCIFY_STACK_END: i32 = ASYNCIFY_DATA_PTR + 0x1000; // +4 KB
@@ -56,10 +57,11 @@ const ASYNCIFY_STACK_END: i32 = ASYNCIFY_DATA_PTR + 0x1000; // +4 KB
 // WasmHost
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// WASM 宿主引擎
+/// WASM host engine
 ///
-/// 编译并持有 WASM 模块，同一模块可多次实例化（每个 actor 一个实例）。
-/// 编译是 CPU 密集型操作，应只执行一次后复用 `WasmHost`。
+/// Compiles and holds a WASM module; the same module can be instantiated multiple times
+/// (one instance per actor). Compilation is CPU-intensive and should be done once,
+/// then the `WasmHost` is reused.
 pub struct WasmHost {
     engine: Engine,
     module: Module,
@@ -72,17 +74,17 @@ impl std::fmt::Debug for WasmHost {
 }
 
 impl WasmHost {
-    /// 从 WASM 字节编译模块（CPU 密集，建议在 `spawn_blocking` 中调用）
+    /// Compile a WASM module from bytes (CPU-intensive, recommend calling in `spawn_blocking`)
     pub fn compile(wasm_bytes: &[u8]) -> WasmResult<Self> {
         let engine = Engine::default();
         let module = Module::new(&engine, wasm_bytes)
-            .map_err(|e| WasmError::LoadFailed(format!("模块编译失败: {e}")))?;
+            .map_err(|e| WasmError::LoadFailed(format!("module compilation failed: {e}")))?;
 
-        tracing::info!(wasm_bytes = wasm_bytes.len(), "WASM 模块编译完成");
+        tracing::info!(wasm_bytes = wasm_bytes.len(), "WASM module compiled");
         Ok(Self { engine, module })
     }
 
-    /// 实例化 WASM 模块，注册所有 host imports，返回可执行的 `WasmInstance`
+    /// Instantiate the WASM module, register all host imports, return an executable `WasmInstance`
     pub fn instantiate(&self) -> WasmResult<WasmInstance> {
         let mut linker = Linker::<HostData>::new(&self.engine);
         register_host_imports(&mut linker)?;
@@ -91,9 +93,9 @@ impl WasmHost {
 
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(|e| WasmError::LoadFailed(format!("模块实例化失败: {e}")))?;
+            .map_err(|e| WasmError::LoadFailed(format!("module instantiation failed: {e}")))?;
 
-        // 初始化 asyncify data buffer
+        // initialize asyncify data buffer
         init_asyncify_data(&instance, &mut store);
 
         let actr_init = resolve_func::<(i32, i32), i32>(&instance, &mut store, abi::EXPORT_INIT)?;
@@ -105,17 +107,17 @@ impl WasmHost {
             .get_memory(&mut store, abi::EXPORT_MEMORY)
             .ok_or_else(|| {
                 WasmError::LoadFailed(
-                    "WASM 模块未导出线性内存 'memory'".to_string(),
+                    "WASM module does not export linear memory 'memory'".to_string(),
                 )
             })?;
 
-        // asyncify 控制函数（由 wasm-opt --asyncify 注入到 WASM 二进制）
+        // asyncify control functions (injected into WASM binary by wasm-opt --asyncify)
         let asyncify_stop_unwind =
             resolve_func::<(), ()>(&instance, &mut store, "asyncify_stop_unwind")?;
         let asyncify_start_rewind =
             resolve_func::<i32, ()>(&instance, &mut store, "asyncify_start_rewind")?;
 
-        tracing::info!("WASM 实例化成功，所有 ABI 导出函数验证通过");
+        tracing::info!("WASM instantiation succeeded, all ABI export functions verified");
 
         Ok(WasmInstance {
             store,
@@ -132,11 +134,11 @@ impl WasmHost {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Host imports 注册
+// Host imports registration
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
-    // ── 同步上下文访问器 ─────────────────────────────────────────────────────
+    // ── synchronous context accessors ─────────────────────────────────────
 
     linker
         .func_wrap(
@@ -147,7 +149,7 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_self_id 失败: {e}")))?;
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_self_id: {e}")))?;
 
     linker
         .func_wrap(
@@ -155,7 +157,7 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
             "actr_host_caller_id",
             |mut caller: Caller<HostData>, out_ptr: i32, out_max: i32| -> i32 {
                 match &caller.data().ctx.caller_id {
-                    None => -1, // 无调用方
+                    None => -1, // no caller
                     Some(id) => {
                         let bytes = id.encode_to_vec();
                         write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
@@ -163,7 +165,9 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 }
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_caller_id 失败: {e}")))?;
+        .map_err(|e| {
+            WasmError::LoadFailed(format!("failed to register actr_host_caller_id: {e}"))
+        })?;
 
     linker
         .func_wrap(
@@ -174,9 +178,11 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_request_id 失败: {e}")))?;
+        .map_err(|e| {
+            WasmError::LoadFailed(format!("failed to register actr_host_request_id: {e}"))
+        })?;
 
-    // ── 异步通信（asyncify 驱动）─────────────────────────────────────────────
+    // ── async communication (asyncify driven) ─────────────────────────────
 
     linker
         .func_wrap(
@@ -200,18 +206,20 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                             read_string_from_wasm(&mut caller, route_key_ptr, route_key_len);
                         let dest_bytes = read_bytes_from_wasm(&mut caller, dest_ptr, dest_len);
                         let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call =
-                            Some(PendingCall::Call { route_key, dest_bytes, payload });
+                        caller.data_mut().pending_call = Some(PendingCall::Call {
+                            route_key,
+                            dest_bytes,
+                            payload,
+                        });
                         caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
                         trigger_unwind(&mut caller);
                         0
                     }
                     AsyncifyMode::Rewinding => {
-                        // rewind：从 io_result 取响应 bytes，写入 WASM 内存，设置长度
+                        // rewind: take response bytes from io_result, write to WASM memory, set length
                         let code = match caller.data_mut().io_result.take() {
                             Some(IoResult::Bytes(bytes)) => {
-                                let written =
-                                    write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
+                                let written = write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
                                 write_i32_to_wasm(&mut caller, out_len_ptr, written);
                                 abi::code::SUCCESS
                             }
@@ -226,7 +234,7 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 }
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_call 失败: {e}")))?;
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_call: {e}")))?;
 
     linker
         .func_wrap(
@@ -247,8 +255,11 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                             read_string_from_wasm(&mut caller, route_key_ptr, route_key_len);
                         let dest_bytes = read_bytes_from_wasm(&mut caller, dest_ptr, dest_len);
                         let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call =
-                            Some(PendingCall::Tell { route_key, dest_bytes, payload });
+                        caller.data_mut().pending_call = Some(PendingCall::Tell {
+                            route_key,
+                            dest_bytes,
+                            payload,
+                        });
                         caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
                         trigger_unwind(&mut caller);
                         0
@@ -267,7 +278,7 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 }
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_tell 失败: {e}")))?;
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_tell: {e}")))?;
 
     linker
         .func_wrap(
@@ -292,8 +303,11 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                         let target_bytes =
                             read_bytes_from_wasm(&mut caller, target_ptr, target_len);
                         let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call =
-                            Some(PendingCall::CallRaw { route_key, target_bytes, payload });
+                        caller.data_mut().pending_call = Some(PendingCall::CallRaw {
+                            route_key,
+                            target_bytes,
+                            payload,
+                        });
                         caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
                         trigger_unwind(&mut caller);
                         0
@@ -301,8 +315,7 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                     AsyncifyMode::Rewinding => {
                         let code = match caller.data_mut().io_result.take() {
                             Some(IoResult::Bytes(bytes)) => {
-                                let written =
-                                    write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
+                                let written = write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
                                 write_i32_to_wasm(&mut caller, out_len_ptr, written);
                                 abi::code::SUCCESS
                             }
@@ -317,7 +330,9 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 }
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_call_raw 失败: {e}")))?;
+        .map_err(|e| {
+            WasmError::LoadFailed(format!("failed to register actr_host_call_raw: {e}"))
+        })?;
 
     linker
         .func_wrap(
@@ -333,14 +348,13 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 match mode {
                     AsyncifyMode::Normal => {
                         let type_bytes = read_bytes_from_wasm(&mut caller, type_ptr, type_len);
-                        caller.data_mut().pending_call =
-                            Some(PendingCall::Discover { type_bytes });
+                        caller.data_mut().pending_call = Some(PendingCall::Discover { type_bytes });
                         caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
                         trigger_unwind(&mut caller);
                         0
                     }
                     AsyncifyMode::Rewinding => {
-                        // 返回实际写入字节数（discover 的返回值即为长度）
+                        // return actual bytes written (discover's return value is the length)
                         let code = match caller.data_mut().io_result.take() {
                             Some(IoResult::Bytes(bytes)) => {
                                 write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
@@ -356,7 +370,9 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
                 }
             },
         )
-        .map_err(|e| WasmError::LoadFailed(format!("注册 actr_host_discover 失败: {e}")))?;
+        .map_err(|e| {
+            WasmError::LoadFailed(format!("failed to register actr_host_discover: {e}"))
+        })?;
 
     Ok(())
 }
@@ -365,10 +381,10 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
 // WasmInstance
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 单个 WASM actor 实例
+/// Single WASM actor instance
 ///
-/// 封装 Wasmtime `Store<HostData>` 和已缓存的导出函数句柄。
-/// **非 `Sync`**：调用方负责并发保护（通常是 `Mutex<WasmInstance>`）。
+/// Wraps a Wasmtime `Store<HostData>` and cached export function handles.
+/// **Not `Sync`**: the caller is responsible for concurrency protection (typically `Mutex<WasmInstance>`).
 pub struct WasmInstance {
     store: Store<HostData>,
     _instance: Instance,
@@ -388,10 +404,10 @@ impl std::fmt::Debug for WasmInstance {
 }
 
 impl WasmInstance {
-    /// 初始化 WASM actor（调用 `actr_init`）
+    /// Initialize the WASM actor (calls `actr_init`)
     pub fn init(&mut self, config: &WasmActorConfig) -> WasmResult<()> {
         let config_json = serde_json::to_vec(config)
-            .map_err(|e| WasmError::InitFailed(format!("config 序列化失败: {e}")))?;
+            .map_err(|e| WasmError::InitFailed(format!("config serialization failed: {e}")))?;
 
         let ptr = self.wasm_write(&config_json)?;
         let len = config_json.len() as i32;
@@ -399,29 +415,29 @@ impl WasmInstance {
         let result = self
             .actr_init
             .call(&mut self.store, (ptr, len))
-            .map_err(|e| WasmError::InitFailed(format!("actr_init 调用失败: {e}")))?;
+            .map_err(|e| WasmError::InitFailed(format!("actr_init call failed: {e}")))?;
 
         self.wasm_free(ptr, len)?;
 
         if result != abi::code::SUCCESS {
             return Err(WasmError::InitFailed(format!(
-                "actr_init 返回错误码 {result} ({})",
+                "actr_init returned error code {result} ({})",
                 abi::describe_error_code(result)
             )));
         }
 
-        tracing::info!("WASM actor 初始化成功");
+        tracing::info!("WASM actor initialized");
         Ok(())
     }
 
-    /// 分发一条 RPC 请求，使用 asyncify 驱动循环处理出站 IO
+    /// Dispatch an RPC request, using asyncify drive loop to handle outbound IO
     ///
-    /// `ctx`：本次调用的上下文数据（self_id、caller_id、request_id）
-    /// `call_executor`：处理 guest 发起的出站调用（返回 `IoResult`）
+    /// `ctx`: context data for this call (self_id, caller_id, request_id)
+    /// `call_executor`: handles outbound calls initiated by the guest (returns `IoResult`)
     ///
-    /// 注意：`call_executor` 需要执行实际的异步 IO，但 Wasmtime 的 host import 是同步的。
-    /// asyncify 协议将 "需要 IO" 的时机暴露到 drive 循环（此函数），
-    /// 在循环内部可以调用 `call_executor`（async）。
+    /// Note: `call_executor` needs to perform real async IO, but Wasmtime host imports are synchronous.
+    /// The asyncify protocol exposes the "IO needed" moment to the drive loop (this function),
+    /// where `call_executor` (async) can be called.
     pub async fn dispatch<F, Fut>(
         &mut self,
         request_bytes: &[u8],
@@ -432,55 +448,53 @@ impl WasmInstance {
         F: Fn(PendingCall) -> Fut,
         Fut: std::future::Future<Output = IoResult>,
     {
-        // 每次 dispatch 前重置 asyncify data buffer
-        // （前次 unwind 可能已写入 buffer，必须在新的 handle 调用前 reset 写指针）
+        // Reset asyncify data buffer before each dispatch
+        // (previous unwind may have written to the buffer; must reset the write pointer before a new handle call)
         reset_asyncify_data(&mut self.store, &self.memory);
 
-        // 设置本次调用的上下文
+        // Set this call's context
         self.store.data_mut().ctx = ctx;
         self.store.data_mut().asyncify_mode = AsyncifyMode::Normal;
 
-        // 将请求写入 WASM 内存
+        // Write request to WASM memory
         let req_ptr = self.wasm_write(request_bytes)?;
         let req_len = request_bytes.len() as i32;
 
-        // 分配接收响应指针和长度的输出区域（2 × i32 = 8 字节）
+        // Allocate output area for response pointer and length (2 x i32 = 8 bytes)
         let out_area_ptr = self.alloc_raw(8)?;
         let resp_ptr_out = out_area_ptr;
         let resp_len_out = out_area_ptr + 4;
 
         let response = loop {
-            // 调用 actr_handle
+            // Call actr_handle
             let result = self
                 .actr_handle
                 .call(
                     &mut self.store,
                     (req_ptr, req_len, resp_ptr_out, resp_len_out),
                 )
-                .map_err(|e| {
-                    WasmError::ExecutionFailed(format!("actr_handle 调用失败: {e}"))
-                })?;
+                .map_err(|e| WasmError::ExecutionFailed(format!("actr_handle call failed: {e}")))?;
 
             match self.store.data().asyncify_mode {
                 AsyncifyMode::Unwinding => {
-                    // WASM 已保存状态，停止 unwind
+                    // WASM has saved state, stop unwind
                     self.asyncify_stop_unwind
                         .call(&mut self.store, ())
                         .map_err(|e| {
-                            WasmError::ExecutionFailed(format!("asyncify_stop_unwind 失败: {e}"))
+                            WasmError::ExecutionFailed(format!("asyncify_stop_unwind failed: {e}"))
                         })?;
 
-                    // 取出待执行的 IO 请求
+                    // Take the pending IO request
                     let pending = self.store.data_mut().pending_call.take().ok_or_else(|| {
-                        WasmError::ExecutionFailed("Unwinding 但无 pending_call".into())
+                        WasmError::ExecutionFailed("Unwinding but no pending_call".into())
                     })?;
 
-                    tracing::debug!(call = ?std::mem::discriminant(&pending), "WASM 发起出站调用");
+                    tracing::debug!(call = ?std::mem::discriminant(&pending), "WASM initiated outbound call");
 
-                    // 执行实际 IO（异步）
+                    // Execute actual IO (async)
                     let io_result = call_executor(pending).await;
 
-                    // 将结果写回 HostData，准备 rewind
+                    // Write result back to HostData, prepare for rewind
                     self.store.data_mut().io_result = Some(io_result);
                     self.store.data_mut().asyncify_mode = AsyncifyMode::Rewinding;
 
@@ -488,17 +502,17 @@ impl WasmInstance {
                     self.asyncify_start_rewind
                         .call(&mut self.store, data_ptr)
                         .map_err(|e| {
-                            WasmError::ExecutionFailed(format!("asyncify_start_rewind 失败: {e}"))
+                            WasmError::ExecutionFailed(format!("asyncify_start_rewind failed: {e}"))
                         })?;
-                    // 继续循环，重新调用 actr_handle 触发 rewind
+                    // Continue loop, re-call actr_handle to trigger rewind
                 }
                 AsyncifyMode::Normal => {
-                    // 正常完成（含 rewind 后执行完毕）
+                    // Normal completion (including completion after rewind)
                     if result != abi::code::SUCCESS {
                         self.free_raw(out_area_ptr, 8)?;
                         self.wasm_free(req_ptr, req_len)?;
                         return Err(WasmError::ExecutionFailed(format!(
-                            "actr_handle 返回错误码 {result} ({})",
+                            "actr_handle returned error code {result} ({})",
                             abi::describe_error_code(result)
                         )));
                     }
@@ -518,15 +532,15 @@ impl WasmInstance {
                     tracing::debug!(
                         req_bytes = request_bytes.len(),
                         resp_bytes = data.len(),
-                        "actr_handle 完成"
+                        "actr_handle completed"
                     );
 
                     break data;
                 }
                 AsyncifyMode::Rewinding => {
-                    // 不应在 actr_handle 返回时处于 Rewinding 状态
+                    // Should not be in Rewinding state when actr_handle returns
                     return Err(WasmError::ExecutionFailed(
-                        "drive 循环：actr_handle 返回时仍处于 Rewinding 状态".into(),
+                        "drive loop: actr_handle returned while still in Rewinding state".into(),
                     ));
                 }
             }
@@ -542,10 +556,11 @@ impl executor::ExecutorAdapter for WasmInstance {
         request_bytes: &[u8],
         ctx: DispatchContext,
         call_executor: &'a executor::CallExecutorFn,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
+    {
         let request_bytes = request_bytes.to_vec();
         Box::pin(async move {
-            self.dispatch(&request_bytes, ctx, |pending| call_executor(pending))
+            self.dispatch(&request_bytes, ctx, call_executor)
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
@@ -553,7 +568,7 @@ impl executor::ExecutorAdapter for WasmInstance {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 内存操作辅助方法
+// Memory operation helper methods
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl WasmInstance {
@@ -561,10 +576,10 @@ impl WasmInstance {
         let ptr = self
             .actr_alloc
             .call(&mut self.store, size)
-            .map_err(|e| WasmError::ExecutionFailed(format!("actr_alloc 失败: {e}")))?;
+            .map_err(|e| WasmError::ExecutionFailed(format!("actr_alloc failed: {e}")))?;
         if ptr == 0 {
             return Err(WasmError::ExecutionFailed(format!(
-                "actr_alloc({size}) 返回 null（OOM）"
+                "actr_alloc({size}) returned null (OOM)"
             )));
         }
         Ok(ptr)
@@ -573,7 +588,7 @@ impl WasmInstance {
     fn free_raw(&mut self, ptr: i32, size: i32) -> WasmResult<()> {
         self.actr_free
             .call(&mut self.store, (ptr, size))
-            .map_err(|e| WasmError::ExecutionFailed(format!("actr_free 失败: {e}")))
+            .map_err(|e| WasmError::ExecutionFailed(format!("actr_free failed: {e}")))
     }
 
     fn wasm_write(&mut self, bytes: &[u8]) -> WasmResult<i32> {
@@ -586,7 +601,7 @@ impl WasmInstance {
         let end = start + bytes.len();
         if end > mem.len() {
             return Err(WasmError::ExecutionFailed(format!(
-                "写入越界：{start}..{end}，内存大小 {}",
+                "write out of bounds: {start}..{end}, memory size {}",
                 mem.len()
             )));
         }
@@ -600,7 +615,7 @@ impl WasmInstance {
         let end = start + len;
         if end > mem.len() {
             return Err(WasmError::ExecutionFailed(format!(
-                "读取越界：{start}..{end}，内存大小 {}",
+                "read out of bounds: {start}..{end}, memory size {}",
                 mem.len()
             )));
         }
@@ -619,14 +634,14 @@ impl WasmInstance {
         Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
-    /// 将 bytes 直接写入 WASM 线性内存指定地址（不 alloc，地址由 guest 提供）
+    /// Write bytes directly to WASM linear memory at the specified address (no alloc, address provided by guest)
     pub fn write_to_addr(&mut self, ptr: i32, bytes: &[u8]) -> WasmResult<()> {
         let mem = self.memory.data_mut(&mut self.store);
         let start = ptr as usize;
         let end = start + bytes.len();
         if end > mem.len() {
             return Err(WasmError::ExecutionFailed(format!(
-                "地址写入越界：{start}..{end}"
+                "address write out of bounds: {start}..{end}"
             )));
         }
         mem[start..end].copy_from_slice(bytes);
@@ -635,11 +650,13 @@ impl WasmInstance {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Asyncify 初始化辅助
+// Asyncify initialization helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn init_asyncify_data(instance: &Instance, store: &mut Store<HostData>) {
-    let memory = instance.get_memory(&mut *store, "memory").expect("no memory export");
+    let memory = instance
+        .get_memory(&mut *store, "memory")
+        .expect("no memory export");
     let mem = memory.data_mut(&mut *store);
     let base = ASYNCIFY_DATA_PTR as usize;
     mem[base..base + 4].copy_from_slice(&ASYNCIFY_STACK_START.to_le_bytes());
@@ -647,22 +664,23 @@ fn init_asyncify_data(instance: &Instance, store: &mut Store<HostData>) {
     store.data_mut().asyncify_data_ptr = ASYNCIFY_DATA_PTR;
 }
 
-/// 每次 dispatch 前重置 asyncify data buffer 的写指针
+/// Reset the asyncify data buffer's write pointer before each dispatch
 ///
-/// unwind 执行后写指针会前移（已写入局部变量快照）。
-/// 下一次 dispatch 开始前需要将写指针复位，否则快照区域溢出或覆盖旧数据。
+/// After unwind execution, the write pointer advances (local variable snapshot written).
+/// Before the next dispatch, the write pointer must be reset to avoid snapshot area overflow
+/// or overwriting old data.
 fn reset_asyncify_data(store: &mut Store<HostData>, memory: &Memory) {
     let mem = memory.data_mut(&mut *store);
     let base = ASYNCIFY_DATA_PTR as usize;
-    // 只重置写指针（[ptr+0]），栈结束地址（[ptr+4]）保持不变
+    // Only reset the write pointer ([ptr+0]), stack end address ([ptr+4]) remains unchanged
     mem[base..base + 4].copy_from_slice(&ASYNCIFY_STACK_START.to_le_bytes());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Host import 辅助函数（在 Caller 上下文中调用）
+// Host import helper functions (called within Caller context)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 从 WASM 线性内存读取指定范围的字节
+/// Read bytes from the specified range in WASM linear memory
 fn read_bytes_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> Vec<u8> {
     if ptr == 0 || len <= 0 {
         return Vec::new();
@@ -675,19 +693,24 @@ fn read_bytes_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> Ve
     let start = ptr as usize;
     let end = start + len as usize;
     if end > data.len() {
-        tracing::warn!(start, end, mem_len = data.len(), "read_bytes_from_wasm 越界");
+        tracing::warn!(
+            start,
+            end,
+            mem_len = data.len(),
+            "read_bytes_from_wasm out of bounds"
+        );
         return Vec::new();
     }
     data[start..end].to_vec()
 }
 
-/// 从 WASM 线性内存读取 UTF-8 字符串
+/// Read a UTF-8 string from WASM linear memory
 fn read_string_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> String {
     let bytes = read_bytes_from_wasm(caller, ptr, len);
     String::from_utf8(bytes).unwrap_or_default()
 }
 
-/// 将 bytes 写入 WASM 线性内存指定地址，返回实际写入字节数
+/// Write bytes to the specified address in WASM linear memory, return actual bytes written
 fn write_to_wasm(caller: &mut Caller<HostData>, bytes: &[u8], ptr: i32, max: i32) -> i32 {
     if ptr == 0 || max <= 0 {
         return 0;
@@ -701,14 +724,14 @@ fn write_to_wasm(caller: &mut Caller<HostData>, bytes: &[u8], ptr: i32, max: i32
     let start = ptr as usize;
     let end = start + to_write;
     if end > data.len() {
-        tracing::warn!(start, end, "write_to_wasm 越界");
+        tracing::warn!(start, end, "write_to_wasm out of bounds");
         return 0;
     }
     data[start..end].copy_from_slice(&bytes[..to_write]);
     to_write as i32
 }
 
-/// 将 i32 写入 WASM 线性内存（little-endian）
+/// Write an i32 to WASM linear memory (little-endian)
 fn write_i32_to_wasm(caller: &mut Caller<HostData>, ptr: i32, value: i32) {
     if ptr == 0 {
         return;
@@ -716,35 +739,35 @@ fn write_i32_to_wasm(caller: &mut Caller<HostData>, ptr: i32, value: i32) {
     write_to_wasm(caller, &value.to_le_bytes(), ptr, 4);
 }
 
-/// 在 host import 内触发 asyncify unwind
+/// Trigger asyncify unwind within a host import
 fn trigger_unwind(caller: &mut Caller<HostData>) {
     let data_ptr = caller.data().asyncify_data_ptr;
     let start_unwind = caller
         .get_export("asyncify_start_unwind")
         .and_then(|e| e.into_func())
-        .expect("asyncify_start_unwind 未找到");
+        .expect("asyncify_start_unwind not found");
     start_unwind
         .typed::<i32, ()>(&*caller)
-        .expect("asyncify_start_unwind 签名错误")
+        .expect("asyncify_start_unwind signature mismatch")
         .call(&mut *caller, data_ptr)
-        .expect("asyncify_start_unwind 调用失败");
+        .expect("asyncify_start_unwind call failed");
 }
 
-/// 在 host import 内停止 asyncify rewind
+/// Stop asyncify rewind within a host import
 fn trigger_stop_rewind(caller: &mut Caller<HostData>) {
     let stop_rewind = caller
         .get_export("asyncify_stop_rewind")
         .and_then(|e| e.into_func())
-        .expect("asyncify_stop_rewind 未找到");
+        .expect("asyncify_stop_rewind not found");
     stop_rewind
         .typed::<(), ()>(&*caller)
-        .expect("asyncify_stop_rewind 签名错误")
+        .expect("asyncify_stop_rewind signature mismatch")
         .call(&mut *caller, ())
-        .expect("asyncify_stop_rewind 调用失败");
+        .expect("asyncify_stop_rewind call failed");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 辅助函数
+// Helper functions
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn resolve_func<Args, Ret>(
@@ -758,5 +781,9 @@ where
 {
     instance
         .get_typed_func::<Args, Ret>(store, name)
-        .map_err(|e| WasmError::LoadFailed(format!("导出函数 '{name}' 缺失或签名不匹配: {e}")))
+        .map_err(|e| {
+            WasmError::LoadFailed(format!(
+                "export function '{name}' missing or signature mismatch: {e}"
+            ))
+        })
 }

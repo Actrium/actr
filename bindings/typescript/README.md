@@ -1,6 +1,6 @@
 # actr-ts
 
-[中文](./README.zh-CN.md) | English
+[Chinese](./README.zh.md) | English
 
 TypeScript/Node.js bindings for the ACTR (Actor-RTC) framework using napi-rs.
 

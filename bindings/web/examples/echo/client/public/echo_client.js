@@ -5,13 +5,13 @@ let wasm_bindgen = (function(exports) {
     }
 
     /**
-     * 处理来自 DOM 的 RPC 控制请求
+     * Handle an RPC control request from the DOM side.
      *
-     * 消息流（Unified Dispatcher 模式）：
-     * - 有 SERVICE_HANDLER: DOM → handler(route_key, payload, ctx) → response
-     *   - local route: handler 本地处理，可通过 ctx.call_raw() 调远程
-     *   - remote route: handler 通过 ctx.call_raw() 转发到远程 Actor
-     * - 无 SERVICE_HANDLER: DOM → HostGate → Gate → WebRTC（旧路径，向后兼容）
+     * Unified-dispatcher flow:
+     * - With `SERVICE_HANDLER`: `DOM -> handler(route_key, payload, ctx) -> response`
+     *   - Local route: the handler processes locally and may call remote targets via `ctx.call_raw()`
+     *   - Remote route: the handler forwards to a remote actor via `ctx.call_raw()`
+     * - Without `SERVICE_HANDLER`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
      * @param {string} client_id
      * @param {any} payload
      * @returns {Promise<void>}
@@ -52,7 +52,7 @@ let wasm_bindgen = (function(exports) {
     exports.handle_dom_webrtc_event = handle_dom_webrtc_event;
 
     /**
-     * WASM 初始化入口
+     * WASM initialization entry point
      */
     function init() {
         wasm.init();
@@ -87,15 +87,15 @@ let wasm_bindgen = (function(exports) {
     exports.register_client = register_client;
 
     /**
-     * 注册来自 DOM 的专用 DataChannel MessagePort
+     * Register a dedicated DataChannel `MessagePort` received from the DOM side.
      *
-     * DOM 在 DataChannel 建立后创建 MessageChannel 桥接：
-     * 1. DOM: `port1 ↔ DataChannel` (双向转发)
-     * 2. DOM: 将 `port2` 通过 Transferable 转移给 SW
-     * 3. SW: 此函数接收 `port2`，创建 `WebRtcConnection`，注入到 `WirePool`
+     * After the DOM creates the DataChannel bridge:
+     * 1. DOM: `port1 <-> DataChannel` for bidirectional forwarding
+     * 2. DOM: transfers `port2` to the SW via a transferable object
+     * 3. SW: this function receives `port2`, builds `WebRtcConnection`, and injects it into `WirePool`
      *
-     * 注入后 DestTransport 的 send 循环通过 ReadyWatcher 被唤醒，
-     * 后续出站数据直接经 `DataLane::PostMessage(port)` 零拷贝发送。
+     * After injection, `DestTransport` is awakened through `ReadyWatcher`, and
+     * subsequent outbound traffic is sent zero-copy through `DataLane::PostMessage(port)`.
      * @param {string} client_id
      * @param {string} peer_id
      * @param {MessagePort} port
@@ -112,10 +112,10 @@ let wasm_bindgen = (function(exports) {
     exports.register_datachannel_port = register_datachannel_port;
 
     /**
-     * 注册本地 SendEcho 服务 handler
+     * Register the local `SendEcho` service handler.
      *
-     * handler 分发 RPC 请求到 SendEcho 服务的具体方法：
-     * - `echo.SendEcho.SendEcho`: 发现远程 EchoService 并转发请求
+     * The handler dispatches RPC requests to the concrete `SendEcho` methods:
+     * - `echo.SendEcho.SendEcho`: discovers the remote `EchoService` and forwards the request
      */
     function register_echo_client_handler() {
         wasm.register_echo_client_handler();

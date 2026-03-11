@@ -135,10 +135,7 @@ impl HostGate {
         tracing::instrument(skip_all, name = "HostGate.send_message", fields(target = ?target.to_string_repr()))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!(
-            "HostGate::send_message to {:?}",
-            target.to_string_repr()
-        );
+        tracing::debug!("HostGate::send_message to {:?}", target.to_string_repr());
 
         // Default to Reliable (no identifier)
         self.transport

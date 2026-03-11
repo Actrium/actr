@@ -227,7 +227,7 @@ impl PeerTransport {
             if !is_creator {
                 // Wait for the actual creator
                 tracing::debug!("Another thread is creating connection: {:?}", dest);
-                // notify 加超时 10秒
+                // Add a 10-second timeout while waiting on notify.
                 match tokio::time::timeout(Duration::from_secs(10), notify.notified()).await {
                     Ok(_) => continue,
                     Err(e) => {
@@ -385,10 +385,7 @@ impl PeerTransport {
     pub async fn close_all(&self) -> NetworkResult<()> {
         let mut transports = self.transports.write().await;
 
-        tracing::info!(
-            "Closing all DestTransports (count: {})",
-            transports.len()
-        );
+        tracing::info!("Closing all DestTransports (count: {})", transports.len());
 
         for (dest, state) in transports.drain() {
             match state {
@@ -520,10 +517,7 @@ impl PeerTransport {
 
                     if !healthy {
                         // All connections failed - schedule for removal
-                        tracing::warn!(
-                            "All connections failed for {:?}, will remove",
-                            dest_clone
-                        );
+                        tracing::warn!("All connections failed for {:?}, will remove", dest_clone);
 
                         // Remove entire DestTransport
                         let mut transports_write = transports.write().await;

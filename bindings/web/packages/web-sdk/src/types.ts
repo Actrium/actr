@@ -55,7 +55,7 @@ export interface RpcOptions {
 /**
  * Subscription callback
  *
- * 在新架构中，metadata 由 WASM 运行时管理，UI 层只接收数据
+ * ，metadata  WASM ，UI 
  */
 export type SubscriptionCallback<T> = (data: T) => void;
 

@@ -1,7 +1,8 @@
-//! Actor 隔离存储实现
+//! Actor isolated storage implementation
 //!
-//! 每个 Actor 拥有独立的 SQLite 数据库文件，由 Hyper 命名空间解析器确定路径。
-//! 所有读写操作均限定在此命名空间内，Actor 无法访问其它 Actor 的数据。
+//! Each Actor has an independent SQLite database file, with the path determined
+//! by Hyper's namespace resolver.
+//! All read/write operations are confined to this namespace; an Actor cannot access another Actor's data.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -10,39 +11,40 @@ use tracing::{debug, error, info};
 
 use crate::error::{HyperError, HyperResult};
 
-/// KV 批量操作枚举
+/// KV batch operation enum
 pub enum KvOp {
     Set { key: String, value: Vec<u8> },
     Delete { key: String },
 }
 
-/// Actor 隔离存储句柄
+/// Actor isolated storage handle
 ///
-/// 每个 Actor 拥有独立的 SQLite 数据库文件，路径由 Hyper 的命名空间解析器决定。
-/// 所有读写操作都限定在此命名空间内，Actor 无法访问其它 Actor 的数据。
+/// Each Actor has an independent SQLite database file, with the path determined
+/// by Hyper's namespace resolver.
+/// All read/write operations are confined to this namespace; an Actor cannot access another Actor's data.
 ///
-/// rusqlite 连接非 Send，通过 `Arc<Mutex<Connection>>` 包装以支持跨线程共享，
-/// 所有阻塞 I/O 通过 `tokio::task::spawn_blocking` 卸载到阻塞线程池。
+/// The rusqlite connection is not Send; wrapped in `Arc<Mutex<Connection>>` for cross-thread sharing.
+/// All blocking I/O is offloaded to the blocking thread pool via `tokio::task::spawn_blocking`.
 #[derive(Clone)]
 pub struct ActorStore {
-    /// 共享 SQLite 连接（rusqlite 不是 Send，用 Mutex 保护）
+    /// Shared SQLite connection (rusqlite is not Send, protected by Mutex)
     conn: Arc<Mutex<rusqlite::Connection>>,
-    /// 数据库文件路径（仅用于日志/调试）
+    /// Database file path (for logging/debugging only)
     namespace: PathBuf,
 }
 
 impl ActorStore {
-    /// 打开或创建 Actor 的 SQLite 数据库
+    /// Open or create an Actor's SQLite database
     ///
-    /// 首次调用时自动建表。父目录不存在时自动创建。
+    /// Automatically creates the table on first call. Parent directory is created automatically if missing.
     pub async fn open(db_path: &Path) -> HyperResult<Self> {
         let db_path = db_path.to_path_buf();
 
-        // 确保父目录存在
+        // ensure parent directory exists
         if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 HyperError::Storage(format!(
-                    "无法创建存储目录 `{}`: {e}",
+                    "failed to create storage directory `{}`: {e}",
                     parent.display()
                 ))
             })?;
@@ -50,23 +52,25 @@ impl ActorStore {
 
         let namespace = db_path.clone();
 
-        // rusqlite 是同步 API，通过 spawn_blocking 在阻塞线程池中执行
+        // rusqlite is a sync API, execute in blocking thread pool via spawn_blocking
         let conn = tokio::task::spawn_blocking(move || -> HyperResult<rusqlite::Connection> {
             let conn = rusqlite::Connection::open(&db_path).map_err(|e| {
                 error!(
                     path = %db_path.display(),
                     error = %e,
-                    "打开 SQLite 数据库失败"
+                    "failed to open SQLite database"
                 );
-                HyperError::Storage(format!("打开数据库 `{}` 失败: {e}", db_path.display()))
+                HyperError::Storage(format!(
+                    "failed to open database `{}`: {e}",
+                    db_path.display()
+                ))
             })?;
 
-            // 开启 WAL 模式，提升并发读性能
-            conn.execute_batch("PRAGMA journal_mode=WAL;").map_err(|e| {
-                HyperError::Storage(format!("设置 WAL 模式失败: {e}"))
-            })?;
+            // enable WAL mode for improved concurrent read performance
+            conn.execute_batch("PRAGMA journal_mode=WAL;")
+                .map_err(|e| HyperError::Storage(format!("failed to set WAL mode: {e}")))?;
 
-            // 建表（idempotent）
+            // create table (idempotent)
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS kv_store (
                     key        TEXT PRIMARY KEY NOT NULL,
@@ -75,17 +79,17 @@ impl ActorStore {
                 );",
             )
             .map_err(|e| {
-                HyperError::Storage(format!("初始化 kv_store 表失败: {e}"))
+                HyperError::Storage(format!("failed to initialize kv_store table: {e}"))
             })?;
 
             Ok(conn)
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))??;
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))??;
 
         info!(
             path = %namespace.display(),
-            "ActorStore 已就绪"
+            "ActorStore ready"
         );
 
         Ok(Self {
@@ -94,7 +98,7 @@ impl ActorStore {
         })
     }
 
-    /// 通用 KV 存储：写入或更新一个键值对
+    /// Generic KV storage: write or update a key-value pair
     pub async fn kv_set(&self, key: &str, value: &[u8]) -> HyperResult<()> {
         let conn = Arc::clone(&self.conn);
         let key = key.to_string();
@@ -103,7 +107,7 @@ impl ActorStore {
 
         tokio::task::spawn_blocking(move || -> HyperResult<()> {
             let conn = conn.lock().map_err(|e| {
-                HyperError::Storage(format!("获取数据库锁失败: {e}"))
+                HyperError::Storage(format!("failed to acquire database lock: {e}"))
             })?;
 
             conn.execute(
@@ -117,21 +121,21 @@ impl ActorStore {
                     namespace = %ns.display(),
                     key = %key,
                     error = %e,
-                    "kv_set 写入失败"
+                    "kv_set write failed"
                 );
-                HyperError::Storage(format!("kv_set 写入 `{key}` 失败: {e}"))
+                HyperError::Storage(format!("kv_set write `{key}` failed: {e}"))
             })?;
 
-            debug!(namespace = %ns.display(), key = %key, "kv_set 写入成功");
+            debug!(namespace = %ns.display(), key = %key, "kv_set write succeeded");
             Ok(())
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))??;
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))??;
 
         Ok(())
     }
 
-    /// 通用 KV 存储：读取一个键的值，键不存在时返回 None
+    /// Generic KV storage: read a key's value, returns None if the key does not exist
     pub async fn kv_get(&self, key: &str) -> HyperResult<Option<Vec<u8>>> {
         let conn = Arc::clone(&self.conn);
         let key = key.to_string();
@@ -139,7 +143,7 @@ impl ActorStore {
 
         tokio::task::spawn_blocking(move || -> HyperResult<Option<Vec<u8>>> {
             let conn = conn.lock().map_err(|e| {
-                HyperError::Storage(format!("获取数据库锁失败: {e}"))
+                HyperError::Storage(format!("failed to acquire database lock: {e}"))
             })?;
 
             let result = conn.query_row(
@@ -150,11 +154,11 @@ impl ActorStore {
 
             match result {
                 Ok(value) => {
-                    debug!(namespace = %ns.display(), key = %key, "kv_get 命中");
+                    debug!(namespace = %ns.display(), key = %key, "kv_get hit");
                     Ok(Some(value))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    debug!(namespace = %ns.display(), key = %key, "kv_get 未命中");
+                    debug!(namespace = %ns.display(), key = %key, "kv_get miss");
                     Ok(None)
                 }
                 Err(e) => {
@@ -162,17 +166,19 @@ impl ActorStore {
                         namespace = %ns.display(),
                         key = %key,
                         error = %e,
-                        "kv_get 读取失败"
+                        "kv_get read failed"
                     );
-                    Err(HyperError::Storage(format!("kv_get 读取 `{key}` 失败: {e}")))
+                    Err(HyperError::Storage(format!(
+                        "kv_get read `{key}` failed: {e}"
+                    )))
                 }
             }
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))?
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))?
     }
 
-    /// 通用 KV 存储：删除一个键，返回是否实际删除了记录
+    /// Generic KV storage: delete a key, returns whether a record was actually deleted
     pub async fn kv_delete(&self, key: &str) -> HyperResult<bool> {
         let conn = Arc::clone(&self.conn);
         let key = key.to_string();
@@ -180,7 +186,7 @@ impl ActorStore {
 
         tokio::task::spawn_blocking(move || -> HyperResult<bool> {
             let conn = conn.lock().map_err(|e| {
-                HyperError::Storage(format!("获取数据库锁失败: {e}"))
+                HyperError::Storage(format!("failed to acquire database lock: {e}"))
             })?;
 
             let affected = conn
@@ -193,20 +199,20 @@ impl ActorStore {
                         namespace = %ns.display(),
                         key = %key,
                         error = %e,
-                        "kv_delete 失败"
+                        "kv_delete failed"
                     );
-                    HyperError::Storage(format!("kv_delete 删除 `{key}` 失败: {e}"))
+                    HyperError::Storage(format!("kv_delete `{key}` failed: {e}"))
                 })?;
 
             let deleted = affected > 0;
-            debug!(namespace = %ns.display(), key = %key, deleted, "kv_delete 执行");
+            debug!(namespace = %ns.display(), key = %key, deleted, "kv_delete executed");
             Ok(deleted)
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))?
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))?
     }
 
-    /// 列出所有 key，可通过 prefix 参数过滤前缀
+    /// List all keys, optionally filtered by prefix
     pub async fn kv_list_keys(&self, prefix: Option<&str>) -> HyperResult<Vec<String>> {
         let conn = Arc::clone(&self.conn);
         let prefix = prefix.map(|s| s.to_string());
@@ -214,57 +220,57 @@ impl ActorStore {
 
         tokio::task::spawn_blocking(move || -> HyperResult<Vec<String>> {
             let conn = conn.lock().map_err(|e| {
-                HyperError::Storage(format!("获取数据库锁失败: {e}"))
+                HyperError::Storage(format!("failed to acquire database lock: {e}"))
             })?;
 
             let keys = if let Some(ref pfx) = prefix {
-                // 用 LIKE 模式匹配前缀，转义通配符
+                // use LIKE pattern matching for prefix, escape wildcards
                 let pattern = format!("{}%", pfx.replace('%', "\\%").replace('_', "\\_"));
                 let mut stmt = conn
                     .prepare("SELECT key FROM kv_store WHERE key LIKE ?1 ESCAPE '\\' ORDER BY key")
-                    .map_err(|e| HyperError::Storage(format!("准备 SQL 失败: {e}")))?;
+                    .map_err(|e| HyperError::Storage(format!("failed to prepare SQL: {e}")))?;
                 let rows = stmt
                     .query_map(rusqlite::params![pattern], |row| row.get::<_, String>(0))
-                    .map_err(|e| HyperError::Storage(format!("查询 key 列表失败: {e}")))?;
+                    .map_err(|e| HyperError::Storage(format!("failed to query key list: {e}")))?;
                 rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| HyperError::Storage(format!("读取 key 行失败: {e}")))?
+                    .map_err(|e| HyperError::Storage(format!("failed to read key row: {e}")))?
             } else {
                 let mut stmt = conn
                     .prepare("SELECT key FROM kv_store ORDER BY key")
-                    .map_err(|e| HyperError::Storage(format!("准备 SQL 失败: {e}")))?;
+                    .map_err(|e| HyperError::Storage(format!("failed to prepare SQL: {e}")))?;
                 let rows = stmt
                     .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(|e| HyperError::Storage(format!("查询 key 列表失败: {e}")))?;
+                    .map_err(|e| HyperError::Storage(format!("failed to query key list: {e}")))?;
                 rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| HyperError::Storage(format!("读取 key 行失败: {e}")))?
+                    .map_err(|e| HyperError::Storage(format!("failed to read key row: {e}")))?
             };
 
             debug!(
                 namespace = %ns.display(),
                 count = keys.len(),
                 prefix = ?prefix,
-                "kv_list_keys 查询完成"
+                "kv_list_keys query completed"
             );
             Ok(keys)
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))?
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))?
     }
 
-    /// 批量操作（原子事务）
+    /// Batch operations (atomic transaction)
     ///
-    /// 所有操作在同一个事务中执行，任意一步失败则全部回滚。
+    /// All operations execute in a single transaction; if any step fails, all are rolled back.
     pub async fn kv_batch(&self, ops: Vec<KvOp>) -> HyperResult<()> {
         let conn = Arc::clone(&self.conn);
         let ns = self.namespace.clone();
 
         tokio::task::spawn_blocking(move || -> HyperResult<()> {
             let mut conn = conn.lock().map_err(|e| {
-                HyperError::Storage(format!("获取数据库锁失败: {e}"))
+                HyperError::Storage(format!("failed to acquire database lock: {e}"))
             })?;
 
             let tx = conn.transaction().map_err(|e| {
-                HyperError::Storage(format!("开启事务失败: {e}"))
+                HyperError::Storage(format!("failed to begin transaction: {e}"))
             })?;
 
             for op in &ops {
@@ -281,9 +287,9 @@ impl ActorStore {
                                 namespace = %ns.display(),
                                 key = %key,
                                 error = %e,
-                                "kv_batch set 操作失败"
+                                "kv_batch set operation failed"
                             );
-                            HyperError::Storage(format!("kv_batch set `{key}` 失败: {e}"))
+                            HyperError::Storage(format!("kv_batch set `{key}` failed: {e}"))
                         })?;
                         debug!(namespace = %ns.display(), key = %key, "kv_batch set");
                     }
@@ -297,9 +303,9 @@ impl ActorStore {
                                 namespace = %ns.display(),
                                 key = %key,
                                 error = %e,
-                                "kv_batch delete 操作失败"
+                                "kv_batch delete operation failed"
                             );
-                            HyperError::Storage(format!("kv_batch delete `{key}` 失败: {e}"))
+                            HyperError::Storage(format!("kv_batch delete `{key}` failed: {e}"))
                         })?;
                         debug!(namespace = %ns.display(), key = %key, "kv_batch delete");
                     }
@@ -307,19 +313,19 @@ impl ActorStore {
             }
 
             tx.commit().map_err(|e| {
-                error!(namespace = %ns.display(), error = %e, "kv_batch 事务提交失败");
-                HyperError::Storage(format!("kv_batch 事务提交失败: {e}"))
+                error!(namespace = %ns.display(), error = %e, "kv_batch transaction commit failed");
+                HyperError::Storage(format!("kv_batch transaction commit failed: {e}"))
             })?;
 
             debug!(
                 namespace = %ns.display(),
                 ops_count = ops.len(),
-                "kv_batch 事务提交成功"
+                "kv_batch transaction committed"
             );
             Ok(())
         })
         .await
-        .map_err(|e| HyperError::Storage(format!("spawn_blocking 任务失败: {e}")))?
+        .map_err(|e| HyperError::Storage(format!("spawn_blocking task failed: {e}")))?
     }
 }
 
@@ -359,10 +365,13 @@ mod tests {
 
         store.kv_set("key1", b"value1").await.unwrap();
         let deleted = store.kv_delete("key1").await.unwrap();
-        assert!(deleted, "应返回 true 表示实际删除了记录");
+        assert!(
+            deleted,
+            "should return true indicating a record was actually deleted"
+        );
 
         let val = store.kv_get("key1").await.unwrap();
-        assert_eq!(val, None, "删除后 get 应返回 None");
+        assert_eq!(val, None, "get should return None after deletion");
     }
 
     #[tokio::test]
@@ -371,7 +380,7 @@ mod tests {
         let store = open_test_store(&dir).await;
 
         let deleted = store.kv_delete("ghost").await.unwrap();
-        assert!(!deleted, "删除不存在的键应返回 false");
+        assert!(!deleted, "deleting a non-existent key should return false");
     }
 
     #[tokio::test]
@@ -384,7 +393,11 @@ mod tests {
         store.kv_set("c", b"3").await.unwrap();
 
         let keys = store.kv_list_keys(None).await.unwrap();
-        assert_eq!(keys, vec!["a", "b", "c"], "应按字典序返回所有 key");
+        assert_eq!(
+            keys,
+            vec!["a", "b", "c"],
+            "should return all keys in lexicographic order"
+        );
     }
 
     #[tokio::test]
@@ -424,11 +437,11 @@ mod tests {
             .await
             .unwrap();
 
-        // new_key 应存在
+        // new_key should exist
         let val = store.kv_get("new_key").await.unwrap();
         assert_eq!(val, Some(b"new_value".to_vec()));
 
-        // existing 在批量中先更新后删除，最终应不存在
+        // existing was updated then deleted in the batch, should not exist
         let val = store.kv_get("existing").await.unwrap();
         assert_eq!(val, None);
     }
@@ -440,16 +453,19 @@ mod tests {
 
         {
             let store = ActorStore::open(&db_path).await.unwrap();
-            store.kv_set("persistent_key", b"persistent_value").await.unwrap();
+            store
+                .kv_set("persistent_key", b"persistent_value")
+                .await
+                .unwrap();
         }
 
-        // 重新打开同一文件
+        // reopen the same file
         let store2 = ActorStore::open(&db_path).await.unwrap();
         let val = store2.kv_get("persistent_key").await.unwrap();
         assert_eq!(
             val,
             Some(b"persistent_value".to_vec()),
-            "重新打开数据库后数据应持久化"
+            "data should persist after reopening the database"
         );
     }
 }

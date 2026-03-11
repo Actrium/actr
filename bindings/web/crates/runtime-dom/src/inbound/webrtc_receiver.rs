@@ -1,6 +1,6 @@
-//! WebRTC DataChannel 消息接收处理
+//! WebRTC DataChannel message receiver.
 //!
-//! 处理 DOM 侧 WebRTC DataChannel 接收到的消息
+//! Handles messages received on the DOM-side WebRTC DataChannel.
 
 use actr_web_common::{MessageFormat, PayloadType, WebError, WebResult};
 use parking_lot::Mutex;
@@ -12,25 +12,25 @@ use web_sys::{MessageEvent, RtcDataChannel};
 use crate::fastpath::{MediaFrameHandlerRegistry, StreamHandlerRegistry};
 use crate::transport::DataLane;
 
-/// WebRTC DataChannel 消息接收处理器
+/// WebRTC DataChannel message receiver.
 ///
-/// 处理从 WebRTC DataChannel 接收到的消息：
-/// - RPC 消息：转发到 SW Mailbox
-/// - Stream 消息：本地派发到 StreamHandlerRegistry
-/// - Media 消息：警告（应该通过 MediaTrack）
+/// Handles messages received over a WebRTC DataChannel:
+/// - RPC messages: forwarded to the SW mailbox
+/// - Stream messages: dispatched locally to StreamHandlerRegistry
+/// - Media messages: logged as warnings because they should use MediaTrack
 pub struct WebRtcDataChannelReceiver {
-    /// Stream 处理器注册表
+    /// Stream handler registry.
     stream_registry: Arc<StreamHandlerRegistry>,
 
-    /// Media 处理器注册表（虽然 Media 应该通过 Track）
+    /// Media handler registry, even though media should normally use a track.
     media_registry: Arc<MediaFrameHandlerRegistry>,
 
-    /// SW 通信通道（用于转发 RPC 消息）
+    /// Service Worker lane used to forward RPC messages.
     sw_lane: Arc<Mutex<Option<DataLane>>>,
 }
 
 impl WebRtcDataChannelReceiver {
-    /// 创建新的接收处理器
+    /// Create a new receiver.
     pub fn new(
         stream_registry: Arc<StreamHandlerRegistry>,
         media_registry: Arc<MediaFrameHandlerRegistry>,
@@ -42,38 +42,38 @@ impl WebRtcDataChannelReceiver {
         }
     }
 
-    /// 设置 SW 通信通道
+    /// Set the Service Worker lane.
     pub fn set_sw_lane(&self, lane: DataLane) {
         let mut sw_lane = self.sw_lane.lock();
         *sw_lane = Some(lane);
         log::info!("[WebRtcDataChannelReceiver] SW lane set");
     }
 
-    /// 绑定到 DataChannel
+    /// Attach to a DataChannel.
     ///
-    /// 设置 onmessage 回调
+    /// Installs the `onmessage` callback.
     pub fn attach_to_datachannel(&self, datachannel: &RtcDataChannel) -> WebResult<()> {
         let stream_registry = self.stream_registry.clone();
         let media_registry = self.media_registry.clone();
         let sw_lane = self.sw_lane.clone();
 
         let onmessage = Closure::wrap(Box::new(move |event: MessageEvent| {
-            // 处理接收到的消息
+            // Handle the incoming message.
             if let Ok(array_buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
                 let uint8_array = js_sys::Uint8Array::new(&array_buffer);
                 let data = uint8_array.to_vec();
 
-                // 解析 MessageFormat
+                // Parse MessageFormat.
                 match MessageFormat::try_from(data.as_slice()) {
                     Ok(message) => {
-                        // 根据 PayloadType 路由
+                        // Route by payload type.
                         match message.payload_type {
                             PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                                // RPC 消息：转发到 SW
+                                // RPC messages: forward to the SW.
                                 Self::forward_rpc_to_sw(&sw_lane, message);
                             }
                             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                // Stream 消息：本地派发
+                                // Stream messages: dispatch locally.
                                 if let Err(e) =
                                     Self::dispatch_stream_local(&stream_registry, message)
                                 {
@@ -84,7 +84,7 @@ impl WebRtcDataChannelReceiver {
                                 }
                             }
                             PayloadType::MediaRtp => {
-                                // Media 消息：警告（应该通过 MediaTrack）
+                                // Media messages: warn because they should use MediaTrack.
                                 log::warn!(
                                     "[WebRtcDataChannelReceiver] Received MEDIA_RTP via DataChannel, \
                                      should use MediaTrack instead"
@@ -116,14 +116,15 @@ impl WebRtcDataChannelReceiver {
         Ok(())
     }
 
-    /// 转发 RPC 消息到 SW
+    /// Forward an RPC message to the Service Worker.
     fn forward_rpc_to_sw(sw_lane: &Arc<Mutex<Option<DataLane>>>, message: MessageFormat) {
         let sw_lane_guard = sw_lane.lock();
 
         if let Some(ref lane) = *sw_lane_guard {
-            // 封装为控制消息并发送到 SW
-            // 格式：[MessageType(1) | From(序列化) | MessageFormat(序列化)]
-            // 这里简化处理，直接发送 MessageFormat
+            // Wrap and send to the SW.
+            // The full format could be:
+            // [MessageType(1) | From(serialized) | MessageFormat(serialized)]
+            // For now, the simplified implementation forwards MessageFormat directly.
             let data = message.to_bytes();
 
             wasm_bindgen_futures::spawn_local({
@@ -147,12 +148,13 @@ impl WebRtcDataChannelReceiver {
         }
     }
 
-    /// 本地派发 Stream 消息
+    /// Dispatch a stream message locally.
     fn dispatch_stream_local(
         stream_registry: &Arc<StreamHandlerRegistry>,
         message: MessageFormat,
     ) -> WebResult<()> {
-        // 解析 stream_id（格式：[stream_id_len(4) | stream_id(N) | chunk_data(M)]）
+        // Parse stream_id using:
+        // [stream_id_len(4) | stream_id(N) | chunk_data(M)]
         let data = message.data;
         if data.len() < 4 {
             return Err(WebError::Protocol(
@@ -172,7 +174,7 @@ impl WebRtcDataChannelReceiver {
 
         let chunk_data = data.slice(4 + stream_id_len..);
 
-        // 派发到注册器
+        // Dispatch to the registry.
         stream_registry.dispatch(&stream_id, chunk_data);
 
         log::debug!(
@@ -183,12 +185,13 @@ impl WebRtcDataChannelReceiver {
         Ok(())
     }
 
-    /// 本地派发 Media 消息
+    /// Dispatch a media message locally.
     fn dispatch_media_local(
         media_registry: &Arc<MediaFrameHandlerRegistry>,
         message: MessageFormat,
     ) -> WebResult<()> {
-        // 解析 track_id（格式：[track_id_len(4) | track_id(N) | frame_data(M)]）
+        // Parse track_id using:
+        // [track_id_len(4) | track_id(N) | frame_data(M)]
         let data = message.data;
         if data.len() < 4 {
             return Err(WebError::Protocol(
@@ -208,7 +211,7 @@ impl WebRtcDataChannelReceiver {
 
         let frame_data = data.slice(4 + track_id_len..);
 
-        // 派发到注册器
+        // Dispatch to the registry.
         media_registry.dispatch(&track_id, frame_data);
 
         log::debug!(

@@ -370,5 +370,5 @@ SW: WireHandle::send()
 
 **文档版本**: 2026-01-08（拆分完成后）
 **相关文档**:
-- [架构总览](./overview.md)
-- [双层架构](./dual-layer.md)
+- [架构总览](./overview.zh.md)
+- [双层架构](./dual-layer.zh.md)

@@ -19,7 +19,7 @@ tracing.workspace = true
 
 [features]
 default = []
-# placeholder — 上层 crate 引用此 feature；完成拆分后移除
+# placeholder — upper layer crates reference this feature; remove after splitting is complete
 opentelemetry = []
 test-utils = []
 

@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Default Wire builder configuration
 pub struct DefaultWireBuilderConfig {
-    /// 本地节点身份（hex-encoded protobuf ActrId bytes），出站 WebSocket 握手时随 X-Actr-Source-ID 头发送
+    /// Local node identity as hex-encoded protobuf `ActrId` bytes, sent in the `X-Actr-Source-ID` header during outbound WebSocket handshakes.
     pub local_id_hex: String,
 
     /// Enable WebRTC
@@ -38,8 +38,7 @@ pub struct DefaultWireBuilderConfig {
     /// contains an entry for it, the stored URL is used instead of the url_template.
     pub discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 
-    /// 本地节点凭证状态（可选）。出站 WebSocket 握手时将当前 credential 以 base64 编码随
-    /// X-Actr-Credential 头发送，供对端进行 Ed25519 签名验证。
+    /// Optional local credential state. During outbound WebSocket handshakes the current credential is base64-encoded and sent in the `X-Actr-Credential` header so the peer can verify the Ed25519 signature.
     pub credential_state: Option<CredentialState>,
 }
 
@@ -55,33 +54,32 @@ impl Default for DefaultWireBuilderConfig {
     }
 }
 
-/// default Wire construct build device
+/// Default builder for wire-layer connections.
 ///
-/// based onconfigurationCreate WebRTC and/or WebSocket Wire group file 。
-/// Supportsaturatedand format Connect（ same temporal attempt try multiple typeConnectType）。
+/// Creates WebRTC and/or WebSocket wire handles from configuration and supports attempting multiple connection types during the same creation pass.
 pub struct DefaultWireBuilder {
-    /// WebRTC coordinator（optional）
+    /// Optional WebRTC coordinator.
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
 
-    /// 本地节点身份 hex（出站 WS 握手时作为 X-Actr-Source-ID 发送）
+    /// Local node identity hex string used as `X-Actr-Source-ID` in outbound WebSocket handshakes.
     local_id_hex: String,
 
     /// Shared map of discovered WebSocket URLs (from signaling discovery)
     discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 
-    /// 本地节点凭证状态（出站 WS 握手时提供 X-Actr-Credential 供对端验签）
+    /// Local credential state used to provide `X-Actr-Credential` during outbound WebSocket handshakes.
     credential_state: Option<CredentialState>,
 
-    /// configuration
+    /// Builder configuration.
     config: DefaultWireBuilderConfig,
 }
 
 impl DefaultWireBuilder {
-    /// Create new Wire construct build device
+    /// Create a new wire builder.
     ///
     /// # Arguments
-    /// - `webrtc_coordinator`: WebRTC coordinator（If start usage WebRTC）
-    /// - `config`: construct build device configuration
+    /// - `webrtc_coordinator`: WebRTC coordinator when WebRTC support is enabled
+    /// - `config`: builder configuration
     pub fn new(
         webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
         config: DefaultWireBuilderConfig,
@@ -95,7 +93,7 @@ impl DefaultWireBuilder {
         }
     }
 
-    /// 查询目标节点的 WebSocket 直连 URL（仅来自服务发现）
+    /// Look up the direct WebSocket URL for the target node, sourced only from service discovery.
     async fn resolve_websocket_url(&self, dest: &Dest) -> Option<String> {
         if let Dest::Actor(actor_id) = dest {
             let map = self.discovered_ws_addresses.read().await;
@@ -140,11 +138,11 @@ impl WireBuilder for DefaultWireBuilder {
             Ok(())
         };
 
-        // 1. Check if already cancelled
+        // 1. Check whether the operation was already cancelled.
         check_cancelled(&cancel_token)?;
 
-        // 2. 尝试建立 WebSocket 连接
-        // URL 来自服务发现（discovered_ws_addresses）。若未发现，则本次跳过 WebSocket 连接。
+        // 2. Try to establish a WebSocket connection.
+        // The URL comes from service discovery (`discovered_ws_addresses`). If nothing was discovered, skip WebSocket for this attempt.
         if self.config.enable_websocket {
             check_cancelled(&cancel_token)?;
 
@@ -153,7 +151,7 @@ impl WireBuilder for DefaultWireBuilder {
                 let mut ws_conn =
                     WebSocketConnection::new(url).with_local_id(self.local_id_hex.clone());
 
-                // 携带本地 credential，供对端 WebSocketGate 进行 Ed25519 验签
+                // Attach the local credential so the peer `WebSocketGate` can verify the Ed25519 signature.
                 if let Some(ref cred_state) = self.credential_state {
                     let credential = cred_state.credential().await;
                     let cred_bytes = credential.encode_to_vec();
@@ -171,15 +169,15 @@ impl WireBuilder for DefaultWireBuilder {
             }
         }
 
-        // 3. Check cancellation before WebRTC
+        // 3. Check cancellation before trying WebRTC.
         check_cancelled(&cancel_token)?;
 
-        // 4. attempt try Create WebRTC Connect
+        // 4. Attempt to create a WebRTC connection.
         if self.config.enable_webrtc {
             if let Some(coordinator) = &self.webrtc_coordinator {
-                // WebRTC merely Support Actor Type
+                // WebRTC is only supported for actor destinations.
                 if dest.is_actor() {
-                    tracing::debug!("🏭 [Factory] Create WebRTC Connectto: {:?}", dest);
+                    tracing::debug!("🏭 [Factory] Creating WebRTC connection to: {:?}", dest);
 
                     // Check cancellation before long-running operation
                     check_cancelled(&cancel_token)?;
@@ -189,9 +187,9 @@ impl WireBuilder for DefaultWireBuilder {
                         .await
                     {
                         Ok(webrtc_conn) => {
-                            // Check cancellation after creation
+                            // Check cancellation again after creation.
                             if let Err(e) = check_cancelled(&cancel_token) {
-                                // Clean up newly created connection
+                                // Clean up the newly created connection.
                                 if let Err(close_err) = webrtc_conn.close().await {
                                     tracing::warn!(
                                         "⚠️ [Factory] Failed to close cancelled connection: {}",
@@ -204,27 +202,29 @@ impl WireBuilder for DefaultWireBuilder {
                         }
                         Err(e) => {
                             tracing::warn!(
-                                "❌ [Factory] WebRTC ConnectCreatefailure: {:?}: {}",
+                                "❌ [Factory] WebRTC connection creation failed: {:?}: {}",
                                 dest,
                                 e
                             );
-                            // not ReturnsError，allowusingotherConnectType
+                            // Do not return an error here; allow other connection types to proceed.
                         }
                     }
                 } else {
                     tracing::debug!(
-                        "ℹ️ [Factory] WebRTC not Support Shell item mark ，skip through "
+                        "ℹ️ [Factory] WebRTC does not support this destination type, skipping"
                     );
                 }
             } else {
-                tracing::warn!("⚠️ [Factory] WebRTC enabled but not Provide WebRtcCoordinator");
+                tracing::warn!(
+                    "⚠️ [Factory] WebRTC is enabled but no WebRtcCoordinator was provided"
+                );
             }
         }
 
         tracing::info!(
-            "✨ [Factory] as {:?} Create done {} Connect",
+            "✨ [Factory] Finished creating {} connections for {:?}",
+            connections.len(),
             dest,
-            connections.len()
         );
 
         Ok(connections)
@@ -238,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_ws_connection_without_discovery() {
-        // WebSocket URL 仅来自服务发现；无发现记录时不应建立 WS 连接
+        // WebSocket URLs come only from service discovery; without a discovery record no WS connection should be created.
         let config = DefaultWireBuilderConfig {
             enable_websocket: true,
             enable_webrtc: false,
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ws_connection_from_discovery() {
-        // 服务发现写入地址后，应能建立 WS 连接
+        // A discovered address should allow a WS connection to be created.
         let map = Arc::new(RwLock::new(HashMap::new()));
         let actor_id = ActrId::default();
         map.write()

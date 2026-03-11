@@ -1,67 +1,67 @@
-//! SW ↔ DOM 通信事件定义
+//! SW <-> DOM communication event definitions
 //!
-//! 定义 Service Worker 和 DOM 之间的消息协议
+//! Defines the message protocol between the Service Worker and the DOM.
 
 use crate::{Dest, WebError, WebResult};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-/// 连接类型
+/// Connection type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnType {
-    /// WebSocket 连接
+    /// WebSocket connection.
     WebSocket,
-    /// WebRTC 连接
+    /// WebRTC connection.
     WebRTC,
 }
 
-/// SW → DOM: 请求创建 P2P 连接
+/// SW -> DOM: request to create a P2P connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateP2PRequest {
-    /// 目标 Dest
+    /// Target destination.
     pub dest: Dest,
 
-    /// 请求 ID（用于匹配响应）
+    /// Request ID used to match the response.
     pub request_id: String,
 }
 
 impl CreateP2PRequest {
-    /// 创建新请求（request_id 由调用方生成）
+    /// Create a new request. The caller provides `request_id`.
     pub fn new(dest: Dest, request_id: String) -> Self {
         Self { dest, request_id }
     }
 
-    /// 序列化
+    /// Serialize the request.
     pub fn serialize(&self) -> WebResult<Bytes> {
         serde_json::to_vec(self)
             .map(Bytes::from)
             .map_err(|e| WebError::Serialization(e.to_string()))
     }
 
-    /// 反序列化
+    /// Deserialize the request.
     pub fn deserialize(data: &[u8]) -> WebResult<Self> {
         serde_json::from_slice(data).map_err(|e| WebError::Serialization(e.to_string()))
     }
 }
 
-/// DOM → SW: P2P 连接就绪事件
+/// DOM -> SW: P2P connection ready event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2PReadyEvent {
-    /// 对应的请求 ID
+    /// Matching request ID.
     pub request_id: String,
 
-    /// 目标 Dest
+    /// Target destination.
     pub dest: Dest,
 
-    /// 是否成功
+    /// Whether the operation succeeded.
     pub success: bool,
 
-    /// 失败原因（如果失败）
+    /// Failure reason, if any.
     pub error_message: Option<String>,
 }
 
 impl P2PReadyEvent {
-    /// 创建成功事件
+    /// Create a successful event.
     pub fn success(request_id: String, dest: Dest) -> Self {
         Self {
             request_id,
@@ -71,7 +71,7 @@ impl P2PReadyEvent {
         }
     }
 
-    /// 创建失败事件
+    /// Create a failed event.
     pub fn failure(request_id: String, dest: Dest, error: String) -> Self {
         Self {
             request_id,
@@ -81,88 +81,88 @@ impl P2PReadyEvent {
         }
     }
 
-    /// 序列化
+    /// Serialize the event.
     pub fn serialize(&self) -> WebResult<Bytes> {
         serde_json::to_vec(self)
             .map(Bytes::from)
             .map_err(|e| WebError::Serialization(e.to_string()))
     }
 
-    /// 反序列化
+    /// Deserialize the event.
     pub fn deserialize(data: &[u8]) -> WebResult<Self> {
         serde_json::from_slice(data).map_err(|e| WebError::Serialization(e.to_string()))
     }
 }
 
-/// 错误严重级别
+/// Error severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ErrorSeverity {
-    /// 警告：非致命错误，系统可继续运行
+    /// Warning: non-fatal, the system can continue running.
     Warning,
-    /// 错误：影响功能，但系统整体可用
+    /// Error: affects functionality, but the overall system remains usable.
     Error,
-    /// 严重：关键功能失效，需要立即处理
+    /// Critical: a key function is broken and needs immediate attention.
     Critical,
-    /// 致命：系统无法继续运行
+    /// Fatal: the system cannot continue running.
     Fatal,
 }
 
-/// 错误类别
+/// Error category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ErrorCategory {
-    /// WebRTC 连接错误
+    /// WebRTC connection error.
     WebRTC,
-    /// WebSocket 连接错误
+    /// WebSocket connection error.
     WebSocket,
-    /// MessagePort 通信错误
+    /// MessagePort communication error.
     MessagePort,
-    /// 数据传输错误
+    /// Data transport error.
     Transport,
-    /// 序列化/反序列化错误
+    /// Serialization or deserialization error.
     Serialization,
-    /// 超时错误
+    /// Timeout error.
     Timeout,
-    /// 内部逻辑错误
+    /// Internal logic error.
     Internal,
 }
 
-/// DOM → SW: 错误报告
+/// DOM -> SW: error report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorReport {
-    /// 错误 ID（用于追踪）
+    /// Error ID used for tracing.
     pub error_id: String,
 
-    /// 错误类别
+    /// Error category.
     pub category: ErrorCategory,
 
-    /// 错误严重级别
+    /// Error severity.
     pub severity: ErrorSeverity,
 
-    /// 错误消息
+    /// Error message.
     pub message: String,
 
-    /// 错误上下文（可选）
+    /// Optional error context.
     pub context: Option<ErrorContext>,
 
-    /// 时间戳（毫秒）
+    /// Timestamp in milliseconds.
     pub timestamp: f64,
 }
 
-/// 错误上下文
+/// Error context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorContext {
-    /// 相关的 Dest（如果有）
+    /// Related destination, if any.
     pub dest: Option<Dest>,
 
-    /// 相关的连接类型（如果有）
+    /// Related connection type, if any.
     pub conn_type: Option<ConnType>,
 
-    /// 额外的调试信息
+    /// Additional debug information.
     pub debug_info: Option<String>,
 }
 
 impl ErrorReport {
-    /// 创建新的错误报告
+    /// Create a new error report.
     pub fn new(category: ErrorCategory, severity: ErrorSeverity, message: String) -> Self {
         use js_sys::Date;
 
@@ -176,13 +176,13 @@ impl ErrorReport {
         }
     }
 
-    /// 添加上下文
+    /// Attach context.
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = Some(context);
         self
     }
 
-    /// 生成错误 ID
+    /// Generate an error ID.
     fn generate_error_id() -> String {
         use js_sys::{Date, Math};
         format!(
@@ -192,41 +192,41 @@ impl ErrorReport {
         )
     }
 
-    /// 序列化
+    /// Serialize the report.
     pub fn serialize(&self) -> WebResult<Bytes> {
         serde_json::to_vec(self)
             .map(Bytes::from)
             .map_err(|e| WebError::Serialization(e.to_string()))
     }
 
-    /// 反序列化
+    /// Deserialize the report.
     pub fn deserialize(data: &[u8]) -> WebResult<Self> {
         serde_json::from_slice(data).map_err(|e| WebError::Serialization(e.to_string()))
     }
 }
 
-/// SW/DOM 控制消息类型
+/// SW/DOM control message type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlMessage {
-    /// 请求创建 P2P
+    /// Request P2P creation.
     CreateP2P(CreateP2PRequest),
 
-    /// P2P 就绪通知
+    /// P2P ready notification.
     P2PReady(P2PReadyEvent),
 
-    /// 错误报告（DOM → SW）
+    /// Error report (DOM -> SW).
     ErrorReport(ErrorReport),
 }
 
 impl ControlMessage {
-    /// 序列化
+    /// Serialize the control message.
     pub fn serialize(&self) -> WebResult<Bytes> {
         serde_json::to_vec(self)
             .map(Bytes::from)
             .map_err(|e| WebError::Serialization(e.to_string()))
     }
 
-    /// 反序列化
+    /// Deserialize the control message.
     pub fn deserialize(data: &[u8]) -> WebResult<Self> {
         serde_json::from_slice(data).map_err(|e| WebError::Serialization(e.to_string()))
     }
@@ -258,7 +258,7 @@ mod tests {
             ErrorCategory::Internal,
         ];
 
-        // 确保所有变体都可以正确创建
+        // Ensure every variant can be created correctly.
         for category in categories {
             assert_eq!(category, category);
         }
@@ -458,7 +458,7 @@ mod tests {
             "Error 2".to_string(),
         );
 
-        // 错误 ID 应该是唯一的
+        // Error IDs should be unique.
         assert_ne!(report1.error_id, report2.error_id);
     }
 

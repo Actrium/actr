@@ -1,35 +1,35 @@
-//! 集成测试：WasmHost + WasmInstance ABI 验证
+//! Integration tests: WasmHost + WasmInstance ABI verification
 //!
-//! 使用内联 WAT（WebAssembly Text Format）构造最小 guest 模块：
-//! - bump allocator（满足 actr_alloc / actr_free 接口）
-//! - actr_init：直接返回 SUCCESS
-//! - actr_handle：将请求原样 echo 回来（用于验证内存读写正确性）
+//! Uses inline WAT (WebAssembly Text Format) to construct a minimal guest module:
+//! - bump allocator (satisfies actr_alloc / actr_free interface)
+//! - actr_init: returns SUCCESS directly
+//! - actr_handle: echoes request back as-is (verifies memory read/write correctness)
 
 #![cfg(feature = "wasm-engine")]
 
-use actr_protocol::ActrId;
 use actr_hyper::wasm::{DispatchContext, IoResult, WasmActorConfig, WasmHost};
+use actr_protocol::ActrId;
 
-// ─── 最小 guest WAT 模块 ──────────────────────────────────────────────────
+// ─── Minimal guest WAT module ──────────────────────────────────────────────────
 
-/// 返回实现了完整 actr ABI 的最小 WASM binary（echo guest）
+/// Returns the minimal WASM binary implementing the full actr ABI (echo guest)
 ///
-/// guest 行为：
-/// - `actr_alloc`：bump allocator（从 offset 4096 开始）
-/// - `actr_free`：no-op
-/// - `actr_init`：不做任何事，返回 0（SUCCESS）
-/// - `actr_handle`：将请求数据 echo 到新分配的响应缓冲区
+/// Guest behavior:
+/// - `actr_alloc`: bump allocator (starting from offset 4096)
+/// - `actr_free`: no-op
+/// - `actr_init`: does nothing, returns 0 (SUCCESS)
+/// - `actr_handle`: echoes request data to a newly allocated response buffer
 fn echo_guest_wasm() -> Vec<u8> {
     wat::parse_str(
         r#"
 (module
-  ;; 2 页内存（128 KB），对外导出
+  ;; 2 pages of memory (128 KB), exported
   (memory (export "memory") 2)
 
-  ;; heap 起始位置（前 4096 字节留给输出区缓冲）
+  ;; heap start position (first 4096 bytes reserved for output buffer)
   (global $heap (mut i32) (i32.const 4096))
 
-  ;; 内部 bump allocator
+  ;; internal bump allocator
   (func $bump (param $n i32) (result i32)
     (local $p i32)
     (local.set $p (global.get $heap))
@@ -40,50 +40,50 @@ fn echo_guest_wasm() -> Vec<u8> {
   (func (export "actr_alloc") (param $n i32) (result i32)
     (call $bump (local.get $n)))
 
-  ;; actr_free(ptr, size) — no-op（bump allocator 不回收）
+  ;; actr_free(ptr, size) -- no-op (bump allocator does not reclaim)
   (func (export "actr_free") (param $p i32) (param $n i32))
 
-  ;; asyncify 桩函数（echo guest 不触发 asyncify，但 instantiate() 要求导出）
+  ;; asyncify stub functions (echo guest does not trigger asyncify, but instantiate() requires exports)
   (func (export "asyncify_start_unwind") (param i32))
   (func (export "asyncify_stop_unwind"))
   (func (export "asyncify_start_rewind") (param i32))
   (func (export "asyncify_stop_rewind"))
 
   ;; actr_init(config_ptr, config_len) -> i32
-  ;; 此 guest 忽略配置，直接返回 0（SUCCESS）
+  ;; This guest ignores config and returns 0 (SUCCESS) directly
   (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
     (i32.const 0))
 
   ;; actr_handle(req_ptr, req_len, resp_ptr_out, resp_len_out) -> i32
-  ;; 分配与请求等长的响应缓冲区，复制请求内容（echo），写入输出指针
+  ;; Allocates response buffer equal to request length, copies request content (echo), writes output pointers
   (func (export "actr_handle")
     (param $req_ptr i32) (param $req_len i32)
     (param $resp_ptr_out i32) (param $resp_len_out i32)
     (result i32)
     (local $resp_ptr i32)
 
-    ;; 分配响应内存
+    ;; allocate response memory
     (local.set $resp_ptr (call $bump (local.get $req_len)))
 
-    ;; 复制请求到响应（echo）
+    ;; copy request to response (echo)
     (memory.copy
       (local.get $resp_ptr)
       (local.get $req_ptr)
       (local.get $req_len))
 
-    ;; 写入输出区：resp_ptr_out 和 resp_len_out（小端 i32）
+    ;; write output area: resp_ptr_out and resp_len_out (little-endian i32)
     (i32.store (local.get $resp_ptr_out) (local.get $resp_ptr))
     (i32.store (local.get $resp_len_out) (local.get $req_len))
 
-    ;; 返回 SUCCESS
+    ;; return SUCCESS
     (i32.const 0))
 )
 "#,
     )
-    .expect("WAT 解析失败")
+    .expect("WAT parse failed")
 }
 
-/// 最小合法 `WasmActorConfig`
+/// Minimal valid `WasmActorConfig`
 fn test_config() -> WasmActorConfig {
     WasmActorConfig {
         actr_type: "test-mfr:echo-actor:0.1.0".to_string(),
@@ -93,7 +93,7 @@ fn test_config() -> WasmActorConfig {
     }
 }
 
-/// Echo guest 不调用 host import，call_executor 不会被触发
+/// Echo guest does not call host imports; call_executor will not be triggered
 fn noop_ctx() -> DispatchContext {
     DispatchContext {
         self_id: ActrId::default(),
@@ -102,28 +102,31 @@ fn noop_ctx() -> DispatchContext {
     }
 }
 
-// ─── 测试用例 ─────────────────────────────────────────────────────────────────
+// ─── Test cases ─────────────────────────────────────────────────────────────────
 
-/// 场景 1：正常流程 — 编译、实例化、init、dispatch（echo）
+/// Scenario 1: normal flow -- compile, instantiate, init, dispatch (echo)
 #[tokio::test]
 async fn wasm_host_compile_and_echo() {
     let wasm_bytes = echo_guest_wasm();
 
-    let host = WasmHost::compile(&wasm_bytes).expect("编译应成功");
-    let mut instance = host.instantiate().expect("实例化应成功");
+    let host = WasmHost::compile(&wasm_bytes).expect("compile should succeed");
+    let mut instance = host.instantiate().expect("instantiate should succeed");
 
-    instance.init(&test_config()).expect("init 应成功");
+    instance.init(&test_config()).expect("init should succeed");
 
     let request = b"hello, wasm!".to_vec();
     let response = instance
         .dispatch(&request, noop_ctx(), |_| async { IoResult::Done })
         .await
-        .expect("dispatch 应成功");
+        .expect("dispatch should succeed");
 
-    assert_eq!(response, request, "echo guest 应原样返回请求数据");
+    assert_eq!(
+        response, request,
+        "echo guest should return request data as-is"
+    );
 }
 
-/// 场景 2：多次 dispatch（验证 bump allocator 不会越界）
+/// Scenario 2: multiple dispatches (verify bump allocator does not overflow)
 #[tokio::test]
 async fn wasm_host_multiple_dispatches() {
     let wasm_bytes = echo_guest_wasm();
@@ -136,31 +139,31 @@ async fn wasm_host_multiple_dispatches() {
         let resp = instance
             .dispatch(&req, noop_ctx(), |_| async { IoResult::Done })
             .await
-            .expect("每次 dispatch 应成功");
-        assert_eq!(resp, req, "第 {i} 次 dispatch 应正确 echo");
+            .expect("each dispatch should succeed");
+        assert_eq!(resp, req, "dispatch #{i} should echo correctly");
     }
 }
 
-/// 场景 3：非法 WASM binary → WasmLoadFailed
+/// Scenario 3: invalid WASM binary -> WasmLoadFailed
 #[test]
 fn wasm_host_invalid_binary() {
     let bad_bytes = b"not a wasm file";
     let result = WasmHost::compile(bad_bytes);
     assert!(
         result.is_err(),
-        "非法 WASM 字节应返回错误，实际: {result:?}"
+        "invalid WASM bytes should return error, got: {result:?}"
     );
     let err = result.unwrap_err();
     assert!(
         matches!(err, actr_hyper::wasm::WasmError::LoadFailed(_)),
-        "错误类型应为 WasmLoadFailed，实际: {err:?}"
+        "error type should be WasmLoadFailed, got: {err:?}"
     );
 }
 
-/// 场景 4：缺少必要导出函数的 WASM → WasmLoadFailed（实例化阶段）
+/// Scenario 4: WASM missing required exports -> WasmLoadFailed (at instantiation)
 #[test]
 fn wasm_host_missing_exports() {
-    // 只有 memory，没有任何 actr_* 函数
+    // Only memory, no actr_* functions
     let incomplete_wat = r#"
 (module
   (memory (export "memory") 1)
@@ -172,16 +175,16 @@ fn wasm_host_missing_exports() {
 
     assert!(
         result.is_err(),
-        "缺失导出函数应在实例化时报错，实际: {result:?}"
+        "missing exports should error at instantiation, got: {result:?}"
     );
     let err = result.unwrap_err();
     assert!(
         matches!(err, actr_hyper::wasm::WasmError::LoadFailed(_)),
-        "错误类型应为 WasmLoadFailed，实际: {err:?}"
+        "error type should be WasmLoadFailed, got: {err:?}"
     );
 }
 
-/// 场景 5：空请求（0 字节）→ dispatch 应返回空响应
+/// Scenario 5: empty request (0 bytes) -> dispatch should return empty response
 #[tokio::test]
 async fn wasm_host_empty_dispatch() {
     let wasm_bytes = echo_guest_wasm();
@@ -192,11 +195,14 @@ async fn wasm_host_empty_dispatch() {
     let response = instance
         .dispatch(&[], noop_ctx(), |_| async { IoResult::Done })
         .await
-        .expect("空请求 dispatch 应成功");
-    assert!(response.is_empty(), "空请求应返回空响应");
+        .expect("empty request dispatch should succeed");
+    assert!(
+        response.is_empty(),
+        "empty request should return empty response"
+    );
 }
 
-/// 场景 6：较大请求（16KB）→ 验证内存操作正确性
+/// Scenario 6: large request (16KB) -> verify memory operations correctness
 #[tokio::test]
 async fn wasm_host_large_dispatch() {
     let wasm_bytes = echo_guest_wasm();
@@ -208,6 +214,9 @@ async fn wasm_host_large_dispatch() {
     let resp = instance
         .dispatch(&large_req, noop_ctx(), |_| async { IoResult::Done })
         .await
-        .expect("大请求 dispatch 应成功");
-    assert_eq!(resp, large_req, "大请求 echo 内容应完全一致");
+        .expect("large request dispatch should succeed");
+    assert_eq!(
+        resp, large_req,
+        "large request echo content should match exactly"
+    );
 }

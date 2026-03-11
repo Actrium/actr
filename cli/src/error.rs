@@ -1,16 +1,16 @@
-//! 统一的CLI错误类型系统
+//! Unified CLI error type system
 //!
-//! 设计原则：
-//! 1. 语义明确：每种错误类型都有明确的使用场景
-//! 2. 避免重复：消除语义重叠的错误类型
-//! 3. 层次分明：区分系统错误vs业务错误
-//! 4. 易于调试：提供足够的上下文信息
+//! Design principles:
+//! 1. Clear semantics: each error type has a well-defined use case
+//! 2. No duplication: eliminate semantically overlapping error types
+//! 3. Layered: distinguish system errors vs. business errors
+//! 4. Easy to debug: provide sufficient context information
 
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ActrCliError {
-    // === 系统级错误 ===
+    // === System-level errors ===
     #[error("IO operation failed: {0}")]
     Io(#[from] std::io::Error),
 
@@ -23,7 +23,7 @@ pub enum ActrCliError {
     #[error("Git operation failed: {0}")]
     Git(#[from] git2::Error),
 
-    // === 配置相关错误 ===
+    // === Configuration errors ===
     #[error("Configuration error: {0}")]
     Configuration(String),
 
@@ -33,7 +33,7 @@ pub enum ActrCliError {
     #[error("Project already exists: {0}")]
     ProjectExists(String),
 
-    // === 依赖和构建错误 ===
+    // === Dependency and build errors ===
     #[error("Dependency resolution failed: {0}")]
     Dependency(String),
 
@@ -43,18 +43,18 @@ pub enum ActrCliError {
     #[error("Code generation failed: {0}")]
     CodeGeneration(String),
 
-    // === 模板和初始化错误 ===
+    // === Template and initialization errors ===
     #[error("Template rendering failed: {0}")]
     Template(#[from] handlebars::RenderError),
 
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
 
-    // === 命令执行错误 ===
+    // === Command execution errors ===
     #[error("Command execution failed: {0}")]
     Command(String),
 
-    // === 底层库错误的包装 ===
+    // === Wrapper for underlying library errors ===
     #[error("Actor framework error: {0}")]
     Actor(#[from] actr_protocol::ActrError),
 
@@ -64,34 +64,34 @@ pub enum ActrCliError {
     #[error("Configuration parsing error: {0}")]
     ConfigParsing(#[from] actr_config::ConfigError),
 
-    // === 通用错误包装器 ===
+    // === Generic error wrapper ===
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
 
-// 错误类型转换辅助
+// Error type conversion helpers
 impl ActrCliError {
-    /// 将字符串转换为配置错误
+    /// Convert a string into a configuration error
     pub fn config_error(msg: impl Into<String>) -> Self {
         Self::Configuration(msg.into())
     }
 
-    /// 将字符串转换为依赖错误
+    /// Convert a string into a dependency error
     pub fn dependency_error(msg: impl Into<String>) -> Self {
         Self::Dependency(msg.into())
     }
 
-    /// 将字符串转换为构建错误
+    /// Convert a string into a build error
     pub fn build_error(msg: impl Into<String>) -> Self {
         Self::Build(msg.into())
     }
 
-    /// 将字符串转换为命令执行错误
+    /// Convert a string into a command execution error
     pub fn command_error(msg: impl Into<String>) -> Self {
         Self::Command(msg.into())
     }
 
-    /// 检查是否为配置相关错误
+    /// Check whether this is a configuration-related error
     pub fn is_config_error(&self) -> bool {
         matches!(
             self,
@@ -99,12 +99,12 @@ impl ActrCliError {
         )
     }
 
-    /// 检查是否为网络相关错误
+    /// Check whether this is a network-related error
     pub fn is_network_error(&self) -> bool {
         matches!(self, Self::Network(_))
     }
 
-    /// 获取用户友好的错误提示
+    /// Get a user-friendly hint for this error
     pub fn user_hint(&self) -> Option<&str> {
         match self {
             Self::InvalidProject(_) => Some("💡 Use 'actr init' to initialize a new project"),
@@ -119,8 +119,8 @@ impl ActrCliError {
     }
 }
 
-/// CLI特定的Result类型
+/// CLI-specific Result type
 pub type Result<T> = std::result::Result<T, ActrCliError>;
 
-// === 错误兼容性转换 ===
-// 保证现有代码的兼容性，同时引导向新错误类型迁移
+// === Error compatibility conversions ===
+// Ensure backward compatibility while guiding migration to new error types

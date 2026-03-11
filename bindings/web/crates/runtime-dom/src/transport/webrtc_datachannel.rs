@@ -1,12 +1,12 @@
-//! WebRTC DataChannel Lane - DOM 端的 WebRTC DataChannel 传输通道
+//! WebRTC DataChannel lane for DOM-side transport.
 //!
-//! WebRTC DataChannel Lane 用于 DOM 端通过 WebRTC DataChannel 传输消息。
-//! 支持的 PayloadType：RPC_*, STREAM_* (不支持 MEDIA_RTP)
+//! Used by the DOM side to send messages over a WebRTC DataChannel.
+//! Supports `RPC_*` and `STREAM_*`, but not `MEDIA_RTP`.
 //!
-//! ## 注意事项
-//! - DataChannel 只能在 DOM 环境中使用（Service Worker 不支持 WebRTC）
-//! - 需要先建立 PeerConnection，然后创建 DataChannel
-//! - DataChannel 支持有序/无序、可靠/不可靠传输模式
+//! ## Notes
+//! - DataChannel can only be used in the DOM environment because Service Workers do not support WebRTC
+//! - A PeerConnection must be established before creating the DataChannel
+//! - DataChannel supports ordered/unordered and reliable/unreliable modes
 
 use super::lane::{DataLane, LaneResult};
 use actr_web_common::PayloadType;
@@ -21,9 +21,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, RtcDataChannel, RtcDataChannelInit, RtcDataChannelState};
 
-/// WebRTC DataChannel Lane 构建器
+/// WebRTC DataChannel lane builder.
 ///
-/// 用于创建和配置 WebRTC DataChannel Lane
+/// Creates and configures a WebRTC DataChannel lane.
 pub struct WebRtcDataChannelLaneBuilder {
     data_channel: RtcDataChannel,
     payload_type: PayloadType,
@@ -31,72 +31,71 @@ pub struct WebRtcDataChannelLaneBuilder {
 }
 
 impl WebRtcDataChannelLaneBuilder {
-    /// 创建新的 WebRTC DataChannel Lane 构建器
+    /// Create a new WebRTC DataChannel lane builder.
     ///
-    /// # 参数
-    /// - `data_channel`: RtcDataChannel 对象（从 RtcPeerConnection 获取）
-    /// - `payload_type`: 该 Lane 传输的 PayloadType
+    /// # Parameters
+    /// - `data_channel`: RtcDataChannel obtained from a RtcPeerConnection
+    /// - `payload_type`: PayloadType carried by this lane
     pub fn new(data_channel: RtcDataChannel, payload_type: PayloadType) -> Self {
         Self {
             data_channel,
             payload_type,
-            buffer_size: 256, // 默认缓冲区大小
+            buffer_size: 256, // Default buffer size.
         }
     }
 
-    /// 设置接收缓冲区大小
+    /// Set the receive buffer size.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
 
-    /// 构建 WebRTC DataChannel Lane
+    /// Build the WebRTC DataChannel lane.
     ///
-    /// # 错误
-    /// - 如果 PayloadType 不支持（MEDIA_RTP）
-    /// - 如果 DataChannel 配置失败
+    /// # Errors
+    /// - If the payload type is unsupported (`MEDIA_RTP`)
+    /// - If DataChannel setup fails
     pub async fn build(self) -> LaneResult<DataLane> {
-        // 验证 PayloadType
+        // Validate the payload type.
         if matches!(self.payload_type, PayloadType::MediaRtp) {
             return Err(WebError::Transport(
-                "WebRTC DataChannel Lane 不支持 MEDIA_RTP，请使用 MediaTrack Lane".to_string(),
+                "WebRTC DataChannel Lane does not support MEDIA_RTP; use MediaTrack Lane instead".to_string(),
             ));
         }
 
-        // 设置 DataChannel 为二进制模式
-        // 注意：RtcDataChannel 的 binary_type 默认就是 arraybuffer，无需设置
-        // 如果需要设置，使用 JS 绑定：self.data_channel.set_binary_type("arraybuffer")
+        // Configure the DataChannel for binary mode.
+        // `RtcDataChannel` already defaults to `arraybuffer`, so no explicit setting is needed.
 
-        // 创建接收通道
+        // Create the receive channel.
         let (tx, rx) = mpsc::unbounded();
         let rx = Arc::new(Mutex::new(rx));
 
-        // 设置 onmessage 回调（零拷贝优化）
+        // Install the onmessage callback with zero-copy helpers.
         let tx_clone = tx.clone();
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-            // 尝试获取 ArrayBuffer 数据
+            // Try to read ArrayBuffer data.
             if let Ok(array_buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
                 let uint8_array = js_sys::Uint8Array::new(&array_buffer);
 
-                // ✅ 零拷贝接收：1 次拷贝（JS → WASM 线性内存）
+                // Zero-copy receive with one unavoidable copy from JS into WASM memory.
                 let data = receive_zero_copy(&uint8_array);
 
-                // 解析消息头部
+                // Parse the message header.
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "WebRTC DataChannel Lane 接收消息: payload_type={}, size={} bytes",
+                        "WebRTC DataChannel Lane received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload：转移 Vec 所有权到 Bytes
+                    // Extract the payload without another copy.
                     let payload_data = extract_payload_zero_copy(data, 5);
 
-                    // 发送到通道（忽略发送失败，可能是接收端已关闭）
+                    // Send to the channel. Ignore failures if the receiver is already closed.
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
             } else {
-                log::warn!("DataChannel 接收到非 ArrayBuffer 数据，已忽略");
+                log::warn!("DataChannel received non-ArrayBuffer data; ignoring it");
             }
         }) as Box<dyn FnMut(MessageEvent)>);
 
@@ -104,11 +103,11 @@ impl WebRtcDataChannelLaneBuilder {
             .set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
         onmessage_callback.forget();
 
-        // 设置 onerror 回调
+        // Install the onerror callback.
         let label = self.data_channel.label();
         let onerror_callback = Closure::wrap(Box::new(move |e: web_sys::ErrorEvent| {
             log::error!(
-                "WebRTC DataChannel 错误 (label={}): {:?}",
+                "WebRTC DataChannel error (label={}): {:?}",
                 label,
                 e.message()
             );
@@ -118,22 +117,22 @@ impl WebRtcDataChannelLaneBuilder {
             .set_onerror(Some(onerror_callback.as_ref().unchecked_ref()));
         onerror_callback.forget();
 
-        // 设置 onclose 回调
+        // Install the onclose callback.
         let label = self.data_channel.label();
         let onclose_callback = Closure::wrap(Box::new(move |_e: JsValue| {
-            log::info!("WebRTC DataChannel 连接关闭 (label={})", label);
+            log::info!("WebRTC DataChannel closed (label={})", label);
         }) as Box<dyn FnMut(JsValue)>);
 
         self.data_channel
             .set_onclose(Some(onclose_callback.as_ref().unchecked_ref()));
         onclose_callback.forget();
 
-        // 设置 onopen 回调
+        // Install the onopen callback.
         let label = self.data_channel.label();
         let payload_type = self.payload_type;
         let onopen_callback = Closure::wrap(Box::new(move |_e: JsValue| {
             log::info!(
-                "WebRTC DataChannel 连接已建立: label={}, payload_type={:?}",
+                "WebRTC DataChannel opened: label={}, payload_type={:?}",
                 label,
                 payload_type
             );
@@ -143,7 +142,7 @@ impl WebRtcDataChannelLaneBuilder {
             .set_onopen(Some(onopen_callback.as_ref().unchecked_ref()));
         onopen_callback.forget();
 
-        // 等待 DataChannel 打开（如果还没打开）
+        // Wait for the DataChannel to open if it is not open yet.
         let dc_clone = self.data_channel.clone();
         let wait_future = async move {
             let start = js_sys::Date::now();
@@ -155,17 +154,17 @@ impl WebRtcDataChannelLaneBuilder {
 
                 if state == RtcDataChannelState::Closed || state == RtcDataChannelState::Closing {
                     return Err(WebError::Transport(
-                        "WebRTC DataChannel 连接失败或已关闭".to_string(),
+                        "WebRTC DataChannel failed or closed".to_string(),
                     ));
                 }
 
                 if js_sys::Date::now() - start > 10000.0 {
                     return Err(WebError::Transport(
-                        "WebRTC DataChannel 连接超时（10秒）".to_string(),
+                        "WebRTC DataChannel timed out after 10 seconds".to_string(),
                     ));
                 }
 
-                // 等待 50ms 后重试
+                // Wait 50 ms and try again.
                 wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _| {
                     let window = web_sys::window().unwrap();
                     window
@@ -180,7 +179,7 @@ impl WebRtcDataChannelLaneBuilder {
         wait_future.await?;
 
         log::info!(
-            "WebRTC DataChannel Lane 创建成功: label={}, payload_type={:?}",
+            "WebRTC DataChannel Lane created successfully: label={}, payload_type={:?}",
             self.data_channel.label(),
             self.payload_type
         );
@@ -193,26 +192,26 @@ impl WebRtcDataChannelLaneBuilder {
     }
 }
 
-/// DataChannel 配置辅助函数
+/// Helper to build DataChannel configuration.
 ///
-/// 根据 PayloadType 创建合适的 DataChannel 配置
+/// Creates a suitable DataChannel configuration for the given payload type.
 pub fn create_datachannel_config(payload_type: PayloadType) -> RtcDataChannelInit {
     let config = RtcDataChannelInit::new();
 
     match payload_type {
         PayloadType::RpcReliable | PayloadType::StreamReliable => {
-            // 可靠有序传输
+            // Reliable ordered delivery.
             config.set_ordered(true);
-            // max_retransmits 不设置表示无限重传
+            // Leaving max_retransmits unset means unlimited retries.
         }
         PayloadType::RpcSignal | PayloadType::StreamLatencyFirst => {
-            // 低延迟传输（允许乱序和丢包）
+            // Low-latency delivery that allows reordering and loss.
             config.set_ordered(false);
-            config.set_max_retransmits(0); // 不重传
+            config.set_max_retransmits(0); // No retransmission.
         }
         PayloadType::MediaRtp => {
-            // DataChannel 不应该用于 MEDIA_RTP
-            log::warn!("DataChannel 不应该用于 MEDIA_RTP，请使用 MediaTrack");
+            // DataChannel should not be used for MEDIA_RTP.
+            log::warn!("DataChannel should not be used for MEDIA_RTP; use MediaTrack instead");
             config.set_ordered(false);
             config.set_max_retransmits(0);
         }
@@ -228,9 +227,9 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // 注意：以下测试因 web-sys API 变更暂时禁用
-    // RtcDataChannelInit 的 getter 方法在新版本中签名已变化
-    // TODO: 更新测试以使用新的 API
+    // Note: the following tests are temporarily disabled because of web-sys API changes.
+    // The getter signatures on RtcDataChannelInit changed in newer versions.
+    // TODO: update the tests to the new API.
     /*
     #[wasm_bindgen_test]
     fn test_datachannel_config_for_reliable_types() {
@@ -255,10 +254,10 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_webrtc_datachannel_lane_rejects_media_rtp() {
-        // 注意：这个测试需要实际的 RtcPeerConnection
-        // 在真实测试环境中应该创建完整的 PeerConnection 和 DataChannel
+        // Note: this test would need a real RtcPeerConnection.
+        // In a full integration environment it should create a real PeerConnection and DataChannel.
 
-        // 这里只验证 PayloadType 验证逻辑
+        // For now, this only verifies the PayloadType validation logic.
         let payload_types = vec![
             PayloadType::RpcReliable,
             PayloadType::RpcSignal,
@@ -267,11 +266,11 @@ mod tests {
         ];
 
         for payload_type in payload_types {
-            // 验证这些类型不是 MEDIA_RTP
+            // Verify these types are not MEDIA_RTP.
             assert!(!matches!(payload_type, PayloadType::MediaRtp));
         }
 
-        // 验证 MEDIA_RTP 会被拒绝
+        // Verify that MEDIA_RTP is the rejected case.
         assert!(matches!(PayloadType::MediaRtp, PayloadType::MediaRtp));
     }
 }

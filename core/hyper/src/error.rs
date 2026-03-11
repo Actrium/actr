@@ -2,43 +2,43 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum HyperError {
-    /// 包中未找到签名 manifest section
+    /// Signed manifest section not found in package
     #[error("package manifest section not found")]
     ManifestNotFound,
 
-    /// manifest 数据格式非法
+    /// Invalid manifest data format
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),
 
-    /// binary_hash 与重算结果不符，包已被篡改
+    /// binary_hash does not match recomputed result, package has been tampered with
     #[error("binary hash mismatch: package integrity check failed")]
     BinaryHashMismatch,
 
-    /// MFR 签名验证失败
+    /// MFR signature verification failed
     #[error("signature verification failed: {0}")]
     SignatureVerificationFailed(String),
 
-    /// MFR 证书不可信（未在 actrix 注册或已吊销）
+    /// MFR certificate is untrusted (not registered with actrix or revoked)
     #[error("untrusted manufacturer: {0}")]
     UntrustedManufacturer(String),
 
-    /// AIS 注册引导失败
+    /// AIS registration bootstrap failed
     #[error("AIS bootstrap failed: {0}")]
     AisBootstrapFailed(String),
 
-    /// 存储层错误
+    /// Storage layer error
     #[error("storage error: {0}")]
     Storage(String),
 
-    /// 配置错误
+    /// Configuration error
     #[error("config error: {0}")]
     Config(String),
 
-    /// 命名空间模板变量缺失
+    /// Namespace template variable missing
     #[error("namespace template variable `{0}` not available")]
     TemplateVariable(String),
 
-    /// 运行时管理错误（spawn 失败、进程崩溃等）
+    /// Runtime management error (spawn failure, process crash, etc.)
     #[error("runtime error: {0}")]
     Runtime(String),
 

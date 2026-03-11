@@ -4,38 +4,38 @@ use tracing::{error, warn};
 
 use crate::error::{HyperError, HyperResult};
 
-/// ActrSystem 句柄 trait（Mode 1 / Mode 3）
+/// ActrSystem handle trait (Mode 1 / Mode 3)
 ///
-/// Hyper 通过此接口管理同进程内的 ActrSystem 生命周期。
-/// Mode 1（Native）：ActrSystem+Workload 编译进同一 binary，直接实现此 trait。
-/// Mode 3（WASM）：ActrSystem native shell 包装 WASM 实例后实现此 trait。
+/// Hyper manages in-process ActrSystem lifecycle through this interface.
+/// Mode 1 (Native): ActrSystem+Workload compiled into the same binary, directly implements this trait.
+/// Mode 3 (WASM): ActrSystem native shell wraps a WASM instance and implements this trait.
 #[async_trait]
 pub trait ActrSystemHandle: Send + Sync {
-    /// 启动 ActrSystem
+    /// Start the ActrSystem
     async fn start(&self) -> HyperResult<()>;
 
-    /// 优雅关闭 ActrSystem，等待 in-flight 消息处理完成
+    /// Gracefully shut down the ActrSystem, wait for in-flight messages to complete
     async fn shutdown(&self) -> HyperResult<()>;
 
-    /// 是否健康（用于 Hyper 侧监控）
+    /// Whether healthy (used for Hyper-side monitoring)
     fn is_healthy(&self) -> bool;
 
-    /// ActrSystem 唯一标识（调试用）
+    /// ActrSystem unique identifier (for debugging)
     fn id(&self) -> &str;
 }
 
-/// Mode 2（Process）子进程句柄
+/// Mode 2 (Process) child process handle
 ///
-/// Hyper 通过此句柄管理子进程的生命周期：spawn、health check、restart policy。
-/// 子进程内的 ActrSystem 直连 signaling，消息流量不经过 Hyper。
+/// Hyper manages child process lifecycle through this handle: spawn, health check, restart policy.
+/// The ActrSystem inside the child process connects directly to signaling; message traffic does not go through Hyper.
 pub struct ChildProcessHandle {
-    /// 子进程 PID
+    /// Child process PID
     pub pid: u32,
-    /// 子进程对应的 ActrType（调试/日志用）
+    /// ActrType of the child process (for debugging/logging)
     pub actr_type: String,
-    /// 子进程状态
+    /// Child process state
     pub state: ChildProcessState,
-    /// tokio 子进程句柄（持有所有权用于 wait/kill）
+    /// Tokio child process handle (owns it for wait/kill)
     pub(crate) child: Option<Mutex<tokio::process::Child>>,
 }
 
@@ -52,16 +52,16 @@ impl std::fmt::Debug for ChildProcessHandle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildProcessState {
-    /// 正在运行
+    /// Running
     Running,
-    /// 已退出，exit code
+    /// Exited with exit code
     Exited(i32),
-    /// 异常终止（信号等，无法获取退出码）
+    /// Abnormally terminated (signal, etc., no exit code available)
     Crashed,
 }
 
 impl ChildProcessHandle {
-    /// 仅用于测试或不需要真实子进程句柄的场景
+    /// For testing only or scenarios that don't need a real child process handle
     pub fn new(pid: u32, actr_type: impl Into<String>) -> Self {
         Self {
             pid,
@@ -71,7 +71,7 @@ impl ChildProcessHandle {
         }
     }
 
-    /// 从真实 tokio Child 构造
+    /// Construct from a real tokio Child
     pub fn from_child(
         pid: u32,
         actr_type: impl Into<String>,
@@ -89,9 +89,9 @@ impl ChildProcessHandle {
         self.state == ChildProcessState::Running
     }
 
-    /// 等待子进程退出，返回最终状态
+    /// Wait for the child process to exit, return the final state
     ///
-    /// 若已无 child 句柄（已被消费），直接返回当前 state。
+    /// If no child handle is available (already consumed), returns the current state directly.
     pub async fn wait(&mut self) -> HyperResult<ChildProcessState> {
         let Some(child_mutex) = &self.child else {
             return Ok(self.state.clone());
@@ -103,7 +103,7 @@ impl ChildProcessHandle {
                 let state = if let Some(code) = status.code() {
                     ChildProcessState::Exited(code)
                 } else {
-                    // 被信号终止，无退出码
+                    // terminated by signal, no exit code
                     ChildProcessState::Crashed
                 };
                 self.state = state.clone();
@@ -114,34 +114,34 @@ impl ChildProcessHandle {
                     pid = self.pid,
                     actr_type = %self.actr_type,
                     error = %e,
-                    "等待子进程退出时发生错误"
+                    "error waiting for child process to exit"
                 );
                 self.state = ChildProcessState::Crashed;
-                Err(HyperError::Runtime(format!("wait() 失败: {e}")))
+                Err(HyperError::Runtime(format!("wait() failed: {e}")))
             }
         }
     }
 
-    /// 终止子进程：先发 SIGTERM，等待最多 5 秒，超时后发 SIGKILL
+    /// Terminate child process: send SIGTERM first, wait up to 5 seconds, then SIGKILL on timeout
     pub async fn kill(&mut self) -> HyperResult<()> {
         let Some(child_mutex) = &self.child else {
-            // 已无句柄，视为已终止
+            // no handle, consider already terminated
             return Ok(());
         };
 
         let mut child = child_mutex.lock().await;
 
-        // 发送 SIGTERM（Unix）/ TerminateProcess（Windows）
+        // Send SIGTERM (Unix) / TerminateProcess (Windows)
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;
-            // 向子进程发 SIGTERM
+            // send SIGTERM to child process
             if let Err(e) = nix_kill(self.pid, libc_sigterm()) {
                 warn!(
                     pid = self.pid,
                     actr_type = %self.actr_type,
                     error = %e,
-                    "发送 SIGTERM 失败，直接 SIGKILL"
+                    "SIGTERM failed, falling back to SIGKILL"
                 );
                 let _ = child.kill().await;
                 self.state = ChildProcessState::Crashed;
@@ -151,19 +151,13 @@ impl ChildProcessHandle {
             warn!(
                 pid = self.pid,
                 actr_type = %self.actr_type,
-                "已发送 SIGTERM，等待子进程优雅退出（最多 5 秒）"
+                "SIGTERM sent, waiting for graceful exit (up to 5 seconds)"
             );
 
-            // 等待最多 5 秒
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                child.wait(),
-            )
-            .await
-            {
+            // wait up to 5 seconds
+            match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
                 Ok(Ok(status)) => {
-                    let code = status.code()
-                        .or_else(|| status.signal().map(|s| -s));
+                    let code = status.code().or_else(|| status.signal().map(|s| -s));
                     self.state = match code {
                         Some(0) => ChildProcessState::Exited(0),
                         Some(c) => ChildProcessState::Exited(c),
@@ -173,7 +167,7 @@ impl ChildProcessHandle {
                         pid = self.pid,
                         actr_type = %self.actr_type,
                         state = ?self.state,
-                        "子进程在 SIGTERM 后已退出"
+                        "child process exited after SIGTERM"
                     );
                     return Ok(());
                 }
@@ -181,24 +175,24 @@ impl ChildProcessHandle {
                     error!(
                         pid = self.pid,
                         error = %e,
-                        "等待子进程退出时出错，升级为 SIGKILL"
+                        "error waiting for child exit, escalating to SIGKILL"
                     );
                 }
                 Err(_timeout) => {
                     warn!(
                         pid = self.pid,
                         actr_type = %self.actr_type,
-                        "SIGTERM 后 5 秒未退出，升级为 SIGKILL"
+                        "no exit within 5 seconds after SIGTERM, escalating to SIGKILL"
                     );
                 }
             }
 
-            // SIGTERM 超时，发 SIGKILL
+            // SIGTERM timed out, send SIGKILL
             if let Err(e) = child.kill().await {
                 error!(
                     pid = self.pid,
                     error = %e,
-                    "SIGKILL 失败"
+                    "SIGKILL failed"
                 );
             }
             let _ = child.wait().await;
@@ -210,11 +204,11 @@ impl ChildProcessHandle {
             warn!(
                 pid = self.pid,
                 actr_type = %self.actr_type,
-                "非 Unix 平台，直接 kill 子进程"
+                "non-Unix platform, directly killing child process"
             );
             if let Err(e) = child.kill().await {
-                error!(pid = self.pid, error = %e, "kill 子进程失败");
-                return Err(HyperError::Runtime(format!("kill 失败: {e}")));
+                error!(pid = self.pid, error = %e, "failed to kill child process");
+                return Err(HyperError::Runtime(format!("kill failed: {e}")));
             }
             let _ = child.wait().await;
             self.state = ChildProcessState::Crashed;
@@ -223,21 +217,21 @@ impl ChildProcessHandle {
         Ok(())
     }
 
-    /// 非阻塞检查进程是否还在运行
+    /// Non-blocking check whether the process is still running
     ///
-    /// 使用 `try_wait()` 轮询，不阻塞当前线程。
+    /// Uses `try_wait()` to poll without blocking the current thread.
     pub fn try_check_alive(&mut self) -> bool {
         let Some(child_mutex) = &self.child else {
             return self.state == ChildProcessState::Running;
         };
 
-        // try_lock 失败说明另一个任务正在 wait，保守返回 true
+        // try_lock failure means another task is waiting, conservatively return true
         let Ok(mut child) = child_mutex.try_lock() else {
             return true;
         };
 
         match child.try_wait() {
-            Ok(None) => true, // 进程仍在运行
+            Ok(None) => true, // process still running
             Ok(Some(status)) => {
                 self.state = if let Some(code) = status.code() {
                     ChildProcessState::Exited(code)
@@ -250,7 +244,7 @@ impl ChildProcessHandle {
                 error!(
                     pid = self.pid,
                     error = %e,
-                    "try_wait() 出错，保守认为进程已退出"
+                    "try_wait() error, conservatively assuming process has exited"
                 );
                 self.state = ChildProcessState::Crashed;
                 false
@@ -259,10 +253,10 @@ impl ChildProcessHandle {
     }
 }
 
-/// Unix 平台：通过 libc 发送 SIGTERM
+/// Unix platform: send SIGTERM via libc
 #[cfg(unix)]
 fn nix_kill(pid: u32, sig: i32) -> Result<(), String> {
-    // SAFETY: kill(2) 是标准 POSIX 系统调用
+    // SAFETY: kill(2) is a standard POSIX system call
     let ret = unsafe { libc::kill(pid as i32, sig) };
     if ret == 0 {
         Ok(())
@@ -276,15 +270,15 @@ fn libc_sigterm() -> i32 {
     libc::SIGTERM
 }
 
-/// Mode 3（WASM）实例句柄
+/// Mode 3 (WASM) instance handle
 ///
-/// ActrSystem native shell 创建并持有此句柄。
-/// 热更新时，旧实例卸载后创建新实例句柄。
+/// Created and held by the ActrSystem native shell.
+/// On hot update, the old instance is unloaded and a new instance handle is created.
 #[derive(Debug)]
 pub struct WasmInstanceHandle {
-    /// WASM 实例唯一 ID（每次 load 生成）
+    /// WASM instance unique ID (generated on each load)
     pub instance_id: String,
-    /// 对应的 ActrType
+    /// Corresponding ActrType
     pub actr_type: String,
 }
 

@@ -13,7 +13,7 @@ let streamClient: StreamClientActorRef | null = null;
 let started = false;
 
 function appendLog(message: string): void {
-    const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
     logEl.textContent += `[${ts}] ${message}\n`;
     logEl.scrollTop = logEl.scrollHeight;
 }
@@ -59,7 +59,7 @@ async function startStream(): Promise<void> {
         appendLog(`start_stream response: accepted=${response.accepted} message=${response.message}`);
     } catch (error) {
         appendLog(`start_stream failed: ${(error as Error).message}`);
-        setStatus(`启动失败: ${(error as Error).message}`, false);
+        setStatus(`Start failed: ${(error as Error).message}`, false);
     } finally {
         started = false;
         startBtn.disabled = false;
@@ -69,13 +69,13 @@ async function startStream(): Promise<void> {
 async function init(): Promise<void> {
     readQuery();
     setupSwLogListener();
-    setStatus('连接中...', true);
+    setStatus('Connecting...', true);
     appendLog('initializing actor...');
 
     try {
         actor = await createActor(actrConfig);
         streamClient = new StreamClientActorRef(actor);
-        setStatus('✅ 已连接', true);
+        setStatus('✅ Connected', true);
         appendLog('actor initialized');
         startBtn.disabled = false;
 
@@ -88,7 +88,7 @@ async function init(): Promise<void> {
             }, 4000);
         }
     } catch (error) {
-        setStatus(`❌ 连接失败: ${(error as Error).message}`, false);
+        setStatus(`❌ Connection failed: ${(error as Error).message}`, false);
         appendLog(`init failed: ${(error as Error).message}`);
     }
 }

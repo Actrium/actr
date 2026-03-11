@@ -1,11 +1,11 @@
-//! Echo Client WASM - 本地 Handler + SW Runtime
+//! Echo Client WASM - local handler + SW runtime
 //!
-//! 演示 local handler 模式（对应 Kotlin 的 UnifiedHandler + ContextBridge）：
-//! - 注册 SendEcho 本地服务 handler
-//! - handler 通过 `ctx.discover()` 发现远程 Echo Server
-//! - handler 通过 `ctx.call_raw()` 将请求转发给远程并获取响应
+//! Demonstrates the local-handler pattern:
+//! - register the local `SendEcho` service handler
+//! - use `ctx.discover()` to find the remote Echo server
+//! - forward the request through `ctx.call_raw()` and return the response
 //!
-//! ## 架构
+//! ## Architecture
 //!
 //! ```text
 //! DOM (UI)
@@ -28,10 +28,10 @@ use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 
-// 重新导出 SW Runtime 的公共 API
+// Re-export the public SW runtime API.
 pub use actr_runtime_sw::*;
 
-/// WASM 初始化入口
+/// WASM initialization entry point
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
@@ -42,10 +42,10 @@ pub fn init() {
     log::info!("  - Local Service: echo.SendEcho");
 }
 
-/// 注册本地 SendEcho 服务 handler
+/// Register the local `SendEcho` service handler.
 ///
-/// handler 分发 RPC 请求到 SendEcho 服务的具体方法：
-/// - `echo.SendEcho.SendEcho`: 发现远程 EchoService 并转发请求
+/// The handler dispatches RPC requests to the concrete `SendEcho` methods:
+/// - `echo.SendEcho.SendEcho`: discovers the remote `EchoService` and forwards the request
 #[wasm_bindgen]
 pub fn register_echo_client_handler() {
     log::info!("Registering local SendEcho handler...");

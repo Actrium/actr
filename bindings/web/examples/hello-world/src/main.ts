@@ -1,19 +1,19 @@
 /**
  * Actor-RTC Web Hello World Example
  *
- * 演示如何使用 @actr/web SDK 调用远程 Echo 服务
+ * Demonstrates how to use the @actr/web SDK to call a remote Echo service.
  *
- * 功能:
- * 1. 连接到 signaling server
- * 2. 通过 WebRTC DataChannel 调用 Echo 服务
- * 3. 显示请求/响应结果
+ * Features:
+ * 1. Connect to the signaling server
+ * 2. Invoke Echo service via a WebRTC DataChannel
+ * 3. Display request/response results
  */
 
 import { createActor, Actor } from '@actr/web';
 import { actrConfig, EchoServiceActorRef } from './generated';
 import { EchoRequest, EchoResponse } from './generated/remote/echo-echo-server/echo';
 
-// DOM 元素
+// DOM elements
 const statusEl = document.getElementById('status')!;
 const sendBtn = document.getElementById('sendBtn') as HTMLButtonElement;
 const resultEl = document.getElementById('result')!;
@@ -22,7 +22,7 @@ let actor: Actor | null = null;
 let echoService: EchoServiceActorRef | null = null;
 
 /**
- * 在页面上显示日志
+ * Display logs on the page
  */
 function log(message: string): void {
   console.log(`[HelloWorld] ${message}`);
@@ -30,101 +30,100 @@ function log(message: string): void {
 }
 
 /**
- * 初始化客户端
+ * Initialize the client
  */
 async function init() {
   try {
-    statusEl.textContent = '连接中...';
+    statusEl.textContent = 'Connecting...';
     statusEl.className = 'status connecting';
 
-    // 使用统一 Actor API 创建实例
+    // Create an actor using the shared Actor API
     actor = await createActor({
       ...actrConfig,
       serviceWorkerPath: '/actor.sw.js?v=7',
       debug: true,
     });
 
-    // 创建类型安全的 Echo 服务引用
+    // Create a type-safe Echo service reference
     echoService = new EchoServiceActorRef(actor);
 
-    statusEl.textContent = '✅ 已连接';
+    statusEl.textContent = '✅ Connected';
     statusEl.className = 'status connected';
     sendBtn.disabled = false;
 
-    // 监听连接状态
+    // Monitor connection state
     actor.on('stateChange', (state) => {
       console.log('Connection state:', state);
-      statusEl.textContent = `连接状态: ${state}`;
+      statusEl.textContent = `Connection status: ${state}`;
     });
 
     console.log('Client initialized successfully');
 
-    // 自动测试: 5 秒后自动发送 echo 消息
-    log('⏳ 将在 5 秒后自动发送 Echo 测试消息...');
+    // Auto-test: send an echo message after 5 seconds
+    log('⏳ Will automatically send Echo test message in 5s...');
     setTimeout(async () => {
-      log('🚀 自动发送 Echo 测试消息...');
+      log('🚀 Automatically sending Echo test message...');
       await sendEcho();
     }, 5000);
   } catch (error) {
     console.error('Failed to initialize client:', error);
-    statusEl.textContent = `❌ 连接失败: ${(error as Error).message}`;
+    statusEl.textContent = `❌ Connection failed: ${(error as Error).message}`;
     statusEl.className = 'status error';
   }
 }
 
 /**
- * 发送 Echo 消息
+ * Send an Echo message
  *
- * 演示两种调用方式:
- * 1. 使用 ActorRef 的类型安全方法
- * 2. 使用 callRaw 的底层方法
+ * Demonstrates two invocation paths:
+ * 1. Type-safe method from `ActorRef`
+ * 2. Lower-level `callRaw` (when the ActorRef is unavailable)
  */
 async function sendEcho() {
   if (!actor || !echoService) {
-    resultEl.textContent = '客户端未初始化';
+    resultEl.textContent = 'Client is not initialized';
     return;
   }
 
   try {
     sendBtn.disabled = true;
-    resultEl.textContent = '发送中...';
+    resultEl.textContent = 'Sending...';
 
     const message = `Hello from Actor-RTC Web! (${new Date().toLocaleTimeString()})`;
 
-    // 方式 1: 使用类型安全的 ActorRef (推荐)
+    // Option 1: use the type-safe ActorRef (recommended)
     const response = await echoService.echo({ message });
 
-    // 方式 2: 使用底层 callRaw (如果 ActorRef 不可用时)
+    // Option 2: the low-level callRaw (when the ActorRef is unavailable)
     // const request: EchoRequest = { message };
     // const encoded = EchoRequest.encode(request).finish();
     // const responseData = await client.callRaw("echo.EchoService.Echo", encoded);
     // const response: EchoResponse = EchoResponse.decode(responseData);
 
     resultEl.innerHTML = `
-      <strong>发送:</strong> ${message}<br>
-      <strong>回复:</strong> ${response.reply}<br>
-      <strong>时间戳:</strong> ${new Date(Number(response.timestamp) * 1000).toLocaleString()}
+      <strong>Sent:</strong> ${message}<br>
+      <strong>Reply:</strong> ${response.reply}<br>
+      <strong>Timestamp:</strong> ${new Date(Number(response.timestamp) * 1000).toLocaleString()}
     `;
 
     console.log('Echo response:', response);
   } catch (error) {
     console.error('Failed to send echo:', error);
-    resultEl.textContent = `错误: ${(error as Error).message}`;
+    resultEl.textContent = `Error: ${(error as Error).message}`;
   } finally {
     sendBtn.disabled = false;
   }
 }
 
-// 事件监听
+// Event listeners
 sendBtn.addEventListener('click', sendEcho);
 
-// 页面卸载时清理
+// Cleanup on page unload
 window.addEventListener('beforeunload', async () => {
   if (actor) {
     await actor.close();
   }
 });
 
-// 启动应用
+// Start the application
 init();
-

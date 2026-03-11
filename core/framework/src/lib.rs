@@ -129,7 +129,7 @@ mod workload;
 pub mod util;
 
 // Test helpers (lightweight Context implementation)
-// 仅在 test-utils feature 下编译（包含 uuid v4 生成，不兼容 wasm32 target）
+// Only compiled under the test-utils feature (includes uuid v4, incompatible with wasm32 target)
 #[cfg(feature = "test-utils")]
 pub mod test_support;
 

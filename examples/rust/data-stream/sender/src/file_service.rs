@@ -1,7 +1,7 @@
-//! # File 用户业务逻辑实现
+//! # File [...]
 //!
-//! 这个文件是由 `actr gen` 命令自动生成的用户代码框架。
-//! 请在这里实现您的具体业务逻辑。
+//! [...] `actr gen` [...]。
+//! [...]。
 
 use crate::generated::{
     file_transfer::*, local_file::*, local_file_service_actor::LocalFileServiceHandler,

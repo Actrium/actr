@@ -1,78 +1,78 @@
-# Actor-RTC Web 文档
+# Actor-RTC Web Documentation
 
-**Actor-RTC Web** 是 Actor-RTC 框架的浏览器端实现，基于 WebAssembly 和 Service Worker 技术，提供与原生版本一致的 Actor 模型编程体验。
-
----
-
-## 📖 用户文档
-
-面向使用 Actor-RTC Web 构建应用的开发者。
-
-### 快速开始
-
-- **[快速开始指南](./getting-started.md)** ⭐ 推荐先读
-  - 客户端模式：调用远程 Actor 服务
-  - Runtime 模式：浏览器内运行 Actor Runtime
-  - React 集成和完整示例
-
-### 故障排查
-
-- **[故障排查指南](./troubleshooting.md)**
-  - 常见问题和解决方案
-  - 调试技巧
-  - 性能优化建议
+**Actor-RTC Web** is the browser implementation of the Actor-RTC framework. It builds on WebAssembly and Service Worker primitives to provide an Actor-model programming experience that matches the native runtime closely.
 
 ---
 
-## 📋 需求与规划文档
+## 📖 User Documentation
 
-项目需求、目标和规划文档：
+These documents target developers building applications with Actor-RTC Web.
 
-- **[Web 适配需求](./requirements.md)** - 完整功能需求和架构设计
+### Getting Started
 
----
+- **[Getting Started Guide](./getting-started.md)** ⭐ recommended first
+  - Client mode for calling remote actors
+  - Runtime mode for running an Actor runtime in the browser
+  - React integration and end-to-end examples
 
-## 🏗️ 架构文档
+### Troubleshooting
 
-面向框架贡献者和希望深入了解内部实现的开发者。
-
-### 核心设计
-
-进入 **[architecture/](./architecture/)** 目录查看完整架构文档：
-
-1. **[架构总览](./architecture/overview.md)** - 双进程模型和核心组件
-2. **[双层架构设计](./architecture/dual-layer.md)** - State Path vs Fast Path
-3. **[API 层设计](./architecture/api-layer.md)** - Gate/Context/ActrRef
-4. **[技术决策记录](./architecture/decisions.md)** - 9 个关键技术决策 (TDR)
-5. **[完成度评估](./architecture/completion-status.md)** - 相对于 actr Native 的完成度 (78%)
+- **[Troubleshooting Guide](./troubleshooting.md)**
+  - Common issues and fixes
+  - Debugging techniques
+  - Performance recommendations
 
 ---
 
-## 🚀 快速预览
+## 📋 Requirements and Planning
 
-### 基础用法
+Project requirements, goals, and planning documents:
+
+- **[Web Requirements](./requirements.md)** - full functional requirements and architecture notes
+
+---
+
+## 🏗️ Architecture
+
+These documents target framework contributors and readers who want to understand the internal design.
+
+### Core Design
+
+See **[architecture/](./architecture/)** for the full architecture set:
+
+1. **[Architecture Overview](./architecture/overview.zh.md)** - dual-process model and core components
+2. **[Dual-Layer Architecture](./architecture/dual-layer.zh.md)** - State Path vs Fast Path
+3. **[API Layer Design](./architecture/api-layer.zh.md)** - Gate, Context, and ActrRef
+4. **[Technical Decisions](./architecture/decisions.zh.md)** - nine key TDRs
+5. **[Completion Status](./architecture/completion-status.zh.md)** - parity against native actr
+
+---
+
+## 🚀 Quick Preview
+
+### Basic Usage
 
 ```typescript
 import { createActor } from '@actr/web';
 
-// 创建 Actor
+// Create an actor
 const actor = await createActor({
   signalingUrl: 'wss://signal.example.com',
   realm: 'demo',
 });
 
-// 调用远端 Actor
+// Call a remote actor
 const response = await actor.call('echo-service', 'sendEcho', {
   message: 'Hello, Actor-RTC!',
 });
 ```
 
-### Runtime 模式（高级）
+### Runtime Mode (Advanced)
 
-在浏览器中运行完整的 Actor Runtime（Service Worker + DOM 双进程架构）：
+Run the full Actor runtime inside the browser with a Service Worker plus DOM split-process architecture:
 
 ```rust
-// Service Worker 侧
+// Service Worker side
 use actr_runtime_sw::*;
 
 let manager = Arc::new(PeerTransport::new(...));
@@ -81,7 +81,7 @@ let dispatcher = Arc::new(InboundPacketDispatcher::new(mailbox));
 ```
 
 ```rust
-// DOM 侧
+// DOM side
 use actr_runtime_dom::*;
 
 let registry = Arc::new(StreamHandlerRegistry::new());
@@ -90,27 +90,27 @@ let receiver = Arc::new(WebRtcDataChannelReceiver::new(registry));
 
 ---
 
-## 📊 当前状态
+## 📊 Current Status
 
-| 维度 | 完成度 | 说明 |
-|------|--------|------|
-| 核心架构层 | 85% | Transport + Message + 完整传输栈 |
-| 持久化与调度 | 95% | Mailbox 完成，Scheduler 已实现 |
-| Fast Path 支持 | 50% | 框架完成，集成待完善 |
-| 整体完成度 | **78%** | 接近 MVP |
+| Area | Completion | Notes |
+|------|------------|-------|
+| Core architecture | 85% | Transport, Message, and full transport stack |
+| Persistence and scheduling | 95% | Mailbox complete, Scheduler implemented |
+| Fast Path support | 50% | Framework complete, integration still in progress |
+| Overall | **78%** | Close to MVP |
 
-详见 [完成度评估](./architecture/completion-status.md)。
+See [Completion Status](./architecture/completion-status.zh.md) for details.
 
 ---
 
-## 🔗 相关资源
+## 🔗 Related Resources
 
-- **示例代码**: `../examples/`
-- **Crate 源码**: `../crates/`
-- **原型实现**: `/d/actor-rtc/actr/` (Native Rust)
+- **Examples**: `../examples/`
+- **Crates**: `../crates/`
+- **Native prototype**: `/d/actor-rtc/actr/`
 - **GitHub**: https://github.com/actor-rtc/actor-rtc
 
 ---
 
-**维护者**: Actor-RTC Team
-**最后更新**: 2026-02-28
+**Maintainer**: Actor-RTC Team
+**Last updated**: 2026-02-28

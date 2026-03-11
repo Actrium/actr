@@ -1,10 +1,10 @@
-//! 最小 asyncify 测试 guest
+//! Minimal asyncify test guest
 //!
 //! host import: host_get_value(x: i32) -> i32
-//! 模拟一个需要"异步 IO"才能得到值的 host 调用。
+//! Simulates a host call that requires "async IO" to obtain a value.
 //!
-//! compute(x) 调用 host_get_value(x)，然后将返回值与 x 相加。
-//! 验证：compute(5) 当 host 返回 10（即 x*2）时应得 15。
+//! compute(x) calls host_get_value(x), then adds the return value to x.
+//! Verification: compute(5) should yield 15 when host returns 10 (i.e. x*2).
 
 #[link(wasm_import_module = "env")]
 extern "C" {

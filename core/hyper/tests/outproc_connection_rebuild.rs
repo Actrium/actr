@@ -5,20 +5,15 @@
 //! - Rebuilding peer connections after failure
 //! - Connection cleanup and state management
 
-mod common;
-
-use actr_protocol::RpcEnvelope;
 use actr_hyper::outbound::PeerGate;
+use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 use actr_hyper::transport::connection_event::{
     ConnectionEvent, ConnectionState as TransportConnectionState,
 };
-use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
-};
+use actr_hyper::transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport};
+use actr_protocol::RpcEnvelope;
 use std::sync::Arc;
 use std::time::Duration;
-
-use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 
 // ========== Tests ==========
 

@@ -1,26 +1,24 @@
-//! WASM actor 端到端集成测试
+//! WASM actor end-to-end integration tests
 //!
-//! 验证完整调用链：
-//! host (WasmHost/WasmInstance) → actr_handle → WasmContext::call_raw()
-//!                            → asyncify unwind → drive loop → mock IO
-//!                            → asyncify rewind → 返回响应
+//! Validates the complete call chain:
+//! host (WasmHost/WasmInstance) -> actr_handle -> WasmContext::call_raw()
+//!                            -> asyncify unwind -> drive loop -> mock IO
+//!                            -> asyncify rewind -> return response
 //!
-//! # 测试场景
+//! # Test scenarios
 //!
-//! 1. **无 IO 的简单调用**：handler 直接返回响应，不触发 asyncify
-//! 2. **触发 asyncify 的 call_raw**：handler 调用 `ctx.call_raw()`，
-//!    host mock 返回 payload 的 2 倍值，验证 asyncify 挂起/恢复正确
+//! 1. **Simple call without IO**: handler returns response directly, no asyncify triggered
+//! 2. **call_raw triggering asyncify**: handler calls `ctx.call_raw()`,
+//!    host mock returns 2x payload value, verifies correct asyncify suspend/resume
 
 #![cfg(feature = "wasm-engine")]
 
 include!("wasm_actor_fixture.rs");
 
-use actr_protocol::{prost::Message as ProstMessage, ActrId, RpcEnvelope};
-use actr_hyper::{
-    wasm::{DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmHost},
-};
+use actr_hyper::wasm::{DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmHost};
+use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
-// ─── 辅助：构造测试用 RpcEnvelope bytes ──────────────────────────────────────
+// ─── Helper: build test RpcEnvelope bytes ──────────────────────────────────────
 
 fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
     let envelope = RpcEnvelope {
@@ -31,7 +29,7 @@ fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
     envelope.encode_to_vec()
 }
 
-// ─── 辅助：构造 DispatchContext ──────────────────────────────────────────────
+// ─── Helper: build DispatchContext ──────────────────────────────────────────────
 
 fn test_ctx() -> DispatchContext {
     DispatchContext {
@@ -41,7 +39,7 @@ fn test_ctx() -> DispatchContext {
     }
 }
 
-// ─── 测试 1：简单路由不存在，返回错误 ────────────────────────────────────────
+// ─── Test 1: unknown route returns error ────────────────────────────────────────
 
 #[tokio::test]
 async fn wasm_actor_unknown_route_returns_error() {
@@ -58,17 +56,17 @@ async fn wasm_actor_unknown_route_returns_error() {
 
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
 
-    // 这个路由不存在，应该返回错误（dispatch 返回 Err，actr_handle 返回 HANDLE_FAILED）
+    // This route does not exist; should return error (dispatch returns Err, actr_handle returns HANDLE_FAILED)
     let result = instance
         .dispatch(&req_bytes, test_ctx(), |_pending| async { IoResult::Done })
         .await;
 
-    // 应该失败（WASM 返回 HANDLE_FAILED 错误码）
-    assert!(result.is_err(), "未知路由应返回错误");
-    tracing::info!("✅ 未知路由返回错误验证通过");
+    // Should fail (WASM returns HANDLE_FAILED error code)
+    assert!(result.is_err(), "unknown route should return error");
+    tracing::info!("unknown route error verified");
 }
 
-// ─── 测试 2：触发 asyncify 的 call_raw 调用 ──────────────────────────────────
+// ─── Test 2: call_raw triggering asyncify ──────────────────────────────────
 
 #[tokio::test]
 async fn wasm_actor_call_raw_triggers_asyncify() {
@@ -83,43 +81,48 @@ async fn wasm_actor_call_raw_triggers_asyncify() {
     };
     instance.init(&config).expect("init failed");
 
-    // 发送 x = 7（4 字节 little-endian i32）
+    // Send x = 7 (4-byte little-endian i32)
     let x: i32 = 7;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    // call_executor：处理 WASM 发出的 call_raw 请求
-    // 期望收到 route_key = "test/double_impl"，payload = x 的 bytes
-    // 返回 x * 2 的 bytes
+    // call_executor: handles call_raw requests from WASM
+    // Expects route_key = "test/double_impl", payload = x's bytes
+    // Returns x * 2 bytes
     let result = instance
         .dispatch(&req_bytes, test_ctx(), |pending| async move {
             match pending {
-                PendingCall::CallRaw { route_key, payload, .. } => {
-                    assert_eq!(route_key, "test/double_impl", "route_key 不匹配");
-                    assert_eq!(payload.len(), 4, "payload 应为 4 字节");
+                PendingCall::CallRaw {
+                    route_key, payload, ..
+                } => {
+                    assert_eq!(route_key, "test/double_impl", "route_key mismatch");
+                    assert_eq!(payload.len(), 4, "payload should be 4 bytes");
 
                     let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                    assert_eq!(val, 7, "WASM 应传入 x=7");
+                    assert_eq!(val, 7, "WASM should pass x=7");
 
-                    // mock IO：返回 x * 2
+                    // mock IO: return x * 2
                     let doubled = (val * 2).to_le_bytes().to_vec();
-                    tracing::info!(val, doubled = val * 2, "mock IO 完成");
+                    tracing::info!(val, doubled = val * 2, "mock IO done");
                     IoResult::Bytes(doubled)
                 }
-                other => panic!("期望 PendingCall::CallRaw，得到 {:?}", std::mem::discriminant(&other)),
+                other => panic!(
+                    "expected PendingCall::CallRaw, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
             }
         })
         .await
-        .expect("dispatch 失败");
+        .expect("dispatch failed");
 
-    // 响应应为 x * 2 = 14
-    assert_eq!(result.len(), 4, "响应应为 4 字节");
+    // Response should be x * 2 = 14
+    assert_eq!(result.len(), 4, "response should be 4 bytes");
     let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
-    assert_eq!(resp_val, 14, "响应值应为 7 * 2 = 14");
+    assert_eq!(resp_val, 14, "response value should be 7 * 2 = 14");
 
-    tracing::info!(resp_val, "✅ WASM actor asyncify call_raw 端到端验证通过");
+    tracing::info!(resp_val, "WASM actor asyncify call_raw e2e verified");
 }
 
-// ─── 测试 3：多次 dispatch，asyncify data buffer 在多次调用间正确重置 ─────────
+// ─── Test 3: multiple dispatches, asyncify data buffer correctly resets between calls ─────────
 
 #[tokio::test]
 async fn wasm_actor_multiple_dispatches() {
@@ -149,11 +152,11 @@ async fn wasm_actor_multiple_dispatches() {
                 }
             })
             .await
-            .expect("dispatch 失败");
+            .expect("dispatch failed");
 
         let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
-        assert_eq!(resp_val, x * 2, "dispatch({x}) 应返回 {}", x * 2);
+        assert_eq!(resp_val, x * 2, "dispatch({x}) should return {}", x * 2);
     }
 
-    tracing::info!("✅ 多次 dispatch 验证通过");
+    tracing::info!("multiple dispatch verified");
 }

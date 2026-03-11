@@ -1,7 +1,7 @@
-//! DestTransport - 单个目标的传输层管理器
+//! Transport manager for a single destination.
 //!
-//! 管理到特定 Dest 的所有连接和消息路由
-//! 实现事件驱动模式，零轮询
+//! Manages all connections and message routing for one `Dest` using an
+//! event-driven model with no polling.
 
 use super::wire_handle::WireHandle;
 use super::wire_pool::WirePool;
@@ -9,32 +9,32 @@ use actr_web_common::{ConnType, Dest, PayloadType, WebError, WebResult};
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// DestTransport - 单个目标的传输层管理器
+/// Transport manager for a single destination.
 ///
-/// 核心职责：
-/// - 管理到特定 Dest 的所有连接（WebSocket + WebRTC）
-/// - 后台并发建立连接（饱和连接模式）
-/// - 事件驱动等待连接状态
-/// - 缓存 WireHandle 内的 Lanes
-/// - WirePool 处理优先级选择
+/// Responsibilities:
+/// - Manage all connections to one `Dest` (`WebSocket` + `WebRTC`)
+/// - Start connection attempts concurrently in the background
+/// - Wait for connection readiness in an event-driven way
+/// - Reuse cached lanes stored inside `WireHandle`
+/// - Delegate connection priority selection to `WirePool`
 pub struct DestTransport {
-    /// 目标
+    /// Destination.
     dest: Dest,
 
-    /// 连接管理器
+    /// Connection manager.
     wire_pool: Arc<WirePool>,
 }
 
 impl DestTransport {
-    /// 创建新的 DestTransport
+    /// Create a new `DestTransport`.
     ///
-    /// # 参数
-    /// - `dest`: 目标
-    /// - `connections`: 预创建的连接列表（WebSocket/WebRTC），可为空
+    /// # Parameters
+    /// - `dest`: destination
+    /// - `connections`: pre-created connection list (`WebSocket`/`WebRTC`), possibly empty
     pub async fn new(dest: Dest, connections: Vec<WireHandle>) -> WebResult<Self> {
         let wire_pool = Arc::new(WirePool::new());
 
-        // 后台并发启动所有连接任务
+        // Start all connection tasks concurrently in the background.
         log::info!("[{:?}] Starting connection tasks...", dest);
         for conn in connections {
             wire_pool.add_connection(conn);
@@ -43,19 +43,21 @@ impl DestTransport {
         Ok(Self { dest, wire_pool })
     }
 
-    /// 获取 WirePool 引用
+    /// Get the WirePool reference.
     ///
-    /// 用于在连接建立后从外部注入新的 WireHandle（例如 DOM 传入 MessagePort 后）。
+    /// This allows external code to inject a new `WireHandle` after a
+    /// connection becomes available, for example when the DOM passes in a
+    /// `MessagePort`.
     pub fn wire_pool(&self) -> &Arc<WirePool> {
         &self.wire_pool
     }
 
-    /// 发送消息
+    /// Send a message.
     ///
-    /// 核心设计：事件驱动等待
-    /// - 如果连接可用，立即发送
-    /// - 如果不可用，等待连接状态变更（通过 watch channel）
-    /// - WirePool 已经处理优先级，只需要按顺序尝试 DataLane Types
+    /// Event-driven behavior:
+    /// - If a connection is available, send immediately
+    /// - Otherwise wait for connection state changes through the watcher channel
+    /// - `WirePool` already handles priority, so this method only tries lane types in order
     pub async fn send(&self, payload_type: PayloadType, data: &[u8]) -> WebResult<()> {
         log::debug!(
             "[{:?}] Sending message: type={:?}, size={}",
@@ -64,7 +66,7 @@ impl DestTransport {
             data.len()
         );
 
-        // 1. 确定需要的连接类型（简化版本：WebRTC 优先）
+        // 1. Determine candidate connection types (simplified: WebRTC first).
         let conn_types = self.get_conn_types_for(payload_type);
 
         if conn_types.is_empty() {
@@ -74,24 +76,24 @@ impl DestTransport {
             )));
         }
 
-        // 2. 订阅连接状态变更
+        // 2. Subscribe to connection state changes.
         let mut watcher = self.wire_pool.subscribe_changes();
 
         loop {
-            // 3. 检查当前可用连接（快照）
+            // 3. Check the current ready connections snapshot.
             let ready_set = watcher.borrow_and_update();
 
             log::trace!("[{:?}] Available connections: {:?}", self.dest, ready_set);
 
-            // 4. 按优先级尝试每种连接类型
+            // 4. Try each connection type in priority order.
             for &conn_type in &conn_types {
-                // 检查此连接是否就绪
+                // Skip connections that are not ready yet.
                 if !ready_set.contains(&conn_type) {
                     log::trace!("[{:?}] {:?} not ready, trying next", self.dest, conn_type);
                     continue;
                 }
 
-                // 获取连接并创建/获取 Lane
+                // Fetch the connection and build or reuse its lane.
                 if let Some(conn) = self.wire_pool.get_connection(conn_type).await {
                     match conn.get_lane(payload_type).await {
                         Ok(lane) => {
@@ -102,7 +104,7 @@ impl DestTransport {
                                 payload_type
                             );
 
-                            // 转换为 Bytes（零拷贝）
+                            // Convert to `Bytes`.
                             return lane.send(Bytes::copy_from_slice(data)).await;
                         }
                         Err(e) => {
@@ -118,10 +120,10 @@ impl DestTransport {
                 }
             }
 
-            // 5. 所有尝试都失败，等待连接状态变更
+            // 5. All attempts failed, so wait for a connection state change.
             log::info!("[{:?}] Waiting for connection status...", self.dest);
 
-            // 事件驱动等待！
+            // Event-driven wait.
             if watcher.changed().await.is_err() {
                 return Err(WebError::Transport("connection manager closed".to_string()));
             }
@@ -130,11 +132,11 @@ impl DestTransport {
         }
     }
 
-    /// 关闭 DestTransport 并释放所有连接资源
+    /// Close the transport and release all connection resources.
     pub async fn close(&self) -> WebResult<()> {
         log::info!("[{:?}] Closing DestTransport", self.dest);
 
-        // 关闭所有连接
+        // Close all connections.
         for conn_type in [ConnType::WebSocket, ConnType::WebRTC] {
             if let Some(conn) = self.wire_pool.get_connection(conn_type).await {
                 if let Err(e) = conn.close().await {
@@ -153,13 +155,13 @@ impl DestTransport {
         Ok(())
     }
 
-    /// 检查是否有健康的连接
+    /// Check whether there is at least one healthy connection.
     ///
-    /// 用于健康检查器检测失败的连接
+    /// Used by health checks to detect complete transport failure.
     ///
-    /// # 返回
-    /// - `true`: 至少有一个连接健康（已连接）
-    /// - `false`: 所有连接都不健康或不存在
+    /// # Returns
+    /// - `true` if at least one connection is healthy
+    /// - `false` if all connections are unhealthy or missing
     pub async fn has_healthy_connection(&self) -> bool {
         for conn_type in [ConnType::WebRTC, ConnType::WebSocket] {
             if let Some(conn) = self.wire_pool.get_connection(conn_type).await {
@@ -171,11 +173,11 @@ impl DestTransport {
         false
     }
 
-    /// 获取给定 PayloadType 需要的连接类型（优先级排序）
+    /// Get connection types for a payload in priority order.
     ///
-    /// 简化版本：
-    /// - MEDIA_RTP: 只能 WebRTC
-    /// - 其他: WebRTC 优先，WebSocket fallback
+    /// Simplified rules:
+    /// - `MEDIA_RTP`: WebRTC only
+    /// - Others: WebRTC first, WebSocket as fallback
     fn get_conn_types_for(&self, payload_type: PayloadType) -> Vec<ConnType> {
         match payload_type {
             PayloadType::MediaRtp => vec![ConnType::WebRTC],
@@ -183,7 +185,7 @@ impl DestTransport {
         }
     }
 
-    /// 获取目标
+    /// Get the destination.
     pub fn dest(&self) -> &Dest {
         &self.dest
     }
@@ -317,13 +319,13 @@ mod tests {
         let dest = Dest::Server("wss://test.com".to_string());
         let ws = WebSocketConnection::new("wss://test.com");
 
-        // 先连接
+        // Connect first.
         ws.connect().await.unwrap();
 
         let handle = WireHandle::WebSocket(ws);
         let dt = DestTransport::new(dest, vec![handle]).await.unwrap();
 
-        // 需要等待连接状态更新
+        // Need to wait for the connection-state update.
         gloo_timers::future::TimeoutFuture::new(100).await;
 
         let healthy = dt.has_healthy_connection().await;
@@ -334,7 +336,7 @@ mod tests {
     fn test_conn_types_priority_order() {
         let dt = create_test_transport();
 
-        // 非 RTP 类型应该 WebRTC 优先
+        // Non-RTP types should prefer WebRTC first.
         let types = dt.get_conn_types_for(PayloadType::RpcReliable);
         assert_eq!(types[0], ConnType::WebRTC);
         assert_eq!(types[1], ConnType::WebSocket);

@@ -1,33 +1,31 @@
-//! 集成测试：开发模式 dev sign → Hyper::verify_package 全流程
+//! Integration tests: dev mode sign -> Hyper::verify_package full flow
 //!
-//! 覆盖场景：
-//! 1. 正常流程：WASM 签名嵌入 → 验证通过，manifest 字段匹配
-//! 2. 篡改检测：修改 WASM 内容后 → binary_hash 不匹配
-//! 3. 错误密钥：用不同密钥验证 → 签名不匹配
-//! 4. 多次签名：相同 WASM 重签 → 替换旧 section，验证通过
-//! 5. 带能力声明：capabilities 字段覆盖
+//! Covered scenarios:
+//! 1. Normal flow: WASM signed and embedded -> verification passes, manifest fields match
+//! 2. Tamper detection: modified WASM content -> binary_hash mismatch
+//! 3. Wrong key: verified with different key -> signature mismatch
+//! 4. Re-signing: same WASM re-signed -> old section replaced, verification passes
+//! 5. With capabilities: capabilities field coverage
 
 use actr_hyper::{
-    HyperConfig, HyperError, TrustMode,
-    Hyper,
-    embed_wasm_manifest, manifest_signed_bytes, PackageManifest,
-    verify::manifest::wasm_binary_hash_excluding_manifest,
+    Hyper, HyperConfig, HyperError, PackageManifest, TrustMode, embed_wasm_manifest,
+    manifest_signed_bytes, verify::manifest::wasm_binary_hash_excluding_manifest,
 };
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
-// ─── 工具函数 ─────────────────────────────────────────────────────────────────
+// ─── Utility functions ─────────────────────────────────────────────────────────────────
 
 fn minimal_wasm() -> Vec<u8> {
-    // 最小合法 WASM：magic + version，无 section
+    // Minimal valid WASM: magic + version, no sections
     b"\0asm\x01\x00\x00\x00".to_vec()
 }
 
-/// 构建已签名的 WASM 包（完整 dev sign 流程）
+/// Build a signed WASM package (full dev sign flow)
 ///
-/// 返回 (嵌入 manifest 后的 WASM bytes, 使用的 signing_key)
+/// Returns (WASM bytes with embedded manifest, signing_key used)
 fn dev_sign_wasm(
     wasm_bytes: &[u8],
     manufacturer: &str,
@@ -36,10 +34,10 @@ fn dev_sign_wasm(
     capabilities: &[&str],
     signing_key: &SigningKey,
 ) -> Vec<u8> {
-    // 1. 计算 binary_hash（排除已有 manifest section）
+    // 1. Compute binary_hash (excluding existing manifest section)
     let binary_hash = wasm_binary_hash_excluding_manifest(wasm_bytes).unwrap();
 
-    // 2. 构建 manifest（signature 暂为空）
+    // 2. Build manifest (signature initially empty)
     let caps: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
     let manifest = PackageManifest {
         manufacturer: manufacturer.to_string(),
@@ -50,15 +48,14 @@ fn dev_sign_wasm(
         signature: vec![],
     };
 
-    // 3. 计算待签名字节（与 verify/mod.rs manifest_signed_bytes 一致）
+    // 3. Compute bytes to sign (consistent with verify/mod.rs manifest_signed_bytes)
     let signed_bytes = manifest_signed_bytes(&manifest);
 
-    // 4. Ed25519 签名
+    // 4. Ed25519 signature
     let signature = signing_key.sign(&signed_bytes);
-    let sig_b64 = base64::engine::general_purpose::STANDARD
-        .encode(signature.to_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
 
-    // 5. 构建 manifest JSON
+    // 5. Build manifest JSON
     let hash_hex: String = binary_hash.iter().map(|b| format!("{b:02x}")).collect();
     let manifest_json = serde_json::to_vec(&serde_json::json!({
         "manufacturer": manufacturer,
@@ -70,7 +67,7 @@ fn dev_sign_wasm(
     }))
     .unwrap();
 
-    // 6. 嵌入 manifest section
+    // 6. Embed manifest section
     embed_wasm_manifest(wasm_bytes, &manifest_json).unwrap()
 }
 
@@ -80,9 +77,9 @@ fn dev_config_with_key(dir: &TempDir, verifying_key: &ed25519_dalek::VerifyingKe
     })
 }
 
-// ─── 测试用例 ─────────────────────────────────────────────────────────────────
+// ─── Test cases ─────────────────────────────────────────────────────────────────
 
-/// 正常流程：签名 WASM → 验证通过，manifest 字段完全匹配
+/// Normal flow: sign WASM -> verify passes, manifest fields fully match
 #[tokio::test]
 async fn wasm_sign_then_verify_succeeds() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -109,10 +106,14 @@ async fn wasm_sign_then_verify_succeeds() {
     assert_eq!(manifest.actr_name, "MyActor");
     assert_eq!(manifest.version, "1.2.3");
     assert_eq!(manifest.capabilities, vec!["storage", "network"]);
-    assert_eq!(manifest.signature.len(), 64, "signature 应为 64 字节 Ed25519");
+    assert_eq!(
+        manifest.signature.len(),
+        64,
+        "signature should be 64-byte Ed25519"
+    );
 }
 
-/// 空能力列表也应正常签名和验证
+/// Empty capabilities list should also sign and verify correctly
 #[tokio::test]
 async fn wasm_sign_with_no_capabilities() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -137,7 +138,7 @@ async fn wasm_sign_with_no_capabilities() {
     assert_eq!(manifest.manufacturer, "acme");
 }
 
-/// 篡改检测：WASM 内容修改后 binary_hash 不匹配 → BinaryHashMismatch
+/// Tamper detection: WASM content modified -> binary_hash mismatch -> BinaryHashMismatch
 #[tokio::test]
 async fn verify_detects_tampered_wasm_content() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -153,11 +154,11 @@ async fn verify_detects_tampered_wasm_content() {
         &signing_key,
     );
 
-    // 篡改：找到 WASM magic 之后的任意字节并修改
-    // 找到第一个非 manifest section 的位置来篡改
-    // 这里我们构造一个带有额外 section 的 WASM 然后篡改它
+    // Tamper: modify any byte after WASM magic
+    // Find the first non-manifest section location to tamper
+    // Here we construct a WASM with an extra section then tamper it
     let mut tampered = signed_wasm.clone();
-    // 修改 WASM version 字段（bytes 4-7），破坏 binary_hash
+    // Modify WASM version field (bytes 4-7), breaking binary_hash
     tampered[4] ^= 0xFF;
 
     let dir = TempDir::new().unwrap();
@@ -166,22 +167,22 @@ async fn verify_detects_tampered_wasm_content() {
         .unwrap();
     let result = hyper.verify_package(&tampered).await;
 
-    // 注意：修改了 WASM version 可能导致解析失败或 hash 不匹配
-    // 两种错误都属于检测到篡改
+    // Note: modifying WASM version may cause parse failure or hash mismatch
+    // Both errors indicate tampering was detected
     assert!(
         matches!(
             result,
             Err(HyperError::BinaryHashMismatch) | Err(HyperError::InvalidManifest(_))
         ),
-        "篡改后验证应失败，实际: {result:?}"
+        "tampered WASM should fail verification, got: {result:?}"
     );
 }
 
-/// 错误密钥：用不同密钥的公钥配置 Hyper → SignatureVerificationFailed
+/// Wrong key: configure Hyper with different key's public key -> SignatureVerificationFailed
 #[tokio::test]
 async fn verify_rejects_wrong_signing_key() {
     let signing_key = SigningKey::generate(&mut OsRng);
-    let wrong_key = SigningKey::generate(&mut OsRng); // 不同密钥
+    let wrong_key = SigningKey::generate(&mut OsRng); // different key
     let wrong_verifying = wrong_key.verifying_key();
 
     let signed_wasm = dev_sign_wasm(
@@ -190,11 +191,11 @@ async fn verify_rejects_wrong_signing_key() {
         "Actor",
         "1.0.0",
         &[],
-        &signing_key, // 用 signing_key 签名
+        &signing_key, // signed with signing_key
     );
 
     let dir = TempDir::new().unwrap();
-    // 但 Hyper 配置为 wrong_verifying → 验证失败
+    // But Hyper configured with wrong_verifying -> verification fails
     let hyper = Hyper::init(dev_config_with_key(&dir, &wrong_verifying))
         .await
         .unwrap();
@@ -202,11 +203,11 @@ async fn verify_rejects_wrong_signing_key() {
 
     assert!(
         matches!(result, Err(HyperError::SignatureVerificationFailed(_))),
-        "错误公钥应返回 SignatureVerificationFailed，实际: {result:?}"
+        "wrong public key should return SignatureVerificationFailed, got: {result:?}"
     );
 }
 
-/// 多次签名：重签同一 WASM → 旧 section 被替换，新 manifest 生效
+/// Re-signing: re-sign the same WASM -> old section replaced, new manifest takes effect
 #[tokio::test]
 async fn resign_replaces_old_manifest() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -214,10 +215,10 @@ async fn resign_replaces_old_manifest() {
 
     let wasm = minimal_wasm();
 
-    // 第一次签名：version = "1.0.0"
+    // First signing: version = "1.0.0"
     let signed_v1 = dev_sign_wasm(&wasm, "mfr", "App", "1.0.0", &[], &signing_key);
 
-    // 第二次签名（在已签名的 WASM 上重签）：version = "2.0.0"
+    // Second signing (re-sign already-signed WASM): version = "2.0.0"
     let signed_v2 = dev_sign_wasm(&signed_v1, "mfr", "App", "2.0.0", &[], &signing_key);
 
     let dir = TempDir::new().unwrap();
@@ -225,16 +226,19 @@ async fn resign_replaces_old_manifest() {
         .await
         .unwrap();
 
-    // v1 应该通过
+    // v1 should pass
     let m1 = hyper.verify_package(&signed_v1).await.unwrap();
     assert_eq!(m1.version, "1.0.0");
 
-    // v2 应该通过，且版本为 2.0.0
+    // v2 should pass, with version 2.0.0
     let m2 = hyper.verify_package(&signed_v2).await.unwrap();
-    assert_eq!(m2.version, "2.0.0", "重签后版本应为 2.0.0");
+    assert_eq!(
+        m2.version, "2.0.0",
+        "version should be 2.0.0 after re-signing"
+    );
 }
 
-/// 未签名 WASM（无 manifest section）→ ManifestNotFound
+/// Unsigned WASM (no manifest section) -> ManifestNotFound
 #[tokio::test]
 async fn verify_rejects_wasm_without_manifest() {
     let dir = TempDir::new().unwrap();
@@ -246,11 +250,11 @@ async fn verify_rejects_wasm_without_manifest() {
     let result = hyper.verify_package(&minimal_wasm()).await;
     assert!(
         matches!(result, Err(HyperError::ManifestNotFound)),
-        "未签名包应返回 ManifestNotFound"
+        "unsigned package should return ManifestNotFound"
     );
 }
 
-/// 非 WASM/ELF/Mach-O 文件 → InvalidManifest
+/// Non-WASM/ELF/Mach-O file -> InvalidManifest
 #[tokio::test]
 async fn verify_rejects_unknown_format() {
     let dir = TempDir::new().unwrap();
@@ -263,7 +267,7 @@ async fn verify_rejects_unknown_format() {
     assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
 }
 
-/// binary_hash 一致性：签名前后 binary_hash 计算结果应相同
+/// binary_hash consistency: binary_hash computation should be identical before and after signing
 #[tokio::test]
 async fn binary_hash_stable_across_signing() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -276,11 +280,11 @@ async fn binary_hash_stable_across_signing() {
 
     assert_eq!(
         hash_before, hash_after,
-        "嵌入 manifest section 后 binary_hash 应保持不变"
+        "binary_hash should remain unchanged after embedding manifest section"
     );
 }
 
-/// verify_package 返回的 manifest.binary_hash 应等于原始 WASM 的 hash
+/// verify_package returned manifest.binary_hash should equal original WASM's hash
 #[tokio::test]
 async fn verified_manifest_binary_hash_matches_original() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -299,6 +303,6 @@ async fn verified_manifest_binary_hash_matches_original() {
 
     assert_eq!(
         manifest.binary_hash, expected_hash,
-        "验证后 binary_hash 应与原始 WASM 的 hash 一致"
+        "verified binary_hash should match original WASM's hash"
     );
 }

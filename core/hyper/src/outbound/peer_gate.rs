@@ -99,9 +99,7 @@ impl PeerGate {
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        tracing::debug!(
-                            "PeerGate event listener stopped (channel closed)"
-                        );
+                        tracing::debug!("PeerGate event listener stopped (channel closed)");
                         break;
                     }
                 };
@@ -400,10 +398,7 @@ impl PeerGate {
         tracing::instrument(skip_all, name = "PeerGate.send_message", fields(target = ?target.to_string_repr()))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!(
-            "PeerGate::send_message to {:?}",
-            target.to_string_repr()
-        );
+        tracing::debug!("PeerGate::send_message to {:?}", target.to_string_repr());
 
         // // Check if target is being cleaned up
         // if self.closing_peers.read().await.contains(target) {

@@ -1,4 +1,4 @@
-//! WebRTC 模块 - DOM 端的 WebRTC 协调器
+//! WebRTC module for the DOM-side coordinator.
 
 pub mod coordinator;
 

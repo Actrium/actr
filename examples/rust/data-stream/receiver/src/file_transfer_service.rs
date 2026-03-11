@@ -8,16 +8,16 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// FileTransfer 服务实现 - 接收端
+/// FileTransfer service[...] - receive[...]
 ///
-/// 负责：
-/// 1. 处理 StartTransfer RPC - 注册 DataStream 回调
-/// 2. 接收 DataStream 数据块
-/// 3. 处理 EndTransfer RPC - 确认传输完成
+/// [...]：
+/// 1. [...] StartTransfer RPC - register DataStream [...]
+/// 2. receive DataStream data[...]
+/// 3. [...] EndTransfer RPC - [...]
 pub struct FileTransferService {
-    /// 接收到的数据块计数
+    /// receive[...]data[...]
     chunks_received: Arc<Mutex<u32>>,
-    /// 接收到的总字节数
+    /// receive[...]
     bytes_received: Arc<Mutex<u64>>,
 }
 
@@ -32,10 +32,10 @@ impl FileTransferService {
 
 #[async_trait]
 impl FileTransferServiceHandler for FileTransferService {
-    /// StartTransfer - 启动文件传输
+    /// StartTransfer - start[...]
     ///
-    /// 1. 注册 DataStream 回调
-    /// 2. 返回 ready=true 通知 sender 可以开始发送
+    /// 1. register DataStream [...]
+    /// 2. [...] ready=true [...] sender [...]send
     async fn start_transfer<C: Context>(
         &self,
         req: StartTransferRequest,
@@ -47,11 +47,11 @@ impl FileTransferServiceHandler for FileTransferService {
         tracing::info!("   total_size: {} bytes", req.total_size);
         tracing::info!("   chunk_count: {}", req.chunk_count);
 
-        // 重置计数器
+        // [...]
         *self.chunks_received.lock().await = 0;
         *self.bytes_received.lock().await = 0;
 
-        // 注册 DataStream 回调
+        // register DataStream [...]
         let stream_id = req.stream_id.clone();
         let chunks_counter = self.chunks_received.clone();
         let bytes_counter = self.bytes_received.clone();
@@ -82,7 +82,7 @@ impl FileTransferServiceHandler for FileTransferService {
                     *bytes
                 );
 
-                // 如果是文本数据，显示预览
+                // [...]data，[...]
                 if let Ok(text) = String::from_utf8(data_stream.payload.to_vec()) {
                     let preview = &text[..text.len().min(80)];
                     tracing::debug!("   Content preview: {}", preview);
@@ -105,10 +105,10 @@ impl FileTransferServiceHandler for FileTransferService {
         })
     }
 
-    /// EndTransfer - 结束文件传输
+    /// EndTransfer - [...]
     ///
-    /// 1. 取消注册 DataStream 回调
-    /// 2. 返回接收统计信息
+    /// 1. [...]register DataStream [...]
+    /// 2. [...]receive[...]
     async fn end_transfer<C: Context>(
         &self,
         req: EndTransferRequest,
@@ -118,14 +118,14 @@ impl FileTransferServiceHandler for FileTransferService {
         tracing::info!("   stream_id: {}", req.stream_id);
         tracing::info!("   success: {}", req.success);
 
-        // 取消注册回调
+        // [...]register[...]
         ctx.unregister_stream(&req.stream_id).await?;
         tracing::info!(
             "✅ DataStream callback unregistered for '{}'",
             req.stream_id
         );
 
-        // 获取统计信息
+        // [...]
         let chunks = *self.chunks_received.lock().await;
         let bytes = *self.bytes_received.lock().await;
 

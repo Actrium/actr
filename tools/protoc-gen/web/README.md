@@ -1,19 +1,19 @@
 # actr-web-protoc-codegen
 
-Protoc 代码生成器，用于从 Protobuf 定义生成 actr-web 代码。
+Protoc code generator for creating actr-web code from Protobuf definitions.
 
-## 功能
+## Features
 
-- ✅ 从 `.proto` 文件生成 Rust WASM Actor 代码
-- ✅ 生成 TypeScript 类型定义
-- ✅ 生成 TypeScript ActorRef 包装类
-- ✅ 可选：生成 React Hooks
-- 🔄 自动化代码格式化
-- 🔄 支持自定义模板
+- ✅ Generate Rust WASM actor code from `.proto` files
+- ✅ Generate TypeScript type definitions
+- ✅ Generate TypeScript ActorRef wrapper classes
+- ✅ Optionally generate React Hooks
+- 🔄 Automated code formatting
+- 🔄 Custom template support
 
-## 使用方式
+## Usage
 
-### 方式 1：在 build.rs 中使用（推荐）
+### Option 1: use it from `build.rs` (recommended)
 
 ```rust
 // build.rs
@@ -37,13 +37,13 @@ fn main() {
 }
 ```
 
-### 方式 2：通过 actr-cli 使用
+### Option 2: use it through `actr-cli`
 
 ```bash
-# 安装支持 web 的 actr-cli
+# Install `actr-cli` with web support
 cargo install actr-cli --features web
 
-# 生成代码
+# Generate code
 actr gen --platform web \
   --input proto/ \
   --output crates/actors/src/generated/ \
@@ -51,7 +51,7 @@ actr gen --platform web \
   --react-hooks
 ```
 
-### 方式 3：编程式 API
+### Option 3: use the programmatic API
 
 ```rust
 use actr_web_protoc_codegen::{WebCodegen, WebCodegenConfig};
@@ -69,13 +69,13 @@ let config = WebCodegenConfig {
 let codegen = WebCodegen::new(config);
 let files = codegen.generate()?;
 
-// 写入文件
+// Write files
 files.write_to_disk()?;
 ```
 
-## 生成的代码结构
+## Generated Layout
 
-### Rust 侧（WASM）
+### Rust side (WASM)
 
 ```
 src/generated/
@@ -84,52 +84,52 @@ src/generated/
 └── ...
 ```
 
-### TypeScript 侧
+### TypeScript side
 
 ```
 src/generated/
 ├── index.ts
-├── echo.types.ts         # 类型定义
-├── echo.actor-ref.ts     # EchoActorRef 类
-├── use-echo.ts           # useEcho Hook (可选)
+├── echo.types.ts         # type definitions
+├── echo.actor-ref.ts     # EchoActorRef class
+├── use-echo.ts           # optional useEcho hook
 └── ...
 ```
 
-## 配置选项
+## Configuration Options
 
-| 选项 | 类型 | 必需 | 说明 |
+| Option | Type | Required | Description |
 |------|------|------|------|
-| `proto_files` | `Vec<PathBuf>` | ✅ | Proto 文件列表 |
-| `rust_output_dir` | `PathBuf` | ✅ | Rust 输出目录 |
-| `ts_output_dir` | `PathBuf` | ✅ | TypeScript 输出目录 |
-| `generate_react_hooks` | `bool` | ❌ | 是否生成 React Hooks（默认 false） |
-| `includes` | `Vec<PathBuf>` | ❌ | Proto include 路径 |
-| `format_code` | `bool` | ❌ | 是否格式化代码（默认 false） |
-| `custom_templates_dir` | `Option<PathBuf>` | ❌ | 自定义模板目录 |
+| `proto_files` | `Vec<PathBuf>` | ✅ | List of proto files |
+| `rust_output_dir` | `PathBuf` | ✅ | Rust output directory |
+| `ts_output_dir` | `PathBuf` | ✅ | TypeScript output directory |
+| `generate_react_hooks` | `bool` | ❌ | Generate React Hooks, default `false` |
+| `includes` | `Vec<PathBuf>` | ❌ | Proto include paths |
+| `format_code` | `bool` | ❌ | Format generated code, default `false` |
+| `custom_templates_dir` | `Option<PathBuf>` | ❌ | Custom template directory |
 
-## 开发状态
+## Status
 
-- [x] 基础架构和配置
-- [x] 完整的 Proto 解析（手写 parser）
-- [x] Rust Actor 方法生成
-- [x] TypeScript 类型生成
-- [x] TypeScript ActorRef 方法生成
-- [x] React Hooks 生成
-- [x] 流式方法支持
-- [x] 代码格式化集成（rustfmt + prettier/dprint）
-- [x] 单元测试
-- [ ] prost-build 集成（可选，当前使用手写 parser）
-- [ ] 自定义模板支持
-- [ ] 集成测试
-- [ ] 性能优化
+- [x] Base architecture and configuration
+- [x] Full proto parsing with a handwritten parser
+- [x] Rust actor method generation
+- [x] TypeScript type generation
+- [x] TypeScript ActorRef method generation
+- [x] React Hooks generation
+- [x] Streaming method support
+- [x] Formatting integration with `rustfmt` and `prettier`/`dprint`
+- [x] Unit tests
+- [ ] Optional `prost-build` integration
+- [ ] Custom template support
+- [ ] Integration tests
+- [ ] Performance tuning
 
-## 示例
+## Examples
 
-参考 `examples/` 目录下的示例项目：
+See the example projects under `examples/`:
 
-- `examples/echo/` - 基础 Echo 服务示例
-- `examples/simple-rpc/` - 端到端 RPC 示例
+- `examples/echo/` - basic Echo service example
+- `examples/simple-rpc/` - end-to-end RPC example
 
-## 许可证
+## License
 
 Apache License 2.0

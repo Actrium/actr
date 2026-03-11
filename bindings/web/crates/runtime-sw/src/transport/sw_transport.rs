@@ -1,10 +1,10 @@
-//! Service Worker Transport 实现
+//! Transport implementation for the Service Worker runtime.
 //!
-//! 统一的传输层封装，负责：
-//! - 管理 WebSocket 连接池
-//! - 管理与 DOM 的 PostMessage 通道
-//! - 自动路由消息（根据 PayloadType）
-//! - 自动转发（MEDIA_RTP → DOM）
+//! This wrapper:
+//! - Manages the WebSocket connection pool
+//! - Manages the PostMessage channel to the DOM side
+//! - Routes messages automatically based on `PayloadType`
+//! - Forwards `MEDIA_RTP` traffic to the DOM side
 
 use super::lane::DataLane;
 use actr_web_common::{
@@ -17,34 +17,34 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use parking_lot::Mutex;
 use std::sync::Arc;
-// 移除 tokio 依赖，Web 环境不支持
+// No `tokio` dependency here because it is not supported in the web runtime.
 
 use super::websocket::WebSocketLaneBuilder;
 
-/// Service Worker 端的 Transport 实现
+/// Transport implementation for the Service Worker side.
 pub struct SwTransport {
-    /// 本地 ID
+    /// Local ID.
     local_id: String,
 
-    /// WebSocket 连接池：Dest → (DataLane, ConnectionState)
+    /// WebSocket pool: `Dest -> (DataLane, ConnectionState)`.
     websocket_pool: Arc<DashMap<Dest, (DataLane, ConnectionState)>>,
 
-    /// DOM 通道（PostMessage）
+    /// DOM channel carried over PostMessage.
     dom_channel: Arc<Mutex<Option<DataLane>>>,
 
-    /// 连接策略
+    /// Connection strategy.
     strategy: ConnectionStrategy,
 
-    /// 统计信息
+    /// Runtime statistics.
     stats: Arc<Mutex<TransportStats>>,
 
-    /// 接收通道（汇总所有消息）
+    /// Aggregated receive channel.
     rx: Arc<Mutex<mpsc::UnboundedReceiver<(Dest, PayloadType, Bytes)>>>,
     tx: mpsc::UnboundedSender<(Dest, PayloadType, Bytes)>,
 }
 
 impl SwTransport {
-    /// 创建新的 SwTransport
+    /// Create a new `SwTransport`.
     pub fn new(local_id: String, strategy: Option<ConnectionStrategy>) -> Self {
         let (tx, rx) = mpsc::unbounded();
 
@@ -59,22 +59,22 @@ impl SwTransport {
         }
     }
 
-    /// 设置 DOM 通道
+    /// Set the DOM channel.
     ///
-    /// 当 DOM 通过 MessagePort 连接到 SW 时调用
+    /// Called when the DOM side connects to the SW through a `MessagePort`.
     pub fn set_dom_channel(&self, lane: DataLane) -> WebResult<()> {
         let mut dom_channel = self.dom_channel.lock();
         *dom_channel = Some(lane);
 
         log::info!("[SwTransport] DOM channel established");
 
-        // 启动 DOM 消息接收循环
+        // Start the DOM receive loop.
         self.start_dom_receiver();
 
         Ok(())
     }
 
-    /// 发送消息
+    /// Send a message.
     pub async fn send(&self, dest: &Dest, payload_type: PayloadType, data: Bytes) -> WebResult<()> {
         log::trace!(
             "[SwTransport] send: dest={:?}, payload_type={:?}, size={} bytes",
@@ -83,9 +83,9 @@ impl SwTransport {
             data.len()
         );
 
-        // 路由策略
+        // Routing policy.
         match payload_type {
-            // RPC 和 STREAM 在 SW 处理（通过 WebSocket）
+            // RPC and stream traffic stays in the SW and uses WebSocket.
             PayloadType::RpcReliable
             | PayloadType::RpcSignal
             | PayloadType::StreamReliable
@@ -93,13 +93,13 @@ impl SwTransport {
                 let lane = self.get_or_create_websocket(dest).await?;
                 lane.send(data.clone()).await?;
 
-                // 更新统计
+                // Update stats.
                 let mut stats = self.stats.lock();
                 stats.bytes_sent += data.len() as u64;
                 stats.messages_sent += 1;
             }
 
-            // MEDIA_RTP 必须转发到 DOM
+            // MEDIA_RTP must be forwarded to the DOM side.
             PayloadType::MediaRtp => {
                 self.forward_to_dom(dest, payload_type, data).await?;
             }
@@ -108,7 +108,7 @@ impl SwTransport {
         Ok(())
     }
 
-    /// 接收消息
+    /// Receive a message.
     pub async fn recv(&self) -> Option<(Dest, PayloadType, Bytes)> {
         let mut rx = self.rx.lock();
         let msg = rx.next().await;
@@ -122,16 +122,16 @@ impl SwTransport {
         msg
     }
 
-    /// 获取统计信息
+    /// Get transport statistics.
     pub fn stats(&self) -> TransportStats {
         self.stats.lock().clone()
     }
 
-    /// 获取或创建 WebSocket 连接
+    /// Get or create a WebSocket connection.
     ///
-    /// 简化实现：直接创建，由 DashMap 处理并发
+    /// Simplified implementation: create directly and let `DashMap` handle concurrency.
     async fn get_or_create_websocket(&self, dest: &Dest) -> WebResult<DataLane> {
-        // 1. 快速路径：检查是否已存在
+        // 1. Fast path: reuse an existing connected lane.
         if let Some(entry) = self.websocket_pool.get(dest) {
             let (lane, state) = entry.value();
             if *state == ConnectionState::Connected {
@@ -139,22 +139,22 @@ impl SwTransport {
             }
         }
 
-        // 2. 创建新连接
+        // 2. Create a new connection.
         let lane = self.create_websocket_connection(dest).await?;
 
-        // 更新为已连接状态
+        // Mark it as connected.
         self.websocket_pool
             .insert(dest.clone(), (lane.clone(), ConnectionState::Connected));
 
         log::info!("[SwTransport] WebSocket connected: {:?}", dest);
 
-        // 启动接收循环
+        // Start the receive loop.
         self.start_websocket_receiver(dest.clone(), lane.clone());
 
         Ok(lane)
     }
 
-    /// 创建 WebSocket 连接
+    /// Create a WebSocket connection.
     async fn create_websocket_connection(&self, dest: &Dest) -> WebResult<DataLane> {
         let url = dest.to_websocket_url()?;
 
@@ -167,7 +167,7 @@ impl SwTransport {
         Ok(lane)
     }
 
-    /// 转发到 DOM
+    /// Forward a message to the DOM side.
     async fn forward_to_dom(
         &self,
         dest: &Dest,
@@ -196,7 +196,7 @@ impl SwTransport {
         }
     }
 
-    /// 启动 WebSocket 接收循环
+    /// Start the WebSocket receive loop.
     fn start_websocket_receiver(&self, dest: Dest, lane: DataLane) {
         let tx = self.tx.clone();
 
@@ -204,8 +204,8 @@ impl SwTransport {
             loop {
                 match lane.recv().await {
                     Some(data) => {
-                        // 解析 PayloadType（从消息头提取）
-                        // 这里简化处理，实际应该从 Lane 获取
+                        // Determine the payload type.
+                        // This is simplified and currently uses the lane's configured type.
                         let payload_type = lane.payload_type();
 
                         if let Err(e) = tx.unbounded_send((dest.clone(), payload_type, data)) {
@@ -225,7 +225,7 @@ impl SwTransport {
         });
     }
 
-    /// 启动 DOM 消息接收循环
+    /// Start the DOM receive loop.
     fn start_dom_receiver(&self) {
         let dom_channel = self.dom_channel.clone();
         let tx = self.tx.clone();
@@ -240,7 +240,7 @@ impl SwTransport {
                 if let Some(lane) = lane {
                     match lane.recv().await {
                         Some(data) => {
-                            // 解析转发消息
+                            // Parse the forwarded message.
                             match ForwardMessage::deserialize(&data) {
                                 Ok(forward_msg) => {
                                     log::trace!(
@@ -280,14 +280,14 @@ impl SwTransport {
         });
     }
 
-    /// 断开连接
+    /// Disconnect a destination.
     pub async fn disconnect(&self, dest: &Dest) -> WebResult<()> {
         self.websocket_pool.remove(dest);
         log::info!("[SwTransport] Disconnected: {:?}", dest);
         Ok(())
     }
 
-    /// 获取连接状态
+    /// Get the connection state for a destination.
     pub fn connection_state(&self, dest: &Dest) -> ConnectionState {
         self.websocket_pool
             .get(dest)

@@ -1,22 +1,22 @@
-//! WebSocketServer - 入站 WebSocket 连接监听器
+//! WebSocketServer - inbound WebSocket connection listener.
 //!
-//! 绑定 TCP 端口，接受对端节点主动发起的 WebSocket 连接（直连模式）。
-//! 每个入站连接被封装为 `InboundWsConn`，通过 mpsc 通道传递给 `WebSocketGate`。
+//! Binds a TCP port and accepts WebSocket connections initiated by peer nodes in direct-connect mode.
+//! Each inbound connection is wrapped as `InboundWsConn` and passed to `WebSocketGate` through an `mpsc` channel.
 //!
-//! ## 发送方身份识别与认证
+//! ## Sender Identification and Authentication
 //!
-//! 连接节点须在 HTTP 升级请求中携带：
+//! Connecting peers should send the following headers in the HTTP upgrade request:
 //! ```text
 //! X-Actr-Source-ID:  <hex-encoded protobuf ActrId bytes>
-//! X-Actr-Credential: <base64-encoded proto AIdCredential bytes>（可选）
+//! X-Actr-Credential: <base64-encoded proto AIdCredential bytes> (optional)
 //! ```
-//! - `X-Actr-Source-ID` 缺失时 `source_id_bytes` 为空，响应路由将失败
-//! - `X-Actr-Credential` 用于 Ed25519 签名验证（gate 层执行）；缺失时按配置决定是否拒绝连接
+//! - If `X-Actr-Source-ID` is missing, `source_id_bytes` stays empty and response routing fails.
+//! - `X-Actr-Credential` is used for Ed25519 signature verification in the gate layer; when missing, connection rejection depends on configuration.
 
 use super::connection::WebSocketConnection;
-use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::AIdCredential;
 use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActorResult, ActrError};
 use std::net::SocketAddr;
 use std::sync::Mutex as StdMutex;
 use tokio::net::TcpListener;
@@ -24,17 +24,17 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_util::sync::CancellationToken;
 
-/// 入站 WebSocket 连接通知通道容量
+/// Capacity of the inbound WebSocket connection notification channel.
 const ACCEPT_CHANNEL_CAPACITY: usize = 64;
 
-/// 入站连接信息：连接实例 + 发送方 ActrId bytes + 发送方 AIdCredential（可选）
+/// Inbound connection info: connection instance, sender `ActrId` bytes, and optional sender `AIdCredential`.
 pub type InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>);
 
-/// WebSocketServer - 监听入站 WebSocket 连接
+/// WebSocketServer listening for inbound WebSocket connections.
 ///
-/// 通道元素类型为 `InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>)`。
+/// The channel carries `InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>)`.
 ///
-/// # 使用方式
+/// # Usage
 /// ```rust,ignore
 /// let (server, mut rx) = WebSocketServer::bind(8090).await?;
 /// server.start(shutdown_token);
@@ -50,7 +50,7 @@ pub struct WebSocketServer {
 }
 
 impl WebSocketServer {
-    /// 绑定到指定端口，返回 server 实例和入站连接接收端
+    /// Bind to the given port and return the server plus the inbound receiver.
     pub async fn bind(port: u16) -> ActorResult<(Self, mpsc::Receiver<InboundWsConn>)> {
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = TcpListener::bind(addr).await.map_err(|e| {
@@ -74,19 +74,19 @@ impl WebSocketServer {
         ))
     }
 
-    /// 返回实际监听地址（端口为 0 时获取系统分配的端口）
+    /// Return the actual listening address, including the OS-assigned port when binding to `0`.
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    /// 启动 accept 循环（在后台 task 中运行）
+    /// Start the accept loop in a background task.
     ///
-    /// 每接受一个 TCP 连接就进行 WebSocket 升级，升级成功后封装为
-    /// `InboundWsConn` 并送入通道，由 `WebSocketGate` 完成身份验证。
+    /// Each accepted TCP connection is upgraded to WebSocket, then wrapped as
+    /// `InboundWsConn` and sent through the channel for identity verification by `WebSocketGate`.
     ///
-    /// 发送方身份通过以下 HTTP 头传递：
-    /// - `X-Actr-Source-ID`：hex 编码的 ActrId protobuf bytes
-    /// - `X-Actr-Credential`：base64 编码的 AIdCredential protobuf bytes（用于 Ed25519 验签）
+    /// Sender identity is conveyed through these HTTP headers:
+    /// - `X-Actr-Source-ID`: hex-encoded protobuf `ActrId` bytes
+    /// - `X-Actr-Credential`: base64-encoded protobuf `AIdCredential` bytes used for Ed25519 verification
     pub fn start(self, shutdown_token: CancellationToken) {
         tokio::spawn(async move {
             tracing::info!(
@@ -110,9 +110,9 @@ impl WebSocketServer {
 
                                 let conn_tx = self.conn_tx.clone();
 
-                                // 在独立 task 中完成 WS 握手，避免阻塞 accept 循环
+                                // Complete the WebSocket handshake in a dedicated task to avoid blocking the accept loop.
                                 tokio::spawn(async move {
-                                    // 使用 arc+std Mutex 在同步回调中捕获握手头信息
+                                    // Use Arc plus std Mutex to capture handshake headers from the synchronous callback.
                                     let captured_source_id: std::sync::Arc<StdMutex<Vec<u8>>> =
                                         std::sync::Arc::new(StdMutex::new(Vec::new()));
                                     let captured_credential: std::sync::Arc<StdMutex<Option<AIdCredential>>> =
@@ -127,7 +127,7 @@ impl WebSocketServer {
                                         tokio_tungstenite::tungstenite::handshake::server::Response,
                                         tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
                                     > {
-                                        // 提取 X-Actr-Source-ID
+                                        // Extract `X-Actr-Source-ID`.
                                         if let Some(val) = req.headers().get("X-Actr-Source-ID") {
                                             if let Ok(hex_str) = val.to_str() {
                                                 match hex::decode(hex_str) {
@@ -150,7 +150,7 @@ impl WebSocketServer {
                                             );
                                         }
 
-                                        // 提取 X-Actr-Credential（base64 → proto AIdCredential）
+                                        // Extract `X-Actr-Credential` (base64 -> protobuf `AIdCredential`).
                                         if let Some(val) = req.headers().get("X-Actr-Credential") {
                                             if let Ok(b64_str) = val.to_str() {
                                                 use base64::Engine as _;
@@ -218,7 +218,7 @@ impl WebSocketServer {
                             }
                             Err(e) => {
                                 tracing::error!("❌ WebSocketServer accept error: {}", e);
-                                // 短暂休眠后继续，避免高速错误循环
+                                // Sleep briefly before retrying to avoid a tight error loop.
                                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             }
                         }

@@ -1,6 +1,6 @@
-//! DOM 侧错误报告器
+//! DOM-side error reporter
 //!
-//! 负责将 DOM 侧的错误报告给 Service Worker
+//! Responsible for reporting DOM-side errors to the Service Worker
 
 use crate::{WebError, WebResult};
 use actr_web_common::{ConnType, Dest, ErrorCategory, ErrorContext, ErrorReport, ErrorSeverity};
@@ -9,17 +9,17 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use web_sys::{MessagePort, Navigator, ServiceWorker, window};
 
-/// DOM 错误报告器
+/// DOM error reporter.
 pub struct DomErrorReporter {
-    /// Service Worker 控制器（可选）
+    /// Optional Service Worker controller.
     sw_controller: Arc<Mutex<Option<ServiceWorker>>>,
 
-    /// 控制通道 MessagePort（可选，用于直接通信）
+    /// Optional control-channel MessagePort for direct communication.
     control_port: Arc<Mutex<Option<Arc<MessagePort>>>>,
 }
 
 impl DomErrorReporter {
-    /// 创建新的错误报告器
+    /// Create a new error reporter.
     pub fn new() -> Self {
         Self {
             sw_controller: Arc::new(Mutex::new(None)),
@@ -27,7 +27,7 @@ impl DomErrorReporter {
         }
     }
 
-    /// 初始化（尝试获取 SW 控制器）
+    /// Initialize the reporter by trying to acquire the SW controller.
     pub fn init(&self) -> WebResult<()> {
         if let Some(win) = window() {
             let navigator = win.navigator();
@@ -42,14 +42,14 @@ impl DomErrorReporter {
         Ok(())
     }
 
-    /// 设置控制通道
+    /// Set the control port.
     pub fn set_control_port(&self, port: Arc<MessagePort>) {
         let mut control_port = self.control_port.lock();
         *control_port = Some(port);
         log::info!("[ErrorReporter] Control port registered");
     }
 
-    /// 报告错误
+    /// Report an error.
     pub fn report_error(
         &self,
         category: ErrorCategory,
@@ -57,7 +57,7 @@ impl DomErrorReporter {
         message: String,
         context: Option<ErrorContext>,
     ) -> WebResult<()> {
-        // 创建错误报告
+        // Build the error report.
         let mut report = ErrorReport::new(category, severity, message);
         if let Some(ctx) = context {
             report = report.with_context(ctx);
@@ -70,13 +70,13 @@ impl DomErrorReporter {
             report.severity
         );
 
-        // 尝试发送到 SW
+        // Attempt to send it to the Service Worker.
         self.send_to_sw(&report)?;
 
         Ok(())
     }
 
-    /// 报告 WebRTC 错误
+    /// Report a WebRTC error.
     pub fn report_webrtc_error(&self, dest: &Dest, message: String, severity: ErrorSeverity) {
         let context = ErrorContext {
             dest: Some(dest.clone()),
@@ -89,7 +89,7 @@ impl DomErrorReporter {
         }
     }
 
-    /// 报告 MessagePort 错误
+    /// Report a MessagePort error.
     pub fn report_messageport_error(&self, message: String, severity: ErrorSeverity) {
         let context = ErrorContext {
             dest: None,
@@ -107,7 +107,7 @@ impl DomErrorReporter {
         }
     }
 
-    /// 报告传输错误
+    /// Report a transport error.
     pub fn report_transport_error(
         &self,
         conn_type: ConnType,
@@ -127,12 +127,12 @@ impl DomErrorReporter {
         }
     }
 
-    /// 发送到 SW
+    /// Send the report to the Service Worker.
     fn send_to_sw(&self, report: &ErrorReport) -> WebResult<()> {
-        // 序列化错误报告
+        // Serialize the error report.
         let data = report.serialize()?;
 
-        // 优先使用控制通道
+        // Prefer the control channel when available.
         if let Some(port) = self.control_port.lock().as_ref() {
             let js_array = js_sys::Uint8Array::from(data.as_ref());
             port.post_message(&js_array.into()).map_err(|e| {
@@ -143,14 +143,14 @@ impl DomErrorReporter {
             return Ok(());
         }
 
-        // 备用：使用 SW controller
+        // Fallback: use the SW controller.
         if let Some(controller) = self.sw_controller.lock().as_ref() {
-            // 包装成控制消息
+            // Wrap into a control message.
             use actr_web_common::ControlMessage;
             let control_msg = ControlMessage::ErrorReport(report.clone());
             let msg_data = control_msg.serialize()?;
 
-            // 将 Bytes 转换为 Vec<u8> 再序列化
+            // Convert Bytes into Vec<u8>` before serializing to JsValue.
             let data_vec: Vec<u8> = msg_data.to_vec();
             let js_value = serde_wasm_bindgen::to_value(&data_vec)
                 .map_err(|e| WebError::Serialization(format!("Failed to serialize: {:?}", e)))?;
@@ -163,7 +163,7 @@ impl DomErrorReporter {
             return Ok(());
         }
 
-        // 无可用通道
+        // No channel is available.
         log::warn!("[ErrorReporter] No channel available to send error");
         Err(WebError::Transport("No SW channel available".into()))
     }
@@ -175,17 +175,17 @@ impl Default for DomErrorReporter {
     }
 }
 
-/// 获取 Service Worker 控制器
+/// Get the Service Worker controller.
 fn get_sw_controller(navigator: &Navigator) -> Option<ServiceWorker> {
     navigator.service_worker().controller()
 }
 
 thread_local! {
-    #[doc = "全局错误报告器实例（用于便捷访问）"]
+    #[doc = "Global error reporter instance for convenient access."]
     static GLOBAL_ERROR_REPORTER: RefCell<Option<Arc<DomErrorReporter>>> = const { RefCell::new(None) };
 }
 
-/// 初始化全局错误报告器
+/// Initialize the global error reporter.
 pub fn init_global_error_reporter() -> Arc<DomErrorReporter> {
     GLOBAL_ERROR_REPORTER.with(|cell| {
         if let Some(reporter) = cell.borrow().as_ref() {
@@ -201,7 +201,7 @@ pub fn init_global_error_reporter() -> Arc<DomErrorReporter> {
     })
 }
 
-/// 获取全局错误报告器
+/// Get the global error reporter.
 pub fn get_global_error_reporter() -> Option<Arc<DomErrorReporter>> {
     GLOBAL_ERROR_REPORTER.with(|cell| cell.borrow().as_ref().cloned())
 }
@@ -218,7 +218,7 @@ mod tests {
     fn test_dom_error_reporter_creation() {
         let reporter = DomErrorReporter::new();
 
-        // 验证初始状态
+        // Verify the initial state.
         let sw_controller = reporter.sw_controller.lock();
         assert!(sw_controller.is_none());
 
@@ -228,7 +228,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_error_report_structure() {
-        // 测试错误报告的构建
+        // Validate error report construction.
         let report = ErrorReport::new(
             ErrorCategory::WebRTC,
             ErrorSeverity::Error,
@@ -281,7 +281,7 @@ mod tests {
             ErrorSeverity::Fatal,
         ];
 
-        // 验证所有严重级别都可以创建
+        // Verify that all severity levels can be created.
         for severity in severities {
             let report = ErrorReport::new(
                 ErrorCategory::Transport,
@@ -304,7 +304,7 @@ mod tests {
             ErrorCategory::Internal,
         ];
 
-        // 验证所有错误类别都可以创建
+        // Verify that all error categories can be created.
         for category in categories {
             let report =
                 ErrorReport::new(category, ErrorSeverity::Error, "Test message".to_string());
@@ -348,7 +348,7 @@ mod tests {
             "Second error".to_string(),
         );
 
-        // 每个错误报告应该有唯一的 ID
+        // Each error report should have a unique ID.
         assert_ne!(report1.error_id, report2.error_id);
     }
 
@@ -360,14 +360,14 @@ mod tests {
             "Serialization test".to_string(),
         );
 
-        // 序列化
+        // Serialize.
         let serialized = original.serialize().expect("Serialization should succeed");
 
-        // 反序列化
+        // Deserialize.
         let deserialized =
             ErrorReport::deserialize(&serialized).expect("Deserialization should succeed");
 
-        // 验证字段匹配
+        // Verify field equality.
         assert_eq!(deserialized.error_id, original.error_id);
         assert_eq!(deserialized.category, original.category);
         assert_eq!(deserialized.severity, original.severity);
@@ -412,7 +412,7 @@ mod tests {
         assert!(control_port.is_none());
     }
 
-    // 注意：以下测试需要 wasm-bindgen-test 环境，在标准测试中会跳过
+    // Note: the following tests require wasm-bindgen-test and are skipped in standard test runs.
 
     #[wasm_bindgen_test]
     fn test_error_id_format() {
@@ -422,10 +422,10 @@ mod tests {
             "ID format test".to_string(),
         );
 
-        // 错误 ID 应该以 "err-" 开头
+        // Error IDs should start with "err-".
         assert!(report.error_id.starts_with("err-"));
 
-        // 错误 ID 应该包含时间戳和随机数
+        // Error IDs should contain a timestamp and random suffix.
         let parts: Vec<&str> = report.error_id.split('-').collect();
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0], "err");
@@ -439,9 +439,9 @@ mod tests {
             "Timestamp test".to_string(),
         );
 
-        // 时间戳应该是最近的（大于某个合理值）
-        // 这里假设测试在 2020 年之后运行
-        assert!(report.timestamp > 1_577_836_800_000.0); // 2020-01-01 的时间戳（毫秒）
+        // The timestamp should be recent and greater than a reasonable lower bound.
+        // This assumes the test runs after 2020.
+        assert!(report.timestamp > 1_577_836_800_000.0); // Timestamp for 2020-01-01 in milliseconds.
     }
 
     #[wasm_bindgen_test]
@@ -454,7 +454,7 @@ mod tests {
 
         let control_msg = ControlMessage::ErrorReport(report.clone());
 
-        // 验证可以正确构造 ControlMessage
+        // Verify that ControlMessage can be constructed correctly.
         match control_msg {
             ControlMessage::ErrorReport(r) => {
                 assert_eq!(r.error_id, report.error_id);

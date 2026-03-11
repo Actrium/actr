@@ -4,11 +4,11 @@ use crate::WebError;
 pub use actr_protocol::PayloadType;
 use bytes::Bytes;
 
-/// 消息格式定义
+/// Message format definition.
 ///
-/// 所有 Lane（除 MediaTrack）使用统一的消息格式：
+/// All lanes except `MediaTrack` use the same message layout:
 /// ```text
-/// [PayloadType(1字节) | Length(4字节, Big-Endian) | Data(N字节)]
+/// [PayloadType(1 byte) | Length(4 bytes, Big-Endian) | Data(N bytes)]
 /// ```
 #[derive(Debug, Clone)]
 pub struct MessageFormat {
@@ -17,12 +17,12 @@ pub struct MessageFormat {
 }
 
 impl MessageFormat {
-    /// 创建新的消息
+    /// Create a new message.
     pub fn new(payload_type: PayloadType, data: Bytes) -> Self {
         Self { payload_type, data }
     }
 
-    /// 序列化为字节流
+    /// Serialize into bytes.
     pub fn serialize(&self) -> Bytes {
         let mut buf = Vec::with_capacity(5 + self.data.len());
         buf.push(self.payload_type as u8);
@@ -31,12 +31,12 @@ impl MessageFormat {
         Bytes::from(buf)
     }
 
-    /// 别名：to_bytes
+    /// Alias for `to_bytes`.
     pub fn to_bytes(&self) -> Bytes {
         self.serialize()
     }
 
-    /// 从字节流反序列化
+    /// Deserialize from bytes.
     pub fn deserialize(data: &[u8]) -> Option<Self> {
         if data.len() < 5 {
             return None;
@@ -49,7 +49,7 @@ impl MessageFormat {
             return None;
         }
 
-        // 尝试转换 PayloadType
+        // Try to convert the payload type.
         let payload_type = match payload_type_byte {
             0 => PayloadType::RpcReliable,
             1 => PayloadType::RpcSignal,
@@ -67,7 +67,7 @@ impl MessageFormat {
         })
     }
 
-    /// 获取消息总长度（包含头部）
+    /// Return the total message length including the header.
     pub fn total_len(&self) -> usize {
         5 + self.data.len()
     }
@@ -108,12 +108,12 @@ mod tests {
 
     #[test]
     fn test_message_format_invalid_data() {
-        // 数据太短
+        // Data is too short.
         let data = vec![0u8, 0, 0, 0];
         assert!(MessageFormat::deserialize(&data).is_none());
 
-        // 长度不匹配
-        let data = vec![0u8, 0, 0, 0, 10, 1, 2, 3]; // 声称 10 字节，实际只有 3 字节
+        // Length mismatch.
+        let data = vec![0u8, 0, 0, 0, 10, 1, 2, 3]; // Claims 10 bytes, actually only 3.
         assert!(MessageFormat::deserialize(&data).is_none());
     }
 }

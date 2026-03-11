@@ -7,7 +7,7 @@ SERVER_DIR="$ROOT_DIR/server"
 
 if ! lsof -iTCP:8081 -sTCP:LISTEN -n -P >/dev/null 2>&1; then
   echo "❌ signaling server is not listening on 8081"
-  echo "   请先在 actrix 仓库启动 signaling 服务，例如: cargo run"
+  echo "   Start the signaling service from the actrix repository first, for example: cargo run"
   exit 1
 fi
 

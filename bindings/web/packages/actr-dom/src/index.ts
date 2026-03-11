@@ -1,14 +1,14 @@
 /**
  * @actr/dom - Actor-RTC DOM-side Fixed Forwarding Layer
  *
- * 这是框架提供的固定 JS 层（Hardware Abstraction Layer），用户无需修改。
+ *  JS （Hardware Abstraction Layer），。
  *
- * 职责：
- * 1. 管理 WebRTC 连接（DOM 侧才能访问 WebRTC API）
- * 2. 接收 WebRTC 数据并零拷贝转发到 Service Worker WASM
- * 3. 提供与 Service Worker 的 PostMessage 通信桥梁
+ * ：
+ * 1.  WebRTC （DOM  WebRTC API）
+ * 2.  WebRTC  Service Worker WASM
+ * 3.  Service Worker  PostMessage 
  *
- * 架构决策：docs/architecture/wasm-dom-integration.md
+ * ：docs/architecture/wasm-dom-integration.md
  */
 
 import { ServiceWorkerBridge } from './sw-bridge';
@@ -32,7 +32,7 @@ export { WebRtcCoordinator } from './webrtc-coordinator';
 export type { WebRtcConfig, PeerConnectionInfo } from './webrtc-coordinator';
 
 /**
- * Actor-RTC DOM 运行时配置
+ * Actor-RTC DOM 
  */
 export interface ActrDomConfig {
   serviceWorkerUrl: string;
@@ -45,9 +45,9 @@ export interface ActrDomConfig {
 }
 
 /**
- * Actor-RTC DOM 运行时
+ * Actor-RTC DOM 
  *
- * 这是用户唯一需要初始化的对象
+ * 
  */
 export class ActrDomRuntime {
   private swBridge: ServiceWorkerBridge;
@@ -65,28 +65,28 @@ export class ActrDomRuntime {
   }
 
   /**
-   * 获取 Service Worker 桥接
+   *  Service Worker 
    */
   getSWBridge(): ServiceWorkerBridge {
     return this.swBridge;
   }
 
   /**
-   * 获取 Fast Path 转发器
+   *  Fast Path 
    */
   getForwarder(): FastPathForwarder {
     return this.forwarder;
   }
 
   /**
-   * 获取 WebRTC 协调器
+   *  WebRTC 
    */
   getCoordinator(): WebRtcCoordinator {
     return this.coordinator;
   }
 
   /**
-   * 清理所有资源
+   * 
    */
   dispose(): void {
     this.coordinator.dispose();
@@ -96,11 +96,11 @@ export class ActrDomRuntime {
 }
 
 /**
- * 初始化 Actor-RTC DOM 运行时
+ *  Actor-RTC DOM 
  *
  * @example
  * ```typescript
- * // 在用户 HTML 页面中引入
+ * //  HTML 
  * import { initActrDom } from '@actr/dom';
  *
  * const runtime = await initActrDom({
@@ -116,14 +116,14 @@ export class ActrDomRuntime {
 export async function initActrDom(config: ActrDomConfig): Promise<ActrDomRuntime> {
   console.log('[actr-dom] Initializing...');
 
-  // 1. 创建 Service Worker 桥接
+  // 1.  Service Worker 
   const swBridge = new ServiceWorkerBridge();
   await swBridge.initialize(config.serviceWorkerUrl, config.runtimeConfig);
 
-  // 2. 创建 Fast Path 转发器
+  // 2.  Fast Path 
   const forwarder = new FastPathForwarder(swBridge);
 
-  // 3. 创建 WebRTC 协调器
+  // 3.  WebRTC 
   const coordinator = new WebRtcCoordinator(swBridge, forwarder, config.webrtcConfig || {});
 
   console.log('[actr-dom] Initialized successfully');
@@ -132,7 +132,7 @@ export async function initActrDom(config: ActrDomConfig): Promise<ActrDomRuntime
 }
 
 /**
- * 默认导出
+ * 
  */
 export default {
   initActrDom,

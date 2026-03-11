@@ -1,11 +1,13 @@
-//! AisKeyCache - AIS signing 公钥本地缓存
+//! AisKeyCache - local cache for AIS signing public keys
 //!
-//! actor 注册时从 RegisterOk 获得当前 AIS signing 公钥，缓存于此。
-//! 验签时按 key_id 查找；miss 时通过 `KeyFetcher` 拉取并写入缓存。
-//! 公钥无需保密，缓存策略简单：按 key_id 永久保留（key_id 单调递增，条目极少）。
+//! During actor registration, the current AIS signing public key is obtained from RegisterOk
+//! and cached here. Signature verification looks up by key_id; on miss, the `KeyFetcher`
+//! fetches and writes into the cache.
+//! Public keys need no secrecy; caching strategy is simple: retain permanently by key_id
+//! (key_id increases monotonically, very few entries).
 //!
-//! 与 runtime 版本的区别：依赖 `KeyFetcher` trait 而非完整的 `SignalingClient`，
-//! 使本模块可独立于上层通信协议使用。
+//! Unlike the runtime version: depends on `KeyFetcher` trait instead of the full `SignalingClient`,
+//! making this module usable independently of the upper communication protocol.
 
 use crate::error::{HyperError, HyperResult};
 use async_trait::async_trait;
@@ -14,80 +16,78 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// 公钥拉取接口
+/// Public key fetching interface
 ///
-/// 当 key_id 在本地缓存中不存在时，由实现者负责从远端（如 AIS/signaling）拉取。
-/// 返回 `(key_id, pubkey_bytes)`，其中 `pubkey_bytes` 必须是 32 字节 Ed25519 原始公钥。
+/// When a key_id is not found in the local cache, the implementor is responsible for
+/// fetching it from a remote source (e.g. AIS/signaling).
+/// Returns `(key_id, pubkey_bytes)`, where `pubkey_bytes` must be a 32-byte Ed25519 raw public key.
 #[async_trait]
 pub trait KeyFetcher: Send + Sync {
     async fn fetch_key(&self, key_id: u32) -> HyperResult<(u32, Vec<u8>)>;
 }
 
-/// AIS Ed25519 signing 公钥缓存
+/// AIS Ed25519 signing public key cache
 ///
-/// 线程安全，通过 `Arc<AisKeyCache>` 共享使用。
-/// 公钥按 key_id 永久存储；key_id 由 AIS 单调递增分配，实际条目数极少。
+/// Thread-safe, shared via `Arc<AisKeyCache>`.
+/// Public keys are stored permanently by key_id; key_id is monotonically assigned by AIS,
+/// with very few actual entries.
 pub struct AisKeyCache {
     cache: RwLock<HashMap<u32, VerifyingKey>>,
 }
 
 impl AisKeyCache {
-    /// 创建新的空缓存，返回 `Arc` 包装以便共享
+    /// Create a new empty cache, returned in an `Arc` wrapper for sharing
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             cache: RwLock::new(HashMap::new()),
         })
     }
 
-    /// 注册或续期时调用，将 AIS signing 公钥写入缓存
+    /// Called during registration or renewal to write AIS signing public key into cache
     ///
-    /// `pubkey_bytes` 必须是 32 字节的 Ed25519 原始公钥。
-    /// 若 key_id 已存在则覆盖（正常情况下不应发生，保持幂等）。
+    /// `pubkey_bytes` must be a 32-byte Ed25519 raw public key.
+    /// If key_id already exists, it is overwritten (should not normally occur, kept idempotent).
     pub async fn seed(&self, key_id: u32, pubkey_bytes: &[u8]) -> HyperResult<()> {
-        let verifying_key = VerifyingKey::from_bytes(
-            pubkey_bytes
-                .try_into()
-                .map_err(|_| HyperError::InvalidManifest("signing pubkey 必须为 32 字节".to_string()))?,
-        )
-        .map_err(|e| HyperError::InvalidManifest(format!("signing pubkey 无效: {e}")))?;
+        let verifying_key = VerifyingKey::from_bytes(pubkey_bytes.try_into().map_err(|_| {
+            HyperError::InvalidManifest("signing pubkey must be 32 bytes".to_string())
+        })?)
+        .map_err(|e| HyperError::InvalidManifest(format!("invalid signing pubkey: {e}")))?;
 
         self.cache.write().await.insert(key_id, verifying_key);
-        tracing::debug!(key_id, "AisKeyCache: 写入公钥");
+        tracing::debug!(key_id, "AisKeyCache: pubkey written");
         Ok(())
     }
 
-    /// 按 key_id 获取公钥；本地命中直接返回，miss 时通过 fetcher 拉取并缓存
+    /// Get public key by key_id; returns directly on local hit, fetches via fetcher on miss
     ///
-    /// 拉取失败视为不可恢复错误，由调用方决定是否重试。
+    /// Fetch failure is treated as an unrecoverable error; the caller decides whether to retry.
     pub async fn get_or_fetch(
         &self,
         key_id: u32,
         fetcher: &dyn KeyFetcher,
     ) -> HyperResult<VerifyingKey> {
-        // 先持读锁尝试命中，避免不必要的写锁竞争
+        // Try read lock first to avoid unnecessary write lock contention
         {
             let cache = self.cache.read().await;
             if let Some(key) = cache.get(&key_id) {
-                tracing::trace!(key_id, "AisKeyCache: 命中缓存");
+                tracing::trace!(key_id, "AisKeyCache: cache hit");
                 return Ok(*key);
             }
         }
 
-        // 缓存未命中，通过 fetcher 拉取
-        tracing::debug!(key_id, "AisKeyCache: 缓存未命中，拉取公钥");
+        // Cache miss, fetch via fetcher
+        tracing::debug!(key_id, "AisKeyCache: cache miss, fetching pubkey");
         let (returned_key_id, pubkey_bytes) = fetcher.fetch_key(key_id).await.map_err(|e| {
-            tracing::warn!(key_id, error = ?e, "AisKeyCache: 拉取公钥失败");
+            tracing::warn!(key_id, error = ?e, "AisKeyCache: pubkey fetch failed");
             e
         })?;
 
         let verifying_key =
             VerifyingKey::from_bytes(pubkey_bytes.as_slice().try_into().map_err(|_| {
-                HyperError::InvalidManifest(
-                    "拉取到的 signing pubkey 必须为 32 字节".to_string(),
-                )
+                HyperError::InvalidManifest("fetched signing pubkey must be 32 bytes".to_string())
             })?)
             .map_err(|e| {
-                HyperError::InvalidManifest(format!("拉取到的 signing pubkey 无效: {e}"))
+                HyperError::InvalidManifest(format!("fetched signing pubkey invalid: {e}"))
             })?;
 
         self.cache
@@ -96,7 +96,7 @@ impl AisKeyCache {
             .insert(returned_key_id, verifying_key);
         tracing::debug!(
             key_id = returned_key_id,
-            "AisKeyCache: 已缓存从远端获取的公钥"
+            "AisKeyCache: cached pubkey fetched from remote"
         );
 
         Ok(verifying_key)
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
 
-    /// 用固定种子生成可重复的 Ed25519 密钥对（无需 rand_core feature）
+    /// Generate a deterministic Ed25519 key pair from a fixed seed (no rand_core feature needed)
     fn test_signing_key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
@@ -184,11 +184,15 @@ mod tests {
         let cache = AisKeyCache::new();
         let bytes = verifying_key_bytes(2);
         cache.seed(1, &bytes).await.unwrap();
-        cache.seed(1, &bytes).await.unwrap(); // 不应报错
+        cache.seed(1, &bytes).await.unwrap(); // should not error
         let mock = MockFetcher::err();
         let result = cache.get_or_fetch(1, &mock).await;
         assert!(result.is_ok());
-        assert_eq!(mock.calls(), 0, "已 seed 的 key 应命中缓存，不触发拉取");
+        assert_eq!(
+            mock.calls(),
+            0,
+            "seeded key should hit cache, no fetch triggered"
+        );
     }
 
     // ─── get_or_fetch: cache hit ─────────────────────────────────────────────
@@ -228,11 +232,11 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(mock.calls(), 1);
 
-        // 第二次调用应命中缓存，不再触发拉取
+        // second call should hit cache, no further fetch
         let mock2 = MockFetcher::err();
         let result2 = cache.get_or_fetch(5, &mock2).await;
         assert!(result2.is_ok());
-        assert_eq!(mock2.calls(), 0, "第二次调用应命中缓存");
+        assert_eq!(mock2.calls(), 0, "second call should hit cache");
     }
 
     #[tokio::test]
@@ -249,7 +253,7 @@ mod tests {
         let cache = AisKeyCache::new();
         let mock = MockFetcher::ok(3, vec![0u8; 31]);
         let result = cache.get_or_fetch(3, &mock).await;
-        assert!(result.is_err(), "非法公钥长度应返回错误");
+        assert!(result.is_err(), "invalid pubkey length should return error");
     }
 
     #[tokio::test]

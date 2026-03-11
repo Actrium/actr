@@ -11,21 +11,21 @@ description = "Actor-RTC Web Common Library (shared between SW and DOM)"
 workspace = true
 
 [lib]
-crate-type = ["rlib"] # 纯 Rust 库，不生成 WASM
+crate-type = ["rlib"] # Pure Rust library, no WASM output
 
 [dependencies]
-# 序列化
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 
-# 工具
+# Utilities
 thiserror.workspace = true
 log.workspace = true
 
-# 数据结构
+# Data structures
 bytes = "1.5"
 
-# WASM 相关
+# WASM-related
 wasm-bindgen.workspace = true
 js-sys = "0.3"
 

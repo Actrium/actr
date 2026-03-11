@@ -7,8 +7,6 @@
 //! - Network type changed event triggers full recovery sequence
 //! - Result feedback mechanism works correctly
 
-mod common;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -17,9 +15,7 @@ use actr_hyper::lifecycle::{
     DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
     NetworkEventResult,
 };
-use actr_hyper::wire::webrtc::SignalingClient;
-
-use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 
 // ==================== Tests ====================
 
@@ -46,7 +42,7 @@ async fn test_network_available_triggers_recovery() {
         create_peer_with_websocket(id_peer_a.clone(), &server.url())
             .await
             .unwrap();
-    let (coordinator_b, _signaling_client_b) =
+    let (_coordinator_b, _signaling_client_b) =
         create_peer_with_websocket(id_peer_b.clone(), &server.url())
             .await
             .unwrap();
@@ -272,25 +268,11 @@ async fn test_result_feedback_mechanism() {
 
     tracing::info!("🧪 Test: Result feedback mechanism");
 
-    let server = TestSignalingServer::start().await.unwrap();
-    let id_peer_a = make_actor_id(500);
-
-    let (coordinator_a, signaling_client_a) =
-        create_peer_with_websocket(id_peer_a.clone(), &server.url())
-            .await
-            .unwrap();
-
-    let processor = Arc::new(DefaultNetworkEventProcessor::new(
-        signaling_client_a.clone(),
-        Some(coordinator_a.clone()),
-    ));
-
     let (event_tx, mut event_rx) = mpsc::channel(10);
     // Use a small buffer for result channel to test backpressure if needed, but here standard is fine
     let (result_tx, result_rx) = mpsc::channel(10);
     let network_handle = NetworkEventHandle::new(event_tx, result_rx);
 
-    let processor_clone = processor.clone();
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let shutdown_clone = shutdown_token.clone();
 

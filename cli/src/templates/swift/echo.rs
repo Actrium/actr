@@ -40,9 +40,9 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
         "README.md",
     )?;
     ProjectTemplate::load_file(
-        &fixtures_root.join("swift/echo/README.zh-CN.md.hbs"),
+        &fixtures_root.join("swift/echo/README.zh.md.hbs"),
         files,
-        "README.zh-CN.md",
+        "README.zh.md",
     )?;
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/Info.plist.hbs"),

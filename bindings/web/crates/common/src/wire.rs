@@ -1,28 +1,28 @@
 //! Wire protocol utilities for Actor-RTC Web
 //!
-//! 提供消息编码/解码、序列化/反序列化等工具函数
+//! Provides helpers for message encoding/decoding and serialization/deserialization.
 
 use crate::error::{WebError, WebResult};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-/// 将消息序列化为 JSON 字节流
+/// Serialize a message into JSON bytes.
 pub fn serialize_json<T: Serialize>(value: &T) -> WebResult<Bytes> {
     let json = serde_json::to_vec(value).map_err(|e| WebError::Serialization(e.to_string()))?;
     Ok(Bytes::from(json))
 }
 
-/// 从 JSON 字节流反序列化消息
+/// Deserialize a message from JSON bytes.
 pub fn deserialize_json<T: for<'de> Deserialize<'de>>(data: &[u8]) -> WebResult<T> {
     serde_json::from_slice(data).map_err(|e| WebError::Serialization(e.to_string()))
 }
 
-/// 将字节数组转换为 Bytes（零拷贝）
+/// Convert a byte slice into `Bytes`.
 pub fn bytes_from_slice(data: &[u8]) -> Bytes {
     Bytes::copy_from_slice(data)
 }
 
-/// 将 Vec<u8> 转换为 Bytes（零拷贝）
+/// Convert `Vec<u8>` into `Bytes`.
 pub fn bytes_from_vec(data: Vec<u8>) -> Bytes {
     Bytes::from(data)
 }

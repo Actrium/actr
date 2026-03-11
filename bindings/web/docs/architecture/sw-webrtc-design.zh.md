@@ -274,5 +274,5 @@ for &conn_type in &conn_types {
 ---
 
 **相关文档**：
-- [消息 I/O 入口出口](./message-io-entry-exit.md)
-- [架构总览](./overview.md)
+- [消息 I/O 入口出口](./message-io-entry-exit.zh.md)
+- [架构总览](./overview.zh.md)

@@ -198,17 +198,17 @@
 <body>
     <div class="container">
         <h1>🖥️ Echo Server</h1>
-        <p class="subtitle">Actor-RTC 浏览器端服务器示例</p>
+        <p class="subtitle">Actor-RTC browser-hosted server sample</p>
 
         <div id="status" class="status loading">
             <div class="spinner"></div>
-            <span>正在启动服务器...</span>
+            <span>Starting server...</span>
         </div>
 
-        <div class="info-section">
-            <h3>📡 服务器信息</h3>
+            <div class="info-section">
+            <h3>📡 Server info</h3>
             <div class="info-item">
-                <span class="info-label">服务名称</span>
+                <span class="info-label">Service Name</span>
                 <span class="info-value" id="serviceName">-</span>
             </div>
             <div class="info-item">
@@ -228,20 +228,20 @@
         <div class="stats">
             <div class="stat-card">
                 <div class="stat-value" id="requestCount">0</div>
-                <div class="stat-label">请求总数</div>
+                <div class="stat-label">Total requests</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="successCount">0</div>
-                <div class="stat-label">成功响应</div>
+                <div class="stat-label">Successful responses</div>
             </div>
             <div class="stat-card">
                 <div class="stat-value" id="errorCount">0</div>
-                <div class="stat-label">错误数</div>
+                <div class="stat-label">Error count</div>
             </div>
         </div>
 
         <div class="log-container">
-            <h3>📋 服务器日志</h3>
+            <h3>📋 Server logs</h3>
             <div class="log" id="log"></div>
         </div>
     </div>

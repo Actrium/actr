@@ -146,7 +146,7 @@ fn reconstruct_proto_content(proto: &prost_types::FileDescriptorProto) -> String
         content.push_str(&format!("service {} {{\n", service.name.as_ref().unwrap()));
         for method in &service.method {
             let method_name = method.name.as_ref().unwrap();
-            // 去掉包名前缀，只保留消息类型名
+            // Drop the package prefix and keep only the message type name.
             let input_type = method
                 .input_type
                 .as_ref()

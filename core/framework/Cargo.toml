@@ -27,7 +27,7 @@ tar = { version = "0.4", optional = true }
 
 [features]
 default = []
-# test-utils: 启用 DummyContext 等测试辅助工具（包含 uuid v4 生成，不兼容 wasm32）
+# `test-utils`: enable testing helpers such as `DummyContext` (includes UUID v4 generation and is not compatible with `wasm32`)
 test-utils = ["uuid/v4"]
 geoip = [
     "maxminddb",

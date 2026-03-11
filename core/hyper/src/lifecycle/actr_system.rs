@@ -51,8 +51,8 @@ pub struct ActrSystem {
     /// Signaling client
     signaling_client: Arc<dyn SignalingClient>,
 
-    /// Network event channels (延迟创建，在 create_network_event_handle() 时创建)
-    /// attach() 时会 take 这些 channels 传递给 ActrNode
+    /// Network event channels (lazily created in create_network_event_handle())
+    /// Taken and passed to ActrNode during attach()
     network_event_channels: NetworkEventChannels,
 }
 
@@ -160,7 +160,7 @@ impl ActrSystem {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Initialize inproc infrastructure (Shell/Local communication - immediately available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        use crate::outbound::{HostGate, Gate};
+        use crate::outbound::{Gate, HostGate};
         use crate::transport::HostTransport;
 
         // Create TWO separate HostTransport instances for bidirectional communication
@@ -175,8 +175,7 @@ impl ActrSystem {
         tracing::debug!("✨ Created workload_to_shell HostTransport");
 
         // Shell uses shell_to_workload for sending
-        let inproc_gate =
-            Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
+        let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
         // Create DataStreamRegistry for DataStream callbacks
         let data_stream_registry = Arc::new(crate::inbound::DataStreamRegistry::new());
@@ -211,29 +210,29 @@ impl ActrSystem {
         })
     }
 
-    /// 创建网络事件处理基础设施（按需调用）
+    /// Create network event processing infrastructure (called on demand)
     ///
-    /// 创建 NetworkEventHandle 和内部 channels。
-    /// channels 会存储在结构体中，供 attach() 使用。
+    /// Creates NetworkEventHandle and internal channels.
+    /// Channels are stored in the struct for use by attach().
     ///
-    /// # 参数
-    /// - `debounce_ms`: 防抖窗口时间（毫秒）。如果为 0，则使用默认值。
+    /// # Parameters
+    /// - `debounce_ms`: Debounce window time in milliseconds. If 0, uses default.
     ///
-    /// # 注意
-    /// - 只能调用一次
-    /// - 如果不调用此方法，网络事件功能将不可用
+    /// # Notes
+    /// - Can only be called once
+    /// - If this method is not called, network event functionality will be unavailable
     ///
     /// # Panics
-    /// 如果已经调用过此方法，会 panic
+    /// Panics if this method has already been called
     pub fn create_network_event_handle(
         &self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
-        // 创建双向 channels
+        // Create bidirectional channels
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
 
-        // 存储 channels（供 attach() 使用）
+        // Store channels (for use by attach())
         let mut channels = self
             .network_event_channels
             .lock()
@@ -243,7 +242,7 @@ impl ActrSystem {
             panic!("create_network_event_handle() can only be called once");
         }
 
-        // 构造防抖配置
+        // Build debounce config
         let debounce_config = if debounce_ms > 0 {
             Some(crate::lifecycle::network_event::DebounceConfig {
                 window: std::time::Duration::from_millis(debounce_ms),
@@ -254,7 +253,7 @@ impl ActrSystem {
 
         *channels = Some((event_rx, result_tx, debounce_config));
 
-        // 创建并返回 NetworkEventHandle
+        // Create and return NetworkEventHandle
         crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
     }
 
@@ -291,7 +290,7 @@ impl ActrSystem {
                 None
             }
         };
-        // 从 network_event_channels 中 take channels（如果存在）
+        // Take channels from network_event_channels (if present)
         let (network_event_rx, network_event_result_tx, network_event_debounce_config) = self
             .network_event_channels
             .lock()
@@ -308,7 +307,7 @@ impl ActrSystem {
             context_factory: Some(self.context_factory), // Initialized with inproc_gate ready
             signaling_client: self.signaling_client,
             actor_id: None,              // Obtained after startup
-            credential_state: None,      // Obtained after startup（含 TurnCredential）
+            credential_state: None,      // Obtained after startup (includes TurnCredential)
             webrtc_coordinator: None,    // Pass shared coordinator
             webrtc_gate: None,           // Created after startup
             websocket_gate: None,        // Created after startup (if websocket_listen_port is set)

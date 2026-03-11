@@ -1,75 +1,75 @@
-//! 业务消息分发层
+//! Business message dispatch layer
 //!
-//! `ActrDispatch` 是新 actr-runtime 的核心结构，负责：
-//! 1. ACL 权限检查
-//! 2. 路由键 → Workload handler 的静态分发
-//! 3. Handler panic 捕获与报告
-//! 4. 生命周期钩子委托（on_start / on_stop）
+//! `ActrDispatch` is the core struct of the new actr-runtime, responsible for:
+//! 1. ACL permission checking
+//! 2. Route key -> Workload handler static dispatch
+//! 3. Handler panic capture and reporting
+//! 4. Lifecycle hook delegation (on_start / on_stop)
 //!
-//! 本模块**不包含**任何 IO、网络、transport 逻辑，
-//! 可在 native 和 wasm32 目标上编译运行。
+//! This module contains **no** IO, network, or transport logic,
+//! and can be compiled and run on both native and wasm32 targets.
 
 use std::sync::Arc;
 
 use actr_framework::{Context, MessageDispatcher, Workload};
-use actr_protocol::{Acl, ActrError, ActrId, ActrIdExt as _, ActorResult, RpcEnvelope};
+use actr_protocol::{Acl, ActorResult, ActrError, ActrId, ActrIdExt as _, RpcEnvelope};
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 
 use crate::acl::check_acl_permission;
 
-/// 纯业务分发器
+/// Pure business dispatcher
 ///
-/// 持有 `Arc<W>` workload 实例与可选 ACL 规则，
-/// 对外暴露 `dispatch()` 与生命周期方法。
+/// Holds an `Arc<W>` workload instance and optional ACL rules,
+/// exposing `dispatch()` and lifecycle methods.
 pub struct ActrDispatch<W: Workload> {
     workload: Arc<W>,
     acl: Option<Acl>,
 }
 
 impl<W: Workload> ActrDispatch<W> {
-    /// 创建分发器
+    /// Create a dispatcher
     ///
-    /// # 参数
-    /// - `workload`: 业务 Workload 实例（`Arc` 包装）
-    /// - `acl`: 可选 ACL 规则集；为 `None` 时默认放行所有调用
+    /// # Arguments
+    /// - `workload`: Business Workload instance (wrapped in `Arc`)
+    /// - `acl`: Optional ACL rule set; `None` means all calls are allowed by default
     pub fn new(workload: Arc<W>, acl: Option<Acl>) -> Self {
         Self { workload, acl }
     }
 
-    /// 获取 Workload 引用
+    /// Get Workload reference
     pub fn workload(&self) -> &W {
         &self.workload
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 生命周期
+    // Lifecycle
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    /// 转发 on_start 生命周期钩子
+    /// Forward on_start lifecycle hook
     pub async fn on_start<C: Context>(&self, ctx: &C) -> ActorResult<()> {
         self.workload.on_start(ctx).await
     }
 
-    /// 转发 on_stop 生命周期钩子
+    /// Forward on_stop lifecycle hook
     pub async fn on_stop<C: Context>(&self, ctx: &C) -> ActorResult<()> {
         self.workload.on_stop(ctx).await
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 消息分发
+    // Message dispatch
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    /// 分发入站消息：ACL 检查 → 路由 → handler 执行
+    /// Dispatch inbound message: ACL check -> routing -> handler execution
     ///
-    /// # 参数
-    /// - `self_id`: 当前 Actor 的 ID
-    /// - `caller_id`: 调用方 ID（本地调用时为 `None`）
-    /// - `envelope`: RPC 信封（包含 route_key 和 payload）
-    /// - `ctx`: 执行上下文（泛型，由上层传入）
+    /// # Arguments
+    /// - `self_id`: Current Actor's ID
+    /// - `caller_id`: Caller ID (`None` for local calls)
+    /// - `envelope`: RPC envelope (contains route_key and payload)
+    /// - `ctx`: Execution context (generic, provided by upper layer)
     ///
-    /// # 返回值
-    /// 序列化后的响应字节，或 `ActrError`
+    /// # Returns
+    /// Serialized response bytes, or `ActrError`
     pub async fn dispatch<C: Context>(
         &self,
         self_id: &ActrId,
@@ -77,7 +77,7 @@ impl<W: Workload> ActrDispatch<W> {
         envelope: RpcEnvelope,
         ctx: &C,
     ) -> ActorResult<Bytes> {
-        // ── ACL 检查 ──
+        // -- ACL check --
         let allowed = check_acl_permission(caller_id, self_id, self.acl.as_ref())
             .map_err(|e| ActrError::Internal(format!("ACL check failed: {e}")))?;
 
@@ -98,26 +98,19 @@ impl<W: Workload> ActrDispatch<W> {
             )));
         }
 
-        // ── 静态分发 + panic 捕获 ──
+        // -- Static dispatch + panic capture --
         self.do_dispatch(envelope, ctx).await
     }
 
-    /// 内部分发：调用 `MessageDispatcher::dispatch`，捕获 handler panic
-    async fn do_dispatch<C: Context>(
-        &self,
-        envelope: RpcEnvelope,
-        ctx: &C,
-    ) -> ActorResult<Bytes> {
+    /// Internal dispatch: call `MessageDispatcher::dispatch`, capture handler panics
+    async fn do_dispatch<C: Context>(&self, envelope: RpcEnvelope, ctx: &C) -> ActorResult<Bytes> {
         let route_key = envelope.route_key.clone();
         let request_id = envelope.request_id.clone();
 
-        let result = std::panic::AssertUnwindSafe(W::Dispatcher::dispatch(
-            &self.workload,
-            envelope,
-            ctx,
-        ))
-        .catch_unwind()
-        .await;
+        let result =
+            std::panic::AssertUnwindSafe(W::Dispatcher::dispatch(&self.workload, envelope, ctx))
+                .catch_unwind()
+                .await;
 
         match result {
             Ok(r) => r,
@@ -130,7 +123,7 @@ impl<W: Workload> ActrDispatch<W> {
                     request_id = %request_id,
                     "handler panicked: {}", info,
                 );
-                // 通知 workload 的 on_error 钩子
+                // Notify workload's on_error hook
                 let _ = self
                     .workload
                     .on_error(ctx, format!("handler panicked: {info}"))
@@ -144,10 +137,10 @@ impl<W: Workload> ActrDispatch<W> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 工具函数
+// Utility functions
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// 从 panic payload 提取可读字符串
+/// Extract a readable string from a panic payload
 fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()

@@ -1,37 +1,39 @@
-//! 将 manifest JSON 嵌入 Actor 包二进制文件
+//! Embed manifest JSON into actor package binaries.
 //!
-//! 供 `actr dev sign` 工具使用，将签名后的 manifest JSON 写入对应 section。
+//! Used by `actr dev sign` to write the signed manifest JSON into the target
+//! binary section.
 //!
-//! | 格式    | section 名            | 实现方式         |
-//! |---------|-----------------------|-----------------|
-//! | WASM    | custom `actr-manifest` | 纯 Rust         |
-//! | ELF64   | `.actr_manifest`      | `objcopy` 子进程 |
-//! | Mach-O  | `__TEXT/__actr_mani`  | `llvm-objcopy` 子进程 |
+//! | Format | Section name | Implementation |
+//! |--------|--------------|----------------|
+//! | WASM | custom `actr-manifest` | pure Rust |
+//! | ELF64 | `.actr_manifest` | `objcopy` subprocess |
+//! | Mach-O | `__TEXT/__actr_mani` | `llvm-objcopy` subprocess |
 
 use std::path::Path;
 
+use super::manifest::{WASM_MANIFEST_SECTION, is_wasm, read_leb128_u32};
 use crate::error::{HyperError, HyperResult};
-use super::manifest::{WASM_MANIFEST_SECTION, read_leb128_u32, is_wasm};
 
-// 重新导出 section 名称常量（embed 逻辑需要与 extract 保持一致）
+// Re-export section name constants so embed/extract stay aligned.
 pub const ELF_SECTION_NAME: &str = "actr_manifest";
 pub const MACHO_SEGMENT_NAME: &str = "__TEXT";
 pub const MACHO_SECTION_NAME: &str = "__actr_mani";
 
 // ─── WASM ────────────────────────────────────────────────────────────────────
 
-/// 将 manifest JSON 嵌入 WASM 字节流
+/// Embed manifest JSON into a WASM byte stream.
 ///
-/// 若已存在 `actr-manifest` custom section，先移除后再追加新内容。
-/// 新 section 始终追加在最后一个 section 之后。
+/// If an `actr-manifest` custom section already exists, it is removed before
+/// appending the new payload. The new section is always appended after the
+/// final section.
 pub fn embed_wasm_manifest(wasm_bytes: &[u8], manifest_json: &[u8]) -> HyperResult<Vec<u8>> {
     if !is_wasm(wasm_bytes) {
         return Err(HyperError::InvalidManifest(
-            "不是有效的 WASM 文件".to_string(),
+            "Not a valid WASM file".to_string(),
         ));
     }
 
-    // 重建字节流，跳过旧的 actr-manifest section
+    // Rebuild the byte stream while skipping the old actr-manifest section.
     let mut out = Vec::with_capacity(wasm_bytes.len() + manifest_json.len() + 32);
     out.extend_from_slice(&wasm_bytes[0..8]); // magic + version
 
@@ -41,18 +43,19 @@ pub fn embed_wasm_manifest(wasm_bytes: &[u8], manifest_json: &[u8]) -> HyperResu
         let section_id = wasm_bytes[pos];
         pos += 1;
 
-        let (section_size, bytes_read) = read_leb128_u32(&wasm_bytes[pos..])
-            .ok_or_else(|| HyperError::InvalidManifest("WASM LEB128 解码失败".to_string()))?;
+        let (section_size, bytes_read) = read_leb128_u32(&wasm_bytes[pos..]).ok_or_else(|| {
+            HyperError::InvalidManifest("Failed to decode WASM LEB128".to_string())
+        })?;
         let header_end = pos + bytes_read;
         let section_end = header_end + section_size as usize;
 
         if section_end > wasm_bytes.len() {
             return Err(HyperError::InvalidManifest(
-                "WASM section 超出文件边界".to_string(),
+                "WASM section exceeds file bounds".to_string(),
             ));
         }
 
-        // 跳过旧的 actr-manifest custom section
+        // Skip the old actr-manifest custom section.
         let mut skip = false;
         if section_id == 0 {
             if let Some((name_len, name_leb_bytes)) = read_leb128_u32(&wasm_bytes[header_end..]) {
@@ -74,7 +77,7 @@ pub fn embed_wasm_manifest(wasm_bytes: &[u8], manifest_json: &[u8]) -> HyperResu
         pos = section_end;
     }
 
-    // 追加新的 actr-manifest custom section
+    // Append the new actr-manifest custom section.
     let name_bytes = WASM_MANIFEST_SECTION.as_bytes();
     let name_len_enc = encode_leb128_u32(name_bytes.len() as u32);
     let payload_len = name_len_enc.len() + name_bytes.len() + manifest_json.len();
@@ -89,32 +92,33 @@ pub fn embed_wasm_manifest(wasm_bytes: &[u8], manifest_json: &[u8]) -> HyperResu
     tracing::info!(
         manifest_len = manifest_json.len(),
         output_len = out.len(),
-        "WASM manifest section 已嵌入"
+        "Embedded WASM manifest section"
     );
     Ok(out)
 }
 
-// ─── ELF（通过 objcopy 子进程）────────────────────────────────────────────────
+// ─── ELF (via objcopy subprocess) ───────────────────────────────────────────
 
-/// 将 manifest JSON 嵌入 ELF 二进制文件
+/// Embed manifest JSON into an ELF binary.
 ///
-/// 使用 `objcopy` 子进程实现，需要系统安装 `binutils`（Linux 标准工具）。
-/// 先移除已有的 `.actr_manifest` section，再重新添加，保证幂等。
+/// Uses the `objcopy` subprocess and requires `binutils` to be installed.
+/// Removes any existing `.actr_manifest` section first so the operation is
+/// idempotent.
 pub fn embed_elf_manifest(
     input_path: &Path,
     output_path: &Path,
     manifest_json: &[u8],
 ) -> HyperResult<()> {
-    // 将 manifest JSON 写入临时文件
+    // Write the manifest JSON to a temporary file.
     let tmp = tempfile_for_manifest(manifest_json)?;
 
-    // 检测 objcopy 是否可用
+    // Check whether objcopy is available.
     let objcopy = find_objcopy()?;
 
     tracing::debug!(
         binary = %input_path.display(),
         tool = %objcopy,
-        "使用 objcopy 嵌入 ELF .actr_manifest section"
+        "Embedding ELF .actr_manifest section with objcopy"
     );
 
     // objcopy --remove-section=.actr_manifest --add-section=.actr_manifest=<tmp> \
@@ -125,36 +129,36 @@ pub fn embed_elf_manifest(
             "--add-section={ELF_SECTION_NAME}={}",
             tmp.path().display()
         ))
-        .arg(format!(
-            "--set-section-flags={ELF_SECTION_NAME}=readonly"
-        ))
+        .arg(format!("--set-section-flags={ELF_SECTION_NAME}=readonly"))
         .arg(input_path)
         .arg(output_path)
         .status()
         .map_err(|e| {
-            HyperError::Runtime(format!("objcopy 启动失败（是否已安装 binutils？）: {e}"))
+            HyperError::Runtime(format!(
+                "Failed to start objcopy (is binutils installed?): {e}"
+            ))
         })?;
 
     if !status.success() {
         return Err(HyperError::Runtime(format!(
-            "objcopy 失败，exit code: {:?}",
+            "objcopy failed with exit code {:?}",
             status.code()
         )));
     }
 
     tracing::info!(
         binary = %output_path.display(),
-        "ELF .actr_manifest section 已嵌入"
+        "Embedded ELF .actr_manifest section"
     );
     Ok(())
 }
 
-// ─── Mach-O（通过 llvm-objcopy 子进程）────────────────────────────────────────
+// ─── Mach-O (via llvm-objcopy subprocess) ───────────────────────────────────
 
-/// 将 manifest JSON 嵌入 Mach-O 二进制文件
+/// Embed manifest JSON into a Mach-O binary.
 ///
-/// 使用 `llvm-objcopy` 子进程实现，需要安装 LLVM 工具链。
-/// 嵌入的 section 位于 `__TEXT/__actr_mani`。
+/// Uses the `llvm-objcopy` subprocess and requires the LLVM toolchain.
+/// The manifest is embedded in the `__TEXT/__actr_mani` section.
 pub fn embed_macho_manifest(
     input_path: &Path,
     output_path: &Path,
@@ -162,13 +166,13 @@ pub fn embed_macho_manifest(
 ) -> HyperResult<()> {
     let tmp = tempfile_for_manifest(manifest_json)?;
 
-    // llvm-objcopy 可能以不同名称存在
+    // llvm-objcopy may be installed under different names.
     let tool = find_llvm_objcopy()?;
 
     tracing::debug!(
         binary = %input_path.display(),
         tool = %tool,
-        "使用 llvm-objcopy 嵌入 Mach-O __TEXT/__actr_mani section"
+        "Embedding Mach-O __TEXT/__actr_mani section with llvm-objcopy"
     );
 
     // llvm-objcopy --remove-section=__TEXT,__actr_mani \
@@ -176,33 +180,36 @@ pub fn embed_macho_manifest(
     let section_spec = format!("{MACHO_SEGMENT_NAME},{MACHO_SECTION_NAME}");
     let status = std::process::Command::new(&tool)
         .arg(format!("--remove-section={section_spec}"))
-        .arg(format!("--add-section={section_spec}={}", tmp.path().display()))
+        .arg(format!(
+            "--add-section={section_spec}={}",
+            tmp.path().display()
+        ))
         .arg(input_path)
         .arg(output_path)
         .status()
         .map_err(|e| {
             HyperError::Runtime(format!(
-                "llvm-objcopy 启动失败（是否已安装 LLVM 工具链？）: {e}"
+                "Failed to start llvm-objcopy (is the LLVM toolchain installed?): {e}"
             ))
         })?;
 
     if !status.success() {
         return Err(HyperError::Runtime(format!(
-            "llvm-objcopy 失败，exit code: {:?}",
+            "llvm-objcopy failed with exit code {:?}",
             status.code()
         )));
     }
 
     tracing::info!(
         binary = %output_path.display(),
-        "Mach-O __TEXT/__actr_mani section 已嵌入"
+        "Embedded Mach-O __TEXT/__actr_mani section"
     );
     Ok(())
 }
 
-// ─── 辅助函数 ────────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-/// LEB128 编码无符号 32 位整数
+/// Encode an unsigned 32-bit integer as LEB128.
 pub(crate) fn encode_leb128_u32(mut value: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(5);
     loop {
@@ -218,19 +225,19 @@ pub(crate) fn encode_leb128_u32(mut value: u32) -> Vec<u8> {
     out
 }
 
-/// 将 manifest JSON 写入临时文件，返回 NamedTempFile（保持文件打开以防提前删除）
+/// Write manifest JSON to a temporary file and keep it open to avoid early deletion.
 fn tempfile_for_manifest(manifest_json: &[u8]) -> HyperResult<tempfile::NamedTempFile> {
     use std::io::Write;
     let mut tmp = tempfile::NamedTempFile::new()
-        .map_err(|e| HyperError::Runtime(format!("创建临时文件失败: {e}")))?;
+        .map_err(|e| HyperError::Runtime(format!("Failed to create temp file: {e}")))?;
     tmp.write_all(manifest_json)
-        .map_err(|e| HyperError::Runtime(format!("写入临时文件失败: {e}")))?;
+        .map_err(|e| HyperError::Runtime(format!("Failed to write temp file: {e}")))?;
     tmp.flush()
-        .map_err(|e| HyperError::Runtime(format!("刷新临时文件失败: {e}")))?;
+        .map_err(|e| HyperError::Runtime(format!("Failed to flush temp file: {e}")))?;
     Ok(tmp)
 }
 
-/// 查找 objcopy（binutils）路径
+/// Find the objcopy executable from binutils.
 fn find_objcopy() -> HyperResult<String> {
     for candidate in &["objcopy", "llvm-objcopy", "x86_64-linux-gnu-objcopy"] {
         if std::process::Command::new(candidate)
@@ -242,11 +249,11 @@ fn find_objcopy() -> HyperResult<String> {
         }
     }
     Err(HyperError::Runtime(
-        "未找到 objcopy 工具，请安装 binutils（Ubuntu: apt install binutils）".to_string(),
+        "objcopy not found; install binutils (Ubuntu: apt install binutils)".to_string(),
     ))
 }
 
-/// 查找 llvm-objcopy 路径
+/// Find the llvm-objcopy executable.
 fn find_llvm_objcopy() -> HyperResult<String> {
     for candidate in &[
         "llvm-objcopy",
@@ -263,7 +270,7 @@ fn find_llvm_objcopy() -> HyperResult<String> {
         }
     }
     Err(HyperError::Runtime(
-        "未找到 llvm-objcopy 工具，请安装 LLVM 工具链（macOS: brew install llvm）".to_string(),
+        "llvm-objcopy not found; install the LLVM toolchain (macOS: brew install llvm)".to_string(),
     ))
 }
 
@@ -273,7 +280,7 @@ mod tests {
     use crate::verify::manifest::{extract_wasm_manifest, wasm_binary_hash_excluding_manifest};
 
     fn minimal_wasm() -> Vec<u8> {
-        // 最小合法 WASM: magic + version，无 section
+        // Minimal valid WASM: magic + version, no sections.
         b"\0asm\x01\x00\x00\x00".to_vec()
     }
 
@@ -297,10 +304,10 @@ mod tests {
 
         let embedded = embed_wasm_manifest(&wasm, manifest_json).unwrap();
 
-        // 嵌入后仍是合法 WASM（magic 不变）
+        // The embedded output must still be valid WASM (same magic).
         assert_eq!(&embedded[0..4], b"\0asm");
 
-        // 可以提取出 manifest section
+        // The manifest section should be extractable.
         let extracted = extract_wasm_manifest(&embedded).unwrap();
         assert_eq!(extracted, manifest_json);
     }
@@ -315,7 +322,10 @@ mod tests {
         let after_second = embed_wasm_manifest(&after_first, second).unwrap();
 
         let extracted = extract_wasm_manifest(&after_second).unwrap();
-        assert_eq!(extracted, second, "第二次嵌入应替换第一次的 section");
+        assert_eq!(
+            extracted, second,
+            "The second embed should replace the first section"
+        );
     }
 
     #[test]
@@ -329,7 +339,7 @@ mod tests {
 
         assert_eq!(
             hash_before, hash_after,
-            "嵌入 manifest section 后 binary_hash 应不变"
+            "binary_hash should remain unchanged after embedding the manifest section"
         );
     }
 

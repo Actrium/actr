@@ -291,6 +291,6 @@ loop {
 ---
 
 **相关文档**:
-- [双层架构设计](./dual-layer.md) - State Path vs Fast Path 详细设计
-- [API 层设计](./api-layer.md) - Gate/Context/ActrRef 实现
-- [完成度评估](./completion-status.md) - 相对 actr 的完成度分析
+- [双层架构设计](./dual-layer.zh.md) - State Path vs Fast Path 详细设计
+- [API 层设计](./api-layer.zh.md) - Gate/Context/ActrRef 实现
+- [完成度评估](./completion-status.zh.md) - 相对 actr 的完成度分析

@@ -19,7 +19,7 @@ async function waitForAutoEcho(page, label, timeout = 45000) {
         await page.waitForFunction(() => {
             const entries = document.querySelectorAll('#result .entry');
             for (const e of entries) {
-                if (e.textContent.includes('📥 回复')) return true;
+                if (e.textContent.includes('📥 Reply')) return true;
             }
             return false;
         }, { timeout });
@@ -38,7 +38,7 @@ async function manualEcho(page, label, timeout = 15000) {
         // Count existing 📥 entries
         const beforeCount = await page.evaluate(() => {
             return [...document.querySelectorAll('#result .entry')]
-                .filter(e => e.textContent.includes('📥 回复')).length;
+                .filter(e => e.textContent.includes('📥 Reply')).length;
         });
 
         // Click send button
@@ -60,7 +60,7 @@ async function manualEcho(page, label, timeout = 15000) {
             await sleep(100);
             const countNow = await page.evaluate(() => {
                 return [...document.querySelectorAll('#result .entry')]
-                    .filter(e => e.textContent.includes('📥 回复')).length;
+                .filter(e => e.textContent.includes('📥 Reply')).length;
             });
             if (countNow > beforeCount) {
                 return { ok: true, ms: Date.now() - start, label };
@@ -126,11 +126,11 @@ async function run() {
         await serverPage.waitForFunction(() => {
             const entries = document.querySelectorAll('.log-entry, .entry, #swLog div, #status');
             for (const e of entries) {
-                if (e.textContent.includes('registered') || e.textContent.includes('已连接') || e.textContent.includes('连接')) return true;
+            if (e.textContent.includes('registered') || e.textContent.includes('Connected')) return true;
             }
             // Also check status element
             const status = document.getElementById('status');
-            if (status && (status.textContent.includes('已连接') || status.textContent.includes('在线'))) return true;
+            if (status && status.textContent.includes('Connected')) return true;
             return false;
         }, { timeout: 30000 });
         console.log('Server appears registered');

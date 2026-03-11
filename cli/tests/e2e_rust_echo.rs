@@ -3,12 +3,10 @@
 //! These tests run against a mock signaling server (no real actrix needed).
 //! Run with: `cargo test --test e2e_rust_echo -- --ignored --test-threads=1`
 
-mod e2e_support;
-
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use e2e_support::{
+use actr_cli::test_support::{
     LoggedProcess, MockSignaling, align_project_with_local_actrix,
     align_rust_project_with_workspace, assert_success, cargo_build,
     pin_echo_service_dependency_version, random_manufacturer, run_actr, rust_e2e_target_dir,

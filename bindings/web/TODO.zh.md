@@ -2,7 +2,7 @@
 
 **最后更新**: 2026-01-08
 **整体完成度**: 82% (相对于 actr Native) / 100% (相对于 Web 适配需求)
-**关键架构决策**: 采用"统一在 WASM"方案（详见 [WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.md)）
+**关键架构决策**: 采用"统一在 WASM"方案（详见 [WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.zh.md)）
 **P0 状态**: ✅ **全部完成** - 生产就绪，包含完整生命周期恢复和错误处理机制！
 
 ---
@@ -149,7 +149,7 @@
 ### 6. Web 环境生命周期恢复机制 (0% → 100%) ✅ **已完成**
 **完成日期**: 2026-01-08
 **文件位置**: `crates/runtime-dom/src/lifecycle.rs`, `crates/runtime-sw/src/lifecycle.rs`, `crates/runtime-sw/src/webrtc_recovery.rs`
-**设计文档**: [Web 生命周期恢复机制设计](./docs/architecture/web-lifecycle-recovery.md)
+**设计文档**: [Web 生命周期恢复机制设计](./docs/architecture/web-lifecycle-recovery.zh.md)
 **提交**: c0f561d, 8e159e0
 
 **问题背景**：
@@ -441,7 +441,7 @@
 ---
 
 ### 14. 多语言支持验证 (0% → 60%) ⭐ **新增**
-**基于**: [WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.md#八、多语言支持路径)
+**基于**: [WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.zh.md#八、多语言支持路径)
 
 - [ ] **定义统一 WASM 接口**
   - [ ] Actor trait 定义
@@ -584,8 +584,8 @@
 ---
 
 **核心架构文档**: ⭐ **新增**
-- **[WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.md)** - 核心技术决策
-- [完成度评估](./docs/architecture/completion-status.md) - 详细分析
+- **[WASM-DOM 集成架构](./docs/architecture/wasm-dom-integration.zh.md)** - 核心技术决策
+- [完成度评估](./docs/architecture/completion-status.zh.md) - 详细分析
 - [实现总结](./docs/architecture/implementation.md) - 已完成功能
 - [需求完成度](./docs/requirements-completion.md) - 需求进度
 

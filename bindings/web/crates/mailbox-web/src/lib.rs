@@ -1,9 +1,9 @@
 //! IndexedDB-based Mailbox for Actor-RTC Web
 //!
-//! # 组件
+//! # Components
 //!
-//! - **IndexedDbMailbox**: 主 Mailbox 实现，支持优先级队列
-//! - **DeadLetterQueue**: 死信队列，存储处理失败的消息
+//! - **IndexedDbMailbox**: Main mailbox implementation with priority queue support
+//! - **DeadLetterQueue**: Stores messages that failed processing
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

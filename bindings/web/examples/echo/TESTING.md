@@ -51,32 +51,32 @@ node test-auto.js X    # All cross-platform suites
 
 | Cat | Suite Name | Tests | Description |
 |-----|-----------|-------|-------------|
-| A | `BasicFunction` | 1-1 ~ 1-6 | 手动/空/快速/大消息, 特殊字符, Enter 键 |
-| A | `PageRefresh` | 2-1 ~ 2-4 | Client/Server/双端刷新后恢复 |
-| A | `SwLifecycle` | 3-1, 3-4 | SW 空闲终止 (keep-alive), SW 更新 |
-| A | `Webrtc` | 5-1, 5-4 | DataChannel 4 通道, Peer 状态变化日志 |
-| A | `MultiTab` | 6-1 ~ 6-6 | 多 client, 同时发送, 关闭/刷新单个 client |
-| A | `PageClose` | 7-1 ~ 7-5 | 页面关闭与 beforeunload |
-| A | `IdleRecovery` | 9-1 ~ 9-3 | SW 空闲恢复 |
-| A | `BrowserCompat` | 10-1, 10-4, 10-5 | Chrome/Edge/隐私模式 |
-| A | `Concurrency` | 12-1 ~ 12-4 | 100 条连续, 5 client 并发, 日志溢出, 内存泄漏 |
-| A | `ErrorRecovery` | 13-x | 错误恢复与降级 |
-| A | `SignalingConfig` | 14-x | Signaling 配置边界 |
-| B | `CdpHardRefresh` | 15-x | 硬刷新 (CDP) |
-| B | `CdpSwControl` | 16-x | SW 控制 (CDP) |
-| B | `CdpNetwork` | 17-x | 网络模拟 (CDP) |
-| B | `CdpWasmLoading` | 18-x | WASM 加载 (CDP) |
-| B | `CdpSignalingRecovery` | 19-x | Signaling 重连 (CDP) |
-| B | `CdpIdleRecovery` | 20-x | 空闲恢复 (CDP) |
-| C | `CActrixRestart` | C1-x | Actrix 服务器生命周期 |
-| C | `CSignalingEdgeCases` | C2-x | Signaling 边界 |
-| C | `CRustServerLifecycle` | C3-x | Rust Server 生命周期 |
-| X | `CrossplatformEnv` | X-0-x | 跨端环境检查 |
-| X | `CrossplatformBasic` | X-1-x | 跨端基本功能 |
-| X | `CrossplatformWebrtc` | X-2-x | 跨端 WebRTC |
-| X | `CrossplatformClientLifecycle` | X-3-x | 跨端 Client 生命周期 |
-| X | `CrossplatformNetwork` | X-4-x | 跨端网络 |
-| X | `CrossplatformProtocol` | X-5-x | 跨端协议 |
+| A | `BasicFunction` | 1-1 ~ 1-6 | manual, empty, rapid, large messages, special characters, Enter key |
+| A | `PageRefresh` | 2-1 ~ 2-4 | recovery after client, server, or dual refresh |
+| A | `SwLifecycle` | 3-1, 3-4 | idle SW termination, keep-alive, SW update |
+| A | `Webrtc` | 5-1, 5-4 | four DataChannel lanes, peer state change logs |
+| A | `MultiTab` | 6-1 ~ 6-6 | multiple clients, concurrent sends, closing or refreshing one client |
+| A | `PageClose` | 7-1 ~ 7-5 | page close and `beforeunload` behavior |
+| A | `IdleRecovery` | 9-1 ~ 9-3 | idle recovery |
+| A | `BrowserCompat` | 10-1, 10-4, 10-5 | Chrome, Edge, private browsing |
+| A | `Concurrency` | 12-1 ~ 12-4 | 100 sequential sends, 5-client concurrency, log overflow, memory leak checks |
+| A | `ErrorRecovery` | 13-x | error recovery and degradation |
+| A | `SignalingConfig` | 14-x | signaling configuration edge cases |
+| B | `CdpHardRefresh` | 15-x | hard refresh via CDP |
+| B | `CdpSwControl` | 16-x | Service Worker control via CDP |
+| B | `CdpNetwork` | 17-x | network simulation via CDP |
+| B | `CdpWasmLoading` | 18-x | WASM loading via CDP |
+| B | `CdpSignalingRecovery` | 19-x | signaling reconnect via CDP |
+| B | `CdpIdleRecovery` | 20-x | idle recovery via CDP |
+| C | `CActrixRestart` | C1-x | Actrix server lifecycle |
+| C | `CSignalingEdgeCases` | C2-x | signaling edge cases |
+| C | `CRustServerLifecycle` | C3-x | Rust server lifecycle |
+| X | `CrossplatformEnv` | X-0-x | cross-platform environment checks |
+| X | `CrossplatformBasic` | X-1-x | cross-platform basic functionality |
+| X | `CrossplatformWebrtc` | X-2-x | cross-platform WebRTC |
+| X | `CrossplatformClientLifecycle` | X-3-x | cross-platform client lifecycle |
+| X | `CrossplatformNetwork` | X-4-x | cross-platform networking |
+| X | `CrossplatformProtocol` | X-5-x | cross-platform protocol coverage |
 
 ## Environment Variables
 

@@ -20,7 +20,21 @@ pub const LOCAL_E2E_REALM_ID: u32 = 1001;
 const KS_GRPC_PORT: u16 = 50052;
 
 pub fn actr_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_actr"))
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_actr") {
+        return PathBuf::from(path);
+    }
+
+    let candidate = workspace_root()
+        .join("target/debug")
+        .join(format!("actr{}", std::env::consts::EXE_SUFFIX));
+    if candidate.is_file() {
+        return candidate;
+    }
+
+    panic!(
+        "failed to locate actr binary: CARGO_BIN_EXE_actr is unset and fallback missing at {}",
+        candidate.display()
+    );
 }
 
 pub fn rust_e2e_target_dir() -> PathBuf {
@@ -395,7 +409,6 @@ pub fn ensure_local_swift_xcframework() -> Result<PathBuf> {
 }
 
 pub struct LoggedProcess {
-    name: String,
     child: Child,
     logs: Arc<Mutex<Vec<String>>>,
 }
@@ -409,11 +422,7 @@ impl LoggedProcess {
         let logs = Arc::new(Mutex::new(Vec::new()));
         drain_stream(child.stdout.take(), Arc::clone(&logs), name, "stdout");
         drain_stream(child.stderr.take(), Arc::clone(&logs), name, "stderr");
-        Ok(Self {
-            name: name.to_string(),
-            child,
-            logs,
-        })
+        Ok(Self { child, logs })
     }
 
     pub fn wait_for_log(&mut self, needle: &str, timeout: Duration) -> bool {
@@ -500,7 +509,6 @@ pub struct LocalActrix {
     actrix_bin: PathBuf,
     config_path: PathBuf,
     http_port: u16,
-    ice_port: u16,
     pub http_base_url: String,
     pub signaling_ws_url: String,
 }
@@ -543,7 +551,6 @@ impl LocalActrix {
             actrix_bin,
             config_path,
             http_port,
-            ice_port,
             http_base_url: format!("http://127.0.0.1:{http_port}"),
             signaling_ws_url: format!("ws://127.0.0.1:{http_port}/signaling/ws"),
         })
@@ -889,7 +896,7 @@ struct ActrixRunInfo {
 
 fn artifact_download_enabled() -> bool {
     std::env::var("ACTR_E2E_ACTRIX_ARTIFACT")
-        .map(|value| value != "0" && value.to_ascii_lowercase() != "false")
+        .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
 }
 
@@ -1167,7 +1174,6 @@ fn write_actrix_config(
     fs::create_dir_all(&log_dir).context("failed to create log dir")?;
 
     let sqlite_path = normalize_path_for_toml(&sqlite_dir);
-    let log_path = normalize_path_for_toml(&log_dir);
 
     let config = format!(
         r#"enable = 25

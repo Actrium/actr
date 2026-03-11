@@ -1,7 +1,7 @@
-//! DOM 侧入站消息分发器
+//! DOM-side inbound message dispatcher.
 //!
-//! 接收来自 SW 的 Fast Path 消息（STREAM_*/MEDIA_RTP）
-//! 并派发到对应的注册器
+//! Receives Fast Path messages from the Service Worker (`STREAM_*` / `MEDIA_RTP`)
+//! and dispatches them to the corresponding registries.
 
 use actr_web_common::{MessageFormat, PayloadType, WebError, WebResult};
 use bytes::Bytes;
@@ -11,20 +11,20 @@ use std::sync::Arc;
 use crate::fastpath::{MediaFrameHandlerRegistry, StreamHandlerRegistry};
 use crate::transport::DataLane;
 
-/// DOM 侧入站消息分发器
+/// DOM-side inbound message dispatcher.
 pub struct DomInboundDispatcher {
-    /// Stream 处理器注册表
+    /// Stream handler registry.
     stream_registry: Arc<StreamHandlerRegistry>,
 
-    /// Media 处理器注册表
+    /// Media handler registry.
     media_registry: Arc<MediaFrameHandlerRegistry>,
 
-    /// SW 通信通道（用于响应）
+    /// Communication lane to the Service Worker.
     sw_lane: Arc<Mutex<Option<DataLane>>>,
 }
 
 impl DomInboundDispatcher {
-    /// 创建新的分发器
+    /// Create a new dispatcher.
     pub fn new(
         stream_registry: Arc<StreamHandlerRegistry>,
         media_registry: Arc<MediaFrameHandlerRegistry>,
@@ -36,19 +36,19 @@ impl DomInboundDispatcher {
         }
     }
 
-    /// 设置 SW 通信通道
+    /// Set the Service Worker communication lane.
     pub fn set_sw_lane(&self, lane: DataLane) {
         let mut sw_lane = self.sw_lane.lock();
         *sw_lane = Some(lane);
         log::info!("[DomInboundDispatcher] SW lane set");
     }
 
-    /// 分发接收到的消息
+    /// Dispatch a received message.
     ///
-    /// # 参数
-    /// - `data`: 原始消息数据
+    /// # Parameters
+    /// - `data`: Raw message bytes
     pub fn dispatch(&self, data: Bytes) -> WebResult<()> {
-        // 解析 MessageFormat
+        // Parse MessageFormat.
         let message = MessageFormat::try_from(data)?;
 
         match message.payload_type {
@@ -57,7 +57,7 @@ impl DomInboundDispatcher {
             }
             PayloadType::MediaRtp => self.dispatch_to_media_registry(message),
             PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                // RPC 消息不应该到 DOM，应该在 SW 处理
+                // RPC messages should not arrive at the DOM; they belong in the SW.
                 log::warn!(
                     "[DomInboundDispatcher] Received RPC message in DOM, \
                      this should be handled in SW"
@@ -69,10 +69,10 @@ impl DomInboundDispatcher {
         }
     }
 
-    /// 分发到 StreamHandlerRegistry
+    /// Dispatch to StreamHandlerRegistry.
     fn dispatch_to_stream_registry(&self, message: MessageFormat) -> WebResult<()> {
-        // 解析 stream_id（这里简化处理，实际可能需要更复杂的协议）
-        // 假设数据格式：[stream_id_len(4) | stream_id(N) | chunk_data(M)]
+        // Parse stream_id using a simplified protocol:
+        // [stream_id_len(4) | stream_id(N) | chunk_data(M)]
         let data = message.data;
         if data.len() < 4 {
             return Err(WebError::Protocol(
@@ -92,7 +92,7 @@ impl DomInboundDispatcher {
 
         let chunk_data = data.slice(4 + stream_id_len..);
 
-        // 派发到注册器
+        // Dispatch to the registry.
         self.stream_registry.dispatch(&stream_id, chunk_data);
 
         log::debug!(
@@ -103,10 +103,10 @@ impl DomInboundDispatcher {
         Ok(())
     }
 
-    /// 分发到 MediaFrameRegistry
+    /// Dispatch to MediaFrameRegistry.
     fn dispatch_to_media_registry(&self, message: MessageFormat) -> WebResult<()> {
-        // 解析 track_id（这里简化处理，实际可能需要更复杂的协议）
-        // 假设数据格式：[track_id_len(4) | track_id(N) | frame_data(M)]
+        // Parse track_id using a simplified protocol:
+        // [track_id_len(4) | track_id(N) | frame_data(M)]
         let data = message.data;
         if data.len() < 4 {
             return Err(WebError::Protocol(
@@ -126,7 +126,7 @@ impl DomInboundDispatcher {
 
         let frame_data = data.slice(4 + track_id_len..);
 
-        // 派发到注册器
+        // Dispatch to the registry.
         self.media_registry.dispatch(&track_id, frame_data);
 
         log::debug!(
@@ -158,7 +158,7 @@ mod tests {
         let media_registry = Arc::new(MediaFrameHandlerRegistry::new());
         let dispatcher = DomInboundDispatcher::new(stream_registry.clone(), media_registry);
 
-        // 注册一个测试handler
+        // Register a test handler.
         let received = Arc::new(parking_lot::Mutex::new(false));
         let received_clone = received.clone();
         stream_registry.register(
@@ -168,7 +168,7 @@ mod tests {
             }),
         );
 
-        // 构造测试消息
+        // Build a test message.
         // [stream_id_len(4) | stream_id(11="test-stream") | chunk_data(10="test-chunk")]
         let stream_id = b"test-stream";
         let chunk_data = b"test-chunk";
@@ -183,7 +183,7 @@ mod tests {
             .dispatch(message.to_bytes())
             .expect("Dispatch failed");
 
-        // 验证回调被调用
+        // Verify the callback was invoked.
         assert!(*received.lock());
     }
 }

@@ -1,7 +1,7 @@
 /**
- * WebRTC Coordinator - WebRTC 连接管理（DOM 侧）
+ * WebRTC Coordinator - WebRTC （DOM ）
  *
- * 负责创建和管理 RTCPeerConnection，接收 WebRTC 数据并转发
+ *  RTCPeerConnection， WebRTC 
  */
 
 import { ServiceWorkerBridge, WebRtcCommandPayload, WebRtcEventPayload } from './sw-bridge';
@@ -20,7 +20,7 @@ export interface PeerConnectionInfo {
 }
 
 /**
- * WebRTC 协调器（DOM 侧）
+ * WebRTC （DOM ）
  */
 export class WebRtcCoordinator {
   private swBridge: ServiceWorkerBridge;
@@ -52,7 +52,7 @@ export class WebRtcCoordinator {
       iceTransportPolicy: config.iceTransportPolicy,
     };
 
-    // 监听来自 SW 的 WebRTC 命令
+    //  SW  WebRTC 
     this.swBridge.onMessage((message) => {
       if (message.type === 'webrtc_command') {
         this.handleWebRtcCommand(message.payload);
@@ -61,7 +61,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 创建 Peer Connection
+   *  Peer Connection
    */
   async createPeerConnection(peerId: string): Promise<void> {
     if (this.peers.has(peerId)) {
@@ -69,11 +69,11 @@ export class WebRtcCoordinator {
       return;
     }
 
-    // 创建 RTCPeerConnection
+    //  RTCPeerConnection
     const connection = new RTCPeerConnection(this.config);
 
-    // TODO: 待商议：是否应该恢复预定义的 4 个 negotiated DataChannels 以优化连接速度？
-    // 详见 .cursor/plans/webrtc-datachannel-negotiation-strategy.md
+    // TODO: ： 4  negotiated DataChannels ？
+    //  .cursor/plans/webrtc-datachannel-negotiation-strategy.md
     // DataChannels will be created by offerer or received via ondatachannel.
     const dataChannels = new Map<number, RTCDataChannel>();
 
@@ -87,7 +87,7 @@ export class WebRtcCoordinator {
       this.attachDataChannel(peerId, laneId, channel);
     };
 
-    // 监听 ICE candidate
+    //  ICE candidate
     connection.onicecandidate = (event) => {
       if (event.candidate) {
         this.notifySW('ice_candidate', {
@@ -97,7 +97,7 @@ export class WebRtcCoordinator {
       }
     };
 
-    // 监听连接状态变化
+    // 
     connection.onconnectionstatechange = () => {
       console.log(`[WebRTC] Connection state changed: ${connection.connectionState}`);
       this.notifySW('connection_state_changed', {
@@ -111,12 +111,12 @@ export class WebRtcCoordinator {
       }
     };
 
-    // 监听 ICE 连接状态
+    //  ICE 
     connection.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE connection state: ${connection.iceConnectionState}`);
     };
 
-    // 存储 peer 信息
+    //  peer 
     this.peers.set(peerId, {
       peerId,
       connection,
@@ -128,14 +128,14 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 处理 DataChannel 消息
+   *  DataChannel 
    */
   private handleDataChannelMessage(
     peerId: string,
     channelId: number,
     data: ArrayBuffer | Blob
   ): void {
-    // 如果是 Blob，转换为 ArrayBuffer
+    //  Blob， ArrayBuffer
     if (data instanceof Blob) {
       // [DEBUG] Keep for now
       console.log(
@@ -163,18 +163,18 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 转发 DataChannel 消息到 Service Worker
+   *  DataChannel  Service Worker
    */
   private forwardDataChannelMessage(peerId: string, channelId: number, data: ArrayBuffer): void {
-    // 构造 stream ID
+    //  stream ID
     const streamId = `${peerId}:${channelId}`;
 
-    // 通过 Fast Path Forwarder 转发
+    //  Fast Path Forwarder 
     this.forwarder.forward(streamId, data);
   }
 
   /**
-   * 处理来自 SW 的 WebRTC 命令
+   *  SW  WebRTC 
    */
   private async handleWebRtcCommand(command: WebRtcCommandPayload): Promise<void> {
     const { action, peerId } = command;
@@ -231,7 +231,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 设置 Remote Description
+   *  Remote Description
    */
   private async setRemoteDescription(
     peerId: string,
@@ -247,7 +247,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 设置 Local Description
+   *  Local Description
    */
   private async setLocalDescription(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const peer = this.peers.get(peerId);
@@ -316,7 +316,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 添加 ICE Candidate
+   *  ICE Candidate
    */
   private async addIceCandidate(peerId: string, candidate: RTCIceCandidateInit): Promise<void> {
     const peer = this.peers.get(peerId);
@@ -346,7 +346,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 发送数据通过 DataChannel
+   *  DataChannel
    */
   private sendData(peerId: string, channelId: number, data: Uint8Array): void {
     const peer = this.peers.get(peerId);
@@ -392,12 +392,12 @@ export class WebRtcCoordinator {
         label: channel.label,
       });
 
-      // 创建专用 MessagePort 桥接：SW → port2 → port1 → DataChannel → Remote
-      // 出站数据通过专用 port 零拷贝发送，不经过共享控制通道
+      //  MessagePort ：SW → port2 → port1 → DataChannel → Remote
+      //  port ，
       const mc = new MessageChannel();
-      // port1 留在 DOM 侧：接收来自 SW 的出站数据，转发到 DataChannel
-      // SW DataLane::PostMessage 会在 payload 前添加 5 字节传输头 [PayloadType(1)|Length(4)]，
-      // 该 header 仅用于 WebSocket 多路复用，DataChannel 不需要，发送前须剥离。
+      // port1  DOM ： SW ， DataChannel
+      // SW DataLane::PostMessage  payload  5  [PayloadType(1)|Length(4)]，
+      //  header  WebSocket ，DataChannel ，。
       const TRANSPORT_HEADER_SIZE = 5;
       mc.port1.onmessage = (e: MessageEvent) => {
         if (channel.readyState === 'open') {
@@ -410,7 +410,7 @@ export class WebRtcCoordinator {
           }
         }
       };
-      // port2 通过 Transferable 转移给 SW → 注入 WirePool → DataLane::PostMessage
+      // port2  Transferable  SW →  WirePool → DataLane::PostMessage
       this.swBridge.sendDataChannelPort(peerId, mc.port2);
     };
 
@@ -453,7 +453,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 关闭 Peer Connection
+   *  Peer Connection
    */
   private closePeerConnection(peerId: string): void {
     const peer = this.peers.get(peerId);
@@ -461,12 +461,12 @@ export class WebRtcCoordinator {
       return;
     }
 
-    // 关闭所有 DataChannels
+    //  DataChannels
     for (const channel of peer.dataChannels.values()) {
       channel.close();
     }
 
-    // 关闭 PeerConnection
+    //  PeerConnection
     peer.connection.close();
 
     this.peers.delete(peerId);
@@ -474,7 +474,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 通知 Service Worker
+   *  Service Worker
    */
   private notifySW<T extends WebRtcEventPayload['eventType']>(
     eventType: T,
@@ -490,21 +490,21 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 获取 Peer 信息
+   *  Peer 
    */
   getPeerInfo(peerId: string): PeerConnectionInfo | undefined {
     return this.peers.get(peerId);
   }
 
   /**
-   * 获取所有 Peer
+   *  Peer
    */
   getAllPeers(): PeerConnectionInfo[] {
     return Array.from(this.peers.values());
   }
 
   /**
-   * 清理所有资源
+   * 
    */
   dispose(): void {
     for (const peerId of this.peers.keys()) {

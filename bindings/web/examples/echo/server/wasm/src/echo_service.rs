@@ -1,7 +1,7 @@
-//! Echo Service 实现
+//! `EchoService` implementation.
 //!
-//! 处理 Echo RPC 请求。
-//! echo 方法签名包含 RuntimeContext 参数，后续由 proto 代码生成器自动生成。
+//! Handles Echo RPC requests.
+//! The eventual generated signature includes `RuntimeContext`.
 
 use std::rc::Rc;
 
@@ -9,7 +9,7 @@ use crate::generated::echo::{EchoRequest, EchoResponse};
 use actr_runtime_sw::RuntimeContext;
 use prost::Message;
 
-/// Echo Service 实现
+/// `EchoService` implementation.
 pub struct EchoService;
 
 impl EchoService {
@@ -17,10 +17,11 @@ impl EchoService {
         Self
     }
 
-    /// 处理 Echo 请求
+    /// Handle an Echo request.
     ///
-    /// 方法签名包含 `ctx: Rc<RuntimeContext>`，后续将由 proto 生成。
-    /// 当前 echo 场景无需使用 ctx（纯本地处理），但保留参数以匹配生成的签名。
+    /// The generated signature includes `ctx: Rc<RuntimeContext>`.
+    /// The Echo flow does not need it today because processing is local, but
+    /// the parameter is kept to match the generated shape.
     pub async fn echo(
         &self,
         request: EchoRequest,
@@ -43,17 +44,17 @@ impl Default for EchoService {
     }
 }
 
-/// 全局服务实例
+/// Global service instance.
 static SERVICE: std::sync::OnceLock<EchoService> = std::sync::OnceLock::new();
 
 fn get_service() -> &'static EchoService {
     SERVICE.get_or_init(EchoService::new)
 }
 
-/// 处理 RPC 请求
+/// Handle an RPC request.
 ///
-/// 由 register_echo_service 注册的 handler 调用。
-/// ctx 透传给具体的 service method。
+/// Called by the handler registered through `register_echo_service`.
+/// The context is forwarded into the concrete service method.
 pub async fn handle_request(
     method: &str,
     request_bytes: &[u8],
@@ -61,14 +62,14 @@ pub async fn handle_request(
 ) -> Result<Vec<u8>, String> {
     match method {
         "echo" | "Echo" => {
-            // 解码请求
+            // Decode the request.
             let request = EchoRequest::decode(request_bytes)
                 .map_err(|e| format!("Failed to decode EchoRequest: {}", e))?;
 
-            // 调用服务（传入 ctx）
+            // Invoke the service with the forwarded context.
             let response = get_service().echo(request, ctx).await?;
 
-            // 编码响应
+            // Encode the response.
             let mut buf = Vec::with_capacity(response.encoded_len());
             response
                 .encode(&mut buf)

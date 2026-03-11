@@ -2,7 +2,7 @@ syntax = "proto2";
 
 package webrtc;
 
-// IceCandidate 对应 WebRTC 标准中的 RTCIceCandidateInit 接口。
+// IceCandidate mirrors the WebRTC standard RTCIceCandidateInit interface.
 message IceCandidate {
   required string candidate = 1;
   optional string sdp_mid = 2;
@@ -10,7 +10,7 @@ message IceCandidate {
   optional string username_fragment = 4;
 }
 
-// SessionDescription 是对 SDP 的统一封装。所有轨道信息都包含在 sdp 字符串中。
+// SessionDescription is the unified wrapper for SDP. All track information is encoded in the `sdp` string.
 message SessionDescription {
   enum Type {
     OFFER = 0;

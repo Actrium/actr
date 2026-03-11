@@ -1,18 +1,18 @@
-//! Scheduler - 消息调度器
+//! Scheduler for message dispatch.
 //!
-//! 负责串行调度消息到 Actor 执行
-//! 对标 actr 的 Scheduler 逻辑
+//! Schedules messages into actor execution serially.
+//! Mirrors the scheduler logic used in actr.
 //!
-//! # 架构位置
+//! # Architecture position
 //!
 //! ```text
 //! Mailbox → MailboxProcessor → Scheduler → Actor
 //! ```
 //!
-//! Scheduler 保证：
-//! - 同一个 Actor 的消息串行执行
-//! - 不同 Actor 的消息可以并发执行（在 WASM 单线程中通过 async 实现）
-//! - 支持优先级调度
+//! Scheduler guarantees:
+//! - Messages for the same actor execute serially
+//! - Messages for different actors can interleave concurrently through async execution
+//! - Priority-aware scheduling is supported
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -25,21 +25,21 @@ use actr_protocol::ActrId;
 use actr_web_common::WebResult;
 use wasm_bindgen_futures::spawn_local;
 
-/// Actor 处理回调类型
+/// Actor processing callback type.
 pub type ActorHandler = Rc<dyn Fn(MessageRecord) -> Pin<Box<dyn Future<Output = WebResult<()>>>>>;
 
-/// 调度项
+/// Scheduled item.
 struct ScheduleItem {
     message: MessageRecord,
     on_complete: Option<Box<dyn FnOnce(WebResult<()>)>>,
 }
 
-/// Actor 队列状态
+/// Actor queue state.
 struct ActorQueue {
-    /// 待处理消息队列
+    /// Pending message queue.
     pending: VecDeque<ScheduleItem>,
 
-    /// 是否正在处理中
+    /// Whether the queue is currently being processed.
     processing: bool,
 }
 
@@ -57,27 +57,27 @@ impl ActorQueue {
 /// Wrapped in `Rc` so that `spawn_local` closures can hold a reference
 /// and continue processing the actor queue after each message completes.
 struct SchedulerInner {
-    /// Actor 处理回调
+    /// Actor handler callback.
     handler: RefCell<Option<ActorHandler>>,
 
-    /// 每个 Actor 的队列
+    /// Per-actor queues.
     actor_queues: RefCell<HashMap<ActrId, ActorQueue>>,
 
-    /// 是否正在运行
+    /// Whether the scheduler is running.
     running: RefCell<bool>,
 }
 
-/// Scheduler - 消息调度器
+/// Message scheduler.
 ///
-/// 保证同一个 Actor 的消息串行执行，不同 Actor 的消息可以并发执行。
-/// 使用 `Rc<SchedulerInner>` 使得异步处理循环可以持有必要的引用。
+/// Ensures serial execution per actor while allowing different actors to interleave.
+/// Uses `Rc<SchedulerInner>` so the async processing loop can retain the required state.
 #[derive(Clone)]
 pub struct Scheduler {
     inner: Rc<SchedulerInner>,
 }
 
 impl Scheduler {
-    /// 创建新的调度器
+    /// Create a new scheduler.
     pub fn new() -> Self {
         Self {
             inner: Rc::new(SchedulerInner {
@@ -88,31 +88,31 @@ impl Scheduler {
         }
     }
 
-    /// 设置 Actor 处理回调
+    /// Set the actor handler callback.
     pub fn set_handler(&self, handler: ActorHandler) {
         *self.inner.handler.borrow_mut() = Some(handler);
     }
 
-    /// 启动调度器
+    /// Start the scheduler.
     pub fn start(&self) {
         *self.inner.running.borrow_mut() = true;
         log::info!("[Scheduler] Started");
     }
 
-    /// 停止调度器
+    /// Stop the scheduler.
     pub fn stop(&self) {
         *self.inner.running.borrow_mut() = false;
         log::info!("[Scheduler] Stopped");
     }
 
-    /// 调度消息
+    /// Schedule a message.
     ///
-    /// 将消息加入对应 Actor 的队列，保证串行执行
+    /// Enqueues the message into the actor queue so it executes serially.
     pub fn schedule(&self, actor_id: ActrId, message: MessageRecord) {
         self.schedule_with_callback(actor_id, message, None);
     }
 
-    /// 调度消息（带完成回调）
+    /// Schedule a message with an optional completion callback.
     pub fn schedule_with_callback(
         &self,
         actor_id: ActrId,
@@ -136,7 +136,7 @@ impl Scheduler {
             actor_id
         );
 
-        // 加入队列
+        // Enqueue the message.
         let should_process = {
             let mut queues = self.inner.actor_queues.borrow_mut();
             let queue = queues
@@ -147,7 +147,7 @@ impl Scheduler {
                 on_complete,
             });
 
-            // 如果队列没有在处理中，则启动处理
+            // Start processing if the queue is currently idle.
             !queue.processing
         };
 
@@ -156,28 +156,28 @@ impl Scheduler {
         }
     }
 
-    /// 处理 Actor 队列（连续处理直到队列为空）
+    /// Process one actor queue until it becomes empty.
     ///
-    /// 使用 `Rc<SchedulerInner>` 而非 `&self`，使得 `spawn_local` 闭包可以持有
-    /// 必要的引用，并在处理完每条消息后继续处理下一条。
+    /// Uses `Rc<SchedulerInner>` instead of `&self` so the `spawn_local` closure
+    /// can retain the necessary state and continue with the next message.
     fn process_actor_queue(inner: Rc<SchedulerInner>, actor_id: ActrId) {
-        // 标记为处理中
+        // Mark the queue as processing.
         {
             let mut queues = inner.actor_queues.borrow_mut();
             if let Some(queue) = queues.get_mut(&actor_id) {
                 if queue.processing {
-                    return; // 已经在处理中
+                    return; // Already processing.
                 }
                 queue.processing = true;
             } else {
-                return; // 队列不存在
+                return; // Queue does not exist.
             }
         }
 
         let handler = inner.handler.borrow().clone();
         let Some(handler) = handler else {
             log::warn!("[Scheduler] No handler set");
-            // Reset processing flag since we can't proceed
+            // Reset the processing flag since we cannot proceed.
             let mut queues = inner.actor_queues.borrow_mut();
             if let Some(queue) = queues.get_mut(&actor_id) {
                 queue.processing = false;
@@ -185,11 +185,10 @@ impl Scheduler {
             return;
         };
 
-        // 使用 spawn_local 异步处理
-        // 连续处理队列中的所有消息，直到队列为空
+        // Process asynchronously with spawn_local until the queue is empty.
         spawn_local(async move {
             loop {
-                // 从队列中取出下一条消息
+                // Pop the next message from the queue.
                 let item = {
                     let mut queues = inner.actor_queues.borrow_mut();
                     queues
@@ -198,7 +197,7 @@ impl Scheduler {
                 };
 
                 let Some(item) = item else {
-                    // 队列为空，标记为未处理
+                    // The queue is empty, so mark it idle.
                     let mut queues = inner.actor_queues.borrow_mut();
                     if let Some(queue) = queues.get_mut(&actor_id) {
                         queue.processing = false;
@@ -209,10 +208,10 @@ impl Scheduler {
                 let msg_id = item.message.id;
                 log::debug!("[Scheduler] Processing message {}", msg_id);
 
-                // 执行处理
+                // Run the handler.
                 let result = handler(item.message).await;
 
-                // 调用完成回调
+                // Invoke the completion callback.
                 if let Some(callback) = item.on_complete {
                     callback(result.clone());
                 }
@@ -226,13 +225,13 @@ impl Scheduler {
                     }
                 }
 
-                // 让出执行权，允许其他任务运行（协作式调度）
+                // Yield so other tasks can run.
                 gloo_timers::future::sleep(std::time::Duration::from_millis(0)).await;
             }
         });
     }
 
-    /// 获取待处理消息数
+    /// Return the number of pending messages.
     pub fn pending_count(&self) -> usize {
         self.inner
             .actor_queues
@@ -242,7 +241,7 @@ impl Scheduler {
             .sum()
     }
 
-    /// 获取正在处理的 Actor 数
+    /// Return the number of actors currently being processed.
     pub fn active_actors(&self) -> usize {
         self.inner
             .actor_queues

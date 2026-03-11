@@ -15,7 +15,7 @@ name = "echo-client-app"
 [dependencies]
 echo-server = { actr_type = "acme:EchoService" }
 
-# Web 平台特定配置
+# Web platform specific configuration
 [platform.web]
 generate_types = true
 types_output = "./src/generated/types"

@@ -32,9 +32,7 @@ pub enum PendingCall {
         payload: Vec<u8>,
     },
     /// Service discovery (by ActrType)
-    Discover {
-        type_bytes: Vec<u8>,
-    },
+    Discover { type_bytes: Vec<u8> },
     /// Raw RPC call (direct ActrId routing)
     CallRaw {
         route_key: String,
@@ -66,6 +64,9 @@ pub mod error_code {
 pub type CallExecutorFn =
     Box<dyn Fn(PendingCall) -> Pin<Box<dyn Future<Output = IoResult> + Send>> + Send + Sync>;
 
+/// Result type for ExecutorAdapter dispatch
+pub type DispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+
 /// Unified dispatch interface for dynamic actor runtimes (WASM, dynclib, etc.)
 ///
 /// Each executor backend (e.g. `WasmInstance`) implements this trait so that
@@ -77,5 +78,5 @@ pub trait ExecutorAdapter: Send {
         request_bytes: &[u8],
         ctx: DispatchContext,
         call_executor: &'a CallExecutorFn,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = DispatchResult> + Send + 'a>>;
 }

@@ -1,9 +1,9 @@
 //! Inbound Packet Dispatcher
 //!
-//! 根据 PayloadType 将接收到的消息路由到正确的处理路径：
-//! - RPC_RELIABLE/RPC_SIGNAL → Mailbox (State Path)
-//! - STREAM_RELIABLE/STREAM_LATENCY_FIRST → 转发到 DOM 的 StreamHandlerRegistry (Fast Path)
-//! - MEDIA_RTP → 转发到 DOM 的 MediaFrameRegistry (Fast Path，通过 WebRTC MediaTrack)
+//! Routes incoming messages to the correct handling path based on PayloadType:
+//! - `RPC_RELIABLE` / `RPC_SIGNAL` -> Mailbox (State Path)
+//! - `STREAM_RELIABLE` / `STREAM_LATENCY_FIRST` -> DOM StreamHandlerRegistry (Fast Path)
+//! - `MEDIA_RTP` -> DOM MediaFrameRegistry (Fast Path, typically via WebRTC MediaTrack)
 
 use actr_mailbox_web::{Mailbox, MessagePriority};
 use actr_web_common::{MessageFormat, PayloadType, WebError, WebResult};
@@ -13,22 +13,22 @@ use std::sync::Arc;
 use crate::inbound::MailboxNotifier;
 use crate::transport::DataLane;
 
-/// 入站消息分发器
+/// Inbound message dispatcher.
 ///
-/// 对标 actr 的 InboundPacketDispatcher
+/// Web counterpart of actr's `InboundPacketDispatcher`.
 pub struct InboundPacketDispatcher {
-    /// Mailbox 用于 State Path（RPC 消息）
+    /// Mailbox for State Path RPC messages.
     mailbox: Arc<dyn Mailbox>,
 
-    /// DOM 通信通道（用于转发 Fast Path 消息）
+    /// DOM communication lane used to forward Fast Path traffic.
     dom_lane: Arc<Mutex<Option<DataLane>>>,
 
-    /// 通知 MailboxProcessor 有新消息可处理
+    /// Notifier used to wake MailboxProcessor when new messages arrive.
     notifier: Option<MailboxNotifier>,
 }
 
 impl InboundPacketDispatcher {
-    /// 创建新的分发器
+    /// Create a new dispatcher.
     pub fn new(mailbox: Arc<dyn Mailbox>) -> Self {
         Self {
             mailbox,
@@ -37,38 +37,38 @@ impl InboundPacketDispatcher {
         }
     }
 
-    /// 设置 MailboxNotifier，使得入队后能唤醒 MailboxProcessor
+    /// Attach a MailboxNotifier so enqueue operations can wake MailboxProcessor.
     pub fn with_notifier(mut self, notifier: MailboxNotifier) -> Self {
         self.notifier = Some(notifier);
         self
     }
 
-    /// 设置 DOM 通信通道
+    /// Set the DOM communication lane.
     pub fn set_dom_lane(&self, lane: DataLane) {
         let mut dom_lane = self.dom_lane.lock();
         *dom_lane = Some(lane);
         log::info!("[InboundPacketDispatcher] DOM lane set");
     }
 
-    /// 分发接收到的消息
+    /// Dispatch a received message.
     ///
-    /// # 参数
-    /// - `from`: 发送方 ID（序列化的 bytes）
-    /// - `message`: 消息格式（包含 PayloadType 和数据）
+    /// # Parameters
+    /// - `from`: Serialized sender ID bytes
+    /// - `message`: Parsed message containing PayloadType and payload
     pub async fn dispatch(&self, from: Vec<u8>, message: MessageFormat) -> WebResult<()> {
         match message.payload_type {
             PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                // State Path: 进入 Mailbox
+                // State Path: enqueue into the Mailbox.
                 self.dispatch_to_mailbox(from, message).await
             }
             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                // Fast Path: 转发到 DOM 的 StreamHandlerRegistry
+                // Fast Path: forward to the DOM StreamHandlerRegistry.
                 self.dispatch_to_stream_registry(from, message).await
             }
             PayloadType::MediaRtp => {
-                // Fast Path: 转发到 DOM 的 MediaFrameRegistry
-                // 注意：MediaRtp 通常不应该通过 DataChannel 接收
-                // 应该通过 WebRTC 的 RTCTrackRemote
+                // Fast Path: forward to the DOM MediaFrameRegistry.
+                // MediaRtp normally should not arrive through DataChannel and is expected
+                // to flow through WebRTC track primitives instead.
                 log::warn!(
                     "[InboundPacketDispatcher] Received MEDIA_RTP via DataChannel, \
                      this is unusual. Media should come via RTCTrackRemote."
@@ -78,7 +78,7 @@ impl InboundPacketDispatcher {
         }
     }
 
-    /// 分发到 Mailbox（State Path）
+    /// Dispatch to the Mailbox through the State Path.
     async fn dispatch_to_mailbox(&self, from: Vec<u8>, message: MessageFormat) -> WebResult<()> {
         let priority = match message.payload_type {
             PayloadType::RpcSignal => MessagePriority::High,
@@ -103,7 +103,7 @@ impl InboundPacketDispatcher {
             priority
         );
 
-        // 通知 MailboxProcessor 有新消息可处理（事件驱动）
+        // Notify MailboxProcessor that new work is available.
         if let Some(ref notifier) = self.notifier {
             notifier.notify();
         }
@@ -111,9 +111,9 @@ impl InboundPacketDispatcher {
         Ok(())
     }
 
-    /// 分发到 StreamHandlerRegistry（Fast Path）
+    /// Dispatch to StreamHandlerRegistry through the Fast Path.
     ///
-    /// 通过 DOM lane 转发消息到 DOM 侧的 StreamHandlerRegistry
+    /// Forwards the message to the DOM-side StreamHandlerRegistry through the DOM lane.
     async fn dispatch_to_stream_registry(
         &self,
         _from: Vec<u8>,
@@ -122,7 +122,7 @@ impl InboundPacketDispatcher {
         let dom_lane = self.dom_lane.lock();
 
         if let Some(ref lane) = *dom_lane {
-            // 转发到 DOM（DOM 侧会解析并派发到 StreamHandlerRegistry）
+            // Forward to the DOM, which will parse and dispatch into StreamHandlerRegistry.
             lane.send(message.data.clone())
                 .await
                 .map_err(|e| WebError::Transport(format!("Failed to forward to DOM: {}", e)))?;
@@ -135,9 +135,9 @@ impl InboundPacketDispatcher {
         Ok(())
     }
 
-    /// 分发到 MediaFrameRegistry（Fast Path）
+    /// Dispatch to MediaFrameRegistry through the Fast Path.
     ///
-    /// 通过 DOM lane 转发消息到 DOM 侧的 MediaFrameRegistry
+    /// Forwards the message to the DOM-side MediaFrameRegistry through the DOM lane.
     async fn dispatch_to_media_registry(
         &self,
         _from: Vec<u8>,
@@ -146,7 +146,7 @@ impl InboundPacketDispatcher {
         let dom_lane = self.dom_lane.lock();
 
         if let Some(ref lane) = *dom_lane {
-            // 转发到 DOM（DOM 侧会解析并派发到 MediaFrameRegistry）
+            // Forward to the DOM, which will parse and dispatch into MediaFrameRegistry.
             lane.send(message.data.clone())
                 .await
                 .map_err(|e| WebError::Transport(format!("Failed to forward to DOM: {}", e)))?;
@@ -187,7 +187,7 @@ mod tests {
                 .expect("Failed to create mailbox"),
         );
 
-        // 清空 mailbox
+        // Clear the mailbox.
         mailbox.clear().await.expect("Failed to clear mailbox");
 
         let dispatcher = InboundPacketDispatcher::new(mailbox.clone());
@@ -201,7 +201,7 @@ mod tests {
             .await
             .expect("Dispatch failed");
 
-        // 验证消息进入了 Mailbox
+        // Verify the message entered the Mailbox.
         let stats = mailbox.stats().await.expect("Failed to get stats");
         assert!(stats.pending_messages > 0);
     }

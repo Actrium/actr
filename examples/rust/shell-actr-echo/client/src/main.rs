@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     let _obs_guard = actr_runtime::init_observability(&config.observability)?;
 
     info!("🚀 Echo Client App - Actor-RTC Standard Pattern");
-    info!("   支持运行时兼容性协商 (Runtime Compatibility Negotiation)");
+    info!("   [...] (Runtime Compatibility Negotiation)");
 
     let system = ActrSystem::new(config).await?;
     info!("✅ ActrSystem created");

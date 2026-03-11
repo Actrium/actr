@@ -10,8 +10,8 @@ keywords = ["actor", "wasm", "runtime", "webassembly", "guest"]
 categories = ["wasm", "asynchronous"]
 
 [lib]
-# cdylib  = WASM 动态库（最终产物）
-# rlib    = Rust 静态库（供集成测试使用）
+# `cdylib` = WASM dynamic library output
+# `rlib`   = Rust static library for integration tests
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

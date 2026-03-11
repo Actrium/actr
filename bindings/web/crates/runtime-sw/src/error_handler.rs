@@ -1,6 +1,6 @@
-//! SW 端错误处理器
+//! Service Worker-side error handler.
 //!
-//! 负责接收和处理来自 DOM 的错误报告
+//! Receives and processes error reports from the DOM side.
 
 use crate::WirePool;
 use actr_web_common::{ErrorCategory, ErrorReport, ErrorSeverity};
@@ -9,23 +9,23 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-/// 错误处理回调类型
+/// Error handler callback type.
 pub type ErrorCallback = Arc<dyn Fn(&ErrorReport) + Send + Sync>;
 
-/// SW 错误处理器
+/// Service Worker error handler.
 pub struct SwErrorHandler {
-    /// WirePool 引用（用于更新连接状态）
+    /// WirePool reference used to update connection state.
     wire_pool: Arc<WirePool>,
 
-    /// 错误历史记录（最近 100 条）
+    /// Error history, capped at the most recent 100 entries.
     error_history: Arc<Mutex<VecDeque<ErrorReport>>>,
 
-    /// 用户注册的错误回调
+    /// User-registered error callbacks.
     error_callbacks: Arc<Mutex<Vec<ErrorCallback>>>,
 }
 
 impl SwErrorHandler {
-    /// 创建新的错误处理器
+    /// Create a new error handler.
     pub fn new(wire_pool: Arc<WirePool>) -> Self {
         log::info!("[ErrorHandler] Creating SW error handler");
 
@@ -36,7 +36,7 @@ impl SwErrorHandler {
         }
     }
 
-    /// 处理来自 DOM 的错误报告
+    /// Handle an error report from the DOM side.
     pub fn handle_error_report(&self, report: ErrorReport) {
         log::warn!(
             "[ErrorHandler] Received error report: category={:?}, severity={:?}, message={}",
@@ -45,24 +45,24 @@ impl SwErrorHandler {
             report.message
         );
 
-        // 1. 记录错误到历史
+        // 1. Record the error in history.
         self.add_to_history(report.clone());
 
-        // 2. 根据错误类型更新 WirePool 状态
+        // 2. Update WirePool state according to the error.
         self.update_wirepool_state(&report);
 
-        // 3. 调用用户回调
+        // 3. Invoke user callbacks.
         self.invoke_callbacks(&report);
 
-        // 4. 根据严重程度采取行动
+        // 4. React according to severity.
         self.handle_severity(&report);
     }
 
-    /// 添加到错误历史
+    /// Add an entry to the error history.
     fn add_to_history(&self, report: ErrorReport) {
         let mut history = self.error_history.lock();
 
-        // 保持最近 100 条
+        // Keep only the latest 100 entries.
         if history.len() >= 100 {
             history.pop_front();
         }
@@ -70,13 +70,13 @@ impl SwErrorHandler {
         history.push_back(report);
     }
 
-    /// 更新 WirePool 状态
+    /// Update WirePool state.
     fn update_wirepool_state(&self, report: &ErrorReport) {
-        // 根据错误类别和严重程度，决定是否标记连接为失败
+        // Decide whether to mark the connection as failed based on category and severity.
         let should_mark_failed = match report.severity {
             ErrorSeverity::Critical | ErrorSeverity::Fatal => true,
             ErrorSeverity::Error => {
-                // Error 级别：根据错误类别决定
+                // For Error severity, decide based on category.
                 matches!(
                     report.category,
                     ErrorCategory::WebRTC | ErrorCategory::WebSocket | ErrorCategory::Transport
@@ -86,7 +86,7 @@ impl SwErrorHandler {
         };
 
         if should_mark_failed {
-            // 从上下文获取连接类型
+            // Read the connection type from the context.
             if let Some(ref context) = report.context {
                 if let Some(conn_type) = context.conn_type {
                     log::warn!(
@@ -95,14 +95,14 @@ impl SwErrorHandler {
                         report.severity
                     );
 
-                    // 移除失效的连接
+                    // Remove the failed connection.
                     self.wire_pool.remove_connection(conn_type);
                 }
             }
         }
     }
 
-    /// 调用用户注册的错误回调
+    /// Invoke user-registered callbacks.
     fn invoke_callbacks(&self, report: &ErrorReport) {
         let callbacks = self.error_callbacks.lock();
 
@@ -111,38 +111,38 @@ impl SwErrorHandler {
         }
     }
 
-    /// 根据严重程度处理
+    /// Handle the report based on severity.
     fn handle_severity(&self, report: &ErrorReport) {
         match report.severity {
             ErrorSeverity::Warning => {
-                // 警告级别：仅记录
+                // Warning level: only log it.
                 log::warn!("[ErrorHandler] Warning: {}", report.message);
             }
             ErrorSeverity::Error => {
-                // 错误级别：记录并可能触发恢复
+                // Error level: log it and potentially trigger recovery.
                 log::error!("[ErrorHandler] Error: {}", report.message);
 
-                // 根据错误类别决定是否触发恢复
+                // Decide whether recovery should be triggered based on category.
                 if matches!(report.category, ErrorCategory::WebRTC) {
                     log::info!("[ErrorHandler] WebRTC error detected, recovery may be needed");
                 }
             }
             ErrorSeverity::Critical => {
-                // 严重级别：记录并触发恢复
+                // Critical level: log it and trigger recovery.
                 log::error!("[ErrorHandler] CRITICAL error: {}", report.message);
 
-                // TODO: 触发自动恢复机制
+                // TODO: trigger automatic recovery.
             }
             ErrorSeverity::Fatal => {
-                // 致命级别：记录并可能需要完全重启
+                // Fatal level: log it and potentially require a full restart.
                 log::error!("[ErrorHandler] FATAL error: {}", report.message);
 
-                // TODO: 触发紧急恢复或通知用户
+                // TODO: trigger emergency recovery or notify the user.
             }
         }
     }
 
-    /// 注册错误处理回调
+    /// Register an error callback.
     pub fn register_callback(&self, callback: ErrorCallback) {
         let mut callbacks = self.error_callbacks.lock();
         callbacks.push(callback);
@@ -152,13 +152,13 @@ impl SwErrorHandler {
         );
     }
 
-    /// 获取错误历史
+    /// Get error history.
     pub fn get_error_history(&self, limit: usize) -> Vec<ErrorReport> {
         let history = self.error_history.lock();
         history.iter().rev().take(limit).cloned().collect()
     }
 
-    /// 获取特定类别的错误历史
+    /// Get error history filtered by category.
     pub fn get_errors_by_category(
         &self,
         category: ErrorCategory,
@@ -174,7 +174,7 @@ impl SwErrorHandler {
             .collect()
     }
 
-    /// 获取特定严重级别的错误历史
+    /// Get error history filtered by severity.
     pub fn get_errors_by_severity(
         &self,
         severity: ErrorSeverity,
@@ -190,14 +190,14 @@ impl SwErrorHandler {
             .collect()
     }
 
-    /// 清空错误历史
+    /// Clear the error history.
     pub fn clear_history(&self) {
         let mut history = self.error_history.lock();
         history.clear();
         log::info!("[ErrorHandler] Error history cleared");
     }
 
-    /// 获取统计信息
+    /// Get error statistics.
     pub fn get_stats(&self) -> ErrorStats {
         let history = self.error_history.lock();
 
@@ -217,25 +217,25 @@ impl SwErrorHandler {
     }
 }
 
-/// 错误统计信息
+/// Error statistics.
 #[derive(Debug, Clone)]
 pub struct ErrorStats {
-    /// 总错误数
+    /// Total error count.
     pub total_errors: usize,
 
-    /// 按类别统计
+    /// Counts grouped by category.
     pub by_category: std::collections::HashMap<ErrorCategory, usize>,
 
-    /// 按严重级别统计
+    /// Counts grouped by severity.
     pub by_severity: std::collections::HashMap<ErrorSeverity, usize>,
 }
 
 thread_local! {
-    #[doc = "全局错误处理器实例"]
+    #[doc = "Global error handler instance"]
     static GLOBAL_ERROR_HANDLER: RefCell<Option<Arc<SwErrorHandler>>> = const { RefCell::new(None) };
 }
 
-/// 初始化全局错误处理器
+/// Initialize the global error handler.
 pub fn init_global_error_handler(wire_pool: Arc<WirePool>) -> Arc<SwErrorHandler> {
     GLOBAL_ERROR_HANDLER.with(|cell| {
         if let Some(handler) = cell.borrow().as_ref() {
@@ -249,7 +249,7 @@ pub fn init_global_error_handler(wire_pool: Arc<WirePool>) -> Arc<SwErrorHandler
     })
 }
 
-/// 获取全局错误处理器
+/// Get the global error handler.
 pub fn get_global_error_handler() -> Option<Arc<SwErrorHandler>> {
     GLOBAL_ERROR_HANDLER.with(|cell| cell.borrow().as_ref().cloned())
 }
@@ -262,7 +262,7 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // 创建测试用的 WirePool（模拟）
+    // Create a test WirePool mock.
     fn create_test_wire_pool() -> Arc<WirePool> {
         Arc::new(WirePool::new())
     }
@@ -302,7 +302,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加多个错误
+        // Add multiple errors.
         for i in 0..5 {
             let report = ErrorReport::new(
                 ErrorCategory::Transport,
@@ -315,7 +315,7 @@ mod tests {
         let history = handler.get_error_history(10);
         assert_eq!(history.len(), 5);
 
-        // 验证顺序（最新的在前）
+        // Verify ordering with the newest error first.
         assert_eq!(history[0].message, "Error 4");
         assert_eq!(history[4].message, "Error 0");
     }
@@ -325,7 +325,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加超过限制的错误
+        // Add more errors than the retention limit.
         for i in 0..150 {
             let report = ErrorReport::new(
                 ErrorCategory::Internal,
@@ -336,13 +336,13 @@ mod tests {
         }
 
         let stats = handler.get_stats();
-        // 应该只保留最近 100 条
+        // Only the newest 100 entries should remain.
         assert_eq!(stats.total_errors, 100);
 
         let history = handler.get_error_history(150);
         assert_eq!(history.len(), 100);
 
-        // 验证最旧的是 Error 50（0-49 被丢弃）
+        // Verify that the oldest remaining entry is Error 50 because 0-49 were dropped.
         assert_eq!(history[99].message, "Error 50");
         assert_eq!(history[0].message, "Error 149");
     }
@@ -352,7 +352,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加不同类别的错误
+        // Add errors from different categories.
         handler.handle_error_report(ErrorReport::new(
             ErrorCategory::WebRTC,
             ErrorSeverity::Error,
@@ -381,7 +381,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加不同严重级别的错误
+        // Add errors with different severity levels.
         handler.handle_error_report(ErrorReport::new(
             ErrorCategory::Transport,
             ErrorSeverity::Warning,
@@ -418,7 +418,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加各种错误
+        // Add a mix of errors.
         handler.handle_error_report(ErrorReport::new(
             ErrorCategory::WebRTC,
             ErrorSeverity::Error,
@@ -449,7 +449,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // 添加错误
+        // Add errors.
         for i in 0..10 {
             handler.handle_error_report(ErrorReport::new(
                 ErrorCategory::Internal,
@@ -500,7 +500,7 @@ mod tests {
 
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        // 注册多个回调
+        // Register multiple callbacks.
         for _ in 0..3 {
             let counter_clone = counter.clone();
             let callback: ErrorCallback = Arc::new(move |_report| {
@@ -516,7 +516,7 @@ mod tests {
         );
         handler.handle_error_report(report);
 
-        // 所有回调都应该被调用
+        // All callbacks should be called.
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
@@ -566,8 +566,8 @@ mod tests {
 
         handler.handle_error_report(report);
 
-        // 注意：实际测试需要验证 WirePool 状态变化
-        // 这里只是确保不会 panic
+        // A full integration test should verify WirePool state changes.
+        // This test only ensures the code path does not panic.
     }
 
     #[wasm_bindgen_test]
@@ -575,7 +575,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let handler = SwErrorHandler::new(wire_pool);
 
-        // Warning 不应该触发连接移除
+        // Warning should not trigger connection removal.
         let warning_report = ErrorReport::new(
             ErrorCategory::WebRTC,
             ErrorSeverity::Warning,
@@ -583,7 +583,7 @@ mod tests {
         );
         handler.handle_error_report(warning_report);
 
-        // Critical 应该触发连接移除（如果有 context）
+        // Critical should trigger connection removal when context exists.
         let context = ErrorContext {
             dest: Some(Dest::Peer("peer1".to_string())),
             conn_type: Some(ConnType::WebRTC),
@@ -597,7 +597,7 @@ mod tests {
         .with_context(context);
         handler.handle_error_report(critical_report);
 
-        // 验证统计
+        // Verify the statistics.
         let stats = handler.get_stats();
         assert_eq!(stats.total_errors, 2);
     }

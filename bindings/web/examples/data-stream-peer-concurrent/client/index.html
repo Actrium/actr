@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 
 <head>
     <meta charset="UTF-8" />
@@ -82,13 +82,13 @@
     <main>
         <div class="card">
             <h1>Data Stream Peer Concurrent - Client</h1>
-            <p class="muted">浏览器 Actor 作为 data-stream 客户端，发起 Prepare/Start 并接收服务端回流数据。</p>
-            <div id="status">初始化中...</div>
+            <p class="muted">Browser actor acting as the data-stream client, issuing Prepare/Start and receiving streamed data back from the server.</p>
+            <div id="status">Initializing...</div>
         </div>
         <div class="card row">
             <label>Client ID <input id="clientId" value="client-1" /></label>
-            <label>消息数 <input id="messageCount" type="number" value="3" min="1" max="20" /></label>
-            <button id="startBtn" disabled>开始数据流测试</button>
+            <label>Message Count <input id="messageCount" type="number" value="3" min="1" max="20" /></label>
+            <button id="startBtn" disabled>Start data-stream test</button>
         </div>
         <div class="card">
             <div id="log"></div>

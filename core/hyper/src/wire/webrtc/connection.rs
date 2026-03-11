@@ -1015,7 +1015,7 @@ mod tests {
     use tokio::sync::broadcast;
     use webrtc::api::APIBuilder;
     use webrtc::peer_connection::configuration::RTCConfiguration;
-    /// 辅助函数：创建一个用于测试的 WebRtcConnection
+    /// Helper: create a WebRtcConnection for testing
     async fn create_test_connection() -> WebRtcConnection {
         let api = APIBuilder::new().build();
         let peer_connection = api
@@ -1035,12 +1035,12 @@ mod tests {
         WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx, None)
     }
 
-    /// 测试：多个任务同时调用 close() 不会死锁
+    /// Test: multiple tasks calling close() concurrently do not deadlock
     ///
-    /// close() 方法依次获取多个 RwLock 的写锁（connected, data_channels,
-    /// media_tracks, track_sequence_numbers, track_ssrcs, lane_cache）。
-    /// 如果两个 close() 调用以不同的顺序或在锁持有期间互等，就会死锁。
-    /// 此测试通过超时来检测死锁。
+    /// close() acquires write locks on multiple RwLocks sequentially (connected, data_channels,
+    /// media_tracks, track_sequence_numbers, track_ssrcs, lane_cache).
+    /// If two close() calls acquire them in different order or wait while holding locks, deadlock occurs.
+    /// This test detects deadlock via timeout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_concurrent_close_no_deadlock() {
         let conn = create_test_connection().await;
@@ -1056,44 +1056,44 @@ mod tests {
             }));
         }
 
-        // 使用超时检测死锁：如果 2 秒内所有任务都完成，就没有死锁
+        // Detect deadlock via timeout: no deadlock if all tasks finish within 2 seconds
         let all_tasks = futures_util::future::join_all(handles);
         let result = tokio::time::timeout(Duration::from_secs(2), all_tasks).await;
 
         match result {
             Ok(results) => {
-                // 所有任务都应成功完成（第一个 close 实际关闭，后续的可能遇到已关闭的连接）
+                // All tasks should succeed (first close actually closes, subsequent ones may encounter already-closed connection)
                 let completed = results.iter().filter(|r| r.is_ok()).count();
                 assert_eq!(
                     completed, num_tasks,
-                    "所有 {} 个任务都应完成，实际完成 {}",
+                    "all {} tasks should complete, actually completed {}",
                     num_tasks, completed
                 );
             }
             Err(_) => {
                 panic!(
-                    "❌ 死锁检测：{} 个并发 close() 调用在 2 秒内未完成，可能存在死锁！",
+                    "deadlock detected: {} concurrent close() calls did not finish within 2 seconds, possible deadlock!",
                     num_tasks
                 );
             }
         }
     }
 
-    /// 测试：close() 与读操作并发不会死锁
+    /// Test: close() with concurrent read operations does not deadlock
     ///
-    /// 场景：一些任务持续读取 is_connected() / has_open_data_channel()，
-    /// 另一些任务调用 close()。RwLock 的读写锁竞争不应导致死锁。
+    /// Scenario: some tasks continuously read is_connected() / has_open_data_channel(),
+    /// while others call close(). RwLock read-write contention should not cause deadlock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_close_with_concurrent_reads_no_deadlock() {
         let conn: WebRtcConnection = create_test_connection().await;
         let mut handles = Vec::new();
 
-        // 启动 5 个读任务，持续读取连接状态
+        // Spawn 5 reader tasks that continuously read connection state
         for i in 0..5 {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
                 for _ in 0..20 {
-                    // 使用 async read 代替 blocking_read（is_connected），避免 async 上下文问题
+                    // Use async read instead of blocking_read (is_connected) to avoid async context issues
                     let _ = *conn.connected.read().await;
                     let _ = conn.has_open_data_channel().await;
                     tokio::task::yield_now().await;
@@ -1102,7 +1102,7 @@ mod tests {
             }));
         }
 
-        // 启动 5 个 close 任务
+        // Spawn 5 close tasks
         for i in 0..5 {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
@@ -1117,26 +1117,28 @@ mod tests {
         match result {
             Ok(results) => {
                 let completed = results.iter().filter(|r| r.is_ok()).count();
-                assert_eq!(completed, 10, "所有 10 个任务都应完成");
+                assert_eq!(completed, 10, "all 10 tasks should complete");
             }
             Err(_) => {
-                panic!("❌ 死锁检测：close() 与并发读操作在 2 秒内未完成，可能存在死锁！");
+                panic!(
+                    "deadlock detected: close() with concurrent reads did not finish within 2 seconds, possible deadlock!"
+                );
             }
         }
     }
 
-    /// 测试：close() 与 handle_state_change() 并发不会死锁
+    /// Test: close() with concurrent handle_state_change() does not deadlock
     ///
-    /// 真实场景复现：ICE restart 失败后，cleanup_cancelled_connection 调用
-    /// peer_connection.close()，触发 state_change 回调调用 handle_state_change(Closed)，
-    /// 而 handle_state_change(Closed) 内部又调用 self.close()。
-    /// 这模拟了实际的 3-way concurrent close 竞争。
+    /// Real-world reproduction: after ICE restart failure, cleanup_cancelled_connection calls
+    /// peer_connection.close(), which triggers a state_change callback invoking handle_state_change(Closed),
+    /// and handle_state_change(Closed) internally calls self.close() again.
+    /// This simulates the actual 3-way concurrent close race.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_close_with_handle_state_change_no_deadlock() {
         let conn = create_test_connection().await;
         let mut handles = Vec::new();
 
-        // 模拟 cleanup_cancelled_connection 路径：直接调用 close()
+        // Simulate cleanup_cancelled_connection path: call close() directly
         {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
@@ -1145,8 +1147,8 @@ mod tests {
             }));
         }
 
-        // 模拟 state_change 回调路径：handle_state_change(Closed)
-        // handle_state_change 内部在 was_connected && Closed 时也会调用 close()
+        // Simulate state_change callback path: handle_state_change(Closed)
+        // handle_state_change internally also calls close() when was_connected && Closed
         {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
@@ -1158,7 +1160,7 @@ mod tests {
             }));
         }
 
-        // 模拟 event listener 路径：收到 StateChanged(Closed) 后再调用 close()
+        // Simulate event listener path: call close() after receiving StateChanged(Closed)
         {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
@@ -1173,20 +1175,20 @@ mod tests {
         match result {
             Ok(results) => {
                 let completed = results.iter().filter(|r| r.is_ok()).count();
-                assert_eq!(completed, 3, "所有 3 个任务都应完成");
+                assert_eq!(completed, 3, "all 3 tasks should complete");
             }
             Err(_) => {
                 panic!(
-                    "❌ 死锁检测：close() 与 handle_state_change 并发在 2 秒内未完成，\
-                     可能存在死锁！这复现了 ICE restart 失败后的 3-way close 竞争场景。"
+                    "deadlock detected: close() with concurrent handle_state_change did not finish within 2 seconds, \
+                     possible deadlock! This reproduces the 3-way close race after ICE restart failure."
                 );
             }
         }
     }
 
-    /// 测试：大量并发 close() 调用的压力测试
+    /// Test: stress test with many concurrent close() calls
     ///
-    /// 使用更多的并发任务来增加锁竞争的概率，更容易暴露潜在的死锁问题。
+    /// Uses more concurrent tasks to increase lock contention probability, making potential deadlocks easier to expose.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_stress_concurrent_close() {
         let conn = create_test_connection().await;
@@ -1196,7 +1198,7 @@ mod tests {
         for i in 0..num_tasks {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
-                // 混合 close 和读操作，增加锁竞争
+                // Mix close and read operations to increase lock contention
                 if i % 3 == 0 {
                     let _ = *conn.connected.read().await;
                 }
@@ -1215,30 +1217,30 @@ mod tests {
                 let completed = results.iter().filter(|r| r.is_ok()).count();
                 assert_eq!(
                     completed, num_tasks,
-                    "所有 {} 个压力测试任务都应完成",
+                    "all {} stress test tasks should complete",
                     num_tasks
                 );
-                // 验证最终状态：连接应该已关闭
+                // Verify final state: connection should be closed
                 assert!(
                     !*conn.connected.read().await,
-                    "close() 之后 connected 应为 false"
+                    "connected should be false after close()"
                 );
             }
             Err(_) => {
                 panic!(
-                    "❌ 压力测试死锁检测：{} 个并发 close() 调用在 3 秒内未完成，可能存在死锁！",
+                    "stress test deadlock detected: {} concurrent close() calls did not finish within 3 seconds, possible deadlock!",
                     num_tasks
                 );
             }
         }
     }
 
-    /// 回归用例：验证 close() 与 invalidate_lane() 并发时不会因为锁顺序反转而阻塞
+    /// Regression test: close() with concurrent invalidate_lane() does not block due to lock order inversion
     ///
-    /// 该用例模拟了历史复现时序：
-    /// - close() 清理缓存；
-    /// - 并发触发 invalidate_lane()（lane_cache -> data_channels）。
-    /// 修复后应在超时窗口内完成，不再互相等待。
+    /// This test simulates a historically reproduced sequence:
+    /// - close() cleans up cache;
+    /// - invalidate_lane() fires concurrently (lane_cache -> data_channels).
+    /// After fix, both should complete within the timeout window without waiting on each other.
     #[tokio::test]
     async fn repro_close_blocked_by_lock_order_inversion() {
         use tokio::time::{Duration, sleep};
@@ -1251,23 +1253,23 @@ mod tests {
         let conn = create_test_connection().await;
         let payload_type = PayloadType::RpcReliable;
 
-        // 先创建一个 DataChannel lane，确保相关缓存和回调路径已建立。
+        // First create a DataChannel lane to ensure related caches and callback paths are established.
         let _ = conn
             .get_lane(payload_type)
             .await
             .expect("failed to create lane for repro");
 
-        // 人为卡住 close()：先持有 media_tracks，确保 close 与 invalidate_lane
-        // 存在并发窗口（历史上这里会触发锁顺序互等）。
+        // Artificially stall close(): hold media_tracks first to ensure a concurrency window
+        // between close and invalidate_lane (historically this triggered lock order contention).
         let media_tracks_guard = conn.media_tracks.write().await;
 
         let conn_for_close = conn.clone();
         let mut close_task = tokio::spawn(async move { conn_for_close.close().await });
 
-        // 给 close 一个短暂时间进入清理路径。
+        // Give close a brief moment to enter the cleanup path.
         sleep(Duration::from_millis(50)).await;
 
-        // 并发触发 invalidate_lane（历史上会与 close 锁顺序互等）。
+        // Trigger invalidate_lane concurrently (historically this would contend with close on lock order).
         let conn_for_invalidate = conn.clone();
         let mut invalidate_task = tokio::spawn(async move {
             conn_for_invalidate.invalidate_lane(payload_type).await;
@@ -1275,7 +1277,7 @@ mod tests {
 
         sleep(Duration::from_millis(50)).await;
 
-        // 释放 media_tracks，让 close 完成剩余清理。
+        // Release media_tracks to let close finish remaining cleanup.
         drop(media_tracks_guard);
 
         let result = tokio::time::timeout(Duration::from_millis(3000), async {

@@ -45,7 +45,7 @@
 - ⏳ Service Worker 集成
 - ⏳ 更多示例（react-echo, todo-app, chat-app）
 
-详见：[完成度评估](./docs/architecture/completion-status.md)
+详见：[完成度评估](./docs/architecture/completion-status.zh.md)
 
 ---
 
@@ -107,10 +107,10 @@ node test-wasm.js
 
 面向框架贡献者和希望深入了解内部实现的开发者：
 
-- [架构文档索引](./docs/architecture/README.md)
-- [架构总览](./docs/architecture/overview.md) - 双进程模型和核心组件
-- [技术决策记录](./docs/architecture/decisions.md) - 9 个 TDR
-- [完成度评伌](./docs/architecture/completion-status.md) - 相对于 actr Native 的完成度 (78%)
+- [架构文档索引](./docs/architecture/README.zh.md)
+- [架构总览](./docs/architecture/overview.zh.md) - 双进程模型和核心组件
+- [技术决策记录](./docs/architecture/decisions.zh.md) - 9 个 TDR
+- [完成度评伌](./docs/architecture/completion-status.zh.md) - 相对于 actr Native 的完成度 (78%)
 
 ---
 
