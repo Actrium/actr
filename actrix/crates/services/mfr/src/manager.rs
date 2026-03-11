@@ -48,7 +48,10 @@ pub struct MfrManager {
 
 impl MfrManager {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool, domain: String::new() }
+        Self {
+            pool,
+            domain: String::new(),
+        }
     }
 
     pub fn with_domain(mut self, domain: String) -> Self {
@@ -72,20 +75,14 @@ impl MfrManager {
         reserved::validate_github_login(&login)?;
         let mfr = Manufacturer::create(&self.pool, &login, contact).await?;
         let challenge = GitHubGistChallenge::create(&self.pool, mfr.id).await?;
-        platform::recording::info!(
-            "MFR application received: github_login={}",
-            login,
-        );
+        platform::recording::info!("MFR application received: github_login={}", login,);
         Ok((mfr, challenge))
     }
 
     /// Step 2: Verify ownership by checking a public GitHub repo.
     ///
     /// Looks for `{mfr.name}/actr-mfr-verify/{domain}.txt` containing the challenge token.
-    pub async fn verify_github(
-        &self,
-        mfr_id: i64,
-    ) -> Result<MfrKeychain, MfrError> {
+    pub async fn verify_github(&self, mfr_id: i64) -> Result<MfrKeychain, MfrError> {
         let mut mfr = Manufacturer::get(&self.pool, mfr_id)
             .await?
             .ok_or(MfrError::NotFound)?;
@@ -102,12 +99,11 @@ impl MfrManager {
             .ok_or(MfrError::ChallengeNotFound)?;
 
         let filename = github::verify_filename(&self.domain);
-        let verified =
-            github::verify_repo(&mfr.name, &challenge.token, &self.domain).await?;
+        let verified = github::verify_repo(&mfr.name, &challenge.token, &self.domain).await?;
         if !verified {
-            return Err(MfrError::VerificationFailed(
-                format!("{filename} does not contain the expected challenge token"),
-            ));
+            return Err(MfrError::VerificationFailed(format!(
+                "{filename} does not contain the expected challenge token"
+            )));
         }
 
         let (private_key, public_key) = crypto::generate_keypair();

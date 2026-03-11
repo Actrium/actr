@@ -301,7 +301,7 @@ export function Realms() {
   }
 
   async function handleFormSubmit(data: {
-    realm_id: number;
+    realm_id?: number;
     name: string;
     enabled: boolean;
   }) {
@@ -406,7 +406,6 @@ export function Realms() {
       {showForm && (
         <RealmForm
           realm={editingRealm}
-          existingRealmIds={new Set(realms.map((r) => r.realm_id))}
           onSubmit={handleFormSubmit}
           onClose={handleFormClose}
           onRefresh={fetchRealms}
@@ -449,7 +448,7 @@ export function Realms() {
         onConfirm={handleConfirmRotate}
         onCancel={() => setRotateConfirm({ isOpen: false, realmId: null })}
       />
-      
+
       {realmSecretNotice && (
         <RealmSecretModal
           isOpen={!!realmSecretNotice}

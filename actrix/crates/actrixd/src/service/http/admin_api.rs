@@ -704,10 +704,7 @@ async fn serve_spa() -> impl IntoResponse {
 
 // ── Router builder ─────────────────────────────────────────────
 
-pub fn build_admin_api_router(
-    state: Arc<AdminApiState>,
-    mfr_router: Option<Router>,
-) -> Router {
+pub fn build_admin_api_router(state: Arc<AdminApiState>, mfr_router: Option<Router>) -> Router {
     let authed_api = Router::new()
         .route("/admin/api/node", get(get_node_info))
         .route("/admin/api/node/services", get(get_node_services))

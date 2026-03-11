@@ -302,9 +302,7 @@ async fn test_manufacturer_get_nonexistent() {
 #[tokio::test]
 async fn test_manufacturer_get_by_name() {
     let pool = setup_test_pool().await;
-    let mfr = Manufacturer::create(&pool, "namedco", None)
-        .await
-        .unwrap();
+    let mfr = Manufacturer::create(&pool, "namedco", None).await.unwrap();
 
     let found = Manufacturer::get_by_name(&pool, "namedco")
         .await
@@ -330,9 +328,7 @@ async fn test_manufacturer_duplicate_name() {
 #[tokio::test]
 async fn test_manufacturer_activate() {
     let pool = setup_test_pool().await;
-    let mut mfr = Manufacturer::create(&pool, "activeco", None)
-        .await
-        .unwrap();
+    let mut mfr = Manufacturer::create(&pool, "activeco", None).await.unwrap();
 
     mfr.activate(&pool, "pubkey_base64".to_string())
         .await
@@ -373,9 +369,7 @@ async fn test_manufacturer_lifecycle_full() {
 #[tokio::test]
 async fn test_manufacturer_invalid_transitions_from_pending() {
     let pool = setup_test_pool().await;
-    let mut mfr = Manufacturer::create(&pool, "transco", None)
-        .await
-        .unwrap();
+    let mut mfr = Manufacturer::create(&pool, "transco", None).await.unwrap();
 
     let err = mfr.suspend(&pool).await.unwrap_err();
     assert!(matches!(err, MfrError::InvalidStatus(_)));
@@ -387,9 +381,7 @@ async fn test_manufacturer_invalid_transitions_from_pending() {
 #[tokio::test]
 async fn test_manufacturer_cannot_activate_twice() {
     let pool = setup_test_pool().await;
-    let mut mfr = Manufacturer::create(&pool, "twiceco", None)
-        .await
-        .unwrap();
+    let mut mfr = Manufacturer::create(&pool, "twiceco", None).await.unwrap();
 
     mfr.activate(&pool, "key1".to_string()).await.unwrap();
     let err = mfr.activate(&pool, "key2".to_string()).await.unwrap_err();
@@ -465,9 +457,7 @@ async fn test_challenge_create() {
 #[tokio::test]
 async fn test_challenge_get_active_found() {
     let pool = setup_test_pool().await;
-    let mfr = Manufacturer::create(&pool, "activech", None)
-        .await
-        .unwrap();
+    let mfr = Manufacturer::create(&pool, "activech", None).await.unwrap();
     let ch = GitHubGistChallenge::create(&pool, mfr.id).await.unwrap();
 
     let active = GitHubGistChallenge::get_active(&pool, mfr.id)

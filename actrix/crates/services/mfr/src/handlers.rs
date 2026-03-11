@@ -63,7 +63,10 @@ async fn apply(
     State(s): State<MfrState>,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, MfrError> {
-    let (mfr, challenge) = s.manager.apply(&req.github_login, req.contact.as_deref()).await?;
+    let (mfr, challenge) = s
+        .manager
+        .apply(&req.github_login, req.contact.as_deref())
+        .await?;
     let filename = crate::github::verify_filename(s.manager.domain());
     Ok(Json(ApplyResponse {
         mfr_id: mfr.id,

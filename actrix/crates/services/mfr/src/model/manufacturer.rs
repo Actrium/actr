@@ -82,7 +82,7 @@ impl Manufacturer {
     ) -> Result<Self, MfrError> {
         let now = Utc::now().timestamp();
         let id = sqlx::query(
-            "INSERT INTO mfr (name, contact, status, created_at) VALUES (?, ?, 'pending', ?)"
+            "INSERT INTO mfr (name, contact, status, created_at) VALUES (?, ?, 'pending', ?)",
         )
         .bind(name)
         .bind(contact)

@@ -209,7 +209,7 @@ export const api = {
   listRealms: () => request<RealmsResponse>("/realms"),
 
   createRealm: (data: {
-    realm_id: number;
+    realm_id?: number;
     name: string;
     enabled?: boolean;
   }) =>

@@ -122,17 +122,28 @@ async fn build_admin_ui_router(
 
     // Build MFR router and nest under /admin/api/mfr
     let mfr_router = {
-        use actrix_mfr::{MfrManager, handlers::{MfrState, create_router}};
+        use actrix_mfr::{
+            MfrManager,
+            handlers::{MfrState, create_router},
+        };
         let pool = platform::storage::db::get_database().get_pool().clone();
-        let domain = config.bind.http.as_ref()
+        let domain = config
+            .bind
+            .http
+            .as_ref()
             .map(|h| h.domain_name.clone())
             .unwrap_or_else(|| "localhost".to_string());
         let manager = MfrManager::new(pool).with_domain(domain);
-        let mfr_state = MfrState { manager: Arc::new(manager) };
+        let mfr_state = MfrState {
+            manager: Arc::new(manager),
+        };
         create_router(mfr_state)
     };
 
-    Ok((build_admin_api_router(state, Some(mfr_router)), jwt_secret_clone))
+    Ok((
+        build_admin_api_router(state, Some(mfr_router)),
+        jwt_secret_clone,
+    ))
 }
 
 async fn build_grpc_api_router(

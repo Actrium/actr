@@ -5,34 +5,23 @@ import { X, Copy, Download, CheckCircle, AlertTriangle } from "lucide-react";
 interface RealmFormProps {
   realm: RealmInfo | null;
   existingRealmIds?: Set<number>;
-  onSubmit: (data: { realm_id: number; name: string; enabled: boolean }) => Promise<RealmMutationResponse | void>;
+  onSubmit: (data: { realm_id?: number; name: string; enabled: boolean }) => Promise<RealmMutationResponse | void>;
   onClose: () => void;
   onRefresh?: () => void;
 }
 
-export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefresh }: RealmFormProps) {
+export function RealmForm({ realm, onSubmit, onClose, onRefresh }: RealmFormProps) {
   const isEditing = !!realm;
-  
-  // Auto-generate ID if creating new (Range: 1,000,000,000 to u32::MAX)
-  // Ensure uniqueness against existing IDs
-  const [realmId, setRealmId] = useState(() => {
+
+  const [realmId] = useState(() => {
     if (realm?.realm_id) return realm.realm_id.toString();
-    
-    // Attempt to generate a unique ID
-    for (let i = 0; i < 100; i++) {
-      const newId = Math.floor(Math.random() * (4294967295 - 1000000000 + 1) + 1000000000);
-      if (!existingRealmIds?.has(newId)) {
-        return newId.toString();
-      }
-    }
-    // Fallback if loop fails (extremely unlikely given the range)
-    return Math.floor(Math.random() * (4294967295 - 1000000000 + 1) + 1000000000).toString();
+    return "";
   });
   const [name, setName] = useState(realm?.name ?? "");
   const [enabled, setEnabled] = useState(realm?.enabled ?? true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  
+
   // Wizard state
   const [step, setStep] = useState<"input" | "success">("input");
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
@@ -57,22 +46,22 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
   // we should probably create it as DISABLED first, then update it?
   // OR, we create it as ENABLED if they click "Activate", and DISABLED if they click "Store".
   // But the secret is returned on CREATE. So we must create it first.
-  
+
   // Let's stick to the plan:
   // Step 1: Input ID & Name. (Remove enabled toggle).
   // Step 2: Create (initially disabled). Show Secret.
   // Step 3: User clicks "Activate" -> Update to enabled=true.
   //         User clicks "Store only" -> Keep enabled=false.
-  
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     setLoading(true);
-    
+
     try {
       if (isEditing) {
         // Update existing
-         await onSubmit({
+        await onSubmit({
           realm_id: parseInt(realmId, 10),
           name,
           enabled, // Use the state for editing
@@ -82,7 +71,6 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
         // Create new - always create as DISABLED first to ensure we get secret
         // before activation decision in step 2
         const resp = await onSubmit({
-          realm_id: parseInt(realmId, 10),
           name,
           enabled: false, // Create disabled initially
         });
@@ -90,12 +78,12 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
         if (resp && 'realm_secret' in resp && resp.realm_secret) {
           setCreatedSecret(resp.realm_secret);
           setCreatedRealm({
-              id: parseInt(realmId, 10),
-              name: name
+            id: resp.realm?.realm_id ?? 0,
+            name: name
           });
           setStep("success");
           // Update local enabled state to false to match
-          setEnabled(false); 
+          setEnabled(false);
         } else {
           onClose();
         }
@@ -111,13 +99,13 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
     if (!createdRealm) return;
     setLoading(true);
     try {
-        await api.updateRealm(createdRealm.id, { enabled: true });
-        if (onRefresh) onRefresh();
-        onClose();
+      await api.updateRealm(createdRealm.id, { enabled: true });
+      if (onRefresh) onRefresh();
+      onClose();
     } catch (err) {
-        setError("Failed to activate realm");
+      setError("Failed to activate realm");
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
   }
 
@@ -163,52 +151,52 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
             </div>
 
             <div className="space-y-3">
-                <div>
-                    <label className="text-xs font-medium text-gray-500 uppercase">Realm ID</label>
-                    <p className="text-sm font-mono text-gray-900">{createdRealm.id}</p>
+              <div>
+                <label className="text-xs font-medium text-gray-500 uppercase">Realm ID</label>
+                <p className="text-sm font-mono text-gray-900">{createdRealm.id}</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 uppercase">Realm Name</label>
+                <p className="text-sm font-medium text-gray-900">{createdRealm.name}</p>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-500 uppercase">Realm Secret</label>
+                <div className="mt-1 flex items-center gap-2">
+                  <code className="flex-1 rounded bg-gray-100 px-3 py-2 text-sm font-mono text-gray-800 border border-gray-200 break-all">
+                    {createdSecret}
+                  </code>
                 </div>
-                <div>
-                    <label className="text-xs font-medium text-gray-500 uppercase">Realm Name</label>
-                    <p className="text-sm font-medium text-gray-900">{createdRealm.name}</p>
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={handleCopy}
+                    className="flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    <Copy className="h-3.5 w-3.5" /> Copy
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    className="flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download
+                  </button>
                 </div>
-                <div>
-                    <label className="text-xs font-medium text-gray-500 uppercase">Realm Secret</label>
-                    <div className="mt-1 flex items-center gap-2">
-                        <code className="flex-1 rounded bg-gray-100 px-3 py-2 text-sm font-mono text-gray-800 border border-gray-200 break-all">
-                            {createdSecret}
-                        </code>
-                    </div>
-                    <div className="flex gap-2 mt-2">
-                        <button
-                            onClick={handleCopy}
-                            className="flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                        >
-                            <Copy className="h-3.5 w-3.5" /> Copy
-                        </button>
-                        <button
-                            onClick={handleDownload}
-                            className="flex items-center gap-1.5 rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-                        >
-                            <Download className="h-3.5 w-3.5" /> Download
-                        </button>
-                    </div>
-                </div>
+              </div>
             </div>
 
             <div className="pt-4 border-t border-gray-100 flex flex-col gap-3">
-                <button
-                    onClick={handleActivate}
-                    disabled={loading}
-                    className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
-                >
-                    {loading ? "Activating..." : "I have saved the secret, Activate Realm"}
-                </button>
-                <button
-                    onClick={onClose}
-                    className="text-xs text-gray-500 hover:text-gray-700 hover:underline text-center"
-                >
-                    Store only (do not activate yet)
-                </button>
+              <button
+                onClick={handleActivate}
+                disabled={loading}
+                className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                {loading ? "Activating..." : "I have saved the secret, Activate Realm"}
+              </button>
+              <button
+                onClick={onClose}
+                className="text-xs text-gray-500 hover:text-gray-700 hover:underline text-center"
+              >
+                Store only (do not activate yet)
+              </button>
             </div>
           </div>
         </div>
@@ -237,13 +225,10 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
               Realm ID
             </label>
             <input
-              type="number"
-              value={realmId}
-              onChange={(e) => setRealmId(e.target.value)}
+              type={isEditing ? "number" : "text"}
+              value={isEditing ? realmId : "Auto-generated by server"}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 font-mono"
-              required
-              disabled={isEditing}
-              min="1"
+              disabled
             />
           </div>
 
@@ -270,22 +255,20 @@ export function RealmForm({ realm, existingRealmIds, onSubmit, onClose, onRefres
                 <button
                   type="button"
                   onClick={() => setEnabled(true)}
-                  className={`flex-1 rounded-md py-1 text-sm font-medium transition-colors ${
-                    enabled
-                      ? "bg-white text-blue-600 shadow-sm"
-                      : "text-gray-500 hover:text-gray-700"
-                  }`}
+                  className={`flex-1 rounded-md py-1 text-sm font-medium transition-colors ${enabled
+                    ? "bg-white text-blue-600 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                    }`}
                 >
                   Enabled
                 </button>
                 <button
                   type="button"
                   onClick={() => setEnabled(false)}
-                  className={`flex-1 rounded-md py-1 text-sm font-medium transition-colors ${
-                    !enabled
-                      ? "bg-white text-gray-900 shadow-sm"
-                      : "text-gray-500 hover:text-gray-700"
-                  }`}
+                  className={`flex-1 rounded-md py-1 text-sm font-medium transition-colors ${!enabled
+                    ? "bg-white text-gray-900 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                    }`}
                 >
                   Stored only
                 </button>
