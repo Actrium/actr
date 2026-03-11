@@ -47,22 +47,6 @@ pub use actr_framework as framework;
 pub use actr_framework::{Context, MessageDispatcher, Workload};
 
 // ============================================================================
-// Hyper - Runtime infrastructure (optional)
-// ============================================================================
-
-#[cfg(feature = "runtime")]
-/// Hyper module - runtime infrastructure (ActrSystem, transport, wire, lifecycle)
-pub use actr_hyper as hyper;
-
-// ============================================================================
-// Runtime - Business dispatch layer (optional)
-// ============================================================================
-
-#[cfg(feature = "runtime")]
-/// Runtime module - business dispatch (ACL + dispatch)
-pub use actr_runtime as runtime;
-
-// ============================================================================
 // Config - Configuration support (optional)
 // ============================================================================
 
@@ -88,7 +72,7 @@ pub mod prelude {
 
     // Runtime infrastructure - ActrSystem / ActrNode / ActrRef
     #[cfg(feature = "runtime")]
-    pub use crate::hyper::{ActrNode, ActrRef, ActrSystem};
+    pub use actr_hyper::{ActrNode, ActrRef, ActrSystem};
 
     // Common traits and types
     pub use async_trait::async_trait;
