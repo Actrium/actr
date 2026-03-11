@@ -5,7 +5,7 @@ use crate::types::{ActrId, ActrType, NetworkEventResult};
 use crate::workload::{DynamicWorkload, WorkloadBridge};
 use actr_config::Config;
 use actr_protocol::{ActrIdExt, ActrTypeExt};
-use actr_runtime::{ActrNode, ActrRef, ActrSystem, NetworkEventHandle};
+use actr_hyper::{ActrNode, ActrRef, ActrSystem, NetworkEventHandle};
 use bytes::Bytes;
 use parking_lot::Mutex;
 use std::sync::Arc;

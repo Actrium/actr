@@ -1463,7 +1463,7 @@ impl<W: Workload> ActrNode<W> {
                         "🔌 WebSocket direct-connect mode enabled, binding port {}",
                         listen_port
                     );
-                    use actr_hyper::key_cache::AisKeyCache;
+                    use crate::key_cache::AisKeyCache;
                     use crate::wire::websocket::gate::WsAuthContext;
                     use crate::wire::websocket::{WebSocketGate, WebSocketServer};
 

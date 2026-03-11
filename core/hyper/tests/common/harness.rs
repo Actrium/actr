@@ -32,11 +32,11 @@ use super::utils::{
 };
 use super::vnet::VNetPair;
 use actr_protocol::{ActrId, RpcEnvelope};
-use actr_runtime::outbound::OutprocOutGate;
-use actr_runtime::transport::{
+use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::transport::{
     DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
 };
-use actr_runtime::wire::webrtc::WebRtcCoordinator;
+use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +57,7 @@ impl TestPeer {
     /// Subscribe to connection events from this peer's coordinator
     pub fn subscribe_events(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<actr_runtime::transport::connection_event::ConnectionEvent>
+    ) -> tokio::sync::broadcast::Receiver<actr_hyper::transport::connection_event::ConnectionEvent>
     {
         self.coordinator.subscribe_events()
     }
@@ -101,7 +101,7 @@ impl TestPeer {
     }
 
     /// Send a ConnectionEvent to simulate state changes
-    pub fn send_event(&self, event: actr_runtime::transport::connection_event::ConnectionEvent) {
+    pub fn send_event(&self, event: actr_hyper::transport::connection_event::ConnectionEvent) {
         let _ = self.coordinator.event_sender().send(event);
     }
 

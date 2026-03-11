@@ -4,7 +4,7 @@
 //! They provide automatic conversion to/from the original types.
 //! Additional types cover runtime lifecycle bindings.
 
-use actr_runtime::lifecycle as runtime_lifecycle;
+use actr_hyper::lifecycle as runtime_lifecycle;
 
 /// Security realm identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]

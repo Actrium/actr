@@ -8,11 +8,11 @@
 mod common;
 
 use actr_protocol::RpcEnvelope;
-use actr_runtime::outbound::OutprocOutGate;
-use actr_runtime::transport::connection_event::{
+use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::transport::connection_event::{
     ConnectionEvent, ConnectionState as TransportConnectionState,
 };
-use actr_runtime::transport::{
+use actr_hyper::transport::{
     DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
 };
 use std::sync::Arc;

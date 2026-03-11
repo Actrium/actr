@@ -7,7 +7,7 @@
 //! ## Workload Side (Subscribe to data streams)
 //!
 //! ```rust,ignore
-//! use actr_runtime::InprocTransportManager;
+//! use actr_hyper::InprocTransportManager;
 //! use std::sync::Arc;
 //!
 //! struct MyWorkload {

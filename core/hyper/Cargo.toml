@@ -104,3 +104,4 @@ tokio-test = "0.4"
 webrtc-ice = "0.14"
 webrtc-util = "0.12"
 actr-hyper = { path = ".", features = ["test-utils"] }
+actr-mock-signaling = { workspace = true }

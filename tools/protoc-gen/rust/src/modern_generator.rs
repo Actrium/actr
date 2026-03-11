@@ -124,8 +124,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use prost::Message as ProstMessage;
 
-use actr_framework::{{Context, Dest, MessageDispatcher, Workload}};
-use actr_protocol::{{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}};
+use actr::framework::{{Context, Dest, MessageDispatcher, Workload}};
+use actr::protocol::{{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}};
 
 // 导入 protobuf 消息类型（由 prost 生成）
 use super::{proto_module}::*;
@@ -270,13 +270,13 @@ impl RpcRequest for {input_type} {{
                 #route_key => {
                     // Extract payload from envelope
                     let payload = envelope.payload.as_ref()
-                        .ok_or_else(|| actr_protocol::ActrError::DecodeFailure(
+                        .ok_or_else(|| actr::protocol::ActrError::DecodeFailure(
                             "Missing payload in RpcEnvelope".to_string()
                         ))?;
 
                     // Deserialize request
                     let req = #input_ident::decode(&**payload)
-                        .map_err(|e| actr_protocol::ActrError::DecodeFailure(
+                        .map_err(|e| actr::protocol::ActrError::DecodeFailure(
                             format!("Failed to decode {}: {}", stringify!(#input_ident), e)
                         ))?;
 
@@ -327,7 +327,7 @@ impl RpcRequest for {input_type} {{
             // Generate match arm for all route keys of this actr_type
             match_arms.push(quote! {
                 #(#route_keys)|* => {
-                    let target_type = actr_protocol::ActrType {
+                    let target_type = actr::protocol::ActrType {
                         manufacturer: #manufacturer.to_string(),
                         name: #name.to_string(),
                         version: "v1".to_string(),
@@ -381,7 +381,7 @@ impl RpcRequest for {input_type} {{
                 ) -> ActorResult<Bytes> {
                     match envelope.route_key.as_str() {
                         #(#match_arms,)*
-                        _ => Err(actr_protocol::ActrError::UnknownRoute(
+                        _ => Err(actr::protocol::ActrError::UnknownRoute(
                             envelope.route_key.to_string()
                         ))
                     }
@@ -500,8 +500,7 @@ impl RpcRequest for {input_type} {{
 ### 1. 实现业务逻辑
 
 ```rust
-use actr_framework::{{Context, ActorSystem}};
-use actr_protocol::ActorResult;
+use actr::prelude::*;
 
 pub struct MyService {{
     // 业务状态
@@ -556,8 +555,7 @@ async fn main() -> ActorResult<()> {{
 ## 客户端使用示例
 
 ```rust
-use actr_framework::Context;
-use actr_protocol::ActorResult;
+use actr::prelude::*;
 
 async fn call_remote_service(ctx: &impl Context, target: ActrId) -> ActorResult<()> {{
     use super::ContextExt;
@@ -658,10 +656,10 @@ mod tests {
         // 验证导入了 PayloadType
         assert!(imports.contains("PayloadType"));
         assert!(imports.contains(
-            "use actr_protocol::{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}"
+            "use actr::protocol::{ActorResult, ActrId, RpcRequest, RpcEnvelope, PayloadType}"
         ));
         assert!(
-            imports.contains("use actr_framework::{Context, Dest, MessageDispatcher, Workload}")
+            imports.contains("use actr::framework::{Context, Dest, MessageDispatcher, Workload}")
         );
     }
 

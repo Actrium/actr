@@ -3,9 +3,9 @@
 //! Helper functions for creating test actors, credentials, and peers
 
 use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm, TurnCredential};
-use actr_runtime::inbound::MediaFrameRegistry;
-use actr_runtime::lifecycle::CredentialState;
-use actr_runtime::wire::webrtc::{
+use actr_hyper::inbound::MediaFrameRegistry;
+use actr_hyper::lifecycle::CredentialState;
+use actr_hyper::wire::webrtc::{
     SignalingClient, WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
 };
 use std::sync::Arc;
@@ -148,7 +148,7 @@ pub async fn create_peer_with_vnet(
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_response_receiver(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_runtime::outbound::OutprocOutGate>,
+    gate: Arc<actr_hyper::outbound::OutprocOutGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();
@@ -243,7 +243,7 @@ pub fn spawn_response_receiver(
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_echo_responder(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_runtime::outbound::OutprocOutGate>,
+    gate: Arc<actr_hyper::outbound::OutprocOutGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();

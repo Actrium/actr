@@ -47,11 +47,19 @@ pub use actr_framework as framework;
 pub use actr_framework::{Context, MessageDispatcher, Workload};
 
 // ============================================================================
-// Runtime - 运行时 (可选)
+// Hyper - 运行时基础设施 (可选)
 // ============================================================================
 
 #[cfg(feature = "runtime")]
-/// Runtime 模块 - ActorSystem 运行时
+/// Hyper 模块 - 运行时基础设施（ActrSystem, transport, wire, lifecycle）
+pub use actr_hyper as hyper;
+
+// ============================================================================
+// Runtime - 业务分发层 (可选)
+// ============================================================================
+
+#[cfg(feature = "runtime")]
+/// Runtime 模块 - 业务分发（ACL + dispatch）
 pub use actr_runtime as runtime;
 
 // ============================================================================
@@ -78,13 +86,9 @@ pub mod prelude {
     // 框架层 - 核心 trait 和类型
     pub use crate::framework::{Context, MessageDispatcher, Workload};
 
-    // 运行时
+    // 运行时基础设施 - ActrSystem / ActrNode / ActrRef
     #[cfg(feature = "runtime")]
-    pub use crate::runtime;
-
-    // 配置
-    #[cfg(feature = "config")]
-    pub use crate::config;
+    pub use crate::hyper::{ActrNode, ActrRef, ActrSystem};
 
     // 常用 trait 和类型
     pub use async_trait::async_trait;

@@ -8,7 +8,7 @@
 #![cfg(feature = "wasm-engine")]
 
 use actr_protocol::ActrId;
-use actr_runtime::wasm::{DispatchContext, IoResult, WasmActorConfig, WasmHost};
+use actr_hyper::wasm::{DispatchContext, IoResult, WasmActorConfig, WasmHost};
 
 // ─── 最小 guest WAT 模块 ──────────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ fn wasm_host_invalid_binary() {
     );
     let err = result.unwrap_err();
     assert!(
-        matches!(err, actr_runtime::wasm::WasmError::LoadFailed(_)),
+        matches!(err, actr_hyper::wasm::WasmError::LoadFailed(_)),
         "错误类型应为 WasmLoadFailed，实际: {err:?}"
     );
 }
@@ -176,7 +176,7 @@ fn wasm_host_missing_exports() {
     );
     let err = result.unwrap_err();
     assert!(
-        matches!(err, actr_runtime::wasm::WasmError::LoadFailed(_)),
+        matches!(err, actr_hyper::wasm::WasmError::LoadFailed(_)),
         "错误类型应为 WasmLoadFailed，实际: {err:?}"
     );
 }

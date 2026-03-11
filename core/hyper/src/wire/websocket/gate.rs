@@ -14,13 +14,13 @@
 
 use super::connection::WebSocketConnection;
 use super::server::InboundWsConn;
-use crate::error::{ActorResult, ActrError};
+use actr_protocol::{ActorResult, ActrError};
 use crate::inbound::DataStreamRegistry;
 use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::SignalingClient;
 use crate::wire::SignalingKeyFetcher;
 use actr_framework::Bytes;
-use actr_hyper::key_cache::AisKeyCache;
+use crate::key_cache::AisKeyCache;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
@@ -937,7 +937,7 @@ mod tests {
 
         let result = rx.await.unwrap();
         assert!(
-            matches!(result, Err(crate::error::ActrError::DecodeFailure(_))),
+            matches!(result, Err(actr_protocol::ActrError::DecodeFailure(_))),
             "both payload+error should produce DecodeFailure: {result:?}"
         );
     }
@@ -974,7 +974,7 @@ mod tests {
 
         let result = rx.await.unwrap();
         assert!(
-            matches!(result, Err(crate::error::ActrError::Unavailable(_))),
+            matches!(result, Err(actr_protocol::ActrError::Unavailable(_))),
             "error-only response should produce Unavailable: {result:?}"
         );
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);

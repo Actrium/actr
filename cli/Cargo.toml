@@ -118,6 +118,7 @@ rust-embed = "8.11.0"
 tokio-test = "0.4"
 tempfile = "3.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
+actr-mock-signaling = { workspace = true }
 
 [lints.clippy]
 collapsible_if = "allow"

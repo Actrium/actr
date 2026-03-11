@@ -119,7 +119,7 @@ pub fn align_rust_project_with_workspace(project_dir: &Path) -> Result<()> {
     let mut content = fs::read_to_string(&cargo_toml_path)
         .with_context(|| format!("failed to read {}", cargo_toml_path.display()))?;
 
-    if content.contains("[patch.crates-io]") && content.contains("actr-runtime = { path =") {
+    if content.contains("[patch.crates-io]") && content.contains("actr = { path =") {
         return Ok(());
     }
 
@@ -129,6 +129,7 @@ pub fn align_rust_project_with_workspace(project_dir: &Path) -> Result<()> {
         ("actr", workspace.clone()),
         ("actr-protocol", workspace.join("core/protocol")),
         ("actr-framework", workspace.join("core/framework")),
+        ("actr-hyper", workspace.join("core/hyper")),
         ("actr-runtime", workspace.join("core/runtime")),
         ("actr-config", workspace.join("core/config")),
         ("actr-service-compat", workspace.join("core/service-compat")),
@@ -461,6 +462,38 @@ impl Drop for LoggedProcess {
     }
 }
 
+/// Mock signaling server for e2e tests (replaces LocalActrix).
+///
+/// Runs `MockSignalingServer` on a background tokio runtime and exposes
+/// a synchronous API compatible with the test harness.
+pub struct MockSignaling {
+    pub signaling_ws_url: String,
+    _runtime: tokio::runtime::Runtime,
+    _server: std::sync::Arc<tokio::sync::Mutex<actr_mock_signaling::MockSignalingServer>>,
+}
+
+impl MockSignaling {
+    pub fn start() -> Result<Self> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("failed to build tokio runtime for mock signaling")?;
+
+        let server = rt
+            .block_on(actr_mock_signaling::MockSignalingServer::start())
+            .context("failed to start mock signaling server")?;
+
+        let ws_url = server.url();
+        let server = std::sync::Arc::new(tokio::sync::Mutex::new(server));
+
+        Ok(Self {
+            signaling_ws_url: ws_url,
+            _runtime: rt,
+            _server: server,
+        })
+    }
+}
+
 pub struct LocalActrix {
     pub state_dir: TempDir,
     process: LoggedProcess,
@@ -657,15 +690,38 @@ fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
 fn ensure_realm_exists(sqlite_dir: &Path, realm_id: u32) -> Result<()> {
     let db_path = sqlite_dir.join("actrix.db");
     let deadline = Instant::now() + Duration::from_secs(10);
+
+    // Generate a stable realm secret for e2e tests
+    let realm_secret = format!(
+        "{:032x}{:032x}",
+        realm_id as u64 ^ 0xDEAD_BEEF_CAFE_BABEu64,
+        realm_id as u64 ^ 0x0123_4567_89AB_CDEFu64,
+    );
+
     loop {
         match Connection::open(&db_path) {
             Ok(conn) => {
                 conn.busy_timeout(Duration::from_secs(3))
                     .context("failed to set sqlite busy timeout")?;
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS realm (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'Active',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        expires_at INTEGER,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER,
+                        secret_current TEXT NOT NULL DEFAULT '',
+                        secret_previous_hash TEXT,
+                        secret_previous_valid_until INTEGER
+                    );
+                     INSERT OR IGNORE INTO sqlite_sequence(name, seq) VALUES('realm', 33554431);",
+                )?;
                 conn.execute(
-                    "INSERT OR IGNORE INTO realm (realm_id, name, status, expires_at, created_at, updated_at)
-                     VALUES (?1, 'e2e-realm', 'Normal', NULL, strftime('%s','now'), strftime('%s','now'))",
-                    [realm_id],
+                    "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current)
+                     VALUES (?1, 'e2e-realm', 'Active', 1, strftime('%s','now'), ?2)",
+                    rusqlite::params![realm_id, realm_secret],
                 )
                 .context("failed to ensure local e2e realm exists")?;
                 return Ok(());
@@ -1121,13 +1177,11 @@ sqlite_path = "{sqlite_path}"
 location_tag = "local,e2e,default"
 actrix_shared_key = "actrix-e2e-shared-key-0123456789abcdef"
 
-[observability]
-filter_level = "info"
+[control]
+head = "admin_ui"
 
-[observability.log]
-output = "console"
-rotate = false
-path = "{log_path}"
+[control.admin_ui]
+password = "e2e-test-password"
 
 [bind.http]
 domain_name = "127.0.0.1"
@@ -1139,6 +1193,8 @@ port = {http_port}
 domain_name = "127.0.0.1"
 ip = "127.0.0.1"
 port = {ice_port}
+advertised_ip = "127.0.0.1"
+advertised_port = {ice_port}
 
 [turn]
 advertised_ip = "127.0.0.1"
@@ -1147,7 +1203,11 @@ relay_port_range = "49152-49200"
 realm = "local.actrix"
 
 [services.ks]
+
+[services.signer]
+
 [services.ais]
+
 [services.signaling]
 
 [services.signaling.server]

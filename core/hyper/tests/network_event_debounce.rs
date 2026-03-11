@@ -6,11 +6,11 @@ use actr_protocol::{
     AIdCredential, ActrId, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
     RouteCandidatesResponse, SignalingEnvelope, UnregisterResponse,
 };
-use actr_runtime::lifecycle::{
+use actr_hyper::lifecycle::{
     CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEventProcessor,
 };
-use actr_runtime::transport::error::{NetworkError, NetworkResult};
-use actr_runtime::wire::webrtc::{SignalingClient, SignalingEvent, SignalingStats};
+use actr_hyper::transport::error::{NetworkError, NetworkResult};
+use actr_hyper::wire::webrtc::{SignalingClient, SignalingEvent, SignalingStats};
 use tokio::sync::broadcast;
 
 struct FakeSignalingClient {
@@ -53,7 +53,7 @@ impl SignalingClient for FakeSignalingClient {
         self.connected.store(false, Ordering::SeqCst);
         self.disconnections.fetch_add(1, Ordering::SeqCst);
         let _ = self.event_tx.send(SignalingEvent::Disconnected {
-            reason: actr_runtime::wire::webrtc::DisconnectReason::Manual,
+            reason: actr_hyper::wire::webrtc::DisconnectReason::Manual,
         });
         Ok(())
     }

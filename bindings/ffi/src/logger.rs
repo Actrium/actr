@@ -4,7 +4,7 @@
 //! to mobile platforms (Android Logcat, iOS os_log).
 
 use actr_config::ObservabilityConfig;
-use actr_runtime::observability::{ObservabilityGuard, init_observability_with_layer};
+use actr_hyper::observability::{ObservabilityGuard, init_observability_with_layer};
 use std::sync::OnceLock;
 
 static GUARD: OnceLock<ObservabilityGuard> = OnceLock::new();

@@ -13,7 +13,7 @@
 
 mod common;
 
-use actr_runtime::wire::webrtc::signaling::{
+use actr_hyper::wire::webrtc::signaling::{
     DisconnectReason, ReconnectConfig, SignalingClient, SignalingConfig, SignalingEvent,
     WebSocketSignalingClient,
 };

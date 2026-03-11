@@ -122,14 +122,10 @@ fn rust_echo_app_scaffold() {
     let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
     assert!(cargo.contains(r#"name = "my-echo-app""#), "package name");
     assert!(cargo.contains(r#"edition = "2024""#), "edition");
-    for dep in [
-        "actr-framework",
-        "actr-protocol",
-        "actr-runtime",
-        "actr-config",
-    ] {
-        assert!(cargo.contains(dep), "missing dependency {dep}");
-    }
+    assert!(
+        cargo.contains("actr = "),
+        "missing dependency actr in Cargo.toml"
+    );
 
     // -- actr.toml --
     let actr = std::fs::read_to_string(dir.join("actr.toml")).unwrap();

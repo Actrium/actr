@@ -9,7 +9,7 @@
 pub mod webrtc;
 pub mod websocket;
 
-use actr_hyper::key_cache::KeyFetcher;
+use crate::key_cache::KeyFetcher;
 use actr_protocol::{AIdCredential, ActrId};
 use async_trait::async_trait;
 
@@ -25,13 +25,13 @@ pub struct SignalingKeyFetcher {
 
 #[async_trait]
 impl KeyFetcher for SignalingKeyFetcher {
-    async fn fetch_key(&self, key_id: u32) -> actr_hyper::error::HyperResult<(u32, Vec<u8>)> {
+    async fn fetch_key(&self, key_id: u32) -> crate::error::HyperResult<(u32, Vec<u8>)> {
         self.client
             .get_signing_key(self.actor_id.clone(), self.credential.clone(), key_id)
             .await
             .map_err(|e| {
                 tracing::warn!(key_id, error = ?e, "SignalingKeyFetcher: 通过 signaling 拉取 AIS 公钥失败");
-                actr_hyper::error::HyperError::AisBootstrapFailed(format!(
+                crate::error::HyperError::AisBootstrapFailed(format!(
                     "signaling get_signing_key 失败: {e:?}"
                 ))
             })

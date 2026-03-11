@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use actr_runtime::lifecycle::{
+use actr_hyper::lifecycle::{
     DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
     NetworkEventResult,
 };
-use actr_runtime::wire::webrtc::SignalingClient;
+use actr_hyper::wire::webrtc::SignalingClient;
 
 use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 

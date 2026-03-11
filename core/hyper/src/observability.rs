@@ -189,7 +189,7 @@ fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerPro
         .with_endpoint(config.tracing_endpoint.clone())
         .build()
         .map_err(|e| {
-            crate::error::ActrError::Internal(format!("OTLP exporter build failed: {e}"))
+            actr_protocol::ActrError::Internal(format!("OTLP exporter build failed: {e}"))
         })?;
 
     let resource = Resource::builder()

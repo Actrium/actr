@@ -16,7 +16,7 @@
 include!("wasm_actor_fixture.rs");
 
 use actr_protocol::{prost::Message as ProstMessage, ActrId, RpcEnvelope};
-use actr_runtime::{
+use actr_hyper::{
     wasm::{DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmHost},
 };
 

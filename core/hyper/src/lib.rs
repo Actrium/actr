@@ -1,26 +1,68 @@
 //! # actr-hyper
 //!
-//! Hyper — Actor 运行平台层
+//! Hyper — Actor 运行平台层 + 运行时基础设施
 //!
 //! ## 定位
 //!
-//! Hyper 是 Actor 的操作系统：划定边界（Sandbox），提供平台原语。
+//! Hyper 是 Actor 的操作系统：划定边界（Sandbox），提供平台原语，
+//! 并承载完整的运行时基础设施（传输、路由、生命周期管理）。
+//!
 //! Actor 不能自己打开数据库，不能自己持有私钥，不能声称自己是某个类型——
 //! 一切都必须经过 Hyper 的受控接口。
 //!
 //! ## 职责
 //!
+//! ### 平台层（原 Hyper）
+//!
 //! - 包签名验证（binary_hash + MFR 签名）
 //! - Actor 启动引导（代表 Actor 向 AIS 发起注册，取得 credential）
 //! - 存储命名空间隔离（每个 Actor 独立的 SQLite 空间）
 //! - 加密原语（Ed25519 签名/验证，Actor 不持有原始私钥）
-//! - 运行时管理（三种模式的 ActrSystem 生命周期）
+//! - 运行时进程管理（三种模式的 ActrSystem 生命周期）
+//!
+//! ### 运行时基础设施（原 actr-runtime）
+//!
+//! - **Actor 生命周期**：系统初始化、节点启动/关停 (ActrSystem / ActrNode / ActrRef)
+//! - **消息传输**：多层架构 (Wire -> Transport -> Gate -> Dispatch)
+//! - **通信模式**：进程内（零拷贝）和跨进程（WebRTC / WebSocket）
+//! - **消息持久化**：SQLite 后端的 Mailbox（ACID 保证）
+//! - **可观测性**：日志、分布式追踪（OpenTelemetry，可选 feature）
+//! - **WASM 引擎**：WASM actor 执行（可选 feature）
+//!
+//! ## 架构分层
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────┐
+//! │  Platform (Hyper)                                   │  AIS Bootstrap
+//! │  Sandbox / Verify / Storage / KeyCache              │  Package Verify
+//! ├─────────────────────────────────────────────────────┤
+//! │  Lifecycle Management (ActrSystem → ActrNode → ActrRef)
+//! ├─────────────────────────────────────────────────────┤
+//! │  Layer 3: Inbound Dispatch                          │  DataStreamRegistry
+//! │           (Fast Path Routing)                       │  MediaFrameRegistry
+//! ├─────────────────────────────────────────────────────┤
+//! │  Layer 2: Outbound Gate                             │  InprocOutGate
+//! │           (Message Sending)                         │  OutprocOutGate
+//! ├─────────────────────────────────────────────────────┤
+//! │  Layer 1: Transport                                 │  Lane (core abstraction)
+//! │           (Channel Management)                      │  InprocTransportManager
+//! │                                                     │  OutprocTransportManager
+//! ├─────────────────────────────────────────────────────┤
+//! │  Layer 0: Wire                                      │  WebRtcGate
+//! │           (Physical Connections)                     │  WebRtcCoordinator
+//! │                                                     │  SignalingClient
+//! └─────────────────────────────────────────────────────┘
+//! ```
 //!
 //! ## 不做的事
 //!
-//! Hyper 不理解业务，不做消息路由，不知道 Actor 之间的关系。
+//! Hyper 不理解业务，不做业务级消息路由，不知道 Actor 之间的业务关系。
 //! WASM 模式下提供的 `hyper_send`/`hyper_recv` 是网络 I/O 原语，
 //! 路由决策由 WASM 内的 ActrSystem 完成。
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Platform modules (original Hyper)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 pub mod ais_client;
 pub mod config;
@@ -30,6 +72,47 @@ pub mod runtime;
 pub mod storage;
 pub mod verify;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Runtime infrastructure modules (moved from actr-runtime)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Lifecycle management layer (not architectural layering)
+pub mod lifecycle;
+
+// ActrRef - Lightweight Actor reference
+pub mod actr_ref;
+
+// Layer 3: Inbound dispatch layer
+pub mod inbound;
+
+// Layer 2: Outbound gate abstraction layer
+pub mod outbound;
+
+// Layer 1: Transport layer
+pub mod transport;
+
+// Layer 0: Wire layer
+pub mod wire;
+
+// Context and context factory
+pub mod context;
+pub mod context_factory;
+
+// Runtime error re-exports (from actr_protocol, distinct from HyperError)
+pub mod runtime_error;
+
+// WASM actor execution engine (optional)
+#[cfg(feature = "wasm-engine")]
+pub mod wasm;
+
+// Monitoring and resource management
+pub mod monitoring;
+pub mod observability;
+pub mod resource;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Re-exports: Platform layer
+// ═══════════════════════════════════════════════════════════════════════════════
 
 pub use ais_client::AisClient;
 pub use config::{HyperConfig, TrustMode};
@@ -42,6 +125,182 @@ pub use verify::{
     manifest_signed_bytes,
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Re-exports: Runtime infrastructure
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Observability
+pub use observability::{ObservabilityGuard, init_observability};
+
+// Core protocol types
+pub use actr_protocol::{ActrId, ActrType};
+
+// Runtime core structures
+pub use actr_ref::ActrRef;
+pub use lifecycle::{ActrNode, ActrSystem, CredentialState, NetworkEventHandle};
+
+// Layer 3: Inbound dispatch layer
+pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
+
+// Re-export MediaSample and MediaType from framework (dependency inversion)
+pub use actr_framework::{MediaSample, MediaType};
+
+// Layer 2: Outbound gate abstraction layer
+pub use outbound::{InprocOutGate, OutGate, OutprocOutGate};
+
+// Layer 1: Transport layer
+pub use transport::{
+    DataLane,
+    DefaultWireBuilder,
+    DefaultWireBuilderConfig,
+    Dest,
+    DestTransport,
+    ExponentialBackoff,
+    InprocTransportManager,
+    NetworkError,
+    NetworkResult,
+    OutprocTransportManager,
+    WireBuilder,
+    WireHandle,
+};
+
+// Backward compatible alias (deprecated)
+#[allow(deprecated)]
+pub use transport::TransportManager;
+
+// Layer 0: Wire layer
+pub use wire::{
+    AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
+    SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
+    WebSocketConnection, WebSocketGate, WebSocketServer, WebSocketSignalingClient, WsAuthContext,
+};
+
+// Mailbox (from actr-runtime-mailbox crate)
+pub use actr_runtime_mailbox::{
+    Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+};
+
+// Context factory
+pub use context_factory::ContextFactory;
+
+// Runtime error types (distinct from HyperError — these are actor-facing errors)
+pub use runtime_error::{ActorResult, ActrError, Classify, ErrorKind};
+
+// Monitoring and resource management
+pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
+pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
+
+// AIS key cache
+pub use key_cache::AisKeyCache;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub const INITIAL_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Prelude
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub mod prelude {
+    //! Convenience prelude module
+    //!
+    //! Re-exports commonly used types and traits for quick imports:
+    //!
+    //! ```rust
+    //! use actr_hyper::prelude::*;
+    //! ```
+
+    // ── Platform types ──────────────────────────────────────────────────────
+    pub use crate::{Hyper, HyperConfig, HyperError, HyperResult, TrustMode};
+    pub use crate::storage::ActorStore;
+    pub use crate::verify::PackageManifest;
+
+    // ── Core structures ─────────────────────────────────────────────────────
+    pub use crate::actr_ref::ActrRef;
+    pub use crate::lifecycle::{
+        ActrNode, ActrSystem, CompatLockFile, CompatLockManager, CompatibilityCheck,
+        DiscoveryResult,
+    };
+
+    // ── Layer 3: Inbound dispatch ───────────────────────────────────────────
+    pub use crate::inbound::{
+        DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback,
+    };
+
+    // Re-export MediaSample and MediaType from framework (dependency inversion)
+    pub use actr_framework::{MediaSample, MediaType};
+
+    // ── Layer 2: Outbound gate ──────────────────────────────────────────────
+    pub use crate::outbound::{InprocOutGate, OutGate, OutprocOutGate};
+
+    // ── Context ─────────────────────────────────────────────────────────────
+    pub use crate::context_factory::ContextFactory;
+
+    // ── Layer 0: Wire (WebRTC) ──────────────────────────────────────────────
+    pub use crate::wire::webrtc::{
+        AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
+        WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator, WebSocketSignalingClient,
+    };
+
+    // ── Mailbox ─────────────────────────────────────────────────────────────
+    pub use actr_runtime_mailbox::{
+        Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+    };
+
+    // ── Layer 1: Transport ──────────────────────────────────────────────────
+    pub use crate::transport::{
+        DataLane,
+        DefaultWireBuilder,
+        DefaultWireBuilderConfig,
+        Dest,
+        DestTransport,
+        InprocTransportManager,
+        NetworkError,
+        NetworkResult,
+        OutprocTransportManager,
+        WireBuilder,
+        WireHandle,
+    };
+
+    // Backward compatible alias (deprecated)
+    #[allow(deprecated)]
+    pub use crate::transport::TransportManager;
+
+    // ── Error types ─────────────────────────────────────────────────────────
+    pub use crate::runtime_error::{ActorResult, ActrError};
+
+    // ── Monitoring / Resource ───────────────────────────────────────────────
+    pub use crate::monitoring::{Alert, AlertSeverity, Monitor};
+    pub use crate::resource::{ResourceManager, ResourceQuota, ResourceUsage};
+
+    // ── Base types ──────────────────────────────────────────────────────────
+    pub use actr_protocol::ActrId;
+
+    // ── Framework traits (for implementing Workload) ────────────────────────
+    pub use actr_framework::{Context, Workload};
+
+    // ── Async trait support ─────────────────────────────────────────────────
+    pub use async_trait::async_trait;
+
+    // ── Common utilities ────────────────────────────────────────────────────
+    pub use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
+    pub use chrono::{DateTime, Utc};
+    pub use uuid::Uuid;
+
+    // ── Tokio runtime primitives ────────────────────────────────────────────
+    pub use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+    pub use tokio::time::{Duration, Instant, sleep, timeout};
+
+    // ── Logging ─────────────────────────────────────────────────────────────
+    pub use tracing::{debug, error, info, trace, warn};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Hyper runtime instance (platform singleton)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,7 +309,7 @@ use prost::Message;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use actr_protocol::{register_response, ActrType, Realm, RegisterRequest};
+use actr_protocol::{register_response, Realm, RegisterRequest};
 use storage::KvOp;
 
 /// Hyper 运行时实例

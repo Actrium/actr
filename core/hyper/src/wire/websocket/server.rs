@@ -14,7 +14,7 @@
 //! - `X-Actr-Credential` 用于 Ed25519 签名验证（gate 层执行）；缺失时按配置决定是否拒绝连接
 
 use super::connection::WebSocketConnection;
-use crate::error::{ActorResult, ActrError};
+use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::AIdCredential;
 use actr_protocol::prost::Message as ProstMessage;
 use std::net::SocketAddr;

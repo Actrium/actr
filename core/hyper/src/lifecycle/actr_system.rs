@@ -1,12 +1,15 @@
 //! ActrSystem - Generic-free infrastructure
 
+use std::path::Path;
+use std::sync::Arc;
+
 use actr_config::Config;
 use actr_framework::Workload;
 use actr_protocol::ActorResult;
-use std::sync::Arc;
 
 use super::ActrNode;
 use crate::context_factory::ContextFactory;
+use crate::observability::ObservabilityGuard;
 
 // Use types from sub-crates
 use crate::wire::webrtc::{
@@ -33,6 +36,9 @@ pub struct ActrSystem {
     /// Runtime configuration
     config: Config,
 
+    /// Observability guard (keeps logging alive while system exists)
+    _observability_guard: Option<ObservabilityGuard>,
+
     /// SQLite persistent mailbox
     mailbox: Arc<dyn Mailbox>,
 
@@ -51,12 +57,50 @@ pub struct ActrSystem {
 }
 
 impl ActrSystem {
-    /// Create new ActrSystem
+    /// Create a fully initialized system from a config file path.
+    ///
+    /// Combines config loading, observability initialization, and system creation.
+    /// The returned `ActrSystem` owns the observability guard internally.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let system = ActrSystem::from_config("actr.toml").await?;
+    /// let _ref = system.attach(MyWorkload).start().await?;
+    /// ```
+    pub async fn from_config(config_path: impl AsRef<Path>) -> ActorResult<Self> {
+        let path = config_path.as_ref();
+
+        let config = actr_config::ConfigParser::from_file(path).map_err(|e| {
+            actr_protocol::ActrError::InvalidArgument(format!(
+                "failed to load config from `{}`: {e}",
+                path.display()
+            ))
+        })?;
+
+        let obs_guard = crate::init_observability(&config.observability)?;
+
+        tracing::info!(config_path = %path.display(), "ActrSystem initializing from config file");
+
+        let mut system = Self::create(config).await?;
+        system._observability_guard = Some(obs_guard);
+        Ok(system)
+    }
+
+    /// Create new ActrSystem from an already-parsed config.
+    ///
+    /// Use this when you need custom observability setup or have already
+    /// parsed the config yourself. For most cases, prefer [`Self::boot`].
     ///
     /// # Errors
     /// - Mailbox initialization failed
     /// - Transport initialization failed
     pub async fn new(config: Config) -> ActorResult<Self> {
+        Self::create(config).await
+    }
+
+    /// Internal creation logic shared by `boot` and `new`.
+    async fn create(config: Config) -> ActorResult<Self> {
         tracing::info!("🚀 Initializing ActrSystem");
 
         // Initialize Mailbox (using SqliteMailbox implementation)
@@ -158,6 +202,7 @@ impl ActrSystem {
 
         Ok(Self {
             config,
+            _observability_guard: None,
             mailbox,
             dlq,
             context_factory,

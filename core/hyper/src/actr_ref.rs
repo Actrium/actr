@@ -69,7 +69,7 @@ use tokio_util::sync::CancellationToken;
 /// ## Generated Code (in `generated/echo_service_actr_ref.rs`)
 ///
 /// ```rust,ignore
-/// use actr_runtime::ActrRef;
+/// use actr_hyper::ActrRef;
 /// use super::echo_service_actor::{EchoServiceWorkload, EchoServiceHandler};
 /// use super::echo::{EchoRequest, EchoResponse, PingRequest, PingResponse};
 ///

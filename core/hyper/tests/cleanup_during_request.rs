@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actr_protocol::RpcEnvelope;
-use actr_runtime::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
-use actr_runtime::outbound::OutprocOutGate;
-use actr_runtime::transport::{
+use actr_hyper::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
+use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::transport::{
     DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
 };
 use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
@@ -93,7 +93,7 @@ async fn test_request_fails_during_cleanup() {
     // Phase 2: Start cleanup and send request - Testing Solution 2: Caller reconnects after cleanup
     tracing::info!("🧹 Phase 2: Testing Solution 2 - Manual reconnect after cleanup...");
 
-    use actr_runtime::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
+    use actr_hyper::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
 
     // Create processor for this test
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
@@ -477,7 +477,7 @@ async fn test_dest_transport_cache_not_cleaned() {
     // Phase 2: Call cleanup_connections (closes WebRTC, but does NOT clean DestTransport cache)
     tracing::info!("🧹 Phase 2: Calling cleanup_connections...");
 
-    use actr_runtime::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
+    use actr_hyper::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
     let processor = Arc::new(DefaultNetworkEventProcessor::new(
         signaling_client_a.clone(),
         Some(coord_a.clone()),

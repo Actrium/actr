@@ -13,7 +13,7 @@
 mod common;
 
 use actr_protocol::{RpcEnvelope, prost::Message};
-use actr_runtime::{
+use actr_hyper::{
     ActrId,
     outbound::OutprocOutGate,
     transport::{
@@ -59,7 +59,7 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
 
     // 创建 OutprocOutGate（用于发送 RPC）
     let wire_config_a = DefaultWireBuilderConfig::default();
-    let wire_builder_a: Arc<dyn actr_runtime::transport::WireBuilder> = Arc::new(
+    let wire_builder_a: Arc<dyn actr_hyper::transport::WireBuilder> = Arc::new(
         DefaultWireBuilder::new(Some(coord_a.clone()), wire_config_a),
     );
     let transport_mgr_a = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder_a));
@@ -67,7 +67,7 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
 
     // 为 peer B 创建 OutprocOutGate（用于响应）
     let wire_config_b = DefaultWireBuilderConfig::default();
-    let wire_builder_b: Arc<dyn actr_runtime::transport::WireBuilder> = Arc::new(
+    let wire_builder_b: Arc<dyn actr_hyper::transport::WireBuilder> = Arc::new(
         DefaultWireBuilder::new(Some(coord_b.clone()), wire_config_b),
     );
     let transport_mgr_b = Arc::new(OutprocTransportManager::new(id_b.clone(), wire_builder_b));

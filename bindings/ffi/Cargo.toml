@@ -15,7 +15,8 @@ name = "actr"
 # actr dependencies (workspace members)
 actr-protocol.workspace = true
 actr-framework.workspace = true
-actr-runtime = { workspace = true, features = ["opentelemetry"] }
+actr-runtime.workspace = true
+actr-hyper = { workspace = true, features = ["opentelemetry"] }
 actr-config = { workspace = true, features = ["opentelemetry"] }
 
 # UniFFI
