@@ -105,6 +105,20 @@ actor-rtc/
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 开启 Pull Request
 
+## Release Train (Maintainers)
+
+Use the manual workflow `Release Train (Basic)` for the monorepo-managed
+foundation crates, protoc tools, supported SDK crates, and `actr-cli` with one
+shared stable version.
+
+- Workflow file: `.github/workflows/release-train-cli-protoc.yml`
+- Local/CI entrypoint: `scripts/release-train-cli-protoc.sh`
+- Required secrets: `CARGO_REGISTRY_TOKEN`, `PYPI_API_TOKEN`
+- Reports are generated under `release/reports/` and uploaded as workflow
+  artifacts.
+- Components without a monorepo-native publish path yet are recorded as skipped
+  in the report and do not block the basic train.
+
 ## 📄 许可证
 
 本项目采用 MIT 许可证。
