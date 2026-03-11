@@ -18,9 +18,19 @@ set -euo pipefail
 # - zip
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="${ROOT_DIR}/dist"
-FRAMEWORK_DIR="${ROOT_DIR}/ActrFFI.xcframework"
+resolve_root_path() {
+  local path="$1"
+  if [[ "${path}" = /* ]]; then
+    printf '%s\n' "${path}"
+  else
+    printf '%s\n' "${ROOT_DIR}/${path}"
+  fi
+}
+
+DIST_DIR="$(resolve_root_path "${ACTR_DIST_DIR:-dist}")"
+FRAMEWORK_DIR="$(resolve_root_path "${ACTR_BINARY_PATH:-ActrFFI.xcframework}")"
 ZIP_PATH="${DIST_DIR}/ActrFFI.xcframework.zip"
+RELEASE_REPOSITORY="${ACTR_RELEASE_REPOSITORY:-Actrium/actr-swift-package-sync}"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -39,16 +49,18 @@ if [[ ! -d "${FRAMEWORK_DIR}" ]]; then
   exit 1
 fi
 
-rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
+rm -f "${ZIP_PATH}" "${DIST_DIR}/release.txt"
 
 echo "[1/3] Zipping XCFramework -> ${ZIP_PATH}"
-(cd "${ROOT_DIR}" && zip -qry "${ZIP_PATH}" "ActrFFI.xcframework")
+ZIP_SOURCE_PARENT="$(dirname "${FRAMEWORK_DIR}")"
+ZIP_SOURCE_NAME="$(basename "${FRAMEWORK_DIR}")"
+(cd "${ZIP_SOURCE_PARENT}" && zip -qry "${ZIP_PATH}" "${ZIP_SOURCE_NAME}")
 
 echo "[2/3] Computing SwiftPM checksum"
 CHECKSUM="$(cd "${ROOT_DIR}" && swift package compute-checksum "${ZIP_PATH}")"
 
-DOWNLOAD_URL="https://github.com/actor-rtc/actr-swift/releases/download/${RELEASE_TAG}/ActrFFI.xcframework.zip"
+DOWNLOAD_URL="https://github.com/${RELEASE_REPOSITORY}/releases/download/${RELEASE_TAG}/ActrFFI.xcframework.zip"
 
 echo "[3/3] Release info"
 cat > "${DIST_DIR}/release.txt" <<EOF
@@ -73,5 +85,5 @@ echo ""
 echo "Next steps:"
 echo "  1) Upload ${ZIP_PATH} to GitHub Release: ${RELEASE_TAG}"
 echo "  2) Set ACTR_BINARY_CHECKSUM=${CHECKSUM} and ACTR_BINARY_TAG=${RELEASE_TAG} in Package.swift (or export as env when resolving)"
-echo "  3) Push tag ${RELEASE_TAG} to https://github.com/actor-rtc/actr-swift"
+echo "  3) Push tag ${RELEASE_TAG} to https://github.com/${RELEASE_REPOSITORY}"
 echo ""

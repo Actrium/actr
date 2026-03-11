@@ -4,6 +4,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+env:
+  PROTOC_VERSION: "29.3"
+
 permissions:
   contents: read
 
