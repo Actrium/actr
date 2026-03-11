@@ -36,7 +36,7 @@ graph TB
 
         subgraph SW_OUT["📤 OUTBOUND 出口"]
             direction TB
-            OUT1["OutGate"]
+            OUT1["Gate"]
             OUT2["TransportManager"]
             OUT3["WirePool<br/>(优先级管理)"]
             OUT4A["WebSocket Wire<br/>(Priority 0)"]
@@ -125,7 +125,7 @@ graph TB
 - 🟢 **绿色虚线**：控制与优化（⑤⑥）- 本地处理和状态通知
 
 **关键要点**：
-1. **总控在 SW**：所有入口（InboundDispatcher）、出口（OutGate）、路由决策都在 Service Worker
+1. **总控在 SW**：所有入口（InboundDispatcher）、出口（Gate）、路由决策都在 Service Worker
 2. **WebRTC 转发**：SW 无法直接访问 WebRTC API，通过 MessagePort 桥接到 DOM
 3. **优先级管理**：WirePool 自动选择，WebRTC (P2P) 优先级高于 WebSocket (C/S)
 4. **Fast Path**：Stream 和 Media 在 DOM 本地处理，绕过 SW Mailbox，延迟 < 3ms
@@ -141,7 +141,7 @@ graph TB
 │            Service Worker (主控)                   │
 │                                                    │
 │  ┌─────────────── 发送 (Transport) ──────────┐   │
-│  │  OutprocTransportManager                   │   │
+│  │  PeerTransport                   │   │
 │  │    → DestTransport                         │   │
 │  │      → WirePool (WebSocket + WebRTC)       │   │
 │  └────────────────────────────────────────────┘   │
@@ -179,7 +179,7 @@ graph TB
 
 | 组件 | 职责 |
 |------|------|
-| OutprocTransportManager | 统一发送接口，管理所有 Dest |
+| PeerTransport | 统一发送接口，管理所有 Dest |
 | WireBuilder | 工厂模式创建连接 |
 | DestTransport | 单 Dest 管理，事件驱动发送 |
 | WirePool | 连接池，优先级选择 |
@@ -233,7 +233,7 @@ loop {
 ### SW 主控
 
 - **SW (主控)**:
-  - OutprocTransportManager (发送)
+  - PeerTransport (发送)
   - InboundPacketDispatcher (接收 RPC)
   - Mailbox + Scheduler (Actor)
 
@@ -260,7 +260,7 @@ loop {
 
 | 组件 | actr | actr-web | 一致性 |
 |------|------|----------|--------|
-| OutprocTransportManager | ✓ | ✓ | 100% |
+| PeerTransport | ✓ | ✓ | 100% |
 | DestTransport | ✓ | ✓ | 100% |
 | WirePool | ✓ | ✓ | 95% |
 | InboundPacketDispatcher | ✓ | ✓ | 100% |
@@ -292,5 +292,5 @@ loop {
 
 **相关文档**:
 - [双层架构设计](./dual-layer.md) - State Path vs Fast Path 详细设计
-- [API 层设计](./api-layer.md) - OutGate/Context/ActrRef 实现
+- [API 层设计](./api-layer.md) - Gate/Context/ActrRef 实现
 - [完成度评估](./completion-status.md) - 相对 actr 的完成度分析

@@ -2,7 +2,7 @@
 //!
 //! 负责在 DOM 重启后重建 WebRTC 连接
 
-use crate::{OutprocTransportManager, WebResult, WirePool};
+use crate::{PeerTransport, WebResult, WirePool};
 use actr_web_common::ConnType;
 use std::sync::Arc;
 use web_sys::MessagePort;
@@ -13,7 +13,7 @@ pub struct WebRtcRecoveryManager {
     wire_pool: Arc<WirePool>,
 
     /// Transport Manager 引用（可选）
-    transport_manager: Option<Arc<OutprocTransportManager>>,
+    transport_manager: Option<Arc<PeerTransport>>,
 }
 
 impl WebRtcRecoveryManager {
@@ -28,7 +28,7 @@ impl WebRtcRecoveryManager {
     }
 
     /// 设置 Transport Manager 引用
-    pub fn with_transport_manager(mut self, manager: Arc<OutprocTransportManager>) -> Self {
+    pub fn with_transport_manager(mut self, manager: Arc<PeerTransport>) -> Self {
         self.transport_manager = Some(manager);
         self
     }
@@ -202,7 +202,7 @@ mod tests {
     fn test_recovery_manager_with_transport_manager() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(OutprocTransportManager::new(
+        let transport_manager = Arc::new(PeerTransport::new(
             "test-sw".to_string(),
             wire_builder,
         ));
@@ -356,7 +356,7 @@ mod tests {
     fn test_with_transport_manager_builder_pattern() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(OutprocTransportManager::new(
+        let transport_manager = Arc::new(PeerTransport::new(
             "test-sw".to_string(),
             wire_builder,
         ));

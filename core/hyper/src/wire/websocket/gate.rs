@@ -57,7 +57,7 @@ pub struct WebSocketGate {
     conn_rx: tokio::sync::Mutex<Option<mpsc::Receiver<InboundWsConn>>>,
 
     /// 待响应请求表（request_id → (caller_id, oneshot::Sender)）
-    /// **与 OutprocOutGate 共享**，以便正确路由 Response
+    /// **与 PeerGate 共享**，以便正确路由 Response
     pending_requests: PendingRequestsMap,
 
     /// DataStream 注册表（fast-path 流消息路由）
@@ -72,7 +72,7 @@ impl WebSocketGate {
     ///
     /// # Arguments
     /// - `conn_rx`: 来自 `WebSocketServer::bind()` 的接收端
-    /// - `pending_requests`: 与 OutprocOutGate 共享的待响应表
+    /// - `pending_requests`: 与 PeerGate 共享的待响应表
     /// - `data_stream_registry`: DataStream 注册表
     /// - `auth_ctx`: 身份验证上下文（配置后对所有入站连接强制验签）
     pub fn new(

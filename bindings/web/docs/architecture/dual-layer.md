@@ -103,7 +103,7 @@ sequenceDiagram
 #### Service Worker 侧（主控）
 - **职责**: State Path 全流程
 - **组件**:
-  - OutprocTransportManager (发送)
+  - PeerTransport (发送)
   - InboundPacketDispatcher (接收 RPC)
   - Mailbox + Scheduler (Actor)
 - **通信**: WebSocket（直接）, PostMessage（与 DOM）
@@ -187,5 +187,5 @@ sequenceDiagram
 
 **相关文档**:
 - [架构总览](./overview.md) - 整体架构设计
-- [API 层设计](./api-layer.md) - OutGate/Context/ActrRef
+- [API 层设计](./api-layer.md) - Gate/Context/ActrRef
 - [完成度评估](./completion-status.md) - 详细进度分析

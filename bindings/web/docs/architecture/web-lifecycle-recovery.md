@@ -491,7 +491,7 @@ impl WirePool {
 
 pub struct WebRtcRecoveryManager {
     wire_pool: Arc<WirePool>,
-    transport_manager: Arc<OutprocTransportManager>,
+    transport_manager: Arc<PeerTransport>,
 }
 
 impl WebRtcRecoveryManager {

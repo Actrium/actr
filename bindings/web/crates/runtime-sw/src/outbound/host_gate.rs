@@ -1,6 +1,6 @@
-//! InprocOutGate - 进程内传输适配器（出站）
+//! HostGate - 进程内传输适配器（出站）
 //!
-//! Web 版本的 InprocOutGate，用于 SW 内部 Actor 之间的通信
+//! Web 版本的 HostGate，用于 SW 内部 Actor 之间的通信
 
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
@@ -10,11 +10,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use actr_framework::MediaSample;
-/// InprocOutGate - 进程内传输适配器
+/// HostGate - 进程内传输适配器
 ///
 /// # 设计说明
 ///
-/// Web 版本的 InprocOutGate 与 actr 版本类似，但有以下区别：
+/// Web 版本的 HostGate 与 actr 版本类似，但有以下区别：
 /// - 使用 JS 环境的异步原语（futures::channel）
 /// - 不需要 mpsc channel（因为 SW 是单线程的）
 /// - 通过 request_id 映射实现请求-响应模式
@@ -32,7 +32,7 @@ use actr_framework::MediaSample;
 ///
 /// 3. **DataStream（Fast Path）**：
 ///    - 绕过序列化，直接传递 bytes
-pub struct InprocOutGate {
+pub struct HostGate {
     /// Pending requests: request_id → oneshot sender
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Bytes>>>>,
 
@@ -45,8 +45,8 @@ pub struct InprocOutGate {
 /// 注意：WASM/Service Worker 是单线程环境，不需要 Send + Sync
 pub type MessageHandler = Box<dyn Fn(ActrId, RpcEnvelope)>;
 
-impl InprocOutGate {
-    /// 创建新的 InprocOutGate
+impl HostGate {
+    /// 创建新的 HostGate
     pub fn new() -> Self {
         Self {
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -78,7 +78,7 @@ impl InprocOutGate {
     /// 4. 等待响应
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         log::debug!(
-            "📤 InprocOutGate::send_request to {:?}, request_id={}",
+            "HostGate::send_request to {:?}, request_id={}",
             target,
             envelope.request_id
         );
@@ -105,7 +105,7 @@ impl InprocOutGate {
                     self.pending_requests.lock().remove(&envelope.request_id);
 
                     return Err(ActrError::Unavailable(
-                        "InprocOutGate message_handler not set".to_string(),
+                        "HostGate message_handler not set".to_string(),
                     ));
                 }
             }
@@ -122,7 +122,7 @@ impl InprocOutGate {
     /// 发送单向消息（不等待响应）
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         log::debug!(
-            "📤 InprocOutGate::send_message to {:?}, request_id={}",
+            "HostGate::send_message to {:?}, request_id={}",
             target,
             envelope.request_id
         );
@@ -135,7 +135,7 @@ impl InprocOutGate {
                 Ok(())
             }
             None => Err(ActrError::Unavailable(
-                "InprocOutGate message_handler not set".to_string(),
+                "HostGate message_handler not set".to_string(),
             )),
         }
     }
@@ -153,7 +153,7 @@ impl InprocOutGate {
         data: Bytes,
     ) -> ActorResult<()> {
         log::debug!(
-            "📤 InprocOutGate::send_data_stream to {:?}, size={} bytes",
+            "HostGate::send_data_stream to {:?}, size={} bytes",
             target,
             data.len()
         );
@@ -186,13 +186,13 @@ impl InprocOutGate {
         _sample: MediaSample,
     ) -> ActorResult<()> {
         log::warn!(
-            "⚠️  InprocOutGate::send_media_sample to {:?}, track={} - not implemented",
+            "HostGate::send_media_sample to {:?}, track={} - not implemented",
             target,
             track_id
         );
 
         Err(ActrError::NotImplemented(
-            "send_media_sample not yet implemented for Web InprocOutGate".to_string(),
+            "send_media_sample not yet implemented for Web HostGate".to_string(),
         ))
     }
 
@@ -210,7 +210,7 @@ impl InprocOutGate {
     }
 }
 
-impl Default for InprocOutGate {
+impl Default for HostGate {
     fn default() -> Self {
         Self::new()
     }
@@ -221,13 +221,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_inproc_out_gate_creation() {
-        let _gate = InprocOutGate::new();
+    fn test_host_gate_creation() {
+        let _gate = HostGate::new();
     }
 
     #[test]
     fn test_handle_response_unknown_request() {
-        let gate = InprocOutGate::new();
+        let gate = HostGate::new();
         gate.handle_response("unknown-id", Bytes::from("test"));
         // 应该只输出 warning，不应该 panic
     }

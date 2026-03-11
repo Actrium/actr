@@ -36,7 +36,7 @@ use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, RpcEnvelope};
 use bytes::Bytes;
 
-use crate::outbound::InprocOutGate;
+use crate::outbound::HostGate;
 use crate::trace::inject_span_context_to_rpc;
 use actr_framework::Workload;
 
@@ -87,9 +87,9 @@ pub(crate) struct ActrRefShared {
     /// Actor ID
     pub(crate) actor_id: ActrId,
 
-    /// Inproc gate for DOM → SW RPC
-    /// (注意：与 actr 不同，Web 版本只需要 InprocOut)
-    pub(crate) inproc_gate: Arc<InprocOutGate>,
+    /// Host gate for DOM → SW RPC
+    /// (注意：与 actr 不同，Web 版本只需要 Host gate)
+    pub(crate) host_gate: Arc<HostGate>,
 
     /// Shutdown flag
     pub(crate) shutdown: Arc<parking_lot::Mutex<bool>>,
@@ -154,7 +154,7 @@ impl<W: Workload> ActrRef<W> {
         // 发送请求并等待响应
         let response_bytes = self
             .shared
-            .inproc_gate
+            .host_gate
             .send_request(&self.shared.actor_id, envelope)
             .await?;
 
@@ -201,7 +201,7 @@ impl<W: Workload> ActrRef<W> {
 
         // 发送消息不等待响应
         self.shared
-            .inproc_gate
+            .host_gate
             .send_message(&self.shared.actor_id, envelope)
             .await
     }

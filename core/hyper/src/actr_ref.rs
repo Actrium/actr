@@ -39,7 +39,7 @@
 //! ```
 
 use crate::lifecycle::ActrNode;
-use crate::outbound::InprocOutGate;
+use crate::outbound::HostGate;
 use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
@@ -141,8 +141,8 @@ pub(crate) struct ActrRefShared {
     /// Actor ID
     pub(crate) actor_id: ActrId,
 
-    /// Inproc gate for Shell → Workload RPC
-    pub(crate) inproc_gate: Arc<InprocOutGate>,
+    /// Host gate for Shell → Workload RPC
+    pub(crate) inproc_gate: Arc<HostGate>,
 
     /// Shutdown signal
     pub(crate) shutdown_token: CancellationToken,

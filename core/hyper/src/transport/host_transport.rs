@@ -1,4 +1,4 @@
-//! InprocTransportManager - Intra-process transport manager
+//! HostTransport - Intra-process transport manager
 //!
 //! Manages mpsc channel communication between Workload and Shell
 //!
@@ -7,17 +7,17 @@
 //! ## Workload Side (Subscribe to data streams)
 //!
 //! ```rust,ignore
-//! use actr_hyper::InprocTransportManager;
+//! use actr_hyper::HostTransport;
 //! use std::sync::Arc;
 //!
 //! struct MyWorkload {
-//!     inproc_mgr: Arc<InprocTransportManager>,
+//!     host_transport: Arc<HostTransport>,
 //! }
 //!
 //! impl MyWorkload {
 //!     pub async fn subscribe_metrics_stream(&self) -> NetworkResult<()> {
 //!         // Create LatencyFirst channel
-//!         let rx = self.inproc_mgr
+//!         let rx = self.host_transport
 //!             .create_latency_first_channel("metrics-stream".to_string())
 //!             .await;
 //!
@@ -40,11 +40,11 @@
 //! ## Shell Side (Send data)
 //!
 //! ```rust,ignore
-//! // Get InprocTransportManager from ActrNode
-//! if let Some(inproc_mgr) = node.inproc_mgr() {
+//! // Get HostTransport from ActrNode
+//! if let Some(host_transport) = node.host_transport() {
 //!     // Send to LatencyFirst channel
 //!     let envelope = RpcEnvelope { /* ... */ };
-//!     inproc_mgr.send_message(
+//!     host_transport.send_message(
 //!         PayloadType::StreamLatencyFirst,
 //!         Some("metrics-stream".to_string()),
 //!         envelope
@@ -60,14 +60,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
-/// Inproc Transport Manager - manages intra-process transport (mpsc channels)
+/// Host Transport - manages intra-process transport (mpsc channels)
 ///
 /// # Design Philosophy
-/// - **Workload ↔ Shell communication bridge** (not for arbitrary Actor-to-Actor communication)
+/// - **Workload <-> Shell communication bridge** (not for arbitrary Actor-to-Actor communication)
 /// - **Reliable is mandatory, others are created on-demand**
 /// - **Dynamic multi-channel management**: HashMap<String, Channel>
 /// - **Bi-directional sharing**: Shell and Workload share the same Manager
-pub struct InprocTransportManager {
+pub struct HostTransport {
     // ========== Mandatory base channel ==========
     /// Reliable channel (must exist)
     reliable_tx: mpsc::Sender<RpcEnvelope>,
@@ -108,22 +108,22 @@ struct LaneKey {
     identifier: Option<String>,
 }
 
-impl Default for InprocTransportManager {
+impl Default for HostTransport {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl InprocTransportManager {
+impl HostTransport {
     /// Create new instance (only creates Reliable channel, others are lazy-initialized)
     ///
-    /// InprocTransportManager manages intra-process communication channels between Workload and Shell.
+    /// HostTransport manages intra-process communication channels between Workload and Shell.
     /// It does not need ActorId as all communication is within a single process.
     pub fn new() -> Self {
         let (reliable_tx, reliable_rx) = mpsc::channel(1024);
 
-        tracing::debug!("Created InprocTransportManager");
-        tracing::debug!("✨ Created Reliable channel");
+        tracing::debug!("Created HostTransport");
+        tracing::debug!("Created Reliable channel");
 
         Self {
             reliable_tx,
@@ -147,7 +147,7 @@ impl InprocTransportManager {
                 tx,
                 rx: Arc::new(Mutex::new(rx)),
             });
-            tracing::debug!("✨ Created Signal channel");
+            tracing::debug!("Created Signal channel");
         }
         // Safe: we just created it if it was None
         opt.as_ref()
@@ -171,7 +171,7 @@ impl InprocTransportManager {
             let rx_clone = pair.rx.clone();
             channels.insert(channel_id.clone(), pair);
 
-            tracing::debug!("✨ Created LatencyFirst channel '{}'", channel_id);
+            tracing::debug!("Created LatencyFirst channel '{}'", channel_id);
             rx_clone
         } else {
             // Safe: we just checked contains_key
@@ -199,7 +199,7 @@ impl InprocTransportManager {
             let rx_clone = pair.rx.clone();
             channels.insert(track_id.clone(), pair);
 
-            tracing::debug!("✨ Created MediaTrack channel '{}'", track_id);
+            tracing::debug!("Created MediaTrack channel '{}'", track_id);
             rx_clone
         } else {
             // Safe: we just checked contains_key
@@ -235,7 +235,7 @@ impl InprocTransportManager {
         {
             let cache = self.lane_cache.read().await;
             if let Some(lane) = cache.get(&key) {
-                tracing::debug!("📦 Reusing cached Inproc DataLane: {:?}", key);
+                tracing::debug!("Reusing cached Inproc DataLane: {:?}", key);
                 return Ok(lane.clone());
             }
         }
@@ -287,7 +287,7 @@ impl InprocTransportManager {
         self.lane_cache.write().await.insert(key, lane.clone());
 
         tracing::debug!(
-            "✨ Created Inproc DataLane: type={:?}, identifier={:?}",
+            "Created Inproc DataLane: type={:?}, identifier={:?}",
             payload_type,
             identifier
         );
@@ -300,7 +300,7 @@ impl InprocTransportManager {
     /// Send request (with response waiting)
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "InprocTransportManager.send_request")
+        tracing::instrument(skip_all, name = "HostTransport.send_request")
     )]
     pub async fn send_request(
         &self,
@@ -336,7 +336,7 @@ impl InprocTransportManager {
     /// Send one-way message
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "InprocTransportManager.send_message")
+        tracing::instrument(skip_all, name = "HostTransport.send_message")
     )]
     pub async fn send_message(
         &self,
@@ -400,7 +400,7 @@ impl InprocTransportManager {
         let mut pending = self.pending_requests.write().await;
         if let Some(tx) = pending.remove(request_id) {
             let _ = tx.send(Ok(response_bytes));
-            tracing::debug!("✅ Completed pending request: {}", request_id);
+            tracing::debug!("Completed pending request: {}", request_id);
             Ok(())
         } else {
             Err(NetworkError::InvalidArgument(format!(
@@ -418,7 +418,7 @@ impl InprocTransportManager {
         let mut pending = self.pending_requests.write().await;
         if let Some(tx) = pending.remove(request_id) {
             let _ = tx.send(Err(error));
-            tracing::debug!("✅ Completed pending request with error: {}", request_id);
+            tracing::debug!("Completed pending request with error: {}", request_id);
             Ok(())
         } else {
             Err(NetworkError::InvalidArgument(format!(
@@ -435,7 +435,7 @@ impl InprocTransportManager {
             match (&envelope.payload, &envelope.error) {
                 (Some(payload), None) => {
                     let _ = tx.send(Ok(payload.clone()));
-                    tracing::debug!("✅ Completed pending request: {}", envelope.request_id);
+                    tracing::debug!("Completed pending request: {}", envelope.request_id);
                 }
                 (None, Some(error)) => {
                     let protocol_err = ActrError::Unavailable(format!(
@@ -444,13 +444,13 @@ impl InprocTransportManager {
                     ));
                     let _ = tx.send(Err(protocol_err));
                     tracing::debug!(
-                        "✅ Completed pending request with error: {}",
+                        "Completed pending request with error: {}",
                         envelope.request_id
                     );
                 }
                 _ => {
                     tracing::error!(
-                        "❌ Invalid RpcEnvelope: both payload and error present or both absent"
+                        "Invalid RpcEnvelope: both payload and error present or both absent"
                     );
                     let _ = tx.send(Err(ActrError::DecodeFailure(
                         "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),

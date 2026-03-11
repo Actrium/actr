@@ -10,7 +10,7 @@
 ┌─────────────────────────────────────────────────────┐
 │              Service Worker (SW)                     │
 │                                                      │
-│  OutGate → OutprocTransportManager                  │
+│  Gate → PeerTransport                               │
 │                ↓                                     │
 │           DestTransport                             │
 │                ↓                                     │
@@ -100,9 +100,9 @@
 SW: Actor 调用
    │ ctx.call(peer_id, request)
    ↓
-SW: OutGate.send_request()
+SW: Gate.send_request()
    ↓
-SW: OutprocTransportManager.send()
+SW: PeerTransport.send()
    ↓
 SW: DestTransport.send()
    │
@@ -219,15 +219,15 @@ for &conn_type in &conn_types {
 - WebWireBuilder 异步请求 DOM 创建 P2P
 - **WebRtcConnection::get_lane()** — 通过 lane_cache + DataLane::PostMessage 实现
 - **完整出站传输栈已接入**：
-  - OutGate::OutprocOut → OutprocOutGate → OutprocTransportManager → DestTransport → WirePool → DataLane::PostMessage
-  - System.MessageHandler → OutGate.send_message()
-  - 响应路由：OutGate.try_handle_response → InprocOutGate.handle_response
+  - Gate::Peer → PeerGate → PeerTransport → DestTransport → WirePool → DataLane::PostMessage
+  - System.MessageHandler → Gate.send_message()
+  - 响应路由：Gate.try_handle_response → HostGate.handle_response
 - **DOM 侧 MessageChannel 桥接已实现**：
   - DataChannel open 时自动创建 MessageChannel
   - port1 留在 DOM（DataChannel ↔ port1 双向转发）
   - port2 通过 Transferable 转移给 SW
   - SW 通过 `register_datachannel_port` 注入 WirePool
-- **OutprocTransportManager.inject_connection()** 支持动态注入连接
+- **PeerTransport.inject_connection()** 支持动态注入连接
 - **DestTransport.wire_pool()** 公开访问器
 - **ICE restart** 完整实现（检测 + 重试 + 回退）
 
@@ -238,8 +238,8 @@ for &conn_type in &conn_types {
 
 **代码位置**：
 - get_lane 实现: `crates/runtime-sw/src/transport/wire_handle.rs`
-- OutGate 路由: `crates/runtime-sw/src/system.rs:init_message_handler`
-- OutprocOutGate: `crates/runtime-sw/src/outbound/outproc_out_gate.rs`
+- Gate 路由: `crates/runtime-sw/src/system.rs:init_message_handler`
+- PeerGate: `crates/runtime-sw/src/outbound/peer_gate.rs`
 - Register port: `crates/runtime-sw/src/client_runtime.rs:register_datachannel_port`
 - DOM 桥接: `packages/actr-dom/src/webrtc-coordinator.ts:attachDataChannel`
 
@@ -250,7 +250,7 @@ for &conn_type in &conn_types {
    - 通过 MessagePort 间接使用
 
 2. **统一接口**
-   - OutGate 层无感知
+   - Gate 层无感知
    - WireHandle 统一抽象
 
 3. **优先级自动切换**

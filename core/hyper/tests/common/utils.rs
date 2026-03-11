@@ -142,13 +142,13 @@ pub async fn create_peer_with_vnet(
 /// This function starts a background task that:
 /// 1. Receives messages from the coordinator
 /// 2. Parses them as RpcEnvelope
-/// 3. Routes responses to OutprocOutGate.handle_response
+/// 3. Routes responses to PeerGate.handle_response
 ///
 /// # Returns
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_response_receiver(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_hyper::outbound::OutprocOutGate>,
+    gate: Arc<actr_hyper::outbound::PeerGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();
@@ -243,7 +243,7 @@ pub fn spawn_response_receiver(
 /// A JoinHandle that can be used to abort the task
 pub fn spawn_echo_responder(
     coordinator: Arc<WebRtcCoordinator>,
-    gate: Arc<actr_hyper::outbound::OutprocOutGate>,
+    gate: Arc<actr_hyper::outbound::PeerGate>,
     peer_name: &str,
 ) -> tokio::task::JoinHandle<()> {
     let peer_name = peer_name.to_string();

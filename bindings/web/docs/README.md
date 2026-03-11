@@ -42,7 +42,7 @@
 
 1. **[架构总览](./architecture/overview.md)** - 双进程模型和核心组件
 2. **[双层架构设计](./architecture/dual-layer.md)** - State Path vs Fast Path
-3. **[API 层设计](./architecture/api-layer.md)** - OutGate/Context/ActrRef
+3. **[API 层设计](./architecture/api-layer.md)** - Gate/Context/ActrRef
 4. **[技术决策记录](./architecture/decisions.md)** - 9 个关键技术决策 (TDR)
 5. **[完成度评估](./architecture/completion-status.md)** - 相对于 actr Native 的完成度 (78%)
 
@@ -75,7 +75,7 @@ const response = await actor.call('echo-service', 'sendEcho', {
 // Service Worker 侧
 use actr_runtime_sw::*;
 
-let manager = Arc::new(OutprocTransportManager::new(...));
+let manager = Arc::new(PeerTransport::new(...));
 let mailbox = Arc::new(IndexedDbMailbox::new().await?);
 let dispatcher = Arc::new(InboundPacketDispatcher::new(mailbox));
 ```

@@ -49,7 +49,7 @@
    - Web 环境适配
 
 6. **[API 层设计](./api-layer.md)**
-   - OutGate (InprocOut + OutprocOut)
+   - Gate (Host + Peer)
    - Context (RuntimeContext)
    - ActrRef (Actor 引用)
 
@@ -109,7 +109,7 @@
 → 阅读 [双层架构设计](./dual-layer.md)
 → 或查看 [消息流全览图](./message-flow-visual.md) 中的对比
 
-#### 如何实现 OutGate/Context/ActrRef
+#### 如何实现 Gate/Context/ActrRef
 → 阅读 [API 层设计](./api-layer.md)
 
 #### UI 如何和 WASM 交互？
@@ -177,7 +177,7 @@ actr-web/
    - `subscribe()` - ⚠️ register_stream 为 TODO stub
    - `on()` - ⚠️ 系统事件监听待完善
 
-3. ~~**实现 ActorSystem 生命周期**~~ ⚠️ 部分完成 (System ~233 行，具备 MessageHandler + OutGate)
+3. ~~**实现 ActorSystem 生命周期**~~ ⚠️ 部分完成 (System ~233 行，具备 MessageHandler + Gate)
 
 4. ~~**实现调度器**~~ ✅ 已完成 (串行调度 + 优先级 + 事件驱动)
 

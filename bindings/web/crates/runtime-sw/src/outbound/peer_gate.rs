@@ -1,8 +1,8 @@
-//! OutprocOutGate - 跨节点传输适配器（出站）
+//! PeerGate - 跨节点传输适配器（出站）
 //!
-//! 封装 OutprocTransportManager，提供标准的 Actor 发送接口
+//! 封装 PeerTransport，提供标准的 Actor 发送接口
 
-use crate::transport::OutprocTransportManager;
+use crate::transport::PeerTransport;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use actr_web_common::Dest;
@@ -11,15 +11,15 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// OutprocOutGate - 跨节点传输适配器
+/// PeerGate - 跨节点传输适配器
 ///
 /// # 职责
-/// - 封装 OutprocTransportManager
+/// - 封装 PeerTransport
 /// - 提供 ActrId → Dest 映射
 /// - 实现请求-响应模式（oneshot channel）
-pub struct OutprocOutGate {
+pub struct PeerGate {
     /// Transport manager
-    transport: Arc<OutprocTransportManager>,
+    transport: Arc<PeerTransport>,
 
     /// ActrId → Dest 映射
     /// 用于将 ActrId 转换为网络目标
@@ -29,9 +29,9 @@ pub struct OutprocOutGate {
     pending_requests: Arc<Mutex<HashMap<String, futures::channel::oneshot::Sender<Bytes>>>>,
 }
 
-impl OutprocOutGate {
-    /// 创建新的 OutprocOutGate
-    pub fn new(transport: Arc<OutprocTransportManager>) -> Self {
+impl PeerGate {
+    /// 创建新的 PeerGate
+    pub fn new(transport: Arc<PeerTransport>) -> Self {
         Self {
             transport,
             actor_dest_map: Arc::new(Mutex::new(HashMap::new())),
@@ -60,7 +60,7 @@ impl OutprocOutGate {
     /// 发送请求并等待响应
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         log::debug!(
-            "📤 OutprocOutGate::send_request to {:?}, request_id={}",
+            "PeerGate::send_request to {:?}, request_id={}",
             target,
             envelope.request_id
         );
@@ -95,7 +95,7 @@ impl OutprocOutGate {
     /// 发送单向消息（不等待响应）
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         log::debug!(
-            "📤 OutprocOutGate::send_message to {:?}, request_id={}",
+            "PeerGate::send_message to {:?}, request_id={}",
             target,
             envelope.request_id
         );
@@ -121,7 +121,7 @@ impl OutprocOutGate {
         data: Bytes,
     ) -> ActorResult<()> {
         log::debug!(
-            "📤 OutprocOutGate::send_data_stream to {:?}, type={:?}",
+            "PeerGate::send_data_stream to {:?}, type={:?}",
             target,
             payload_type
         );
@@ -161,12 +161,12 @@ mod tests {
     use crate::transport::WebWireBuilder;
 
     #[test]
-    fn test_outproc_out_gate_creation() {
+    fn test_peer_gate_creation() {
         let wire_builder = Arc::new(WebWireBuilder::new());
-        let manager = Arc::new(OutprocTransportManager::new(
+        let manager = Arc::new(PeerTransport::new(
             "test-sw".to_string(),
             wire_builder,
         ));
-        let _gate = OutprocOutGate::new(manager);
+        let _gate = PeerGate::new(manager);
     }
 }

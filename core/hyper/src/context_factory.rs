@@ -1,11 +1,11 @@
 //! Context factory
 //!
-//! 负责创建 RuntimeContext 实例，注入 OutGate 和其他依赖。
+//! 负责创建 RuntimeContext 实例，注入 Gate 和其他依赖。
 
 use crate::context::RuntimeContext;
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
-use crate::outbound::OutGate;
-use crate::transport::InprocTransportManager;
+use crate::outbound::Gate;
+use crate::transport::HostTransport;
 use crate::wire::webrtc::SignalingClient;
 use actr_config::lock::LockFile;
 use actr_protocol::{AIdCredential, ActrId};
@@ -16,21 +16,21 @@ use std::sync::Arc;
 /// # 职责
 ///
 /// - 创建 RuntimeContext 实例
-/// - 注入 OutGate（enum dispatch，零虚函数）
+/// - 注入 Gate（enum dispatch，零虚函数）
 /// - 管理默认配置
 #[derive(Clone)]
 pub struct ContextFactory {
     /// 进程内通信 gate（本地调用）- 立即可用
-    pub(crate) inproc_gate: OutGate,
+    pub(crate) inproc_gate: Gate,
 
     /// 跨进程通信 gate（远程调用）- 延迟初始化
-    pub(crate) outproc_gate: Option<OutGate>,
+    pub(crate) outproc_gate: Option<Gate>,
 
     /// Shell → Workload 方向的传输管理器
-    pub(crate) shell_to_workload: Arc<InprocTransportManager>,
+    pub(crate) shell_to_workload: Arc<HostTransport>,
 
     /// Workload → Shell 方向的传输管理器
-    pub(crate) workload_to_shell: Arc<InprocTransportManager>,
+    pub(crate) workload_to_shell: Arc<HostTransport>,
 
     /// DataStream 回调注册表
     pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
@@ -60,13 +60,13 @@ impl ContextFactory {
     ///
     /// - **inproc_gate**: 在 ActrSystem::new() 时创建，立即可用（Shell/Local 通信不需要 ActorId）
     /// - **outproc_gate**: 初始为 None，在 ActrNode::start() WebRTC 初始化完成后设置
-    /// - **双向 InprocTransportManager**: 确保 Shell 和 Workload 的 pending_requests 完全分离
+    /// - **双向 HostTransport**: 确保 Shell 和 Workload 的 pending_requests 完全分离
     /// - **data_stream_registry**: 管理 DataStream 回调，支持应用数据流传输
     /// - **media_frame_registry**: 管理 MediaTrack 回调，支持 WebRTC 原生媒体流
     pub fn new(
-        inproc_gate: OutGate,
-        shell_to_workload: Arc<InprocTransportManager>,
-        workload_to_shell: Arc<InprocTransportManager>,
+        inproc_gate: Gate,
+        shell_to_workload: Arc<HostTransport>,
+        workload_to_shell: Arc<HostTransport>,
         data_stream_registry: Arc<DataStreamRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
@@ -88,8 +88,8 @@ impl ContextFactory {
     /// # 用途
     ///
     /// ActrNode::start() 完成 WebRTC 初始化后调用
-    pub fn set_outproc_gate(&mut self, gate: OutGate) {
-        tracing::debug!("🔄 Setting outproc OutGate in ContextFactory");
+    pub fn set_outproc_gate(&mut self, gate: Gate) {
+        tracing::debug!("🔄 Setting outproc Gate in ContextFactory");
         self.outproc_gate = Some(gate);
     }
 
@@ -104,12 +104,12 @@ impl ContextFactory {
     }
 
     /// 获取 Shell → Workload 方向的传输管理器
-    pub fn shell_to_workload(&self) -> Arc<InprocTransportManager> {
+    pub fn shell_to_workload(&self) -> Arc<HostTransport> {
         self.shell_to_workload.clone()
     }
 
     /// 获取 Workload → Shell 方向的传输管理器
-    pub fn workload_to_shell(&self) -> Arc<InprocTransportManager> {
+    pub fn workload_to_shell(&self) -> Arc<HostTransport> {
         self.workload_to_shell.clone()
     }
 
@@ -135,8 +135,8 @@ impl ContextFactory {
             self_id.clone(),
             caller_id.cloned(),
             request_id.to_string(),
-            self.inproc_gate.clone(), // Clone OutGate enum（Arc 内部，开销低）
-            self.outproc_gate.clone(), // Clone Option<OutGate>
+            self.inproc_gate.clone(), // Clone Gate enum（Arc 内部，开销低）
+            self.outproc_gate.clone(), // Clone Option<Gate>
             self.data_stream_registry.clone(), // Clone Arc<DataStreamRegistry>
             self.media_frame_registry.clone(), // Clone Arc<MediaFrameRegistry>
             self.signaling_client.clone(),

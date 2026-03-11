@@ -11,7 +11,7 @@ use actr_protocol::{
 use bytes::Bytes;
 
 use crate::WebContext;
-use crate::outbound::OutGate;
+use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
 /// RuntimeContext - Actor 运行时上下文（Web 实现）
@@ -32,7 +32,7 @@ pub struct RuntimeContext {
     request_id: String,
 
     /// 出站 gate
-    outproc_gate: OutGate,
+    gate: Gate,
 
     /// 运行时桥接（用于 call_raw、discover 等需要底层 runtime 支持的操作）
     bridge: Option<Rc<dyn RuntimeBridge>>,
@@ -46,7 +46,7 @@ impl RuntimeContext {
         traceparent: String,
         tracestate: String,
         request_id: String,
-        outproc_gate: OutGate,
+        gate: Gate,
     ) -> Self {
         Self {
             self_id,
@@ -54,7 +54,7 @@ impl RuntimeContext {
             traceparent,
             tracestate,
             request_id,
-            outproc_gate,
+            gate,
             bridge: None,
         }
     }
@@ -124,7 +124,7 @@ impl WebContext for RuntimeContext {
             timeout_ms,
         };
 
-        let response_bytes = self.outproc_gate.send_request(target, envelope).await?;
+        let response_bytes = self.gate.send_request(target, envelope).await?;
         Ok(response_bytes.to_vec())
     }
 
@@ -174,8 +174,8 @@ impl WebContext for RuntimeContext {
             timeout_ms: 30000,
         };
 
-        // 4. 通过 OutGate 发送
-        let response_bytes = self.outproc_gate.send_request(target, envelope).await?;
+        // 4. 通过 Gate 发送
+        let response_bytes = self.gate.send_request(target, envelope).await?;
 
         // 5. 解码响应
         R::Response::decode(&*response_bytes).map_err(|e| {
@@ -219,8 +219,8 @@ impl WebContext for RuntimeContext {
             timeout_ms: 0, // 0 表示不等待响应
         };
 
-        // 4. 通过 OutGate 发送
-        self.outproc_gate.send_message(target, envelope).await
+        // 4. 通过 Gate 发送
+        self.gate.send_message(target, envelope).await
     }
 
     // ========== Stream 注册方法 ==========
@@ -300,8 +300,8 @@ impl WebContext for RuntimeContext {
         payload.extend_from_slice(track_id_bytes);
         payload.extend_from_slice(&data);
 
-        // 通过 OutGate 发送 Fast Path 数据
-        self.outproc_gate
+        // 通过 Gate 发送 Fast Path 数据
+        self.gate
             .send_data_stream(
                 target,
                 actr_protocol::PayloadType::MediaRtp,
@@ -331,8 +331,8 @@ impl WebContext for RuntimeContext {
         payload.extend_from_slice(stream_id_bytes);
         payload.extend_from_slice(&data);
 
-        // 通过 OutGate 发送 Fast Path 数据（默认使用 STREAM_RELIABLE）
-        self.outproc_gate
+        // 通过 Gate 发送 Fast Path 数据（默认使用 STREAM_RELIABLE）
+        self.gate
             .send_data_stream(
                 target,
                 actr_protocol::PayloadType::StreamReliable,

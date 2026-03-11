@@ -20,10 +20,10 @@ Sender (datastream.Sender)
       └─ ctx.send_data_stream(&dest, chunk)
            │
            ├─ RuntimeContext::send_data_stream()
-           ├─ OutGate::send_data_stream()
-           └─ OutprocOutGate::send_data_stream()
+           ├─ Gate::send_data_stream()
+           └─ PeerGate::send_data_stream()
                 │
-                └─ OutprocTransportManager::send()
+                └─ PeerTransport::send()
                      └─ WebRTC DataChannel / WebSocket
 
 Receiver (datastream.Receiver)

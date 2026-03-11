@@ -156,10 +156,10 @@
 
 **测试质量**: ⭐⭐ (最小覆盖)
 
-### 9. runtime-sw/src/outbound/inproc_out_gate.rs (2 tests)
+### 9. runtime-sw/src/outbound/host_gate.rs (2 tests)
 
 **覆盖功能**：
-- ✅ InprocOutGate 基本功能
+- ✅ HostGate 基本功能
 
 **测试质量**: ⭐⭐⭐ (基本覆盖)
 

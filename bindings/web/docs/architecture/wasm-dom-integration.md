@@ -520,7 +520,7 @@ pub trait ActorInterface {
 - ✅ WebSocket Transport
 - ✅ State Path (Mailbox + Dispatcher)
 - ✅ Scheduler（串行调度 + 优先级 + 事件驱动）
-- ✅ 完整传输栈 (OutprocOutGate → OutprocTransportManager → DestTransport → WirePool)
+- ✅ 完整传输栈 (PeerGate → PeerTransport → DestTransport → WirePool)
 - ✅ RouteTable (~300 行)
 - ✅ ActrRef (call/tell/shutdown)
 - **目标**：支持 90% 客户端场景，用户代码 100% WASM ✅

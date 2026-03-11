@@ -5,7 +5,7 @@
 
 ## 1. 总览
 
-本文档描述 `actr-web` 的 API 层实现，包括 OutGate、Context 和 ActrRef。
+本文档描述 `actr-web` 的 API 层实现，包括 Gate、Context 和 ActrRef。
 这些组件对标 `actr` 的核心 API，但针对 Web 环境（Service Worker + DOM）进行了适配。
 
 ## 2. 架构对比
@@ -14,7 +14,7 @@
 
 | 组件 | actr (Native) | actr-web (Web) | 一致性 |
 |------|---------------|----------------|--------|
-| **OutGate** | InprocOut + OutprocOut | InprocOut + OutprocOut | 100% |
+| **Gate** | Host + Peer | Host + Peer | 100% |
 | **Context** | trait + RuntimeContext | trait + RuntimeContext | 95% |
 | **ActrRef** | ActrRef<W> | ActrRef<W> | 95% |
 
@@ -23,23 +23,23 @@
 - actr-web 使用 Web 异步原语（futures::channel, parking_lot::Mutex）
 - 功能和接口完全等价，只是底层实现不同
 
-## 3. OutGate 层
+## 3. Gate 层
 
 ### 3.1 设计
 
-OutGate 是出站消息门的统一接口，使用 enum dispatch 实现零虚函数调用。
+Gate 是出站消息门的统一接口，使用 enum dispatch 实现零虚函数调用。
 
 ```rust
-pub enum OutGate {
+pub enum Gate {
     /// SW 内部通信（零序列化）
-    InprocOut(Arc<InprocOutGate>),
+    Host(Arc<HostGate>),
 
     /// 跨节点传输（WebSocket/WebRTC）
-    OutprocOut(Arc<OutprocOutGate>),
+    Peer(Arc<PeerGate>),
 }
 ```
 
-### 3.2 InprocOutGate (SW 内部通信)
+### 3.2 HostGate (SW 内部通信)
 
 **用途**：同一个 Service Worker 中的 Actor 之间的通信
 
@@ -48,10 +48,10 @@ pub enum OutGate {
 - 通过 request_id 映射实现请求-响应模式
 - 单线程环境，使用 futures::channel::oneshot
 
-**实现位置**：`actr-web/crates/runtime-sw/src/outbound/inproc_out_gate.rs`
+**实现位置**：`actr-web/crates/runtime-sw/src/outbound/host_gate.rs`
 
 ```rust
-pub struct InprocOutGate {
+pub struct HostGate {
     /// Pending requests: request_id → oneshot sender
     pending_requests: Arc<Mutex<HashMap<String, oneshot::Sender<Bytes>>>>,
 
@@ -65,21 +65,21 @@ pub struct InprocOutGate {
 - `send_message()`: 发送单向消息
 - `handle_response()`: 处理接收到的响应
 
-### 3.3 OutprocOutGate (跨节点传输)
+### 3.3 PeerGate (跨节点传输)
 
 **用途**：跨 Service Worker 或跨节点的 Actor 通信
 
 **特点**：
-- 封装 OutprocTransportManager
+- 封装 PeerTransport
 - 提供 ActrId → Dest 映射
 - 实现请求-响应模式
 
-**实现位置**：`actr-web/crates/runtime-sw/src/outbound/outproc_out_gate.rs`
+**实现位置**：`actr-web/crates/runtime-sw/src/outbound/peer_gate.rs`
 
 ```rust
-pub struct OutprocOutGate {
+pub struct PeerGate {
     /// Transport manager
-    transport: Arc<OutprocTransportManager>,
+    transport: Arc<PeerTransport>,
 
     /// ActrId → Dest 映射
     actor_dest_map: Arc<Mutex<HashMap<ActrId, Dest>>>,
@@ -118,7 +118,7 @@ pub struct RuntimeContext {
     request_id: String,
 
     /// 出站 gate
-    outproc_gate: OutGate,
+    outproc_gate: Gate,
 }
 ```
 
@@ -168,7 +168,7 @@ pub(crate) struct ActrRefShared {
     pub(crate) actor_id: ActrId,
 
     /// Inproc gate for DOM → SW RPC
-    pub(crate) inproc_gate: Arc<InprocOutGate>,
+    pub(crate) inproc_gate: Arc<HostGate>,
 
     /// Shutdown flag
     pub(crate) shutdown: Arc<parking_lot::Mutex<bool>>,
@@ -229,7 +229,7 @@ DOM 侧
   ActrRef::call()
     ├─ 编码请求 (protobuf)
     ├─ 创建 RpcEnvelope
-    └─ InprocOutGate.send_request()
+    └─ HostGate.send_request()
         ↓
       MessageHandler (由 System 设置)
         ↓
@@ -245,7 +245,7 @@ DOM 侧
         ↓
       响应返回 (通过 request_id 匹配)
         ↓
-      InprocOutGate.handle_response()
+      HostGate.handle_response()
         ↓
       oneshot::Sender.send(response)
         ↓
@@ -261,11 +261,11 @@ SW 侧
   RuntimeContext::call()
     ├─ 编码请求 (protobuf)
     ├─ 创建 RpcEnvelope
-    └─ OutGate.send_request()
+    └─ Gate.send_request()
         ↓
-      OutprocOutGate.send_request()
+      PeerGate.send_request()
         ├─ 查找 remote_id → Dest 映射
-        └─ OutprocTransportManager.send()
+        └─ PeerTransport.send()
             ↓
           DestTransport
             ↓
@@ -277,7 +277,7 @@ SW 侧
             ↓
           响应返回 (通过 request_id 匹配)
             ↓
-          OutprocOutGate.handle_response()
+          PeerGate.handle_response()
             ↓
           oneshot::Sender.send(response)
             ↓
@@ -289,12 +289,12 @@ SW 侧
 | 路径 | 延迟 | 特点 |
 |------|------|------|
 | **DOM → SW (ActrRef)** | ~30-40ms | 包含 Mailbox 持久化 + Scheduler |
-| **SW → SW (InprocOut)** | ~5-10ms | 零序列化，直接传递 |
-| **SW → Remote (OutprocOut)** | ~50-100ms+ | 包含网络传输 |
+| **SW → SW (Host)** | ~5-10ms | 零序列化，直接传递 |
+| **SW → Remote (Peer)** | ~50-100ms+ | 包含网络传输 |
 
 ## 8. 后续工作
 
-- [x] 实现 InprocOutGate 的 MessageHandler 自动注册（通过 System.init_message_handler）
+- [x] 实现 HostGate 的 MessageHandler 自动注册（通过 System.init_message_handler）
 - [ ] 实现 Context 的 Fast Path 方法（register_stream, send_data_stream 等）
 - [ ] 添加 ActrRef 的事件订阅功能（events()）
 - [ ] 完善错误处理和超时机制

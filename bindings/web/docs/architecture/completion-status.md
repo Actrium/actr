@@ -25,7 +25,7 @@
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
 | **WebRTC DataChannel** | ✅ 完整实现 (5 文件, ~1200 行) | ✅ 完整实现 + MessagePort 桥接 | **85%** |
-| - WebRtcGate | ✅ | ✅ OutprocOutGate + WirePool | 85% |
+| - WebRtcGate | ✅ | ✅ PeerGate + WirePool | 85% |
 | - WebRtcCoordinator | ✅ | ✅ DOM 侧 TS 实现 | 85% |
 | - WebRtcNegotiator | ✅ | ✅ ICE/SDP 通过 Signaling Relay | 80% |
 | - Connection 管理 | ✅ | ✅ ICE restart + 状态监控 | 85% |
@@ -53,8 +53,8 @@
 | - WebRtcMediaTrack Lane | ✅ | ⚠️ 待实现 | 20% |
 | - Mpsc Lane (inproc) | ✅ | ✅ PostMessage 替代 | 85% |
 | - WebSocket Lane | ✅ | ✅ 完整实现 | 75% |
-| **InprocTransportManager** | ✅ | ✅ PostMessage 实现 | **80%** |
-| **OutprocTransportManager** | ✅ 完整 (~800 行) | ✅ 完整 (~400 行) + inject_connection | **85%** |
+| **HostTransport** | ✅ | ✅ PostMessage 实现 | **80%** |
+| **PeerTransport** | ✅ 完整 (~800 行) | ✅ 完整 (~400 行) + inject_connection | **85%** |
 | **WireBuilder** | ✅ | ✅ | 80% |
 | **WirePool** | ✅ | ✅ 完整 + ReadyWatcher | 85% |
 | **RouteTable** | ✅ | ✅ 完整实现 (~300 行) | 90% |
@@ -76,13 +76,13 @@
 
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
-| **InprocOutGate** | ✅ (~200 行) | ✅ (~180 行) | **90%** |
-| **OutprocOutGate** | ✅ (~250 行) | ✅ (~170 行, 完整实现) | **85%** |
-| **OutGate enum** | ✅ | ✅ InprocOut + OutprocOut | 90% |
+| **HostGate** | ✅ (~200 行) | ✅ (~180 行) | **90%** |
+| **PeerGate** | ✅ (~250 行) | ✅ (~170 行, 完整实现) | **85%** |
+| **Gate enum** | ✅ | ✅ Host + Peer | 90% |
 
 **关键差异**:
 - 功能对等，actr-web 依赖异步 Web API
-- OutprocOutGate 完整实现：send_request/send_message/send_data_stream/handle_response/register_actor
+- PeerGate 完整实现：send_request/send_message/send_data_stream/handle_response/register_actor
 - DomBridge 过渡方案已移除，直接使用完整传输栈
 
 ---
@@ -138,7 +138,7 @@
 
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
-| **ActrSystem** | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + OutGate) | **50%** |
+| **ActrSystem** | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + Gate) | **50%** |
 | - new() | ✅ | ✅ | 90% |
 | - attach() | ✅ | ❌ | 0% |
 | **ActrNode** | ✅ 完整 (~400 行) | ❌ 未实现 | **0%** |
@@ -150,12 +150,12 @@
 - **actr**: 三阶段生命周期 (ActrSystem → ActrNode → Running)
 - **actr-web**:
   - **客户端模式**: 使用 `register_client` 创建独立运行时
-  - **Service Worker**: System 作为消息中枢已实现 (MessageHandler + OutGate 路由)
+  - **Service Worker**: System 作为消息中枢已实现 (MessageHandler + Gate 路由)
   - **暴未支持完整 ActrNode 启动流程**
 
 **设计决策**:
 - actr-web Phase 1 专注客户端场景
-- System 已具备 MessageHandler + OutGate 路由能力
+- System 已具备 MessageHandler + Gate 路由能力
 - 完整生命周期管理计划在 Phase 2 实现
 
 ---
@@ -215,7 +215,7 @@
 | 特性 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
 | **DataStreamRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
-| **send_data_stream()** | ✅ | ✅ 已实现 (OutprocOutGate + RuntimeContext) | **85%** |
+| **send_data_stream()** | ✅ | ✅ 已实现 (PeerGate + RuntimeContext) | **85%** |
 | **register_stream()** | ✅ | ⚠️ 基础实现 | **35%** |
 | **回调并发执行** | ✅ Tokio spawn | ❌ 未实现 | **0%** |
 | **流式 API** | ✅ | ❌ | 0% |
@@ -334,7 +334,7 @@
 | **React Hooks** | ✅ | **85%** | useActor, useServiceCall |
 | **gRPC-Web 集成** | ✅ | **90%** | Echo 示例验证 |
 | **浏览器 WebRTC API** | ✅ | **70%** | 完整信令 + ICE restart + MessagePort 桥接 |
-| **Service Worker 集成** | ✅ | **75%** | 完整传输栈 + register_client + OutprocOutGate |
+| **Service Worker 集成** | ✅ | **75%** | 完整传输栈 + register_client + PeerGate |
 
 ---
 
@@ -443,7 +443,7 @@
 5. **✅ 架构设计** - 清晰分层，可扩展性强
 6. **✅ WASM 体积** - 99.6 KB (~35 KB gzipped)，达标
 7. **✅ 文档** - 完整的技术文档和决策记录
-8. **✅ 完整传输栈** - OutprocOutGate → OutprocTransportManager → DestTransport → WirePool → DataLane
+8. **✅ 完整传输栈** - PeerGate → PeerTransport → DestTransport → WirePool → DataLane
 9. **✅ Scheduler** - 串行调度，优先级支持，事件驱动
 10. **✅ ICE Restart** - 检测 + 重试 + 指数退避
 11. **✅ SwLifecycleManager** - 597 行，完整生命周期管理
@@ -468,7 +468,7 @@
 **✅ 已完成的核心能力** (75-100%):
 - Mailbox 持久化 (95%)
 - Scheduler 调度器 (90%)
-- OutprocOutGate 出站 (85%)
+- PeerGate 出站 (85%)
 - RouteTable 路由 (90%)
 - Transport 传输层 (85%)
 - Inbound 入站分发 (85%)

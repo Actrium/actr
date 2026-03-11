@@ -1,4 +1,4 @@
-//! Integration tests for OutprocOutGate
+//! Integration tests for PeerGate
 //!
 //! Tests focus on:
 //! - Creating new peer connections
@@ -8,12 +8,12 @@
 mod common;
 
 use actr_protocol::RpcEnvelope;
-use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::outbound::PeerGate;
 use actr_hyper::transport::connection_event::{
     ConnectionEvent, ConnectionState as TransportConnectionState,
 };
 use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
+    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,11 +158,11 @@ async fn test_pending_requests_cleanup_on_close() {
         .await
         .unwrap();
 
-    // Create OutprocOutGate
+    // Create PeerGate
     let wire_config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), wire_config));
-    let transport_mgr = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(OutprocOutGate::new(transport_mgr, Some(coord_a.clone())));
+    let transport_mgr = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
+    let gate_a = Arc::new(PeerGate::new(transport_mgr, Some(coord_a.clone())));
 
     tracing::info!("🔗 Establishing connection...");
 
@@ -250,22 +250,22 @@ async fn test_reconnect_and_send_after_close() {
         .await
         .unwrap();
 
-    // Create OutprocOutGates for both peers
+    // Create PeerGates for both peers
     let wire_config_a = DefaultWireBuilderConfig::default();
     let wire_builder_a = Arc::new(DefaultWireBuilder::new(
         Some(coord_a.clone()),
         wire_config_a,
     ));
-    let transport_mgr_a = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder_a));
-    let gate_a = Arc::new(OutprocOutGate::new(transport_mgr_a, Some(coord_a.clone())));
+    let transport_mgr_a = Arc::new(PeerTransport::new(id_a.clone(), wire_builder_a));
+    let gate_a = Arc::new(PeerGate::new(transport_mgr_a, Some(coord_a.clone())));
 
     let wire_config_b = DefaultWireBuilderConfig::default();
     let wire_builder_b = Arc::new(DefaultWireBuilder::new(
         Some(coord_b.clone()),
         wire_config_b,
     ));
-    let transport_mgr_b = Arc::new(OutprocTransportManager::new(id_b.clone(), wire_builder_b));
-    let _gate_b = Arc::new(OutprocOutGate::new(transport_mgr_b, Some(coord_b.clone())));
+    let transport_mgr_b = Arc::new(PeerTransport::new(id_b.clone(), wire_builder_b));
+    let _gate_b = Arc::new(PeerGate::new(transport_mgr_b, Some(coord_b.clone())));
 
     tracing::info!("🔗 Step 1: Establishing initial connection...");
 

@@ -3,7 +3,7 @@
 //! Implements the Context trait defined in actr-framework.
 
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
-use crate::outbound::OutGate;
+use crate::outbound::Gate;
 use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::inject_span_context_to_rpc;
@@ -21,14 +21,14 @@ use std::sync::Arc;
 ///
 /// # 设计特性
 ///
-/// - **零虚函数**：内部使用 OutGate enum dispatch（非 dyn）
-/// - **智能路由**：根据 Dest 自动选择 InprocOut 或 OutprocOut
+/// - **零虚函数**：内部使用 Gate enum dispatch（非 dyn）
+/// - **智能路由**：根据 Dest 自动选择 Host 或 Peer
 /// - **完整实现**：包含 call/tell 的完整逻辑（编码、发送、解码）
 /// - **类型安全**：泛型方法提供编译时类型检查
 ///
 /// # 性能
 ///
-/// - OutGate 是 enum，使用静态分发
+/// - Gate 是 enum，使用静态分发
 /// - 编译器可完全内联整个调用链
 /// - 零虚函数调用开销
 #[derive(Clone)]
@@ -36,8 +36,8 @@ pub struct RuntimeContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
-    inproc_gate: OutGate,                          // Shell/Local 调用 - 立即可用
-    outproc_gate: Option<OutGate>,                 // 远程 Actor 调用 - 延迟初始化
+    inproc_gate: Gate,                          // Shell/Local 调用 - 立即可用
+    outproc_gate: Option<Gate>,                 // 远程 Actor 调用 - 延迟初始化
     data_stream_registry: Arc<DataStreamRegistry>, // DataStream 回调注册表
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack 回调注册表
     signaling_client: Arc<dyn SignalingClient>,
@@ -65,8 +65,8 @@ impl RuntimeContext {
         self_id: ActrId,
         caller_id: Option<ActrId>,
         request_id: String,
-        inproc_gate: OutGate,
-        outproc_gate: Option<OutGate>,
+        inproc_gate: Gate,
+        outproc_gate: Option<Gate>,
         data_stream_registry: Arc<DataStreamRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
@@ -93,12 +93,12 @@ impl RuntimeContext {
     /// - Dest::Local → inproc_gate（立即可用）
     /// - Dest::Actor(_) → outproc_gate（需要检查是否已初始化）
     #[inline]
-    fn select_gate(&self, dest: &Dest) -> ActorResult<&OutGate> {
+    fn select_gate(&self, dest: &Dest) -> ActorResult<&Gate> {
         match dest {
             Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
             Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
                 ActrError::Internal(
-                    "OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string(),
+                    "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
                 )
             }),
         }
@@ -341,7 +341,7 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 5. 通过 OutGate enum dispatch 发送（零虚函数调用！）
+        // 5. 通过 Gate enum dispatch 发送（零虚函数调用！）
         // Respect request's declared payload type (lane selection)
         let response_bytes = gate
             .send_request_with_type(target_id, R::payload_type(), envelope)
@@ -388,7 +388,7 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 5. 通过 OutGate enum dispatch 发送（respect payload type）
+        // 5. 通过 Gate enum dispatch 发送（respect payload type）
         gate.send_message_with_type(target_id, R::payload_type(), envelope)
             .await
     }
@@ -439,7 +439,7 @@ impl Context for RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        // 3. Send via OutGate with the caller-specified PayloadType
+        // 3. Send via Gate with the caller-specified PayloadType
         gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
             .await
     }
@@ -543,7 +543,7 @@ impl Context for RuntimeContext {
         // 2. Select outproc gate (raw calls are always remote)
         let gate = self.outproc_gate.as_ref().ok_or_else(|| {
             ActrError::Internal(
-                "OutprocOutGate not initialized yet (WebRTC setup in progress)".to_string(),
+                "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
             )
         })?;
 
@@ -587,7 +587,7 @@ impl Context for RuntimeContext {
         // 2. Extract target ActrId
         let target_id = self.extract_target_id(target);
 
-        // 3. Send via OutGate (delegates to WebRTC Track)
+        // 3. Send via Gate (delegates to WebRTC Track)
         gate.send_media_sample(target_id, track_id, sample).await
     }
 

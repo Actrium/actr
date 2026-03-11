@@ -2,7 +2,7 @@
 
 use crate::context_factory::ContextFactory;
 use crate::lifecycle::dedup::{DedupOutcome, DedupState};
-use crate::transport::InprocTransportManager;
+use crate::transport::HostTransport;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
 use actr_framework::{Bytes, Workload};
@@ -95,12 +95,12 @@ pub struct ActrNode<W: Workload> {
     /// Shell → Workload Transport Manager
     ///
     /// Workload receives REQUEST from Shell (zero serialization, direct RpcEnvelope passing)
-    pub(crate) inproc_mgr: Option<Arc<InprocTransportManager>>,
+    pub(crate) inproc_mgr: Option<Arc<HostTransport>>,
 
     /// Workload → Shell Transport Manager
     ///
     /// Workload sends RESPONSE to Shell (separate pending_requests from Shell's)
-    pub(crate) workload_to_shell_mgr: Option<Arc<InprocTransportManager>>,
+    pub(crate) workload_to_shell_mgr: Option<Arc<HostTransport>>,
 
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
@@ -138,12 +138,11 @@ pub struct ActrNode<W: Workload> {
     pub(crate) discovered_ws_addresses:
         Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
 
-    /// WASM actor 实例（仅 `wasm-engine` feature 启用时存在）
+    /// Dynamic executor adapter (WASM, dynclib, etc.)
     ///
-    /// 当此字段为 `Some` 时，`handle_incoming` 使用 WASM asyncify 驱动路径，
-    /// 而不是原生 `W::Dispatcher::dispatch`。
-    #[cfg(feature = "wasm-engine")]
-    pub(crate) wasm_instance: Option<Mutex<crate::wasm::WasmInstance>>,
+    /// When this field is `Some`, `handle_incoming` dispatches through the executor
+    /// instead of native `W::Dispatcher::dispatch`.
+    pub(crate) executor: Option<Mutex<Box<dyn crate::executor::ExecutorAdapter>>>,
 }
 
 /// Credential state for shared access between tasks
@@ -218,21 +217,19 @@ fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// WASM PendingCall 执行器 — 将 WASM guest 发出的调用路由到 RuntimeContext
+/// PendingCall executor - routes guest outbound calls through RuntimeContext
 ///
-/// 由 `handle_incoming` 的 WASM dispatch 路径调用，为每次 asyncify unwind 提供真实 IO。
-#[cfg(feature = "wasm-engine")]
-async fn wasm_call_executor(
+/// Called by the executor dispatch path in `handle_incoming` for each asyncify unwind.
+async fn executor_call_handler(
     ctx: crate::context::RuntimeContext,
-    pending: crate::wasm::PendingCall,
-) -> crate::wasm::IoResult {
+    pending: crate::executor::PendingCall,
+) -> crate::executor::IoResult {
     use actr_framework::{Context as _, Dest};
     use actr_protocol::{ActrId, ActrType, PayloadType};
     use actr_protocol::prost::Message as ProstMessage;
-    use crate::wasm::{IoResult, PendingCall};
-    use crate::wasm::abi::code;
+    use crate::executor::{IoResult, PendingCall, error_code as code};
 
-    /// 将 WASM guest 编码的 dest_bytes 解码回 `Dest`
+    /// 将 guest 编码的 dest_bytes 解码回 `Dest`
     ///
     /// 格式与 `actr-runtime-wasm` 中 `encode_dest()` 对应：
     /// - `0x00` = Shell
@@ -470,26 +467,36 @@ fn matches_rule(caller: &ActrId, rule: &actr_protocol::AclRule) -> bool {
 }
 
 impl<W: Workload> ActrNode<W> {
-    /// 配置 WASM actor 实例，启用 WASM dispatch 路径
+    /// Set a dynamic executor adapter (WASM, dynclib, etc.)
     ///
-    /// 调用后，`handle_incoming` 将使用 WASM asyncify 驱动路径而非原生 dispatch。
-    /// 在 `build()` 之后、`start()` 之前调用。
+    /// When set, `handle_incoming` dispatches through this executor instead of
+    /// the native `W::Dispatcher::dispatch` path.
+    /// Call after `build()` and before `start()`.
+    pub fn with_executor(mut self, executor: Box<dyn crate::executor::ExecutorAdapter>) -> Self {
+        self.executor = Some(Mutex::new(executor));
+        self
+    }
+
+    /// Configure a WASM actor instance as the executor
+    ///
+    /// Convenience wrapper around `with_executor` that boxes the `WasmInstance`.
+    /// Call after `build()` and before `start()`.
     #[cfg(feature = "wasm-engine")]
     pub fn with_wasm_instance(mut self, instance: crate::wasm::WasmInstance) -> Self {
-        self.wasm_instance = Some(Mutex::new(instance));
+        self.executor = Some(Mutex::new(Box::new(instance)));
         self
     }
 
     /// Get Inproc Transport Manager
     ///
     /// # Returns
-    /// - `Some(Arc<InprocTransportManager>)`: Initialized manager
+    /// - `Some(Arc<HostTransport>)`: Initialized manager
     /// - `None`: Not yet started (need to call start() first)
     ///
     /// # Use Cases
     /// - Workload internals need to communicate with Shell
     /// - Create custom LatencyFirst/MediaTrack channels
-    pub fn inproc_mgr(&self) -> Option<Arc<InprocTransportManager>> {
+    pub fn inproc_mgr(&self) -> Option<Arc<HostTransport>> {
         self.inproc_mgr.clone()
     }
 
@@ -1058,41 +1065,38 @@ impl<W: Workload> ActrNode<W> {
                 &credential_state.credential().await,
             );
 
-        // 2. Dispatch（WASM asyncify 路径 or 原生静态路径）
+        // 2. Dispatch (executor adapter path or native static dispatch)
 
-        #[cfg(feature = "wasm-engine")]
-        let result: ActorResult<Bytes> = if let Some(wasm) = &self.wasm_instance {
+        let result: ActorResult<Bytes> = if let Some(executor) = &self.executor {
             let envelope_bytes = envelope.encode_to_vec();
-            let dispatch_ctx = crate::wasm::DispatchContext {
+            let dispatch_ctx = crate::executor::DispatchContext {
                 self_id: actor_id.clone(),
                 caller_id: caller_id.cloned(),
                 request_id: envelope.request_id.clone(),
             };
             let ctx_for_executor = ctx.clone();
-            let mut guard = wasm.lock().await;
+            let call_executor: crate::executor::CallExecutorFn = Box::new(move |pending| {
+                let ctx = ctx_for_executor.clone();
+                Box::pin(async move { executor_call_handler(ctx, pending).await })
+            });
+            let mut guard = executor.lock().await;
             guard
-                .dispatch(&envelope_bytes, dispatch_ctx, |pending| {
-                    let ctx = ctx_for_executor.clone();
-                    async move { wasm_call_executor(ctx, pending).await }
-                })
+                .dispatch(&envelope_bytes, dispatch_ctx, &call_executor)
                 .await
                 .map(Bytes::from)
                 .map_err(|e| {
                     tracing::error!(
                         severity = 7,
-                        error_category = "wasm_dispatch_error",
+                        error_category = "executor_dispatch_error",
                         route_key = envelope.route_key,
                         request_id = %envelope.request_id,
-                        "❌ WASM dispatch 失败: {:?}", e
+                        "executor dispatch failed: {:?}", e
                     );
-                    ActrError::Internal(format!("WASM dispatch 失败: {e:?}"))
+                    ActrError::Internal(format!("executor dispatch failed: {e:?}"))
                 })
         } else {
             self.native_dispatch(&envelope, &ctx).await
         };
-
-        #[cfg(not(feature = "wasm-engine"))]
-        let result: ActorResult<Bytes> = self.native_dispatch(&envelope, &ctx).await;
 
         // 3. Log result
         match &result {
@@ -1373,9 +1377,9 @@ impl<W: Workload> ActrNode<W> {
                     ));
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.6. Create OutprocTransportManager + OutprocOutGate (新架构)
+                // 1.6. Create PeerTransport + PeerGate (新架构)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🏗️  Creating OutprocTransportManager with WebRTC support");
+                tracing::info!("🏗️  Creating PeerTransport with WebRTC support");
 
                 // Create DefaultWireBuilder with WebRTC coordinator
                 use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
@@ -1398,20 +1402,20 @@ impl<W: Workload> ActrNode<W> {
                     wire_builder_config,
                 ));
 
-                // Create OutprocTransportManager
-                use crate::transport::OutprocTransportManager;
+                // Create PeerTransport
+                use crate::transport::PeerTransport;
                 let transport_manager =
-                    Arc::new(OutprocTransportManager::new(actor_id.clone(), wire_builder));
+                    Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
 
-                // Create OutprocOutGate with WebRTC coordinator for MediaTrack support
-                use crate::outbound::{OutGate, OutprocOutGate};
-                let outproc_gate = Arc::new(OutprocOutGate::new(
+                // Create PeerGate with WebRTC coordinator for MediaTrack support
+                use crate::outbound::{Gate, PeerGate};
+                let outproc_gate = Arc::new(PeerGate::new(
                     transport_manager,
                     Some(coordinator.clone()), // Enable MediaTrack support
                 ));
-                let outproc_gate_enum = OutGate::OutprocOut(outproc_gate.clone());
+                let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
 
-                tracing::info!("✅ OutprocTransportManager + OutprocOutGate initialized");
+                tracing::info!("PeerTransport + PeerGate initialized");
 
                 // Get DataStreamRegistry from ContextFactory
                 let data_stream_registry = self
@@ -2224,14 +2228,14 @@ impl<W: Workload> ActrNode<W> {
         // 6. Create ActrRef for Shell to interact with Workload
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         use crate::actr_ref::{ActrRef, ActrRefShared};
-        use crate::outbound::InprocOutGate;
+        use crate::outbound::HostGate;
 
-        // Create InprocOutGate from shell_to_workload transport manager
+        // Create HostGate from shell_to_workload transport manager
         let shell_to_workload = node_ref
             .inproc_mgr
             .clone()
             .expect("inproc_mgr must be initialized");
-        let inproc_gate = Arc::new(InprocOutGate::new(shell_to_workload));
+        let inproc_gate = Arc::new(HostGate::new(shell_to_workload));
 
         // Create ActrRefShared
         let actr_ref_shared = Arc::new(ActrRefShared {

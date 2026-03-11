@@ -7,7 +7,7 @@
 
 use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
-use super::manager::WireBuilder;
+use super::peer_transport::WireBuilder;
 use super::wire_handle::WireHandle;
 use crate::lifecycle::CredentialState;
 use crate::wire::webrtc::WebRtcCoordinator;

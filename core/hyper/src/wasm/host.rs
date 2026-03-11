@@ -12,9 +12,10 @@
 //! 4. 将结果存入 `HostData`，发起 rewind，重新调用 `actr_handle`
 //! 5. Import 在 Rewinding 模式下返回真实结果，WASM 继续执行
 
-use actr_protocol::{ActrId, prost::Message as ProstMessage};
+use actr_protocol::prost::Message as ProstMessage;
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
+use crate::executor::{self, DispatchContext, IoResult, PendingCall};
 use crate::wasm::error::{WasmError, WasmResult};
 
 use super::abi::{self, WasmActorConfig};
@@ -30,55 +31,6 @@ enum AsyncifyMode {
     Normal,
     Unwinding,
     Rewinding,
-}
-
-/// 当前调用的上下文数据（由 dispatch 调用方设置，host import 读取）
-#[derive(Debug, Default)]
-pub struct DispatchContext {
-    pub self_id: ActrId,
-    pub caller_id: Option<ActrId>,
-    pub request_id: String,
-}
-
-/// WASM guest 发起的出站调用请求
-///
-/// out_ptr / out_len_ptr 等输出地址字段不在此处保存——rewind 时 host import
-/// 会被再次调用，参数与 unwind 时完全相同，因此直接从参数读取即可。
-#[derive(Debug)]
-pub enum PendingCall {
-    /// 有响应的 RPC 调用（经 Dest 路由）
-    Call {
-        route_key: String,
-        dest_bytes: Vec<u8>,
-        payload: Vec<u8>,
-    },
-    /// 无响应的单向消息
-    Tell {
-        route_key: String,
-        dest_bytes: Vec<u8>,
-        payload: Vec<u8>,
-    },
-    /// 服务发现（按 ActrType）
-    Discover { type_bytes: Vec<u8> },
-    /// 原始 RPC 调用（按 ActrId 直接路由）
-    CallRaw {
-        route_key: String,
-        target_bytes: Vec<u8>,
-        payload: Vec<u8>,
-    },
-}
-
-/// `call_executor` 返回给 drive 循环的 IO 结果
-///
-/// host import 在 Rewinding 模式下读取此值并写入 WASM 线性内存。
-#[derive(Debug)]
-pub enum IoResult {
-    /// Call / CallRaw / Discover 的响应字节（由 host import 在 rewind 时写入 WASM 内存）
-    Bytes(Vec<u8>),
-    /// Tell 完成（无响应数据）
-    Done,
-    /// 错误码
-    Error(i32),
 }
 
 /// Wasmtime Store 内部数据
@@ -581,6 +533,22 @@ impl WasmInstance {
         };
 
         Ok(response)
+    }
+}
+
+impl executor::ExecutorAdapter for WasmInstance {
+    fn dispatch<'a>(
+        &'a mut self,
+        request_bytes: &[u8],
+        ctx: DispatchContext,
+        call_executor: &'a executor::CallExecutorFn,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>> + Send + 'a>> {
+        let request_bytes = request_bytes.to_vec();
+        Box::pin(async move {
+            self.dispatch(&request_bytes, ctx, |pending| call_executor(pending))
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
     }
 }
 

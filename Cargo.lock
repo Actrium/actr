@@ -150,6 +150,7 @@ dependencies = [
  "futures-util",
  "hex",
  "libc",
+ "libloading",
  "mockito",
  "num_cpus",
  "opentelemetry",
@@ -232,6 +233,19 @@ dependencies = [
  "bytes",
  "futures-util",
  "tracing",
+]
+
+[[package]]
+name = "actr-runtime-dynclib"
+version = "0.2.0"
+dependencies = [
+ "actr-framework",
+ "actr-protocol",
+ "actr-runtime",
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "prost 0.14.3",
 ]
 
 [[package]]

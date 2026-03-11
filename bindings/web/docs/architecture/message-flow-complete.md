@@ -77,9 +77,9 @@
 │  └────────────────────────────────────────────────────────┘ │
 │                                                              │
 │         ┌─────────────────────┐                             │
-│         │ OutGate             │                             │
-│         │  - InprocOutGate    │ (同 SW 内部)                │
-│         │  - OutprocOutGate   │ (跨节点)                    │
+│         │ Gate                │                             │
+│         │  - HostGate         │ (同 SW 内部)                │
+│         │  - PeerGate         │ (跨节点)                    │
 │         └──────┬──────────────┘                             │
 │                │                                             │
 │                ↓                                             │
@@ -228,7 +228,7 @@ SW: Scheduler (串行调度)
 SW: Actor.handle_call(ctx: &WebContext)
    │ (业务逻辑处理)
    ↓
-SW: OutGate.send_request()
+SW: Gate.send_request()
    │ (发送响应)
    ↓
 SW: WebSocket Lane
@@ -321,10 +321,10 @@ SW: Actor 内部
 SW: ctx.call(target_id, request)
    │ (WebContext trait)
    ↓
-SW: OutGate.send_request()
+SW: Gate.send_request()
    │
    ↓
-SW: OutprocTransportManager
+SW: PeerTransport
    │ (查找目标节点)
    ↓
 SW: DestTransport

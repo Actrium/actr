@@ -34,7 +34,7 @@ use tracing::Instrument as _;
 /// - Response reuses Request's request_id (standard RPC semantics)
 /// - Use pending_requests to distinguish: exists = Response, doesn't exist = Request
 /// - Gateway layer doesn't deserialize payloads, raw bytes go directly to Mailbox
-/// - **IMPORTANT**: pending_requests should be shared with OutprocOutGate
+/// - **IMPORTANT**: pending_requests should be shared with PeerGate
 pub struct WebRtcGate {
     /// Local Actor ID
     local_id: Arc<RwLock<Option<ActrId>>>,
@@ -44,7 +44,7 @@ pub struct WebRtcGate {
 
     /// Pending requests (request_id → (target_actor_id, response channel))
     /// Used to determine if received message is Response (key exists) or Request (key doesn't exist)
-    /// **Shared with OutprocOutGate** to ensure correct Response routing
+    /// **Shared with PeerGate** to ensure correct Response routing
     /// Can send success (Ok(Bytes)) or error (Err(ProtocolError))
     pending_requests: PendingRequestsMap,
 
@@ -57,7 +57,7 @@ impl WebRtcGate {
     ///
     /// # Arguments
     /// - `coordinator`: WebRtcCoordinator instance
-    /// - `pending_requests`: Shared pending requests (should be same as OutprocOutGate)
+    /// - `pending_requests`: Shared pending requests (should be same as PeerGate)
     /// - `data_stream_registry`: DataStream registry for fast-path routing
     pub fn new(
         coordinator: Arc<WebRtcCoordinator>,

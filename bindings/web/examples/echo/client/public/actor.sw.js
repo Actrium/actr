@@ -42,7 +42,7 @@
     const msg = extractMessage(args);
     if (msg.includes('[SW]') || msg.includes('Echo') || msg.includes('Registering')
       || msg.includes('Scheduler') || msg.includes('Dispatcher')
-      || msg.includes('InprocOutGate') || msg.includes('OutprocOutGate')) {
+      || msg.includes('HostGate') || msg.includes('PeerGate')) {
       broadcast({ type: 'sw_log', level: 'info', message: msg, ts: Date.now() });
     }
   };

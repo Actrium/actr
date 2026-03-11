@@ -4,7 +4,7 @@
 //! - webrtc: WebRTC transport (DataChannel, MediaTrack, Coordinator, Signaling)
 //! - websocket: WebSocket transport
 //!
-//! **Note**: For intra-process communication, use `crate::transport::InprocTransportManager`
+//! **Note**: For intra-process communication, use `crate::transport::HostTransport`
 
 pub mod webrtc;
 pub mod websocket;

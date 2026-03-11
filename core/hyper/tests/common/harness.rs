@@ -1,4 +1,4 @@
-//! Test Harness for OutprocOutGate integration tests
+//! Test Harness for PeerGate integration tests
 //!
 //! Provides `TestPeer` and `TestHarness` for building multi-peer test
 //! topologies with optional VNet-based network simulation.
@@ -32,25 +32,25 @@ use super::utils::{
 };
 use super::vnet::VNetPair;
 use actr_protocol::{ActrId, RpcEnvelope};
-use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::outbound::PeerGate;
 use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
+    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
 };
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A single test peer encapsulating all components needed for outproc communication.
+/// A single test peer encapsulating all components needed for peer communication.
 pub struct TestPeer {
     /// Actor ID for this peer
     pub id: ActrId,
     /// WebRTC coordinator (connection management, ICE restart, signaling)
     pub coordinator: Arc<WebRtcCoordinator>,
-    /// OutprocOutGate (message sending, pending request management)
-    pub gate: Arc<OutprocOutGate>,
+    /// PeerGate (message sending, pending request management)
+    pub gate: Arc<PeerGate>,
     /// Transport manager (wire pool, dest transport management)
-    pub transport_manager: Arc<OutprocTransportManager>,
+    pub transport_manager: Arc<PeerTransport>,
 }
 
 impl TestPeer {
@@ -203,14 +203,14 @@ impl TestHarness {
             coord
         };
 
-        // Build OutprocOutGate with full transport stack
+        // Build PeerGate with full transport stack
         let wire_config = DefaultWireBuilderConfig::default();
         let wire_builder = Arc::new(DefaultWireBuilder::new(
             Some(coordinator.clone()),
             wire_config,
         ));
-        let transport_manager = Arc::new(OutprocTransportManager::new(id.clone(), wire_builder));
-        let gate = Arc::new(OutprocOutGate::new(
+        let transport_manager = Arc::new(PeerTransport::new(id.clone(), wire_builder));
+        let gate = Arc::new(PeerGate::new(
             transport_manager.clone(),
             Some(coordinator.clone()),
         ));
@@ -256,10 +256,10 @@ impl TestHarness {
     }
 
     /// Establish a connection from one peer to another **by sending a message
-    /// through the OutprocOutGate**.
+    /// through the PeerGate**.
     ///
     /// This triggers the full transport stack:
-    /// `OutprocOutGate → OutprocTransportManager (lazy create) → WireBuilder → WebRTC`
+    /// `PeerGate → PeerTransport (lazy create) → WireBuilder → WebRTC`
     ///
     /// Internally:
     /// 1. Starts an **echo responder** on the target peer

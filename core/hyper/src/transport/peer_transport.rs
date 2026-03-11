@@ -1,10 +1,10 @@
-//! OutprocTransportManager - Cross-process transport manager
+//! PeerTransport - Cross-process transport manager
 //!
 //! Manages transport layer for multiple Dests, providing unified send/recv interface
 //!
 //! # Naming Convention
-//! - **OutprocTransportManager**: Manages cross-process communication (WebRTC, WebSocket)
-//! - **InprocTransportManager**: Manages intra-process communication (mpsc channels)
+//! - **PeerTransport**: Manages cross-process communication (WebRTC, WebSocket)
+//! - **HostTransport**: Manages intra-process communication (mpsc channels)
 //!
 //! These two form a symmetric design, handling different transport scenarios
 
@@ -73,7 +73,7 @@ pub trait WireBuilder: Send + Sync {
 /// - Right: Connected state with DestTransport
 type DestState = Either<Arc<Notify>, Arc<DestTransport>>;
 
-/// OutprocTransportManager - Cross-process transport manager
+/// PeerTransport - Cross-process transport manager
 ///
 /// Responsibilities:
 /// - Manage transport layer for multiple Dests (each Dest maps to one DestTransport)
@@ -82,28 +82,28 @@ type DestState = Either<Arc<Notify>, Arc<DestTransport>>;
 /// - Support custom connection factories
 /// - Prevent duplicate connection creation using Either state machine
 ///
-/// # Comparison with InprocTransportManager
-/// - **OutprocTransportManager**: Cross-process, uses WebRTC/WebSocket
-/// - **InprocTransportManager**: Intra-process, uses mpsc channels, zero serialization
+/// # Comparison with HostTransport
+/// - **PeerTransport**: Cross-process, uses WebRTC/WebSocket
+/// - **HostTransport**: Intra-process, uses mpsc channels, zero serialization
 ///
 /// # State Machine
 /// ```text
-/// None → Connecting(Notify) → Connected(Transport)
-///         ↓                      ↓
+/// None -> Connecting(Notify) -> Connected(Transport)
+///         |                      |
 ///      (multiple waiters)     (ready)
 /// ```
-pub struct OutprocTransportManager {
+pub struct PeerTransport {
     /// Local Actor ID
     local_id: ActrId,
 
-    /// Dest → DestState mapping (Either state machine)
+    /// Dest -> DestState mapping (Either state machine)
     transports: Arc<RwLock<HashMap<Dest, DestState>>>,
 
     /// Wire builder (used to create Wire handles for new DestTransport)
     conn_factory: Arc<dyn WireBuilder>,
 
     /// Cancellation tokens for in-progress connection creation
-    /// Dest → CancellationToken (for cancelling ongoing connection attempts)
+    /// Dest -> CancellationToken (for cancelling ongoing connection attempts)
     pending_tokens: Arc<Mutex<HashMap<Dest, CancellationToken>>>,
 
     #[allow(unused)]
@@ -111,8 +111,8 @@ pub struct OutprocTransportManager {
     closing_peers: Arc<RwLock<HashSet<Dest>>>,
 }
 
-impl OutprocTransportManager {
-    /// Create new OutprocTransportManager
+impl PeerTransport {
+    /// Create new PeerTransport
     ///
     /// # Arguments
     /// - `local_id`: Local Actor ID
@@ -142,9 +142,9 @@ impl OutprocTransportManager {
     ///
     /// # State Machine
     /// Uses Either to prevent duplicate connections:
-    /// 1. If Connected → return transport
-    /// 2. If Connecting → wait for notify, then retry
-    /// 3. If None → insert Connecting(notify), create connection outside lock
+    /// 1. If Connected -> return transport
+    /// 2. If Connecting -> wait for notify, then retry
+    /// 3. If None -> insert Connecting(notify), create connection outside lock
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
     pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
         // 0. Check if dest is being closed - fast fail
@@ -165,12 +165,12 @@ impl OutprocTransportManager {
             match state_opt {
                 // Already connected - fast path
                 Some(Either::Right(transport)) => {
-                    tracing::debug!("📦 Reusing existing DestTransport: {:?}", dest);
+                    tracing::debug!("Reusing existing DestTransport: {:?}", dest);
                     return Ok(transport);
                 }
                 // Currently connecting - wait for completion
                 Some(Either::Left(notify)) => {
-                    tracing::debug!("⏳ Waiting for ongoing connection: {:?}", dest);
+                    tracing::debug!("Waiting for ongoing connection: {:?}", dest);
                     notify.notified().await;
                     // Check if cancelled during wait
                     // if self.closing_peers.read().await.contains(dest) {
@@ -212,7 +212,7 @@ impl OutprocTransportManager {
                         // We are the creator, insert Connecting state
                         let notify = Arc::new(Notify::new());
                         transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));
-                        tracing::debug!("🔄 Inserted Connecting state for: {:?}", dest);
+                        tracing::debug!("Inserted Connecting state for: {:?}", dest);
                         Arc::clone(&notify)
                     }
                 }
@@ -226,7 +226,7 @@ impl OutprocTransportManager {
 
             if !is_creator {
                 // Wait for the actual creator
-                tracing::debug!("⏳ Another thread is creating connection: {:?}", dest);
+                tracing::debug!("Another thread is creating connection: {:?}", dest);
                 // notify 加超时 10秒
                 match tokio::time::timeout(Duration::from_secs(10), notify.notified()).await {
                     Ok(_) => continue,
@@ -240,7 +240,7 @@ impl OutprocTransportManager {
             }
 
             // 3. We are the creator - create connections OUTSIDE lock
-            tracing::info!("🚀 Creating new connection for: {:?}", dest);
+            tracing::info!("Creating new connection for: {:?}", dest);
 
             // Create cancellation token for this connection attempt
             let cancel_token = CancellationToken::new();
@@ -262,7 +262,7 @@ impl OutprocTransportManager {
                 }
 
                 tracing::info!(
-                    "✨ Creating DestTransport: {:?} ({} connections)",
+                    "Creating DestTransport: {:?} ({} connections)",
                     dest,
                     connections.len()
                 );
@@ -282,7 +282,7 @@ impl OutprocTransportManager {
 
             match result {
                 Ok(transport) => {
-                    tracing::info!("✅ Connection established: {:?}", dest);
+                    tracing::info!("Connection established: {:?}", dest);
                     transports.insert(dest.clone(), Either::Right(Arc::clone(&transport)));
                     drop(transports);
                     self.spawn_ready_monitor(dest.clone(), Arc::clone(&transport));
@@ -290,7 +290,7 @@ impl OutprocTransportManager {
                     return Ok(transport);
                 }
                 Err(e) => {
-                    tracing::error!("❌ Connection failed: {:?}: {}", dest, e);
+                    tracing::error!("Connection failed: {:?}: {}", dest, e);
                     transports.remove(dest);
                     drop(transports);
                     notify.notify_waiters();
@@ -314,7 +314,7 @@ impl OutprocTransportManager {
     /// ```
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "OutprocTransportManager.send")
+        tracing::instrument(skip_all, name = "PeerTransport.send")
     )]
     pub async fn send(
         &self,
@@ -323,7 +323,7 @@ impl OutprocTransportManager {
         data: &[u8],
     ) -> NetworkResult<()> {
         tracing::debug!(
-            "📤 [OutprocTransportManager] Sending to {:?}: type={:?}, size={}",
+            "[PeerTransport] Sending to {:?}: type={:?}, size={}",
             dest,
             payload_type,
             data.len()
@@ -338,8 +338,8 @@ impl OutprocTransportManager {
 
     /// Close DestTransport for specified Dest
     ///
-    /// Called by OutprocOutGate when connection events indicate cleanup is needed.
-    /// This triggers the cleanup chain: OutprocTransportManager → DestTransport → WirePool
+    /// Called by PeerGate when connection events indicate cleanup is needed.
+    /// This triggers the cleanup chain: PeerTransport -> DestTransport -> WirePool
     ///
     /// # Arguments
     /// - `dest`: Target destination
@@ -351,7 +351,7 @@ impl OutprocTransportManager {
         {
             let mut tokens = self.pending_tokens.lock().await;
             if let Some(token) = tokens.remove(dest) {
-                tracing::info!("🚫 Cancelling in-progress connection for {:?}", dest);
+                tracing::info!("Cancelling in-progress connection for {:?}", dest);
                 token.cancel();
             }
         }
@@ -364,11 +364,11 @@ impl OutprocTransportManager {
 
             match state {
                 Either::Right(transport) => {
-                    tracing::info!("🔌 Closing DestTransport: {:?}", dest);
+                    tracing::info!("Closing DestTransport: {:?}", dest);
                     transport.close().await?;
                 }
                 Either::Left(notify) => {
-                    tracing::debug!("⏸️ Removed Connecting state for: {:?}", dest);
+                    tracing::debug!("Removed Connecting state for: {:?}", dest);
                     // Notify waiters that connection was cancelled
                     notify.notify_waiters();
                 }
@@ -386,7 +386,7 @@ impl OutprocTransportManager {
         let mut transports = self.transports.write().await;
 
         tracing::info!(
-            "🔌 Closing all DestTransports (count: {})",
+            "Closing all DestTransports (count: {})",
             transports.len()
         );
 
@@ -394,11 +394,11 @@ impl OutprocTransportManager {
             match state {
                 Either::Right(transport) => {
                     if let Err(e) = transport.close().await {
-                        tracing::warn!("❌ Failed to close DestTransport {:?}: {}", dest, e);
+                        tracing::warn!("Failed to close DestTransport {:?}: {}", dest, e);
                     }
                 }
                 Either::Left(_notify) => {
-                    tracing::debug!("⏸️ Skipped Connecting state for: {:?}", dest);
+                    tracing::debug!("Skipped Connecting state for: {:?}", dest);
                 }
             }
         }
@@ -452,11 +452,11 @@ impl OutprocTransportManager {
                         drop(map);
 
                         tracing::warn!(
-                            "🧹 Removing DestTransport for {:?} after all connections closed",
+                            "Removing DestTransport for {:?} after all connections closed",
                             dest
                         );
                         if let Err(e) = transport.close().await {
-                            tracing::warn!("⚠️ Failed to close DestTransport {:?}: {}", dest, e);
+                            tracing::warn!("Failed to close DestTransport {:?}: {}", dest, e);
                         }
                     }
                     break;
@@ -472,8 +472,8 @@ impl OutprocTransportManager {
     /// Spawn health checker background task with smart reconnect
     ///
     /// Periodically checks all DestTransport health status:
-    /// - If some connections failed → trigger smart reconnect (reuse working connections)
-    /// - If all connections failed → remove entire DestTransport
+    /// - If some connections failed -> trigger smart reconnect (reuse working connections)
+    /// - If all connections failed -> remove entire DestTransport
     ///
     /// # Arguments
     /// - `interval`: Health check interval (recommended: 10-30 seconds)
@@ -483,7 +483,7 @@ impl OutprocTransportManager {
     ///
     /// # Example
     /// ```rust,ignore
-    /// let mgr = Arc::new(OutprocTransportManager::new(local_id, factory));
+    /// let mgr = Arc::new(PeerTransport::new(local_id, factory));
     /// let health_check_handle = mgr.spawn_health_checker(Duration::from_secs(10));
     /// ```
     pub fn spawn_health_checker(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
@@ -521,7 +521,7 @@ impl OutprocTransportManager {
                     if !healthy {
                         // All connections failed - schedule for removal
                         tracing::warn!(
-                            "💀 All connections failed for {:?}, will remove",
+                            "All connections failed for {:?}, will remove",
                             dest_clone
                         );
 
@@ -530,7 +530,7 @@ impl OutprocTransportManager {
                         if let Some(Either::Right(transport)) = transports_write.remove(&dest_clone)
                         {
                             tracing::info!(
-                                "🗑️  Removing completely failed DestTransport: {:?}",
+                                "Removing completely failed DestTransport: {:?}",
                                 dest_clone
                             );
                             // Drop lock before awaiting close
@@ -538,7 +538,7 @@ impl OutprocTransportManager {
 
                             if let Err(e) = transport.close().await {
                                 tracing::warn!(
-                                    "❌ Failed to close DestTransport {:?}: {}",
+                                    "Failed to close DestTransport {:?}: {}",
                                     dest_clone,
                                     e
                                 );
@@ -550,12 +550,12 @@ impl OutprocTransportManager {
                     } else {
                         // At least one connection is working
                         // Try to reconnect failed ones (smart reconnect)
-                        tracing::debug!("🔄 Triggering smart reconnect for: {:?}", dest_clone);
+                        tracing::debug!("Triggering smart reconnect for: {:?}", dest_clone);
                         if let Err(e) = transport
                             .retry_failed_connections(&dest_clone, conn_factory.as_ref())
                             .await
                         {
-                            tracing::warn!("❌ Smart reconnect failed for {:?}: {}", dest_clone, e);
+                            tracing::warn!("Smart reconnect failed for {:?}: {}", dest_clone, e);
                         }
                     }
                 }
@@ -564,9 +564,9 @@ impl OutprocTransportManager {
     }
 }
 
-impl Drop for OutprocTransportManager {
+impl Drop for PeerTransport {
     fn drop(&mut self) {
-        tracing::debug!("🗑️  OutprocTransportManager dropped");
+        tracing::debug!("PeerTransport dropped");
         // Note: async cleanup requires external call to close_all()
     }
 }
@@ -593,7 +593,7 @@ mod tests {
     async fn test_transport_manager_creation() {
         let local_id = ActrId::default();
         let factory = create_test_factory();
-        let mgr = OutprocTransportManager::new(local_id.clone(), factory);
+        let mgr = PeerTransport::new(local_id.clone(), factory);
 
         assert_eq!(mgr.dest_count().await, 0);
         assert_eq!(mgr.local_id(), &local_id);
@@ -603,7 +603,7 @@ mod tests {
     async fn test_list_dests() {
         let local_id = ActrId::default();
         let factory = create_test_factory();
-        let mgr = OutprocTransportManager::new(local_id, factory);
+        let mgr = PeerTransport::new(local_id, factory);
 
         let dests = mgr.list_dests().await;
         assert_eq!(dests.len(), 0);
@@ -613,7 +613,7 @@ mod tests {
     async fn test_has_dest() {
         let local_id = ActrId::default();
         let factory = create_test_factory();
-        let mgr = OutprocTransportManager::new(local_id, factory);
+        let mgr = PeerTransport::new(local_id, factory);
 
         let dest = Dest::shell();
         assert!(!mgr.has_dest(&dest).await);

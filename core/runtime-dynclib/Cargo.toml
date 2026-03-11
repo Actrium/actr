@@ -1,0 +1,22 @@
+[package]
+name = "actr-runtime-dynclib"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Dynamic library (cdylib) guest runtime for Actor-RTC actors"
+repository = "https://github.com/actor-rtc/actr"
+keywords = ["actor", "dynclib", "runtime", "cdylib", "guest"]
+categories = ["asynchronous", "concurrency"]
+
+[dependencies]
+actr-framework.workspace = true
+actr-protocol.workspace = true
+actr-runtime.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+prost.workspace = true
+
+[lints]
+workspace = true

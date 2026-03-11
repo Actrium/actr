@@ -160,23 +160,23 @@ impl ActrSystem {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Initialize inproc infrastructure (Shell/Local communication - immediately available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        use crate::outbound::{InprocOutGate, OutGate};
-        use crate::transport::InprocTransportManager;
+        use crate::outbound::{HostGate, Gate};
+        use crate::transport::HostTransport;
 
-        // Create TWO separate InprocTransportManager instances for bidirectional communication
+        // Create TWO separate HostTransport instances for bidirectional communication
         // This ensures Shell's pending_requests and Workload's pending_requests are separate
 
         // Direction 1: Shell → Workload (REQUEST)
-        let shell_to_workload = Arc::new(InprocTransportManager::new());
-        tracing::debug!("✨ Created shell_to_workload InprocTransportManager");
+        let shell_to_workload = Arc::new(HostTransport::new());
+        tracing::debug!("✨ Created shell_to_workload HostTransport");
 
         // Direction 2: Workload → Shell (RESPONSE)
-        let workload_to_shell = Arc::new(InprocTransportManager::new());
-        tracing::debug!("✨ Created workload_to_shell InprocTransportManager");
+        let workload_to_shell = Arc::new(HostTransport::new());
+        tracing::debug!("✨ Created workload_to_shell HostTransport");
 
         // Shell uses shell_to_workload for sending
         let inproc_gate =
-            OutGate::InprocOut(Arc::new(InprocOutGate::new(shell_to_workload.clone())));
+            Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
         // Create DataStreamRegistry for DataStream callbacks
         let data_stream_registry = Arc::new(crate::inbound::DataStreamRegistry::new());
@@ -326,8 +326,7 @@ impl ActrSystem {
                 std::collections::HashMap::new(),
             )),
             injected_registration: None, // Set by inject_credential() before start() in Process/Wasm mode
-            #[cfg(feature = "wasm-engine")]
-            wasm_instance: None, // Set by with_wasm_instance() after build()
+            executor: None, // Set by with_executor() / with_wasm_instance() after build()
         }
     }
 }

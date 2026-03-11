@@ -9,7 +9,7 @@ declare namespace wasm_bindgen {
      * - 有 SERVICE_HANDLER: DOM → handler(route_key, payload, ctx) → response
      *   - local route: handler 本地处理，可通过 ctx.call_raw() 调远程
      *   - remote route: handler 通过 ctx.call_raw() 转发到远程 Actor
-     * - 无 SERVICE_HANDLER: DOM → InprocOutGate → OutGate → WebRTC（旧路径，向后兼容）
+     * - 无 SERVICE_HANDLER: DOM → HostGate → Gate → WebRTC（旧路径，向后兼容）
      */
     export function handle_dom_control(client_id: string, payload: any): Promise<void>;
 

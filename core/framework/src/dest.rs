@@ -52,17 +52,17 @@ use std::hash::{Hash, Hasher};
 ///
 /// - **`Dest::Shell`**: Workload → App (inproc 反向通道)
 ///   - Used by Workload to call App side
-///   - Routed through `InprocOutGate` (zero serialization)
+///   - Routed through `HostGate` (zero serialization)
 ///   - Example: Workload pushing notifications to App
 ///
 /// - **`Dest::Local`**: Target local Workload
-///   - From App: routed through `InprocOutGate` (zero serialization)
-///   - From Workload: routed through `OutprocOutGate` (full serialization, short-circuit at transport)
+///   - From App: routed through `HostGate` (zero serialization)
+///   - From Workload: routed through `PeerGate` (full serialization, short-circuit at transport)
 ///   - Example: App calling its local Workload, or Workload calling itself
 ///
 /// - **`Dest::Actor(ActrId)`**: Remote Actor (full outproc)
 ///   - Used for cross-process Actor communication
-///   - Routed through `OutprocOutGate` (WebRTC/WebSocket)
+///   - Routed through `PeerGate` (WebRTC/WebSocket)
 ///   - Example: ClientWorkload calling RemoteServer
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dest {

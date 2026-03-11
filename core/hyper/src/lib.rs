@@ -41,12 +41,12 @@
 //! │  Layer 3: Inbound Dispatch                          │  DataStreamRegistry
 //! │           (Fast Path Routing)                       │  MediaFrameRegistry
 //! ├─────────────────────────────────────────────────────┤
-//! │  Layer 2: Outbound Gate                             │  InprocOutGate
-//! │           (Message Sending)                         │  OutprocOutGate
+//! │  Layer 2: Outbound Gate                             │  HostGate
+//! │           (Message Sending)                         │  PeerGate
 //! ├─────────────────────────────────────────────────────┤
 //! │  Layer 1: Transport                                 │  Lane (core abstraction)
-//! │           (Channel Management)                      │  InprocTransportManager
-//! │                                                     │  OutprocTransportManager
+//! │           (Channel Management)                      │  HostTransport
+//! │                                                     │  PeerTransport
 //! ├─────────────────────────────────────────────────────┤
 //! │  Layer 0: Wire                                      │  WebRtcGate
 //! │           (Physical Connections)                     │  WebRtcCoordinator
@@ -101,9 +101,16 @@ pub mod context_factory;
 // Runtime error re-exports (from actr_protocol, distinct from HyperError)
 pub mod runtime_error;
 
+// Executor adapter trait (unified dispatch for WASM, dynclib, etc.)
+pub mod executor;
+
 // WASM actor execution engine (optional)
 #[cfg(feature = "wasm-engine")]
 pub mod wasm;
+
+// Dynclib (native shared library) actor execution engine (optional)
+#[cfg(feature = "dynclib-engine")]
+pub mod dynclib;
 
 // Monitoring and resource management
 pub mod monitoring;
@@ -146,7 +153,7 @@ pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, Me
 pub use actr_framework::{MediaSample, MediaType};
 
 // Layer 2: Outbound gate abstraction layer
-pub use outbound::{InprocOutGate, OutGate, OutprocOutGate};
+pub use outbound::{Gate, HostGate, PeerGate};
 
 // Layer 1: Transport layer
 pub use transport::{
@@ -156,17 +163,14 @@ pub use transport::{
     Dest,
     DestTransport,
     ExponentialBackoff,
-    InprocTransportManager,
+    HostTransport,
     NetworkError,
     NetworkResult,
-    OutprocTransportManager,
+    PeerTransport,
     WireBuilder,
     WireHandle,
 };
 
-// Backward compatible alias (deprecated)
-#[allow(deprecated)]
-pub use transport::TransportManager;
 
 // Layer 0: Wire layer
 pub use wire::{
@@ -189,6 +193,9 @@ pub use runtime_error::{ActorResult, ActrError, Classify, ErrorKind};
 // Monitoring and resource management
 pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
+
+// Executor adapter
+pub use executor::{CallExecutorFn, DispatchContext, ExecutorAdapter, IoResult, PendingCall};
 
 // AIS key cache
 pub use key_cache::AisKeyCache;
@@ -233,7 +240,7 @@ pub mod prelude {
     pub use actr_framework::{MediaSample, MediaType};
 
     // ── Layer 2: Outbound gate ──────────────────────────────────────────────
-    pub use crate::outbound::{InprocOutGate, OutGate, OutprocOutGate};
+    pub use crate::outbound::{Gate, HostGate, PeerGate};
 
     // ── Context ─────────────────────────────────────────────────────────────
     pub use crate::context_factory::ContextFactory;
@@ -256,17 +263,13 @@ pub mod prelude {
         DefaultWireBuilderConfig,
         Dest,
         DestTransport,
-        InprocTransportManager,
+        HostTransport,
         NetworkError,
         NetworkResult,
-        OutprocTransportManager,
+        PeerTransport,
         WireBuilder,
         WireHandle,
     };
-
-    // Backward compatible alias (deprecated)
-    #[allow(deprecated)]
-    pub use crate::transport::TransportManager;
 
     // ── Error types ─────────────────────────────────────────────────────────
     pub use crate::runtime_error::{ActorResult, ActrError};

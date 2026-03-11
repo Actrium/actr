@@ -15,9 +15,9 @@ mod common;
 use actr_protocol::{RpcEnvelope, prost::Message};
 use actr_hyper::{
     ActrId,
-    outbound::OutprocOutGate,
+    outbound::PeerGate,
     transport::{
-        DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
+        DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
         connection_event::{ConnectionEvent, ConnectionState},
     },
 };
@@ -57,21 +57,21 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
         .await
         .unwrap();
 
-    // 创建 OutprocOutGate（用于发送 RPC）
+    // 创建 PeerGate（用于发送 RPC）
     let wire_config_a = DefaultWireBuilderConfig::default();
     let wire_builder_a: Arc<dyn actr_hyper::transport::WireBuilder> = Arc::new(
         DefaultWireBuilder::new(Some(coord_a.clone()), wire_config_a),
     );
-    let transport_mgr_a = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder_a));
-    let gate_a = Arc::new(OutprocOutGate::new(transport_mgr_a, Some(coord_a.clone())));
+    let transport_mgr_a = Arc::new(PeerTransport::new(id_a.clone(), wire_builder_a));
+    let gate_a = Arc::new(PeerGate::new(transport_mgr_a, Some(coord_a.clone())));
 
-    // 为 peer B 创建 OutprocOutGate（用于响应）
+    // 为 peer B 创建 PeerGate（用于响应）
     let wire_config_b = DefaultWireBuilderConfig::default();
     let wire_builder_b: Arc<dyn actr_hyper::transport::WireBuilder> = Arc::new(
         DefaultWireBuilder::new(Some(coord_b.clone()), wire_config_b),
     );
-    let transport_mgr_b = Arc::new(OutprocTransportManager::new(id_b.clone(), wire_builder_b));
-    let gate_b = Arc::new(OutprocOutGate::new(transport_mgr_b, Some(coord_b.clone())));
+    let transport_mgr_b = Arc::new(PeerTransport::new(id_b.clone(), wire_builder_b));
+    let gate_b = Arc::new(PeerGate::new(transport_mgr_b, Some(coord_b.clone())));
 
     // 启动 peer B 的 Echo 响应任务
     let responder_task = common::spawn_echo_responder(coord_b.clone(), gate_b.clone(), "Peer 200");
@@ -128,7 +128,7 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
                                 ..Default::default()
                             };
 
-                            // 使用 OutboundGate 发送（公共 API）
+                            // 使用 Gate 发送（公共 API）
                             let result = gate_a.send_request(&id_b, envelope).await;
 
                             match result {

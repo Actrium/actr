@@ -1,13 +1,13 @@
-//! OutprocOutGate - Outproc transport adapter (outbound)
+//! PeerGate - Peer transport adapter (outbound)
 //!
 //! # Responsibilities
-//! - Wrap OutprocTransportManager (Protobuf serialization)
+//! - Wrap PeerTransport (Protobuf serialization)
 //! - Used for cross-process communication (WebRTC + WebSocket)
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::{Dest, OutprocTransportManager, PayloadTypeExt};
+use crate::transport::{Dest, PayloadTypeExt, PeerTransport};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
@@ -17,11 +17,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
 
-/// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
+/// Pending requests map type: request_id -> (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
-/// OutprocOutGate - Outproc transport adapter (outbound)
+/// PeerGate - Outproc transport adapter (outbound)
 ///
 /// # Features
 /// - Protobuf serialization: serialize RpcEnvelope to byte stream
@@ -29,11 +29,11 @@ type PendingRequestsMap =
 /// - Maintain pending_requests for Request/Response matching
 /// - Support MediaTrack sending via WebRTC
 /// - Block new requests to peers being cleaned up (closing_peers)
-pub struct OutprocOutGate {
-    /// OutprocTransportManager instance
-    transport_manager: Arc<OutprocTransportManager>,
+pub struct PeerGate {
+    /// PeerTransport instance
+    transport_manager: Arc<PeerTransport>,
 
-    /// Pending requests: request_id → (target_actor_id, oneshot::Sender<Bytes>)
+    /// Pending requests: request_id -> (target_actor_id, oneshot::Sender<Bytes>)
     /// Stores both the target ActorId and response sender for efficient cleanup by peer
     pending_requests: PendingRequestsMap,
 
@@ -45,14 +45,14 @@ pub struct OutprocOutGate {
     closing_peers: Arc<RwLock<HashSet<ActrId>>>,
 }
 
-impl OutprocOutGate {
-    /// Create new OutprocOutGate
+impl PeerGate {
+    /// Create new PeerGate
     ///
     /// # Arguments
-    /// - `transport_manager`: OutprocTransportManager instance
+    /// - `transport_manager`: PeerTransport instance
     /// - `webrtc_coordinator`: Optional WebRTC coordinator for MediaTrack support
     pub fn new(
-        transport_manager: Arc<OutprocTransportManager>,
+        transport_manager: Arc<PeerTransport>,
         webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
     ) -> Self {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
@@ -85,7 +85,7 @@ impl OutprocOutGate {
         mut event_rx: broadcast::Receiver<ConnectionEvent>,
         pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
-        transport_manager: Arc<OutprocTransportManager>,
+        transport_manager: Arc<PeerTransport>,
     ) {
         tokio::spawn(async move {
             loop {
@@ -93,19 +93,19 @@ impl OutprocOutGate {
                     Ok(event) => event,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(
-                            "⚠️ OutprocOutGate event listener lagged by {} events, continuing",
+                            "PeerGate event listener lagged by {} events, continuing",
                             n
                         );
                         continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         tracing::debug!(
-                            "🔌 OutprocOutGate event listener stopped (channel closed)"
+                            "PeerGate event listener stopped (channel closed)"
                         );
                         break;
                     }
                 };
-                tracing::debug!("🔄 OutprocOutGate received connection event: {:?}", event);
+                tracing::debug!("PeerGate received connection event: {:?}", event);
                 match &event {
                     // Block new requests when connection enters Disconnected/Failed state
                     ConnectionEvent::StateChanged {
@@ -115,7 +115,7 @@ impl OutprocOutGate {
                     } => {
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
-                            "🚫 Blocking new requests to peer {} (state: {:?})",
+                            "Blocking new requests to peer {} (state: {:?})",
                             peer_id.to_string_repr(),
                             event
                         );
@@ -133,7 +133,7 @@ impl OutprocOutGate {
                             closing_peers.write().await.insert(peer_id.clone());
                         } // Lock released here
 
-                        // 1. Trigger downstream cleanup (OutprocTransportManager → DestTransport → WirePool)
+                        // 1. Trigger downstream cleanup (PeerTransport -> DestTransport -> WirePool)
                         // Note: We don't hold closing_peers lock here to avoid deadlock when
                         // close_transport needs to acquire its own locks or when multiple
                         // connections are closing simultaneously during shutdown.
@@ -141,13 +141,13 @@ impl OutprocOutGate {
                         match transport_manager.close_transport(&dest).await {
                             Ok(_) => {
                                 tracing::info!(
-                                    "✅ Successfully closed transport chain for peer {}",
+                                    "Successfully closed transport chain for peer {}",
                                     peer_id.to_string_repr()
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "⚠️ Failed to close transport for peer {}: {}",
+                                    "Failed to close transport for peer {}: {}",
                                     peer_id.to_string_repr(),
                                     e
                                 );
@@ -172,7 +172,7 @@ impl OutprocOutGate {
                         let cleaned_count = keys_to_remove.len();
 
                         tracing::info!(
-                            "🧹 Cleaned {} pending requests for peer {}",
+                            "Cleaned {} pending requests for peer {}",
                             cleaned_count,
                             peer_id.to_string_repr()
                         );
@@ -199,7 +199,7 @@ impl OutprocOutGate {
                     } => {
                         closing_peers.write().await.remove(peer_id);
                         tracing::debug!(
-                            "✅ Unblocked peer {} after successful ICE restart",
+                            "Unblocked peer {} after successful ICE restart",
                             peer_id.to_string_repr()
                         );
                     }
@@ -230,13 +230,13 @@ impl OutprocOutGate {
             // Wake up waiting request with result (success or error)
             let _ = tx.send(result);
             tracing::debug!(
-                "✅ Completed request: {} (target: {})",
+                "Completed request: {} (target: {})",
                 request_id,
                 target.to_string_repr()
             );
             Ok(true)
         } else {
-            tracing::warn!("⚠️  No pending request for: {}", request_id);
+            tracing::warn!("No pending request for: {}", request_id);
             Ok(false)
         }
     }
@@ -262,7 +262,7 @@ impl OutprocOutGate {
     }
 }
 
-impl OutprocOutGate {
+impl PeerGate {
     /// Send data via transport with per-PayloadType retry on transient failures.
     ///
     /// Retry is applied only when `NetworkError::kind()` is `Transient`.
@@ -322,7 +322,7 @@ impl OutprocOutGate {
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
         tracing::debug!(
-            "📤 OutprocGate::send_request_with_type to {:?}, payload_type={:?}, request_id={}",
+            "PeerGate::send_request_with_type to {:?}, payload_type={:?}, request_id={}",
             target,
             payload_type,
             envelope.request_id
@@ -351,7 +351,7 @@ impl OutprocOutGate {
         let result = tokio::time::timeout(timeout, async {
             // 5a. Send with per-PayloadType retry on transient failures
             self.send_with_retry(&dest, payload_type, &data).await?;
-            tracing::debug!("✅ Sent request to {:?}", target);
+            tracing::debug!("Sent request to {:?}", target);
 
             // 5b. Wait for response
             match response_rx.await {
@@ -369,7 +369,7 @@ impl OutprocOutGate {
                     // Send failed or channel closed — clean up pending request
                     self.pending_requests.write().await.remove(&request_id);
                 } else {
-                    tracing::debug!("✅ Received response for request: {}", request_id);
+                    tracing::debug!("Received response for request: {}", request_id);
                 }
                 inner
             }
@@ -387,7 +387,7 @@ impl OutprocOutGate {
     /// Send request and wait for response (bidirectional communication)
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "OutprocOutGate.send_request")
+        tracing::instrument(skip_all, name = "PeerGate.send_request")
     )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         self.send_request_with_type(target, PayloadType::RpcReliable, envelope)
@@ -397,11 +397,11 @@ impl OutprocOutGate {
     /// Send one-way message (no response expected)
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "OutprocOutGate.send_message", fields(target = ?target.to_string_repr()))
+        tracing::instrument(skip_all, name = "PeerGate.send_message", fields(target = ?target.to_string_repr()))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::send_message to {:?}",
+            "PeerGate::send_message to {:?}",
             target.to_string_repr()
         );
 
@@ -425,7 +425,7 @@ impl OutprocOutGate {
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::send_message_with_type to {:?}, payload_type={:?}",
+            "PeerGate::send_message_with_type to {:?}, payload_type={:?}",
             target.to_string_repr(),
             payload_type
         );
@@ -451,7 +451,7 @@ impl OutprocOutGate {
         sample: MediaSample,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::send_media_sample to {:?}, track_id={}",
+            "PeerGate::send_media_sample to {:?}, track_id={}",
             target,
             track_id
         );
@@ -467,7 +467,7 @@ impl OutprocOutGate {
             .await
             .map_err(|e| ActrError::Unavailable(format!("WebRTC send failed: {e}")))?;
 
-        tracing::debug!("✅ Sent media sample to {:?}", target);
+        tracing::debug!("Sent media sample to {:?}", target);
         Ok(())
     }
 
@@ -480,7 +480,7 @@ impl OutprocOutGate {
         media_type: &str,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::add_media_track to {:?}, track_id={}, codec={}, type={}",
+            "PeerGate::add_media_track to {:?}, track_id={}, codec={}, type={}",
             target,
             track_id,
             codec,
@@ -501,7 +501,7 @@ impl OutprocOutGate {
     /// Remove a media track from the WebRTC connection with the target.
     pub async fn remove_media_track(&self, target: &ActrId, track_id: &str) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::remove_media_track to {:?}, track_id={}",
+            "PeerGate::remove_media_track to {:?}, track_id={}",
             target,
             track_id
         );
@@ -522,7 +522,7 @@ impl OutprocOutGate {
     /// - `data`: Serialized DataStream bytes
     ///
     /// # Implementation Note
-    /// Sends via OutprocTransportManager using WebRTC DataChannel or WebSocket
+    /// Sends via PeerTransport using WebRTC DataChannel or WebSocket
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -530,7 +530,7 @@ impl OutprocOutGate {
         data: Bytes,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "📤 OutprocGate::send_data_stream to {:?}, payload_type={:?}, size={} bytes",
+            "PeerGate::send_data_stream to {:?}, payload_type={:?}, size={} bytes",
             target,
             payload_type,
             data.len()
@@ -556,8 +556,8 @@ impl OutprocOutGate {
     }
 }
 
-impl Drop for OutprocOutGate {
+impl Drop for PeerGate {
     fn drop(&mut self) {
-        tracing::debug!("🗑️  OutprocGate dropped");
+        tracing::debug!("PeerGate dropped");
     }
 }

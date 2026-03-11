@@ -1,4 +1,4 @@
-//! Integration tests for OutprocOutGate disconnection/reconnection
+//! Integration tests for PeerGate disconnection/reconnection
 //!
 //! Uses TestHarness for multi-peer topology with VNet network simulation.
 //!

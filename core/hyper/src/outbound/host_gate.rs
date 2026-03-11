@@ -1,33 +1,33 @@
-//! InprocOutGate - Inproc transport adapter (outbound)
+//! HostGate - Host transport adapter (outbound)
 //!
 //! # Responsibilities
-//! - Wrap InprocTransportManager (zero serialization, direct RpcEnvelope passing)
-//! - Used for intra-process communication (e.g., Shell ↔ Workload)
+//! - Wrap HostTransport (zero serialization, direct RpcEnvelope passing)
+//! - Used for intra-process communication (e.g., Shell <-> Workload)
 //! - Support PayloadType routing (default Reliable)
 
-use crate::transport::InprocTransportManager;
+use crate::transport::HostTransport;
 use actr_framework::Bytes;
 use actr_protocol::ActrIdExt;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
-/// InprocOutGate - Inproc transport adapter (outbound)
+/// HostGate - Inproc transport adapter (outbound)
 ///
 /// # Features
 /// - Zero serialization: directly pass `RpcEnvelope` objects
 /// - Zero copy: use mpsc channel for in-process passing
 /// - PayloadType routing: defaults to Reliable, can specify other types via extension methods
-/// - High performance: latency < 10μs
-pub struct InprocOutGate {
-    transport: Arc<InprocTransportManager>,
+/// - High performance: latency < 10us
+pub struct HostGate {
+    transport: Arc<HostTransport>,
 }
 
-impl InprocOutGate {
-    /// Create new InprocOutGate
+impl HostGate {
+    /// Create new HostGate
     ///
     /// # Arguments
-    /// - `transport`: InprocTransportManager instance
-    pub fn new(transport: Arc<InprocTransportManager>) -> Self {
+    /// - `transport`: HostTransport instance
+    pub fn new(transport: Arc<HostTransport>) -> Self {
         Self { transport }
     }
 
@@ -49,7 +49,7 @@ impl InprocOutGate {
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
         tracing::debug!(
-            "📤 InprocOutGate::send_request_with_type to {:?} (type={:?}, id={:?})",
+            "HostGate::send_request_with_type to {:?} (type={:?}, id={:?})",
             _target,
             payload_type,
             identifier
@@ -76,7 +76,7 @@ impl InprocOutGate {
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "📤 InprocOutGate::send_message_with_type to {:?} (type={:?}, id={:?})",
+            "HostGate::send_message_with_type to {:?} (type={:?}, id={:?})",
             _target,
             payload_type,
             identifier
@@ -98,11 +98,11 @@ impl InprocOutGate {
     /// Uses PayloadType::RpcReliable with no identifier
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "InprocOutGate.send_request")
+        tracing::instrument(skip_all, name = "HostGate.send_request")
     )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         tracing::info!(
-            "📤 InprocOutGate::send_request to {:?}, request_id={}",
+            "HostGate::send_request to {:?}, request_id={}",
             target,
             envelope.request_id
         );
@@ -115,8 +115,8 @@ impl InprocOutGate {
             .map_err(|e| ActrError::Unavailable(e.to_string()));
 
         match &result {
-            Ok(_) => tracing::info!("✅ InprocOutGate::send_request completed successfully"),
-            Err(e) => tracing::error!("❌ InprocOutGate::send_request failed: {:?}", e),
+            Ok(_) => tracing::info!("HostGate::send_request completed successfully"),
+            Err(e) => tracing::error!("HostGate::send_request failed: {:?}", e),
         }
 
         result
@@ -132,11 +132,11 @@ impl InprocOutGate {
     /// Uses PayloadType::RpcReliable with no identifier
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "InprocOutGate.send_message", fields(target = ?target.to_string_repr()))
+        tracing::instrument(skip_all, name = "HostGate.send_message", fields(target = ?target.to_string_repr()))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         tracing::debug!(
-            "InprocOutGate::send_message to {:?}",
+            "HostGate::send_message to {:?}",
             target.to_string_repr()
         );
 
@@ -169,7 +169,7 @@ impl InprocOutGate {
             .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode DataStream: {e}")))?;
 
         tracing::debug!(
-            "📤 InprocOutGate::send_data_stream stream_id={}, sequence={}",
+            "HostGate::send_data_stream stream_id={}, sequence={}",
             stream.stream_id,
             stream.sequence
         );

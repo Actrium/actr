@@ -1,4 +1,4 @@
-//! OutprocTransportManager - 跨进程传输管理器
+//! PeerTransport - 跨进程传输管理器
 //!
 //! 管理多个 Dest 的传输层，提供统一的 send/recv 接口
 
@@ -21,7 +21,7 @@ enum DestState {
     Connected(Arc<DestTransport>),
 }
 
-/// OutprocTransportManager - 跨进程传输管理器
+/// PeerTransport - 跨进程传输管理器
 ///
 /// 职责：
 /// - 管理多个 Dest 的传输层（每个 Dest 映射到一个 DestTransport）
@@ -29,7 +29,7 @@ enum DestState {
 /// - 提供统一的 send/recv 接口
 /// - 支持自定义连接工厂
 /// - 防止重复创建连接（使用 DashMap + oneshot）
-pub struct OutprocTransportManager {
+pub struct PeerTransport {
     /// 本地 ID
     local_id: String,
 
@@ -40,8 +40,8 @@ pub struct OutprocTransportManager {
     wire_builder: Arc<dyn WireBuilder>,
 }
 
-impl OutprocTransportManager {
-    /// 创建新的 OutprocTransportManager
+impl PeerTransport {
+    /// 创建新的 PeerTransport
     ///
     /// # 参数
     /// - `local_id`: 本地 Actor ID 或标识符
@@ -73,7 +73,7 @@ impl OutprocTransportManager {
             match entry.value() {
                 DestState::Connected(transport) => {
                     log::debug!(
-                        "[OutprocTransportManager] Reusing existing DestTransport: {:?}",
+                        "[PeerTransport] Reusing existing DestTransport: {:?}",
                         dest
                     );
                     return Ok(Arc::clone(transport));
@@ -81,7 +81,7 @@ impl OutprocTransportManager {
                 DestState::Connecting(_rx) => {
                     // 等待创建完成
                     log::debug!(
-                        "[OutprocTransportManager] Waiting for ongoing connection: {:?}",
+                        "[PeerTransport] Waiting for ongoing connection: {:?}",
                         dest
                     );
                     drop(entry); // 释放锁
@@ -104,7 +104,7 @@ impl OutprocTransportManager {
 
         // 2. 慢速路径：创建新连接
         log::info!(
-            "[OutprocTransportManager] Creating new connection for: {:?}",
+            "[PeerTransport] Creating new connection for: {:?}",
             dest
         );
 
@@ -130,7 +130,7 @@ impl OutprocTransportManager {
             // 实际的 WireHandle 稍后通过 inject_connection 注入。
             // DestTransport 的事件驱动发送循环会等待 ReadyWatcher。
             log::info!(
-                "[OutprocTransportManager] Creating DestTransport: {:?} ({} initial connections)",
+                "[PeerTransport] Creating DestTransport: {:?} ({} initial connections)",
                 dest,
                 connections.len()
             );
@@ -144,7 +144,7 @@ impl OutprocTransportManager {
         match result {
             Ok(transport) => {
                 log::info!(
-                    "[OutprocTransportManager] Connection established: {:?}",
+                    "[PeerTransport] Connection established: {:?}",
                     dest
                 );
                 self.transports
@@ -157,7 +157,7 @@ impl OutprocTransportManager {
             }
             Err(e) => {
                 log::error!(
-                    "[OutprocTransportManager] Connection failed: {:?}: {}",
+                    "[PeerTransport] Connection failed: {:?}: {}",
                     dest,
                     e
                 );
@@ -179,7 +179,7 @@ impl OutprocTransportManager {
     /// - `data`: 消息数据
     pub async fn send(&self, dest: &Dest, payload_type: PayloadType, data: &[u8]) -> WebResult<()> {
         log::debug!(
-            "[OutprocTransportManager] Sending to {:?}: type={:?}, size={}",
+            "[PeerTransport] Sending to {:?}: type={:?}, size={}",
             dest,
             payload_type,
             data.len()
@@ -201,14 +201,14 @@ impl OutprocTransportManager {
             match state {
                 DestState::Connected(transport) => {
                     log::info!(
-                        "[OutprocTransportManager] Closing DestTransport: {:?}",
+                        "[PeerTransport] Closing DestTransport: {:?}",
                         dest
                     );
                     transport.close().await?;
                 }
                 DestState::Connecting(_) => {
                     log::debug!(
-                        "[OutprocTransportManager] Removed Connecting state for: {:?}",
+                        "[PeerTransport] Removed Connecting state for: {:?}",
                         dest
                     );
                 }
@@ -221,7 +221,7 @@ impl OutprocTransportManager {
     /// 关闭所有 DestTransports
     pub async fn close_all(&self) -> WebResult<()> {
         log::info!(
-            "[OutprocTransportManager] Closing all DestTransports (count: {})",
+            "[PeerTransport] Closing all DestTransports (count: {})",
             self.transports.len()
         );
 
@@ -234,7 +234,7 @@ impl OutprocTransportManager {
         for dest in dests {
             if let Err(e) = self.close_transport(&dest).await {
                 log::warn!(
-                    "[OutprocTransportManager] Failed to close DestTransport {:?}: {}",
+                    "[PeerTransport] Failed to close DestTransport {:?}: {}",
                     dest,
                     e
                 );
@@ -286,16 +286,16 @@ impl OutprocTransportManager {
         let transport = self.get_or_create_transport(dest).await?;
         transport.wire_pool().add_connection(wire_handle);
         log::info!(
-            "[OutprocTransportManager] Injected connection into {:?}",
+            "[PeerTransport] Injected connection into {:?}",
             dest
         );
         Ok(())
     }
 }
 
-impl Drop for OutprocTransportManager {
+impl Drop for PeerTransport {
     fn drop(&mut self) {
-        log::debug!("[OutprocTransportManager] Dropped");
+        log::debug!("[PeerTransport] Dropped");
         // 注意：异步清理需要外部调用 close_all()
     }
 }

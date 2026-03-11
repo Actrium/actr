@@ -6,7 +6,7 @@
 
 实际上：
 - **入口**：分布在 SW 和 DOM
-- **出口控制**：在 SW（OutGate）
+- **出口控制**：在 SW（Gate）
 - **出口执行**：分布在 SW 和 DOM
 
 ## 📥 消息入口（INBOUND）
@@ -123,15 +123,15 @@ SW: Actor 内部
 SW: ctx.call(target_id, request)
    │ WebContext trait
    ↓
-SW: OutGate.send_request()
+SW: Gate.send_request()
    │
-   ├─ InprocOutGate (同 SW 内)
+   ├─ HostGate (同 SW 内)
    │    └─ 直接调用 handler
    │
-   └─ OutprocOutGate (跨节点)
+   └─ PeerGate (跨节点)
         │
         ↓
-     OutprocTransportManager
+     PeerTransport
         │
         ↓
      DestTransport
@@ -144,7 +144,7 @@ SW: OutGate.send_request()
 ```
 
 **位置**：
-- `crates/runtime-sw/src/outbound/mod.rs:1` - OutGate
+- `crates/runtime-sw/src/outbound/mod.rs:1` - Gate
 - `crates/runtime-sw/src/transport/outproc_transport_manager.rs:1`
 - `crates/runtime-sw/src/transport/dest_transport.rs:1`
 
@@ -153,7 +153,7 @@ SW: OutGate.send_request()
 #### 出口 A：WebSocket（SW 直接发送）
 
 ```
-SW: OutprocTransportManager
+SW: PeerTransport
    │
    ↓
 SW: DestTransport.send()
@@ -181,7 +181,7 @@ SW: DataLane::WebSocket.send()
 #### 出口 B：WebRTC（通过 MessagePort 桥接）
 
 ```
-SW: OutprocTransportManager
+SW: PeerTransport
    │
    ↓
 SW: DestTransport.send()
@@ -237,7 +237,7 @@ DOM: RtcDataChannel.send()
 **最佳方案**：WebSocket（SW → SW）
 
 ```
-发送: SW OutGate → WebSocket → 远程
+发送: SW Gate → WebSocket → 远程
 接收: 远程 → WebSocket → SW InboundDispatcher
 ```
 
@@ -292,7 +292,7 @@ DOM: RtcDataChannel.send()
 
 1. **统一管理**：
    - Actor 逻辑在 SW
-   - OutGate 在 SW
+   - Gate 在 SW
    - 路由决策在 SW
    - WirePool 优先级管理在 SW
 
@@ -322,7 +322,7 @@ DOM: RtcDataChannel.send()
    - WebRTC ❌ DOM only
 
 2. **出口控制在 SW，执行分布**
-   - 决策：SW（OutGate + WirePool）
+   - 决策：SW（Gate + WirePool）
    - WebSocket 发送：SW 直接
    - WebRTC 发送：SW 通过 MessagePort（DOM 后台转发）
 

@@ -41,7 +41,7 @@
 │        ↓            │                   │      │
 │ Actor (WebContext)  │                   │      │
 │        ↓            │                   │      │
-│ OutGate 发送 ───────┼───────────────────┘      │
+│ Gate 发送 ───────┼───────────────────┘      │
 │                     │                          │
 └─────────────────────┘                          │
                                                  │
@@ -104,9 +104,9 @@ SW │ Scheduler (串行化)
    ↓
 SW │ Actor.handle_call(ctx) (业务逻辑)
    ↓
-SW │ ctx.call() → OutGate
+SW │ ctx.call() → Gate
    ↓
-SW │ OutprocTransportManager
+SW │ PeerTransport
    ↓
 SW │ WebSocket.send() (RPC_RESPONSE)
    ↓

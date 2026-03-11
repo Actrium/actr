@@ -11,7 +11,7 @@
 //! ```text
 //! DOM → handle_dom_control → SERVICE_HANDLER (UnifiedDispatcher)
 //!     → local route: handler(route_key, payload, ctx) → response
-//!     → remote route: ctx.call_raw() → OutGate → WebRTC DataChannel
+//!     → remote route: ctx.call_raw() → Gate → WebRTC DataChannel
 //! ```
 //!
 //! ## 接收响应/请求（Remote → SW）
@@ -50,7 +50,7 @@ use web_sys::{BinaryType, CloseEvent, MessageEvent, MessagePort, WebSocket};
 
 use crate::context::RuntimeContext;
 use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
-use crate::outbound::OutGate;
+use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
 type StreamHandler = Rc<RefCell<Box<dyn FnMut(Bytes)>>>;
@@ -474,7 +474,7 @@ struct FastPathPayload {
 /// Distinguishes between DOM-originated and handler-internal pending RPCs.
 ///
 /// - `Dom`: response must be sent back to the DOM as a `control_response` message.
-/// - `Internal`: response is consumed by the InprocOutGate oneshot only (handler-initiated remote calls).
+/// - `Internal`: response is consumed by the HostGate oneshot only (handler-initiated remote calls).
 #[derive(Clone, Debug)]
 pub enum PendingRpcTarget {
     Dom,
@@ -1100,7 +1100,7 @@ impl SwRuntime {
     ///
     /// 按照文档 6.1 消息流：
     /// 远程响应 → handle_fast_path → handle_rpc_response → System.handle_remote_response
-    /// → InprocOutGate.handle_response → DOM 收到响应
+    /// → HostGate.handle_response → DOM 收到响应
     fn handle_rpc_response(&mut self, envelope: RpcEnvelope) -> Result<(), JsValue> {
         let request_id = envelope.request_id.clone();
 
@@ -1127,7 +1127,7 @@ impl SwRuntime {
             .unwrap_or_default();
 
         // 通过 System 处理响应
-        // 这将触发 InprocOutGate.handle_response()
+        // 这将触发 HostGate.handle_response()
         CLIENTS.with(|cell| {
             if let Some(ctx) = cell.borrow().get(&self.client_id) {
                 ctx.system
@@ -1168,7 +1168,7 @@ impl SwRuntime {
                 self.send_dom_message(&msg_js_value)?;
             }
             PendingRpcTarget::Internal => {
-                // Internal (handler-initiated) RPCs: response handled via System/InprocOutGate only
+                // Internal (handler-initiated) RPCs: response handled via System/HostGate only
                 log::debug!(
                     "[SW] Internal RPC response handled: request_id={}",
                     request_id
@@ -1807,7 +1807,7 @@ impl SwRuntime {
                     let _ = self.send_dom_message(&msg_js_value);
                 }
                 PendingRpcTarget::Internal => {
-                    // Internal RPCs: resolved via System/InprocOutGate error handling
+                    // Internal RPCs: resolved via System/HostGate error handling
                     CLIENTS.with(|cell| {
                         if let Some(ctx) = cell.borrow().get(&self.client_id) {
                             ctx.system.handle_remote_response(request_id, Bytes::new());
@@ -1982,21 +1982,21 @@ struct ClientContext {
     runtime: Rc<Mutex<SwRuntime>>,
     system: Rc<crate::System>,
     dispatcher: Rc<InboundPacketDispatcher>,
-    /// OutprocOutGate — 跨节点传输适配器
-    outproc_gate: Arc<crate::outbound::OutprocOutGate>,
-    /// OutprocTransportManager — 管理每个 Dest 的 DestTransport
-    transport_manager: Arc<crate::transport::OutprocTransportManager>,
+    /// PeerGate — 跨节点传输适配器
+    peer_gate: Arc<crate::outbound::PeerGate>,
+    /// PeerTransport — 管理每个 Dest 的 DestTransport
+    transport_manager: Arc<crate::transport::PeerTransport>,
     /// DataStream 回调注册表（每个浏览器 tab 独立）
     stream_handlers: Rc<RefCell<HashMap<String, StreamHandler>>>,
 }
 
 /// SwRuntimeBridge - RuntimeBridge 的实现
 ///
-/// 连接 RuntimeContext 和 SwRuntime / System / OutprocOutGate，
+/// 连接 RuntimeContext 和 SwRuntime / System / PeerGate，
 /// 为 handler 内的 `ctx.call_raw()` / `ctx.discover()` 提供底层能力。
 struct SwRuntimeBridge {
     runtime: Rc<Mutex<SwRuntime>>,
-    outproc_gate: Arc<crate::outbound::OutprocOutGate>,
+    peer_gate: Arc<crate::outbound::PeerGate>,
     client_id: String,
 }
 
@@ -2024,7 +2024,7 @@ impl RuntimeBridge for SwRuntimeBridge {
         let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
             actr_protocol::ActrError::Unavailable(format!("Failed to ensure peer: {:?}", e))
         })?;
-        self.outproc_gate
+        self.peer_gate
             .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));
         Ok(())
     }
@@ -2276,34 +2276,34 @@ pub async fn register_client(
                     is_tell
                 );
 
-                // Build RuntimeContext for the handler (server-side: uses OutprocOut for outbound)
-                // Look up system/outproc_gate from CLIENTS (initialized after scheduler setup)
+                // Build RuntimeContext for the handler (server-side: uses Peer gate for outbound)
+                // Look up system/peer_gate from CLIENTS (initialized after scheduler setup)
                 let (outgate, bridge) = CLIENTS.with(|cell| {
                     let map = cell.borrow();
                     if let Some(ctx) = map.get(&client_id) {
                         if let Some(caller_id) = caller_id.clone() {
-                            ctx.outproc_gate.register_actor(
+                            ctx.peer_gate.register_actor(
                                 caller_id,
                                 actr_web_common::Dest::Peer(peer_id.clone()),
                             );
                         }
                         let outgate = ctx.system.outgate().unwrap_or_else(|| {
-                            OutGate::inproc(Arc::clone(ctx.system.inproc_gate()))
+                            Gate::host(Arc::clone(ctx.system.host_gate()))
                         });
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
-                            outproc_gate: Arc::clone(&ctx.outproc_gate),
+                            peer_gate: Arc::clone(&ctx.peer_gate),
                             client_id: client_id.clone(),
                         });
                         (outgate, bridge)
                     } else {
-                        // Fallback: InprocOut with no bridge
+                        // Fallback: Host gate with no bridge
                         log::error!("[Scheduler] Client context not found for {}", client_id);
-                        let gate = OutGate::inproc(Arc::new(crate::outbound::InprocOutGate::new()));
+                        let gate = Gate::host(Arc::new(crate::outbound::HostGate::new()));
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
-                            outproc_gate: Arc::new(crate::outbound::OutprocOutGate::new(
-                                Arc::new(crate::transport::OutprocTransportManager::new(
+                            peer_gate: Arc::new(crate::outbound::PeerGate::new(
+                                Arc::new(crate::transport::PeerTransport::new(
                                     client_id.clone(),
                                     Arc::new(crate::transport::WebWireBuilder::new()),
                                 )),
@@ -2454,16 +2454,16 @@ pub async fn register_client(
         system.set_local_actor_id(actor_id);
     }
 
-    // 创建完整传输栈：OutprocOutGate → OutprocTransportManager → DestTransport → WirePool
+    // 创建完整传输栈：PeerGate → PeerTransport → DestTransport → WirePool
     let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-    let transport_manager = Arc::new(crate::transport::OutprocTransportManager::new(
+    let transport_manager = Arc::new(crate::transport::PeerTransport::new(
         client_id.clone(),
         wire_builder,
     ));
-    let outproc_gate = Arc::new(crate::outbound::OutprocOutGate::new(Arc::clone(
+    let peer_gate = Arc::new(crate::outbound::PeerGate::new(Arc::clone(
         &transport_manager,
     )));
-    system.set_outgate(crate::outbound::OutGate::outproc(Arc::clone(&outproc_gate)));
+    system.set_outgate(crate::outbound::Gate::peer(Arc::clone(&peer_gate)));
 
     system.init_message_handler();
 
@@ -2473,7 +2473,7 @@ pub async fn register_client(
         runtime: Rc::clone(&runtime),
         system: Rc::clone(&system),
         dispatcher: Rc::clone(&dispatcher),
-        outproc_gate: Arc::clone(&outproc_gate),
+        peer_gate: Arc::clone(&peer_gate),
         transport_manager: Arc::clone(&transport_manager),
         stream_handlers: Rc::new(RefCell::new(HashMap::new())),
     });
@@ -2611,7 +2611,7 @@ pub async fn unregister_client(client_id: String) {
 /// - 有 SERVICE_HANDLER: DOM → handler(route_key, payload, ctx) → response
 ///   - local route: handler 本地处理，可通过 ctx.call_raw() 调远程
 ///   - remote route: handler 通过 ctx.call_raw() 转发到远程 Actor
-/// - 无 SERVICE_HANDLER: DOM → InprocOutGate → OutGate → WebRTC（旧路径，向后兼容）
+/// - 无 SERVICE_HANDLER: DOM → HostGate → Gate → WebRTC（旧路径，向后兼容）
 #[wasm_bindgen]
 pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(), JsValue> {
     let call: DomRpcCall = serde_wasm_bindgen::from_value(payload)?;
@@ -2656,12 +2656,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             let rt = runtime.lock().await;
             rt.actor_id.clone().unwrap_or_default()
         };
-        // Use InprocOut OutGate so call_raw goes through:
-        // InprocOutGate → MessageHandler → OutGate::OutprocOut → WebRTC
-        let outgate = OutGate::inproc(Arc::clone(system.inproc_gate()));
+        // Use Host Gate so call_raw goes through:
+        // HostGate → MessageHandler → Gate::Peer → WebRTC
+        let outgate = Gate::host(Arc::clone(system.host_gate()));
         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
             runtime: Rc::clone(runtime),
-            outproc_gate: Arc::clone(&ctx.outproc_gate),
+            peer_gate: Arc::clone(&ctx.peer_gate),
             client_id: client_id.clone(),
         });
         let handler_ctx: Rc<RuntimeContext> = Rc::new(
@@ -2767,27 +2767,27 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
                 log::error!("[SW] Failed to ensure peer: {:?}", e);
                 e
             })?;
-            ctx.outproc_gate
+            ctx.peer_gate
                 .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));
             rt.pending_rpcs
                 .insert(request_id.clone(), PendingRpcTarget::Dom);
         }
 
-        // 通过 InprocOutGate 发送请求
-        let inproc_gate = Arc::clone(system.inproc_gate());
+        // 通过 HostGate 发送请求
+        let host_gate = Arc::clone(system.host_gate());
 
         wasm_bindgen_futures::spawn_local({
             let request_id = request_id.clone();
             async move {
-                match inproc_gate.send_request(&target_id, envelope).await {
+                match host_gate.send_request(&target_id, envelope).await {
                     Ok(_response) => {
                         log::info!(
-                            "[SW] InprocOutGate response received for request_id={}",
+                            "[SW] HostGate response received for request_id={}",
                             request_id
                         );
                     }
                     Err(e) => {
-                        log::error!("[SW] InprocOutGate send_request failed: {:?}", e);
+                        log::error!("[SW] HostGate send_request failed: {:?}", e);
                     }
                 }
             }
@@ -2857,7 +2857,7 @@ pub async fn register_datachannel_port(
     let wire_handle = crate::transport::WireHandle::WebRTC(rtc_conn);
     let dest = actr_web_common::Dest::Peer(peer_id.clone());
 
-    // 注入到 OutprocTransportManager 对应的 WirePool
+    // 注入到 PeerTransport 对应的 WirePool
     // 如果 DestTransport 尚不存在，会自动创建一个空的
     ctx.transport_manager
         .inject_connection(&dest, wire_handle)

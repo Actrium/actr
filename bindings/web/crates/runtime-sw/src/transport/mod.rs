@@ -7,7 +7,7 @@
 
 pub mod dest_transport;
 pub mod lane;
-pub mod outproc_transport_manager;
+pub mod peer_transport;
 pub mod postmessage;
 pub mod route_table;
 pub mod sw_transport;
@@ -19,7 +19,7 @@ pub mod wire_pool;
 
 pub use dest_transport::DestTransport;
 pub use lane::{DataLane, LaneResult, PortFailureNotifier};
-pub use outproc_transport_manager::OutprocTransportManager;
+pub use peer_transport::PeerTransport;
 pub use postmessage::PostMessageLaneBuilder;
 pub use route_table::{RouteEntry, RouteTable, RouteTableStats};
 pub use sw_transport::SwTransport;

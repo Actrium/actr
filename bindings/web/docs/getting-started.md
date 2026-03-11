@@ -168,7 +168,7 @@ pub async fn init_sw() -> Result<(), JsValue> {
 
     // 1. Transport (发送)
     let wire_builder = Arc::new(WebWireBuilder::new());
-    let manager = Arc::new(OutprocTransportManager::new(
+    let manager = Arc::new(PeerTransport::new(
         "sw-id",
         wire_builder.clone(),
     ));

@@ -34,7 +34,7 @@ pub use error_handler::{
 };
 pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcessor};
 pub use lifecycle::SwLifecycleManager;
-pub use outbound::{InprocOutGate, OutGate, OutprocOutGate};
+pub use outbound::{Gate, HostGate, PeerGate};
 pub use runtime::{
     ServiceHandlerFn, handle_dom_control, handle_dom_fast_path, handle_dom_webrtc_event,
     init_global, register_client, register_datachannel_port, register_service_handler,
@@ -42,7 +42,7 @@ pub use runtime::{
 };
 pub use system::System;
 pub use transport::{
-    DataLane, DestTransport, OutprocTransportManager, PostMessageLaneBuilder, SwTransport,
+    DataLane, DestTransport, PeerTransport, PostMessageLaneBuilder, SwTransport,
     WebSocketLaneBuilder, WebWireBuilder, WireBuilder, WireHandle, WirePool,
 };
 pub use web_context::RuntimeBridge; // 导出 RuntimeBridge trait

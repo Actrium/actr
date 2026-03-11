@@ -8,4 +8,7 @@ pub mod host;
 
 pub use abi::WasmActorConfig;
 pub use error::{WasmError, WasmResult};
-pub use host::{DispatchContext, IoResult, PendingCall, WasmHost, WasmInstance};
+pub use host::{WasmHost, WasmInstance};
+
+// Re-export shared executor types for backward compatibility
+pub use crate::executor::{DispatchContext, IoResult, PendingCall};

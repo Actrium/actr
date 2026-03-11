@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use actr_protocol::RpcEnvelope;
 use actr_hyper::lifecycle::{DefaultNetworkEventProcessor, NetworkEventProcessor};
-use actr_hyper::outbound::OutprocOutGate;
+use actr_hyper::outbound::PeerGate;
 use actr_hyper::transport::{
-    DefaultWireBuilder, DefaultWireBuilderConfig, OutprocTransportManager,
+    DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
 };
 use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 use tokio::sync::Barrier;
@@ -50,11 +50,11 @@ async fn test_request_fails_during_cleanup() {
         .await
         .unwrap();
 
-    // Create OutprocOutGate for testing
+    // Create PeerGate for testing
     let config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), config));
-    let transport_manager = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(OutprocOutGate::new(
+    let transport_manager = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
+    let gate_a = Arc::new(PeerGate::new(
         transport_manager.clone(),
         Some(coord_a.clone()),
     ));
@@ -297,11 +297,11 @@ async fn test_request_succeeds_after_cleanup() {
         .await
         .unwrap();
 
-    // Create OutprocOutGate
+    // Create PeerGate
     let config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), config));
-    let transport_manager = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(OutprocOutGate::new(
+    let transport_manager = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
+    let gate_a = Arc::new(PeerGate::new(
         transport_manager,
         Some(coord_a.clone()),
     ));
@@ -433,8 +433,8 @@ async fn test_dest_transport_cache_not_cleaned() {
     // Create components
     let config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), config));
-    let transport_manager = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(OutprocOutGate::new(
+    let transport_manager = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
+    let gate_a = Arc::new(PeerGate::new(
         transport_manager.clone(),
         Some(coord_a.clone()),
     ));
@@ -647,8 +647,8 @@ async fn test_precise_log_reproduction() {
     // Create components
     let config = DefaultWireBuilderConfig::default();
     let wire_builder = Arc::new(DefaultWireBuilder::new(Some(coord_a.clone()), config));
-    let transport_manager = Arc::new(OutprocTransportManager::new(id_a.clone(), wire_builder));
-    let gate_a = Arc::new(OutprocOutGate::new(
+    let transport_manager = Arc::new(PeerTransport::new(id_a.clone(), wire_builder));
+    let gate_a = Arc::new(PeerGate::new(
         transport_manager.clone(),
         Some(coord_a.clone()),
     ));
