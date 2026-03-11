@@ -24,6 +24,12 @@ pub struct Config {
     /// 所属 Realm (Security Realm)
     pub realm: Realm,
 
+    /// Realm secret for AIS registration (sent as X-Actrix-Realm-Secret header)
+    pub realm_secret: Option<String>,
+
+    /// AIS (Actor Identity Service) base URL, derived from signaling_url
+    pub ais_base_url: Url,
+
     /// 是否在服务发现中可见
     pub visible_in_discovery: bool,
 

@@ -69,6 +69,24 @@ impl ParserV1 {
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
 
+        // 7b. Derive AIS base URL from signaling URL
+        // ws://host:port/signaling/ws → http://host:port
+        // wss://host:port/signaling/ws → https://host:port
+        let ais_base_url = {
+            let scheme = match signaling_url.scheme() {
+                "wss" => "https",
+                _ => "http",
+            };
+            let host = signaling_url
+                .host_str()
+                .ok_or(ConfigError::MissingField("system.signaling.url host"))?;
+            let port = signaling_url.port().unwrap_or(80);
+            Url::parse(&format!("{scheme}://{host}:{port}")).map_err(ConfigError::InvalidUrl)?
+        };
+
+        // 7c. Extract realm_secret
+        let realm_secret = raw.system.deployment.realm_secret.clone();
+
         // 8. 解析 observability 配置
         let observability = self.parse_observability(&raw.system, &package);
 
@@ -94,6 +112,8 @@ impl ParserV1 {
             dependencies,
             signaling_url,
             realm: self_realm,
+            realm_secret,
+            ais_base_url,
             visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
             acl,
             mailbox_path: raw.system.storage.mailbox_path,
@@ -464,6 +484,10 @@ impl ParserV1 {
             },
             deployment: crate::raw::RawDeploymentConfig {
                 realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
+                realm_secret: child
+                    .deployment
+                    .realm_secret
+                    .or(parent.deployment.realm_secret),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),

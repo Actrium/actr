@@ -161,6 +161,9 @@
 // AIS signing 公钥缓存（按 key_id 索引，miss 时通过 signaling 拉取）
 pub mod ais_key_cache;
 
+// AIS HTTP registration client (replaces signaling-based registration)
+pub mod ais_registration;
+
 // Lifecycle management layer (not architectural layering)
 pub mod lifecycle;
 

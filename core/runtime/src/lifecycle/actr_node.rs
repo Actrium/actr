@@ -9,8 +9,7 @@ use actr_framework::{Bytes, Workload};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RegisterRequest,
-    RouteCandidatesRequest, RpcEnvelope, TurnCredential, register_response,
-    route_candidates_request,
+    RouteCandidatesRequest, RpcEnvelope, TurnCredential, route_candidates_request,
 };
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
@@ -954,14 +953,8 @@ impl<W: Workload> ActrNode<W> {
         let hook_cb = self.build_hook_callback(hook_ctx_deps.clone());
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 1. Connect to signaling server and register
+        // 1. Register via AIS HTTP, then connect to signaling
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        tracing::info!("📡 Connecting to signaling server");
-        self.signaling_client
-            .connect()
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Signaling connect failed: {e}")))?;
-        tracing::info!("✅ Connected to signaling server");
 
         // Get ActrType from configuration
         let actr_type = self.config.actr_type().clone();
@@ -1006,455 +999,431 @@ impl<W: Workload> ActrNode<W> {
             ws_address,
         };
 
-        tracing::info!("📤 Registering actor with signaling server (protobuf)");
+        // Phase 1: Register via AIS HTTP endpoint (with retry for transient failures)
+        tracing::info!("📤 Registering actor via AIS HTTP endpoint");
+        let register_ok = crate::ais_registration::register_with_ais_retry(
+            &self.config.ais_base_url,
+            &register_request,
+            self.config.realm_secret.as_deref(),
+            5, // max attempts
+        )
+        .await
+        .map_err(|e| ActrError::Unavailable(format!("AIS registration failed: {e}")))?;
 
-        // Use send_register_request to send and wait for response
-        let register_response = self
-            .signaling_client
-            .send_register_request(register_request.clone())
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Actor registration failed: {e}")))?;
-
-        // Handle RegisterResponse oneof result
+        // Handle RegisterOk result
         //
         // Collect background task handles (including unregister task) so they can be managed
         // by ActrRefShared later.
         let mut task_handles = Vec::new();
 
-        match register_response.result {
-            Some(register_response::Result::Success(register_ok)) => {
-                let actor_id = register_ok.actr_id;
-                let credential = register_ok.credential;
+        {
+            let actor_id = register_ok.actr_id.clone();
+            let credential = register_ok.credential.clone();
 
-                tracing::info!("✅ Registration successful");
-                tracing::info!(
-                    "🆔 Assigned ActrId: {}",
-                    actr_protocol::ActrIdExt::to_string_repr(&actor_id)
-                );
-                tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
-                tracing::info!(
-                    "💓 Signaling heartbeat interval: {} seconds",
-                    register_ok.signaling_heartbeat_interval_secs
-                );
+            tracing::info!("✅ Registration successful");
+            tracing::info!(
+                "🆔 Assigned ActrId: {}",
+                actr_protocol::ActrIdExt::to_string_repr(&actor_id)
+            );
+            tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
+            tracing::info!(
+                "💓 Signaling heartbeat interval: {} seconds",
+                register_ok.signaling_heartbeat_interval_secs
+            );
 
-                // 记录附加信息：TurnCredential 为 required 字段，正常情况下一定存在
-                tracing::debug!("🔑 收到 TurnCredential，TURN 认证就绪");
+            // 记录附加信息：TurnCredential 为 required 字段，正常情况下一定存在
+            tracing::debug!("🔑 收到 TurnCredential，TURN 认证就绪");
 
-                if let Some(expires_at) = &register_ok.credential_expires_at {
-                    tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
-                }
+            if let Some(expires_at) = &register_ok.credential_expires_at {
+                tracing::debug!("⏰ Credential expires at: {}s", expires_at.seconds);
+            }
 
-                // 存储 ActrId 与凭证状态
-                self.actor_id = Some(actor_id.clone());
-                let credential_state = CredentialState::new(
-                    credential,
-                    register_ok.credential_expires_at,
-                    Some(register_ok.turn_credential.clone()),
-                );
-                self.credential_state = Some(credential_state.clone());
+            // 存储 ActrId 与凭证状态
+            self.actor_id = Some(actor_id.clone());
+            let credential_state = CredentialState::new(
+                credential,
+                register_ok.credential_expires_at.clone(),
+                Some(register_ok.turn_credential.clone()),
+            );
+            self.credential_state = Some(credential_state.clone());
 
-                // 将身份信息传递给 signaling client，使后续重连 URL 携带正确的认证信息
-                self.signaling_client.set_actor_id(actor_id.clone()).await;
-                self.signaling_client
-                    .set_credential_state(credential_state.clone())
-                    .await;
+            // Phase 2: Set identity on signaling client, then connect
+            // The signaling server requires credential in URL params for WebSocket auth
+            self.signaling_client.set_actor_id(actor_id.clone()).await;
+            self.signaling_client
+                .set_credential_state(credential_state.clone())
+                .await;
 
-                // Populate hook callback ctx dependencies now that we have actor_id + credential.
-                // After this, all hook invocations will receive Some(ctx) instead of None.
-                let _ = hook_ctx_deps.set((
-                    self.context_factory
-                        .clone()
-                        .expect("ContextFactory must exist"),
-                    actor_id.clone(),
-                    credential_state.clone(),
-                ));
+            tracing::info!("📡 Connecting to signaling server (with credential in URL)");
+            self.signaling_client
+                .connect()
+                .await
+                .map_err(|e| ActrError::Unavailable(format!("Signaling connect failed: {e}")))?;
+            tracing::info!("✅ Connected to signaling server");
 
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let Some(actr_lock) = self.actr_lock.clone() {
-                    self.context_factory
-                        .as_mut()
-                        .expect("ContextFactory must exist")
-                        .set_actr_lock(actr_lock);
-                    tracing::info!(
-                        "✅ Actr.lock.toml set in ContextFactory for fingerprint lookups"
-                    );
-                }
+            // Populate hook callback ctx dependencies now that we have actor_id + credential.
+            // After this, all hook invocations will receive Some(ctx) instead of None.
+            let _ = hook_ctx_deps.set((
+                self.context_factory
+                    .clone()
+                    .expect("ContextFactory must exist"),
+                actor_id.clone(),
+                credential_state.clone(),
+            ));
 
-                // Persist identity into ContextFactory for later Context creation
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                let shell_to_workload = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .shell_to_workload();
-                let workload_to_shell = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .workload_to_shell();
-                self.inproc_mgr = Some(shell_to_workload); // Workload receives from this
-                self.workload_to_shell_mgr = Some(workload_to_shell); // Workload sends to this
-
-                tracing::info!(
-                    "✅ Inproc infrastructure already ready (created in ActrSystem::new())"
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.5. Create WebRTC infrastructure
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🌐 Initializing WebRTC infrastructure");
-
-                // Get MediaFrameRegistry from ContextFactory
-                let media_frame_registry = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .media_frame_registry
-                    .clone();
-
-                // 创建 WebRtcCoordinator
-                let coordinator =
-                    Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
-                        actor_id.clone(),
-                        credential_state.clone(),
-                        self.signaling_client.clone(),
-                        self.config.webrtc.clone(),
-                        media_frame_registry,
-                    ));
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.6. Create OutprocTransportManager + OutprocOutGate (新架构)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🏗️  Creating OutprocTransportManager with WebRTC support");
-
-                // Create DefaultWireBuilder with WebRTC coordinator
-                use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
-                // WebSocket 通道始终启用：连接目标的 ws:// 地址完全由服务发现
-                // 直连模式：将本地节点 ActrId 编码为 hex，在 WS 握手请求中作为 X-Actr-Source-ID 发送
-                let local_id_hex = hex::encode(actor_id.encode_to_vec());
-                let wire_builder_config = DefaultWireBuilderConfig {
-                    local_id_hex,
-                    enable_webrtc: true,
-                    enable_websocket: true,
-                    // Share the discovered_ws_addresses map so that post-discovery connections
-                    // can use the signaling-provided ws:// URL for this actor node.
-                    discovered_ws_addresses: self.discovered_ws_addresses.clone(),
-                    // 传递 credential_state，使出站 WS 握手携带 X-Actr-Credential 头，
-                    // 供对端 WebSocketGate 进行 Ed25519 签名验证
-                    credential_state: Some(credential_state.clone()),
-                };
-                let wire_builder = Arc::new(DefaultWireBuilder::new(
-                    Some(coordinator.clone()),
-                    wire_builder_config,
-                ));
-
-                // Create OutprocTransportManager
-                use crate::transport::OutprocTransportManager;
-                let transport_manager =
-                    Arc::new(OutprocTransportManager::new(actor_id.clone(), wire_builder));
-
-                // Create OutprocOutGate with WebRTC coordinator for MediaTrack support
-                use crate::outbound::{OutGate, OutprocOutGate};
-                let outproc_gate = Arc::new(OutprocOutGate::new(
-                    transport_manager,
-                    Some(coordinator.clone()), // Enable MediaTrack support
-                ));
-                let outproc_gate_enum = OutGate::OutprocOut(outproc_gate.clone());
-
-                tracing::info!("✅ OutprocTransportManager + OutprocOutGate initialized");
-
-                // Get DataStreamRegistry from ContextFactory
-                let data_stream_registry = self
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must exist")
-                    .data_stream_registry
-                    .clone();
-
-                // Create WebRtcGate with shared pending_requests and DataStreamRegistry
-                let pending_requests = outproc_gate.get_pending_requests();
-                let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
-                    coordinator.clone(),
-                    pending_requests,
-                    data_stream_registry.clone(),
-                ));
-
-                // Set local_id
-                gate.set_local_id(actor_id.clone()).await;
-
-                tracing::info!(
-                    "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7. Set outproc_gate in ContextFactory (completing initialization)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                tracing::info!("🔧 Setting outproc_gate in ContextFactory");
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let Some(actr_lock) = self.actr_lock.clone() {
                 self.context_factory
                     .as_mut()
                     .expect("ContextFactory must exist")
-                    .set_outproc_gate(outproc_gate_enum);
+                    .set_actr_lock(actr_lock);
+                tracing::info!("✅ Actr.lock.toml set in ContextFactory for fingerprint lookups");
+            }
 
+            // Persist identity into ContextFactory for later Context creation
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            let shell_to_workload = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .shell_to_workload();
+            let workload_to_shell = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .workload_to_shell();
+            self.inproc_mgr = Some(shell_to_workload); // Workload receives from this
+            self.workload_to_shell_mgr = Some(workload_to_shell); // Workload sends to this
+
+            tracing::info!("✅ Inproc infrastructure already ready (created in ActrSystem::new())");
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.5. Create WebRTC infrastructure
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🌐 Initializing WebRTC infrastructure");
+
+            // Get MediaFrameRegistry from ContextFactory
+            let media_frame_registry = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .media_frame_registry
+                .clone();
+
+            // 创建 WebRtcCoordinator
+            let coordinator = Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
+                actor_id.clone(),
+                credential_state.clone(),
+                self.signaling_client.clone(),
+                self.config.webrtc.clone(),
+                media_frame_registry,
+            ));
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.6. Create OutprocTransportManager + OutprocOutGate (新架构)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🏗️  Creating OutprocTransportManager with WebRTC support");
+
+            // Create DefaultWireBuilder with WebRTC coordinator
+            use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
+            // WebSocket 通道始终启用：连接目标的 ws:// 地址完全由服务发现
+            // 直连模式：将本地节点 ActrId 编码为 hex，在 WS 握手请求中作为 X-Actr-Source-ID 发送
+            let local_id_hex = hex::encode(actor_id.encode_to_vec());
+            let wire_builder_config = DefaultWireBuilderConfig {
+                local_id_hex,
+                enable_webrtc: true,
+                enable_websocket: true,
+                // Share the discovered_ws_addresses map so that post-discovery connections
+                // can use the signaling-provided ws:// URL for this actor node.
+                discovered_ws_addresses: self.discovered_ws_addresses.clone(),
+                // 传递 credential_state，使出站 WS 握手携带 X-Actr-Credential 头，
+                // 供对端 WebSocketGate 进行 Ed25519 签名验证
+                credential_state: Some(credential_state.clone()),
+            };
+            let wire_builder = Arc::new(DefaultWireBuilder::new(
+                Some(coordinator.clone()),
+                wire_builder_config,
+            ));
+
+            // Create OutprocTransportManager
+            use crate::transport::OutprocTransportManager;
+            let transport_manager =
+                Arc::new(OutprocTransportManager::new(actor_id.clone(), wire_builder));
+
+            // Create OutprocOutGate with WebRTC coordinator for MediaTrack support
+            use crate::outbound::{OutGate, OutprocOutGate};
+            let outproc_gate = Arc::new(OutprocOutGate::new(
+                transport_manager,
+                Some(coordinator.clone()), // Enable MediaTrack support
+            ));
+            let outproc_gate_enum = OutGate::OutprocOut(outproc_gate.clone());
+
+            tracing::info!("✅ OutprocTransportManager + OutprocOutGate initialized");
+
+            // Get DataStreamRegistry from ContextFactory
+            let data_stream_registry = self
+                .context_factory
+                .as_ref()
+                .expect("ContextFactory must exist")
+                .data_stream_registry
+                .clone();
+
+            // Create WebRtcGate with shared pending_requests and DataStreamRegistry
+            let pending_requests = outproc_gate.get_pending_requests();
+            let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
+                coordinator.clone(),
+                pending_requests,
+                data_stream_registry.clone(),
+            ));
+
+            // Set local_id
+            gate.set_local_id(actor_id.clone()).await;
+
+            tracing::info!(
+                "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
+            );
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7. Set outproc_gate in ContextFactory (completing initialization)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            tracing::info!("🔧 Setting outproc_gate in ContextFactory");
+            self.context_factory
+                .as_mut()
+                .expect("ContextFactory must exist")
+                .set_outproc_gate(outproc_gate_enum);
+
+            tracing::info!("✅ ContextFactory fully initialized (inproc + outproc gates ready)");
+
+            // Save references (WebRtcGate kept for backward compatibility if needed)
+            self.webrtc_coordinator = Some(coordinator.clone());
+            self.webrtc_gate = Some(gate.clone());
+
+            tracing::info!("✅ WebRTC infrastructure initialized");
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7.6. WebSocket Server（直连模式，可选）
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let Some(listen_port) = self.config.websocket_listen_port {
                 tracing::info!(
-                    "✅ ContextFactory fully initialized (inproc + outproc gates ready)"
+                    "🔌 WebSocket direct-connect mode enabled, binding port {}",
+                    listen_port
                 );
+                use crate::ais_key_cache::AisKeyCache;
+                use crate::wire::websocket::gate::WsAuthContext;
+                use crate::wire::websocket::{WebSocketGate, WebSocketServer};
 
-                // Save references (WebRtcGate kept for backward compatibility if needed)
-                self.webrtc_coordinator = Some(coordinator.clone());
-                self.webrtc_gate = Some(gate.clone());
-
-                tracing::info!("✅ WebRTC infrastructure initialized");
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7.6. WebSocket Server（直连模式，可选）
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let Some(listen_port) = self.config.websocket_listen_port {
-                    tracing::info!(
-                        "🔌 WebSocket direct-connect mode enabled, binding port {}",
-                        listen_port
+                // 构建 AisKeyCache，并用注册响应中的 signing key 进行初始化
+                let ais_key_cache = AisKeyCache::new();
+                if !register_ok.signing_pubkey.is_empty() {
+                    match ais_key_cache
+                        .seed(register_ok.signing_key_id, &register_ok.signing_pubkey)
+                        .await
+                    {
+                        Ok(()) => tracing::info!(
+                            key_id = register_ok.signing_key_id,
+                            "🔑 AisKeyCache seeded from RegisterOk"
+                        ),
+                        Err(e) => tracing::warn!(
+                            key_id = register_ok.signing_key_id,
+                            error = ?e,
+                            "⚠️ AisKeyCache seed 失败，WebSocket 连接将拒绝所有入站"
+                        ),
+                    }
+                } else {
+                    tracing::warn!(
+                        "⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级"
                     );
-                    use crate::ais_key_cache::AisKeyCache;
-                    use crate::wire::websocket::gate::WsAuthContext;
-                    use crate::wire::websocket::{WebSocketGate, WebSocketServer};
+                }
 
-                    // 构建 AisKeyCache，并用注册响应中的 signing key 进行初始化
-                    let ais_key_cache = AisKeyCache::new();
-                    if !register_ok.signing_pubkey.is_empty() {
-                        match ais_key_cache
-                            .seed(register_ok.signing_key_id, &register_ok.signing_pubkey)
-                            .await
-                        {
-                            Ok(()) => tracing::info!(
-                                key_id = register_ok.signing_key_id,
-                                "🔑 AisKeyCache seeded from RegisterOk"
-                            ),
-                            Err(e) => tracing::warn!(
-                                key_id = register_ok.signing_key_id,
-                                error = ?e,
-                                "⚠️ AisKeyCache seed 失败，WebSocket 连接将拒绝所有入站"
-                            ),
+                let auth_ctx = WsAuthContext {
+                    ais_key_cache,
+                    actor_id: actor_id.clone(),
+                    credential_state: credential_state.clone(),
+                    signaling_client: self.signaling_client.clone(),
+                };
+
+                match WebSocketServer::bind(listen_port).await {
+                    Ok((ws_server, conn_rx)) => {
+                        ws_server.start(self.shutdown_token.clone());
+                        let ws_gate = Arc::new(WebSocketGate::new(
+                            conn_rx,
+                            outproc_gate.get_pending_requests(),
+                            data_stream_registry.clone(),
+                            Some(auth_ctx),
+                        ));
+                        self.websocket_gate = Some(ws_gate);
+                        tracing::info!(
+                            "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "❌ Failed to bind WebSocket server on port {}: {:?}",
+                            listen_port,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7.5. Create shared state for credential management
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // Shared credential state initialized above; reused across tasks
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            {
+                let shutdown = self.shutdown_token.clone();
+                let client = self.signaling_client.clone();
+                let actor_id_for_heartbeat = actor_id.clone();
+                let credential_state_for_heartbeat = credential_state.clone();
+                let mailbox_for_heartbeat = self.mailbox.clone();
+                let register_request_for_heartbeat = register_request.clone();
+
+                // Use interval from registration response, default to 30s
+                let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
+                let heartbeat_interval = if heartbeat_interval_secs > 0 {
+                    Duration::from_secs(heartbeat_interval_secs as u64)
+                } else {
+                    Duration::from_secs(30)
+                };
+
+                let heartbeat_handle = tokio::spawn(heartbeat_task(
+                    shutdown,
+                    client,
+                    actor_id_for_heartbeat,
+                    credential_state_for_heartbeat,
+                    mailbox_for_heartbeat,
+                    heartbeat_interval,
+                    register_request_for_heartbeat,
+                    self.config.ais_base_url.clone(),
+                    self.config.realm_secret.clone(),
+                ));
+
+                task_handles.push(heartbeat_handle);
+            }
+            tracing::info!(
+                "✅ Heartbeat task started (interval: {}s)",
+                register_ok.signaling_heartbeat_interval_secs
+            );
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.8.5. Spawn network event processing loop
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if let (Some(event_rx), Some(result_tx)) = (
+                self.network_event_rx.take(),
+                self.network_event_result_tx.take(),
+            ) {
+                use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
+
+                // 创建 DefaultNetworkEventProcessor
+                // 如果有防抖配置，使用 new_with_debounce
+                let event_processor =
+                    if let Some(config) = self.network_event_debounce_config.clone() {
+                        Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+                            self.signaling_client.clone(),
+                            self.webrtc_coordinator.clone(),
+                            config,
+                        ))
+                    } else {
+                        Arc::new(DefaultNetworkEventProcessor::new(
+                            self.signaling_client.clone(),
+                            self.webrtc_coordinator.clone(),
+                        ))
+                    };
+
+                let shutdown = self.shutdown_token.clone();
+
+                let network_event_handle = tokio::spawn(async move {
+                    Self::network_event_loop(event_rx, result_tx, event_processor, shutdown).await;
+                });
+
+                task_handles.push(network_event_handle);
+                tracing::info!("✅ Network event loop started");
+            }
+
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            //
+            // This task:
+            // - Waits for shutdown_token to be cancelled (e.g., wait_for_ctrl_c_and_shutdown)
+            // - Then sends UnregisterRequest via signaling client with a timeout
+            //
+            // NOTE: we push its JoinHandle into task_handles so it can be aborted
+            // by ActrRefShared::Drop if needed.
+            {
+                let shutdown = self.shutdown_token.clone();
+                let client = self.signaling_client.clone();
+                let actor_id_for_unreg = actor_id.clone();
+                let credential_state_for_unreg = credential_state.clone();
+                let webrtc_coordinator = self.webrtc_coordinator.clone();
+
+                let unregister_handle = tokio::spawn(async move {
+                    // Wait for shutdown signal
+                    shutdown.cancelled().await;
+                    tracing::info!(
+                        "📡 Shutdown signal received2, sending UnregisterRequest for Actor {:?}",
+                        actor_id_for_unreg
+                    );
+
+                    // 1. 先关闭所有 WebRTC peer 连接（如果存在）
+                    if let Some(coord) = webrtc_coordinator {
+                        if let Err(e) = coord.close_all_peers().await {
+                            tracing::warn!(
+                                "⚠️ Failed to close all WebRTC peers before UnregisterRequest: {}",
+                                e
+                            );
+                        } else {
+                            tracing::info!("✅ All WebRTC peers closed before UnregisterRequest");
                         }
                     } else {
-                        tracing::warn!(
-                            "⚠️ RegisterOk 未携带 signing_pubkey，WebSocket credential 验签将降级"
+                        tracing::debug!(
+                            "WebRTC coordinator not found before UnregisterRequest (no WebRTC?)"
                         );
                     }
 
-                    let auth_ctx = WsAuthContext {
-                        ais_key_cache,
-                        actor_id: actor_id.clone(),
-                        credential_state: credential_state.clone(),
-                        signaling_client: self.signaling_client.clone(),
-                    };
-
-                    match WebSocketServer::bind(listen_port).await {
-                        Ok((ws_server, conn_rx)) => {
-                            ws_server.start(self.shutdown_token.clone());
-                            let ws_gate = Arc::new(WebSocketGate::new(
-                                conn_rx,
-                                outproc_gate.get_pending_requests(),
-                                data_stream_registry.clone(),
-                                Some(auth_ctx),
-                            ));
-                            self.websocket_gate = Some(ws_gate);
+                    // 2. 再发送 UnregisterRequest，设置一个超时（例如 5 秒）
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        client.send_unregister_request(
+                            actor_id_for_unreg.clone(),
+                            credential_state_for_unreg.credential().await,
+                            Some("Graceful shutdown".to_string()),
+                        ),
+                    )
+                    .await;
+                    tracing::info!("UnregisterRequest result: {:?}", result);
+                    match result {
+                        Ok(Ok(_)) => {
                             tracing::info!(
-                                "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
+                                "✅ UnregisterRequest sent to signaling server for Actor {:?}",
+                                actor_id_for_unreg
                             );
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                "❌ Failed to bind WebSocket server on port {}: {:?}",
-                                listen_port,
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "⚠️ Failed to send UnregisterRequest for Actor {:?}: {}",
+                                actor_id_for_unreg,
                                 e
                             );
                         }
-                    }
-                }
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.7.5. Create shared state for credential management
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // Shared credential state initialized above; reused across tasks
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8. Spawn heartbeat task (periodic Ping to signaling server)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                {
-                    let shutdown = self.shutdown_token.clone();
-                    let client = self.signaling_client.clone();
-                    let actor_id_for_heartbeat = actor_id.clone();
-                    let credential_state_for_heartbeat = credential_state.clone();
-                    let mailbox_for_heartbeat = self.mailbox.clone();
-                    let register_request_for_heartbeat = register_request.clone();
-
-                    // Use interval from registration response, default to 30s
-                    let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
-                    let heartbeat_interval = if heartbeat_interval_secs > 0 {
-                        Duration::from_secs(heartbeat_interval_secs as u64)
-                    } else {
-                        Duration::from_secs(30)
-                    };
-
-                    let heartbeat_handle = tokio::spawn(heartbeat_task(
-                        shutdown,
-                        client,
-                        actor_id_for_heartbeat,
-                        credential_state_for_heartbeat,
-                        mailbox_for_heartbeat,
-                        heartbeat_interval,
-                        register_request_for_heartbeat,
-                    ));
-
-                    task_handles.push(heartbeat_handle);
-                }
-                tracing::info!(
-                    "✅ Heartbeat task started (interval: {}s)",
-                    register_ok.signaling_heartbeat_interval_secs
-                );
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.8.5. Spawn network event processing loop
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                if let (Some(event_rx), Some(result_tx)) = (
-                    self.network_event_rx.take(),
-                    self.network_event_result_tx.take(),
-                ) {
-                    use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
-
-                    // 创建 DefaultNetworkEventProcessor
-                    // 如果有防抖配置，使用 new_with_debounce
-                    let event_processor =
-                        if let Some(config) = self.network_event_debounce_config.clone() {
-                            Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-                                self.signaling_client.clone(),
-                                self.webrtc_coordinator.clone(),
-                                config,
-                            ))
-                        } else {
-                            Arc::new(DefaultNetworkEventProcessor::new(
-                                self.signaling_client.clone(),
-                                self.webrtc_coordinator.clone(),
-                            ))
-                        };
-
-                    let shutdown = self.shutdown_token.clone();
-
-                    let network_event_handle = tokio::spawn(async move {
-                        Self::network_event_loop(event_rx, result_tx, event_processor, shutdown)
-                            .await;
-                    });
-
-                    task_handles.push(network_event_handle);
-                    tracing::info!("✅ Network event loop started");
-                }
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                //
-                // This task:
-                // - Waits for shutdown_token to be cancelled (e.g., wait_for_ctrl_c_and_shutdown)
-                // - Then sends UnregisterRequest via signaling client with a timeout
-                //
-                // NOTE: we push its JoinHandle into task_handles so it can be aborted
-                // by ActrRefShared::Drop if needed.
-                {
-                    let shutdown = self.shutdown_token.clone();
-                    let client = self.signaling_client.clone();
-                    let actor_id_for_unreg = actor_id.clone();
-                    let credential_state_for_unreg = credential_state.clone();
-                    let webrtc_coordinator = self.webrtc_coordinator.clone();
-
-                    let unregister_handle = tokio::spawn(async move {
-                        // Wait for shutdown signal
-                        shutdown.cancelled().await;
-                        tracing::info!(
-                            "📡 Shutdown signal received2, sending UnregisterRequest for Actor {:?}",
-                            actor_id_for_unreg
-                        );
-
-                        // 1. 先关闭所有 WebRTC peer 连接（如果存在）
-                        if let Some(coord) = webrtc_coordinator {
-                            if let Err(e) = coord.close_all_peers().await {
-                                tracing::warn!(
-                                    "⚠️ Failed to close all WebRTC peers before UnregisterRequest: {}",
-                                    e
-                                );
-                            } else {
-                                tracing::info!(
-                                    "✅ All WebRTC peers closed before UnregisterRequest"
-                                );
-                            }
-                        } else {
-                            tracing::debug!(
-                                "WebRTC coordinator not found before UnregisterRequest (no WebRTC?)"
+                        Err(_) => {
+                            tracing::warn!(
+                                "⚠️ UnregisterRequest timeout (5s) for Actor {:?}",
+                                actor_id_for_unreg
                             );
                         }
+                    }
+                });
 
-                        // 2. 再发送 UnregisterRequest，设置一个超时（例如 5 秒）
-                        let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            client.send_unregister_request(
-                                actor_id_for_unreg.clone(),
-                                credential_state_for_unreg.credential().await,
-                                Some("Graceful shutdown".to_string()),
-                            ),
-                        )
-                        .await;
-                        tracing::info!("UnregisterRequest result: {:?}", result);
-                        match result {
-                            Ok(Ok(_)) => {
-                                tracing::info!(
-                                    "✅ UnregisterRequest sent to signaling server for Actor {:?}",
-                                    actor_id_for_unreg
-                                );
-                            }
-                            Ok(Err(e)) => {
-                                tracing::warn!(
-                                    "⚠️ Failed to send UnregisterRequest for Actor {:?}: {}",
-                                    actor_id_for_unreg,
-                                    e
-                                );
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    "⚠️ UnregisterRequest timeout (5s) for Actor {:?}",
-                                    actor_id_for_unreg
-                                );
-                            }
-                        }
-                    });
-
-                    task_handles.push(unregister_handle);
-                }
-            }
-            Some(register_response::Result::Error(error)) => {
-                tracing::error!(
-                    severity = 10,
-                    error_category = "registration_error",
-                    error_code = error.code,
-                    "❌ Registration failed: code={}, message={}",
-                    error.code,
-                    error.message
-                );
-                return Err(ActrError::Unavailable(format!(
-                    "Registration rejected: {} (code: {})",
-                    error.message, error.code
-                )));
-            }
-            None => {
-                tracing::error!(
-                    severity = 10,
-                    error_category = "registration_error",
-                    "❌ Registration response missing result"
-                );
-                return Err(ActrError::Unavailable(
-                    "Invalid registration response: missing result".to_string(),
-                ));
+                task_handles.push(unregister_handle);
             }
         }
 

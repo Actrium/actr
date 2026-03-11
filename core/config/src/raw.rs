@@ -161,6 +161,10 @@ pub struct RawSignalingConfig {
 pub struct RawDeploymentConfig {
     #[serde(default)]
     pub realm_id: Option<u32>,
+
+    /// Realm secret for AIS registration (sent as X-Actrix-Realm-Secret header)
+    #[serde(default)]
+    pub realm_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

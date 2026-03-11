@@ -11,6 +11,7 @@ use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 /// Typical mailbox capacity for backlog ratio calculation
 /// A typical_capacity of 1000 means 100 messages = 10% backlog
@@ -79,6 +80,8 @@ async fn get_power_reserve_and_availability(
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats (used for timeout calculation)
 /// * `register_request` - RegisterRequest for re-registration on credential expiry
+/// * `ais_base_url` - AIS base URL for HTTP registration
+/// * `realm_secret` - Optional realm secret for AIS registration
 ///
 /// Returns `Some(new_actor_id)` when re-registration assigns a new ActrId,
 /// so the caller can update its loop variable for subsequent heartbeats.
@@ -89,6 +92,8 @@ async fn send_heartbeat_and_handle_response(
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: &RegisterRequest,
+    ais_base_url: &Url,
+    realm_secret: Option<&str>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -123,6 +128,8 @@ async fn send_heartbeat_and_handle_response(
                 actor_id.clone(),
                 register_request.clone(),
                 credential_state.clone(),
+                ais_base_url.clone(),
+                realm_secret.map(str::to_owned),
             )
             .await;
 
@@ -158,11 +165,17 @@ async fn send_heartbeat_and_handle_response(
             warning.message
         );
 
-        // Trigger immediate credential refresh in a spawned task
+        // Trigger immediate credential refresh via AIS HTTP in a spawned task
+        let ais_url = ais_base_url.clone();
+        let secret = realm_secret.map(str::to_owned);
+        let req = register_request.clone();
         tokio::spawn(credential_refresh_task(
             client.clone(),
             actor_id.clone(),
             credential_state.clone(),
+            ais_url,
+            secret,
+            req,
         ));
     }
     None
@@ -182,6 +195,8 @@ async fn send_heartbeat_and_handle_response(
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats
 /// * `register_request` - RegisterRequest for re-registration on credential expiry
+/// * `ais_base_url` - AIS base URL for HTTP registration
+/// * `realm_secret` - Optional realm secret for AIS registration
 pub async fn heartbeat_task(
     shutdown: CancellationToken,
     client: Arc<dyn SignalingClient>,
@@ -190,6 +205,8 @@ pub async fn heartbeat_task(
     mailbox: Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: RegisterRequest,
+    ais_base_url: Url,
+    realm_secret: Option<String>,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -208,6 +225,8 @@ pub async fn heartbeat_task(
                     &mailbox,
                     heartbeat_interval,
                     &register_request,
+                    &ais_base_url,
+                    realm_secret.as_deref(),
                 )
                 .await {
                     tracing::info!(
@@ -223,173 +242,146 @@ pub async fn heartbeat_task(
     tracing::info!("✅ Heartbeat task terminated gracefully");
 }
 
-/// Refresh credential for an actor
+/// Refresh credential for an actor via AIS HTTP endpoint
 ///
-/// This function sends a credential update request to the signaling server
-/// and updates the shared credential state upon success.
+/// This function re-registers via AIS HTTP to obtain a fresh credential.
+/// The signaling WebSocket connection remains intact (credential is still valid,
+/// just nearing expiry).
 ///
 /// # Arguments
-/// * `client` - Signaling client for sending credential update request
+/// * `client` - Signaling client for updating credential state
 /// * `actor_id` - Actor ID for the credential update
 /// * `credential_state` - Shared credential state to update
+/// * `ais_base_url` - AIS base URL for HTTP registration
+/// * `realm_secret` - Optional realm secret
+/// * `register_request` - RegisterRequest for re-registration
 async fn credential_refresh_task(
     client: Arc<dyn SignalingClient>,
     actor_id: ActrId,
     credential_state: CredentialState,
+    ais_base_url: Url,
+    realm_secret: Option<String>,
+    register_request: RegisterRequest,
 ) {
     tracing::info!(
-        "🔑 Refreshing credential for Actor {}",
+        "🔑 Refreshing credential for Actor {} via AIS HTTP",
         actor_id.to_string_repr()
     );
 
-    match client
-        .send_credential_update_request(actor_id.clone(), credential_state.credential().await)
-        .await
+    match crate::ais_registration::register_with_ais(
+        &ais_base_url,
+        &register_request,
+        realm_secret.as_deref(),
+    )
+    .await
     {
-        Ok(register_response) => {
-            match register_response.result {
-                Some(actr_protocol::register_response::Result::Success(register_ok)) => {
-                    let new_credential = register_ok.credential;
-                    let new_expires_at = register_ok.credential_expires_at;
-                    // TurnCredential 为 required proto 字段，直接包装为 Some
-                    let new_turn_credential = Some(register_ok.turn_credential);
+        Ok(register_ok) => {
+            let new_credential = register_ok.credential;
+            let new_expires_at = register_ok.credential_expires_at;
+            let new_turn_credential = Some(register_ok.turn_credential);
 
-                    // 更新共享凭证状态，同步更新 TURN 凭证
-                    credential_state
-                        .update(new_credential.clone(), new_expires_at, new_turn_credential)
-                        .await;
+            // Update shared credential state
+            credential_state
+                .update(new_credential.clone(), new_expires_at, new_turn_credential)
+                .await;
 
-                    tracing::info!(
-                        "✅ Credential refreshed successfully for Actor {}",
-                        actor_id.serial_number,
-                    );
+            // Update signaling client credential for reconnect URL
+            client.set_credential_state(credential_state.clone()).await;
 
-                    tracing::debug!("🔑 TurnCredential 已更新，TURN 认证就绪");
+            tracing::info!(
+                "✅ Credential refreshed successfully for Actor {}",
+                actor_id.to_string_repr(),
+            );
 
-                    if let Some(expires_at) = &new_expires_at {
-                        tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
-                    }
-                }
-                Some(actr_protocol::register_response::Result::Error(err)) => {
-                    tracing::error!(
-                        "❌ Credential refresh failed: code={}, message={}",
-                        err.code,
-                        err.message
-                    );
-                }
-                None => {
-                    tracing::error!("❌ Credential refresh response missing result");
-                }
+            if let Some(expires_at) = &new_expires_at {
+                tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
             }
         }
         Err(e) => {
-            tracing::warn!("⚠️ Failed to send credential update request: {}", e);
+            tracing::warn!("⚠️ Credential refresh via AIS failed: {}", e);
         }
     }
 }
 
-/// Re-register actor after credential expiry
+/// Re-register actor after credential expiry via AIS HTTP
 ///
-/// When the credential has completely expired (key deleted from key store),
-/// neither heartbeat nor credential refresh will work because the server
-/// cannot validate the old credential. The server also rejects a plain
-/// RegisterRequest with 409 "Already registered" because the actor is still
-/// registered on the existing WebSocket session.
-///
-/// The solution is to disconnect the WebSocket first (which causes the server
-/// to clean up the stale registration), reconnect with a fresh session,
-/// and then register again.
+/// When the credential has completely expired, the solution is:
+/// 1. Register via AIS HTTP to get fresh credentials
+/// 2. Disconnect old signaling WebSocket (server cleans up stale state)
+/// 3. Reconnect signaling WebSocket with new identity in URL
 ///
 /// # Arguments
-/// * `client` - Signaling client for sending register request
+/// * `client` - Signaling client for WebSocket management
 /// * `actor_id` - Current actor ID (used for logging)
-/// * `register_request` - RegisterRequest containing actor type, realm, and service spec
+/// * `register_request` - RegisterRequest for re-registration
 /// * `credential_state` - Shared credential state to update
+/// * `ais_base_url` - AIS base URL for HTTP registration
+/// * `realm_secret` - Optional realm secret
 async fn re_register_task(
     client: Arc<dyn SignalingClient>,
     actor_id: ActrId,
     register_request: RegisterRequest,
     credential_state: CredentialState,
+    ais_base_url: Url,
+    realm_secret: Option<String>,
 ) -> ActrId {
     tracing::info!(
-        "🔄 Re-registering actor {} after credential expiry (type: {}/{})",
+        "🔄 Re-registering actor {} after credential expiry via AIS HTTP (type: {}/{})",
         actor_id.to_string_repr(),
         register_request.actr_type.manufacturer,
         register_request.actr_type.name
     );
 
-    // Step 0: Clear identity from the signaling client so the reconnect URL
-    // does not carry the old actor_id / expired credential. Without this the
-    // signaling server treats the new WebSocket as a "reconnect" of the old
-    // actor and restores its registered state, causing 409 "Already registered".
-    client.clear_identity().await;
+    // Step 1: Register via AIS HTTP to get fresh credentials
+    let register_ok = match crate::ais_registration::register_with_ais(
+        &ais_base_url,
+        &register_request,
+        realm_secret.as_deref(),
+    )
+    .await
+    {
+        Ok(ok) => ok,
+        Err(e) => {
+            tracing::error!("❌ Re-registration via AIS failed: {}", e);
+            return actor_id;
+        }
+    };
 
-    // Step 1: Disconnect to clear the server-side registration state.
-    // The server returns 409 "Already registered" if we try to register
-    // while still connected with the old session. Disconnecting forces
-    // the server to clean up the stale registration.
+    let new_actor_id = register_ok.actr_id.clone();
+    let new_credential = register_ok.credential;
+    let new_expires_at = register_ok.credential_expires_at;
+    let new_turn_credential = Some(register_ok.turn_credential);
+
+    // Step 2: Update shared credential state
+    credential_state
+        .update(new_credential.clone(), new_expires_at, new_turn_credential)
+        .await;
+
+    // Step 3: Disconnect old signaling WebSocket
     tracing::info!("🔌 Disconnecting signaling client to clear stale registration");
+    client.clear_identity().await;
     if let Err(e) = client.disconnect().await {
         tracing::warn!("⚠️ Disconnect failed (non-fatal, continuing): {}", e);
     }
 
-    // Step 2: Reconnect to get a fresh WebSocket connection.
-    // If an auto-reconnector is running, connect() may return immediately
-    // via the "already connected" fast-path, which is fine.
-    tracing::info!("🔗 Reconnecting signaling client for re-registration");
+    // Step 4: Set new identity and reconnect
+    client.set_actor_id(new_actor_id.clone()).await;
+    client.set_credential_state(credential_state.clone()).await;
+
+    tracing::info!("🔗 Reconnecting signaling client with new credentials");
     if let Err(e) = client.connect().await {
         tracing::error!("❌ Failed to reconnect for re-registration: {}", e);
-        return actor_id;
+        return new_actor_id;
     }
 
-    // Step 3: Send register request on the fresh connection
-    match client.send_register_request(register_request.clone()).await {
-        Ok(register_response) => match register_response.result {
-            Some(actr_protocol::register_response::Result::Success(register_ok)) => {
-                let new_actor_id = register_ok.actr_id.clone();
-                let new_credential = register_ok.credential;
-                let new_expires_at = register_ok.credential_expires_at;
-                // TurnCredential 为 required proto 字段，直接包装为 Some
-                let new_turn_credential = Some(register_ok.turn_credential);
+    tracing::info!(
+        "✅ Re-registration successful (ActrId: {})",
+        new_actor_id.to_string_repr(),
+    );
 
-                // 更新共享凭证状态，同步更新 TURN 凭证
-                credential_state
-                    .update(new_credential.clone(), new_expires_at, new_turn_credential)
-                    .await;
-
-                // 更新 signaling client 身份信息，使后续自动重连携带正确凭证
-                client.set_actor_id(new_actor_id.clone()).await;
-                client.set_credential_state(credential_state.clone()).await;
-
-                tracing::info!(
-                    "✅ Re-registration successful (ActrId: {})",
-                    new_actor_id.to_string_repr(),
-                );
-
-                tracing::debug!("🔑 TurnCredential 已更新，TURN 认证就绪");
-
-                if let Some(expires_at) = &new_expires_at {
-                    tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
-                }
-
-                new_actor_id
-            }
-            Some(actr_protocol::register_response::Result::Error(err)) => {
-                tracing::error!(
-                    "❌ Re-registration failed: code={}, message={}",
-                    err.code,
-                    err.message
-                );
-                actor_id
-            }
-            None => {
-                tracing::error!("❌ Re-registration response missing result");
-                actor_id
-            }
-        },
-        Err(e) => {
-            tracing::error!("❌ Failed to send re-register request: {}", e);
-            actor_id
-        }
+    if let Some(expires_at) = &new_expires_at {
+        tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
     }
+
+    new_actor_id
 }

@@ -36,6 +36,9 @@ opentelemetry_sdk = { workspace = true, optional = true }
 prost-types = "0.14"
 pwrzv.workspace = true
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+] }
 # === 序列化 ===
 serde.workspace = true
 serde_json.workspace = true
