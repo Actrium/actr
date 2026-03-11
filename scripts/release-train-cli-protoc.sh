@@ -32,8 +32,10 @@ readonly CLI_CRATES=(
 
 readonly OPTIONAL_SKIPPED_COMPONENTS=(
   "actr-ts|sdk|external_repo_not_managed_in_monorepo"
-  "actr-swift|sdk|external_repo_not_managed_in_monorepo"
 )
+readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
+readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
+readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""
@@ -42,6 +44,8 @@ REPORT_DIR=""
 STATE_FILE=""
 REPORT_MARKDOWN=""
 REPORT_JSON=""
+RELEASE_PYTHON_BIN="python3"
+RELEASE_PYTHON_ENV=""
 
 VERSION=""
 DRY_RUN=false
@@ -49,6 +53,8 @@ RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
 RELEASE_SHA=""
+FINAL_TAG=""
+PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 
 usage() {
   cat <<'EOF'
@@ -83,6 +89,9 @@ fail() {
 cleanup() {
   if [[ -n "$WORKTREE_PATH" ]] && [[ -d "$WORKTREE_PATH" ]]; then
     git -C "$ORIGINAL_REPO_ROOT" worktree remove --force "$WORKTREE_PATH" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$RELEASE_PYTHON_ENV" ]] && [[ -d "$RELEASE_PYTHON_ENV" ]]; then
+    rm -rf "$RELEASE_PYTHON_ENV"
   fi
 }
 
@@ -280,7 +289,7 @@ append_state() {
 }
 
 set_release_sha() {
-  RELEASE_SHA=$(git rev-parse --short HEAD)
+  RELEASE_SHA=$(git rev-parse HEAD)
 }
 
 configure_git_identity() {
@@ -293,19 +302,53 @@ configure_git_identity() {
   fi
 }
 
-ensure_release_tag_absent() {
-  local final_tag="${FINAL_TAG_PREFIX}${VERSION}"
-  if git rev-parse -q --verify "refs/tags/${final_tag}" >/dev/null 2>&1; then
-    fail "Final release tag already exists locally: ${final_tag}"
+resolve_package_sync_owner() {
+  if [[ -n "${PACKAGE_SYNC_OWNER:-}" ]]; then
+    return
   fi
 
-  if git ls-remote --exit-code --tags origin "refs/tags/${final_tag}" >/dev/null 2>&1; then
-    fail "Final release tag already exists on origin: ${final_tag}"
+  PACKAGE_SYNC_OWNER=$(
+    python3 - "$(git config --get remote.origin.url)" <<'PY'
+from __future__ import annotations
+
+import re
+import sys
+
+url = sys.argv[1]
+match = re.search(r'github\.com[:/]([^/]+)/', url)
+if not match:
+    raise SystemExit("failed to resolve GitHub owner from origin URL")
+print(match.group(1))
+PY
+  )
+}
+
+package_sync_repo_url() {
+  local repo=$1
+  printf 'https://github.com/%s/%s' "$PACKAGE_SYNC_OWNER" "$repo"
+}
+
+package_sync_release_url() {
+  local repo=$1
+  printf '%s/releases/tag/v%s' "$(package_sync_repo_url "$repo")" "$VERSION"
+}
+
+ensure_release_tag_absent() {
+  FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+  if git rev-parse -q --verify "refs/tags/${FINAL_TAG}" >/dev/null 2>&1; then
+    fail "Final release tag already exists locally: ${FINAL_TAG}"
+  fi
+
+  if git ls-remote --exit-code --tags origin "refs/tags/${FINAL_TAG}" >/dev/null 2>&1; then
+    fail "Final release tag already exists on origin: ${FINAL_TAG}"
   fi
 }
 
 install_python_release_tools() {
-  python3 -m pip install --quiet --upgrade build twine
+  RELEASE_PYTHON_ENV=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-python.XXXXXX")
+  python3 -m venv "$RELEASE_PYTHON_ENV"
+  RELEASE_PYTHON_BIN="${RELEASE_PYTHON_ENV}/bin/python"
+  "$RELEASE_PYTHON_BIN" -m pip install --quiet --upgrade pip build twine
 }
 
 update_versions() {
@@ -439,7 +482,7 @@ run_validation_suite() {
   rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
   (
     cd tools/protoc-gen/python
-    python3 -m build >/dev/null
+    "$RELEASE_PYTHON_BIN" -m build >/dev/null
   )
 }
 
@@ -449,6 +492,126 @@ append_skipped_components() {
     IFS='|' read -r name stage reason <<<"$descriptor"
     append_state "$name" "$stage" "external" "skipped" "$reason" "-" "$RELEASE_SHA"
   done
+}
+
+dispatch_package_sync_workflow() {
+  local repo=$1
+  local workflow=$2
+  local dispatched_at
+
+  dispatched_at=$(python3 - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)
+  curl -fsSL \
+    -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
+    "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/dispatches" \
+    -d @- >/dev/null <<EOF
+{
+  "ref": "main",
+  "inputs": {
+    "version": "${VERSION}",
+    "source_sha": "${RELEASE_SHA}",
+    "source_tag": "${FINAL_TAG}"
+  }
+}
+EOF
+
+  printf '%s\n' "${dispatched_at}"
+}
+
+find_package_sync_run_id() {
+  local repo=$1
+  local workflow=$2
+  local dispatched_at=$3
+
+  curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
+    "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=10" \
+    | python3 - "$dispatched_at" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+payload = json.load(sys.stdin)
+dispatched_at = sys.argv[1]
+
+for run in payload.get("workflow_runs", []):
+    if run.get("created_at", "") >= dispatched_at:
+        print(run["id"])
+        break
+PY
+}
+
+wait_for_package_sync_workflow() {
+  local repo=$1
+  local workflow=$2
+  local dispatched_at=$3
+  local run_id=""
+  local attempt
+
+  for attempt in $(seq 1 30); do
+    run_id=$(find_package_sync_run_id "$repo" "$workflow" "$dispatched_at" || true)
+    if [[ -n "${run_id}" ]]; then
+      break
+    fi
+    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)"
+    sleep 10
+  done
+
+  [[ -n "${run_id}" ]] || fail "Failed to locate workflow run for ${repo} after ${dispatched_at}"
+
+  for attempt in $(seq 1 120); do
+    local response status conclusion html_url
+    response=$(curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
+      "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/runs/${run_id}")
+    status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$response")
+    conclusion=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("conclusion",""))' <<<"$response")
+    html_url=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["html_url"])' <<<"$response")
+
+    if [[ "${status}" == "completed" ]]; then
+      if [[ "${conclusion}" == "success" ]]; then
+        printf '%s\n' "${html_url}"
+        return 0
+      fi
+      log_error "${repo} workflow failed: ${html_url}"
+      return 1
+    fi
+
+    log_info "Waiting for ${repo} workflow completion (${attempt}/120)"
+    sleep 15
+  done
+
+  log_error "Timed out waiting for ${repo} workflow completion"
+  return 1
+}
+
+publish_package_sync_repo() {
+  local _language=$1
+  local repo=$2
+  local workflow=$3
+  local release_url dispatched_at run_url
+  release_url=$(package_sync_release_url "$repo")
+
+  if [[ "$DRY_RUN" == true ]]; then
+    append_state "$repo" "sdk" "package_sync" "success" "dry_run_validated" "$release_url" "$RELEASE_SHA"
+    return
+  fi
+
+  dispatched_at=$(dispatch_package_sync_workflow "$repo" "$workflow")
+  if ! run_url=$(wait_for_package_sync_workflow "$repo" "$workflow" "$dispatched_at"); then
+    append_state "$repo" "sdk" "package_sync" "failure" "workflow_failed" "$release_url" "$RELEASE_SHA"
+    fail "Package sync workflow failed for ${repo}"
+  fi
+
+  append_state "$repo" "sdk" "package_sync" "success" "$run_url" "$release_url" "$RELEASE_SHA"
 }
 
 commit_and_push_version_bump() {
@@ -584,7 +747,7 @@ publish_python_package() {
     cd tools/protoc-gen/python
     TWINE_USERNAME="__token__" \
     TWINE_PASSWORD="${PYPI_API_TOKEN:-}" \
-    python3 -m twine upload dist/*
+    "$RELEASE_PYTHON_BIN" -m twine upload dist/*
   ) 2>&1 | tee "$upload_log"
   local twine_status=${PIPESTATUS[0]}
 
@@ -615,9 +778,8 @@ create_final_tag() {
     return
   fi
 
-  local final_tag="${FINAL_TAG_PREFIX}${VERSION}"
-  git tag "$final_tag"
-  git push origin "$final_tag"
+  git tag "$FINAL_TAG"
+  git push origin "$FINAL_TAG"
 }
 
 main() {
@@ -634,6 +796,7 @@ main() {
   prepare_paths
   prepare_worktree
   ensure_release_tag_absent
+  resolve_package_sync_owner
 
   if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
     fail "CARGO_REGISTRY_TOKEN must be set for publishing"
@@ -641,6 +804,10 @@ main() {
 
   if [[ -z "${PYPI_API_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
     fail "PYPI_API_TOKEN must be set for publishing"
+  fi
+
+  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
+    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
   fi
 
   install_python_release_tools
@@ -669,6 +836,8 @@ main() {
   done
 
   create_final_tag
+  publish_package_sync_repo "swift" "$SWIFT_PACKAGE_SYNC_REPO" "release.yml"
+  publish_package_sync_repo "kotlin" "$KOTLIN_PACKAGE_SYNC_REPO" "release.yml"
 }
 
 main "$@"

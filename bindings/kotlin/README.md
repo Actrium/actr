@@ -2,7 +2,28 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Kotlin/Android bindings for the Actor-RTC (ACTR) framework - enabling Android developers to build real-time communication applications using the Actor model over WebRTC.
+Kotlin/Android source bindings for the Actor-RTC (ACTR) framework.
+
+Official release artifacts are published from the package-sync repository:
+
+- Repository: `Actrium/actr-kotlin-package-sync`
+- Maven coordinate: `io.actrium:actr:<version>`
+
+## Workspace Layout
+
+The Kotlin build scripts build `libactr` from the monorepo workspace root.
+
+```text
+actr/
+├── Cargo.toml                # Rust workspace root
+├── bindings/
+│   ├── ffi/                  # libactr crate
+│   └── kotlin/               # Android module and build scripts
+└── core/                     # Rust crates required by libactr
+```
+
+The package-sync repository owns its own workflow definitions.
+The monorepo release train only dispatches that external release workflow with `version`, `source_sha`, and `source_tag`.
 
 ## 🎯 Overview
 
@@ -30,9 +51,6 @@ actr-kotlin/
 │   │   ├── ServerActivity.kt # Server demo
 │   │   └── EchoIntegrationTest.kt # Integration tests
 │   └── src/androidTest/      # Android instrumentation tests
-├── libactr/                  # 🦀 Rust FFI Library (git submodule)
-│   ├── Cargo.toml           # Rust dependencies
-│   └── src/                 # UniFFI binding source
 ├── proto/                    # 🔧 Protocol Buffer Definitions
 │   └── local_file.proto      # File transfer service
 ├── build-android.sh          # 📦 Native library build script
@@ -59,12 +77,8 @@ actr-kotlin/
 ### 1. Clone and Setup
 
 ```bash
-# Clone with submodules
-git clone --recursive <repository-url>
-cd actr-kotlin
-
-# Or if already cloned, initialize submodules
-git submodule update --init --recursive
+git clone <repository-url>
+cd actr/bindings/kotlin
 ```
 
 ### 2. Build Native Libraries
@@ -214,15 +228,11 @@ The project uses automatic code generation for:
 ### Building from Source
 
 ```bash
-# 1. Build Rust library with Android targets
-cd ../libactr
+# 1. Build Rust library with Android targets and refresh UniFFI bindings
 ./build-android.sh
 
-# 2. Generate Kotlin bindings
-cd ../actr-kotlin
+# 2. Build Android project
 ./gradlew :actr-kotlin:generateUniFFIBindings
-
-# 3. Build Android project
 ./gradlew build
 ```
 

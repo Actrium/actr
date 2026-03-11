@@ -17,6 +17,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  PROTOC_VERSION: "29.3"
+
 jobs:
   preflight:
     name: Preflight TypeScript CI

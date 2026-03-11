@@ -16,6 +16,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PROTOC_VERSION: "29.3"
+
 jobs:
   determine:
     name: Determine Affected Targets

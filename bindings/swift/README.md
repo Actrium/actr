@@ -7,11 +7,27 @@ Swift Package for distributing the ACTR (Actor-RTC) framework via a prebuilt XCF
 - **ActrFFI.xcframework**: Precompiled iOS/macOS XCFramework published through GitHub Releases (remote `binaryTarget`).
 - **Actr**: Swift API that includes UniFFI-generated bindings and high-level helpers.
 
+## Workspace Layout
+
+The Swift build scripts build `libactr` from the monorepo workspace root.
+
+```text
+actr/
+├── Cargo.toml                # Rust workspace root
+├── bindings/
+│   ├── ffi/                  # libactr crate
+│   └── swift/                # Swift package sources and build scripts
+└── core/                     # Rust crates required by libactr
+```
+
+The package-sync repository owns its own workflow definitions.
+The monorepo release train only dispatches that external release workflow with `version`, `source_sha`, and `source_tag`.
+
 ## Consume via SwiftPM
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/actor-rtc/actr-swift.git", from: "0.1.0")
+    .package(url: "https://github.com/Actrium/actr-swift-package-sync.git", from: "0.1.0")
 ]
 ```
 
@@ -59,8 +75,8 @@ This generates Swift bindings and the multi-platform XCFramework at `ActrFFI.xcf
    - Outputs `dist/ActrFFI.xcframework.zip` and `dist/release.txt` with the checksum and URL.
 3. Update `Package.swift` defaults:
    - Set `ACTR_BINARY_TAG` (default tag) and `ACTR_BINARY_CHECKSUM` (64-hex checksum) to match `dist/release.txt`.
-4. Push code/tag to GitHub `actor-rtc/actr-swift` and create a Release with the zip asset:
-   - `gh release create v0.1.0 dist/ActrFFI.xcframework.zip --notes "ActrFFI v0.1.0"`
+4. Trigger the `Actrium/actr-swift-package-sync` release workflow from the monorepo release train.
+   - The external package-sync repository clones the tagged `actr` source, rebuilds the XCFramework, updates `Package.swift`, and publishes `ActrFFI.xcframework.zip`.
 5. Consumers can then resolve the package without building Rust locally.
 
 ## Project Structure

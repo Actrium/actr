@@ -17,5 +17,6 @@ dependencyResolutionManagement {
 rootProject.name = "actr-kotlin"
 
 include(":actr-kotlin")
-
-include(":demo")
+if (file("demo").isDirectory) {
+    include(":demo")
+}

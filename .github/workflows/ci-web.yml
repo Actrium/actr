@@ -4,12 +4,13 @@ on:
   workflow_call:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 env:
+  PROTOC_VERSION: "29.3"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
 
 jobs:
   format-and-check:
