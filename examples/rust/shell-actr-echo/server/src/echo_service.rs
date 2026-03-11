@@ -1,7 +1,7 @@
 //! Echo service implementation
 
 use crate::generated::echo::{EchoRequest, EchoResponse};
-use crate::generated::echo_service_actor::EchoServiceHandler;
+use crate::generated::echo_actor::EchoServiceHandler;
 use actr_framework::Context;
 use actr_protocol::ActorResult;
 use async_trait::async_trait;

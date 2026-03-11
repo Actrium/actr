@@ -9,6 +9,9 @@
 set -e
 set -o pipefail
 
+# Prefer cargo-installed binaries over system/homebrew versions
+export PATH="$HOME/.cargo/bin:$PATH"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,7 +25,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # Determine paths and switch to workspace root
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
+ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
 ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 ECHO_SERVER_DIR="$WORKSPACE_ROOT/shell-actr-echo/server"
@@ -187,6 +190,16 @@ echo ""
 echo "🚀 Starting actrix (signaling server)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Clean stale databases from previous runs to avoid expired key issues.
+# The Signaling key cache may contain expired Ed25519 public keys that get
+# cleaned up during WS auth, causing "Invalid credential format" errors
+# even though the Signer still signs within its tolerance window.
+ACTRIX_DB_DIR="$WORKSPACE_ROOT/database"
+if [ -d "$ACTRIX_DB_DIR" ]; then
+    echo "Cleaning stale actrix databases from previous run..."
+    rm -rf "$ACTRIX_DB_DIR"
+fi
+
 $ACTRIX_CMD --config "$ACTRIX_CONFIG" > "$LOG_DIR/actrix.log" 2>&1 &
 ACTRIX_PID=$!
 
@@ -224,8 +237,9 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Wait a bit for supervisord gRPC service to be ready (port 50055)
-sleep 2
+# Wait for internal services (Signer, AIS key generation) to be ready.
+# The Signer takes a few seconds to initialize after the HTTP port opens.
+sleep 4
 
 # Build realm-setup tool if needed
 if ! cargo build -p realm-setup 2>&1 | tail -5; then

@@ -47,10 +47,10 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
         );
 
         let payload = envelope.payload.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string())
+            actr_protocol::ActrError::DecodeFailure("Missing payload in RpcEnvelope".to_string())
         })?;
         let request: EchoRequest = actr_protocol::prost::Message::decode(&**payload)
-            .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
+            .map_err(|e| actr_protocol::ActrError::DecodeFailure(e.to_string()))?;
 
         info!("[ClientWorkload] App message: {}", request.message);
 
@@ -59,7 +59,7 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
             Some(id) => id,
             None => {
                 error!("[ClientWorkload] Server ID not set");
-                return Err(actr_protocol::ProtocolError::TransportError(
+                return Err(actr_protocol::ActrError::Unavailable(
                     "Server ID not configured".to_string(),
                 ));
             }

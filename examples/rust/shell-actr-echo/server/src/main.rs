@@ -6,7 +6,7 @@ mod echo_service;
 mod generated;
 
 use echo_service::EchoService;
-use generated::echo_service_actor::EchoServiceWorkload;
+use generated::echo_actor::EchoServiceWorkload;
 
 use actr_runtime::prelude::*;
 use std::path::PathBuf;
