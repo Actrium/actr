@@ -39,17 +39,6 @@ ACTRIX*.md
 # Demo logs
 .demo_logs/
 
-# Cloned source repos (used during migration, not part of monorepo)
-actr-kotlin/
-actr-python/
-actr-swift/
-actr-ts/
-libactr/
-framework-codegen-kotlin/
-framework-codegen-python/
-framework-codegen-swift/
-framework-codegen-typescript/
-
 # Python ignore
 __pycache__/
 *.py[cod]
