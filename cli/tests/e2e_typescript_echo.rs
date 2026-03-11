@@ -17,8 +17,7 @@ use e2e_support::{
 };
 use tempfile::TempDir;
 
-const EXPECTED_ACTR_TS_TARBALL_URL: &str =
-    "https://github.com/actor-rtc/actr-ts/releases/download/v0.1.14/actor-rtc-actr-0.1.14.tgz";
+const EXPECTED_ACTR_TS_VERSION: &str = "0.1.14";
 
 fn framework_codegen_typescript_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -91,13 +90,13 @@ fn assert_generated_actr_dependency(project_dir: &Path) {
     let actual = value
         .get("dependencies")
         .and_then(serde_json::Value::as_object)
-        .and_then(|deps| deps.get("@actor-rtc/actr"))
+        .and_then(|deps| deps.get("@actrium/actr"))
         .and_then(serde_json::Value::as_str)
-        .expect("@actor-rtc/actr dependency missing in package.json");
+        .expect("@actrium/actr dependency missing in package.json");
 
     assert_eq!(
-        actual, EXPECTED_ACTR_TS_TARBALL_URL,
-        "generated package.json should use the release tarball dependency"
+        actual, EXPECTED_ACTR_TS_VERSION,
+        "generated package.json should use the published npm package version"
     );
 }
 

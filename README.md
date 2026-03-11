@@ -119,6 +119,12 @@ shared stable version.
 - Components without a monorepo-native publish path yet are recorded as skipped
   in the report and do not block the basic train.
 
+TypeScript package releases use the separate manual workflow
+`Publish TypeScript Package`, which publishes `@actrium/actr` from
+`bindings/typescript` using npm trusted publishing via GitHub Actions OIDC.
+The package must be published manually once before enabling the trusted
+publisher for `.github/workflows/publish-typescript.yml`.
+
 ## 📄 许可证
 
 本项目采用 MIT 许可证。
