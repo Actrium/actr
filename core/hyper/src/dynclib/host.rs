@@ -9,6 +9,10 @@
 //! The guest library calls back into the host through a `HostVTable` passed at
 //! init time. VTable trampolines bridge the synchronous C ABI with the async
 //! Rust `CallExecutorFn` via thread-local storage and `tokio::runtime::Handle`.
+//!
+//! Each `DynclibInstance` is one logical actor instance. If the host wants to
+//! run two actors from the same shared library, it loads/initializes two
+//! independent instances and keeps dispatch serialized per instance.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -515,7 +519,9 @@ impl DynclibHost {
 /// Per-actor instance backed by a native shared library.
 ///
 /// Holds cached function pointers for `actr_handle` and `actr_free_response`.
-/// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynclibInstance>`).
+/// `actr_init` initializes exactly one logical actor state inside this instance.
+/// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynclibInstance>`)
+/// and must not enter `actr_handle` concurrently for the same instance.
 pub struct DynclibInstance {
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,

@@ -11,7 +11,9 @@
 /// # Safety
 ///
 /// - All function pointers remain valid from `actr_init` until process exit
-/// - The host guarantees thread safety: the same actor instance is never called concurrently
+/// - The host guarantees thread safety: the same actor instance is never entered concurrently
+/// - A single vtable corresponds to one logical actor instance; hosts that need multiple
+///   actors must create multiple guest instances and pass each one its own `HostVTable`
 /// - `*mut *mut u8` output pointers refer to host-allocated memory; the guest must free them via `free_host_buf`
 #[repr(C)]
 pub struct HostVTable {

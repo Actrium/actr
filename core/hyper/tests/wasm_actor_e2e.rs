@@ -15,7 +15,9 @@
 
 include!("wasm_actor_fixture.rs");
 
-use actr_hyper::wasm::{DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmHost};
+use actr_hyper::wasm::{
+    DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmError, WasmHost,
+};
 use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
 // ─── Helper: build test RpcEnvelope bytes ──────────────────────────────────────
@@ -64,6 +66,37 @@ async fn wasm_actor_unknown_route_returns_error() {
     // Should fail (WASM returns HANDLE_FAILED error code)
     assert!(result.is_err(), "unknown route should return error");
     tracing::info!("unknown route error verified");
+}
+
+// ─── Test 1b: repeated init is rejected ───────────────────────────────────────
+
+#[test]
+fn wasm_actor_repeated_init_returns_error() {
+    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
+    let mut instance = host.instantiate().expect("instantiate failed");
+
+    let config = WasmActorConfig {
+        actr_type: "test:double:0.1.0".to_string(),
+        credential_b64: String::new(),
+        actor_id_b64: String::new(),
+        realm_id: 0,
+    };
+
+    instance.init(&config).expect("first init failed");
+
+    let err = instance
+        .init(&config)
+        .expect_err("second init should fail for the same guest instance");
+
+    match err {
+        WasmError::InitFailed(message) => {
+            assert!(
+                message.contains("error code -2") && message.contains("initialization failed"),
+                "expected INIT_FAILED error message, got: {message}"
+            );
+        }
+        other => panic!("expected InitFailed, got {other:?}"),
+    }
 }
 
 // ─── Test 2: call_raw triggering asyncify ──────────────────────────────────

@@ -4,6 +4,10 @@
 //! message dispatch. A single `WasmHost` corresponds to one WASM module (compiled once),
 //! from which multiple `WasmInstance`s can be derived.
 //!
+//! Each `WasmInstance` is one logical actor instance. If the host wants to run two
+//! actors of the same WASM type, it instantiates the module twice and keeps the
+//! resulting instances isolated.
+//!
 //! # Asyncify driver
 //!
 //! `dispatch()` uses the asyncify unwind/rewind protocol:
@@ -384,7 +388,10 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
 /// Single WASM actor instance
 ///
 /// Wraps a Wasmtime `Store<HostData>` and cached export function handles.
-/// **Not `Sync`**: the caller is responsible for concurrency protection (typically `Mutex<WasmInstance>`).
+/// `actr_init` initializes exactly one logical actor state inside this instance.
+/// **Not `Sync`**: the caller is responsible for concurrency protection
+/// (typically `Mutex<WasmInstance>`), and must not drive `dispatch()` concurrently
+/// on the same instance.
 pub struct WasmInstance {
     store: Store<HostData>,
     _instance: Instance,

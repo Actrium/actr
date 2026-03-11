@@ -141,6 +141,10 @@ pub struct ActrNode<W: Workload> {
     ///
     /// When this field is `Some`, `handle_incoming` dispatches through the executor
     /// instead of native `W::Dispatcher::dispatch`.
+    ///
+    /// The `Mutex` is the enforcement point for the guest ABI contract:
+    /// one executor instance equals one logical guest actor instance, and
+    /// dispatch into that instance is serialized.
     pub(crate) executor: Option<Mutex<Box<dyn crate::executor::ExecutorAdapter>>>,
 }
 
@@ -2264,8 +2268,309 @@ impl<W: Workload> ActrNode<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::AIdCredential;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use actr_framework::{Context, MessageDispatcher};
+    use actr_protocol::{
+        AIdCredential, ActorResult, ActrId, ActrType, Pong, Realm, RegisterRequest,
+        RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse, RpcEnvelope,
+        ServiceAvailabilityState, SignalingEnvelope, UnregisterResponse,
+    };
+    use actr_runtime_mailbox::{DeadLetterQueue, Mailbox, SqliteDeadLetterQueue, SqliteMailbox};
+    use async_trait::async_trait;
     use prost_types::Timestamp;
+    use tokio::sync::broadcast;
+    use tokio_util::sync::CancellationToken;
+
+    use crate::context_factory::ContextFactory;
+    use crate::executor::{CallExecutorFn, DispatchContext, DispatchResult, ExecutorAdapter};
+    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::outbound::{Gate, HostGate};
+    use crate::transport::{HostTransport, NetworkError, NetworkResult};
+    use crate::wire::webrtc::{SignalingClient, SignalingEvent, SignalingStats};
+
+    struct NoopSignalingClient {
+        event_tx: broadcast::Sender<SignalingEvent>,
+    }
+
+    impl NoopSignalingClient {
+        fn new() -> Self {
+            let (event_tx, _) = broadcast::channel(8);
+            Self { event_tx }
+        }
+    }
+
+    #[async_trait]
+    impl SignalingClient for NoopSignalingClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<Pong> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            Err(NetworkError::SignalingError(
+                "unused in unit test".to_string(),
+            ))
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            self.event_tx.subscribe()
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    struct TestWorkload;
+
+    #[async_trait]
+    impl Workload for TestWorkload {
+        type Dispatcher = TestDispatcher;
+    }
+
+    struct TestDispatcher;
+
+    #[async_trait]
+    impl MessageDispatcher for TestDispatcher {
+        type Workload = TestWorkload;
+
+        async fn dispatch<C: Context>(
+            _workload: &Self::Workload,
+            _envelope: RpcEnvelope,
+            _ctx: &C,
+        ) -> ActorResult<Bytes> {
+            Err(ActrError::Internal(
+                "native dispatch path should not be used in executor test".to_string(),
+            ))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ExecutorProbe {
+        active: Arc<AtomicUsize>,
+        max_active: Arc<AtomicUsize>,
+    }
+
+    struct SerialProbeExecutor {
+        probe: ExecutorProbe,
+        delay: Duration,
+    }
+
+    impl SerialProbeExecutor {
+        fn new(probe: ExecutorProbe) -> Self {
+            Self {
+                probe,
+                delay: Duration::from_millis(25),
+            }
+        }
+    }
+
+    impl ExecutorAdapter for SerialProbeExecutor {
+        fn dispatch<'a>(
+            &'a mut self,
+            _request_bytes: &[u8],
+            _ctx: DispatchContext,
+            _call_executor: &'a CallExecutorFn,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = DispatchResult> + Send + 'a>>
+        {
+            let probe = self.probe.clone();
+            let delay = self.delay;
+            Box::pin(async move {
+                let active_now = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+                probe.max_active.fetch_max(active_now, Ordering::SeqCst);
+
+                tokio::time::sleep(delay).await;
+
+                probe.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(b"ok".to_vec())
+            })
+        }
+    }
+
+    fn create_test_actor_id(serial_number: u64) -> ActrId {
+        ActrId {
+            serial_number,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "test-actor".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            realm: Realm { realm_id: 7 },
+        }
+    }
+
+    fn create_test_config() -> actr_config::Config {
+        actr_config::Config {
+            package: actr_config::PackageInfo {
+                name: "test-actor".to_string(),
+                actr_type: ActrType {
+                    manufacturer: "acme".to_string(),
+                    name: "test-actor".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                description: None,
+                authors: vec![],
+                license: None,
+            },
+            exports: vec![],
+            dependencies: vec![],
+            signaling_url: url::Url::parse("ws://localhost:8081").unwrap(),
+            realm: Realm { realm_id: 7 },
+            visible_in_discovery: true,
+            acl: None,
+            mailbox_path: None,
+            tags: vec![],
+            scripts: HashMap::new(),
+            webrtc: actr_config::WebRtcConfig::default(),
+            websocket_listen_port: None,
+            websocket_advertised_host: None,
+            observability: actr_config::ObservabilityConfig {
+                filter_level: "info".to_string(),
+                tracing_enabled: false,
+                tracing_endpoint: String::new(),
+                tracing_service_name: "test-actor".to_string(),
+            },
+            config_dir: std::env::temp_dir(),
+            execution_mode: actr_config::ActrMode::Native,
+        }
+    }
+
+    async fn build_test_node_with_executor(
+        executor: Box<dyn ExecutorAdapter>,
+    ) -> ActrNode<TestWorkload> {
+        let mailbox: Arc<dyn Mailbox> = Arc::new(SqliteMailbox::new(":memory:").await.unwrap());
+        let dlq: Arc<dyn DeadLetterQueue> = Arc::new(
+            SqliteDeadLetterQueue::new_standalone(":memory:")
+                .await
+                .unwrap(),
+        );
+
+        let shell_to_workload = Arc::new(HostTransport::new());
+        let workload_to_shell = Arc::new(HostTransport::new());
+        let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
+        let signaling_client: Arc<dyn SignalingClient> = Arc::new(NoopSignalingClient::new());
+        let context_factory = ContextFactory::new(
+            inproc_gate,
+            shell_to_workload.clone(),
+            workload_to_shell.clone(),
+            Arc::new(DataStreamRegistry::new()),
+            Arc::new(MediaFrameRegistry::new()),
+            signaling_client.clone(),
+        );
+
+        ActrNode {
+            config: create_test_config(),
+            workload: Arc::new(TestWorkload),
+            mailbox,
+            dlq,
+            context_factory: Some(context_factory),
+            signaling_client,
+            actor_id: Some(create_test_actor_id(42)),
+            credential_state: Some(CredentialState::new(create_test_credential(1), None, None)),
+            webrtc_coordinator: None,
+            webrtc_gate: None,
+            websocket_gate: None,
+            inproc_mgr: Some(shell_to_workload),
+            workload_to_shell_mgr: Some(workload_to_shell),
+            shutdown_token: CancellationToken::new(),
+            actr_lock: None,
+            network_event_rx: None,
+            network_event_result_tx: None,
+            network_event_debounce_config: None,
+            dedup_state: Arc::new(Mutex::new(DedupState::new())),
+            injected_registration: None,
+            discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            executor: Some(Mutex::new(executor)),
+        }
+    }
 
     fn create_test_credential(key_id: u32) -> AIdCredential {
         AIdCredential {
@@ -2380,5 +2685,44 @@ mod tests {
         let final_credential = state.credential().await;
         // The exact value depends on which update finished last, but it should be valid
         assert!(final_credential.key_id >= 2 && final_credential.key_id <= 11);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_executor_dispatch_is_serialized() {
+        let probe = ExecutorProbe::default();
+        let node = Arc::new(
+            build_test_node_with_executor(Box::new(SerialProbeExecutor::new(probe.clone()))).await,
+        );
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let node = node.clone();
+            handles.push(tokio::spawn(async move {
+                let envelope = RpcEnvelope {
+                    route_key: "test.serialized.executor".to_string(),
+                    payload: Some(Bytes::new()),
+                    error: None,
+                    traceparent: None,
+                    tracestate: None,
+                    request_id: format!("req-{i}"),
+                    metadata: vec![],
+                    timeout_ms: 0,
+                };
+
+                let response = node.handle_incoming(envelope, None).await.unwrap();
+                assert_eq!(response.as_ref(), b"ok");
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(
+            probe.max_active.load(Ordering::SeqCst),
+            1,
+            "dynamic executor dispatch must be serialized per actor instance",
+        );
+        assert_eq!(probe.active.load(Ordering::SeqCst), 0);
     }
 }

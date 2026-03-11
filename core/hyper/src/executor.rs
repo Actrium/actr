@@ -71,6 +71,14 @@ pub type DispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Syn
 ///
 /// Each executor backend (e.g. `WasmInstance`) implements this trait so that
 /// `ActrNode` can dispatch requests through a type-erased `Box<dyn ExecutorAdapter>`.
+///
+/// # Concurrency contract
+///
+/// A single executor instance represents one logical guest actor instance.
+/// `ActrNode` serializes calls to that executor with a `Mutex`, so implementors
+/// may rely on `dispatch()` never being entered concurrently for the same
+/// instance. Hosts that want multiple actors of the same type must create
+/// multiple executor instances.
 pub trait ExecutorAdapter: Send {
     /// Dispatch a request through the guest actor
     fn dispatch<'a>(

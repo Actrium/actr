@@ -3,6 +3,19 @@
 //! Provides the unified `entry!` macro and platform-specific Context implementations.
 //! Actor developers write ONE `entry!(MyActor)` -- platform ABI is auto-selected by cfg.
 //!
+//! # Execution contract
+//!
+//! The current guest ABI deliberately keeps the runtime model simple:
+//!
+//! - One loaded guest instance corresponds to one logical actor instance.
+//! - The host calls `actr_init` once for that instance before the first request.
+//! - The host must serialize `actr_handle` calls for the same instance.
+//!
+//! In other words, if the host wants two actors of the same type, it must create
+//! two guest instances (for example, two `WasmInstance`s), not reuse one instance
+//! with two independent actor states. The ABI does not expose an instance handle,
+//! so guest-side state is process/module-global within one loaded instance.
+//!
 //! # Supported platforms
 //!
 //! - **WASM** (`target_arch = "wasm32"`): host imports + asyncify
@@ -84,6 +97,9 @@ macro_rules! entry {
             pub extern "C" fn actr_init(_config_ptr: i32, _config_len: i32) -> i32 {
                 let workload: $workload_type = $init_expr;
                 unsafe {
+                    if __ACTR_WORKLOAD.is_some() {
+                        return $crate::guest::abi::code::INIT_FAILED;
+                    }
                     __ACTR_WORKLOAD = Some(workload);
                 }
                 $crate::guest::abi::code::SUCCESS
@@ -181,6 +197,9 @@ macro_rules! entry {
 
                 let workload: $workload_type = $init_expr;
                 unsafe {
+                    if __ACTR_WORKLOAD.is_some() || __ACTR_VTABLE.is_some() {
+                        return $crate::guest::abi::code::INIT_FAILED;
+                    }
                     __ACTR_VTABLE = Some(vtable);
                     __ACTR_WORKLOAD = Some(workload);
                 }
