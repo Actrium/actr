@@ -162,9 +162,7 @@ impl System {
                                 }
                             }
                             None => {
-                                log::error!(
-                                    "[System] Gate not set, cannot route remote message"
-                                );
+                                log::error!("[System] Gate not set, cannot route remote message");
                             }
                         }
                     }

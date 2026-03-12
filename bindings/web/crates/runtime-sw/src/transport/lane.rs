@@ -216,9 +216,7 @@ impl DataLane {
 
             DataLane::WebSocket { .. } => {
                 // WebSocket does not support transferable objects, so fall back to `send`.
-                log::warn!(
-                    "WebSocket does not support transferable objects; falling back to send"
-                );
+                log::warn!("WebSocket does not support transferable objects; falling back to send");
                 self.send(data).await
             }
         }

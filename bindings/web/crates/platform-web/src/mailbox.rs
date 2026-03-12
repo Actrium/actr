@@ -105,11 +105,8 @@ impl IndexedDbMailbox {
                             .key_path("id")
                             .auto_increment(false)
                             .add_index(
-                                Index::new(
-                                    INDEX_STATUS_PRIORITY_TIME,
-                                    "status_priority_time",
-                                )
-                                .unique(false),
+                                Index::new(INDEX_STATUS_PRIORITY_TIME, "status_priority_time")
+                                    .unique(false),
                             ),
                     )
                     .build()
@@ -257,13 +254,14 @@ impl Mailbox for IndexedDbMailbox {
         // Build JS object with the compound index key path
         let js_value = Self::build_js_record(&stored)?;
 
-        store.add(&js_value, None).await.map_err(|e| {
-            StorageError::QueryError(format!("failed to add message: {e:?}"))
-        })?;
+        store
+            .add(&js_value, None)
+            .await
+            .map_err(|e| StorageError::QueryError(format!("failed to add message: {e:?}")))?;
 
-        tx.done().await.map_err(|e| {
-            StorageError::QueryError(format!("transaction commit failed: {e:?}"))
-        })?;
+        tx.done()
+            .await
+            .map_err(|e| StorageError::QueryError(format!("transaction commit failed: {e:?}")))?;
 
         debug!(
             message_id = %id,
@@ -287,9 +285,10 @@ impl Mailbox for IndexedDbMailbox {
             StorageError::QueryError(format!("failed to access object store: {e:?}"))
         })?;
 
-        let all_values = store.get_all(None, None).await.map_err(|e| {
-            StorageError::QueryError(format!("failed to get all messages: {e:?}"))
-        })?;
+        let all_values = store
+            .get_all(None, None)
+            .await
+            .map_err(|e| StorageError::QueryError(format!("failed to get all messages: {e:?}")))?;
 
         tx.done().await.map_err(|e| {
             StorageError::QueryError(format!("read transaction commit failed: {e:?}"))
@@ -312,9 +311,11 @@ impl Mailbox for IndexedDbMailbox {
 
         // Sort: highest priority first, then oldest first (FIFO within same priority)
         queued.sort_by(|a, b| {
-            b.priority_num
-                .cmp(&a.priority_num)
-                .then_with(|| a.created_at.partial_cmp(&b.created_at).unwrap_or(std::cmp::Ordering::Equal))
+            b.priority_num.cmp(&a.priority_num).then_with(|| {
+                a.created_at
+                    .partial_cmp(&b.created_at)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
 
         // Take up to batch size
@@ -357,7 +358,10 @@ impl Mailbox for IndexedDbMailbox {
             StorageError::QueryError(format!("write transaction commit failed: {e:?}"))
         })?;
 
-        info!(count = results.len(), "dequeued messages marked as Inflight");
+        info!(
+            count = results.len(),
+            "dequeued messages marked as Inflight"
+        );
         Ok(results)
     }
 
@@ -379,9 +383,9 @@ impl Mailbox for IndexedDbMailbox {
             StorageError::QueryError(format!("failed to delete message {message_id}: {e:?}"))
         })?;
 
-        tx.done().await.map_err(|e| {
-            StorageError::QueryError(format!("transaction commit failed: {e:?}"))
-        })?;
+        tx.done()
+            .await
+            .map_err(|e| StorageError::QueryError(format!("transaction commit failed: {e:?}")))?;
 
         debug!(message_id = %message_id, "acknowledged and deleted message");
         Ok(())
@@ -400,13 +404,14 @@ impl Mailbox for IndexedDbMailbox {
             StorageError::QueryError(format!("failed to access object store: {e:?}"))
         })?;
 
-        let all_values = store.get_all(None, None).await.map_err(|e| {
-            StorageError::QueryError(format!("failed to get all messages: {e:?}"))
-        })?;
+        let all_values = store
+            .get_all(None, None)
+            .await
+            .map_err(|e| StorageError::QueryError(format!("failed to get all messages: {e:?}")))?;
 
-        tx.done().await.map_err(|e| {
-            StorageError::QueryError(format!("transaction commit failed: {e:?}"))
-        })?;
+        tx.done()
+            .await
+            .map_err(|e| StorageError::QueryError(format!("transaction commit failed: {e:?}")))?;
 
         let mut queued_messages: u64 = 0;
         let mut inflight_messages: u64 = 0;
@@ -489,11 +494,7 @@ impl IndexedDbMailbox {
             &JsValue::from_f64(stored.priority_num as f64),
         )?;
         set_prop(&obj, "status", &JsValue::from_str(&stored.status))?;
-        set_prop(
-            &obj,
-            "created_at",
-            &JsValue::from_f64(stored.created_at),
-        )?;
+        set_prop(&obj, "created_at", &JsValue::from_f64(stored.created_at))?;
 
         // Compound index key path value
         let index_val =

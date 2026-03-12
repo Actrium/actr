@@ -274,12 +274,9 @@ impl KvStore for IndexedDbKvStore {
                 }
                 KvOp::Delete { key } => {
                     // Silently ignore missing keys within a batch.
-                    store
-                        .delete(JsValue::from_str(key))
-                        .await
-                        .map_err(|e| {
-                            PlatformError::Storage(format!("batch delete failed: {e:?}"))
-                        })?;
+                    store.delete(JsValue::from_str(key)).await.map_err(|e| {
+                        PlatformError::Storage(format!("batch delete failed: {e:?}"))
+                    })?;
                     trace!(key = %key, "batch: delete");
                 }
             }

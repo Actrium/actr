@@ -162,10 +162,7 @@ mod tests {
     #[test]
     fn test_peer_gate_creation() {
         let wire_builder = Arc::new(WebWireBuilder::new());
-        let manager = Arc::new(PeerTransport::new(
-            "test-sw".to_string(),
-            wire_builder,
-        ));
+        let manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
         let _gate = PeerGate::new(manager);
     }
 }
