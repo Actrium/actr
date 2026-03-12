@@ -1,87 +1,49 @@
-//! Echo Real Server - real Actor server
+//! Echo Server — minimal echo service example
 //!
-//! using/use ActorSystem start，via/through signaling server register
+//! Demonstrates the standard Actor startup flow:
+//! config → ActrSystem → attach Workload → node.start() → serve
 
 mod echo_service;
 mod generated;
 
 use echo_service::EchoService;
-use generated::echo_service_actor::EchoServiceWorkload;
+use generated::echo_actor::EchoServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. loadconfig
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 1. Load config
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_file(&config_path)?;
+    let config = actr::config::ConfigParser::from_file(&config_path)?;
 
-    // initialize[...]（log/[...]）
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
-    info!("🚀 Echo Real Server start");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 using/usereal protobuf register[...]");
-    info!("📡 need/require signaling-server [...] ws://localhost:8081");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("Echo Server starting");
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. create ActorSystem
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  create ActorSystem...");
+    // 2. Create ActrSystem
+    let system = ActrSystem::new(config).await?;
 
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
-        Err(e) => {
-            error!("❌ ActrSystem createfailed: {:?}", e);
-            return Err(e.into());
-        }
-    };
-
-    info!("✅ ActrSystem createsuccess");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. create EchoService [...]attach Workload
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("📦 create EchoService...");
-
-    let echo_service = EchoService::new();
-    let workload = EchoServiceWorkload::new(echo_service);
+    // 3. Attach EchoService workload
+    let workload = EchoServiceWorkload::new(EchoService);
     let node = system.attach(workload);
 
-    info!("✅ EchoService attached");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. start ActrNode (connection signaling server, register, startreceive)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🚀 start ActrNode...");
-
+    // 4. Start ActrNode (connect signaling, register, begin serving)
     let actr_ref = match node.start().await {
-        Ok(actr) => actr,
+        Ok(r) => r,
         Err(e) => {
-            error!("❌ ActrNode startfailed: {:?}", e);
-            error!("💡 tip/hint：please ensure signaling-server already[...]: cd signaling-server && cargo run");
+            error!("ActrNode start failed: {:?}", e);
             return Err(e.into());
         }
     };
 
-    info!("✅ ActrNode startsuccess！");
-    info!("🆔 Server ID: {:?}", actr_ref.actor_id());
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("🎉 Echo Server alreadyfully/completelystart[...]register");
-    info!("📡 waiting/wait forclientconnection...");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!(id = ?actr_ref.actor_id(), "Echo Server ready, waiting for requests...");
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. Wait for Ctrl+C and shutdown
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 5. Wait for Ctrl+C
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
-    info!("✅ Echo Server closed");
-
+    info!("Echo Server stopped");
     Ok(())
 }
