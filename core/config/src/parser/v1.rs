@@ -103,7 +103,6 @@ impl ParserV1 {
             exports,
             dependencies,
             signaling_url,
-            ais_endpoint,
             realm: self_realm,
             realm_secret: raw.system.deployment.realm_secret.clone(),
             visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
@@ -117,7 +116,7 @@ impl ParserV1 {
             observability,
             config_dir,
             execution_mode,
-            ais_endpoint: raw.system.deployment.ais_endpoint.clone(),
+            ais_endpoint: Some(ais_endpoint.to_string()),
         })
     }
 
@@ -648,7 +647,7 @@ run = "cargo run"
         assert_eq!(config.realm.realm_id, 1001);
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
-        assert_eq!(config.ais_endpoint.as_str(), "http://localhost:8081/ais");
+        assert_eq!(config.ais_endpoint.as_deref(), Some("http://localhost:8081/ais"));
     }
 
     #[test]
@@ -692,7 +691,7 @@ realm_id = 1001
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
         assert!(dep.is_cross_realm(&config.realm));
-        assert_eq!(config.ais_endpoint.as_str(), "http://localhost:8081/ais");
+        assert_eq!(config.ais_endpoint.as_deref(), Some("http://localhost:8081/ais"));
     }
 
     #[test]
@@ -726,8 +725,8 @@ realm_id = 1001
         let config = parser.parse(raw).unwrap();
 
         assert_eq!(
-            config.ais_endpoint.as_str(),
-            "https://registry.example.com/custom-ais"
+            config.ais_endpoint.as_deref(),
+            Some("https://registry.example.com/custom-ais")
         );
     }
 

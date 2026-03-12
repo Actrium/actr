@@ -2533,7 +2533,6 @@ mod tests {
             exports: vec![],
             dependencies: vec![],
             signaling_url: url::Url::parse("ws://localhost:8081").unwrap(),
-            ais_endpoint: url::Url::parse("http://localhost:8081/ais").unwrap(),
             realm: Realm { realm_id: 7 },
             realm_secret: None,
             visible_in_discovery: true,

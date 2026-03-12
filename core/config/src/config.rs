@@ -60,11 +60,6 @@ pub struct Config {
     /// Signaling server URL (validated)
     pub signaling_url: Url,
 
-    /// AIS HTTP endpoint (validated)
-    ///
-    /// Required via `[system.ais_endpoint].url`.
-    pub ais_endpoint: Url,
-
     /// Owning Realm (Security Realm)
     pub realm: Realm,
 
@@ -492,7 +487,6 @@ mod tests {
                 },
             ],
             signaling_url: Url::parse("ws://localhost:8081").unwrap(),
-            ais_endpoint: Url::parse("http://localhost:8081/ais").unwrap(),
             realm: Realm { realm_id: 1001 },
             realm_secret: None,
             visible_in_discovery: true,
