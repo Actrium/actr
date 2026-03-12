@@ -32,12 +32,10 @@ impl ConnType {
     const ALL: [ConnType; 2] = [ConnType::WebSocket, ConnType::WebRTC];
 }
 
-impl From<&WireHandle> for ConnType {
-    fn from(conn: &WireHandle) -> Self {
-        match conn {
-            WireHandle::WebSocket(_) => ConnType::WebSocket,
-            WireHandle::WebRTC(_) => ConnType::WebRTC,
-        }
+impl ConnType {
+    /// Derive ConnType from a WireHandle trait object
+    pub fn from_wire(handle: &dyn WireHandle) -> Self {
+        handle.connection_type()
     }
 }
 
@@ -128,14 +126,14 @@ impl WirePool {
     /// # Behavior
     /// - **Unconditionally starts**: Always starts connection attempt, even if a connection already exists
     /// - Use `add_connection_smart()` if you want to skip already-ready connections
-    pub fn add_connection(&self, connection: WireHandle) {
+    pub fn add_connection(&self, connection: Arc<dyn WireHandle>) {
         let connections = Arc::clone(&self.connections);
         let ready_tx = self.ready_tx.clone();
         let pending = Arc::clone(&self.pending);
         let retry_config = self.retry_config;
         let closed = Arc::clone(&self.closed);
 
-        let conn_type = ConnType::from(&connection);
+        let conn_type = connection.connection_type();
 
         tokio::spawn(async move {
             // Initialize status
@@ -202,7 +200,7 @@ impl WirePool {
                         {
                             let mut conns = connections.write().await;
                             conns[conn_type.as_index()] =
-                                Some(WireStatus::Ready(connection.clone()));
+                                Some(WireStatus::Ready(Arc::clone(&connection)));
                         }
 
                         // Broadcast new ready connection set (keep all connections, no replacement)
@@ -255,8 +253,8 @@ impl WirePool {
     /// # Use Case
     /// Perfect for reconnection scenarios where you want to retry failed connections
     /// without disrupting working ones.
-    pub async fn add_connection_smart(&self, connection: WireHandle) {
-        let conn_type = ConnType::from(&connection);
+    pub async fn add_connection_smart(&self, connection: Arc<dyn WireHandle>) {
+        let conn_type = connection.connection_type();
 
         // Check current status
         let should_add = {
@@ -317,11 +315,11 @@ impl WirePool {
     }
 
     /// Get connection of specified type
-    pub async fn get_connection(&self, conn_type: ConnType) -> Option<WireHandle> {
+    pub async fn get_connection(&self, conn_type: ConnType) -> Option<Arc<dyn WireHandle>> {
         let conns = self.connections.read().await;
 
         match &conns[conn_type.as_index()] {
-            Some(WireStatus::Ready(conn)) => Some(conn.clone()),
+            Some(WireStatus::Ready(conn)) => Some(Arc::clone(conn)),
             _ => None,
         }
     }

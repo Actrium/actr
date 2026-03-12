@@ -113,7 +113,7 @@ impl DefaultWireBuilder {
 #[async_trait]
 impl WireBuilder for DefaultWireBuilder {
     #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
-    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>> {
+    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
         // Delegate to method with no cancel token
         self.create_connections_with_cancel(dest, None).await
     }
@@ -123,8 +123,8 @@ impl WireBuilder for DefaultWireBuilder {
         &self,
         dest: &Dest,
         cancel_token: Option<CancellationToken>,
-    ) -> NetworkResult<Vec<WireHandle>> {
-        let mut connections = Vec::new();
+    ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        let mut connections: Vec<Arc<dyn WireHandle>> = Vec::new();
 
         // Helper to check cancellation
         let check_cancelled = |token: &Option<CancellationToken>| -> NetworkResult<()> {
@@ -160,7 +160,7 @@ impl WireBuilder for DefaultWireBuilder {
                     ws_conn = ws_conn.with_credential_b64(cred_b64);
                 }
 
-                connections.push(WireHandle::WebSocket(ws_conn));
+                connections.push(Arc::new(ws_conn) as Arc<dyn WireHandle>);
             } else {
                 tracing::debug!(
                     "🔎 [Factory] No WebSocket URL available for {:?}, skipping WS connection",
@@ -198,7 +198,7 @@ impl WireBuilder for DefaultWireBuilder {
                                 }
                                 return Err(e);
                             }
-                            connections.push(WireHandle::WebRTC(webrtc_conn));
+                            connections.push(Arc::new(webrtc_conn) as Arc<dyn WireHandle>);
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -234,6 +234,7 @@ impl WireBuilder for DefaultWireBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::ConnType;
     use actr_protocol::ActrId;
 
     #[tokio::test]
@@ -272,6 +273,6 @@ mod tests {
         let dest = Dest::actor(actor_id);
         let connections = factory.create_connections(&dest).await.unwrap();
         assert_eq!(connections.len(), 1);
-        assert!(matches!(connections[0], WireHandle::WebSocket(_)));
+        assert_eq!(connections[0].connection_type(), ConnType::WebSocket);
     }
 }

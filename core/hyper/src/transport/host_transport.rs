@@ -52,7 +52,7 @@
 //! }
 //! ```
 
-use super::{DataLane, NetworkError, NetworkResult};
+use super::{DataLane, MpscLane, NetworkError, NetworkResult};
 use actr_framework::Bytes;
 use actr_protocol::{ActrError, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
@@ -85,7 +85,7 @@ pub struct HostTransport {
 
     // ========== Management data ==========
     /// Lane cache (avoid repeated creation)
-    lane_cache: Arc<RwLock<HashMap<LaneKey, DataLane>>>,
+    lane_cache: Arc<RwLock<HashMap<LaneKey, Arc<dyn DataLane>>>>,
 
     /// Pending requests (request/response matching)
     /// Sender can receive either success (Bytes) or error (ProtocolError)
@@ -225,7 +225,7 @@ impl HostTransport {
         &self,
         payload_type: PayloadType,
         identifier: Option<String>,
-    ) -> NetworkResult<DataLane> {
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         let key = LaneKey {
             payload_type,
             identifier: identifier.clone(),
@@ -281,7 +281,7 @@ impl HostTransport {
         };
 
         // 3. Create DataLane
-        let lane = DataLane::mpsc_shared(payload_type, pair.tx, pair.rx);
+        let lane: Arc<dyn DataLane> = Arc::new(MpscLane::new_shared(payload_type, pair.tx, pair.rx));
 
         // 4. Cache it
         self.lane_cache.write().await.insert(key, lane.clone());

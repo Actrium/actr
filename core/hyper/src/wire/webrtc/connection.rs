@@ -1,12 +1,12 @@
 //! WebRTC P2P Connection implementation
 
-use crate::transport::DataLane;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::session::ConnectionSession;
-use crate::transport::{NetworkError, NetworkResult};
+use crate::transport::{ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle};
 use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
+use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +19,9 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 /// Type alias for media track storage (track_id → (Track, Sender))
 type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>)>>>;
+
+/// Type alias for lane cache array (PayloadType index → cached DataLane)
+type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
@@ -43,10 +46,10 @@ pub struct WebRtcConnection {
     /// RTP SSRC per track (track_id → ssrc)
     track_ssrcs: Arc<RwLock<HashMap<String, u32>>>,
 
-    /// Lane Cache：PayloadType → Lane（ merely 3 solely proportion Type）
-    /// index reference mapping：RpcReliable(0), RpcSignal(1), StreamReliable(2), StreamLatencyFirst(3)
-    /// MediaTrack not Cachein array in ，using HashMap
-    lane_cache: Arc<RwLock<[Option<DataLane>; 4]>>,
+    /// Lane Cache: PayloadType -> Lane (4 types use DataChannel)
+    /// index mapping: RpcReliable(0), RpcSignal(1), StreamReliable(2), StreamLatencyFirst(3)
+    /// MediaTrack not cached in array, uses HashMap
+    lane_cache: LaneCache<4>,
 
     /// Event broadcaster for connection state changes
     event_tx: broadcast::Sender<ConnectionEvent>,
@@ -460,9 +463,14 @@ impl WebRtcConnection {
 }
 
 impl WebRtcConnection {
-    /// GetorCreate DataLane（ carry Cache）
-    pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
-        // MediaTrack not Supportin this Method in Create（need stream_id）
+    /// Get or create DataLane (with caching)
+    pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        self.get_lane_internal(payload_type).await
+    }
+
+    /// Internal implementation of get_lane
+    async fn get_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        // MediaTrack not supported in this method (needs stream_id)
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(
                 "MediaTrack Lane requires stream_id, use get_media_lane() instead".to_string(),
@@ -471,32 +479,21 @@ impl WebRtcConnection {
 
         let idx = payload_type as usize;
 
-        // 1. CheckCache
+        // 1. Check cache
         let mut need_recreate = false;
         {
             let cache = self.lane_cache.read().await;
             if let Some(lane) = &cache[idx] {
-                // If the cached lane is backed by a DataChannel, ensure it is still open.
-                if let DataLane::WebRtcDataChannel { data_channel, .. } = lane {
-                    use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-                    let state = data_channel.ready_state();
-                    if matches!(
-                        state,
-                        RTCDataChannelState::Closed | RTCDataChannelState::Closing
-                    ) {
-                        tracing::warn!(
-                            "♻️ Cached DataChannel for {:?} is {:?}, recreating lane",
-                            payload_type,
-                            state
-                        );
-                        need_recreate = true;
-                    } else {
-                        tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
-                        return Ok(lane.clone());
-                    }
+                // Check if the cached lane's transport is still healthy
+                if !lane.is_healthy() {
+                    tracing::warn!(
+                        "Cached lane for {:?} is unhealthy, recreating",
+                        payload_type,
+                    );
+                    need_recreate = true;
                 } else {
-                    tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
-                    return Ok(lane.clone());
+                    tracing::debug!("Reuse cached DataLane: {:?}", payload_type);
+                    return Ok(Arc::clone(lane));
                 }
             }
         }
@@ -509,13 +506,13 @@ impl WebRtcConnection {
             channels[idx] = None;
         }
 
-        // 2. Createnew DataLane
+        // 2. Create new DataLane
         let lane = self.create_lane_internal(payload_type).await?;
 
         // 3. Cache
         {
             let mut cache = self.lane_cache.write().await;
-            cache[idx] = Some(lane.clone());
+            cache[idx] = Some(Arc::clone(&lane));
         }
 
         tracing::info!("✨ WebRtcConnection Createnew DataLane: {:?}", payload_type);
@@ -528,6 +525,11 @@ impl WebRtcConnection {
     /// Used when the underlying DataChannel has transitioned to Closed and needs
     /// to be recreated on next `get_lane` call.
     pub async fn invalidate_lane(&self, payload_type: PayloadType) {
+        self.invalidate_lane_internal(payload_type).await;
+    }
+
+    /// Internal implementation of invalidate_lane
+    async fn invalidate_lane_internal(&self, payload_type: PayloadType) {
         let idx = payload_type as usize;
         let mut cache = self.lane_cache.write().await;
         cache[idx] = None;
@@ -535,8 +537,8 @@ impl WebRtcConnection {
         channels[idx] = None;
     }
 
-    /// inner part Method：Create DataChannel Lane（ not carry Cache）
-    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
+    /// Internal: Create DataChannel Lane (without cache)
+    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         // Checkwhetheras MediaTrack Type
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(
@@ -688,7 +690,7 @@ impl WebRtcConnection {
         channels[idx] = Some(Arc::clone(&data_channel));
 
         // Returns Lane
-        Ok(DataLane::webrtc_data_channel(data_channel, rx))
+        Ok(Arc::new(WebRtcDataLane::new(data_channel, rx)))
     }
 
     /// Add media track to PeerConnection
@@ -825,7 +827,7 @@ impl WebRtcConnection {
     /// - `_stream_id`: Media stream ID
     ///
     /// backwardaftercompatible hold Method：create_lane adjust usage get_lane
-    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
+    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         self.get_lane(payload_type).await
     }
 
@@ -838,7 +840,7 @@ impl WebRtcConnection {
         data_channel: Arc<RTCDataChannel>,
         payload_type: PayloadType,
         message_tx: mpsc::UnboundedSender<(Vec<u8>, Bytes, PayloadType)>,
-    ) -> NetworkResult<DataLane> {
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         // Check if it's MediaTrack type
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(
@@ -957,10 +959,10 @@ impl WebRtcConnection {
         }
 
         // Create and cache Lane
-        let lane = DataLane::webrtc_data_channel(data_channel, rx);
+        let lane: Arc<dyn DataLane> = Arc::new(WebRtcDataLane::new(data_channel, rx));
         {
             let mut cache = self.lane_cache.write().await;
-            cache[idx] = Some(lane.clone());
+            cache[idx] = Some(Arc::clone(&lane));
         }
 
         tracing::info!(
@@ -1004,6 +1006,37 @@ impl WebRtcConnection {
         });
 
         Ok(lane)
+    }
+}
+
+#[async_trait]
+impl WireHandle for WebRtcConnection {
+    fn connection_type(&self) -> ConnType {
+        ConnType::WebRTC
+    }
+
+    fn priority(&self) -> u8 {
+        1 // WebRTC has higher priority
+    }
+
+    async fn connect(&self) -> NetworkResult<()> {
+        Self::connect(self).await
+    }
+
+    fn is_connected(&self) -> bool {
+        Self::is_connected(self)
+    }
+
+    async fn close(&self) -> NetworkResult<()> {
+        Self::close(self).await
+    }
+
+    async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        self.get_lane_internal(payload_type).await
+    }
+
+    async fn invalidate_lane(&self, payload_type: PayloadType) {
+        self.invalidate_lane_internal(payload_type).await;
     }
 }
 

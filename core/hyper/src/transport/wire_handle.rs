@@ -1,128 +1,68 @@
-//! Wire Handle - Unified handle for Wire layer components
+//! Wire Handle - Trait-based abstraction for Wire layer connections
 //!
-//! Provides unified access interface to Wire layer components (WebRtcConnection/WebSocketConnection)
-//! Uses enum dispatch for zero-cost abstraction
+//! WireHandle trait provides a unified interface for different wire connection
+//! types (WebRTC, WebSocket, etc.). Platform-specific implementations provide
+//! the concrete connection behavior.
 
 use super::error::NetworkResult;
 use super::lane::DataLane;
+use super::wire_pool::ConnType;
 use actr_protocol::PayloadType;
+use async_trait::async_trait;
+use std::sync::Arc;
 
-// Re-export Wire layer connection types
-pub use crate::wire::webrtc::WebRtcConnection;
-pub use crate::wire::websocket::WebSocketConnection;
-
-/// WireHandle - Unified handle for Wire layer components
+/// WireHandle - Unified interface for Wire layer connections
 ///
 /// # Design Philosophy
-/// - Uses enum dispatch instead of trait objects, achieving zero virtual call overhead
-/// - Provides unified interface to access different Wire layer implementations
+/// - Uses trait objects for cross-platform extensibility
 /// - Supports connection priority comparison (WebRTC > WebSocket)
-#[derive(Clone, Debug)]
-pub enum WireHandle {
-    /// WebSocket connection handle
-    WebSocket(WebSocketConnection),
-
-    /// WebRTC connection handle
-    WebRTC(WebRtcConnection),
-}
-
-impl WireHandle {
-    /// Get connection type name
-    #[inline]
-    pub fn connection_type(&self) -> &'static str {
-        match self {
-            WireHandle::WebSocket(_) => "WebSocket",
-            WireHandle::WebRTC(_) => "WebRTC",
-        }
-    }
+/// - Platform-specific implementations (native, web) implement this trait
+#[async_trait]
+pub trait WireHandle: Send + Sync + std::fmt::Debug {
+    /// Get connection type
+    fn connection_type(&self) -> ConnType;
 
     /// Connection priority (higher number = higher priority)
-    #[inline]
-    pub fn priority(&self) -> u8 {
-        match self {
-            WireHandle::WebSocket(_) => 0,
-            WireHandle::WebRTC(_) => 1, // WebRTC has higher priority
-        }
-    }
+    fn priority(&self) -> u8;
 
     /// Establish connection
-    #[inline]
-    pub async fn connect(&self) -> NetworkResult<()> {
-        match self {
-            WireHandle::WebSocket(ws) => ws.connect().await,
-            WireHandle::WebRTC(rtc) => rtc.connect().await,
-        }
-    }
+    async fn connect(&self) -> NetworkResult<()>;
 
     /// Check if connected
-    #[inline]
-    pub fn is_connected(&self) -> bool {
-        match self {
-            WireHandle::WebSocket(ws) => ws.is_connected(),
-            WireHandle::WebRTC(rtc) => rtc.is_connected(),
-        }
-    }
+    fn is_connected(&self) -> bool;
 
     /// Close connection
-    #[inline]
-    pub async fn close(&self) -> NetworkResult<()> {
-        match self {
-            WireHandle::WebSocket(ws) => ws.close().await,
-            WireHandle::WebRTC(rtc) => rtc.close().await,
-        }
-    }
+    async fn close(&self) -> NetworkResult<()>;
 
     /// Get or create DataLane (with caching)
-    #[inline]
-    pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
-        match self {
-            WireHandle::WebSocket(ws) => ws.get_lane(payload_type).await,
-            WireHandle::WebRTC(rtc) => rtc.get_lane(payload_type).await,
-        }
-    }
+    async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>>;
 
-    /// Create Lane (backward compatible)
-    #[inline]
-    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
-        self.get_lane(payload_type).await
-    }
-
-    /// Convert to WebRTC connection (if it is one)
-    #[inline]
-    pub fn as_webrtc(&self) -> Option<&WebRtcConnection> {
-        match self {
-            WireHandle::WebRTC(rtc) => Some(rtc),
-            _ => None,
-        }
-    }
-
-    /// Convert to WebSocket connection (if it is one)
-    #[inline]
-    pub fn as_websocket(&self) -> Option<&WebSocketConnection> {
-        match self {
-            WireHandle::WebSocket(ws) => Some(ws),
-            _ => None,
-        }
-    }
-
-    /// Invalidate cached lane for WebRTC connections (no-op for WebSocket).
-    #[inline]
-    pub async fn invalidate_lane(&self, payload_type: PayloadType) {
-        if let WireHandle::WebRTC(rtc) = self {
-            rtc.invalidate_lane(payload_type).await;
-        }
-    }
+    /// Invalidate cached lane (no-op by default).
+    ///
+    /// Used when the underlying transport (e.g. DataChannel) has closed
+    /// and needs to be recreated on next `get_lane` call.
+    async fn invalidate_lane(&self, _payload_type: PayloadType) {}
 }
 
 /// Wire connection status
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum WireStatus {
     /// Connecting
     Connecting,
 
     /// Connection ready
-    Ready(WireHandle),
+    Ready(Arc<dyn WireHandle>),
 
     /// Connection failed
     Failed,
+}
+
+impl Clone for WireStatus {
+    fn clone(&self) -> Self {
+        match self {
+            WireStatus::Connecting => WireStatus::Connecting,
+            WireStatus::Ready(handle) => WireStatus::Ready(Arc::clone(handle)),
+            WireStatus::Failed => WireStatus::Failed,
+        }
+    }
 }

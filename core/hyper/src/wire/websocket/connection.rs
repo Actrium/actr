@@ -1,9 +1,9 @@
 //! WebSocket C/S Connection implementation
 
-use crate::transport::DataLane;
-use crate::transport::{NetworkError, NetworkResult};
+use crate::transport::{ConnType, DataLane, NetworkError, NetworkResult, WebSocketDataLane, WireHandle, WsSink};
 use actr_protocol::PayloadType;
-use futures_util::stream::{SplitSink, SplitStream};
+use async_trait::async_trait;
+use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -23,6 +23,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 /// ```text
 /// [payload_type: 1 byte][data_len: 4 bytes][data: N bytes]
 /// ```
+/// Type alias for lane cache array (PayloadType index → cached DataLane)
+type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
+
 #[derive(Debug, Clone)]
 struct TransportMessage {
     payload_type: PayloadType,
@@ -72,9 +75,6 @@ impl TransportMessage {
     }
 }
 
-/// WebSocket Sink Type distinct name
-type WsSink = Arc<Mutex<Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>>>>;
-
 /// WebSocketConnection - WebSocket C/S Connect
 #[derive(Clone, Debug)]
 pub struct WebSocketConnection {
@@ -87,11 +87,11 @@ pub struct WebSocketConnection {
     /// Write end (Sink) - using Option to avoid initialization issues
     sink: WsSink,
 
-    /// message route by table ：PayloadType → Sender（using array index reference ，5 fixed elements，using Bytes zero-copy）
+    /// message route by table: PayloadType -> Sender (using array index, 5 fixed elements, Bytes zero-copy)
     router: Arc<RwLock<[Option<mpsc::Sender<bytes::Bytes>>; 5]>>,
 
-    /// Lane Cache：PayloadType → Lane（using array index reference ，5 fixed elements）
-    lane_cache: Arc<RwLock<[Option<DataLane>; 5]>>,
+    /// Lane Cache: PayloadType -> Lane (using array index, 5 fixed elements)
+    lane_cache: LaneCache<5>,
 
     /// connection status
     connected: Arc<RwLock<bool>>,
@@ -300,38 +300,43 @@ impl WebSocketConnection {
 }
 
 impl WebSocketConnection {
-    /// GetorCreate DataLane（ carry Cache）
-    pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
+    /// Get or create DataLane (with caching)
+    pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        self.get_lane_internal(payload_type).await
+    }
+
+    /// Internal implementation of get_lane
+    async fn get_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         let idx = payload_type as usize;
 
-        // 1. CheckCache
+        // 1. Check cache
         {
             let cache = self.lane_cache.read().await;
             if let Some(lane) = &cache[idx] {
-                tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
-                return Ok(lane.clone());
+                tracing::debug!("Reuse cached DataLane: {:?}", payload_type);
+                return Ok(Arc::clone(lane));
             }
         }
 
-        // 2. Createnew DataLane
+        // 2. Create new DataLane
         let lane = self.create_lane_internal(payload_type).await?;
 
         // 3. Cache
         {
             let mut cache = self.lane_cache.write().await;
-            cache[idx] = Some(lane.clone());
+            cache[idx] = Some(Arc::clone(&lane));
         }
 
         tracing::info!(
-            "✨ WebSocketConnection Createnew DataLane: {:?}",
+            "WebSocketConnection created new DataLane: {:?}",
             payload_type
         );
 
         Ok(lane)
     }
 
-    /// inner part Method：Create DataLane（ not carry Cache）
-    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
+    /// Internal: Create DataLane (without cache)
+    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         // Check connection status
         if !*self.connected.read().await {
             return Err(NetworkError::ConnectionError(
@@ -339,25 +344,20 @@ impl WebSocketConnection {
             ));
         }
 
-        // CreateReceive channel
+        // Create receive channel
         let (tx, rx) = mpsc::channel(100);
 
-        // Register route by
+        // Register route
         self.register_route(payload_type, tx).await?;
 
-        // Getshared's Sink
+        // Get shared Sink
         let sink = self.sink.clone();
 
-        // Create DataLane（usingnew's websocket transform body ）
-        Ok(DataLane::websocket(sink, payload_type, rx))
+        // Create WebSocketDataLane
+        Ok(Arc::new(WebSocketDataLane::new(sink, payload_type, rx)))
     }
 
-    /// backwardaftercompatible hold Method：create_lane adjust usage get_lane
-    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<DataLane> {
-        self.get_lane(payload_type).await
-    }
-
-    /// CloseConnect
+    /// Close connection
     pub async fn close(&self) -> NetworkResult<()> {
         *self.connected.write().await = false;
 
@@ -376,8 +376,35 @@ impl WebSocketConnection {
         let mut cache = self.lane_cache.write().await;
         *cache = [None, None, None, None, None];
 
-        tracing::info!("🔌 WebSocketConnection already Close");
+        tracing::info!("WebSocketConnection closed");
         Ok(())
+    }
+}
+
+#[async_trait]
+impl WireHandle for WebSocketConnection {
+    fn connection_type(&self) -> ConnType {
+        ConnType::WebSocket
+    }
+
+    fn priority(&self) -> u8 {
+        0
+    }
+
+    async fn connect(&self) -> NetworkResult<()> {
+        self.connect().await
+    }
+
+    fn is_connected(&self) -> bool {
+        self.is_connected()
+    }
+
+    async fn close(&self) -> NetworkResult<()> {
+        Self::close(self).await
+    }
+
+    async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        self.get_lane_internal(payload_type).await
     }
 }
 

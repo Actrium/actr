@@ -34,7 +34,7 @@ pub trait WireBuilder: Send + Sync {
     ///
     /// # Returns
     /// - Wire handle list (may contain multiple types: WebSocket, WebRTC, etc.)
-    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<WireHandle>>;
+    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>>;
 
     /// Create Wire handle list with cancellation support
     ///
@@ -51,7 +51,7 @@ pub trait WireBuilder: Send + Sync {
         &self,
         dest: &Dest,
         cancel_token: Option<CancellationToken>,
-    ) -> NetworkResult<Vec<WireHandle>> {
+    ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
         // Check if already cancelled
         if let Some(ref token) = cancel_token {
             if token.is_cancelled() {
@@ -573,7 +573,7 @@ mod tests {
 
     #[async_trait]
     impl WireBuilder for TestFactory {
-        async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<WireHandle>> {
+        async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
             // Test factory: returns empty list (real usage requires actual connections)
             Ok(vec![])
         }

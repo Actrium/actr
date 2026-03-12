@@ -31,7 +31,7 @@ impl DestTransport {
     /// # Arguments
     /// - `dest`: destination
     /// - `connections`: list of pre-built connections (WebSocket/WebRTC)
-    pub async fn new(dest: Dest, connections: Vec<WireHandle>) -> NetworkResult<Self> {
+    pub async fn new(dest: Dest, connections: Vec<Arc<dyn WireHandle>>) -> NetworkResult<Self> {
         let conn_mgr = Arc::new(WirePool::new(RetryConfig::default()));
 
         // Start connection tasks in background (concurrently)

@@ -23,8 +23,8 @@ mod wire_pool;
 // Re-export Dest from actr-framework (unified API layer)
 pub use actr_framework::Dest;
 
-// DataLane core abstraction
-pub use lane::DataLane;
+// DataLane core abstraction (trait + concrete types)
+pub use lane::{DataLane, MpscLane, WebRtcDataLane, WebSocketDataLane, WsSink};
 pub use route_table::{DataChannelQoS, DataLaneType, PayloadTypeExt, RetryPolicy};
 
 // Transport management
@@ -36,7 +36,7 @@ pub use dest_transport::DestTransport;
 // Wire layer management
 pub use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
 pub use wire_handle::WireHandle;
-pub use wire_pool::WirePool;
+pub use wire_pool::{ConnType, WirePool};
 
 // Error types
 pub use error::{NetworkError, NetworkResult};
