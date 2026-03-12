@@ -96,9 +96,6 @@ wasmtime = { workspace = true, optional = true }
 # === Dynclib Runtime (native shared library, optional) ===
 libloading = { version = "0.8", optional = true }
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [dev-dependencies]
 tokio = { workspace = true }
 rand.workspace = true

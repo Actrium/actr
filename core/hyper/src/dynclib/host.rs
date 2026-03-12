@@ -433,7 +433,10 @@ impl DynclibHost {
     ) -> DynclibResult<Self> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|e| {
-            DynclibError::LoadFailed(format!("failed to read binary for verification: {}: {e}", path.display()))
+            DynclibError::LoadFailed(format!(
+                "failed to read binary for verification: {}: {e}",
+                path.display()
+            ))
         })?;
         let manifest = verifier.verify(&bytes)?;
         tracing::info!(

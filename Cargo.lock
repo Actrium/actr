@@ -151,7 +151,6 @@ dependencies = [
  "either",
  "futures-util",
  "hex",
- "libc",
  "libloading",
  "mockito",
  "num_cpus",

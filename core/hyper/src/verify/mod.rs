@@ -93,7 +93,7 @@ impl PackageVerifier {
         Ok(manifest)
     }
 
-    /// Verify an ELF package (Native Mode 1 / Process Mode 2).
+    /// Verify an ELF package (Native / DynCLib).
     ///
     /// The flow matches `verify_wasm`, but section extraction and hashing use ELF-specific logic.
     fn verify_elf(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
@@ -126,7 +126,7 @@ impl PackageVerifier {
         Ok(manifest)
     }
 
-    /// Verify a Mach-O package (Native Mode 1 / Process Mode 2).
+    /// Verify a Mach-O package (Native / DynCLib).
     ///
     /// The flow matches `verify_wasm`, but section extraction and hashing use Mach-O-specific logic.
     /// Fat binaries return `ManifestNotFound` from `extract_macho_manifest`.

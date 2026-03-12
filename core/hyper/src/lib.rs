@@ -18,7 +18,7 @@
 //! - Actor bootstrap (registers with AIS on behalf of the Actor, obtains credential)
 //! - Storage namespace isolation (independent SQLite space per Actor)
 //! - Cryptographic primitives (Ed25519 sign/verify, Actor does not hold raw private keys)
-//! - Runtime process management (ActrSystem lifecycle across three modes)
+//! - Runtime lifecycle management (ActrSystem lifecycle for Native and WASM execution bodies)
 //!
 //! ### Runtime Infrastructure (formerly actr-runtime)
 //!
@@ -129,7 +129,7 @@ pub mod resource;
 pub use ais_client::AisClient;
 pub use config::{HyperConfig, TrustMode};
 pub use error::{HyperError, HyperResult};
-pub use runtime::{ActorRuntime, ActrSystemHandle, ChildProcessHandle, WasmInstanceHandle};
+pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
 pub use storage::ActorStore;
 pub use verify::{
     MfrCertCache, PackageManifest, embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
@@ -395,7 +395,7 @@ impl Hyper {
     /// Bootstrap credential registration with AIS (two-phase flow)
     ///
     /// Hyper completes registration bootstrap on behalf of the Actor to obtain an ActrId credential.
-    /// This credential is then passed to ActrSystem (Mode 1/3) or via environment variables to the child process (Mode 2).
+    /// This credential is then passed to ActrSystem (Native/WASM).
     ///
     /// ## Two-Phase Logic
     ///

@@ -1148,13 +1148,12 @@ impl<W: Workload> ActrNode<W> {
         result
     }
 
-    /// Inject a pre-issued registration credential (Process / Wasm mode)
+    /// Inject a pre-issued registration credential (Wasm mode)
     ///
     /// Called by the Hyper layer before `start()`, writing the already-issued `RegisterOk`
     /// into ActrNode so that `start()` skips the signaling registration step.
     ///
-    /// Applicable scenarios:
-    /// - **Process mode**: Hyper launches ActrSystem as a subprocess; credential obtained in advance
+    /// Applicable scenario:
     /// - **Wasm mode**: Hyper host injects the credential into the WASM instance via host functions
     pub fn inject_credential(&mut self, register_ok: actr_protocol::register_response::RegisterOk) {
         tracing::debug!(
