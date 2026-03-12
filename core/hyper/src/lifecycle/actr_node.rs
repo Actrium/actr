@@ -1187,14 +1187,8 @@ impl<W: Workload> ActrNode<W> {
         let hook_cb = self.build_hook_callback(hook_ctx_deps.clone());
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 1. Connect to signaling server and register
+        // 1. Build RegisterRequest
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        tracing::info!("📡 Connecting to signaling server");
-        self.signaling_client
-            .connect()
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Signaling connect failed: {e}")))?;
-        tracing::info!("✅ Connected to signaling server");
 
         // Get ActrType from configuration
         let actr_type = self.config.actr_type().clone();
@@ -1209,7 +1203,6 @@ impl<W: Workload> ActrNode<W> {
             tracing::info!("📦 No proto exports, ServiceSpec is None");
         }
 
-        // Construct protobuf RegisterRequest
         // If a WebSocket listen port is configured, build the advertised ws:// address
         // to register with the signaling server so clients can discover it.
         let ws_address = if let Some(port) = self.config.websocket_listen_port {
@@ -1303,6 +1296,32 @@ impl<W: Workload> ActrNode<W> {
             }
         };
 
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 3. Set credential on signaling client, then connect signaling WS
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // The signaling server requires credential params in the WS URL for
+        // authentication. We must set actor_id + credential BEFORE connecting
+        // so that build_url_with_identity() includes them in the query string.
+        {
+            let actor_id = register_ok.actr_id.clone();
+            let credential_state = CredentialState::new(
+                register_ok.credential.clone(),
+                register_ok.credential_expires_at.clone(),
+                Some(register_ok.turn_credential.clone()),
+            );
+            self.signaling_client.set_actor_id(actor_id).await;
+            self.signaling_client
+                .set_credential_state(credential_state)
+                .await;
+        }
+
+        tracing::info!("📡 Connecting to signaling server (with credential)");
+        self.signaling_client
+            .connect()
+            .await
+            .map_err(|e| ActrError::Unavailable(format!("Signaling connect failed: {e}")))?;
+        tracing::info!("✅ Connected to signaling server");
+
         // Collect background task handles so they can be managed by ActrRefShared later.
         let mut task_handles = Vec::new();
 
@@ -1336,11 +1355,8 @@ impl<W: Workload> ActrNode<W> {
             );
             self.credential_state = Some(credential_state.clone());
 
-            // Pass identity info to signaling client so subsequent reconnect URLs carry correct auth info
-            self.signaling_client.set_actor_id(actor_id.clone()).await;
-            self.signaling_client
-                .set_credential_state(credential_state.clone())
-                .await;
+            // Note: actor_id and credential_state were already set on signaling_client
+            // before connect (step 3 above), so reconnect URLs already carry correct auth.
 
             // Populate hook callback ctx dependencies now that we have actor_id + credential.
             // After this, all hook invocations will receive Some(ctx) instead of None.
@@ -2517,7 +2533,9 @@ mod tests {
             exports: vec![],
             dependencies: vec![],
             signaling_url: url::Url::parse("ws://localhost:8081").unwrap(),
+            ais_endpoint: url::Url::parse("http://localhost:8081/ais").unwrap(),
             realm: Realm { realm_id: 7 },
+            realm_secret: None,
             visible_in_discovery: true,
             acl: None,
             mailbox_path: None,

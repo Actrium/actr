@@ -27,6 +27,9 @@ name = "test-service"
 [system.signaling]
 url = "ws://localhost:8080/"
 
+[system.ais_endpoint]
+url = "http://localhost:8080/ais"
+
 [system.deployment]
 realm_id = 1001
 

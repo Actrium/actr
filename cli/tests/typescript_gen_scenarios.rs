@@ -141,6 +141,9 @@ name = "LocalService"
 [system.signaling]
 url = "wss://localhost:8080"
 
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
+
 [system.deployment]
 realm_id = 1
 "#,
@@ -162,6 +165,9 @@ echo-service = { actr_type = "acme:EchoService" }
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1
@@ -185,6 +191,9 @@ echo-service = { actr_type = "acme:EchoService" }
 [system.signaling]
 url = "wss://localhost:8080"
 
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
+
 [system.deployment]
 realm_id = 1
 "#,
@@ -207,6 +216,9 @@ profile-service = { actr_type = "acme:ProfileService" }
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1

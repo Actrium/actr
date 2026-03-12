@@ -174,6 +174,7 @@ impl ConfigCommand {
         // System settings
         output.push_str(&format!("\n  {} System:\n", "⚙️".blue()));
         output.push_str("    signaling.url\n");
+        output.push_str("    ais_endpoint.url\n");
         output.push_str("    deployment.realm_id\n");
         output.push_str("    discovery.visible\n");
         output.push_str("    storage.mailbox_path\n");
@@ -318,6 +319,7 @@ impl ConfigCommand {
 
                 output.push_str(&format!("  Realm: {}\n", config.realm.realm_id));
                 output.push_str(&format!("  Signaling URL: {}\n", config.signaling_url));
+                output.push_str(&format!("  AIS Endpoint: {}\n", config.ais_endpoint));
                 output.push_str(&format!(
                     "  Visible in discovery: {}\n",
                     config.visible_in_discovery
@@ -375,6 +377,9 @@ impl ConfigCommand {
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url = Some(value.to_string())
+            }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url = Some(value.to_string())
             }
 
             // Deployment configuration
@@ -467,6 +472,9 @@ impl ConfigCommand {
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url.clone().unwrap_or_default()
+            }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url.clone().unwrap_or_default()
             }
 
             // Deployment configuration
@@ -589,6 +597,9 @@ impl ConfigCommand {
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url = None
+            }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url = None
             }
 
             // Deployment configuration

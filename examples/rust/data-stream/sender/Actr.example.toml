@@ -17,6 +17,9 @@ name = "GenericClient"
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 0
 

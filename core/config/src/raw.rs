@@ -109,6 +109,9 @@ pub struct RawSystemConfig {
     pub signaling: RawSignalingConfig,
 
     #[serde(default)]
+    pub ais_endpoint: RawAisEndpointConfig,
+
+    #[serde(default)]
     pub deployment: RawDeploymentConfig,
 
     #[serde(default)]
@@ -160,9 +163,19 @@ pub struct RawSignalingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawAisEndpointConfig {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawDeploymentConfig {
     #[serde(default)]
     pub realm_id: Option<u32>,
+
+    /// Realm secret for AIS registration authentication
+    #[serde(default)]
+    pub realm_secret: Option<String>,
 
     /// Execution mode: `"native"` (default) | `"process"` | `"wasm"`
     #[serde(default)]
@@ -337,6 +350,34 @@ run = "cargo run"
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.exports.len(), 1);
         assert!(config.dependencies.contains_key("user-service"));
+    }
+
+    #[test]
+    fn test_parse_explicit_ais_endpoint() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let config = RawConfig::from_str(toml_content).unwrap();
+        assert_eq!(
+            config.system.ais_endpoint.url.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
     }
 
     #[test]

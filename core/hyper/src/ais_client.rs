@@ -19,6 +19,8 @@ use crate::error::{HyperError, HyperResult};
 pub struct AisClient {
     endpoint: String,
     http: reqwest::Client,
+    /// Optional realm secret for `x-actrix-realm-secret` header authentication
+    realm_secret: Option<String>,
 }
 
 impl AisClient {
@@ -33,7 +35,14 @@ impl AisClient {
         Self {
             endpoint: endpoint.into(),
             http,
+            realm_secret: None,
         }
+    }
+
+    /// Set the realm secret for authentication
+    pub fn with_realm_secret(mut self, secret: impl Into<String>) -> Self {
+        self.realm_secret = Some(secret.into());
+        self
     }
 
     /// Initial registration: authenticate with MFR manifest
@@ -76,18 +85,21 @@ impl AisClient {
 
         debug!(url = %url, body_len = body.len(), "sending AIS register request");
 
-        let response = self
+        let mut request_builder = self
             .http
             .post(&url)
             .header("Content-Type", "application/x-protobuf")
-            .header("Accept", "application/x-protobuf")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| {
-                error!(url = %url, error = %e, "AIS HTTP request failed");
-                HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
-            })?;
+            .header("Accept", "application/x-protobuf");
+
+        // Include realm secret header if configured
+        if let Some(ref secret) = self.realm_secret {
+            request_builder = request_builder.header("x-actrix-realm-secret", secret);
+        }
+
+        let response = request_builder.body(body).send().await.map_err(|e| {
+            error!(url = %url, error = %e, "AIS HTTP request failed");
+            HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
+        })?;
 
         let status = response.status();
         if !status.is_success() {

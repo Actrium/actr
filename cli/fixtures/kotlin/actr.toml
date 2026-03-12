@@ -16,6 +16,9 @@ echo-echo-server = {}
 [system.signaling]
 url = "{{SIGNALING_URL}}"
 
+[system.ais_endpoint]
+url = "{{AIS_ENDPOINT_URL}}"
+
 [system.webrtc]
 stun_urls = ["stun:{{SIGNALING_HOST}}:3478"]
 turn_urls = ["turn:{{SIGNALING_HOST}}:3478"]

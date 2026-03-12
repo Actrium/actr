@@ -21,6 +21,9 @@ test = "cargo test"
 [system.signaling]
 url = "ws://localhost:8081"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 

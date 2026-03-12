@@ -557,7 +557,7 @@ mod tests {{
     }
 
     fn ensure_protoc_plugin(&self, config_path: &Path) -> Result<PathBuf> {
-        const EXPECTED_VERSION: &str = "0.1.10";
+        const EXPECTED_VERSION: &str = "0.2.0";
         const PLUGIN_NAME: &str = "protoc-gen-actrframework";
 
         if let Some(plugin_path) = self.try_use_local_workspace_plugin()? {
@@ -1062,6 +1062,9 @@ echo = { actr_type = "remote:EchoService" }
 
 [system.signaling]
 url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
 
 [system.deployment]
 realm_id = 1001

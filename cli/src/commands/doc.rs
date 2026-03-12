@@ -379,6 +379,9 @@ name = "my-actor-service"
 [system.signaling]
 url = "ws://127.0.0.1:8080"
 
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
 [system.deployment]
 realm_id = 1001
 

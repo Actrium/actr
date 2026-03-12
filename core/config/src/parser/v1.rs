@@ -71,6 +71,13 @@ impl ParserV1 {
             .ok_or(ConfigError::MissingField("system.signaling.url"))?;
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
+        let ais_endpoint = raw
+            .system
+            .ais_endpoint
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("system.ais_endpoint.url"))
+            .and_then(|url| Url::parse(url).map_err(ConfigError::InvalidUrl))?;
 
         // 8. Parse observability config
         let observability = self.parse_observability(&raw.system, &package);
@@ -96,7 +103,9 @@ impl ParserV1 {
             exports,
             dependencies,
             signaling_url,
+            ais_endpoint,
             realm: self_realm,
+            realm_secret: raw.system.deployment.realm_secret.clone(),
             visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
             acl,
             mailbox_path: raw.system.storage.mailbox_path,
@@ -467,8 +476,15 @@ impl ParserV1 {
             signaling: crate::raw::RawSignalingConfig {
                 url: child.signaling.url.or(parent.signaling.url),
             },
+            ais_endpoint: crate::raw::RawAisEndpointConfig {
+                url: child.ais_endpoint.url.or(parent.ais_endpoint.url),
+            },
             deployment: crate::raw::RawDeploymentConfig {
                 realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
+                realm_secret: child
+                    .deployment
+                    .realm_secret
+                    .or(parent.deployment.realm_secret),
                 mode: child.deployment.mode.or(parent.deployment.mode),
                 ais_endpoint: child
                     .deployment
@@ -552,6 +568,9 @@ impl ParserV1 {
         if raw.system.signaling.url.is_none() {
             return Err(ConfigError::MissingField("system.signaling.url"));
         }
+        if raw.system.ais_endpoint.url.is_none() {
+            return Err(ConfigError::MissingField("system.ais_endpoint.url"));
+        }
         if raw.system.deployment.realm_id.is_none() {
             return Err(ConfigError::MissingField("system.deployment.realm"));
         }
@@ -599,6 +618,9 @@ user-service = {}
 [system.signaling]
 url = "ws://localhost:8081"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 
@@ -626,6 +648,7 @@ run = "cargo run"
         assert_eq!(config.realm.realm_id, 1001);
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
+        assert_eq!(config.ais_endpoint.as_str(), "http://localhost:8081/ais");
     }
 
     #[test]
@@ -647,6 +670,9 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
 [system.signaling]
 url = "ws://localhost:8081"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 "#;
@@ -666,6 +692,76 @@ realm_id = 1001
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
         assert!(dep.is_cross_realm(&config.realm));
+        assert_eq!(config.ais_endpoint.as_str(), "http://localhost:8081/ais");
+    }
+
+    #[test]
+    fn test_parse_explicit_ais_endpoint() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "https://registry.example.com/custom-ais"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let config = parser.parse(raw).unwrap();
+
+        assert_eq!(
+            config.ais_endpoint.as_str(),
+            "https://registry.example.com/custom-ais"
+        );
+    }
+
+    #[test]
+    fn test_missing_ais_endpoint_is_error() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+
+[package.actr_type]
+manufacturer = "acme"
+name = "test"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse(raw);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::MissingField("system.ais_endpoint.url"))
+        ));
     }
 
     #[test]
@@ -683,6 +779,9 @@ name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -718,6 +817,9 @@ name = "test-"
 [system.signaling]
 url = "ws://localhost:8081"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 "#;
@@ -752,6 +854,9 @@ name = "test"
 [system.signaling]
 url = "ws://localhost:8081"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 
@@ -783,6 +888,8 @@ manufacturer = "acme"
 name = "test"
 [system.signaling]
 url = "ws://localhost:8081"
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 [system.deployment]
 realm_id = 1001
 {mode_line}"#
