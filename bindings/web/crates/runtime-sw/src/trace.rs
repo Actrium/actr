@@ -25,6 +25,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// set_parent_from_rpc_envelope(&span, &envelope);
 /// let _guard = span.enter();
 /// ```
+#[allow(dead_code)]
 pub(crate) fn set_parent_from_rpc_envelope(span: &Span, envelope: &RpcEnvelope) {
     let context = extract_trace_context_from_rpc(envelope);
     span.set_parent(context);
@@ -69,6 +70,7 @@ pub(crate) fn inject_span_context_to_rpc(span: &Span, envelope: &mut RpcEnvelope
 ///
 /// This keeps trace propagation consistent when the response does not explicitly
 /// set trace context fields.
+#[allow(dead_code)]
 pub(crate) fn copy_trace_context_from_rpc(request: &RpcEnvelope, response: &mut RpcEnvelope) {
     if response.traceparent.is_none() {
         response.traceparent = request.traceparent.clone();

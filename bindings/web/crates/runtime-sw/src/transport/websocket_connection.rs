@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 /// WebSocket connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum ConnectionState {
     Disconnected,
     Connecting,

@@ -32,6 +32,7 @@ enum ConnectionType {
 }
 
 /// Connection information for a destination.
+#[allow(dead_code)]
 struct DestConnection {
     /// Primary connection, either DataChannel or a WebSocket routed through the SW.
     primary: Option<DataLane>,
@@ -47,6 +48,7 @@ struct DestConnection {
 }
 
 /// Transport implementation for the DOM side.
+#[allow(dead_code)]
 pub struct DomTransport {
     /// Local ID.
     local_id: String,

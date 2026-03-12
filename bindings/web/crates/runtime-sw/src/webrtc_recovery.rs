@@ -93,6 +93,7 @@ impl WebRtcRecoveryManager {
     /// Request that the DOM rebuild WebRTC.
     ///
     /// Sends a rebuild request message to the DOM side.
+    #[allow(dead_code)]
     async fn request_webrtc_rebuild(&self) -> WebResult<()> {
         log::info!("[WebRtcRecovery] Requesting WebRTC rebuild from DOM");
 

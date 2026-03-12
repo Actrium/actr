@@ -81,17 +81,6 @@ struct WebRtcCommandPayload {
     payload: JsValue,
 }
 
-#[derive(Serialize)]
-struct SdpPayload {
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    sdp: JsValue,
-}
-
-#[derive(Serialize)]
-struct IcePayload {
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    candidate: JsValue,
-}
 
 #[derive(Serialize)]
 struct SendDataPayload {
@@ -429,6 +418,7 @@ struct DomWebRtcEvent {
 
 #[derive(Deserialize)]
 struct LocalDescriptionEvent {
+    #[allow(dead_code)]
     #[serde(rename = "peerId")]
     peer_id: String,
     sdp: SdpInit,
@@ -443,6 +433,7 @@ struct SdpInit {
 
 #[derive(Deserialize)]
 struct IceCandidateEvent {
+    #[allow(dead_code)]
     #[serde(rename = "peerId")]
     peer_id: String,
     candidate: IceCandidateInit,
@@ -1301,6 +1292,7 @@ impl SwRuntime {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_inbound_signaling(&mut self) -> Result<(), JsValue> {
         while let Some(env) = self.signaling.recv_inbound().await {
             if let Some(signaling_envelope::Flow::ActrRelay(relay)) = env.flow {
@@ -1838,6 +1830,7 @@ impl SwRuntime {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn is_channel_open(&self, peer_id: &str, channel_id: u32) -> bool {
         self.open_channels
             .get(peer_id)
@@ -1852,6 +1845,7 @@ impl SwRuntime {
             .insert(channel_id);
     }
 
+    #[allow(dead_code)]
     fn queue_channel_data(&mut self, peer_id: &str, data: Vec<u8>) {
         self.pending_channel_data
             .entry(peer_id.to_string())

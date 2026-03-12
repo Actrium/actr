@@ -99,6 +99,7 @@ impl<W: Workload> ActrRef<W> {
     /// Create new ActrRef from shared state
     ///
     /// Internal API used by `ActrNode::start()`.
+    #[allow(dead_code)]
     pub(crate) fn new(shared: Arc<ActrRefShared>) -> Self {
         Self {
             shared,

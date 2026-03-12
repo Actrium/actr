@@ -22,6 +22,7 @@ use std::sync::Arc;
 use super::websocket::WebSocketLaneBuilder;
 
 /// Transport implementation for the Service Worker side.
+#[allow(dead_code)]
 pub struct SwTransport {
     /// Local ID.
     local_id: String,
