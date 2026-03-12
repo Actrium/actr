@@ -14,7 +14,6 @@ members = [
     # "acl/allowed-client",
     # "acl/blocked-client",
     # "acl/server",
-    "realm-setup",
     # "data-stream-peer-concurrent/server",
     # "data-stream-peer-concurrent/client",
     "wasm-echo/server",
