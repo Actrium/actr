@@ -1,24 +1,36 @@
-pub mod cert_cache;
-pub mod embed;
 pub mod manifest;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cert_cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod embed;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use cert_cache::MfrCertCache;
+#[cfg(not(target_arch = "wasm32"))]
 pub use embed::{embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest};
 pub use manifest::PackageManifest;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use actr_platform_traits::CryptoProvider;
+#[cfg(not(target_arch = "wasm32"))]
 use ed25519_dalek::{Signature, VerifyingKey};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::config::TrustMode;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::{HyperError, HyperResult};
+#[cfg(not(target_arch = "wasm32"))]
 use manifest::{
     elf_binary_hash_excluding_manifest, extract_elf_manifest, extract_macho_manifest,
     extract_wasm_manifest, is_elf, is_macho, is_wasm, macho_binary_hash_excluding_manifest,
     wasm_binary_hash_excluding_manifest,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Package verifier.
 ///
 /// Holds the current trust root, either the Actrix root CA or a local self-signed public key,
@@ -34,6 +46,7 @@ pub struct PackageVerifier {
     crypto: Option<Arc<dyn CryptoProvider>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PackageVerifier {
     pub fn new(trust_mode: TrustMode) -> Self {
         let cert_cache = match &trust_mode {
@@ -228,6 +241,7 @@ impl PackageVerifier {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Verify the MFR signature embedded in the manifest.
 ///
 /// The signed payload is the serialized bytes of all manifest fields except `signature`.
@@ -250,6 +264,7 @@ fn verify_manifest_signature(manifest: &PackageManifest, pubkey: &VerifyingKey) 
         })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Serialize the manifest fields that participate in signing.
 ///
 /// This excludes the `signature` field itself to avoid circular dependence.
@@ -272,6 +287,7 @@ pub fn manifest_signed_bytes(manifest: &PackageManifest) -> Vec<u8> {
     buf
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Parse manifest section bytes into a `PackageManifest`.
 ///
 /// JSON is used for now and can be replaced later by a more compact format.
@@ -323,6 +339,7 @@ fn parse_manifest(bytes: &[u8]) -> HyperResult<PackageManifest> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
     if hex.len() != 64 {
         return Err(HyperError::InvalidManifest(
@@ -341,6 +358,7 @@ fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
     Ok(out)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn base64_decode(s: &str) -> HyperResult<Vec<u8>> {
     // Use a small local base64 decoder for now instead of adding a dependency.
     // TODO: Replace this with the workspace base64 crate later.
@@ -349,6 +367,7 @@ fn base64_decode(s: &str) -> HyperResult<Vec<u8>> {
         .ok_or_else(|| HyperError::InvalidManifest("Failed to decode signature base64".to_string()))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Minimal base64 decoder using the standard alphabet without padding tolerance.
 fn base64_simple_decode(s: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -31,21 +31,15 @@ test-utils = ["dep:actr-mock-signaling", "dep:webrtc-util"]
 # === Internal ===
 actr-protocol.workspace = true
 actr-runtime.workspace = true
-actr-runtime-mailbox.workspace = true
-actr-config.workspace = true
 actr-framework.workspace = true
-actr-service-compat.workspace = true
 actr-platform-traits.workspace = true
+# actr-config is optional here for wasm32 compat; non-optional on native (see target deps)
+actr-config = { workspace = true, optional = true }
 
-# === Storage ===
-rusqlite = { workspace = true }
-
-# === Async Runtime ===
-tokio.workspace = true
+# === Async Runtime (cross-platform minimal) ===
+tokio = { version = "1.48", default-features = false, features = ["sync", "macros"] }
 async-trait.workspace = true
 futures-util.workspace = true
-tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-util = { version = "0.7", features = ["full"] }
 
 # === Serialization ===
 serde.workspace = true
@@ -55,35 +49,14 @@ prost-types.workspace = true
 bytes.workspace = true
 toml.workspace = true
 
-# === Cryptography ===
-ed25519-dalek.workspace = true
-sha2.workspace = true
-rand.workspace = true
-
-# === Networking ===
-webrtc.workspace = true
-tokio-tungstenite.workspace = true
-reqwest = { version = "0.12", features = ["json"] }
-url.workspace = true
-
 # === Utilities ===
-uuid.workspace = true
+uuid = { version = "1.18", features = ["v4", "serde"] }
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 chrono.workspace = true
 base64.workspace = true
-tempfile.workspace = true
-pwrzv.workspace = true
-crossbeam.workspace = true
-dashmap.workspace = true
-dotenvy = "0.15"
-either = "1.15"
 hex = "0.4"
-num_cpus = "1.17"
-actr-mock-signaling = { workspace = true, optional = true }
-webrtc-util = { version = "0.12", optional = true }
 
 # === Observability (optional) ===
 opentelemetry = { workspace = true, optional = true }
@@ -91,10 +64,57 @@ opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
-# === WASM Runtime (optional) ===
+# ═══════════════════════════════════════════════════════════════════════════════
+# wasm32-specific dependencies
+# ═══════════════════════════════════════════════════════════════════════════════
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.18", features = ["v4", "serde", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Native-only dependencies (not available on wasm32)
+# ═══════════════════════════════════════════════════════════════════════════════
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# actr-config is always available on native (overrides optional from [dependencies])
+actr-config = { workspace = true }
+actr-runtime-mailbox.workspace = true
+actr-service-compat.workspace = true
+
+# Storage
+rusqlite = { workspace = true }
+
+# Full async runtime (extends the cross-platform tokio above)
+tokio = { version = "1.48", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["full"] }
+
+# Cryptography (native implementations)
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand.workspace = true
+
+# Networking
+webrtc.workspace = true
+tokio-tungstenite.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+url.workspace = true
+
+# Utilities (native-only)
+tracing-subscriber.workspace = true
+tempfile.workspace = true
+pwrzv.workspace = true
+crossbeam.workspace = true
+dashmap.workspace = true
+dotenvy = "0.15"
+either = "1.15"
+num_cpus = "1.17"
+actr-mock-signaling = { workspace = true, optional = true }
+webrtc-util = { version = "0.12", optional = true }
+
+# WASM Runtime (optional, native-only)
 wasmtime = { workspace = true, optional = true }
 
-# === Dynclib Runtime (native shared library, optional) ===
+# Dynclib Runtime (native shared library, optional)
 libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]

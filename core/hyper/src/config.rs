@@ -1,6 +1,8 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::{HyperError, HyperResult};
 
 /// Hyper initialization configuration
@@ -77,6 +79,7 @@ impl HyperConfig {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Namespace template resolver
 ///
 /// Holds runtime-known variables and resolves path templates on demand.
@@ -85,6 +88,7 @@ pub(crate) struct NamespaceResolver {
     vars: HashMap<String, String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl NamespaceResolver {
     pub fn new(config: &HyperConfig, instance_id: &str) -> HyperResult<Self> {
         let mut vars = HashMap::new();

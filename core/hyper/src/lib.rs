@@ -62,104 +62,134 @@
 //! routing decisions are made by the ActrSystem running inside the WASM.
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Platform modules (original Hyper)
+// Platform modules (cross-platform)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub mod ais_client;
 pub mod config;
 pub mod error;
-pub mod key_cache;
-pub mod runtime;
-pub mod storage;
-pub mod verify;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Runtime infrastructure modules (moved from actr-runtime)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Lifecycle management layer (not architectural layering)
-pub mod lifecycle;
-
-// ActrRef - Lightweight Actor reference
-pub mod actr_ref;
-
-// Layer 3: Inbound dispatch layer
-pub mod inbound;
-
-// Layer 2: Outbound gate abstraction layer
-pub mod outbound;
-
-// Layer 1: Transport layer
-pub mod transport;
-
-// Layer 0: Wire layer
-pub mod wire;
-
-// Shared helpers for integration tests
-#[cfg(feature = "test-utils")]
-pub mod test_support;
-
-// Context and context factory
-pub mod context;
-pub mod context_factory;
 
 // Runtime error re-exports (from actr_protocol, distinct from HyperError)
 pub mod runtime_error;
 
-// Executor adapter trait (unified dispatch for WASM, dynclib, etc.)
+// Verify module: PackageManifest struct is cross-platform,
+// verification logic is native-only (sha2, ed25519-dalek).
+pub mod verify;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Native-only modules (excluded on wasm32)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ais_client;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod key_cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod storage;
+
+// Runtime infrastructure modules (native-only)
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lifecycle;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod actr_ref;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod inbound;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod outbound;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod transport;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod wire;
+
+// Shared helpers for integration tests (native-only)
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
+pub mod test_support;
+
+// Context and context factory (native-only, depend on transport/wire)
+#[cfg(not(target_arch = "wasm32"))]
+pub mod context;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod context_factory;
+
+// Executor adapter (native-only, WASM/dynclib host)
+#[cfg(not(target_arch = "wasm32"))]
 pub mod executor;
 
-// WASM actor execution engine (optional)
-#[cfg(feature = "wasm-engine")]
+// WASM actor execution engine (optional, native-only)
+#[cfg(all(not(target_arch = "wasm32"), feature = "wasm-engine"))]
 pub mod wasm;
 
-// Dynclib (native shared library) actor execution engine (optional)
-#[cfg(feature = "dynclib-engine")]
+// Dynclib actor execution engine (optional, native-only)
+#[cfg(all(not(target_arch = "wasm32"), feature = "dynclib-engine"))]
 pub mod dynclib;
 
-// Monitoring and resource management
+// Monitoring, observability, and resource management (native-only)
+#[cfg(not(target_arch = "wasm32"))]
 pub mod monitoring;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod observability;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod resource;
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Re-exports: Platform layer
+// Re-exports: Cross-platform
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub use ais_client::AisClient;
 pub use config::{HyperConfig, TrustMode};
 pub use error::{HyperError, HyperResult};
-pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
-pub use storage::ActorStore;
-pub use verify::{
-    MfrCertCache, PackageManifest, embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
-    manifest_signed_bytes,
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Re-exports: Runtime infrastructure
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Observability
-pub use observability::{ObservabilityGuard, init_observability};
+pub use verify::PackageManifest;
 
 // Core protocol types
 pub use actr_protocol::{ActrId, ActrType};
 
-// Runtime core structures
-pub use actr_ref::ActrRef;
-pub use lifecycle::{ActrNode, ActrSystem, CredentialState, NetworkEventHandle};
-
-// Layer 3: Inbound dispatch layer
-pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
-
 // Re-export MediaSample and MediaType from framework (dependency inversion)
 pub use actr_framework::{MediaSample, MediaType};
 
+// Runtime error types (distinct from HyperError — these are actor-facing errors)
+pub use runtime_error::{ActorResult, ActrError, Classify, ErrorKind};
+
+// Platform traits re-exports
+pub use actr_platform_traits::{
+    CryptoProvider, KvStore, PlatformError, PlatformProvider,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Re-exports: Native-only
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use ais_client::AisClient;
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
+#[cfg(not(target_arch = "wasm32"))]
+pub use storage::ActorStore;
+#[cfg(not(target_arch = "wasm32"))]
+pub use verify::{
+    MfrCertCache, embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
+    manifest_signed_bytes,
+};
+
+// Observability
+#[cfg(not(target_arch = "wasm32"))]
+pub use observability::{ObservabilityGuard, init_observability};
+
+// Runtime core structures
+#[cfg(not(target_arch = "wasm32"))]
+pub use actr_ref::ActrRef;
+#[cfg(not(target_arch = "wasm32"))]
+pub use lifecycle::{ActrNode, ActrSystem, CredentialState, NetworkEventHandle};
+
+// Layer 3: Inbound dispatch layer
+#[cfg(not(target_arch = "wasm32"))]
+pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
+
 // Layer 2: Outbound gate abstraction layer
+#[cfg(not(target_arch = "wasm32"))]
 pub use outbound::{Gate, HostGate, PeerGate};
 
 // Layer 1: Transport layer
+#[cfg(not(target_arch = "wasm32"))]
 pub use transport::{
     DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport,
     ExponentialBackoff, HostTransport, NetworkError, NetworkResult, PeerTransport, WireBuilder,
@@ -167,6 +197,7 @@ pub use transport::{
 };
 
 // Layer 0: Wire layer
+#[cfg(not(target_arch = "wasm32"))]
 pub use wire::{
     AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
     SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
@@ -174,32 +205,30 @@ pub use wire::{
 };
 
 // Mailbox (from actr-runtime-mailbox crate)
+#[cfg(not(target_arch = "wasm32"))]
 pub use actr_runtime_mailbox::{
     Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
 };
 
 // Context factory
+#[cfg(not(target_arch = "wasm32"))]
 pub use context_factory::ContextFactory;
 
-// Runtime error types (distinct from HyperError — these are actor-facing errors)
-pub use runtime_error::{ActorResult, ActrError, Classify, ErrorKind};
-
 // Monitoring and resource management
+#[cfg(not(target_arch = "wasm32"))]
 pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
 
 // Executor adapter
+#[cfg(not(target_arch = "wasm32"))]
 pub use executor::{
     CallExecutorFn, DispatchContext, DispatchResult, ExecutorAdapter, IoResult, PendingCall,
 };
 
 // AIS key cache
+#[cfg(not(target_arch = "wasm32"))]
 pub use key_cache::AisKeyCache;
-
-// Platform traits re-exports
-pub use actr_platform_traits::{
-    CryptoProvider, KvStore, PlatformError, PlatformProvider,
-};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -220,19 +249,23 @@ pub mod prelude {
     //! use actr_hyper::prelude::*;
     //! ```
 
-    // ── Platform types ──────────────────────────────────────────────────────
-    pub use crate::storage::ActorStore;
+    // ── Platform types (cross-platform) ─────────────────────────────────────
     pub use crate::verify::PackageManifest;
-    pub use crate::{Hyper, HyperConfig, HyperError, HyperResult, TrustMode};
+    pub use crate::{HyperConfig, HyperError, HyperResult, TrustMode};
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::{Hyper, storage::ActorStore};
 
-    // ── Core structures ─────────────────────────────────────────────────────
+    // ── Core structures (native-only) ───────────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::actr_ref::ActrRef;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::lifecycle::{
         ActrNode, ActrSystem, CompatLockFile, CompatLockManager, CompatibilityCheck,
         DiscoveryResult,
     };
 
-    // ── Layer 3: Inbound dispatch ───────────────────────────────────────────
+    // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::inbound::{
         DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback,
     };
@@ -240,24 +273,29 @@ pub mod prelude {
     // Re-export MediaSample and MediaType from framework (dependency inversion)
     pub use actr_framework::{MediaSample, MediaType};
 
-    // ── Layer 2: Outbound gate ──────────────────────────────────────────────
+    // ── Layer 2: Outbound gate (native-only) ────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::outbound::{Gate, HostGate, PeerGate};
 
-    // ── Context ─────────────────────────────────────────────────────────────
+    // ── Context (native-only) ───────────────────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::context_factory::ContextFactory;
 
-    // ── Layer 0: Wire (WebRTC) ──────────────────────────────────────────────
+    // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::wire::webrtc::{
         AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
         WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator, WebSocketSignalingClient,
     };
 
-    // ── Mailbox ─────────────────────────────────────────────────────────────
+    // ── Mailbox (native-only) ───────────────────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use actr_runtime_mailbox::{
         Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
     };
 
-    // ── Layer 1: Transport ──────────────────────────────────────────────────
+    // ── Layer 1: Transport (native-only) ────────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::transport::{
         DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport, HostTransport,
         NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
@@ -266,8 +304,10 @@ pub mod prelude {
     // ── Error types ─────────────────────────────────────────────────────────
     pub use crate::runtime_error::{ActorResult, ActrError};
 
-    // ── Monitoring / Resource ───────────────────────────────────────────────
+    // ── Monitoring / Resource (native-only) ─────────────────────────────────
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::monitoring::{Alert, AlertSeverity, Monitor};
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::resource::{ResourceManager, ResourceQuota, ResourceUsage};
 
     // ── Base types ──────────────────────────────────────────────────────────
@@ -286,6 +326,7 @@ pub mod prelude {
 
     // ── Tokio runtime primitives ────────────────────────────────────────────
     pub use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
+    #[cfg(not(target_arch = "wasm32"))]
     pub use tokio::time::{Duration, Instant, sleep, timeout};
 
     // ── Logging ─────────────────────────────────────────────────────────────
@@ -293,20 +334,29 @@ pub mod prelude {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Hyper runtime instance (platform singleton)
+// Hyper runtime instance (platform singleton) — native-only
 // ═══════════════════════════════════════════════════════════════════════════════
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
 use prost::Message;
+#[cfg(not(target_arch = "wasm32"))]
 use tracing::{debug, error, info, warn};
+#[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
 use actr_platform_traits::KvOp;
+#[cfg(not(target_arch = "wasm32"))]
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Hyper runtime instance
 ///
 /// Process-level singleton, initialized via `Hyper::init()`.
@@ -316,6 +366,7 @@ pub struct Hyper {
     inner: Arc<HyperInner>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct HyperInner {
     config: HyperConfig,
     /// Locally unique ID generated and persisted on first startup
@@ -326,6 +377,7 @@ struct HyperInner {
     platform: Option<Arc<dyn PlatformProvider>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Hyper {
     /// Initialize Hyper (process-level, call once)
     ///
@@ -630,8 +682,9 @@ impl Hyper {
     }
 }
 
-// ─── Helper functions ────────────────────────────────────────────────────────
+// ─── Helper functions (native-only) ──────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Load PSK from any KvStore implementation; returns PSK bytes if present and not expired
 ///
 /// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
@@ -651,7 +704,7 @@ async fn load_valid_psk_dyn(store: &dyn KvStore) -> HyperResult<Option<Vec<u8>>>
 /// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
 ///
 /// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
-#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), test))]
 async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
     let token = store.kv_get("hyper:psk:token").await?;
     let expires_at_raw = store.kv_get("hyper:psk:expires_at").await?;
@@ -659,6 +712,7 @@ async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
     check_psk_expiry(token, expires_at_raw)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Check PSK expiry given pre-fetched token and expires_at values
 fn check_psk_expiry(
     token: Option<Vec<u8>>,
@@ -704,6 +758,7 @@ fn check_psk_expiry(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Serialize a `PackageManifest` into JSON bytes.
 ///
 /// AIS verifies the MFR identity using `manifest_json + mfr_signature`.
@@ -733,6 +788,7 @@ fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Quickly extract the `manufacturer` field from a binary, used only to prefetch the MFR public key without full verification.
 ///
 /// Parses JSON from the manifest section in WASM, ELF, or Mach-O binaries and extracts `manufacturer`.
@@ -757,6 +813,7 @@ fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
     value["manufacturer"].as_str().map(|s| s.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Load an existing `instance_id` or generate and persist a new one.
 async fn load_or_create_instance_id(data_dir: &std::path::Path) -> HyperResult<String> {
     let id_file = data_dir.join(".hyper-instance-id");
@@ -780,7 +837,7 @@ async fn load_or_create_instance_id(data_dir: &std::path::Path) -> HyperResult<S
     Ok(new_id)
 }
 
-#[cfg(test)]
+#[cfg(all(not(target_arch = "wasm32"), test))]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;

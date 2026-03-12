@@ -1,5 +1,7 @@
+#[cfg(not(target_arch = "wasm32"))]
 use sha2::{Digest, Sha256};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::{HyperError, HyperResult};
 
 /// Signed manifest embedded in an Actr package.
@@ -86,6 +88,7 @@ pub fn extract_wasm_manifest(wasm_bytes: &[u8]) -> Option<&[u8]> {
     None
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Compute the SHA-256 hash of a WASM file with the manifest custom section removed.
 ///
 /// This is how `binary_hash` is computed: hash before writing the section during signing,
@@ -198,6 +201,7 @@ pub fn extract_elf_manifest(bytes: &[u8]) -> Option<&[u8]> {
     Some(&bytes[sh_off..data_end])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Compute the SHA-256 hash of an ELF file with the manifest section zero-filled.
 ///
 /// Zero-fill means replacing the section data region with zero bytes before hashing,
@@ -236,6 +240,7 @@ pub fn elf_binary_hash_excluding_manifest(bytes: &[u8]) -> HyperResult<[u8; 32]>
     Ok(hasher.finalize().into())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Return the `(file_offset, size)` pair for the ELF `actr_manifest` section, or an error.
 pub fn elf_manifest_data_range(bytes: &[u8]) -> HyperResult<Option<(usize, usize)>> {
     Ok(elf_manifest_data_range_inner(bytes))
@@ -390,6 +395,7 @@ pub fn extract_macho_manifest(bytes: &[u8]) -> Option<&[u8]> {
     Some(&bytes[data_off..data_end])
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Compute the SHA-256 hash of a Mach-O file after zero-filling the manifest section.
 ///
 /// Fat binaries are explicitly rejected with a descriptive error.
@@ -437,6 +443,7 @@ pub fn macho_binary_hash_excluding_manifest(bytes: &[u8]) -> HyperResult<[u8; 32
     Ok(hasher.finalize().into())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Return `(file_offset, size)` for the Mach-O `__TEXT/__actr_mani` section.
 pub fn macho_manifest_data_range(bytes: &[u8]) -> HyperResult<Option<(usize, usize)>> {
     Ok(macho_manifest_data_range_inner(bytes))

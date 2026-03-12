@@ -991,7 +991,7 @@ impl WebRtcCoordinator {
                         // Return a new channel that's already signaled
                         let (tx, rx) = oneshot::channel();
                         let _ = tx.send(());
-                        return Ok(rx);
+                        Ok(rx)
                     }
                     Ok(Err(_)) => {
                         tracing::warn!(
@@ -1000,9 +1000,9 @@ impl WebRtcCoordinator {
                         );
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
-                        return Err(ActrError::Internal(
+                        Err(ActrError::Internal(
                             "Connection ready channel closed".to_string(),
-                        ));
+                        ))
                     }
                     Err(_) => {
                         tracing::warn!(
@@ -1011,7 +1011,7 @@ impl WebRtcCoordinator {
                         );
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
-                        return Err(ActrError::TimedOut);
+                        Err(ActrError::TimedOut)
                     }
                 }
             }
@@ -1021,7 +1021,7 @@ impl WebRtcCoordinator {
                     target.serial_number,
                     e
                 );
-                return Err(e);
+                Err(e)
             }
         }
     }
