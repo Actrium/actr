@@ -72,7 +72,7 @@ pub mod prelude {
 
     // Runtime infrastructure - ActrSystem / ActrNode / ActrRef
     #[cfg(feature = "runtime")]
-    pub use actr_hyper::{ActrNode, ActrRef, ActrSystem};
+    pub use actr_hyper::{ActrNode, ActrRef, ActrSystem, init_observability};
 
     // Common traits and types
     pub use async_trait::async_trait;

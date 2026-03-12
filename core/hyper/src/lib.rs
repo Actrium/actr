@@ -196,6 +196,11 @@ pub use executor::{
 // AIS key cache
 pub use key_cache::AisKeyCache;
 
+// Platform traits re-exports
+pub use actr_platform_traits::{
+    CryptoProvider, KvStore, PlatformError, PlatformProvider,
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -299,8 +304,8 @@ use prost::Message;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
-use storage::KvOp;
 
 /// Hyper runtime instance
 ///
@@ -317,6 +322,8 @@ struct HyperInner {
     instance_id: String,
     /// Package signature verifier
     verifier: verify::PackageVerifier,
+    /// Optional platform provider for cross-platform abstraction
+    platform: Option<Arc<dyn PlatformProvider>>,
 }
 
 impl Hyper {
@@ -326,6 +333,27 @@ impl Hyper {
     /// - Load or generate instance_id (persisted to data_dir)
     /// - Initialize package verifier
     pub async fn init(config: HyperConfig) -> HyperResult<Self> {
+        Self::init_inner(config, None).await
+    }
+
+    /// Initialize Hyper with a platform provider for cross-platform support.
+    ///
+    /// When a `PlatformProvider` is injected:
+    /// - `ensure_dir` delegates to `platform.ensure_dir()` instead of `tokio::fs`
+    /// - `load_or_create_instance_id` delegates to `platform.load_or_create_instance_id()`
+    /// - `bootstrap_credential` uses `platform.open_kv_store()` instead of `ActorStore::open()`
+    /// - `PackageVerifier` receives `platform.crypto()` for signature verification
+    pub async fn init_with_platform(
+        config: HyperConfig,
+        platform: Arc<dyn PlatformProvider>,
+    ) -> HyperResult<Self> {
+        Self::init_inner(config, Some(platform)).await
+    }
+
+    async fn init_inner(
+        config: HyperConfig,
+        platform: Option<Arc<dyn PlatformProvider>>,
+    ) -> HyperResult<Self> {
         info!(
             data_dir = %config.data_dir.display(),
             trust_mode = match &config.trust_mode {
@@ -336,26 +364,46 @@ impl Hyper {
         );
 
         // ensure data_dir exists
-        tokio::fs::create_dir_all(&config.data_dir)
-            .await
-            .map_err(|e| {
+        let data_dir_str = config.data_dir.to_string_lossy().to_string();
+        if let Some(ref p) = platform {
+            p.ensure_dir(&data_dir_str).await.map_err(|e| {
                 HyperError::Config(format!(
                     "failed to create data_dir `{}`: {e}",
                     config.data_dir.display()
                 ))
             })?;
+        } else {
+            tokio::fs::create_dir_all(&config.data_dir)
+                .await
+                .map_err(|e| {
+                    HyperError::Config(format!(
+                        "failed to create data_dir `{}`: {e}",
+                        config.data_dir.display()
+                    ))
+                })?;
+        }
 
         // load or generate instance_id
-        let instance_id = load_or_create_instance_id(&config.data_dir).await?;
+        let instance_id = if let Some(ref p) = platform {
+            p.load_or_create_instance_id(&data_dir_str)
+                .await
+                .map_err(|e| HyperError::Storage(format!("failed to load instance_id: {e}")))?
+        } else {
+            load_or_create_instance_id(&config.data_dir).await?
+        };
         debug!(instance_id, "Hyper instance_id ready");
 
-        let verifier = verify::PackageVerifier::new(config.trust_mode.clone());
+        let mut verifier = verify::PackageVerifier::new(config.trust_mode.clone());
+        if let Some(ref p) = platform {
+            verifier = verifier.with_crypto(p.crypto());
+        }
 
         Ok(Self {
             inner: Arc::new(HyperInner {
                 config,
                 instance_id,
                 verifier,
+                platform,
             }),
         })
     }
@@ -420,12 +468,19 @@ impl Hyper {
             ais_endpoint, realm_id, "starting credential bootstrap with AIS"
         );
 
-        // 1. Open the Actor's ActorStore (storage namespace isolation)
+        // 1. Open the Actor's storage (platform-agnostic KV store or ActorStore)
         let storage_path = self.resolve_storage_path(manifest)?;
-        let store = ActorStore::open(&storage_path).await?;
+        let store: Arc<dyn KvStore> = if let Some(ref platform) = self.inner.platform {
+            let ns = storage_path.to_string_lossy().to_string();
+            platform.open_kv_store(&ns).await.map_err(|e| {
+                HyperError::Storage(format!("failed to open KV store: {e}"))
+            })?
+        } else {
+            Arc::new(ActorStore::open(&storage_path).await?)
+        };
 
         // 2. Check if there is a valid PSK in ActorStore
-        let valid_psk = load_valid_psk(&store).await?;
+        let valid_psk = load_valid_psk_dyn(&*store).await?;
 
         // 3. Build RegisterRequest and send to AIS
         let ais = AisClient::new(ais_endpoint);
@@ -513,7 +568,7 @@ impl Hyper {
             );
             let expires_at_bytes = (psk_expires_at as u64).to_le_bytes().to_vec();
             store
-                .kv_batch(vec![
+                .batch(vec![
                     KvOp::Set {
                         key: "hyper:psk:token".to_string(),
                         value: psk.to_vec(),
@@ -523,7 +578,8 @@ impl Hyper {
                         value: expires_at_bytes,
                     },
                 ])
-                .await?;
+                .await
+                .map_err(|e| HyperError::Storage(format!("failed to store PSK: {e}")))?;
             debug!(
                 actr_type = manifest.actr_type_str(),
                 "PSK successfully persisted to ActorStore"
@@ -534,7 +590,7 @@ impl Hyper {
         let pubkey_bytes = ok.signing_pubkey.to_vec();
         let key_id_bytes = ok.signing_key_id.to_le_bytes().to_vec();
         store
-            .kv_batch(vec![
+            .batch(vec![
                 KvOp::Set {
                     key: "hyper:ais:signing_pubkey".to_string(),
                     value: pubkey_bytes,
@@ -544,7 +600,8 @@ impl Hyper {
                     value: key_id_bytes,
                 },
             ])
-            .await?;
+            .await
+            .map_err(|e| HyperError::Storage(format!("failed to store signing key: {e}")))?;
         debug!(
             actr_type = manifest.actr_type_str(),
             signing_key_id = ok.signing_key_id,
@@ -575,12 +632,38 @@ impl Hyper {
 
 // ─── Helper functions ────────────────────────────────────────────────────────
 
+/// Load PSK from any KvStore implementation; returns PSK bytes if present and not expired
+///
+/// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
+async fn load_valid_psk_dyn(store: &dyn KvStore) -> HyperResult<Option<Vec<u8>>> {
+    let token = store
+        .get("hyper:psk:token")
+        .await
+        .map_err(|e| HyperError::Storage(format!("failed to read PSK token: {e}")))?;
+    let expires_at_raw = store
+        .get("hyper:psk:expires_at")
+        .await
+        .map_err(|e| HyperError::Storage(format!("failed to read PSK expires_at: {e}")))?;
+
+    check_psk_expiry(token, expires_at_raw)
+}
+
 /// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
 ///
 /// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
+#[cfg(test)]
 async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
     let token = store.kv_get("hyper:psk:token").await?;
     let expires_at_raw = store.kv_get("hyper:psk:expires_at").await?;
+
+    check_psk_expiry(token, expires_at_raw)
+}
+
+/// Check PSK expiry given pre-fetched token and expires_at values
+fn check_psk_expiry(
+    token: Option<Vec<u8>>,
+    expires_at_raw: Option<Vec<u8>>,
+) -> HyperResult<Option<Vec<u8>>> {
 
     match (token, expires_at_raw) {
         (Some(token), Some(expires_bytes)) => {

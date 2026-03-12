@@ -52,10 +52,12 @@
 
 pub mod error;
 pub mod mailbox;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 
 // Dead Letter Queue modules
 pub mod dlq;
+#[cfg(feature = "sqlite")]
 pub mod sqlite_dlq;
 
 // Re-export core types
@@ -68,8 +70,10 @@ pub use mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, Message
 // DLQ core interfaces
 pub use dlq::{DeadLetterQueue, DlqQuery, DlqRecord, DlqStats};
 
-// Backend implementations
+// Backend implementations (only available with sqlite feature)
+#[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteConfig, SqliteMailbox};
+#[cfg(feature = "sqlite")]
 pub use sqlite_dlq::SqliteDeadLetterQueue;
 
 pub mod prelude {
@@ -79,10 +83,12 @@ pub mod prelude {
     pub use crate::mailbox::{
         Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
     };
+    #[cfg(feature = "sqlite")]
     pub use crate::sqlite::{SqliteConfig, SqliteMailbox};
 
     // Dead Letter Queue
     pub use crate::dlq::{DeadLetterQueue, DlqQuery, DlqRecord, DlqStats};
+    #[cfg(feature = "sqlite")]
     pub use crate::sqlite_dlq::SqliteDeadLetterQueue;
 
     // Base types

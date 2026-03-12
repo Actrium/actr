@@ -35,6 +35,7 @@ actr-runtime-mailbox.workspace = true
 actr-config.workspace = true
 actr-framework.workspace = true
 actr-service-compat.workspace = true
+actr-platform-traits.workspace = true
 
 # === Storage ===
 rusqlite = { workspace = true }

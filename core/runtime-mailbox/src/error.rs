@@ -56,6 +56,7 @@ impl From<actr_protocol::ActrError> for StorageError {
     }
 }
 
+#[cfg(feature = "sqlite")]
 impl From<rusqlite::Error> for StorageError {
     fn from(err: rusqlite::Error) -> Self {
         match err {

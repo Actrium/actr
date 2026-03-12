@@ -135,6 +135,7 @@ dependencies = [
  "actr-framework",
  "actr-hyper",
  "actr-mock-signaling",
+ "actr-platform-traits",
  "actr-protocol",
  "actr-runtime",
  "actr-runtime-mailbox",
@@ -206,6 +207,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-platform-traits"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "actr-protocol"
 version = "0.2.0"
 dependencies = [
@@ -251,6 +260,23 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "actr-runtime-native"
+version = "0.2.0"
+dependencies = [
+ "actr-hyper",
+ "actr-platform-traits",
+ "async-trait",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "rusqlite",
+ "sha2",
+ "tempfile",
+ "tokio",
  "tracing",
  "uuid",
 ]

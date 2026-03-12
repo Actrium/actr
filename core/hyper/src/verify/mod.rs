@@ -8,6 +8,7 @@ pub use manifest::PackageManifest;
 
 use std::sync::Arc;
 
+use actr_platform_traits::CryptoProvider;
 use ed25519_dalek::{Signature, VerifyingKey};
 
 use crate::config::TrustMode;
@@ -22,10 +23,15 @@ use manifest::{
 ///
 /// Holds the current trust root, either the Actrix root CA or a local self-signed public key,
 /// and exposes a unified `verify` entry point that dispatches by package format.
+///
+/// When a `CryptoProvider` is injected, signature verification delegates to it
+/// (enabling Web Crypto on browser). Otherwise falls back to direct ed25519-dalek.
 pub struct PackageVerifier {
     trust_mode: TrustMode,
     /// Cache of MFR public keys in production mode. `None` in development mode.
     cert_cache: Option<Arc<MfrCertCache>>,
+    /// Optional platform crypto provider for cross-platform signature verification
+    crypto: Option<Arc<dyn CryptoProvider>>,
 }
 
 impl PackageVerifier {
@@ -37,7 +43,14 @@ impl PackageVerifier {
         Self {
             trust_mode,
             cert_cache,
+            crypto: None,
         }
+    }
+
+    /// Set a platform crypto provider for cross-platform signature verification
+    pub fn with_crypto(mut self, crypto: Arc<dyn CryptoProvider>) -> Self {
+        self.crypto = Some(crypto);
+        self
     }
 
     /// Verify package bytes and return the validated manifest.
@@ -84,7 +97,7 @@ impl PackageVerifier {
 
         // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        verify_manifest_signature(&manifest, &pubkey)?;
+        self.verify_signature(&manifest, &pubkey)?;
 
         tracing::info!(
             actr_type = manifest.actr_type_str(),
@@ -117,7 +130,7 @@ impl PackageVerifier {
 
         // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        verify_manifest_signature(&manifest, &pubkey)?;
+        self.verify_signature(&manifest, &pubkey)?;
 
         tracing::info!(
             actr_type = manifest.actr_type_str(),
@@ -151,13 +164,25 @@ impl PackageVerifier {
 
         // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        verify_manifest_signature(&manifest, &pubkey)?;
+        self.verify_signature(&manifest, &pubkey)?;
 
         tracing::info!(
             actr_type = manifest.actr_type_str(),
             "Mach-O package signature verified"
         );
         Ok(manifest)
+    }
+
+    /// Verify the MFR signature.
+    ///
+    /// Currently uses ed25519-dalek directly. The stored `CryptoProvider` will be
+    /// used in Phase 4 when verification moves to a fully async path.
+    fn verify_signature(
+        &self,
+        manifest: &PackageManifest,
+        pubkey: &VerifyingKey,
+    ) -> HyperResult<()> {
+        verify_manifest_signature(manifest, pubkey)
     }
 
     /// Resolve the Ed25519 public key for the MFR synchronously, used only on cache-hit paths.
