@@ -16,7 +16,8 @@ pub enum KvOp {
 ///
 /// Each Actor gets an isolated KV namespace. The backing implementation
 /// may be SQLite (native), IndexedDB (web), or any other storage engine.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait KvStore: Send + Sync {
     /// Read a key's value, returns `None` if the key does not exist
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, PlatformError>;

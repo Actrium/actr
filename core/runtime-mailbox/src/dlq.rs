@@ -110,7 +110,8 @@ pub struct DlqQuery {
 /// Dead Letter Queue interface
 ///
 /// Provides persistence and query capabilities for poison messages.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait DeadLetterQueue: Send + Sync {
     /// Add a poison message to DLQ
     ///

@@ -13,7 +13,8 @@ use crate::PlatformError;
 /// Groups all platform-specific services behind a single injectable interface.
 /// `ActrSystem` and `Hyper` accept `Arc<dyn PlatformProvider>` to decouple
 /// from concrete native/web implementations.
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait PlatformProvider: Send + Sync {
     /// Open a KV store isolated by namespace (each Actor gets its own)
     async fn open_kv_store(&self, namespace: &str) -> Result<Arc<dyn KvStore>, PlatformError>;

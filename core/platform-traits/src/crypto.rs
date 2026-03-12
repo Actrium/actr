@@ -8,7 +8,8 @@ use crate::PlatformError;
 ///
 /// Native: ed25519-dalek + sha2
 /// Web: SubtleCrypto (Web Crypto API)
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait CryptoProvider: Send + Sync {
     /// Ed25519 signature verification
     ///

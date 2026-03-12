@@ -28,7 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 # Async Support
-tokio.workspace = true
+tokio = { version = "1", default-features = false, features = ["sync"] }
 async-trait.workspace = true
 
 # Utilities
