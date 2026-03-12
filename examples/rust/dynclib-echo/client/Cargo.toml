@@ -1,0 +1,21 @@
+[package]
+name = "dynclib-echo-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+actr-hyper = { workspace = true }
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-config = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"
