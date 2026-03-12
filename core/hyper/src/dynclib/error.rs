@@ -4,6 +4,9 @@ pub type DynclibResult<T> = Result<T, DynclibError>;
 
 #[derive(Debug, Error)]
 pub enum DynclibError {
+    #[error("dynclib package verification failed: {0}")]
+    VerificationFailed(#[from] crate::error::HyperError),
+
     #[error("failed to load library: {0}")]
     LoadFailed(String),
 

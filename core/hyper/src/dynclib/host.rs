@@ -422,6 +422,29 @@ unsafe impl Send for DynclibHost {}
 unsafe impl Sync for DynclibHost {}
 
 impl DynclibHost {
+    /// Verify package signature from the binary on disk, then load the shared library.
+    ///
+    /// This is the production entry point. Verification is mandatory — loading
+    /// is rejected if the manifest is missing, the binary hash does not match, or
+    /// the MFR signature is invalid.
+    pub fn load_verified(
+        path: impl AsRef<Path>,
+        verifier: &crate::verify::PackageVerifier,
+    ) -> DynclibResult<Self> {
+        let path = path.as_ref();
+        let bytes = std::fs::read(path).map_err(|e| {
+            DynclibError::LoadFailed(format!("failed to read binary for verification: {}: {e}", path.display()))
+        })?;
+        let manifest = verifier.verify(&bytes)?;
+        tracing::info!(
+            manufacturer = %manifest.manufacturer,
+            actr_name = %manifest.actr_name,
+            version = %manifest.version,
+            "dynclib package signature verified, proceeding to load"
+        );
+        Self::load(path)
+    }
+
     /// Load a shared library from the given filesystem path.
     ///
     /// Resolves the required ABI symbols (`actr_init`, `actr_handle`,

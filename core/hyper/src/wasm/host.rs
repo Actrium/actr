@@ -88,6 +88,25 @@ impl WasmHost {
         Ok(Self { engine, module })
     }
 
+    /// Verify package signature, then compile the WASM module.
+    ///
+    /// This is the production entry point. Verification is mandatory — compilation
+    /// is rejected if the manifest is missing, the binary hash does not match, or
+    /// the MFR signature is invalid.
+    pub fn compile_verified(
+        wasm_bytes: &[u8],
+        verifier: &crate::verify::PackageVerifier,
+    ) -> WasmResult<Self> {
+        let manifest = verifier.verify(wasm_bytes)?;
+        tracing::info!(
+            manufacturer = %manifest.manufacturer,
+            actr_name = %manifest.actr_name,
+            version = %manifest.version,
+            "WASM package signature verified, proceeding to compile"
+        );
+        Self::compile(wasm_bytes)
+    }
+
     /// Instantiate the WASM module, register all host imports, return an executable `WasmInstance`
     pub fn instantiate(&self) -> WasmResult<WasmInstance> {
         let mut linker = Linker::<HostData>::new(&self.engine);
