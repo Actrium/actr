@@ -156,7 +156,8 @@ pub trait SignalingClient: Send + Sync {
     /// DisconnectConnect
     async fn disconnect(&self) -> NetworkResult<()>;
 
-    /// SendRegisterrequest（Register front stream process, using PeerToSignaling）
+    /// Deprecated: Registration now happens via AIS HTTP; this WS path is no longer used.
+    /// Kept for backward compatibility; will be removed in a future release.
     async fn send_register_request(
         &self,
         request: RegisterRequest,

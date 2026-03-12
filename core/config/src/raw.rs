@@ -167,6 +167,13 @@ pub struct RawDeploymentConfig {
     /// Execution mode: `"native"` (default) | `"process"` | `"wasm"`
     #[serde(default)]
     pub mode: Option<String>,
+
+    /// AIS (Actor Identity Service) HTTP endpoint, e.g. `"http://ais.example.com:8080"`.
+    ///
+    /// Used for credential registration via HTTP. Required in native mode;
+    /// in process/wasm mode, Hyper handles registration and injects credentials.
+    #[serde(default)]
+    pub ais_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
