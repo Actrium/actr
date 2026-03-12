@@ -37,6 +37,7 @@ import io.actor_rtc.actr.ActrRefWrapper
 import io.actor_rtc.actr.ActrSystemWrapper
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.NetworkEventHandleWrapper
+import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.WorkloadBridge
 
 // ============================================================================
@@ -181,9 +182,13 @@ suspend fun ActrRef.discoverOne(type: ActrType): ActrId? {
  * }
  * ```
  */
-suspend fun SimpleWorkload.sendStream(target: ActrId, builder: DataStreamBuilder.() -> Unit) {
+suspend fun SimpleWorkload.sendStream(
+        target: ActrId,
+        payloadType: PayloadType = PayloadType.STREAM_RELIABLE,
+        builder: DataStreamBuilder.() -> Unit
+) {
     val dataStream = DataStreamBuilder().apply(builder).build()
-    sendDataStream(target, dataStream)
+    sendDataStream(target, dataStream, payloadType)
 }
 
 /** Await shutdown completion. Alias for [waitForShutdown]. */

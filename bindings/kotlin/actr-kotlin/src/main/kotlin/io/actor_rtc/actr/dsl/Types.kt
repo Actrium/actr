@@ -12,16 +12,22 @@ import io.actor_rtc.actr.Realm
 // ============================================================================
 
 /**
- * Create an ActrType from a string in "manufacturer:name" format.
+ * Create an ActrType from a string in "manufacturer:name[:version]" format.
  *
- * @param typeString Type string like "acme:EchoService"
+ * @param typeString Type string like "acme:EchoService" or "acme:EchoService:1.0.0"
  * @return ActrType with parsed manufacturer and name
  * @throws IllegalArgumentException if format is invalid
  */
 fun String.toActrType(): ActrType {
-    val parts = this.split(":", limit = 2)
-    require(parts.size == 2) { "ActrType string must be in 'manufacturer:name' format, got: $this" }
-    return ActrType(manufacturer = parts[0], name = parts[1])
+    val parts = this.split(":", limit = 3)
+    require(parts.size == 2 || parts.size == 3) {
+        "ActrType string must be in 'manufacturer:name[:version]' format, got: $this"
+    }
+    return ActrType(
+            manufacturer = parts[0],
+            name = parts[1],
+            version = parts.getOrNull(2)
+    )
 }
 
 /**
@@ -48,18 +54,24 @@ inline fun actrType(builder: ActrTypeBuilder.() -> Unit): ActrType {
  * ```
  */
 fun actrType(manufacturer: String, name: String): ActrType {
-    return ActrType(manufacturer = manufacturer, name = name)
+    return ActrType(manufacturer = manufacturer, name = name, version = null)
+}
+
+/** Create an ActrType from manufacturer, name, and version. */
+fun actrType(manufacturer: String, name: String, version: String?): ActrType {
+    return ActrType(manufacturer = manufacturer, name = name, version = version)
 }
 
 /** Builder for ActrType. */
 class ActrTypeBuilder {
     var manufacturer: String = ""
     var name: String = ""
+    var version: String? = null
 
     fun build(): ActrType {
         require(manufacturer.isNotBlank()) { "manufacturer must not be blank" }
         require(name.isNotBlank()) { "name must not be blank" }
-        return ActrType(manufacturer = manufacturer, name = name)
+        return ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 }
 
@@ -68,7 +80,16 @@ class ActrTypeBuilder {
 // ============================================================================
 
 /** Convert ActrType to string representation. */
-fun ActrType.toTypeString(): String = "$manufacturer:$name"
+fun ActrType.toTypeString(): String =
+        buildString {
+            append(manufacturer)
+            append(":")
+            append(name)
+            version?.takeIf { it.isNotBlank() }?.let {
+                append(":")
+                append(it)
+            }
+        }
 
 /** Check if this type matches a type string. */
 fun ActrType.matches(typeString: String): Boolean {
@@ -116,7 +137,12 @@ class ActrIdBuilder {
 
     /** Set the actor type with manufacturer and name. */
     fun type(manufacturer: String, name: String) {
-        _type = ActrType(manufacturer = manufacturer, name = name)
+        _type = ActrType(manufacturer = manufacturer, name = name, version = null)
+    }
+
+    /** Set the actor type with manufacturer, name, and version. */
+    fun type(manufacturer: String, name: String, version: String?) {
+        _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
     fun build(): ActrId {

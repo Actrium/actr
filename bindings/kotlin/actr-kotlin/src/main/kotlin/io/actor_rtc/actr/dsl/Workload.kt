@@ -5,6 +5,7 @@ import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.DataStream
+import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
 import io.actor_rtc.actr.WorkloadBridge
@@ -46,7 +47,11 @@ open class SimpleWorkload(
     private val dataStreamChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
 
     /** Data class for DataStream requests. */
-    data class DataStreamRequest(val target: ActrId, val dataStream: DataStream)
+    data class DataStreamRequest(
+            val target: ActrId,
+            val dataStream: DataStream,
+            val payloadType: PayloadType
+    )
 
     /**
      * The target server ID for RPC calls. Must be set before making RPC calls via
@@ -72,11 +77,12 @@ open class SimpleWorkload(
             realm: UInt,
             manufacturer: String,
             name: String,
+            version: String? = null,
             onStartHandler: suspend (ContextBridge) -> Unit = {},
             onStopHandler: suspend (ContextBridge) -> Unit = {}
     ) : this(
             realm,
-            ActrType(manufacturer = manufacturer, name = name),
+            ActrType(manufacturer = manufacturer, name = name, version = version),
             onStartHandler,
             onStopHandler
     )
@@ -102,8 +108,12 @@ open class SimpleWorkload(
      * Send a DataStream through the workload's context. This method is thread-safe and can be
      * called from UI threads.
      */
-    suspend fun sendDataStream(target: ActrId, dataStream: DataStream) {
-        dataStreamChannel.send(DataStreamRequest(target, dataStream))
+    suspend fun sendDataStream(
+            target: ActrId,
+            dataStream: DataStream,
+            payloadType: PayloadType = PayloadType.STREAM_RELIABLE
+    ) {
+        dataStreamChannel.send(DataStreamRequest(target, dataStream, payloadType))
     }
 
     override suspend fun onStart(ctx: ContextBridge) {
@@ -111,7 +121,7 @@ open class SimpleWorkload(
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
             for (request in dataStreamChannel) {
                 try {
-                    ctx.sendDataStream(request.target, request.dataStream)
+                    ctx.sendDataStream(request.target, request.dataStream, request.payloadType)
                 } catch (e: Exception) {
                     // Log error but continue processing
                     println("Failed to send DataStream: ${e.message}")
@@ -193,7 +203,12 @@ class WorkloadBuilder {
 
     /** Set the actor type with manufacturer and name. */
     fun type(manufacturer: String, name: String) {
-        _type = ActrType(manufacturer = manufacturer, name = name)
+        _type = ActrType(manufacturer = manufacturer, name = name, version = null)
+    }
+
+    /** Set the actor type with manufacturer, name, and version. */
+    fun type(manufacturer: String, name: String, version: String?) {
+        _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
     /**
