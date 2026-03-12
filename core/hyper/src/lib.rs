@@ -165,10 +165,7 @@ pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]
-pub use verify::{
-    MfrCertCache, embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest,
-    manifest_signed_bytes,
-};
+pub use verify::MfrCertCache;
 
 // Observability
 #[cfg(not(target_arch = "wasm32"))]
@@ -789,36 +786,18 @@ fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Quickly extract the `manufacturer` field from a binary, used only to prefetch the MFR public key without full verification.
+/// Quickly extract the `manufacturer` field from an `.actr` package, used only to prefetch
+/// the MFR public key without full verification.
 ///
-/// Parses JSON from the manifest section in WASM, ELF, or Mach-O binaries and extracts `manufacturer`.
-/// Returns `None` when parsing fails or the format is not recognized. The caller then skips prefetch and lets verification report the error.
+/// Returns `None` when parsing fails or the format is not recognized.
+/// The caller then skips prefetch and lets verification report the error.
 fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
-    use verify::manifest::{
-        extract_elf_manifest, extract_macho_manifest, extract_wasm_manifest, is_elf, is_macho,
-        is_wasm,
-    };
-
-    // .actr ZIP package (PK magic)
     if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
         return actr_pack::read_manifest(bytes)
             .ok()
             .map(|m| m.manufacturer);
     }
-
-    // Legacy embedded-manifest formats
-    let section = if is_wasm(bytes) {
-        extract_wasm_manifest(bytes)?
-    } else if is_elf(bytes) {
-        extract_elf_manifest(bytes)?
-    } else if is_macho(bytes) {
-        extract_macho_manifest(bytes)?
-    } else {
-        return None;
-    };
-
-    let value: serde_json::Value = serde_json::from_slice(section).ok()?;
-    value["manufacturer"].as_str().map(|s| s.to_string())
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]

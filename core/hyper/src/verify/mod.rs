@@ -1,22 +1,14 @@
 //! Package verification module.
 //!
-//! Supports two package formats:
-//! - `.actr` ZIP STORE packages (new format, via `actr_pack`)
-//! - Legacy embedded manifest in WASM/ELF/Mach-O binaries
-//!
-//! The `.actr` format is preferred; legacy format is retained for backward compatibility.
+//! Verifies `.actr` ZIP STORE packages using `actr_pack`.
 
 pub mod manifest;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cert_cache;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod embed;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use cert_cache::MfrCertCache;
-#[cfg(not(target_arch = "wasm32"))]
-pub use embed::{embed_elf_manifest, embed_macho_manifest, embed_wasm_manifest};
 pub use manifest::PackageManifest;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,26 +17,18 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use actr_platform_traits::CryptoProvider;
 #[cfg(not(target_arch = "wasm32"))]
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::config::TrustMode;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::{HyperError, HyperResult};
-#[cfg(not(target_arch = "wasm32"))]
-use manifest::{
-    elf_binary_hash_excluding_manifest, extract_elf_manifest, extract_macho_manifest,
-    extract_wasm_manifest, is_elf, is_macho, is_wasm, macho_binary_hash_excluding_manifest,
-    wasm_binary_hash_excluding_manifest,
-};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Package verifier.
 ///
 /// Holds the current trust root, either the Actrix root CA or a local self-signed public key,
-/// and exposes a unified `verify` entry point that dispatches by package format.
-///
-/// Supports both `.actr` ZIP packages (new) and legacy embedded-manifest binaries.
+/// and exposes a unified `verify` entry point that delegates to `actr_pack`.
 pub struct PackageVerifier {
     trust_mode: TrustMode,
     /// Cache of MFR public keys in production mode. `None` in development mode.
@@ -75,28 +59,16 @@ impl PackageVerifier {
 
     /// Verify package bytes and return the validated manifest.
     ///
-    /// Dispatches by format:
-    /// - ZIP (PK magic) → `.actr` package via `actr_pack::verify`
-    /// - WASM / ELF / Mach-O → legacy embedded-manifest verification
+    /// Only `.actr` ZIP STORE packages are supported.
     pub fn verify(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        // Detect .actr ZIP package (PK\x03\x04 magic)
-        if is_actr_package(bytes) {
-            return self.verify_actr_package(bytes);
+        if !is_actr_package(bytes) {
+            tracing::warn!("Unrecognized package format");
+            return Err(HyperError::InvalidManifest(
+                "Unsupported package format; expected .actr ZIP package".to_string(),
+            ));
         }
 
-        // Legacy format dispatch
-        if is_wasm(bytes) {
-            self.verify_wasm(bytes)
-        } else if is_elf(bytes) {
-            self.verify_elf(bytes)
-        } else if is_macho(bytes) {
-            self.verify_macho(bytes)
-        } else {
-            tracing::warn!("Unrecognized package format");
-            Err(HyperError::InvalidManifest(
-                "Unsupported package format; expected .actr, WASM, ELF64 LE, or Mach-O 64-bit LE".to_string(),
-            ))
-        }
+        self.verify_actr_package(bytes)
     }
 
     /// Verify an `.actr` ZIP STORE package using `actr_pack`.
@@ -143,70 +115,6 @@ impl PackageVerifier {
         })
     }
 
-    // ─── Legacy format verification ─────────────────────────────────────────
-
-    fn verify_wasm(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        let section_bytes = extract_wasm_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-        let manifest: PackageManifest = parse_manifest(section_bytes)?;
-        let computed_hash = wasm_binary_hash_excluding_manifest(bytes)?;
-        if computed_hash != manifest.binary_hash {
-            tracing::warn!(
-                actr_type = manifest.actr_type_str(),
-                "binary_hash mismatch"
-            );
-            return Err(HyperError::BinaryHashMismatch);
-        }
-        let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        self.verify_signature(&manifest, &pubkey)?;
-        tracing::info!(actr_type = manifest.actr_type_str(), "WASM package verified");
-        Ok(manifest)
-    }
-
-    fn verify_elf(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        let section_bytes = extract_elf_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-        let manifest: PackageManifest = parse_manifest(section_bytes)?;
-        let computed_hash = elf_binary_hash_excluding_manifest(bytes)?;
-        if computed_hash != manifest.binary_hash {
-            tracing::warn!(
-                actr_type = manifest.actr_type_str(),
-                "ELF binary_hash mismatch"
-            );
-            return Err(HyperError::BinaryHashMismatch);
-        }
-        let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        self.verify_signature(&manifest, &pubkey)?;
-        tracing::info!(actr_type = manifest.actr_type_str(), "ELF package verified");
-        Ok(manifest)
-    }
-
-    fn verify_macho(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        let section_bytes = extract_macho_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-        let manifest: PackageManifest = parse_manifest(section_bytes)?;
-        let computed_hash = macho_binary_hash_excluding_manifest(bytes)?;
-        if computed_hash != manifest.binary_hash {
-            tracing::warn!(
-                actr_type = manifest.actr_type_str(),
-                "Mach-O binary_hash mismatch"
-            );
-            return Err(HyperError::BinaryHashMismatch);
-        }
-        let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
-        self.verify_signature(&manifest, &pubkey)?;
-        tracing::info!(
-            actr_type = manifest.actr_type_str(),
-            "Mach-O package verified"
-        );
-        Ok(manifest)
-    }
-
-    fn verify_signature(
-        &self,
-        manifest: &PackageManifest,
-        pubkey: &VerifyingKey,
-    ) -> HyperResult<()> {
-        verify_manifest_signature(manifest, pubkey)
-    }
-
     /// Resolve the Ed25519 public key for the MFR synchronously, used only on cache-hit paths.
     fn resolve_mfr_pubkey(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
         match &self.trust_mode {
@@ -249,87 +157,6 @@ fn is_actr_package(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04"
 }
 
-// ─── Legacy helpers (kept for backward compatibility) ────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-fn verify_manifest_signature(manifest: &PackageManifest, pubkey: &VerifyingKey) -> HyperResult<()> {
-    let signed_bytes = manifest_signed_bytes(manifest);
-
-    let sig_bytes: [u8; 64] = manifest.signature.as_slice().try_into().map_err(|_| {
-        HyperError::SignatureVerificationFailed(
-            "Invalid signature length; Ed25519 signatures must be 64 bytes".to_string(),
-        )
-    })?;
-    let signature = Signature::from_bytes(&sig_bytes);
-
-    pubkey
-        .verify_strict(&signed_bytes, &signature)
-        .map_err(|e| {
-            HyperError::SignatureVerificationFailed(format!(
-                "Ed25519 signature verification failed: {e}"
-            ))
-        })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Serialize the manifest fields that participate in signing (legacy format).
-pub fn manifest_signed_bytes(manifest: &PackageManifest) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.extend_from_slice(manifest.manufacturer.as_bytes());
-    buf.push(0);
-    buf.extend_from_slice(manifest.actr_name.as_bytes());
-    buf.push(0);
-    buf.extend_from_slice(manifest.version.as_bytes());
-    buf.push(0);
-    buf.extend_from_slice(&manifest.binary_hash);
-    buf.push(0);
-    for cap in &manifest.capabilities {
-        buf.extend_from_slice(cap.as_bytes());
-        buf.push(0);
-    }
-    buf
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn parse_manifest(bytes: &[u8]) -> HyperResult<PackageManifest> {
-    let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|e| HyperError::InvalidManifest(format!("JSON parsing failed: {e}")))?;
-
-    let get_str = |key: &str| -> HyperResult<String> {
-        value[key].as_str().map(|s| s.to_string()).ok_or_else(|| {
-            HyperError::InvalidManifest(format!("Field `{key}` is missing or has the wrong type"))
-        })
-    };
-
-    let manufacturer = get_str("manufacturer")?;
-    let actr_name = get_str("actr_name")?;
-    let version = get_str("version")?;
-
-    let hash_hex = get_str("binary_hash")?;
-    let hash_bytes = hex_to_32_bytes(&hash_hex)?;
-
-    let capabilities = value["capabilities"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let sig_b64 = get_str("signature")?;
-    let signature = base64_decode(&sig_b64)?;
-
-    Ok(PackageManifest {
-        manufacturer,
-        actr_name,
-        version,
-        binary_hash: hash_bytes,
-        capabilities,
-        signature,
-    })
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
     if hex.len() != 64 {
@@ -347,63 +174,4 @@ fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
         })?;
     }
     Ok(out)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn base64_decode(s: &str) -> HyperResult<Vec<u8>> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    base64_simple_decode(&cleaned)
-        .ok_or_else(|| HyperError::InvalidManifest("Failed to decode signature base64".to_string()))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn base64_simple_decode(s: &str) -> Option<Vec<u8>> {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut decode_table = [0xFF_u8; 256];
-    for (i, &c) in TABLE.iter().enumerate() {
-        decode_table[c as usize] = i as u8;
-    }
-
-    let s = s.trim_end_matches('=');
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i + 3 < bytes.len() {
-        let [a, b, c, d] = [
-            decode_table[bytes[i] as usize],
-            decode_table[bytes[i + 1] as usize],
-            decode_table[bytes[i + 2] as usize],
-            decode_table[bytes[i + 3] as usize],
-        ];
-        if a == 0xFF || b == 0xFF || c == 0xFF || d == 0xFF {
-            return None;
-        }
-        out.push((a << 2) | (b >> 4));
-        out.push((b << 4) | (c >> 2));
-        out.push((c << 6) | d);
-        i += 4;
-    }
-    let rem = bytes.len() - i;
-    if rem == 2 {
-        let [a, b] = [
-            decode_table[bytes[i] as usize],
-            decode_table[bytes[i + 1] as usize],
-        ];
-        if a == 0xFF || b == 0xFF {
-            return None;
-        }
-        out.push((a << 2) | (b >> 4));
-    } else if rem == 3 {
-        let [a, b, c] = [
-            decode_table[bytes[i] as usize],
-            decode_table[bytes[i + 1] as usize],
-            decode_table[bytes[i + 2] as usize],
-        ];
-        if a == 0xFF || b == 0xFF || c == 0xFF {
-            return None;
-        }
-        out.push((a << 2) | (b >> 4));
-        out.push((b << 4) | (c >> 2));
-    }
-    Some(out)
 }

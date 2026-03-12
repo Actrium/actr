@@ -7,12 +7,9 @@
 //! 4. Different MFRs -> independent caches
 //! 5. HTTP request body and response format validation
 
-use actr_hyper::{
-    Hyper, HyperConfig, HyperError, MfrCertCache, PackageManifest, TrustMode, embed_wasm_manifest,
-    manifest_signed_bytes, verify::manifest::wasm_binary_hash_excluding_manifest,
-};
+use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, TrustMode};
 use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
@@ -29,41 +26,35 @@ fn prod_config(dir: &TempDir, ais_endpoint: &str) -> HyperConfig {
     })
 }
 
-/// Build a signed WASM for the given manufacturer, returns (embedded_wasm, signing_key)
-fn make_signed_wasm(
+/// Build a signed .actr package for the given manufacturer
+fn make_signed_package(
     manufacturer: &str,
     actr_name: &str,
     version: &str,
     signing_key: &SigningKey,
 ) -> Vec<u8> {
     let wasm = minimal_wasm();
-    let binary_hash = wasm_binary_hash_excluding_manifest(&wasm).unwrap();
-
-    let manifest = PackageManifest {
+    let manifest = actr_pack::PackageManifest {
         manufacturer: manufacturer.to_string(),
-        actr_name: actr_name.to_string(),
+        name: actr_name.to_string(),
         version: version.to_string(),
-        binary_hash,
-        capabilities: vec![],
-        signature: vec![],
+        binary: actr_pack::BinaryEntry {
+            path: "bin/actor.wasm".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            hash: String::new(),
+            size: None,
+        },
+        signature_algorithm: "ed25519".to_string(),
+        resources: vec![],
+        metadata: actr_pack::ManifestMetadata::default(),
     };
-
-    let signed_bytes = manifest_signed_bytes(&manifest);
-    let sig = signing_key.sign(&signed_bytes);
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
-    let hash_hex: String = binary_hash.iter().map(|b| format!("{b:02x}")).collect();
-
-    let json = serde_json::to_vec(&serde_json::json!({
-        "manufacturer": manufacturer,
-        "actr_name": actr_name,
-        "version": version,
-        "binary_hash": hash_hex,
-        "capabilities": [],
-        "signature": sig_b64,
-    }))
-    .unwrap();
-
-    embed_wasm_manifest(&wasm, &json).unwrap()
+    let opts = actr_pack::PackOptions {
+        manifest,
+        binary_bytes: wasm,
+        resources: vec![],
+        signing_key: signing_key.clone(),
+    };
+    actr_pack::pack(&opts).unwrap()
 }
 
 /// Build actrix MFR verifying_key response body
@@ -90,12 +81,12 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
         .create_async()
         .await;
 
-    let signed_wasm = make_signed_wasm("acme", "Sensor", "1.0.0", &signing_key);
+    let package = make_signed_package("acme", "Sensor", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest = hyper.verify_package(&signed_wasm).await.unwrap();
+    let manifest = hyper.verify_package(&package).await.unwrap();
 
     mock.assert_async().await;
     assert_eq!(manifest.manufacturer, "acme");
@@ -119,15 +110,15 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
         .create_async()
         .await;
 
-    let signed_wasm = make_signed_wasm("cached-mfr", "App", "1.0.0", &signing_key);
+    let package = make_signed_package("cached-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     // First: miss -> HTTP
-    hyper.verify_package(&signed_wasm).await.unwrap();
+    hyper.verify_package(&package).await.unwrap();
     // Second: hit -> no HTTP
-    hyper.verify_package(&signed_wasm).await.unwrap();
+    hyper.verify_package(&package).await.unwrap();
 
     mock.assert_async().await; // verify it was called only once
 }
@@ -144,12 +135,12 @@ async fn production_mode_returns_untrusted_for_unknown_mfr() {
         .create_async()
         .await;
 
-    let signed_wasm = make_signed_wasm("unknown-mfr", "App", "1.0.0", &signing_key);
+    let package = make_signed_package("unknown-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let result = hyper.verify_package(&signed_wasm).await;
+    let result = hyper.verify_package(&package).await;
 
     assert!(
         matches!(result, Err(HyperError::UntrustedManufacturer(_))),
@@ -174,13 +165,13 @@ async fn production_mode_rejects_wrong_cached_key() {
         .create_async()
         .await;
 
-    // WASM signed with real_signing_key
-    let signed_wasm = make_signed_wasm("mfr-x", "X", "1.0.0", &real_signing_key);
+    // Package signed with real_signing_key
+    let package = make_signed_package("mfr-x", "X", "1.0.0", &real_signing_key);
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let result = hyper.verify_package(&signed_wasm).await;
+    let result = hyper.verify_package(&package).await;
 
     assert!(
         matches!(result, Err(HyperError::SignatureVerificationFailed(_))),
@@ -210,14 +201,14 @@ async fn production_mode_independent_caches_per_manufacturer() {
         .create_async()
         .await;
 
-    let wasm_a = make_signed_wasm("mfr-a", "ActorA", "1.0.0", &key_a);
-    let wasm_b = make_signed_wasm("mfr-b", "ActorB", "1.0.0", &key_b);
+    let pkg_a = make_signed_package("mfr-a", "ActorA", "1.0.0", &key_a);
+    let pkg_b = make_signed_package("mfr-b", "ActorB", "1.0.0", &key_b);
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest_a = hyper.verify_package(&wasm_a).await.unwrap();
-    let manifest_b = hyper.verify_package(&wasm_b).await.unwrap();
+    let manifest_a = hyper.verify_package(&pkg_a).await.unwrap();
+    let manifest_b = hyper.verify_package(&pkg_b).await.unwrap();
 
     assert_eq!(manifest_a.manufacturer, "mfr-a");
     assert_eq!(manifest_b.manufacturer, "mfr-b");
@@ -259,20 +250,18 @@ async fn cert_cache_get_from_cache_after_prefetch() {
     );
 }
 
-/// WASM without manifest section does not trigger HTTP in production mode (quick_extract returns None)
+/// Non-.actr bytes -> InvalidManifest (no HTTP triggered)
 #[tokio::test]
-async fn production_mode_no_http_for_unsigned_wasm() {
+async fn production_mode_no_http_for_unknown_format() {
     let server = mockito::Server::new_async().await;
     // No mock endpoints set; if HTTP is triggered, the test fails
 
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    // WASM without manifest section -> no HTTP triggered (quick_extract returns None)
-    // Goes directly to verify, returns ManifestNotFound
-    let result = hyper.verify_package(b"\0asm\x01\x00\x00\x00").await;
+    let result = hyper.verify_package(b"this is not a package").await;
     assert!(
-        matches!(result, Err(HyperError::ManifestNotFound)),
-        "no manifest should return ManifestNotFound, got: {result:?}"
+        matches!(result, Err(HyperError::InvalidManifest(_))),
+        "unknown format should return InvalidManifest, got: {result:?}"
     );
 }
