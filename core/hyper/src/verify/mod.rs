@@ -1,3 +1,11 @@
+//! Package verification module.
+//!
+//! Supports two package formats:
+//! - `.actr` ZIP STORE packages (new format, via `actr_pack`)
+//! - Legacy embedded manifest in WASM/ELF/Mach-O binaries
+//!
+//! The `.actr` format is preferred; legacy format is retained for backward compatibility.
+
 pub mod manifest;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,8 +44,7 @@ use manifest::{
 /// Holds the current trust root, either the Actrix root CA or a local self-signed public key,
 /// and exposes a unified `verify` entry point that dispatches by package format.
 ///
-/// When a `CryptoProvider` is injected, signature verification delegates to it
-/// (enabling Web Crypto on browser). Otherwise falls back to direct ed25519-dalek.
+/// Supports both `.actr` ZIP packages (new) and legacy embedded-manifest binaries.
 pub struct PackageVerifier {
     trust_mode: TrustMode,
     /// Cache of MFR public keys in production mode. `None` in development mode.
@@ -68,13 +75,16 @@ impl PackageVerifier {
 
     /// Verify package bytes and return the validated manifest.
     ///
-    /// Flow:
-    /// 1. Detect the package format: WASM, ELF, or Mach-O
-    /// 2. Extract the manifest section
-    /// 3. Recompute `binary_hash` with the manifest section excluded
-    /// 4. Verify hash consistency
-    /// 5. Verify the MFR signature
+    /// Dispatches by format:
+    /// - ZIP (PK magic) → `.actr` package via `actr_pack::verify`
+    /// - WASM / ELF / Mach-O → legacy embedded-manifest verification
     pub fn verify(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+        // Detect .actr ZIP package (PK\x03\x04 magic)
+        if is_actr_package(bytes) {
+            return self.verify_actr_package(bytes);
+        }
+
+        // Legacy format dispatch
         if is_wasm(bytes) {
             self.verify_wasm(bytes)
         } else if is_elf(bytes) {
@@ -82,114 +92,113 @@ impl PackageVerifier {
         } else if is_macho(bytes) {
             self.verify_macho(bytes)
         } else {
-            tracing::warn!("Unrecognized package format, not WASM/ELF/Mach-O");
+            tracing::warn!("Unrecognized package format");
             Err(HyperError::InvalidManifest(
-                "Unsupported package format; only WASM, ELF64 little-endian, and Mach-O 64-bit little-endian are supported".to_string(),
+                "Unsupported package format; expected .actr, WASM, ELF64 LE, or Mach-O 64-bit LE".to_string(),
             ))
         }
     }
 
+    /// Verify an `.actr` ZIP STORE package using `actr_pack`.
+    fn verify_actr_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+        // Read manifest first to extract manufacturer for pubkey resolution
+        let pack_manifest = actr_pack::read_manifest(bytes).map_err(|e| match &e {
+            actr_pack::PackError::ManifestNotFound => HyperError::ManifestNotFound,
+            actr_pack::PackError::ManifestParseError(msg) => {
+                HyperError::InvalidManifest(msg.clone())
+            }
+            _ => HyperError::InvalidManifest(e.to_string()),
+        })?;
+
+        let pubkey = self.resolve_mfr_pubkey(&pack_manifest.manufacturer)?;
+
+        let verified = actr_pack::verify(bytes, &pubkey).map_err(|e| match &e {
+            actr_pack::PackError::SignatureVerificationFailed(msg) => {
+                HyperError::SignatureVerificationFailed(msg.clone())
+            }
+            actr_pack::PackError::BinaryHashMismatch { .. } => HyperError::BinaryHashMismatch,
+            actr_pack::PackError::SignatureNotFound => {
+                HyperError::SignatureVerificationFailed("signature not found in package".to_string())
+            }
+            actr_pack::PackError::BinaryNotFound(path) => {
+                HyperError::InvalidManifest(format!("binary not found: {path}"))
+            }
+            actr_pack::PackError::ManifestNotFound => HyperError::ManifestNotFound,
+            _ => HyperError::InvalidManifest(e.to_string()),
+        })?;
+
+        tracing::info!(
+            actr_type = %verified.actr_type_str(),
+            ".actr package verified"
+        );
+
+        // Convert actr_pack::PackageManifest to hyper's PackageManifest
+        Ok(PackageManifest {
+            manufacturer: verified.manufacturer,
+            actr_name: verified.name,
+            version: verified.version,
+            binary_hash: hex_to_32_bytes(&verified.binary.hash).unwrap_or_default(),
+            capabilities: vec![],
+            signature: vec![], // not needed after verification
+        })
+    }
+
+    // ─── Legacy format verification ─────────────────────────────────────────
+
     fn verify_wasm(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        // 1. Extract the manifest section.
         let section_bytes = extract_wasm_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-
-        // 2. Deserialize the manifest.
         let manifest: PackageManifest = parse_manifest(section_bytes)?;
-
-        // 3. Recompute `binary_hash`.
         let computed_hash = wasm_binary_hash_excluding_manifest(bytes)?;
-
-        // 4. Verify hash consistency.
         if computed_hash != manifest.binary_hash {
             tracing::warn!(
                 actr_type = manifest.actr_type_str(),
-                "binary_hash mismatch; the package may have been tampered with"
+                "binary_hash mismatch"
             );
             return Err(HyperError::BinaryHashMismatch);
         }
-
-        // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
         self.verify_signature(&manifest, &pubkey)?;
-
-        tracing::info!(
-            actr_type = manifest.actr_type_str(),
-            "WASM package signature verified"
-        );
+        tracing::info!(actr_type = manifest.actr_type_str(), "WASM package verified");
         Ok(manifest)
     }
 
-    /// Verify an ELF package (Native / DynCLib).
-    ///
-    /// The flow matches `verify_wasm`, but section extraction and hashing use ELF-specific logic.
     fn verify_elf(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        // 1. Extract the manifest section.
         let section_bytes = extract_elf_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-
-        // 2. Deserialize the manifest.
         let manifest: PackageManifest = parse_manifest(section_bytes)?;
-
-        // 3. Recompute `binary_hash` after zero-filling the manifest section.
         let computed_hash = elf_binary_hash_excluding_manifest(bytes)?;
-
-        // 4. Verify hash consistency.
         if computed_hash != manifest.binary_hash {
             tracing::warn!(
                 actr_type = manifest.actr_type_str(),
-                "ELF binary_hash mismatch; the package may have been tampered with"
+                "ELF binary_hash mismatch"
             );
             return Err(HyperError::BinaryHashMismatch);
         }
-
-        // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
         self.verify_signature(&manifest, &pubkey)?;
-
-        tracing::info!(
-            actr_type = manifest.actr_type_str(),
-            "ELF package signature verified"
-        );
+        tracing::info!(actr_type = manifest.actr_type_str(), "ELF package verified");
         Ok(manifest)
     }
 
-    /// Verify a Mach-O package (Native / DynCLib).
-    ///
-    /// The flow matches `verify_wasm`, but section extraction and hashing use Mach-O-specific logic.
-    /// Fat binaries return `ManifestNotFound` from `extract_macho_manifest`.
     fn verify_macho(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
-        // 1. Extract the manifest section. Fat binaries return `None` -> `ManifestNotFound`.
         let section_bytes = extract_macho_manifest(bytes).ok_or(HyperError::ManifestNotFound)?;
-
-        // 2. Deserialize the manifest.
         let manifest: PackageManifest = parse_manifest(section_bytes)?;
-
-        // 3. Recompute `binary_hash` after zero-filling the manifest section.
         let computed_hash = macho_binary_hash_excluding_manifest(bytes)?;
-
-        // 4. Verify hash consistency.
         if computed_hash != manifest.binary_hash {
             tracing::warn!(
                 actr_type = manifest.actr_type_str(),
-                "Mach-O binary_hash mismatch; the package may have been tampered with"
+                "Mach-O binary_hash mismatch"
             );
             return Err(HyperError::BinaryHashMismatch);
         }
-
-        // 5. Verify the MFR signature.
         let pubkey = self.resolve_mfr_pubkey(&manifest.manufacturer)?;
         self.verify_signature(&manifest, &pubkey)?;
-
         tracing::info!(
             actr_type = manifest.actr_type_str(),
-            "Mach-O package signature verified"
+            "Mach-O package verified"
         );
         Ok(manifest)
     }
 
-    /// Verify the MFR signature.
-    ///
-    /// Currently uses ed25519-dalek directly. The stored `CryptoProvider` will be
-    /// used in Phase 4 when verification moves to a fully async path.
     fn verify_signature(
         &self,
         manifest: &PackageManifest,
@@ -199,9 +208,6 @@ impl PackageVerifier {
     }
 
     /// Resolve the Ed25519 public key for the MFR synchronously, used only on cache-hit paths.
-    ///
-    /// - Development mode: use the local self-signed public key directly
-    /// - Production mode: read from `cert_cache`, which must be warmed by `Hyper::prefetch_mfr_cert`
     fn resolve_mfr_pubkey(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
         match &self.trust_mode {
             TrustMode::Development { self_signed_pubkey } => {
@@ -215,8 +221,6 @@ impl PackageVerifier {
                     .map_err(|e| HyperError::Config(format!("Invalid self-signed public key: {e}")))
             }
             TrustMode::Production { .. } => {
-                // In production the cert cache is expected to be prewarmed by async verification.
-                // `get_from_cache` is synchronous and performs no HTTP.
                 let cache = self
                     .cert_cache
                     .as_ref()
@@ -231,8 +235,6 @@ impl PackageVerifier {
     }
 
     /// In production, prefetch the MFR public key over async HTTP and store it in `cert_cache`.
-    ///
-    /// Called by `Hyper::verify_package_async` before invoking synchronous verification.
     pub async fn prefetch_mfr_cert(&self, manufacturer: &str) -> HyperResult<()> {
         if let Some(cache) = &self.cert_cache {
             cache.get_or_fetch(manufacturer).await?;
@@ -241,10 +243,15 @@ impl PackageVerifier {
     }
 }
 
+/// Detect `.actr` ZIP package by ZIP magic bytes (PK\x03\x04).
 #[cfg(not(target_arch = "wasm32"))]
-/// Verify the MFR signature embedded in the manifest.
-///
-/// The signed payload is the serialized bytes of all manifest fields except `signature`.
+fn is_actr_package(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04"
+}
+
+// ─── Legacy helpers (kept for backward compatibility) ────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 fn verify_manifest_signature(manifest: &PackageManifest, pubkey: &VerifyingKey) -> HyperResult<()> {
     let signed_bytes = manifest_signed_bytes(manifest);
 
@@ -265,12 +272,8 @@ fn verify_manifest_signature(manifest: &PackageManifest, pubkey: &VerifyingKey) 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Serialize the manifest fields that participate in signing.
-///
-/// This excludes the `signature` field itself to avoid circular dependence.
-/// The CLI signing tool must produce exactly the same byte sequence.
+/// Serialize the manifest fields that participate in signing (legacy format).
 pub fn manifest_signed_bytes(manifest: &PackageManifest) -> Vec<u8> {
-    // Simple concatenation with null-byte separators keeps the layout deterministic.
     let mut buf = Vec::new();
     buf.extend_from_slice(manifest.manufacturer.as_bytes());
     buf.push(0);
@@ -288,19 +291,7 @@ pub fn manifest_signed_bytes(manifest: &PackageManifest) -> Vec<u8> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Parse manifest section bytes into a `PackageManifest`.
-///
-/// JSON is used for now and can be replaced later by a more compact format.
 fn parse_manifest(bytes: &[u8]) -> HyperResult<PackageManifest> {
-    // Example manifest JSON format:
-    // {
-    //   "manufacturer": "acme",
-    //   "actr_name": "Sensor",
-    //   "version": "1.0.0",
-    //   "binary_hash": "<hex>",
-    //   "capabilities": ["storage", "network"],
-    //   "signature": "<base64>"
-    // }
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|e| HyperError::InvalidManifest(format!("JSON parsing failed: {e}")))?;
 
@@ -360,15 +351,12 @@ fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn base64_decode(s: &str) -> HyperResult<Vec<u8>> {
-    // Use a small local base64 decoder for now instead of adding a dependency.
-    // TODO: Replace this with the workspace base64 crate later.
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     base64_simple_decode(&cleaned)
         .ok_or_else(|| HyperError::InvalidManifest("Failed to decode signature base64".to_string()))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Minimal base64 decoder using the standard alphabet without padding tolerance.
 fn base64_simple_decode(s: &str) -> Option<Vec<u8>> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut decode_table = [0xFF_u8; 256];
@@ -395,7 +383,6 @@ fn base64_simple_decode(s: &str) -> Option<Vec<u8>> {
         out.push((c << 6) | d);
         i += 4;
     }
-    // Handle the remaining 2 or 3 characters.
     let rem = bytes.len() - i;
     if rem == 2 {
         let [a, b] = [

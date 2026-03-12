@@ -799,6 +799,14 @@ fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
         is_wasm,
     };
 
+    // .actr ZIP package (PK magic)
+    if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
+        return actr_pack::read_manifest(bytes)
+            .ok()
+            .map(|m| m.manufacturer);
+    }
+
+    // Legacy embedded-manifest formats
     let section = if is_wasm(bytes) {
         extract_wasm_manifest(bytes)?
     } else if is_elf(bytes) {

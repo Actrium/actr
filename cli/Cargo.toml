@@ -24,6 +24,9 @@ actr = { path = "..", version = "0.2.0", features = ["config"] }
 # Hyper layer - binary hash computation and manifest embed for dev tooling
 actr-hyper = { path = "../core/hyper", version = "0.1.0" }
 
+# Package format (.actr ZIP STORE)
+actr-pack.workspace = true
+
 # Key generation for actr dev keygen
 rand.workspace = true
 

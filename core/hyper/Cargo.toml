@@ -79,6 +79,7 @@ getrandom = { version = "0.2", features = ["js"] }
 actr-config = { workspace = true }
 actr-runtime-mailbox.workspace = true
 actr-service-compat.workspace = true
+actr-pack.workspace = true
 
 # Storage
 rusqlite = { workspace = true }
@@ -126,4 +127,5 @@ prost.workspace = true
 tempfile.workspace = true
 tokio-test = "0.4"
 webrtc-ice = "0.14"
+actr-pack.workspace = true
 actr-hyper = { path = ".", features = ["test-utils"] }
