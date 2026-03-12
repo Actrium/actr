@@ -2,7 +2,9 @@
 
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::session::ConnectionSession;
-use crate::transport::{ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle};
+use crate::transport::{
+    ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
+};
 use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
@@ -469,7 +471,10 @@ impl WebRtcConnection {
     }
 
     /// Internal implementation of get_lane
-    async fn get_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+    async fn get_lane_internal(
+        &self,
+        payload_type: PayloadType,
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         // MediaTrack not supported in this method (needs stream_id)
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(
@@ -538,7 +543,10 @@ impl WebRtcConnection {
     }
 
     /// Internal: Create DataChannel Lane (without cache)
-    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+    async fn create_lane_internal(
+        &self,
+        payload_type: PayloadType,
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         // Checkwhetheras MediaTrack Type
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(

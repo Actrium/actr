@@ -573,7 +573,10 @@ mod tests {
 
     #[async_trait]
     impl WireBuilder for TestFactory {
-        async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        async fn create_connections(
+            &self,
+            _dest: &Dest,
+        ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
             // Test factory: returns empty list (real usage requires actual connections)
             Ok(vec![])
         }

@@ -37,9 +37,11 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<PackageManifes
         read_zip_entry(&mut archive, "actr.toml").map_err(|_| PackError::ManifestNotFound)?;
 
     // 3. Verify signature over actr.toml
-    pubkey.verify_strict(&manifest_bytes, &signature).map_err(|e| {
-        PackError::SignatureVerificationFailed(format!("Ed25519 verification failed: {e}"))
-    })?;
+    pubkey
+        .verify_strict(&manifest_bytes, &signature)
+        .map_err(|e| {
+            PackError::SignatureVerificationFailed(format!("Ed25519 verification failed: {e}"))
+        })?;
 
     tracing::debug!("package signature verified");
 
@@ -110,7 +112,7 @@ fn sha256_hex(data: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::manifest::{BinaryEntry, ManifestMetadata, PackageManifest, ResourceEntry};
-    use crate::pack::{pack, PackOptions};
+    use crate::pack::{PackOptions, pack};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
     use std::io::Write;
@@ -175,7 +177,11 @@ mod tests {
         }
         let result = verify(&tampered, &key.verifying_key());
         // Should fail with either signature or hash mismatch
-        assert!(result.is_err(), "tampered package should fail: {:?}", result);
+        assert!(
+            result.is_err(),
+            "tampered package should fail: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -195,8 +201,8 @@ mod tests {
         // Create a ZIP without actr.sig
         let cursor = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(cursor);
-        let opts =
-            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         zip.start_file("actr.toml", opts).unwrap();
         zip.write_all(b"[fake]").unwrap();
         let data = zip.finish().unwrap().into_inner();

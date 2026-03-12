@@ -260,10 +260,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
 
     println!("Package built successfully");
     println!();
-    println!(
-        "  type:        {}:{}:{}",
-        manufacturer, name, version
-    );
+    println!("  type:        {}:{}:{}", manufacturer, name, version);
     println!("  target:      {}", args.target);
     println!("  binary_hash: {}...", &hash_hex[..16]);
     println!("  output:      {}", output_path.display());
@@ -428,9 +425,7 @@ fn load_verifying_key(path: &std::path::Path) -> Result<ed25519_dalek::Verifying
         .map_err(|e| anyhow::anyhow!("Invalid public key: {e}"))
 }
 
-fn load_verifying_key_from_dev_key(
-    path: &std::path::Path,
-) -> Result<ed25519_dalek::VerifyingKey> {
+fn load_verifying_key_from_dev_key(path: &std::path::Path) -> Result<ed25519_dalek::VerifyingKey> {
     if !path.exists() {
         anyhow::bail!(
             "No key file found at {}. Specify --pubkey or run `actr pkg keygen` first.",

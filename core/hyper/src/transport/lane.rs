@@ -194,10 +194,7 @@ pub trait DataLane: Send + Sync + std::fmt::Debug {
     ///
     /// Default implementation returns `InvalidOperation` error.
     /// Override for inproc lanes (Mpsc).
-    async fn send_envelope(
-        &self,
-        _envelope: actr_protocol::RpcEnvelope,
-    ) -> NetworkResult<()> {
+    async fn send_envelope(&self, _envelope: actr_protocol::RpcEnvelope) -> NetworkResult<()> {
         Err(NetworkError::InvalidOperation(
             "send_envelope() not supported on this lane type".to_string(),
         ))
@@ -280,10 +277,7 @@ impl DataLane for MpscLane {
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "MpscLane.send_envelope")
     )]
-    async fn send_envelope(
-        &self,
-        envelope: actr_protocol::RpcEnvelope,
-    ) -> NetworkResult<()> {
+    async fn send_envelope(&self, envelope: actr_protocol::RpcEnvelope) -> NetworkResult<()> {
         self.tx
             .send(envelope)
             .await
@@ -530,11 +524,7 @@ impl std::fmt::Debug for WebSocketDataLane {
 impl WebSocketDataLane {
     /// Create WebSocket DataLane
     #[inline]
-    pub fn new(
-        sink: WsSink,
-        payload_type: PayloadType,
-        rx: mpsc::Receiver<bytes::Bytes>,
-    ) -> Self {
+    pub fn new(sink: WsSink, payload_type: PayloadType, rx: mpsc::Receiver<bytes::Bytes>) -> Self {
         Self {
             sink,
             payload_type,
@@ -562,9 +552,9 @@ impl DataLane for WebSocketDataLane {
         // 2. Send to WebSocket
         let mut sink_opt = self.sink.lock().await;
         if let Some(s) = sink_opt.as_mut() {
-            s.send(WsMessage::Binary(buf.into())).await.map_err(|e| {
-                NetworkError::SendError(format!("WebSocket send failed: {e}"))
-            })?;
+            s.send(WsMessage::Binary(buf.into()))
+                .await
+                .map_err(|e| NetworkError::SendError(format!("WebSocket send failed: {e}")))?;
 
             tracing::trace!(
                 "WebSocket sent {} bytes (type={:?})",
@@ -581,9 +571,10 @@ impl DataLane for WebSocketDataLane {
 
     async fn recv(&self) -> NetworkResult<bytes::Bytes> {
         let mut receiver = self.rx.lock().await;
-        receiver.recv().await.ok_or_else(|| {
-            NetworkError::ChannelClosed("DataLane receiver closed".to_string())
-        })
+        receiver
+            .recv()
+            .await
+            .ok_or_else(|| NetworkError::ChannelClosed("DataLane receiver closed".to_string()))
     }
 
     async fn try_recv(&self) -> NetworkResult<Option<bytes::Bytes>> {
@@ -591,9 +582,9 @@ impl DataLane for WebSocketDataLane {
         match receiver.try_recv() {
             Ok(data) => Ok(Some(data)),
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::error::TryRecvError::Disconnected) => Err(
-                NetworkError::ChannelClosed("Lane receiver closed".to_string()),
-            ),
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(NetworkError::ChannelClosed(
+                "Lane receiver closed".to_string(),
+            )),
         }
     }
 
@@ -838,8 +829,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(10);
         let rx_shared = Arc::new(Mutex::new(rx));
 
-        let lane =
-            MpscLane::new_shared(PayloadType::RpcReliable, tx.clone(), rx_shared.clone());
+        let lane = MpscLane::new_shared(PayloadType::RpcReliable, tx.clone(), rx_shared.clone());
 
         let envelope = RpcEnvelope {
             request_id: "test-3".to_string(),

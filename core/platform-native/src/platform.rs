@@ -84,10 +84,7 @@ mod tests {
         let nested = dir.path().join("a/b/c");
         let provider = NativePlatformProvider::new();
 
-        provider
-            .ensure_dir(nested.to_str().unwrap())
-            .await
-            .unwrap();
+        provider.ensure_dir(nested.to_str().unwrap()).await.unwrap();
         assert!(nested.exists());
     }
 

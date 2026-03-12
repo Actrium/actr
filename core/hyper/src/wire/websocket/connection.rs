@@ -1,6 +1,8 @@
 //! WebSocket C/S Connection implementation
 
-use crate::transport::{ConnType, DataLane, NetworkError, NetworkResult, WebSocketDataLane, WireHandle, WsSink};
+use crate::transport::{
+    ConnType, DataLane, NetworkError, NetworkResult, WebSocketDataLane, WireHandle, WsSink,
+};
 use actr_protocol::PayloadType;
 use async_trait::async_trait;
 use futures_util::stream::SplitStream;
@@ -306,7 +308,10 @@ impl WebSocketConnection {
     }
 
     /// Internal implementation of get_lane
-    async fn get_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+    async fn get_lane_internal(
+        &self,
+        payload_type: PayloadType,
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         let idx = payload_type as usize;
 
         // 1. Check cache
@@ -336,7 +341,10 @@ impl WebSocketConnection {
     }
 
     /// Internal: Create DataLane (without cache)
-    async fn create_lane_internal(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+    async fn create_lane_internal(
+        &self,
+        payload_type: PayloadType,
+    ) -> NetworkResult<Arc<dyn DataLane>> {
         // Check connection status
         if !*self.connected.read().await {
             return Err(NetworkError::ConnectionError(

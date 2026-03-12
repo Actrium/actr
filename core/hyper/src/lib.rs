@@ -90,11 +90,11 @@ pub mod storage;
 
 // Runtime infrastructure modules (native-only)
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lifecycle;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actr_ref;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod inbound;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lifecycle;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod outbound;
 #[cfg(not(target_arch = "wasm32"))]
@@ -150,9 +150,7 @@ pub use actr_framework::{MediaSample, MediaType};
 pub use runtime_error::{ActorResult, ActrError, Classify, ErrorKind};
 
 // Platform traits re-exports
-pub use actr_platform_traits::{
-    CryptoProvider, KvStore, PlatformError, PlatformProvider,
-};
+pub use actr_platform_traits::{CryptoProvider, KvStore, PlatformError, PlatformProvider};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Re-exports: Native-only
@@ -248,9 +246,9 @@ pub mod prelude {
 
     // ── Platform types (cross-platform) ─────────────────────────────────────
     pub use crate::verify::PackageManifest;
-    pub use crate::{HyperConfig, HyperError, HyperResult, TrustMode};
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{Hyper, storage::ActorStore};
+    pub use crate::{HyperConfig, HyperError, HyperResult, TrustMode};
 
     // ── Core structures (native-only) ───────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -521,9 +519,10 @@ impl Hyper {
         let storage_path = self.resolve_storage_path(manifest)?;
         let store: Arc<dyn KvStore> = if let Some(ref platform) = self.inner.platform {
             let ns = storage_path.to_string_lossy().to_string();
-            platform.open_kv_store(&ns).await.map_err(|e| {
-                HyperError::Storage(format!("failed to open KV store: {e}"))
-            })?
+            platform
+                .open_kv_store(&ns)
+                .await
+                .map_err(|e| HyperError::Storage(format!("failed to open KV store: {e}")))?
         } else {
             Arc::new(ActorStore::open(&storage_path).await?)
         };
@@ -715,7 +714,6 @@ fn check_psk_expiry(
     token: Option<Vec<u8>>,
     expires_at_raw: Option<Vec<u8>>,
 ) -> HyperResult<Option<Vec<u8>>> {
-
     match (token, expires_at_raw) {
         (Some(token), Some(expires_bytes)) => {
             // parse expiration time (u64 little-endian)
@@ -793,9 +791,7 @@ fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
 /// The caller then skips prefetch and lets verification report the error.
 fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
     if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
-        return actr_pack::read_manifest(bytes)
-            .ok()
-            .map(|m| m.manufacturer);
+        return actr_pack::read_manifest(bytes).ok().map(|m| m.manufacturer);
     }
     None
 }
@@ -874,14 +870,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_package_rejects_wasm_without_manifest() {
+    async fn verify_package_rejects_non_actr_format() {
         let dir = TempDir::new().unwrap();
         let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
 
-        // Minimal valid WASM with only the magic header and version, no sections.
-        let minimal_wasm = b"\0asm\x01\x00\x00\x00";
-        let result = hyper.verify_package(minimal_wasm).await;
-        assert!(matches!(result, Err(HyperError::ManifestNotFound)));
+        // Non-.actr bytes should return InvalidManifest
+        let result = hyper.verify_package(b"\0asm\x01\x00\x00\x00").await;
+        assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
     }
 
     // ─── PSK storage and expiration unit tests ──────────────────────────────

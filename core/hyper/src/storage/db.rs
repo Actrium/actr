@@ -329,23 +329,33 @@ impl ActorStore {
 #[async_trait]
 impl KvStore for ActorStore {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, PlatformError> {
-        self.kv_get(key).await.map_err(|e| PlatformError::Storage(e.to_string()))
+        self.kv_get(key)
+            .await
+            .map_err(|e| PlatformError::Storage(e.to_string()))
     }
 
     async fn set(&self, key: &str, value: &[u8]) -> Result<(), PlatformError> {
-        self.kv_set(key, value).await.map_err(|e| PlatformError::Storage(e.to_string()))
+        self.kv_set(key, value)
+            .await
+            .map_err(|e| PlatformError::Storage(e.to_string()))
     }
 
     async fn delete(&self, key: &str) -> Result<bool, PlatformError> {
-        self.kv_delete(key).await.map_err(|e| PlatformError::Storage(e.to_string()))
+        self.kv_delete(key)
+            .await
+            .map_err(|e| PlatformError::Storage(e.to_string()))
     }
 
     async fn list_keys(&self, prefix: Option<&str>) -> Result<Vec<String>, PlatformError> {
-        self.kv_list_keys(prefix).await.map_err(|e| PlatformError::Storage(e.to_string()))
+        self.kv_list_keys(prefix)
+            .await
+            .map_err(|e| PlatformError::Storage(e.to_string()))
     }
 
     async fn batch(&self, ops: Vec<KvOp>) -> Result<(), PlatformError> {
-        self.kv_batch(ops).await.map_err(|e| PlatformError::Storage(e.to_string()))
+        self.kv_batch(ops)
+            .await
+            .map_err(|e| PlatformError::Storage(e.to_string()))
     }
 }
 

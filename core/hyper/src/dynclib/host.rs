@@ -455,9 +455,7 @@ impl DynclibHost {
             let tmp_dir = path.parent().unwrap_or(Path::new("."));
             let tmp_path = tmp_dir.join(format!(".actr-tmp-{}", manifest.actr_name));
             std::fs::write(&tmp_path, &binary_bytes).map_err(|e| {
-                DynclibError::LoadFailed(format!(
-                    "failed to write extracted binary: {e}"
-                ))
+                DynclibError::LoadFailed(format!("failed to write extracted binary: {e}"))
             })?;
             let result = Self::load(&tmp_path);
             let _ = std::fs::remove_file(&tmp_path);

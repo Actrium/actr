@@ -28,5 +28,5 @@ pub mod verify;
 pub use error::PackError;
 pub use load::{load_binary, read_manifest};
 pub use manifest::{BinaryEntry, ManifestMetadata, PackageManifest, ResourceEntry};
-pub use pack::{pack, PackOptions};
+pub use pack::{PackOptions, pack};
 pub use verify::verify;

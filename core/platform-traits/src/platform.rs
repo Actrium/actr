@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::PlatformError;
 use crate::crypto::CryptoProvider;
 use crate::storage::KvStore;
-use crate::PlatformError;
 
 /// Composite platform provider
 ///

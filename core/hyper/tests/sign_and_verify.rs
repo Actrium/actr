@@ -84,10 +84,7 @@ async fn actr_package_tampered_binary() {
 
     // Tamper: find "original wasm" in the ZIP and modify it
     let mut tampered = package.clone();
-    if let Some(pos) = tampered
-        .windows(13)
-        .position(|w| w == b"original wasm")
-    {
+    if let Some(pos) = tampered.windows(13).position(|w| w == b"original wasm") {
         tampered[pos] ^= 0xFF;
     }
 

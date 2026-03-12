@@ -281,7 +281,8 @@ impl HostTransport {
         };
 
         // 3. Create DataLane
-        let lane: Arc<dyn DataLane> = Arc::new(MpscLane::new_shared(payload_type, pair.tx, pair.rx));
+        let lane: Arc<dyn DataLane> =
+            Arc::new(MpscLane::new_shared(payload_type, pair.tx, pair.rx));
 
         // 4. Cache it
         self.lane_cache.write().await.insert(key, lane.clone());

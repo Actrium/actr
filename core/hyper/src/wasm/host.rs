@@ -106,8 +106,9 @@ impl WasmHost {
 
         // .actr ZIP package: extract binary from the archive
         if package_bytes.len() >= 4 && &package_bytes[0..4] == b"PK\x03\x04" {
-            let wasm_bytes = actr_pack::load_binary(package_bytes)
-                .map_err(|e| WasmError::LoadFailed(format!("failed to extract binary from .actr package: {e}")))?;
+            let wasm_bytes = actr_pack::load_binary(package_bytes).map_err(|e| {
+                WasmError::LoadFailed(format!("failed to extract binary from .actr package: {e}"))
+            })?;
             Self::compile(&wasm_bytes)
         } else {
             // Legacy: WASM bytes with embedded manifest

@@ -24,9 +24,9 @@ impl CryptoProvider for NativeCryptoProvider {
         let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
             .map_err(|e| PlatformError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
 
-        let sig_bytes: [u8; 64] = signature.try_into().map_err(|_| {
-            PlatformError::Crypto("Ed25519 signature must be 64 bytes".to_string())
-        })?;
+        let sig_bytes: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| PlatformError::Crypto("Ed25519 signature must be 64 bytes".to_string()))?;
         let sig = Signature::from_bytes(&sig_bytes);
 
         verifying_key
@@ -70,11 +70,7 @@ mod tests {
         let signature = signing_key.sign(message);
 
         let result = provider
-            .ed25519_verify(
-                verifying_key.as_bytes(),
-                message,
-                &signature.to_bytes(),
-            )
+            .ed25519_verify(verifying_key.as_bytes(), message, &signature.to_bytes())
             .await;
         assert!(result.is_ok());
     }

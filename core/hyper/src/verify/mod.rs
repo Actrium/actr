@@ -89,9 +89,9 @@ impl PackageVerifier {
                 HyperError::SignatureVerificationFailed(msg.clone())
             }
             actr_pack::PackError::BinaryHashMismatch { .. } => HyperError::BinaryHashMismatch,
-            actr_pack::PackError::SignatureNotFound => {
-                HyperError::SignatureVerificationFailed("signature not found in package".to_string())
-            }
+            actr_pack::PackError::SignatureNotFound => HyperError::SignatureVerificationFailed(
+                "signature not found in package".to_string(),
+            ),
             actr_pack::PackError::BinaryNotFound(path) => {
                 HyperError::InvalidManifest(format!("binary not found: {path}"))
             }
