@@ -39,6 +39,10 @@ ACTRIX*.md
 # Demo logs
 .demo_logs/
 
+# WASM guest built artifacts (compiled binaries, not source)
+examples/rust/wasm-echo/guest/built/
+examples/rust/dynclib-echo/guest/target/
+
 # Python ignore
 __pycache__/
 *.py[cod]
