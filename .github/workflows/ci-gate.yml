@@ -235,6 +235,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v5
       - name: Setup Java
@@ -243,6 +245,26 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: gradle
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: sdkmanager "ndk;25.2.9519653"
+      - name: Build Android bindings
+        working-directory: bindings/kotlin
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: ./build-android.sh
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
         run: ./gradlew :actr-kotlin:build --no-daemon
