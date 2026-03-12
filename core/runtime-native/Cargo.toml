@@ -1,0 +1,38 @@
+[package]
+name = "actr-runtime-native"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native platform provider for Actor-RTC: SQLite storage, ed25519-dalek crypto, filesystem operations"
+keywords = ["actor", "platform", "native", "sqlite", "ed25519"]
+categories = ["asynchronous", "cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+actr-platform-traits.workspace = true
+actr-hyper.workspace = true
+
+# Async
+async-trait.workspace = true
+tokio.workspace = true
+
+# Crypto
+ed25519-dalek.workspace = true
+sha2.workspace = true
+
+# Storage
+rusqlite.workspace = true
+
+# Utilities
+uuid.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "actr-platform-traits"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Platform abstraction traits for Actor-RTC: KvStore, CryptoProvider, PlatformProvider"
+keywords = ["actor", "platform", "abstraction", "traits"]
+categories = ["asynchronous", "cryptography"]
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
