@@ -2569,7 +2569,9 @@ pub async fn register_client(
                     } else {
                         // Fallback: Host gate with no bridge
                         log::error!("[Scheduler] Client context not found for {}", client_id);
+                        #[allow(clippy::arc_with_non_send_sync)]
                         let gate = Gate::host(Arc::new(crate::outbound::HostGate::new()));
+                        #[allow(clippy::arc_with_non_send_sync)]
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
                             peer_gate: Arc::new(crate::outbound::PeerGate::new(
@@ -2725,11 +2727,14 @@ pub async fn register_client(
     }
 
     // Build the full transport stack: `PeerGate -> PeerTransport -> DestTransport -> WirePool`.
+    #[allow(clippy::arc_with_non_send_sync)]
     let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
+    #[allow(clippy::arc_with_non_send_sync)]
     let transport_manager = Arc::new(crate::transport::PeerTransport::new(
         client_id.clone(),
         wire_builder,
     ));
+    #[allow(clippy::arc_with_non_send_sync)]
     let peer_gate = Arc::new(crate::outbound::PeerGate::new(Arc::clone(
         &transport_manager,
     )));
@@ -3171,7 +3176,7 @@ pub fn handle_dom_fast_path(client_id: String, payload: JsValue) -> Result<(), J
 /// Encode raw bytes to standard Base64 string.
 fn bytes_to_base64(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };

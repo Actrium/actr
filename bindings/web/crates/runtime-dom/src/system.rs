@@ -57,6 +57,7 @@ impl DomSystem {
     /// Send a message to the Service Worker.
     ///
     /// Used to forward RPC messages into the Service Worker mailbox.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
     pub async fn send_to_sw(&self, data: Bytes) -> Result<(), String> {
         let sw_lane = self.sw_lane.lock();
         if let Some(ref lane) = *sw_lane {

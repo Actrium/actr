@@ -119,9 +119,12 @@ impl InboundPacketDispatcher {
         _from: Vec<u8>,
         message: MessageFormat,
     ) -> WebResult<()> {
-        let dom_lane = self.dom_lane.lock();
+        let lane_opt = {
+            let dom_lane = self.dom_lane.lock();
+            dom_lane.clone()
+        };
 
-        if let Some(ref lane) = *dom_lane {
+        if let Some(ref lane) = lane_opt {
             // Forward to the DOM, which will parse and dispatch into StreamHandlerRegistry.
             lane.send(message.data.clone())
                 .await
@@ -143,9 +146,12 @@ impl InboundPacketDispatcher {
         _from: Vec<u8>,
         message: MessageFormat,
     ) -> WebResult<()> {
-        let dom_lane = self.dom_lane.lock();
+        let lane_opt = {
+            let dom_lane = self.dom_lane.lock();
+            dom_lane.clone()
+        };
 
-        if let Some(ref lane) = *dom_lane {
+        if let Some(ref lane) = lane_opt {
             // Forward to the DOM, which will parse and dispatch into MediaFrameRegistry.
             lane.send(message.data.clone())
                 .await

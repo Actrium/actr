@@ -217,6 +217,7 @@ impl DataLane {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: stream recv must hold lock across await
     pub async fn recv(&self) -> Option<Bytes> {
         use futures::StreamExt;
 

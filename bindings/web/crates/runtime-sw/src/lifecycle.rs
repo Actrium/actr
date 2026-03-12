@@ -71,28 +71,23 @@ impl SwLifecycleManager {
             if data.dyn_ref::<js_sys::Object>().is_some() {
                 // Try to deserialize it as `Vec<u8>` using serde_wasm_bindgen format.
                 if let Ok(bytes) = serde_wasm_bindgen::from_value::<Vec<u8>>(data.clone()) {
-                    if let Ok(control_msg) = ControlMessage::deserialize(&bytes) {
-                        match control_msg {
-                            ControlMessage::ErrorReport(error_report) => {
-                                log::debug!(
-                                    "[SwLifecycle] Received error report via SW controller: {:?}",
-                                    error_report.category
-                                );
+                    if let Ok(ControlMessage::ErrorReport(error_report)) =
+                        ControlMessage::deserialize(&bytes)
+                    {
+                        log::debug!(
+                            "[SwLifecycle] Received error report via SW controller: {:?}",
+                            error_report.category
+                        );
 
-                                // Forward it to the global error handler.
-                                if let Some(handler) = get_global_error_handler() {
-                                    handler.handle_error_report(error_report);
-                                } else {
-                                    log::warn!(
-                                        "[SwLifecycle] Error handler not initialized, cannot process error report"
-                                    );
-                                }
-                                return;
-                            }
-                            _ => {
-                                // Other ControlMessage types fall through to the normal path.
-                            }
+                        // Forward it to the global error handler.
+                        if let Some(handler) = get_global_error_handler() {
+                            handler.handle_error_report(error_report);
+                        } else {
+                            log::warn!(
+                                "[SwLifecycle] Error handler not initialized, cannot process error report"
+                            );
                         }
+                        return;
                     }
                 }
             }

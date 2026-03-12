@@ -235,6 +235,7 @@ impl ReadyWatcher {
     /// Wait for the next change.
     ///
     /// Returns `Ok(())` when a change arrives and `Err(...)` when the channel closes.
+    #[allow(clippy::await_holding_lock)] // Single-threaded wasm: no contention risk
     pub async fn changed(&mut self) -> WebResult<()> {
         let mut rx = self.rx.lock();
         if rx.next().await.is_some() {

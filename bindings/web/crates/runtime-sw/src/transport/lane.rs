@@ -249,6 +249,7 @@ impl DataLane {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // Single-threaded wasm: no contention risk
     pub async fn recv(&self) -> Option<Bytes> {
         use futures::StreamExt;
 

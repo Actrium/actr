@@ -47,6 +47,7 @@ pub type MessageHandler = Box<dyn Fn(ActrId, RpcEnvelope)>;
 
 impl HostGate {
     /// Create a new HostGate.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn new() -> Self {
         Self {
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
