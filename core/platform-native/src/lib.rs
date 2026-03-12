@@ -1,4 +1,4 @@
-//! # actr-runtime-native
+//! # actr-platform-native
 //!
 //! Native platform provider for Actor-RTC.
 //!

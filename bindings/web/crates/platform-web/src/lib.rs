@@ -1,4 +1,4 @@
-//! # actr-runtime-web
+//! # actr-platform-web
 //!
 //! Web platform implementation for Actor-RTC.
 //!

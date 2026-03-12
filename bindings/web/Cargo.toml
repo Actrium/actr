@@ -4,7 +4,7 @@ members = [
     "crates/runtime-sw",
     "crates/runtime-dom",
     "crates/mailbox-web",
-    "crates/runtime-web",
+    "crates/platform-web",
 ]
 exclude = ["examples/*"]
 resolver = "2"

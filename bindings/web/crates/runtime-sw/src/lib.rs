@@ -19,6 +19,7 @@ pub mod transport;
 pub mod web_context; // Web-specific Context trait
 pub mod webrtc_recovery;
 pub use actr_framework::Workload;
+pub use actr_platform_web::WebPlatformProvider;
 
 pub use actr_mailbox_web::{
     IndexedDbMailbox, Mailbox, MailboxStats, MessagePriority, MessageRecord,

@@ -18,6 +18,8 @@ crate-type = ["cdylib", "rlib"] # Build both WASM and Rust library outputs
 actr-web-common = { path = "../common" }
 actr-protocol.workspace = true
 actr-framework.workspace = true
+actr-platform-traits.workspace = true
+actr-platform-web = { path = "../platform-web" }
 
 # Mailbox
 actr-mailbox-web = { path = "../mailbox-web" }

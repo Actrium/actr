@@ -37,7 +37,7 @@
 
 ### 1. 完善 WebRTC 连接逻辑 (40% → 100%) ✅ **已完成**
 **完成日期**: 2025-11-12
-**文件位置**: `crates/runtime-web/src/wire/coordinator.rs`
+**文件位置**: `crates/platform-web/src/wire/coordinator.rs`
 
 - [x] Negotiated DataChannels 实现
 - [x] 消息接收和路由
@@ -58,7 +58,7 @@
 
 ### 2. 实现 ActorSystem 生命周期 (15% → 100%) ✅ **已完成**
 **完成日期**: 2025-11-12
-**文件位置**: `crates/runtime-web/src/dom_bridge.rs` (新建), `system.rs`
+**文件位置**: `crates/platform-web/src/dom_bridge.rs` (新建), `system.rs`
 **提交**: a7d7ce9
 
 - [x] Actor 注册和发现（通过 signaling）
@@ -271,7 +271,7 @@
 **文档**: [零拷贝优化详解](./docs/architecture/zerocopy-optimization.md)
 
 #### 6.1 WASM 侧实现 ✅
-**文件位置**: `crates/runtime-web/src/fastpath/` (~1,200 行 Rust)
+**文件位置**: `crates/platform-web/src/fastpath/` (~1,200 行 Rust)
 
 - [x] **Fast Path Registry** (SW 侧)
   - [x] register_fast_path(stream_id, callback) - DashMap 无锁并发
@@ -314,7 +314,7 @@
 
 ### 7. 实现 RouteTable (0% → 100%) ✅ **已完成**
 **完成日期**: 2025-11-18
-**文件位置**: `crates/runtime-web/src/routing/mod.rs` (~350 行 Rust)
+**文件位置**: `crates/platform-web/src/routing/mod.rs` (~350 行 Rust)
 
 - [x] RouteTable 数据结构
   - [x] 静态路由表（HashMap）

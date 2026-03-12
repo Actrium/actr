@@ -48,6 +48,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, MessagePort, WebSocket};
 
+use actr_platform_traits::PlatformProvider;
+use actr_platform_web::WebPlatformProvider;
+
 use crate::context::RuntimeContext;
 use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
 use crate::outbound::Gate;
@@ -508,6 +511,8 @@ struct SwRuntime {
     signaling: SignalingClient,
     actor_id: Option<ActrId>,
     credential: Option<AIdCredential>,
+    /// Platform provider for crypto and KV storage
+    platform: WebPlatformProvider,
     target_id: Option<ActrId>,
     dom_port: Option<MessagePort>,
     pending_rpcs: HashMap<String, PendingRpcTarget>,
@@ -569,6 +574,7 @@ impl SwRuntime {
             signaling,
             actor_id: None,
             credential: None,
+            platform: WebPlatformProvider::new(),
             target_id: None,
             dom_port: None,
             pending_rpcs: HashMap::new(),
@@ -630,6 +636,9 @@ impl SwRuntime {
                 );
                 self.actor_id = Some(ok.actr_id);
                 self.credential = Some(ok.credential);
+                if let Err(e) = self.persist_credentials().await {
+                    log::warn!("[SW] failed to persist credentials: {:?}", e);
+                }
                 Ok(())
             }
             Some(actr_protocol::register_response::Result::Error(err)) => {
@@ -641,6 +650,112 @@ impl SwRuntime {
             }
             None => Err(JsValue::from_str("Register response missing result")),
         }
+    }
+
+    /// KV namespace for persisting credentials across SW restarts.
+    fn cred_kv_namespace(&self) -> String {
+        format!("actr_credentials_{}", self.client_actr_type.to_string_repr())
+    }
+
+    /// Persist the current credential and actor_id to IndexedDB so they
+    /// survive Service Worker restarts.
+    async fn persist_credentials(&self) -> Result<(), JsValue> {
+        let actor_id = self
+            .actor_id
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("No actor_id to persist"))?;
+        let credential = self
+            .credential
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("No credential to persist"))?;
+
+        let kv = self
+            .platform
+            .open_kv_store(&self.cred_kv_namespace())
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let cred_bytes = credential.encode_to_vec();
+        kv.set("credential", &cred_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist credential: {e}")))?;
+
+        let id_str = actor_id.to_string_repr();
+        kv.set("actor_id", id_str.as_bytes())
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist actor_id: {e}")))?;
+
+        log::info!("[SW] credentials persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Try to restore previously persisted credentials from IndexedDB.
+    ///
+    /// Returns `true` if valid credentials were restored, `false` if none
+    /// were found or they had expired.
+    async fn try_restore_credentials(&mut self) -> Result<bool, JsValue> {
+        let kv = self
+            .platform
+            .open_kv_store(&self.cred_kv_namespace())
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(cred_bytes) = kv
+            .get("credential")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read credential: {e}")))?
+        else {
+            log::debug!("[SW] no persisted credential found");
+            return Ok(false);
+        };
+
+        let Some(id_bytes) = kv
+            .get("actor_id")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read actor_id: {e}")))?
+        else {
+            log::debug!("[SW] no persisted actor_id found");
+            return Ok(false);
+        };
+
+        // Decode credential
+        let credential = AIdCredential::decode(&*cred_bytes).map_err(|e| {
+            JsValue::from_str(&format!("Failed to decode persisted credential: {e}"))
+        })?;
+
+        // Decode and validate claims expiry
+        let claims =
+            actr_protocol::IdentityClaims::decode(&*credential.claims).map_err(|e| {
+                JsValue::from_str(&format!("Failed to decode identity claims: {e}"))
+            })?;
+
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        if claims.expires_at <= now_secs {
+            log::info!(
+                "[SW] persisted credential expired (expires_at={}, now={}), will re-register",
+                claims.expires_at,
+                now_secs
+            );
+            // Clean up stale data
+            let _ = kv.delete("credential").await;
+            let _ = kv.delete("actor_id").await;
+            return Ok(false);
+        }
+
+        // Decode actor_id
+        let id_str = String::from_utf8(id_bytes)
+            .map_err(|e| JsValue::from_str(&format!("Invalid actor_id UTF-8: {e}")))?;
+        let actor_id = ActrId::from_string_repr(&id_str)
+            .map_err(|e| JsValue::from_str(&format!("Failed to parse actor_id: {e}")))?;
+
+        self.credential = Some(credential);
+        self.actor_id = Some(actor_id.clone());
+        log::info!(
+            "[SW] credentials restored from IndexedDB (actor_id={}, expires_in={}s)",
+            actor_id.to_string_repr(),
+            claims.expires_at.saturating_sub(now_secs)
+        );
+        Ok(true)
     }
 
     /// Reconnect the signaling WebSocket and re-register with the
@@ -677,9 +792,16 @@ impl SwRuntime {
         self.signaling =
             SignalingClient::connect_with_retries(&self.signaling_url, &reconnect_config).await?;
 
-        // 4. Re-register with the signaling server to obtain a fresh
-        //    actr_id + credential and restore the service entry.
-        self.register().await?;
+        // 4. Attempt to restore persisted credentials; fall back to
+        //    a full re-register if none are available or expired.
+        match self.try_restore_credentials().await {
+            Ok(true) => {
+                log::info!("[SW] restored credentials from IndexedDB, skipping re-register");
+            }
+            Ok(false) | Err(_) => {
+                self.register().await?;
+            }
+        }
 
         log::info!(
             "[SW] [{}] Signaling reconnected and re-registered",
