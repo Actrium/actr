@@ -596,6 +596,8 @@ impl AIdIssuer {
             signaling_heartbeat_interval_secs: self.config.signaling_heartbeat_interval_secs,
             signing_pubkey: Bytes::from(verifying_key.as_bytes().to_vec()),
             signing_key_id: key_id,
+            psk: None,
+            psk_expires_at: None,
         })
     }
 

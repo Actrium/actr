@@ -59,7 +59,10 @@ use tracing::Instrument;
 use tracing::instrument;
 
 fn type_key(actor_type: &ActrType) -> String {
-    format!("{}:{}", actor_type.manufacturer, actor_type.name)
+    format!(
+        "{}:{}:{}",
+        actor_type.manufacturer, actor_type.name, actor_type.version
+    )
 }
 
 /// 信令服务器状态
