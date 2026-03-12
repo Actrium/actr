@@ -17,9 +17,9 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # Determine paths and switch to workspace root
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
+ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
 ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
-ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
+ACTRIX_CONFIG="$ACTRIX_DIR/config.example.toml"
 PROTO_DIR="$WORKSPACE_ROOT/data-stream/proto"
 
 # Switch to workspace root and stay there
@@ -44,9 +44,6 @@ SENDER_DIR="$DATA_STREAM_DIR/sender"
 RECEIVER_DIR="$DATA_STREAM_DIR/receiver"
 ensure_actr_toml "$SENDER_DIR"
 ensure_actr_toml "$RECEIVER_DIR"
-
-# Ensure actrix-config.toml exists
-ensure_actrix_config "$WORKSPACE_ROOT"
 
 echo ""
 echo "🧰 Checking required CLI tools..."
@@ -124,6 +121,11 @@ fi
 echo ""
 echo "🛠️ Generating sender code..."
 cd "$SENDER_DIR"
+echo "Running actr install..."
+$ACTR_GEN_CMD install || {
+    echo -e "${RED}❌ actr install failed (sender)${NC}"
+    exit 1
+}
 OUTPUT_FILE="$LOG_DIR/actr-gen-sender.log"
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean --no-scaffold > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed (sender)${NC}"
@@ -137,6 +139,11 @@ echo -e "${GREEN}✅ Sender code generated${NC}"
 echo ""
 echo "🛠️ Generating receiver code..."
 cd "$RECEIVER_DIR"
+echo "Running actr install..."
+$ACTR_GEN_CMD install || {
+    echo -e "${RED}❌ actr install failed (receiver)${NC}"
+    exit 1
+}
 OUTPUT_FILE="$LOG_DIR/actr-gen-receiver.log"
 $ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$OUTPUT_FILE" 2>&1 || {
     echo -e "${RED}❌ actr gen failed (receiver)${NC}"
@@ -235,29 +242,16 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Wait a bit for supervisord gRPC service to be ready (port 50055)
-sleep 2
+REALM_ID=$(grep -E "^[[:space:]]*realm_id[[:space:]]*=" "$RECEIVER_DIR/actr.toml" | head -n 1 | awk -F '=' '{print $2}' | tr -d ' ' | tr -d '"')
+REALM_SECRET=$(grep -E "^[[:space:]]*realm_secret[[:space:]]*=" "$RECEIVER_DIR/actr.toml" | head -n 1 | awk -F '=' '{print $2}' | tr -d ' ' | tr -d '"' | tr -d "'")
 
-# Build realm-setup tool if needed
-if ! cargo build -p realm-setup 2>&1 | tail -5; then
-    echo -e "${RED}❌ Failed to build realm-setup tool${NC}"
-    exit 1
+# provide defaults if empty
+if [ -z "$REALM_ID" ]; then
+    REALM_ID=33554432
 fi
 
-# Run realm-setup with actr.toml files from sender and receiver
-REALM_SETUP_OUTPUT="$LOG_DIR/realm-setup.log"
-if ! cargo run -p realm-setup -- \
-    --actrix-config "$ACTRIX_CONFIG" \
-    --actr-toml "$SENDER_DIR/actr.toml" \
-    --actr-toml "$RECEIVER_DIR/actr.toml" \
-    > "$REALM_SETUP_OUTPUT" 2>&1; then
-    echo -e "${RED}❌ Failed to setup realms in actrix${NC}"
-    cat "$REALM_SETUP_OUTPUT"
-    exit 1
-fi
-
-echo -e "${GREEN}✅ Realms setup completed${NC}"
-cat "$REALM_SETUP_OUTPUT" | grep -E "(Created|Skipped|Found)" || true
+sqlite3 "$ACTRIX_DIR/database/actrix.db" "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'DataStream Realm', 'Active', 1, strftime('%s', 'now'), '$REALM_SECRET');"
+echo -e "${GREEN}✅ Realm $REALM_ID initialized directly in SQLite${NC}"
 
 # Step 3.6: Build binaries to avoid compilation delay during cargo run
 echo ""

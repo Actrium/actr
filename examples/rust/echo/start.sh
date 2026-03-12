@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 set -e
 set -o pipefail
 
@@ -10,10 +9,11 @@ GREEN='\033[0;32m'
 NC='\033[0m'
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
+ACTRIUM_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
+ACTRIX_DIR="$ACTRIUM_DIR/actrix"
 ECHO_DIR="$WORKSPACE_ROOT/echo"
 LOG_DIR="$WORKSPACE_ROOT/logs"
+BIN_DIR="$WORKSPACE_ROOT/target/debug"
 
 mkdir -p "$LOG_DIR"
 
@@ -35,12 +35,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 killall actrix echo-server echo-client 2>/dev/null || true
 
 echo "📦 Building project..."
-cd "$ECHO_DIR/server"
-cargo build
-cd "$ECHO_DIR/client"
-cargo build
+
 cd "$ACTRIX_DIR"
 cargo build --bin actrix
+
+cd "$WORKSPACE_ROOT"
+cargo build --manifest-path "$ECHO_DIR/server/Cargo.toml"
+cargo build --manifest-path "$ECHO_DIR/client/Cargo.toml"
+
+echo -e "\n🔑 Inserting Realm into sqlite database directly..."
+REALM_SECRET_PLAIN="rs_Uvj69r18EtEh2FzYlVhnXZ9FOM3ruAQ9"
+REALM_SECRET_HASH=$(echo -n "$REALM_SECRET_PLAIN" | sha256sum | cut -d' ' -f1)
+mkdir -p "$ACTRIX_DIR/database"
+sqlite3 "$ACTRIX_DIR/database/actrix.db" "INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES (33554432, 'Echo Realm', 'Active', 1, strftime('%s', 'now'), '$REALM_SECRET_HASH');"
+echo -e "${GREEN}✅ Realm 33554432 initialized${NC}"
 
 echo -e "\n🚀 Starting Actrix..."
 cd "$ACTRIX_DIR"
@@ -66,13 +74,9 @@ if [ $COUNTER -eq $MAX_WAIT ]; then
     exit 1
 fi
 
-echo -e "\n🔑 Inserting Realm into sqlite database directly..."
-sqlite3 "$ACTRIX_DIR/database/actrix.db" "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES (33554432, 'Echo Realm', 'Active', 1, strftime('%s', 'now'), '');"
-echo -e "${GREEN}✅ Realm 33554432 initialized${NC}"
-
 echo -e "\n🚀 Starting Echo Server..."
 cd "$ECHO_DIR/server"
-../../target/debug/echo-server --config=actr.toml > "$LOG_DIR/echo-server.log" 2>&1 &
+"$BIN_DIR/echo-server" --config actr.example.toml > "$LOG_DIR/echo-server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "⏳ Waiting for Server to register..."
@@ -87,6 +91,6 @@ cd "$ECHO_DIR/client"
   echo "This is an automated test message."
   sleep 1
   echo "quit"
-) | ../../target/debug/echo-client --config actr.toml
+) | "$BIN_DIR/echo-client" --config actr.example.toml
 
 echo ""

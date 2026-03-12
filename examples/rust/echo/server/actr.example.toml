@@ -3,10 +3,10 @@ exports = ["../proto/echo.proto"]
 
 [package]
 name = "echo-server"
-description = "Echo Server (Process Mode Demo)"
+description = "Echo Server (Native Mode Demo)"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
-tags = ["dev", "example", "process"]
+tags = ["dev", "example", "native"]
 
 [package.actr_type]
 manufacturer = "acme"
@@ -24,8 +24,8 @@ url = "http://localhost:8081/ais"
 [system.deployment]
 realm_id = 33554432
 realm_secret = "rs_Uvj69r18EtEh2FzYlVhnXZ9FOM3ruAQ9"
-# Process mode: credentials injected by Hyper via ACTR_REGISTER_OK env var
-mode = "process"
+# Native mode: ActrSystem registers with signaling server on its own
+mode = "native"
 
 [system.discovery]
 visible = true
@@ -34,7 +34,7 @@ visible = true
 filter_level = "info"
 tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
-tracing_service_name = "echo-server-process"
+tracing_service_name = "echo-server-native"
 
 [system.webrtc]
 force_relay = false

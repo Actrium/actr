@@ -18,7 +18,13 @@ use tracing::info;
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load configuration
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
+    let config_file = std::env::args()
+        .skip_while(|a| a != "--config")
+        .nth(1)
+        .unwrap_or_else(|| "actr.example.toml".to_string());
+
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&config_file);
+    println!("DEBUG config_path: {:?}", config_path);
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability
