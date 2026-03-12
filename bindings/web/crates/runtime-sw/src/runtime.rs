@@ -539,25 +539,21 @@ impl SwRuntime {
         let acl = if config.acl_allow_types.is_empty() {
             None
         } else {
-            let principals: Vec<acl_rule::Principal> = config
+            let rules = config
                 .acl_allow_types
                 .iter()
                 .map(|type_str| {
                     let actr_type = ActrType::from_string_repr(type_str).map_err(|e| {
                         JsValue::from_str(&format!("Invalid ACL type '{}': {}", type_str, e))
                     })?;
-                    Ok(acl_rule::Principal {
-                        realm: None,
-                        actr_type: Some(actr_type),
+                    Ok(AclRule {
+                        permission: acl_rule::Permission::Allow as i32,
+                        from_type: actr_type,
+                        source_realm: None,
                     })
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;
-            Some(Acl {
-                rules: vec![AclRule {
-                    principals,
-                    permission: acl_rule::Permission::Allow as i32,
-                }],
-            })
+            Some(Acl { rules })
         };
 
         Ok(Self {
@@ -603,6 +599,9 @@ impl SwRuntime {
             acl: self.acl.clone(),
             service: None,
             ws_address: None,
+            manifest_json: None,
+            mfr_signature: None,
+            psk_token: None,
         };
         let envelope = SignalingEnvelope {
             envelope_version: 1,
