@@ -3,6 +3,24 @@
 version = 4
 
 [[package]]
+name = "acl-server"
+version = "0.2.0"
+dependencies = [
+ "actr",
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "actr-runtime",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "actr"
 version = "0.2.0"
 dependencies = [
@@ -18,8 +36,10 @@ dependencies = [
 name = "actr-a-relay"
 version = "0.2.0"
 dependencies = [
+ "actr",
  "actr-config",
  "actr-framework",
+ "actr-hyper",
  "actr-protocol",
  "actr-runtime",
  "anyhow",
@@ -36,8 +56,10 @@ dependencies = [
 name = "actr-b-receiver"
 version = "0.2.0"
 dependencies = [
+ "actr",
  "actr-config",
  "actr-framework",
+ "actr-hyper",
  "actr-protocol",
  "actr-runtime",
  "anyhow",
@@ -107,7 +129,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost 0.14.1",
- "prost-types 0.14.1",
+ "prost-types",
  "pwrzv",
  "rand 0.8.5",
  "reqwest",
@@ -163,8 +185,8 @@ dependencies = [
  "chrono",
  "glob",
  "prost 0.14.1",
- "prost-build 0.14.1",
- "prost-types 0.14.1",
+ "prost-build",
+ "prost-types",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -212,18 +234,6 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 2.0.17",
-]
-
-[[package]]
-name = "actrix-proto"
-version = "0.1.1"
-source = "git+https://github.com/actor-rtc/actrix.git?rev=c55d0b7#c55d0b7fe6495e6b0193f7c1968c7272c11230e9"
-dependencies = [
- "prost 0.14.1",
- "prost-types 0.14.1",
- "tonic 0.14.5",
- "tonic-prost",
- "tonic-prost-build",
 ]
 
 [[package]]
@@ -286,6 +296,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "allowed-client"
+version = "0.2.0"
+dependencies = [
+ "actr",
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "actr-runtime",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -476,49 +504,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "axum"
-version = "0.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
-dependencies = [
- "axum-core",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "itoa",
- "matchit",
- "memchr",
- "mime",
- "percent-encoding",
- "pin-project-lite",
- "serde_core",
- "sync_wrapper",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
-dependencies = [
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -585,6 +570,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "blocked-client"
+version = "0.2.0"
+dependencies = [
+ "actr",
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "actr-runtime",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -618,20 +621,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35af189006b9c0f00a064685c727031e3ed2d8020f7ba284d78cc2671bd36ea"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "cargo_metadata"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7daec1a2a2129eeba1644b220b4647ec537b0b5d4bfd6876fcc5a540056b592"
-dependencies = [
- "camino",
- "cargo-platform",
- "semver",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1003,8 +992,10 @@ checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 name = "data-stream-receiver"
 version = "0.2.0"
 dependencies = [
+ "actr",
  "actr-config",
  "actr-framework",
+ "actr-hyper",
  "actr-protocol",
  "actr-runtime",
  "anyhow",
@@ -1020,8 +1011,10 @@ dependencies = [
 name = "data-stream-sender"
 version = "0.2.0"
 dependencies = [
+ "actr",
  "actr-config",
  "actr-framework",
+ "actr-hyper",
  "actr-protocol",
  "actr-runtime",
  "anyhow",
@@ -1159,30 +1152,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-client"
+name = "echo-real-client-app"
 version = "0.2.0"
 dependencies = [
  "actr",
  "actr-config",
  "actr-framework",
  "actr-hyper",
- "actr-protocol",
- "actr-runtime",
- "anyhow",
- "async-trait",
- "bytes",
- "prost 0.14.1",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "echo-real-client-app"
-version = "0.2.0"
-dependencies = [
- "actr-config",
- "actr-framework",
  "actr-protocol",
  "actr-runtime",
  "anyhow",
@@ -1206,26 +1182,6 @@ dependencies = [
  "prost 0.14.1",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "echo-server"
-version = "0.2.0"
-dependencies = [
- "actr",
- "actr-config",
- "actr-framework",
- "actr-hyper",
- "actr-protocol",
- "actr-runtime",
- "anyhow",
- "async-trait",
- "base64",
- "bytes",
- "prost 0.14.1",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1698,12 +1654,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
-name = "httpdate"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
 name = "hyper"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1717,7 +1667,6 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
- "httpdate",
  "itoa",
  "pin-project-lite",
  "pin-utils",
@@ -2079,12 +2028,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matchit"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2159,6 +2102,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "mutil_client"
+version = "0.2.0"
+dependencies = [
+ "actr",
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "actr-runtime",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mutil_server"
+version = "0.2.0"
+dependencies = [
+ "actr",
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-protocol",
+ "actr-runtime",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "prost 0.14.1",
+ "prost-build",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2196,25 +2178,6 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
-]
-
-[[package]]
-name = "nonce-auth"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e076e6915f8ad077f9c448e4b8aed138aa980330c78cc1ba3c6fcf669d0d30d"
-dependencies = [
- "async-trait",
- "base64",
- "hex",
- "hmac",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -2383,7 +2346,7 @@ dependencies = [
  "reqwest",
  "thiserror 2.0.17",
  "tokio",
- "tonic 0.13.1",
+ "tonic",
  "tracing",
 ]
 
@@ -2396,7 +2359,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "prost 0.13.5",
- "tonic 0.13.1",
+ "tonic",
 ]
 
 [[package]]
@@ -2656,26 +2619,6 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
-dependencies = [
- "heck",
- "itertools",
- "log",
- "multimap",
- "once_cell",
- "petgraph",
- "prettyplease",
- "prost 0.13.5",
- "prost-types 0.13.5",
- "regex",
- "syn",
- "tempfile",
-]
-
-[[package]]
-name = "prost-build"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
@@ -2688,9 +2631,7 @@ dependencies = [
  "petgraph",
  "prettyplease",
  "prost 0.14.1",
- "prost-types 0.14.1",
- "pulldown-cmark",
- "pulldown-cmark-to-cmark",
+ "prost-types",
  "regex",
  "syn",
  "tempfile",
@@ -2720,15 +2661,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
-dependencies = [
- "prost 0.13.5",
 ]
 
 [[package]]
@@ -2791,26 +2723,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "pulldown-cmark"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83c41efbf8f90ac44de7f3a868f0867851d261b56291732d0cbf7cceaaeb55a6"
-dependencies = [
- "bitflags 2.11.0",
- "memchr",
- "unicase",
-]
-
-[[package]]
-name = "pulldown-cmark-to-cmark"
-version = "21.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8246feae3db61428fd0bb94285c690b460e4517d83152377543ca802357785f1"
-dependencies = [
- "pulldown-cmark",
 ]
 
 [[package]]
@@ -2914,27 +2826,6 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
-]
-
-[[package]]
-name = "realm-setup"
-version = "0.2.0"
-dependencies = [
- "actrix-proto",
- "anyhow",
- "cargo_metadata 0.17.0",
- "clap",
- "hex",
- "nonce-auth",
- "prost 0.13.5",
- "prost-types 0.13.5",
- "serde",
- "tokio",
- "toml",
- "tonic 0.13.1",
- "tonic-build 0.13.1",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3138,7 +3029,6 @@ version = "0.23.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "533f54bc6a7d4f647e46ad909549eda97bf5afc1585190ef692b4286b198bd8f"
 dependencies = [
- "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3830,10 +3720,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e581ba15a835f4d9ea06c55ab1bd4dce26fc53752c69a04aac00703bfb49ba9"
 dependencies = [
  "async-trait",
- "axum",
  "base64",
  "bytes",
- "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -3843,96 +3731,12 @@ dependencies = [
  "percent-encoding",
  "pin-project",
  "prost 0.13.5",
- "socket2 0.5.10",
  "tokio",
  "tokio-stream",
  "tower",
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "tonic"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fec7c61a0695dc1887c1b53952990f3ad2e3a31453e1f49f10e75424943a93ec"
-dependencies = [
- "async-trait",
- "axum",
- "base64",
- "bytes",
- "h2",
- "http",
- "http-body",
- "http-body-util",
- "hyper",
- "hyper-timeout",
- "hyper-util",
- "percent-encoding",
- "pin-project",
- "socket2 0.6.1",
- "sync_wrapper",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tower",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tonic-build"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eac6f67be712d12f0b41328db3137e0d0757645d8904b4cb7d51cd9c2279e847"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "prost-build 0.13.5",
- "prost-types 0.13.5",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "tonic-build"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1882ac3bf5ef12877d7ed57aad87e75154c11931c2ba7e6cde5e22d63522c734"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "tonic-prost"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a55376a0bbaa4975a3f10d009ad763d8f4108f067c7c2e74f3001fb49778d309"
-dependencies = [
- "bytes",
- "prost 0.14.1",
- "tonic 0.14.5",
-]
-
-[[package]]
-name = "tonic-prost-build"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3144df636917574672e93d0f56d7edec49f90305749c668df5101751bb8f95a"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "prost-build 0.14.1",
- "prost-types 0.14.1",
- "quote",
- "syn",
- "tempfile",
- "tonic-build 0.14.5",
 ]
 
 [[package]]
@@ -4139,7 +3943,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c866f627c3f04c3df068b68bb2d725492caaa539dd313e2a9d26bb85b1a32f4e"
 dependencies = [
  "anyhow",
- "cargo_metadata 0.19.2",
+ "cargo_metadata",
  "uniffi_bindgen",
  "uniffi_core",
  "uniffi_macros",
@@ -4155,7 +3959,7 @@ dependencies = [
  "anyhow",
  "askama",
  "camino",
- "cargo_metadata 0.19.2",
+ "cargo_metadata",
  "fs-err",
  "glob",
  "goblin",

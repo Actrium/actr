@@ -6,9 +6,9 @@ mod echo_service;
 mod generated;
 
 use echo_service::EchoService;
-use generated::echo_service_actor::EchoServiceWorkload;
+use generated::echo_actor::EchoServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // initialize[...]（log/[...]）
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Echo Real Server start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

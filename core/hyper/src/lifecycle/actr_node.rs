@@ -1258,7 +1258,10 @@ impl<W: Workload> ActrNode<W> {
                 "Registering actor with AIS via HTTP"
             );
 
-            let ais = AisClient::new(ais_endpoint);
+            let mut ais = AisClient::new(ais_endpoint);
+            if let Some(ref secret) = self.config.realm_secret {
+                ais = ais.with_realm_secret(secret);
+            }
             let resp = ais
                 .register_with_manifest(register_request.clone())
                 .await

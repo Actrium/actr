@@ -6,7 +6,7 @@ mod client_workload;
 mod generated;
 
 use actr_protocol::ActrType;
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use client_workload::ClientWorkload;
 
 #[tokio::main]
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // initialize[...]（log/[...]）
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Echo Client App - [...]");
 

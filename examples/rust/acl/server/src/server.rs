@@ -1,10 +1,10 @@
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::info;
 
 mod generated;
 use generated::greeter::{GreetRequest, GreetResponse};
-use generated::greeter_service_actor::{GreeterServiceHandler, GreeterServiceWorkload};
+use generated::greeter_actor::{GreeterServiceHandler, GreeterServiceWorkload};
 
 struct GreeterService;
 
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 Greeter Server (ACL Protected) starting...");
 
     // Load configuration
-    let config_path = PathBuf::from("actr.toml");
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
     info!("✅ Configuration loaded");
 

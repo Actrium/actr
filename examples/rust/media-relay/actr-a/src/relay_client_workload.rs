@@ -7,7 +7,7 @@ use tracing::info;
 
 use crate::generated::media_relay::{RelayFrameRequest, RelayFrameResponse};
 use actr_framework::{Context, Dest, MessageDispatcher, Workload};
-use actr_protocol::{ActrId, ActrType, RpcEnvelope};
+use actr_protocol::{ActrId, RpcEnvelope};
 
 /// Client Workload that forwards frames to remote actr-b
 #[derive(Clone)]
@@ -43,19 +43,17 @@ impl MessageDispatcher for RelayClientDispatcher {
         ctx: &C,
     ) -> actr_protocol::ActorResult<Bytes> {
         let payload = envelope.payload.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::DecodeError("Missing payload in RpcEnvelope".to_string())
+            actr_protocol::ActrError::DecodeFailure("Missing payload in RpcEnvelope".to_string())
         })?;
         let request: RelayFrameRequest = prost::Message::decode(&**payload)
-            .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
+            .map_err(|e| actr_protocol::ActrError::DecodeFailure(e.to_string()))?;
 
         let frame = request.frame.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::Actr(actr_protocol::ActrError::DecodeFailure {
-                message: "MediaFrame is missing".to_string(),
-            })
+            actr_protocol::ActrError::DecodeFailure("MediaFrame is missing".to_string())
         })?;
 
         let server_id = workload.server_id.lock().await.clone().ok_or_else(|| {
-            actr_protocol::ProtocolError::TransportError("Server ID not configured".to_string())
+            actr_protocol::ActrError::Unavailable("Server ID not configured".to_string())
         })?;
 
         info!(

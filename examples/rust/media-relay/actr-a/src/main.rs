@@ -10,7 +10,7 @@ use media_relay_common::{MediaSource, TestPatternSource};
 use relay_client_workload::RelayClientWorkload;
 
 use actr_protocol::ActrType;
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use anyhow::{Context, anyhow};
 use std::path::PathBuf;
 use tracing::info;
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Actr A (Relay/Shell Client) start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

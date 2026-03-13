@@ -9,6 +9,7 @@ authors = ["Actr Dev Team"]
 [package.actr_type]
 manufacturer = "actr-example"
 name = "RelayService"
+version = "v1"
 
 [dependencies]
 
@@ -19,7 +20,8 @@ url = "ws://localhost:8081/signaling/ws"
 url = "http://localhost:8081/ais"
 
 [system.deployment]
-realm_id = 1001
+realm_id = 33554433
+realm_secret = "rs_MediaRelayExampleSecret123"
 
 [system.discovery]
 visible = true
@@ -31,7 +33,7 @@ visible = true
 [[acl.rules]]
 permission = "allow"
 # Allow RelayClient to send signaling/data to us (RelayService)
-types = ["actr-example+RelayClient"]
+type = "actr-example:RelayClient:v1"
 
 [scripts]
 dev = "cargo run"

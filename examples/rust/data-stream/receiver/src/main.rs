@@ -8,9 +8,9 @@ mod file_transfer_service;
 mod generated;
 
 use file_transfer_service::FileTransferService;
-use generated::file_transfer_service_actor::FileTransferServiceWorkload;
+use generated::file_transfer_actor::FileTransferServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 DataStream Receiver starting - 100% Real Implementation");
     info!("📋 Config: type={}", config.package.actr_type.name);

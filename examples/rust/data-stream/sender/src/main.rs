@@ -7,13 +7,13 @@
 mod file_service;
 mod generated;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::info;
 
 use crate::{
     file_service::MyFileService,
-    generated::{local_file::SendFileRequest, local_file_service_actor::LocalFileServiceWorkload},
+    generated::{local_file::SendFileRequest, file_actor::LocalFileServiceWorkload},
 };
 
 #[tokio::main]
@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     info!("⚙️  Configuration loaded");
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     // Create ActrSystem
     info!("🏗️  Creating ActrSystem...");

@@ -5,7 +5,7 @@ use actr_protocol::ActorResult;
 use async_trait::async_trait;
 
 use crate::generated::media_relay::*;
-use crate::generated::relay_service_actor::RelayServiceHandler;
+use crate::generated::media_relay_actor::RelayServiceHandler;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,9 +31,9 @@ impl RelayServiceHandler for RelayService {
         _ctx: &C,
     ) -> ActorResult<RelayFrameResponse> {
         let frame = req.frame.ok_or_else(|| {
-            actr_protocol::ProtocolError::Actr(actr_protocol::ActrError::DecodeFailure {
-                message: "MediaFrame is missing in RelayFrameRequest".to_string(),
-            })
+            actr_protocol::ActrError::DecodeFailure(
+                "MediaFrame is missing in RelayFrameRequest".to_string(),
+            )
         })?;
 
         let count = self.received_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -50,9 +50,9 @@ impl RelayServiceHandler for RelayService {
         let received_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
-                actr_protocol::ProtocolError::Actr(actr_protocol::ActrError::DecodeFailure {
-                    message: format!("SystemTime error: {}", e),
-                })
+                actr_protocol::ActrError::DecodeFailure(
+                    format!("SystemTime error: {}", e),
+                )
             })?
             .as_millis() as u64;
 

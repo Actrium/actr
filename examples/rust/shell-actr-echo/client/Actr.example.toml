@@ -11,9 +11,10 @@ tags = ["dev", "client"]
 [package.actr_type]
 manufacturer = "acme"
 name = "echo-client-app"
+version = "v1"
 
 [dependencies]
-echo-real-server = {}
+echo-real-server = { actr_type = "acme:EchoService:v1" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
@@ -23,6 +24,7 @@ url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 759049003
+realm_secret = "rs_AclExampleSecret123456"
 
 [system.discovery]
 visible = true
@@ -43,8 +45,8 @@ turn_urls = ["turn:localhost:3478"]
 
 [[acl.rules]]
 permission = "allow"
-# Allow server with actr_type = "acme+EchoService"
-types = ["acme+EchoService"]
+# Allow server with actr_type = "acme:EchoService:v1"
+type = "acme:EchoService:v1"
 
 [scripts]
 dev = "cargo run"
