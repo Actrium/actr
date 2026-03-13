@@ -4,20 +4,21 @@ version = 4
 
 [[package]]
 name = "actr-framework"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "anyhow",
  "async-trait",
  "bytes",
  "futures-util",
+ "prost",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "actr-mailbox-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -35,11 +36,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-platform-traits"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "actr-platform-web"
+version = "0.2.0"
+dependencies = [
+ "actr-platform-traits",
+ "actr-protocol",
+ "actr-runtime-mailbox",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "getrandom 0.2.17",
+ "js-sys",
+ "rexie",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "actr-protocol"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
- "base122-rs",
  "base64",
  "bytes",
  "chrono",
@@ -49,17 +82,35 @@ dependencies = [
  "prost-types",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "uniffi",
  "uuid",
 ]
 
 [[package]]
+name = "actr-runtime-mailbox"
+version = "0.2.0"
+dependencies = [
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "actr-runtime-sw"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "actr-framework",
  "actr-mailbox-web",
+ "actr-platform-traits",
+ "actr-platform-web",
  "actr-protocol",
  "actr-web-common",
  "async-trait",
@@ -88,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "actr-web-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "actr-protocol",
  "bytes",
@@ -98,6 +149,8 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -182,12 +235,6 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "base122-rs"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c8ae722b83726dd93247786be3237fc4c30a8c13d8e6c161b61b00a0d32374f"
 
 [[package]]
 name = "base64"
@@ -315,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "data-stream-peer-concurrent-server-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "actr-runtime-sw",
  "actr-web-common",
@@ -1250,6 +1297,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27ad5e34374e03cfffefc301becb44e9dc3c17584f414349ebe29ed26661822d"
 dependencies = [
  "pin-project-lite",
+ "tokio-macros",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

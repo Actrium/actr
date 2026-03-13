@@ -209,6 +209,22 @@ impl HostGate {
             log::warn!("Received response for unknown request_id: {}", request_id);
         }
     }
+
+    /// Reject a pending request by removing its oneshot sender, causing the
+    /// receiver to resolve with `Err(Cancelled)`.
+    ///
+    /// Called when the downstream gate (e.g. PeerGate) fails to deliver the
+    /// message.  Dropping the sender unblocks `send_request`'s `rx.await`
+    /// so the caller gets an error instead of hanging forever.
+    pub fn reject_request(&self, request_id: &str) {
+        let mut pending = self.pending_requests.lock();
+        if pending.remove(request_id).is_some() {
+            log::debug!(
+                "HostGate::reject_request: dropped sender for request_id={}",
+                request_id
+            );
+        }
+    }
 }
 
 impl Default for HostGate {
