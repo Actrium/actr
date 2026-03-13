@@ -5,8 +5,8 @@ members = [
     "media-relay/common",
     "media-relay/actr-a",
     "media-relay/actr-b",
-    "shell-actr-echo/server",
-    "shell-actr-echo/client",
+    # "shell-actr-echo/server",
+    # "shell-actr-echo/client",
     "ws-actr-echo/server",
     "ws-actr-echo/client",
     # "mutil-actr/server",
@@ -14,9 +14,12 @@ members = [
     # "acl/allowed-client",
     # "acl/blocked-client",
     # "acl/server",
-    "realm-setup",
     # "data-stream-peer-concurrent/server",
     # "data-stream-peer-concurrent/client",
+    "wasm-echo/server",
+    "wasm-echo/client",
+    "dynclib-echo/server",
+    "dynclib-echo/client",
 ]
 resolver = "2"
 
@@ -31,6 +34,9 @@ actr-framework = { version = "0.2.0" }
 actr-protocol = { version = "0.2.0" }
 actr-runtime = { version = "0.2.0" }
 actr-config = { version = "0.2.0" }
+
+# Actr infrastructure layer (ActrSystem, ActrNode, ActrRef, WASM engine, transport)
+actr-hyper = { path = "../../core/hyper" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

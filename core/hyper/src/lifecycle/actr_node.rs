@@ -1187,6 +1187,28 @@ impl<W: Workload> ActrNode<W> {
         let hook_cb = self.build_hook_callback(hook_ctx_deps.clone());
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 0.9. Pre-populate signaling identity from injected credential (before connect!)
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // When a credential has been pre-injected (Process / Wasm mode), we must
+        // set the actor_id and credential on the signaling client BEFORE calling
+        // connect(), because the WebSocket URL requires auth parameters
+        // (actor_id, key_id, claims, signature) for authentication.
+        if let Some(ref reg) = self.injected_registration {
+            tracing::info!(
+                "🔑 Pre-populating signaling identity from injected credential (before connect)"
+            );
+            self.signaling_client
+                .set_actor_id(reg.actr_id.clone())
+                .await;
+            let cred_state = crate::lifecycle::CredentialState::new(
+                reg.credential.clone(),
+                reg.credential_expires_at.clone(),
+                Some(reg.turn_credential.clone()),
+            );
+            self.signaling_client.set_credential_state(cred_state).await;
+        }
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 1. Connect to signaling server and register
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         tracing::info!("📡 Connecting to signaling server");
