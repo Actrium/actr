@@ -2,7 +2,7 @@ use tracing::{Instrument as _, error, info};
 
 use crate::client_workload::ClientWorkload;
 use crate::generated::echo::EchoRequest;
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 
 pub struct AppSide {
     pub actr_ref: ActrRef<ClientWorkload>,

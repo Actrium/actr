@@ -3,15 +3,17 @@ use crate::core::{
     ServiceInfo,
 };
 use actr_config::Config;
-use actr_protocol::ActrTypeExt;
+use actr_hyper::AisClient;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, ActrType, DiscoveryRequest, ErrorResponse,
-    GetServiceSpecRequest, PeerToSignaling, RegisterRequest, SignalingEnvelope, actr_to_signaling,
-    discovery_response, get_service_spec_response, peer_to_signaling, register_response,
-    signaling_envelope, signaling_to_actr,
+    GetServiceSpecRequest, RegisterRequest, SignalingEnvelope, actr_to_signaling,
+    discovery_response, get_service_spec_response, register_response, signaling_envelope,
+    signaling_to_actr,
 };
+use actr_protocol::{ActrIdExt, ActrTypeExt};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message;
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use url::Url;
 
 type SignalingSocket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -126,14 +129,9 @@ impl NetworkServiceDiscovery {
     }
 
     async fn connect_and_register(&self) -> Result<SignalingState> {
-        let signaling_url = self.config.signaling_url.as_str();
-        let (mut socket, _) = connect_async(signaling_url)
-            .await
-            .with_context(|| format!("Failed to connect to signaling: {signaling_url}"))?;
-
         let register_request = RegisterRequest {
             actr_type: self.config.package.actr_type.clone(),
-            realm: self.config.realm,
+            realm: self.config.realm.clone(),
             service_spec: None,
             service: None,
             acl: None,
@@ -141,47 +139,58 @@ impl NetworkServiceDiscovery {
             ..Default::default()
         };
 
-        let envelope =
-            Self::build_envelope(signaling_envelope::Flow::PeerToServer(PeerToSignaling {
-                payload: Some(peer_to_signaling::Payload::RegisterRequest(
-                    register_request,
-                )),
-            }))?;
+        let mut ais_client = AisClient::new(self.config.ais_endpoint.as_deref().unwrap_or_default());
+        if let Some(realm_secret) = &self.config.realm_secret {
+            ais_client = ais_client.with_realm_secret(realm_secret.clone());
+        }
 
-        Self::send_envelope(&mut socket, envelope).await?;
+        let register_response = ais_client
+            .register_with_manifest(register_request)
+            .await
+            .map_err(|err| anyhow!("AIS HTTP registration failed: {err}"))?;
 
-        let (actr_id, credential) = loop {
-            let envelope = Self::read_envelope(&mut socket).await?;
-            match envelope.flow {
-                Some(signaling_envelope::Flow::ServerToActr(server)) => match server.payload {
-                    Some(signaling_to_actr::Payload::RegisterResponse(response)) => {
-                        match response.result {
-                            Some(register_response::Result::Success(success)) => {
-                                break (success.actr_id, success.credential);
-                            }
-                            Some(register_response::Result::Error(error)) => {
-                                return Err(Self::as_error("Register failed", &error));
-                            }
-                            None => return Err(anyhow!("Register response is missing result")),
-                        }
-                    }
-                    Some(signaling_to_actr::Payload::Error(error)) => {
-                        return Err(Self::as_error("Register failed", &error));
-                    }
-                    _ => {}
-                },
-                Some(signaling_envelope::Flow::EnvelopeError(error)) => {
-                    return Err(Self::as_error("Register failed", &error));
-                }
-                _ => {}
+        let (actr_id, credential) = match register_response.result {
+            Some(register_response::Result::Success(success)) => {
+                (success.actr_id, success.credential)
             }
+            Some(register_response::Result::Error(error)) => {
+                return Err(Self::as_error("AIS registration failed", &error));
+            }
+            None => return Err(anyhow!("AIS registration response is missing result")),
         };
+
+        let signaling_url = Self::build_signaling_url_with_identity(
+            &self.config.signaling_url,
+            &actr_id,
+            &credential,
+        );
+        let (socket, _) = connect_async(signaling_url.as_str())
+            .await
+            .with_context(|| format!("Failed to connect to signaling: {signaling_url}"))?;
 
         Ok(SignalingState {
             socket,
             actr_id,
             credential,
         })
+    }
+
+    fn build_signaling_url_with_identity(
+        signaling_url: &Url,
+        actr_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> Url {
+        let mut url = signaling_url.clone();
+        let claims_b64 = base64::engine::general_purpose::STANDARD.encode(&credential.claims);
+        let signature_b64 = base64::engine::general_purpose::STANDARD.encode(&credential.signature);
+
+        url.query_pairs_mut()
+            .append_pair("actor_id", &actr_id.to_string_repr())
+            .append_pair("key_id", &credential.key_id.to_string())
+            .append_pair("claims", &claims_b64)
+            .append_pair("signature", &signature_b64);
+
+        url
     }
 
     fn as_error(context: &str, error: &ErrorResponse) -> anyhow::Error {
@@ -510,5 +519,61 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
             result
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actr_protocol::Realm;
+
+    fn sample_actor_id() -> ActrId {
+        ActrId {
+            serial_number: 42,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "echo".to_string(),
+                version: "v1".to_string(),
+            },
+            realm: Realm { realm_id: 1001 },
+        }
+    }
+
+    fn sample_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 7,
+            claims: vec![1, 2, 3, 4].into(),
+            signature: vec![5, 6, 7, 8].into(),
+        }
+    }
+
+    #[test]
+    fn build_signaling_url_with_identity_appends_auth_query() {
+        let signaling_url = Url::parse("ws://localhost:8081/signaling/ws?existing=1").unwrap();
+        let actor_id = sample_actor_id();
+        let credential = sample_credential();
+
+        let authenticated_url = NetworkServiceDiscovery::build_signaling_url_with_identity(
+            &signaling_url,
+            &actor_id,
+            &credential,
+        );
+        let query_pairs: std::collections::HashMap<_, _> =
+            authenticated_url.query_pairs().into_owned().collect();
+
+        assert_eq!(query_pairs.get("existing"), Some(&"1".to_string()));
+        assert_eq!(
+            query_pairs.get("actor_id"),
+            Some(&actor_id.to_string_repr())
+        );
+        assert_eq!(query_pairs.get("key_id"), Some(&"7".to_string()));
+        assert_eq!(
+            query_pairs.get("claims"),
+            Some(&base64::engine::general_purpose::STANDARD.encode([1, 2, 3, 4]))
+        );
+        assert_eq!(
+            query_pairs.get("signature"),
+            Some(&base64::engine::general_purpose::STANDARD.encode([5, 6, 7, 8]))
+        );
     }
 }

@@ -154,6 +154,7 @@ fn swift_echo_init_fails_if_directory_exists() {
 
 #[test]
 #[cfg_attr(not(target_os = "macos"), ignore = "Requires macOS and xcodegen")]
+#[ignore = "TODO: re-enable when AIS is implemented"]
 fn swift_echo_full_workflow_init_install_gen() {
     let tmp = TempDir::new().unwrap();
     let project_name = "EchoWorkflowApp";

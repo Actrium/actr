@@ -19,6 +19,9 @@ version = "1.0.0"
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 
@@ -44,7 +47,7 @@ advertised_host = "127.0.0.1"
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme:ws-echo-client-app:1.0.0"]
+type = "acme:ws-echo-client-app:1.0.0"
 
 [scripts]
 dev = "cargo run"

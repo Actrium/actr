@@ -5,10 +5,10 @@
 mod generated;
 mod media_relay_service;
 
-use generated::relay_service_actor::RelayServiceWorkload;
+use generated::media_relay_actor::RelayServiceWorkload;
 use media_relay_service::RelayService;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Actr B (Receiver) start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
