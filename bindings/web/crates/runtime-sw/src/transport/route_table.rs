@@ -102,11 +102,7 @@ impl RouteTable {
         let routes = self.id_routes.read();
         routes.get(actor_id).and_then(|entries| {
             // Return the first available route.
-            entries
-                .iter()
-                .filter(|e| e.available)
-                .next()
-                .map(|e| e.dest.clone())
+            entries.iter().find(|e| e.available).map(|e| e.dest.clone())
         })
     }
 
@@ -146,13 +142,9 @@ impl RouteTable {
     /// Look up the best route for an ActrType.
     pub fn lookup_type(&self, actr_type: &ActrType) -> Option<Dest> {
         let routes = self.type_routes.read();
-        routes.get(actr_type).and_then(|entries| {
-            entries
-                .iter()
-                .filter(|e| e.available)
-                .next()
-                .map(|e| e.dest.clone())
-        })
+        routes
+            .get(actr_type)
+            .and_then(|entries| entries.iter().find(|e| e.available).map(|e| e.dest.clone()))
     }
 
     /// Look up all available routes for an ActrType for load balancing.

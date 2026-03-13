@@ -152,7 +152,9 @@ impl WebSocketLaneBuilder {
                 }
 
                 if js_sys::Date::now() - start > 5000.0 {
-                    return Err(WebError::Transport("WebSocket connection timed out (5s)".to_string()));
+                    return Err(WebError::Transport(
+                        "WebSocket connection timed out (5s)".to_string(),
+                    ));
                 }
 
                 // Retry after 10 ms with `gloo_timers`, which works in Service Workers.

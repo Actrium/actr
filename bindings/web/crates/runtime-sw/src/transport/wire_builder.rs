@@ -61,8 +61,11 @@ impl WebWireBuilder {
         let request_id = self.next_request_id();
 
         wasm_bindgen_futures::spawn_local(async move {
-            let channel = dom_channel.lock();
-            if let Some(lane) = channel.as_ref() {
+            let lane_opt = {
+                let channel = dom_channel.lock();
+                channel.clone()
+            };
+            if let Some(lane) = lane_opt.as_ref() {
                 // Build the request.
                 let request = CreateP2PRequest::new(dest.clone(), request_id.clone());
                 let control_msg = ControlMessage::CreateP2P(request);

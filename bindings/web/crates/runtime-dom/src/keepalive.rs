@@ -80,7 +80,10 @@ impl ServiceWorkerKeepalive {
                         log::trace!("ServiceWorkerKeepalive: sent keepalive message");
                     }
                     Err(e) => {
-                        log::error!("ServiceWorkerKeepalive: failed to send keepalive message: {:?}", e);
+                        log::error!(
+                            "ServiceWorkerKeepalive: failed to send keepalive message: {:?}",
+                            e
+                        );
                     }
                 }
             }

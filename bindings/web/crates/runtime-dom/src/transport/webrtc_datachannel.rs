@@ -59,7 +59,8 @@ impl WebRtcDataChannelLaneBuilder {
         // Validate the payload type.
         if matches!(self.payload_type, PayloadType::MediaRtp) {
             return Err(WebError::Transport(
-                "WebRTC DataChannel Lane does not support MEDIA_RTP; use MediaTrack Lane instead".to_string(),
+                "WebRTC DataChannel Lane does not support MEDIA_RTP; use MediaTrack Lane instead"
+                    .to_string(),
             ));
         }
 

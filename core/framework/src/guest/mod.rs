@@ -185,6 +185,7 @@ macro_rules! entry {
             ///
             /// Host calls this after dlopen, passing HostVTable and optional config data.
             /// Returns 0 on success, negative on error.
+            /// Note: Multiple calls to actr_init are permitted; each call reinitializes the workload.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_init(
                 vtable: *const $crate::guest::vtable::HostVTable,
@@ -197,9 +198,6 @@ macro_rules! entry {
 
                 let workload: $workload_type = $init_expr;
                 unsafe {
-                    if __ACTR_WORKLOAD.is_some() || __ACTR_VTABLE.is_some() {
-                        return $crate::guest::abi::code::INIT_FAILED;
-                    }
                     __ACTR_VTABLE = Some(vtable);
                     __ACTR_WORKLOAD = Some(workload);
                 }

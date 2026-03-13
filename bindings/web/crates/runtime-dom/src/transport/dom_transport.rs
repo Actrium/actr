@@ -175,6 +175,7 @@ impl DomTransport {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
     pub async fn recv(&self) -> Option<(Dest, PayloadType, Bytes)> {
         let mut rx = self.rx.lock();
         let msg = rx.next().await;
@@ -383,6 +384,7 @@ impl DomTransport {
     }
 
     /// Forward a message to the Service Worker.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
     async fn forward_to_sw(
         &self,
         dest: &Dest,

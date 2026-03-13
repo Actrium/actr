@@ -108,6 +108,12 @@ pub struct Config {
     ///
     /// Corresponds to `[system.deployment] mode = "native" | "process" | "wasm"`, defaults to `Native`.
     pub execution_mode: ActrMode,
+
+    /// AIS (Actor Identity Service) HTTP endpoint for credential registration.
+    ///
+    /// Required in native mode. In process/wasm mode, Hyper handles registration.
+    /// Corresponds to `[system.deployment] ais_endpoint = "..."` in actr.toml.
+    pub ais_endpoint: Option<String>,
 }
 
 /// Package info
@@ -493,6 +499,7 @@ mod tests {
             },
             config_dir: PathBuf::from("."),
             execution_mode: ActrMode::Native,
+            ais_endpoint: None,
         };
 
         // Test dependency lookup

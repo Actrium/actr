@@ -108,6 +108,7 @@ impl ParserV1 {
             observability,
             config_dir,
             execution_mode,
+            ais_endpoint: raw.system.deployment.ais_endpoint.clone(),
         })
     }
 
@@ -469,6 +470,10 @@ impl ParserV1 {
             deployment: crate::raw::RawDeploymentConfig {
                 realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
                 mode: child.deployment.mode.or(parent.deployment.mode),
+                ais_endpoint: child
+                    .deployment
+                    .ais_endpoint
+                    .or(parent.deployment.ais_endpoint),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),

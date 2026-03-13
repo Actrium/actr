@@ -110,6 +110,7 @@ impl SwTransport {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // Single-threaded wasm: no contention risk
     pub async fn recv(&self) -> Option<(Dest, PayloadType, Bytes)> {
         let mut rx = self.rx.lock();
         let msg = rx.next().await;
@@ -175,9 +176,12 @@ impl SwTransport {
         payload_type: PayloadType,
         data: Bytes,
     ) -> WebResult<()> {
-        let dom_channel = self.dom_channel.lock();
+        let lane_opt = {
+            let dom_channel = self.dom_channel.lock();
+            dom_channel.clone()
+        };
 
-        if let Some(lane) = dom_channel.as_ref() {
+        if let Some(lane) = lane_opt.as_ref() {
             let forward_msg = ForwardMessage::new(dest.clone(), payload_type, data);
             let serialized = forward_msg.serialize()?;
 

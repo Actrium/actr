@@ -1,5 +1,6 @@
 //! ActrNode - ActrSystem + Workload (1:1 composition)
 
+use crate::ais_client::AisClient;
 use crate::context_factory::ContextFactory;
 use crate::lifecycle::dedup::{DedupOutcome, DedupState};
 use crate::transport::HostTransport;
@@ -1262,28 +1263,39 @@ impl<W: Workload> ActrNode<W> {
         };
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 1. Obtain registration info (Hyper pre-injected or signaling server)
+        // 1. Obtain registration info (Hyper pre-injected or AIS HTTP)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         //
-        // - Process / Wasm mode: Hyper completed AIS registration in advance and injected RegisterOk; skip signaling registration
-        // - Native mode (default): register via signaling server to obtain ActrId and AID credential
+        // - Process / Wasm mode: Hyper completed AIS registration in advance and injected RegisterOk
+        // - Native mode (default): register via AIS HTTP to obtain ActrId and AID credential
         let register_ok = if let Some(injected) = self.injected_registration.take() {
             tracing::info!(
                 execution_mode = %self.config.execution_mode,
-                "Using Hyper pre-injected registration credential; skipping signaling registration"
+                "Using Hyper pre-injected registration credential; skipping AIS registration"
             );
             injected
         } else {
-            tracing::info!("Registering actor with signaling server");
-            let resp = self
-                .signaling_client
-                .send_register_request(register_request.clone())
+            // Native mode: register via AIS HTTP
+            let ais_endpoint = self.config.ais_endpoint.as_ref().ok_or_else(|| {
+                ActrError::Unavailable(
+                    "ais_endpoint is required for native mode registration".to_string(),
+                )
+            })?;
+
+            tracing::info!(
+                ais_endpoint = %ais_endpoint,
+                "Registering actor with AIS via HTTP"
+            );
+
+            let ais = AisClient::new(ais_endpoint);
+            let resp = ais
+                .register_with_manifest(register_request.clone())
                 .await
-                .map_err(|e| ActrError::Unavailable(format!("Actor registration failed: {e}")))?;
+                .map_err(|e| ActrError::Unavailable(format!("AIS registration failed: {e}")))?;
 
             match resp.result {
                 Some(register_response::Result::Success(ok)) => {
-                    tracing::info!("✅ Registration successful");
+                    tracing::info!("✅ AIS HTTP registration successful");
                     ok
                 }
                 Some(register_response::Result::Error(error)) => {
@@ -1291,12 +1303,12 @@ impl<W: Workload> ActrNode<W> {
                         severity = 10,
                         error_category = "registration_error",
                         error_code = error.code,
-                        "❌ Registration failed: code={}, message={}",
+                        "❌ AIS registration failed: code={}, message={}",
                         error.code,
                         error.message
                     );
                     return Err(ActrError::Unavailable(format!(
-                        "Registration rejected: {} (code: {})",
+                        "AIS registration rejected: {} (code: {})",
                         error.message, error.code
                     )));
                 }
@@ -1304,10 +1316,10 @@ impl<W: Workload> ActrNode<W> {
                     tracing::error!(
                         severity = 10,
                         error_category = "registration_error",
-                        "❌ Registration response missing result"
+                        "❌ AIS registration response missing result"
                     );
                     return Err(ActrError::Unavailable(
-                        "Invalid registration response: missing result".to_string(),
+                        "Invalid AIS registration response: missing result".to_string(),
                     ));
                 }
             }
@@ -1584,6 +1596,8 @@ impl<W: Workload> ActrNode<W> {
                     Duration::from_secs(30)
                 };
 
+                let ais_endpoint_for_heartbeat =
+                    self.config.ais_endpoint.clone().unwrap_or_default();
                 let heartbeat_handle = tokio::spawn(heartbeat_task(
                     shutdown,
                     client,
@@ -1592,6 +1606,7 @@ impl<W: Workload> ActrNode<W> {
                     mailbox_for_heartbeat,
                     heartbeat_interval,
                     register_request_for_heartbeat,
+                    ais_endpoint_for_heartbeat,
                 ));
 
                 task_handles.push(heartbeat_handle);
@@ -2541,6 +2556,7 @@ mod tests {
             },
             config_dir: std::env::temp_dir(),
             execution_mode: actr_config::ActrMode::Native,
+            ais_endpoint: None,
         }
     }
 

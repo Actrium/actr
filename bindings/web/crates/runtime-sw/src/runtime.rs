@@ -29,14 +29,13 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrIdExt, ActrToSignaling, ActrType, ActrTypeExt,
-    PeerToSignaling, Ping, RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
+    AIdCredential, Acl, AclRule, ActrId, ActrIdExt, ActrToSignaling, ActrType, ActrTypeExt, Ping,
+    RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
     ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
-    peer_to_signaling, route_candidates_request, session_description, signaling_envelope,
-    signaling_to_actr,
+    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
-use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType};
+use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
@@ -80,7 +79,6 @@ struct WebRtcCommandPayload {
     #[serde(with = "serde_wasm_bindgen::preserve")]
     payload: JsValue,
 }
-
 
 #[derive(Serialize)]
 struct SendDataPayload {
@@ -376,6 +374,7 @@ impl Default for ReconnectConfig {
 
 #[derive(Deserialize)]
 struct SwConfig {
+    ais_endpoint: String,
     signaling_url: String,
     realm_id: u32,
     client_actr_type: String,
@@ -492,7 +491,9 @@ const P2P_RETRY_MAX_DELAY_MS: u64 = 15000;
 struct SwRuntime {
     /// Unique client identifier (one per browser tab)
     client_id: String,
+    ais_endpoint: String,
     signaling_url: String,
+    reconnect_config: ReconnectConfig,
     realm_id: u32,
     client_actr_type: ActrType,
     target_actr_type: ActrType,
@@ -522,10 +523,6 @@ struct SwRuntime {
 
 impl SwRuntime {
     async fn new(client_id: String, config: SwConfig) -> Result<Self, JsValue> {
-        let signaling =
-            SignalingClient::connect_with_retries(&config.signaling_url, &config.reconnect_config)
-                .await?;
-
         // Build ACL from config
         let acl = if config.acl_allow_types.is_empty() {
             None
@@ -547,21 +544,54 @@ impl SwRuntime {
             Some(Acl { rules })
         };
 
+        let client_actr_type = ActrType::from_string_repr(&config.client_actr_type)
+            .map_err(|e| JsValue::from_str(&format!("Invalid client actr_type: {e}")))?;
+        let platform = WebPlatformProvider::new();
+
+        // Step 1: Obtain credential via AIS HTTP registration
+        //   Try to restore persisted credentials first; if expired or missing,
+        //   perform a fresh AIS HTTP registration.
+        let cred_kv_ns = format!("actr_credentials_{}", client_actr_type.to_string_repr());
+        let (actor_id, credential) = Self::obtain_credential_from_ais(
+            &config.ais_endpoint,
+            &client_actr_type,
+            config.realm_id,
+            &acl,
+            &platform,
+            &cred_kv_ns,
+        )
+        .await?;
+
+        // Step 2: Build signaling URL with credential query params
+        let signaling_url_with_cred = Self::build_signaling_url_with_identity_static(
+            &config.signaling_url,
+            &actor_id,
+            &credential,
+        );
+
+        // Step 3: Connect signaling WebSocket with credential in URL
+        let signaling = SignalingClient::connect_with_retries(
+            &signaling_url_with_cred,
+            &config.reconnect_config,
+        )
+        .await?;
+
         Ok(Self {
             client_id,
+            ais_endpoint: config.ais_endpoint,
             signaling_url: config.signaling_url,
+            reconnect_config: config.reconnect_config,
             realm_id: config.realm_id,
-            client_actr_type: ActrType::from_string_repr(&config.client_actr_type)
-                .map_err(|e| JsValue::from_str(&format!("Invalid client actr_type: {e}")))?,
+            client_actr_type,
             target_actr_type: ActrType::from_string_repr(&config.target_actr_type)
                 .map_err(|e| JsValue::from_str(&format!("Invalid target actr_type: {e}")))?,
             service_fingerprint: config.service_fingerprint,
             acl,
             is_server: config.is_server,
             signaling,
-            actor_id: None,
-            credential: None,
-            platform: WebPlatformProvider::new(),
+            actor_id: Some(actor_id),
+            credential: Some(credential),
+            platform,
             target_id: None,
             dom_port: None,
             pending_rpcs: HashMap::new(),
@@ -576,92 +606,225 @@ impl SwRuntime {
         })
     }
 
-    async fn register(&mut self) -> Result<(), JsValue> {
-        log::info!(
-            "[SW] register: sending RegisterRequest (acl={:?})",
-            self.acl.is_some()
-        );
+    /// Register with AIS via HTTP and obtain credential.
+    ///
+    /// Checks IndexedDB for a valid PSK first (renewal path); falls back to
+    /// manifest-less initial registration if no PSK is available.
+    async fn register_via_ais(&mut self) -> Result<(), JsValue> {
+        let (actor_id, credential) = Self::obtain_credential_from_ais(
+            &self.ais_endpoint,
+            &self.client_actr_type,
+            self.realm_id,
+            &self.acl,
+            &self.platform,
+            &self.cred_kv_namespace(),
+        )
+        .await?;
+        self.actor_id = Some(actor_id);
+        self.credential = Some(credential);
+        Ok(())
+    }
+
+    /// Obtain a credential from AIS via HTTP.
+    ///
+    /// 1. Try to load a valid PSK from IndexedDB for renewal
+    /// 2. If no PSK, perform initial registration (no manifest for web clients)
+    /// 3. Persist PSK and credential to IndexedDB
+    /// 4. Return (actor_id, credential)
+    async fn obtain_credential_from_ais(
+        ais_endpoint: &str,
+        client_actr_type: &ActrType,
+        realm_id: u32,
+        acl: &Option<Acl>,
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<(ActrId, AIdCredential), JsValue> {
+        // Try to restore persisted credential if still valid
+        if let Some((actor_id, credential)) =
+            Self::try_restore_credential_static(platform, cred_kv_ns).await?
+        {
+            log::info!(
+                "[SW] credentials restored from IndexedDB (actor_id={})",
+                actor_id.to_string_repr()
+            );
+            return Ok((actor_id, credential));
+        }
+
+        let ais = WebAisClient::new(ais_endpoint);
+
+        // Try to load PSK for renewal
+        let psk_token = Self::load_valid_psk_static(platform, cred_kv_ns).await?;
+
         let request = RegisterRequest {
-            actr_type: self.client_actr_type.clone(),
-            realm: actr_protocol::Realm {
-                realm_id: self.realm_id,
-            },
+            actr_type: client_actr_type.clone(),
+            realm: actr_protocol::Realm { realm_id },
             service_spec: None,
-            acl: self.acl.clone(),
+            acl: acl.clone(),
             service: None,
             ws_address: None,
             manifest_json: None,
             mfr_signature: None,
-            psk_token: None,
-        };
-        let envelope = SignalingEnvelope {
-            envelope_version: 1,
-            envelope_id: self.signaling.next_envelope_id(),
-            reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
-            traceparent: None,
-            tracestate: None,
-            flow: Some(signaling_envelope::Flow::PeerToServer(PeerToSignaling {
-                payload: Some(peer_to_signaling::Payload::RegisterRequest(request)),
-            })),
+            psk_token: psk_token.clone().map(|t| t.into()),
         };
 
-        let response = self.signaling.send_request(envelope).await?;
-        log::info!("[SW] register: got response");
-        let register_response = match response.flow {
-            Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) => {
-                match server_to_actr.payload {
-                    Some(signaling_to_actr::Payload::RegisterResponse(resp)) => resp,
-                    _ => return Err(JsValue::from_str("Unexpected signaling response payload")),
-                }
-            }
-            _ => return Err(JsValue::from_str("Unexpected signaling response flow")),
-        };
+        log::info!(
+            "[SW] register via AIS HTTP: actr_type={}, psk={}",
+            client_actr_type.to_string_repr(),
+            psk_token.is_some()
+        );
 
-        match register_response.result {
+        let response = if psk_token.is_some() {
+            ais.register_with_psk(request).await
+        } else {
+            ais.register_with_manifest(request).await
+        }
+        .map_err(|e| JsValue::from_str(&format!("AIS registration failed: {e}")))?;
+
+        match response.result {
             Some(actr_protocol::register_response::Result::Success(ok)) => {
+                let actor_id = ok.actr_id.clone();
+                let credential = ok.credential.clone();
+
                 log::info!(
-                    "[SW] register: success actr_id={}",
-                    ok.actr_id.to_string_repr()
+                    "[SW] AIS registration success: actr_id={}",
+                    actor_id.to_string_repr()
                 );
-                self.actor_id = Some(ok.actr_id);
-                self.credential = Some(ok.credential);
-                if let Err(e) = self.persist_credentials().await {
-                    log::warn!("[SW] failed to persist credentials: {:?}", e);
+
+                // Persist PSK if returned
+                if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
+                    Self::persist_psk_static(platform, cred_kv_ns, psk, psk_expires_at as u64)
+                        .await?;
                 }
-                Ok(())
+
+                // Persist credential and actor_id
+                Self::persist_credentials_static(platform, cred_kv_ns, &actor_id, &credential)
+                    .await?;
+
+                Ok((actor_id, credential))
             }
             Some(actr_protocol::register_response::Result::Error(err)) => {
-                log::warn!("[SW] register: error {}", err.message);
+                log::warn!("[SW] AIS register error: {}", err.message);
                 Err(JsValue::from_str(&format!(
-                    "Register failed: {}",
+                    "AIS register failed: {}",
                     err.message
                 )))
             }
-            None => Err(JsValue::from_str("Register response missing result")),
+            None => Err(JsValue::from_str("AIS register response missing result")),
         }
     }
 
-    /// KV namespace for persisting credentials across SW restarts.
-    fn cred_kv_namespace(&self) -> String {
-        format!("actr_credentials_{}", self.client_actr_type.to_string_repr())
+    /// Build signaling URL with credential query params for authenticated WS connection.
+    fn build_signaling_url_with_identity(&self) -> String {
+        let actor_id = self.actor_id.as_ref().expect("actor_id must be set");
+        let credential = self.credential.as_ref().expect("credential must be set");
+        Self::build_signaling_url_with_identity_static(&self.signaling_url, actor_id, credential)
     }
 
-    /// Persist the current credential and actor_id to IndexedDB so they
-    /// survive Service Worker restarts.
-    async fn persist_credentials(&self) -> Result<(), JsValue> {
-        let actor_id = self
-            .actor_id
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("No actor_id to persist"))?;
-        let credential = self
-            .credential
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("No credential to persist"))?;
+    /// Build signaling URL with identity params (static version, no &self needed).
+    fn build_signaling_url_with_identity_static(
+        base_url: &str,
+        actor_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> String {
+        let actor_str = actor_id.to_string_repr();
+        let claims_b64 = bytes_to_base64(&credential.claims);
+        let sig_b64 = bytes_to_base64(&credential.signature);
 
-        let kv = self
-            .platform
-            .open_kv_store(&self.cred_kv_namespace())
+        let separator = if base_url.contains('?') { "&" } else { "?" };
+        format!(
+            "{base_url}{separator}actor_id={}&key_id={}&claims={}&signature={}",
+            js_encode_uri_component(&actor_str),
+            credential.key_id,
+            js_encode_uri_component(&claims_b64),
+            js_encode_uri_component(&sig_b64),
+        )
+    }
+
+    /// Load a valid (non-expired) PSK from IndexedDB.
+    async fn load_valid_psk_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(token) = kv
+            .get("psk_token")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK token: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let Some(expires_bytes) = kv
+            .get("psk_expires_at")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK expires_at: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        if expires_bytes.len() != 8 {
+            log::warn!("[SW] PSK expires_at has unexpected format, ignoring");
+            return Ok(None);
+        }
+        let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+
+        if now_secs >= expires_at {
+            log::info!(
+                "[SW] PSK expired (expires_at={}, now={}), will do initial registration",
+                expires_at,
+                now_secs
+            );
+            let _ = kv.delete("psk_token").await;
+            let _ = kv.delete("psk_expires_at").await;
+            return Ok(None);
+        }
+
+        log::debug!(
+            "[SW] valid PSK found (expires_in={}s)",
+            expires_at.saturating_sub(now_secs)
+        );
+        Ok(Some(token))
+    }
+
+    /// Persist PSK token and expiry to IndexedDB.
+    async fn persist_psk_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        psk: &[u8],
+        psk_expires_at: u64,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        kv.set("psk_token", psk)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK token: {e}")))?;
+
+        let expires_bytes = psk_expires_at.to_le_bytes().to_vec();
+        kv.set("psk_expires_at", &expires_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK expires_at: {e}")))?;
+
+        log::info!("[SW] PSK persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Persist credential and actor_id to IndexedDB (static version).
+    async fn persist_credentials_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        actor_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -679,14 +842,13 @@ impl SwRuntime {
         Ok(())
     }
 
-    /// Try to restore previously persisted credentials from IndexedDB.
-    ///
-    /// Returns `true` if valid credentials were restored, `false` if none
-    /// were found or they had expired.
-    async fn try_restore_credentials(&mut self) -> Result<bool, JsValue> {
-        let kv = self
-            .platform
-            .open_kv_store(&self.cred_kv_namespace())
+    /// Try to restore valid credentials from IndexedDB (static version).
+    async fn try_restore_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<(ActrId, AIdCredential)>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -695,8 +857,7 @@ impl SwRuntime {
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to read credential: {e}")))?
         else {
-            log::debug!("[SW] no persisted credential found");
-            return Ok(false);
+            return Ok(None);
         };
 
         let Some(id_bytes) = kv
@@ -704,58 +865,48 @@ impl SwRuntime {
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to read actor_id: {e}")))?
         else {
-            log::debug!("[SW] no persisted actor_id found");
-            return Ok(false);
+            return Ok(None);
         };
 
-        // Decode credential
         let credential = AIdCredential::decode(&*cred_bytes).map_err(|e| {
             JsValue::from_str(&format!("Failed to decode persisted credential: {e}"))
         })?;
 
-        // Decode and validate claims expiry
-        let claims =
-            actr_protocol::IdentityClaims::decode(&*credential.claims).map_err(|e| {
-                JsValue::from_str(&format!("Failed to decode identity claims: {e}"))
-            })?;
+        let claims = actr_protocol::IdentityClaims::decode(&*credential.claims)
+            .map_err(|e| JsValue::from_str(&format!("Failed to decode identity claims: {e}")))?;
 
         let now_secs = (js_sys::Date::now() / 1000.0) as u64;
         if claims.expires_at <= now_secs {
             log::info!(
-                "[SW] persisted credential expired (expires_at={}, now={}), will re-register",
+                "[SW] persisted credential expired (expires_at={}, now={})",
                 claims.expires_at,
                 now_secs
             );
-            // Clean up stale data
             let _ = kv.delete("credential").await;
             let _ = kv.delete("actor_id").await;
-            return Ok(false);
+            return Ok(None);
         }
 
-        // Decode actor_id
         let id_str = String::from_utf8(id_bytes)
             .map_err(|e| JsValue::from_str(&format!("Invalid actor_id UTF-8: {e}")))?;
         let actor_id = ActrId::from_string_repr(&id_str)
             .map_err(|e| JsValue::from_str(&format!("Failed to parse actor_id: {e}")))?;
 
-        self.credential = Some(credential);
-        self.actor_id = Some(actor_id.clone());
-        log::info!(
-            "[SW] credentials restored from IndexedDB (actor_id={}, expires_in={}s)",
-            actor_id.to_string_repr(),
-            claims.expires_at.saturating_sub(now_secs)
-        );
-        Ok(true)
+        Ok(Some((actor_id, credential)))
     }
 
-    /// Reconnect the signaling WebSocket and re-register with the
-    /// signaling server.  Called when the heartbeat detects that the
-    /// existing WebSocket is dead (e.g. browser killed the SW, network
-    /// interruption, server restart).
+    /// KV namespace for persisting credentials across SW restarts.
+    fn cred_kv_namespace(&self) -> String {
+        format!(
+            "actr_credentials_{}",
+            self.client_actr_type.to_string_repr()
+        )
+    }
+
+    /// Reconnect the signaling WebSocket after detecting a dead connection.
     ///
-    /// After a successful reconnect the caller must spawn a new signaling
-    /// relay loop because the old one terminated when the old channel
-    /// was closed.
+    /// New flow: obtain credential via AIS HTTP first, then connect signaling
+    /// with credential in URL.
     async fn reconnect_signaling(&mut self) -> Result<(), JsValue> {
         log::info!(
             "[SW] [{}] Reconnecting signaling WebSocket...",
@@ -777,24 +928,26 @@ impl SwRuntime {
         self.ice_restart_attempts.clear();
         self.peer_connection_states.clear();
 
-        // 3. Create a brand-new signaling client (new WebSocket).
-        let reconnect_config = ReconnectConfig::default();
-        self.signaling =
-            SignalingClient::connect_with_retries(&self.signaling_url, &reconnect_config).await?;
-
-        // 4. Attempt to restore persisted credentials; fall back to
-        //    a full re-register if none are available or expired.
-        match self.try_restore_credentials().await {
-            Ok(true) => {
-                log::info!("[SW] restored credentials from IndexedDB, skipping re-register");
+        // 3. Obtain credential: try restore from IndexedDB, else re-register via AIS HTTP.
+        let cred_kv_ns = self.cred_kv_namespace();
+        match Self::try_restore_credential_static(&self.platform, &cred_kv_ns).await {
+            Ok(Some((actor_id, credential))) => {
+                log::info!("[SW] restored credentials from IndexedDB, skipping AIS re-register");
+                self.actor_id = Some(actor_id);
+                self.credential = Some(credential);
             }
-            Ok(false) | Err(_) => {
-                self.register().await?;
+            _ => {
+                self.register_via_ais().await?;
             }
         }
 
+        // 4. Build signaling URL with credential and connect.
+        let url_with_cred = self.build_signaling_url_with_identity();
+        self.signaling =
+            SignalingClient::connect_with_retries(&url_with_cred, &self.reconnect_config).await?;
+
         log::info!(
-            "[SW] [{}] Signaling reconnected and re-registered",
+            "[SW] [{}] Signaling reconnected (AIS HTTP credential)",
             self.client_id
         );
         Ok(())
@@ -2315,7 +2468,6 @@ pub async fn register_client(
         config.is_server
     );
     let mut runtime = SwRuntime::new(client_id.clone(), config).await?;
-    runtime.register().await?;
 
     // Set DOM port
     runtime.dom_port = Some(port);
@@ -2417,7 +2569,9 @@ pub async fn register_client(
                     } else {
                         // Fallback: Host gate with no bridge
                         log::error!("[Scheduler] Client context not found for {}", client_id);
+                        #[allow(clippy::arc_with_non_send_sync)]
                         let gate = Gate::host(Arc::new(crate::outbound::HostGate::new()));
+                        #[allow(clippy::arc_with_non_send_sync)]
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
                             peer_gate: Arc::new(crate::outbound::PeerGate::new(
@@ -2573,11 +2727,14 @@ pub async fn register_client(
     }
 
     // Build the full transport stack: `PeerGate -> PeerTransport -> DestTransport -> WirePool`.
+    #[allow(clippy::arc_with_non_send_sync)]
     let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
+    #[allow(clippy::arc_with_non_send_sync)]
     let transport_manager = Arc::new(crate::transport::PeerTransport::new(
         client_id.clone(),
         wire_builder,
     ));
+    #[allow(clippy::arc_with_non_send_sync)]
     let peer_gate = Arc::new(crate::outbound::PeerGate::new(Arc::clone(
         &transport_manager,
     )));
@@ -3014,4 +3171,34 @@ pub fn handle_dom_fast_path(client_id: String, payload: JsValue) -> Result<(), J
         );
     }
     Ok(())
+}
+
+/// Encode raw bytes to standard Base64 string.
+fn bytes_to_base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// URL-encode a string using JS `encodeURIComponent`.
+fn js_encode_uri_component(s: &str) -> String {
+    js_sys::encode_uri_component(s).into()
 }

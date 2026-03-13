@@ -86,7 +86,9 @@ impl DataLane {
 
                 // Check the DataChannel state.
                 if data_channel.ready_state() != RtcDataChannelState::Open {
-                    return Err(WebError::Transport("WebRTC DataChannel is not open".to_string()));
+                    return Err(WebError::Transport(
+                        "WebRTC DataChannel is not open".to_string(),
+                    ));
                 }
 
                 // Build the message with zero-copy helpers.
@@ -175,7 +177,9 @@ impl DataLane {
 
             DataLane::WebRtcDataChannel { .. } => {
                 // DataChannel does not support Transferable Objects, so fall back to regular send.
-                log::warn!("WebRTC DataChannel does not support Transferable Objects; falling back to regular send");
+                log::warn!(
+                    "WebRTC DataChannel does not support Transferable Objects; falling back to regular send"
+                );
                 self.send(data).await
             }
 
@@ -213,6 +217,7 @@ impl DataLane {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: stream recv must hold lock across await
     pub async fn recv(&self) -> Option<Bytes> {
         use futures::StreamExt;
 

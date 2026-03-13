@@ -3,6 +3,7 @@
 //! This module contains functions for sending periodic heartbeat messages
 //! to the signaling server and handling responses.
 
+use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkError;
 use crate::wire::webrtc::SignalingClient;
@@ -89,6 +90,7 @@ async fn send_heartbeat_and_handle_response(
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: &RegisterRequest,
+    ais_endpoint: &str,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -123,6 +125,7 @@ async fn send_heartbeat_and_handle_response(
                 actor_id.clone(),
                 register_request.clone(),
                 credential_state.clone(),
+                ais_endpoint.to_string(),
             )
             .await;
 
@@ -182,6 +185,8 @@ async fn send_heartbeat_and_handle_response(
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats
 /// * `register_request` - RegisterRequest for re-registration on credential expiry
+/// * `ais_endpoint` - AIS HTTP endpoint for re-registration
+#[allow(clippy::too_many_arguments)]
 pub async fn heartbeat_task(
     shutdown: CancellationToken,
     client: Arc<dyn SignalingClient>,
@@ -190,6 +195,7 @@ pub async fn heartbeat_task(
     mailbox: Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: RegisterRequest,
+    ais_endpoint: String,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -208,6 +214,7 @@ pub async fn heartbeat_task(
                     &mailbox,
                     heartbeat_interval,
                     &register_request,
+                    &ais_endpoint,
                 )
                 .await {
                     tracing::info!(
@@ -290,105 +297,94 @@ async fn credential_refresh_task(
 
 /// Re-register actor after credential expiry
 ///
-/// When the credential has completely expired (key deleted from key store),
-/// neither heartbeat nor credential refresh will work because the server
-/// cannot validate the old credential. The server also rejects a plain
-/// RegisterRequest with 409 "Already registered" because the actor is still
-/// registered on the existing WebSocket session.
-///
-/// The solution is to disconnect the WebSocket first (which causes the server
-/// to clean up the stale registration), reconnect with a fresh session,
-/// and then register again.
+/// When the credential has completely expired, re-register via AIS HTTP,
+/// then disconnect/reconnect the signaling WebSocket with the new credential.
 ///
 /// # Arguments
-/// * `client` - Signaling client for sending register request
+/// * `client` - Signaling client for reconnection
 /// * `actor_id` - Current actor ID (used for logging)
 /// * `register_request` - RegisterRequest containing actor type, realm, and service spec
 /// * `credential_state` - Shared credential state to update
+/// * `ais_endpoint` - AIS HTTP endpoint for registration
 async fn re_register_task(
     client: Arc<dyn SignalingClient>,
     actor_id: ActrId,
     register_request: RegisterRequest,
     credential_state: CredentialState,
+    ais_endpoint: String,
 ) -> ActrId {
     tracing::info!(
-        "🔄 Re-registering actor {} after credential expiry (type: {}/{})",
+        "🔄 Re-registering actor {} after credential expiry via AIS HTTP (type: {}/{})",
         actor_id.to_string_repr(),
         register_request.actr_type.manufacturer,
         register_request.actr_type.name
     );
 
-    // Step 0: Clear identity from the signaling client so the reconnect URL
-    // does not carry the old actor_id / expired credential. Without this the
-    // signaling server treats the new WebSocket as a "reconnect" of the old
-    // actor and restores its registered state, causing 409 "Already registered".
-    client.clear_identity().await;
-
-    // Step 1: Disconnect to clear the server-side registration state.
-    // The server returns 409 "Already registered" if we try to register
-    // while still connected with the old session. Disconnecting forces
-    // the server to clean up the stale registration.
-    tracing::info!("🔌 Disconnecting signaling client to clear stale registration");
-    if let Err(e) = client.disconnect().await {
-        tracing::warn!("⚠️ Disconnect failed (non-fatal, continuing): {}", e);
-    }
-
-    // Step 2: Reconnect to get a fresh WebSocket connection.
-    // If an auto-reconnector is running, connect() may return immediately
-    // via the "already connected" fast-path, which is fine.
-    tracing::info!("🔗 Reconnecting signaling client for re-registration");
-    if let Err(e) = client.connect().await {
-        tracing::error!("❌ Failed to reconnect for re-registration: {}", e);
-        return actor_id;
-    }
-
-    // Step 3: Send register request on the fresh connection
-    match client.send_register_request(register_request.clone()).await {
-        Ok(register_response) => match register_response.result {
-            Some(actr_protocol::register_response::Result::Success(register_ok)) => {
-                let new_actor_id = register_ok.actr_id.clone();
-                let new_credential = register_ok.credential;
-                let new_expires_at = register_ok.credential_expires_at;
-                // TurnCredential is a required proto field; wrap as Some directly
-                let new_turn_credential = Some(register_ok.turn_credential);
-
-                // Update shared credential state, synchronously updating TURN credential
-                credential_state
-                    .update(new_credential.clone(), new_expires_at, new_turn_credential)
-                    .await;
-
-                // Update signaling client identity info so subsequent auto-reconnects carry correct credentials
-                client.set_actor_id(new_actor_id.clone()).await;
-                client.set_credential_state(credential_state.clone()).await;
-
-                tracing::info!(
-                    "✅ Re-registration successful (ActrId: {})",
-                    new_actor_id.to_string_repr(),
-                );
-
-                tracing::debug!("TurnCredential updated, TURN authentication ready");
-
-                if let Some(expires_at) = &new_expires_at {
-                    tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
-                }
-
-                new_actor_id
-            }
-            Some(actr_protocol::register_response::Result::Error(err)) => {
-                tracing::error!(
-                    "❌ Re-registration failed: code={}, message={}",
-                    err.code,
-                    err.message
-                );
-                actor_id
-            }
-            None => {
-                tracing::error!("❌ Re-registration response missing result");
-                actor_id
-            }
-        },
+    // Step 1: Register via AIS HTTP to get new credential
+    let ais = AisClient::new(&ais_endpoint);
+    let resp = match ais.register_with_manifest(register_request.clone()).await {
+        Ok(resp) => resp,
         Err(e) => {
-            tracing::error!("❌ Failed to send re-register request: {}", e);
+            tracing::error!("❌ AIS re-registration HTTP request failed: {}", e);
+            return actor_id;
+        }
+    };
+
+    match resp.result {
+        Some(actr_protocol::register_response::Result::Success(register_ok)) => {
+            let new_actor_id = register_ok.actr_id.clone();
+            let new_credential = register_ok.credential;
+            let new_expires_at = register_ok.credential_expires_at;
+            let new_turn_credential = Some(register_ok.turn_credential);
+
+            // Update shared credential state
+            credential_state
+                .update(new_credential.clone(), new_expires_at, new_turn_credential)
+                .await;
+
+            // Step 2: Clear old identity from signaling client
+            client.clear_identity().await;
+
+            // Step 3: Disconnect old WebSocket session
+            tracing::info!("🔌 Disconnecting signaling client to refresh session");
+            if let Err(e) = client.disconnect().await {
+                tracing::warn!("⚠️ Disconnect failed (non-fatal, continuing): {}", e);
+            }
+
+            // Step 4: Update signaling client identity with new credential
+            client.set_actor_id(new_actor_id.clone()).await;
+            client.set_credential_state(credential_state.clone()).await;
+
+            // Step 5: Reconnect signaling WebSocket (URL will carry new credential)
+            tracing::info!("🔗 Reconnecting signaling client with new credential");
+            if let Err(e) = client.connect().await {
+                tracing::error!("❌ Failed to reconnect after re-registration: {}", e);
+                // Credential is updated even if reconnect fails — next heartbeat retry will reconnect
+            }
+
+            tracing::info!(
+                "✅ Re-registration successful via AIS HTTP (ActrId: {})",
+                new_actor_id.to_string_repr(),
+            );
+
+            tracing::debug!("TurnCredential updated, TURN authentication ready");
+
+            if let Some(expires_at) = &new_expires_at {
+                tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
+            }
+
+            new_actor_id
+        }
+        Some(actr_protocol::register_response::Result::Error(err)) => {
+            tracing::error!(
+                "❌ AIS re-registration failed: code={}, message={}",
+                err.code,
+                err.message
+            );
+            actor_id
+        }
+        None => {
+            tracing::error!("❌ AIS re-registration response missing result");
             actor_id
         }
     }

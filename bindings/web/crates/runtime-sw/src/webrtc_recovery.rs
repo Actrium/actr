@@ -203,10 +203,7 @@ mod tests {
     fn test_recovery_manager_with_transport_manager() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(PeerTransport::new(
-            "test-sw".to_string(),
-            wire_builder,
-        ));
+        let transport_manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
 
         let manager =
             WebRtcRecoveryManager::new(wire_pool).with_transport_manager(transport_manager);
@@ -357,10 +354,7 @@ mod tests {
     fn test_with_transport_manager_builder_pattern() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(PeerTransport::new(
-            "test-sw".to_string(),
-            wire_builder,
-        ));
+        let transport_manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
 
         // Use the builder pattern.
         let manager =

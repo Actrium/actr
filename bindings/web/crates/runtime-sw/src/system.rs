@@ -70,6 +70,7 @@ pub struct System {
 
 impl System {
     /// Create a new System.
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn new() -> Self {
         let host_gate = Arc::new(HostGate::new());
 
@@ -162,9 +163,7 @@ impl System {
                                 }
                             }
                             None => {
-                                log::error!(
-                                    "[System] Gate not set, cannot route remote message"
-                                );
+                                log::error!("[System] Gate not set, cannot route remote message");
                             }
                         }
                     }
@@ -188,9 +187,9 @@ impl System {
 
         // 2. Try System pending_requests.
         if let Some(tx) = self.pending_requests.borrow_mut().remove(request_id) {
-            match tx.send(response.clone()) {
-                Ok(()) => return, // Receiver alive, consumed
-                Err(_) => {}      // Receiver dropped, fall through
+            // Receiver alive, consumed; otherwise receiver dropped, fall through
+            if let Ok(()) = tx.send(response.clone()) {
+                return;
             }
         }
 

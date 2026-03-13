@@ -72,18 +72,12 @@ impl PeerTransport {
         if let Some(entry) = self.transports.get(dest) {
             match entry.value() {
                 DestState::Connected(transport) => {
-                    log::debug!(
-                        "[PeerTransport] Reusing existing DestTransport: {:?}",
-                        dest
-                    );
+                    log::debug!("[PeerTransport] Reusing existing DestTransport: {:?}", dest);
                     return Ok(Arc::clone(transport));
                 }
                 DestState::Connecting(_rx) => {
                     // Wait for the ongoing creation to finish.
-                    log::debug!(
-                        "[PeerTransport] Waiting for ongoing connection: {:?}",
-                        dest
-                    );
+                    log::debug!("[PeerTransport] Waiting for ongoing connection: {:?}", dest);
                     drop(entry); // Release the lock.
 
                     // Note: a oneshot receiver can only be consumed once, so this
@@ -103,10 +97,7 @@ impl PeerTransport {
         }
 
         // 2. Slow path: create a new connection.
-        log::info!(
-            "[PeerTransport] Creating new connection for: {:?}",
-            dest
-        );
+        log::info!("[PeerTransport] Creating new connection for: {:?}", dest);
 
         // Create the oneshot channel.
         let (tx, rx) = futures::channel::oneshot::channel();
@@ -144,10 +135,7 @@ impl PeerTransport {
         // Update the state.
         match result {
             Ok(transport) => {
-                log::info!(
-                    "[PeerTransport] Connection established: {:?}",
-                    dest
-                );
+                log::info!("[PeerTransport] Connection established: {:?}", dest);
                 self.transports
                     .insert(dest.clone(), DestState::Connected(Arc::clone(&transport)));
 
@@ -157,11 +145,7 @@ impl PeerTransport {
                 Ok(transport)
             }
             Err(e) => {
-                log::error!(
-                    "[PeerTransport] Connection failed: {:?}: {}",
-                    dest,
-                    e
-                );
+                log::error!("[PeerTransport] Connection failed: {:?}: {}", dest, e);
                 self.transports.remove(dest);
 
                 // Notify waiters of failure by closing the channel.
@@ -201,17 +185,11 @@ impl PeerTransport {
         if let Some((_, state)) = self.transports.remove(dest) {
             match state {
                 DestState::Connected(transport) => {
-                    log::info!(
-                        "[PeerTransport] Closing DestTransport: {:?}",
-                        dest
-                    );
+                    log::info!("[PeerTransport] Closing DestTransport: {:?}", dest);
                     transport.close().await?;
                 }
                 DestState::Connecting(_) => {
-                    log::debug!(
-                        "[PeerTransport] Removed Connecting state for: {:?}",
-                        dest
-                    );
+                    log::debug!("[PeerTransport] Removed Connecting state for: {:?}", dest);
                 }
             }
         }
@@ -286,10 +264,7 @@ impl PeerTransport {
     ) -> WebResult<()> {
         let transport = self.get_or_create_transport(dest).await?;
         transport.wire_pool().add_connection(wire_handle);
-        log::info!(
-            "[PeerTransport] Injected connection into {:?}",
-            dest
-        );
+        log::info!("[PeerTransport] Injected connection into {:?}", dest);
         Ok(())
     }
 }

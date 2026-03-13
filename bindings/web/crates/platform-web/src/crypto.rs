@@ -75,19 +75,22 @@ impl CryptoProvider for WebCryptoProvider {
         // Import the raw public key
         let pk_array = Uint8Array::from(public_key);
         let import_promise = subtle
-            .import_key_with_object("raw", &pk_array, &algorithm, false, &js_sys::Array::of1(&"verify".into()))
+            .import_key_with_object(
+                "raw",
+                &pk_array,
+                &algorithm,
+                false,
+                &js_sys::Array::of1(&"verify".into()),
+            )
             .map_err(|e| {
                 warn!("Ed25519 importKey failed — SubtleCrypto may not support Ed25519");
                 js_err("Ed25519 importKey not supported by this browser", e)
             })?;
 
-        let crypto_key =
-            JsFuture::from(import_promise)
-                .await
-                .map_err(|e| {
-                    warn!("Ed25519 importKey promise rejected");
-                    js_err("Ed25519 importKey rejected", e)
-                })?;
+        let crypto_key = JsFuture::from(import_promise).await.map_err(|e| {
+            warn!("Ed25519 importKey promise rejected");
+            js_err("Ed25519 importKey rejected", e)
+        })?;
 
         // Verify the signature
         let sig_array = Uint8Array::from(signature);

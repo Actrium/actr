@@ -216,9 +216,7 @@ impl DataLane {
 
             DataLane::WebSocket { .. } => {
                 // WebSocket does not support transferable objects, so fall back to `send`.
-                log::warn!(
-                    "WebSocket does not support transferable objects; falling back to send"
-                );
+                log::warn!("WebSocket does not support transferable objects; falling back to send");
                 self.send(data).await
             }
         }
@@ -251,6 +249,7 @@ impl DataLane {
     }
 
     /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // Single-threaded wasm: no contention risk
     pub async fn recv(&self) -> Option<Bytes> {
         use futures::StreamExt;
 
