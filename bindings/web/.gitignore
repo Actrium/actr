@@ -59,3 +59,5 @@ examples/*/public/actr_runtime_*.js
 .DS_Store
 Thumbs.db
 .certs/
+
+!examples/echo/client/.certs/

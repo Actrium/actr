@@ -7,9 +7,20 @@ server/wasm/Cargo.lock
 # Client
 client/node_modules/
 client/dist/
-client/src/generated/
 client/wasm/target/
 client/wasm/Cargo.lock
+
+# Generated WASM artifacts
+server/public/echo_server_bg.wasm*
+server/public/echo_server.js
+server/public/echo_server.d.ts
+client/public/echo_client_bg.wasm*
+client/public/echo_client.js
+client/public/echo_client.d.ts
+client/src/generated/
+
+# Development certificates
+client/.certs/
 
 # Logs
 *.log
@@ -17,3 +28,8 @@ client/wasm/Cargo.lock
 # PIDs
 .server.pid
 .client.pid
+
+# Runtime artifacts
+actrix*.log
+actrix-dev-db/
+actrix-dev.toml
