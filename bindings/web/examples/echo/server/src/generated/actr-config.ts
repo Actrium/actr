@@ -29,7 +29,8 @@ export const packageInfo = {
 export const actorType = {
     manufacturer: 'acme',
     name: 'EchoService',
-    fullType: 'acme:EchoService',
+    version: '0.1.0',
+    fullType: 'acme:EchoService:0.1.0',
 } as const;
 
 /** Dependencies (none) */
@@ -49,10 +50,11 @@ export const platform = {
 /** System configuration */
 export const system = {
     signaling: {
-        url: 'wss://10.30.3.206:8081/signaling/ws',
+        url: 'ws://localhost:8081/signaling/ws',
     },
     deployment: {
         realm_id: 2368266035,
+        ais_endpoint: 'http://localhost:8081/ais',
     },
     discovery: {
         visible: true,
@@ -62,7 +64,7 @@ export const system = {
         tracing_enabled: false,
     },
     webrtc: {
-        stun_urls: ['stun:10.30.3.206:3478'],
+        stun_urls: ['stun:localhost:3478'],
     },
 } as const;
 
@@ -71,7 +73,7 @@ export const acl = {
     rules: [
         {
             permission: 'allow' as const,
-            types: ['acme:echo-client-app'],
+            types: ['acme:echo-client-app:0.1.0'],
         },
     ],
 } as const;
@@ -83,13 +85,14 @@ export const acl = {
  * Passed from the main thread via DOM_PORT_INIT to the Service Worker
  */
 export const runtimeConfig: SwRuntimeConfig = {
-  signaling_url: system.signaling.url,
-  realm_id: system.deployment.realm_id,
-  client_actr_type: 'acme:EchoService',
-  target_actr_type: 'acme:echo-client-app',
-  service_fingerprint: '',
-  acl_allow_types: ['acme:echo-client-app'],
-  is_server: true,
+    ais_endpoint: 'http://localhost:8081/ais',
+    signaling_url: system.signaling.url,
+    realm_id: system.deployment.realm_id,
+    client_actr_type: 'acme:EchoService:0.1.0',
+    target_actr_type: 'acme:echo-client-app:0.1.0',
+    service_fingerprint: '',
+    acl_allow_types: ['acme:echo-client-app:0.1.0'],
+    is_server: true,
 };
 
 // ── ActorClientConfig (passed to createActor) ──

@@ -394,24 +394,32 @@ export class WebRtcCoordinator {
 
       //  MessagePort ：SW → port2 → port1 → DataChannel → Remote
       //  port ，
-      const mc = new MessageChannel();
-      // port1  DOM ： SW ， DataChannel
-      // SW DataLane::PostMessage  payload  5  [PayloadType(1)|Length(4)]，
-      //  header  WebSocket ，DataChannel ，。
-      const TRANSPORT_HEADER_SIZE = 5;
-      mc.port1.onmessage = (e: MessageEvent) => {
-        if (channel.readyState === 'open') {
-          if (e.data instanceof ArrayBuffer) {
-            channel.send(e.data.slice(TRANSPORT_HEADER_SIZE));
-          } else {
-            // Uint8Array view – slice() copies into a plain ArrayBuffer-backed Uint8Array
-            const arr = e.data as Uint8Array;
-            channel.send(arr.slice(TRANSPORT_HEADER_SIZE));
+      //
+      // NOTE: Only register the RPC_RELIABLE (lane 0) port with the SW.
+      // The SW's WirePool has a single WebRTC slot, so each register_datachannel_port
+      // call replaces the previous connection. By only registering lane 0, we ensure
+      // all outgoing RPC data is sent through the RPC_RELIABLE channel, which the
+      // remote's handle_fast_path correctly routes to the RPC decoder.
+      if (laneId === 0) {
+        const mc = new MessageChannel();
+        // port1  DOM ： SW ， DataChannel
+        // SW DataLane::PostMessage  payload  5  [PayloadType(1)|Length(4)]，
+        //  header  WebSocket ，DataChannel ，。
+        const TRANSPORT_HEADER_SIZE = 5;
+        mc.port1.onmessage = (e: MessageEvent) => {
+          if (channel.readyState === 'open') {
+            if (e.data instanceof ArrayBuffer) {
+              channel.send(e.data.slice(TRANSPORT_HEADER_SIZE));
+            } else {
+              // Uint8Array view – slice() copies into a plain ArrayBuffer-backed Uint8Array
+              const arr = e.data as Uint8Array;
+              channel.send(arr.slice(TRANSPORT_HEADER_SIZE));
+            }
           }
-        }
-      };
-      // port2  Transferable  SW →  WirePool → DataLane::PostMessage
-      this.swBridge.sendDataChannelPort(peerId, mc.port2);
+        };
+        // port2  Transferable  SW →  WirePool → DataLane::PostMessage
+        this.swBridge.sendDataChannelPort(peerId, mc.port2);
+      }
     };
 
     channel.onclose = () => {

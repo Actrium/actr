@@ -6,8 +6,9 @@ set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$PROJECT_ROOT/.." && pwd)"
-ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
+# actr repo root (parent of bindings/web)
+ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
+ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
 
 # Color codes
 RED='\033[0;31m'
@@ -99,14 +100,6 @@ check_dependencies() {
 
     local missing=0
 
-    # Rust
-    if command_exists cargo; then
-        log_success "Rust: $(cargo --version | awk '{print $2}')"
-    else
-        log_error "Rust not found - Install from https://rustup.rs/"
-        missing=1
-    fi
-
     # Node.js
     if command_exists node; then
         log_success "Node.js: $(node --version)"
@@ -115,31 +108,11 @@ check_dependencies() {
         missing=1
     fi
 
-    # npm
-    if command_exists npm; then
-        log_success "npm: v$(npm --version)"
+    # pnpm
+    if command_exists pnpm; then
+        log_success "pnpm: v$(pnpm --version)"
     else
-        log_error "npm not found"
-        missing=1
-    fi
-
-    # wasm-pack
-    if command_exists wasm-pack; then
-        log_success "wasm-pack: $(wasm-pack --version | awk '{print $2}')"
-    else
-        log_warning "wasm-pack not found - Installing..."
-        cargo install wasm-pack || { log_error "Failed to install wasm-pack"; exit 1; }
-        log_success "wasm-pack installed"
-    fi
-
-    # protoc
-    if command_exists protoc; then
-        log_success "protoc: $(protoc --version | awk '{print $2}')"
-    else
-        log_error "protoc not found - Install Protocol Buffers compiler"
-        log_info "  Ubuntu/Debian: sudo apt install -y protobuf-compiler"
-        log_info "  macOS: brew install protobuf"
-        log_info "  Or download from: https://github.com/protocolbuffers/protobuf/releases"
+        log_error "pnpm not found - Install: npm install -g pnpm"
         missing=1
     fi
 
@@ -193,20 +166,30 @@ start_actrix() {
         exit 1
     fi
 
-    # Create development config with Signaling enabled
+    # Create development config with all services enabled
     cat > "$SCRIPT_DIR/actrix-dev.toml" <<'EOF'
-enable = 6
-name = "actrix-dev"
+# Auto-generated dev config for web echo example
+enable = 31
+name = "actrix-web-echo-dev"
 env = "dev"
-log_level = "info"
-log_output = "file"
-log_path = "logs/"
-sqlite_path = "actrix-dev.db"
+sqlite_path = "actrix-dev-db"
 location_tag = "local,dev,default"
-actrix_shared_key = "actr-web-echo-dev-secret-key-98765"
+actrix_shared_key = "web-echo-dev-secret-key-9876543210abcdef"
 
-[services.signaling]
-enabled = true
+[recording]
+service_name = "actrix-web-echo-dev"
+
+[recording.observability]
+filter = "digest"
+
+[recording.audit]
+filter = "mutations"
+
+[recording.security]
+filter = "all"
+
+[recording.operations]
+filter = "lifecycle"
 
 [bind.http]
 domain_name = "localhost"
@@ -219,12 +202,48 @@ domain_name = "localhost"
 advertised_ip = "127.0.0.1"
 ip = "127.0.0.1"
 port = 3478
+advertised_port = 3478
 
 [turn]
 advertised_ip = "127.0.0.1"
 advertised_port = 3478
 relay_port_range = "49152-49252"
 realm = "localhost"
+
+[services.signer]
+
+[services.signer.storage]
+backend = "sqlite"
+key_ttl_seconds = 3600
+
+[services.signer.storage.sqlite]
+path = "actrix-dev-ks.db"
+
+[services.ais]
+
+[services.ais.server]
+
+[services.signaling]
+
+[services.signaling.server]
+ws_path = "/signaling"
+
+[control]
+head = "admin_ui"
+
+[control.admin_ui]
+password = "devpassword123"
+session_expiry_secs = 86400
+
+[control.grpc_api]
+node_id = "actrix-web-echo-dev"
+node_name = "actrix-web-echo-dev"
+shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+max_clock_skew_secs = 300
+
+[acl]
+enabled = true
+default_policy = "allow"
 EOF
 
     # Start actrix
@@ -249,108 +268,112 @@ EOF
     echo ""
 }
 
+setup_realm() {
+    log_step "Setting up realm (AIS identity)..."
+
+    local SERVER_DIR="$SCRIPT_DIR/server"
+    local CLIENT_DIR="$SCRIPT_DIR/client"
+
+    sleep 2
+
+    # Extract realm IDs from actr.toml files
+    local SERVER_REALM
+    SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+    local CLIENT_REALM
+    CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+
+    log_info "Server realm_id=$SERVER_REALM, Client realm_id=$CLIENT_REALM"
+
+    # Insert realms directly into SQLite (same approach as actrix fullstack tests)
+    local ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
+
+    if [ ! -f "$ACTRIX_DB" ]; then
+        log_error "Actrix database not found at $ACTRIX_DB"
+        log_info "Actrix may not have started properly."
+        exit 1
+    fi
+
+    for REALM_ID in $SERVER_REALM $CLIENT_REALM; do
+        log_info "Creating realm $REALM_ID..."
+        sqlite3 "$ACTRIX_DB" \
+            "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'wasm-echo-realm', 'Active', 1, strftime('%s','now'), '');"
+    done
+
+    log_success "Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_REALM)"
+
+    # Patch actr-config.ts in both client and server with the correct realm_id
+    log_info "Patching config files with realm_id from actr.toml..."
+
+    local CLIENT_CONFIG="$SCRIPT_DIR/client/src/generated/actr-config.ts"
+    local SERVER_CONFIG="$SCRIPT_DIR/server/src/generated/actr-config.ts"
+
+    if [ -f "$SERVER_CONFIG" ]; then
+        sed -i '' "s/realm_id: [0-9][0-9]*,/realm_id: $SERVER_REALM,/g" "$SERVER_CONFIG"
+        log_success "Patched server actr-config.ts with realm_id=$SERVER_REALM"
+    fi
+
+    if [ -f "$CLIENT_CONFIG" ]; then
+        sed -i '' "s/realm_id: [0-9][0-9]*,/realm_id: $CLIENT_REALM,/g" "$CLIENT_CONFIG"
+        log_success "Patched client actr-config.ts with realm_id=$CLIENT_REALM"
+    fi
+
+    log_success "Realm setup complete"
+    echo ""
+}
+
 build_wasm() {
-    log_step "Building WASM runtime..."
+    log_step "Checking WASM artifacts..."
+
+    # Check if server WASM is already built
+    if [ -f "$SCRIPT_DIR/server/public/echo_server_bg.wasm" ] && [ -f "$SCRIPT_DIR/server/public/echo_server.js" ]; then
+        log_success "Server WASM already built"
+    else
+        log_info "Building server WASM..."
+        cd "$SCRIPT_DIR/server"
+        bash build.sh 2>&1 | tee "$SCRIPT_DIR/wasm-server-build.log"
+        log_success "Server WASM built"
+    fi
+
+    # Check if client WASM is already built
+    if [ -f "$SCRIPT_DIR/client/public/echo_client_bg.wasm" ] && [ -f "$SCRIPT_DIR/client/public/echo_client.js" ]; then
+        log_success "Client WASM already built"
+    else
+        log_info "Building client WASM..."
+        cd "$SCRIPT_DIR/client"
+        bash build.sh 2>&1 | tee "$SCRIPT_DIR/wasm-client-build.log"
+        log_success "Client WASM built"
+    fi
+
+    echo ""
+}
+
+install_deps() {
+    log_step "Installing web dependencies..."
 
     cd "$PROJECT_ROOT"
 
-    if bash ./scripts/build-wasm.sh 2>&1 | tee "$SCRIPT_DIR/wasm-build.log"; then
-        log_success "WASM runtime built"
-    else
-        log_warning "WASM build completed with warnings (check wasm-build.log)"
-    fi
-
-    echo ""
-}
-
-generate_proto_client() {
-    log_step "Generating TypeScript protobuf code..."
-
-    cd "$SCRIPT_DIR/client"
-
-    # Create generated directory
-    mkdir -p src/generated
-
-    # Check for protoc-gen-js plugin
-    if ! command_exists protoc-gen-js; then
-        log_error "protoc-gen-js not found - Required for JavaScript protobuf generation"
-        log_info "Install via npm (recommended):"
-        log_info "  npm install -g protoc-gen-js"
-        log_info ""
-        log_info "Or install grpc-tools which includes it:"
-        log_info "  npm install -g grpc-tools"
-        log_info ""
-        log_info "Or ensure you have the latest protoc with built-in JavaScript support:"
-        log_info "  https://github.com/protocolbuffers/protobuf/releases"
-        exit 1
-    fi
-
-    # Check for grpc-web protoc plugin
-    if ! command_exists protoc-gen-grpc-web; then
-        log_warning "protoc-gen-grpc-web not found - Installing..."
-
-        # Download grpc-web plugin
-        local OS="linux"
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-            OS="darwin"
-        fi
-
-        local PLUGIN_VERSION="1.5.0"
-        local PLUGIN_URL="https://github.com/grpc/grpc-web/releases/download/${PLUGIN_VERSION}/protoc-gen-grpc-web-${PLUGIN_VERSION}-${OS}-x86_64"
-
-        log_info "Downloading protoc-gen-grpc-web..."
-        curl -L "$PLUGIN_URL" -o /tmp/protoc-gen-grpc-web
-        chmod +x /tmp/protoc-gen-grpc-web
-        sudo mv /tmp/protoc-gen-grpc-web /usr/local/bin/ || mv /tmp/protoc-gen-grpc-web ~/.local/bin/ || {
-            log_error "Failed to install protoc-gen-grpc-web"
-            exit 1
-        }
-
-        log_success "protoc-gen-grpc-web installed"
-    fi
-
-    # Generate JavaScript protobuf code
-    protoc \
-        --js_out=import_style=commonjs,binary:./src/generated \
-        --grpc-web_out=import_style=typescript,mode=grpcwebtext:./src/generated \
-        --proto_path=../proto \
-        ../proto/echo.proto
-
-    log_success "TypeScript protobuf code generated"
-    echo ""
-}
-
-build_server() {
-    log_step "Building Actor-RTC server..."
-
-    cd "$SCRIPT_DIR/server"
-
-    cargo build --release 2>&1 | tee "$SCRIPT_DIR/server-build.log"
-
-    if [ ${PIPESTATUS[0]} -eq 0 ]; then
-        log_success "Actor-RTC server built successfully"
-    else
-        log_error "Server build failed (see server-build.log)"
-        exit 1
-    fi
+    # Always run pnpm install to ensure all workspace packages have node_modules
+    log_info "Running pnpm install at web workspace root..."
+    pnpm install 2>&1 | tail -5
+    log_success "Dependencies installed"
 
     echo ""
 }
 
 start_server() {
-    log_step "Starting Actor-RTC server..."
+    log_step "Starting Echo Server (browser-hosted)..."
 
     cd "$SCRIPT_DIR/server"
 
-    RUST_LOG="${RUST_LOG:-info}" cargo run --release > "$SCRIPT_DIR/server.log" 2>&1 &
+    pnpm dev > "$SCRIPT_DIR/server.log" 2>&1 &
     SERVER_PID=$!
     echo $SERVER_PID > "$SCRIPT_DIR/.server.pid"
 
-    log_success "Actor-RTC server started (PID: $SERVER_PID)"
+    log_success "Echo Server dev server started (PID: $SERVER_PID)"
     log_info "Server logs: $SCRIPT_DIR/server.log"
 
-    # Wait for server to connect to signaling server
-    log_info "Waiting for server to register with actrix..."
+    # Wait for vite to start
+    log_info "Waiting for Vite dev server to start..."
     sleep 3
 
     # Check if server is still running
@@ -361,46 +384,39 @@ start_server() {
         exit 1
     fi
 
-    log_success "Actor-RTC server is running"
-    echo ""
-}
-
-setup_client() {
-    log_step "Setting up web client..."
-
-    cd "$SCRIPT_DIR/client"
-
-    if [ ! -d "node_modules" ]; then
-        log_info "Installing dependencies..."
-        npm install
-        log_success "Dependencies installed"
-    else
-        log_success "Dependencies already installed"
-    fi
-
+    log_success "Echo Server is running at http://localhost:5174"
     echo ""
 }
 
 start_client() {
-    log_step "Starting web client..."
+    log_step "Starting Echo Client..."
 
     cd "$SCRIPT_DIR/client"
 
-    npm run dev > "$SCRIPT_DIR/client.log" 2>&1 &
+    pnpm dev > "$SCRIPT_DIR/client.log" 2>&1 &
     CLIENT_PID=$!
     echo $CLIENT_PID > "$SCRIPT_DIR/.client.pid"
 
     log_success "Client started (PID: $CLIENT_PID)"
     log_info "Client logs: $SCRIPT_DIR/client.log"
 
-    # Wait for client
+    # Wait for client dev server
     sleep 3
 
+    # Check if client is still running
+    if ! kill -0 $CLIENT_PID 2>/dev/null; then
+        log_error "Client failed to start"
+        log_info "Check logs: cat $SCRIPT_DIR/client.log"
+        cat "$SCRIPT_DIR/client.log"
+        exit 1
+    fi
+
+    log_success "Echo Client is running at https://localhost:5173"
     echo ""
 }
 
 open_browser() {
-    local url="http://localhost:3000"
+    local url="https://localhost:5173"
 
     log_info "Opening browser..."
 
@@ -417,6 +433,86 @@ open_browser() {
     echo ""
 }
 
+run_basic_test() {
+    log_step "Running BasicFunction automated test..."
+
+    cd "$SCRIPT_DIR"
+
+    # Resolve puppeteer: try direct, then from tests/e2e workspace package
+    local EXTRA_ENV=""
+    if node -e "require('puppeteer')" 2>/dev/null; then
+        log_success "Puppeteer available"
+    else
+        local E2E_MODULES="$PROJECT_ROOT/tests/e2e/node_modules"
+        if [ -d "$E2E_MODULES/puppeteer" ]; then
+            export NODE_PATH="$E2E_MODULES:${NODE_PATH:-}"
+            log_success "Puppeteer found via workspace tests/e2e"
+        else
+            log_info "Installing puppeteer via pnpm..."
+            cd "$PROJECT_ROOT"
+            PUPPETEER_SKIP_DOWNLOAD=true pnpm add -Dw puppeteer 2>&1 | tail -3
+            cd "$SCRIPT_DIR"
+            export NODE_PATH="$PROJECT_ROOT/node_modules:${NODE_PATH:-}"
+        fi
+    fi
+
+    # Use system Chrome if puppeteer's bundled Chrome isn't available
+    if ! node -e "require('puppeteer').launch({headless:'new'}).then(b=>b.close())" 2>/dev/null; then
+        local CHROME_PATH=""
+        if [ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+            CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        elif command_exists google-chrome; then
+            CHROME_PATH="$(which google-chrome)"
+        elif command_exists chromium-browser; then
+            CHROME_PATH="$(which chromium-browser)"
+        elif command_exists chromium; then
+            CHROME_PATH="$(which chromium)"
+        fi
+        if [ -n "$CHROME_PATH" ]; then
+            export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
+            log_success "Using system Chrome: $CHROME_PATH"
+        else
+            log_error "No Chrome/Chromium found for puppeteer"
+            return 1
+        fi
+    fi
+
+    # Verify puppeteer can launch
+    if ! node -e "require('puppeteer')" 2>/dev/null; then
+        log_error "Puppeteer not available. Install with: pnpm add -Dw puppeteer"
+        return 1
+    fi
+
+    # Give services a bit more time to stabilize before running tests
+    log_info "Waiting for services to fully stabilize..."
+    sleep 5
+
+    # Run BasicFunction suite only
+    log_info "Executing: node test-auto.js BasicFunction"
+    echo ""
+
+    set +e  # Don't exit on test failure
+    CLIENT_URL="https://localhost:5173" \
+    SERVER_URL="http://localhost:5174" \
+    node "$SCRIPT_DIR/test-auto.js" BasicFunction
+    TEST_EXIT_CODE=$?
+    set -e
+
+    echo ""
+    if [ $TEST_EXIT_CODE -eq 0 ]; then
+        log_success "🎉 BasicFunction tests PASSED! Echo messaging is working."
+    else
+        log_error "BasicFunction tests FAILED (exit code: $TEST_EXIT_CODE)"
+        log_info "Check the test output above for details."
+        log_info "Service logs:"
+        echo "  tail -f $SCRIPT_DIR/actrix.log"
+        echo "  tail -f $SCRIPT_DIR/server.log"
+        echo "  tail -f $SCRIPT_DIR/client.log"
+    fi
+
+    return $TEST_EXIT_CODE
+}
+
 main() {
     print_banner
 
@@ -424,51 +520,48 @@ main() {
 
     start_actrix
 
+    setup_realm
+
     build_wasm
 
-    generate_proto_client
-
-    build_server
+    install_deps
 
     start_server
 
-    setup_client
-
     start_client
-
-    open_browser
 
     # Print status
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║              ✅ Real Echo Implementation Running         ║"
     echo "╠═══════════════════════════════════════════════════════════╣"
     echo "║  Actrix:   Signaling at http://localhost:8081           ║"
-    echo "║  Server:   Actor-RTC via WebRTC (actr-runtime)          ║"
-    echo "║  Client:   Web UI at http://localhost:3000              ║"
-    echo "║  Proto:    TypeScript generated from echo.proto          ║"
-    echo "║  WASM:     IndexedDB mailbox (rexie)                     ║"
-    echo "║  Status:   Press Ctrl+C to stop                          ║"
+    echo "║  Server:   Echo service at http://localhost:5174        ║"
+    echo "║  Client:   Web UI at https://localhost:5173             ║"
+    echo "║  WASM:     SW Runtime + User Workload                   ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 
-    log_success "🎉 Everything is running!"
-    echo ""
-    log_info "Open http://localhost:3000 in your browser"
-    log_info "Press Ctrl+C to stop all services"
-    echo ""
-    log_info "Quick test:"
-    echo "  1. Click 'Connect to Server'"
-    echo "  2. Type a message and click 'Send Echo'"
-    echo "  3. Watch the real Actor-RTC call and IndexedDB storage!"
-    echo ""
-    log_info "View logs:"
-    echo "  tail -f $SCRIPT_DIR/actrix.log  # Actrix signaling logs"
-    echo "  tail -f $SCRIPT_DIR/server.log  # Actor-RTC server logs"
-    echo "  tail -f $SCRIPT_DIR/client.log  # Web client logs"
+    log_success "🎉 All services are running!"
     echo ""
 
-    # Wait
-    wait
+    # Run automated test to verify echo messaging works
+    run_basic_test
+    TEST_RESULT=$?
+
+    echo ""
+    if [ $TEST_RESULT -eq 0 ]; then
+        log_success "✅ Verification complete — echo messaging is working end-to-end!"
+    else
+        log_error "❌ Verification failed — echo messaging is NOT working."
+        log_info "Services are still running for manual debugging."
+        log_info "  Client: https://localhost:5173"
+        log_info "  Server: http://localhost:5174"
+        log_info "Press Ctrl+C to stop all services"
+        wait
+    fi
+
+    # Cleanup happens via trap
+    exit $TEST_RESULT
 }
 
 main

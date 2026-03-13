@@ -14,6 +14,9 @@ export type WorkerType = 'service-worker' | 'web-worker';
  * then forwarded to WASM register_client().
  */
 export interface SwRuntimeConfig {
+  /** AIS (Actor Identity Service) endpoint URL (e.g. http://host:port/ais) */
+  ais_endpoint: string;
+
   /** Signaling WebSocket URL (e.g. wss://host:port/signaling/ws) */
   signaling_url: string;
 
