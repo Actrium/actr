@@ -115,27 +115,27 @@ fn matches_rule(caller: &ActrId, rule: &AclRule) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::{ActrType, Realm, acl_rule::Permission};
+    use actr_protocol::{ActrType, Realm, acl_rule::Permission, acl_rule::SourceRealm};
 
-    fn make_id(manufacturer: &str, name: &str, realm_id: u32) -> ActrId {
+    fn make_id(manufacturer: &str, name: &str, version: &str, realm_id: u32) -> ActrId {
         ActrId {
             serial_number: 0xaabb,
             r#type: ActrType {
                 manufacturer: manufacturer.into(),
                 name: name.into(),
-                version: String::new(),
+                version: version.into(),
             },
             realm: Realm { realm_id },
         }
     }
 
-    fn make_rule(manufacturer: &str, name: &str, perm: Permission) -> AclRule {
+    fn make_rule(manufacturer: &str, name: &str, version: &str, perm: Permission) -> AclRule {
         AclRule {
             permission: perm as i32,
             from_type: ActrType {
                 manufacturer: manufacturer.into(),
                 name: name.into(),
-                version: String::new(),
+                version: version.into(),
             },
             source_realm: None,
         }
@@ -143,33 +143,33 @@ mod tests {
 
     #[test]
     fn local_call_always_allowed() {
-        let target = make_id("acme", "svc", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         assert!(check_acl_permission(None, &target, None).unwrap());
     }
 
     #[test]
     fn no_acl_allows_by_default() {
-        let caller = make_id("acme", "client", 1);
-        let target = make_id("acme", "svc", 1);
+        let caller = make_id("acme", "client", "0.1.0", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         assert!(check_acl_permission(Some(&caller), &target, None).unwrap());
     }
 
     #[test]
     fn empty_rules_denies() {
-        let caller = make_id("acme", "client", 1);
-        let target = make_id("acme", "svc", 1);
+        let caller = make_id("acme", "client", "0.1.0", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         let acl = Acl { rules: vec![] };
         assert!(!check_acl_permission(Some(&caller), &target, Some(&acl)).unwrap());
     }
 
     #[test]
     fn deny_overrides_allow() {
-        let caller = make_id("acme", "client", 1);
-        let target = make_id("acme", "svc", 1);
+        let caller = make_id("acme", "client", "0.1.0", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         let acl = Acl {
             rules: vec![
-                make_rule("acme", "client", Permission::Allow),
-                make_rule("acme", "client", Permission::Deny),
+                make_rule("acme", "client", "0.1.0", Permission::Allow),
+                make_rule("acme", "client", "0.1.0", Permission::Deny),
             ],
         };
         assert!(!check_acl_permission(Some(&caller), &target, Some(&acl)).unwrap());
@@ -177,21 +177,39 @@ mod tests {
 
     #[test]
     fn allow_when_matched() {
-        let caller = make_id("acme", "client", 1);
-        let target = make_id("acme", "svc", 1);
+        let caller = make_id("acme", "client", "0.1.0", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         let acl = Acl {
-            rules: vec![make_rule("acme", "client", Permission::Allow)],
+            rules: vec![make_rule("acme", "client", "0.1.0", Permission::Allow)],
         };
         assert!(check_acl_permission(Some(&caller), &target, Some(&acl)).unwrap());
     }
 
     #[test]
     fn no_match_denies() {
-        let caller = make_id("acme", "client", 1);
-        let target = make_id("acme", "svc", 1);
+        let caller = make_id("acme", "client", "0.1.0", 1);
+        let target = make_id("acme", "svc", "0.1.0", 1);
         let acl = Acl {
-            rules: vec![make_rule("other", "other", Permission::Allow)],
+            rules: vec![make_rule("other", "other", "0.1.0", Permission::Allow)],
         };
         assert!(!check_acl_permission(Some(&caller), &target, Some(&acl)).unwrap());
+    }
+
+    #[test]
+    fn any_realm_rule_matches_foreign_realm() {
+        let caller = make_id("acme", "client", "0.1.0", 2002);
+        let target = make_id("acme", "svc", "0.1.0", 1001);
+        let acl = Acl {
+            rules: vec![AclRule {
+                permission: Permission::Allow as i32,
+                from_type: ActrType {
+                    manufacturer: "acme".into(),
+                    name: "client".into(),
+                    version: "0.1.0".into(),
+                },
+                source_realm: Some(SourceRealm::AnyRealm(true)),
+            }],
+        };
+        assert!(check_acl_permission(Some(&caller), &target, Some(&acl)).unwrap());
     }
 }

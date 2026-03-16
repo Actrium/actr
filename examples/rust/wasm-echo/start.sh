@@ -181,26 +181,22 @@ echo "📦 Checking actrix availability..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTRIX_CMD=""
-if command -v actrix > /dev/null 2>&1; then
-    ACTRIX_CMD="actrix"
-    echo -e "${GREEN}✅ Actrix found: $(which actrix)${NC}"
-elif [ -f "$ACTRIX_DIR/target/debug/actrix" ]; then
+if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
     ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
     echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
-elif [ -f "$ACTRIX_DIR/target/release/actrix" ]; then
+elif [ -x "$ACTRIX_DIR/target/release/actrix" ]; then
     ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
     echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
+elif command -v actrix > /dev/null 2>&1; then
+    ACTRIX_CMD="actrix"
+    echo -e "${YELLOW}⚠️  Falling back to actrix from PATH: $(which actrix)${NC}"
 else
     echo -e "${YELLOW}⚠️  Actrix not found in PATH or build directory. Attempting build...${NC}"
     if [ -d "$ACTRIX_DIR" ]; then
         cd "$ACTRIX_DIR"
         cargo build 2>&1 | tail -5
-        if [ -f "$ACTRIX_DIR/target/debug/actrix" ]; then
+        if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
             ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
-            mkdir -p ~/.cargo/bin
-            cp "$ACTRIX_CMD" ~/.cargo/bin/actrix
-            chmod +x ~/.cargo/bin/actrix
-            ACTRIX_CMD="actrix"
         fi
         cd "$WORKSPACE_ROOT"
     fi
