@@ -208,3 +208,44 @@ sequenceDiagram
 ```
 
 **代码位置**: [actr_node.rs](file:///Users/zhj/RustProject/Actrium/actr/core/hyper/src/lifecycle/actr_node.rs), [validator.rs](file:///Users/zhj/RustProject/Actrium/actrix/crates/platform/src/aid/credential/validator.rs)
+
+---
+
+## 源码模式（Source/Native）
+
+> 源码模式不经过阶段一~四（无打包、无发布、无验签），直接从 AIS 注册开始。
+> 当前仅保留名（acme/self/actrix）可通过 `lookup_package` 校验。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as 源码 Actor (cargo run)
+    participant AIS as AIS Handler
+    participant MFR as MFR lookup
+    participant Signer as Signer Service
+    participant Signaling as Signaling Server
+    participant Validator as CredentialValidator
+
+    App->>App: 加载 actr.toml<br/>(actr_type, realm, signaling)
+    App->>App: ActrSystem::new(config)
+    App->>AIS: POST /ais/register (protobuf)<br/>+ X-Realm-Secret header
+    AIS->>AIS: validate_realm(realm_id)
+    AIS->>AIS: verify_realm_secret
+    AIS->>MFR: lookup_package(actr_type)
+    alt 保留名 (acme/self/actrix)
+        MFR-->>AIS: true（放行）
+    else 非保留名
+        MFR->>MFR: 查 mfr_package 表
+        MFR-->>AIS: ❌ 无记录 → 校验失败
+        AIS-->>App: Error: ManufacturerNotVerified
+    end
+    AIS->>Signer: gRPC Sign(key_id, claims_bytes)
+    Signer-->>AIS: signature
+    AIS-->>App: RegisterOk {actr_id, credential}
+    App->>Signaling: WebSocket 连接 (携带 credential)
+    Signaling->>Validator: check(credential, realm_id)
+    Validator-->>Signaling: valid
+    Signaling-->>App: Actor 在线
+```
+
+> ⚠️ **已知问题**: 源码模式使用非保留名时，因 `mfr_package` 表无记录，`verify_actr_type()` 校验必定失败，需要为源码模式提供注册通道。

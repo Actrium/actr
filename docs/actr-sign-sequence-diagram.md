@@ -208,3 +208,44 @@ sequenceDiagram
 ```
 
 **Code**: [actr_node.rs](file:///Users/zhj/RustProject/Actrium/actr/core/hyper/src/lifecycle/actr_node.rs), [validator.rs](file:///Users/zhj/RustProject/Actrium/actrix/crates/platform/src/aid/credential/validator.rs)
+
+---
+
+## Source Mode (Source/Native)
+
+> Source mode skips Phases 1–4 (no packaging, no publishing, no verification), going directly to AIS registration.
+> Currently only reserved names (acme/self/actrix) can pass the `lookup_package` check.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Source Actor (cargo run)
+    participant AIS as AIS Handler
+    participant MFR as MFR lookup
+    participant Signer as Signer Service
+    participant Signaling as Signaling Server
+    participant Validator as CredentialValidator
+
+    App->>App: Load actr.toml<br/>(actr_type, realm, signaling)
+    App->>App: ActrSystem::new(config)
+    App->>AIS: POST /ais/register (protobuf)<br/>+ X-Realm-Secret header
+    AIS->>AIS: validate_realm(realm_id)
+    AIS->>AIS: verify_realm_secret
+    AIS->>MFR: lookup_package(actr_type)
+    alt Reserved name (acme/self/actrix)
+        MFR-->>AIS: true (bypass)
+    else Non-reserved name
+        MFR->>MFR: Query mfr_package table
+        MFR-->>AIS: ❌ No record → check failed
+        AIS-->>App: Error: ManufacturerNotVerified
+    end
+    AIS->>Signer: gRPC Sign(key_id, claims_bytes)
+    Signer-->>AIS: signature
+    AIS-->>App: RegisterOk {actr_id, credential}
+    App->>Signaling: WebSocket connect (with credential)
+    Signaling->>Validator: check(credential, realm_id)
+    Validator-->>Signaling: valid
+    Signaling-->>App: Actor online
+```
+
+> ⚠️ **Known issue**: Source mode actors using non-reserved manufacturer names will always fail `verify_actr_type()` because there is no `mfr_package` record. A separate registration channel for source mode is needed.
