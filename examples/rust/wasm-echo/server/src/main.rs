@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize WASM actor with config
     let wasm_config = WasmActorConfig {
-        actr_type: "acme:WasmEchoService:v1".to_string(),
+        actr_type: "acme:WasmEchoService:0.1.0".to_string(),
         credential_b64: String::new(),
         actor_id_b64: String::new(),
         realm_id: 0,

@@ -13,6 +13,7 @@ use actr_protocol::{
     RouteCandidatesRequest, RpcEnvelope, TurnCredential, register_response,
     route_candidates_request,
 };
+use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use futures_util::FutureExt;
 use std::sync::Arc;
@@ -381,115 +382,6 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
         ActrError::DecodeFailure(_) => 400,          // Bad Request - decode failure
         ActrError::NotImplemented(_) => 501,         // Not Implemented
         ActrError::Internal(_) => 500,               // Internal Server Error
-    }
-}
-
-/// Check ACL permission for incoming request
-///
-/// # Arguments
-/// - `caller_id`: The ActrId of the caller (None for local calls)
-/// - `target_id`: The ActrId of the target (self)
-/// - `acl`: ACL rules from configuration
-///
-/// # Returns
-/// - `Ok(true)`: Permission granted
-/// - `Ok(false)`: Permission denied
-/// - `Err`: ACL check failed (treat as deny)
-///
-/// # ACL Evaluation Logic
-/// 1. If no caller_id (local call), always allow
-/// 2. If no ACL configured, allow by default (permissive mode for backward compatibility)
-/// 3. If ACL configured but rules are empty, deny all (secure by default)
-/// 4. Deny-first: any matching DENY rule overrides all ALLOWs
-/// 5. If no DENY matches and at least one ALLOW matches, allow
-/// 6. If no rule matches, deny by default
-fn check_acl_permission(
-    caller_id: Option<&ActrId>,
-    target_id: &ActrId,
-    acl: Option<&actr_protocol::Acl>,
-) -> Result<bool, String> {
-    // 1. Local calls (no caller_id) are always allowed
-    if caller_id.is_none() {
-        tracing::trace!("ACL: Local call, allowing");
-        return Ok(true);
-    }
-
-    let caller = caller_id.unwrap();
-
-    // 2. No ACL configured - allow by default
-    let acl_rules = match acl {
-        Some(acl) => acl,
-        None => {
-            tracing::trace!(
-                "ACL: No ACL configured, allowing {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr()
-            );
-            return Ok(true);
-        }
-    };
-
-    // 3. If ACL is configured but has no rules, deny all (secure by default)
-    if acl_rules.rules.is_empty() {
-        tracing::warn!(
-            "ACL: No rules defined, denying {} -> {} (default deny)",
-            caller.to_string_repr(),
-            target_id.to_string_repr()
-        );
-        return Ok(false);
-    }
-
-    // 4 & 5. Deny-first evaluation
-    let mut any_allow = false;
-    for rule in &acl_rules.rules {
-        if !matches_rule(caller, rule) {
-            continue;
-        }
-        let is_allow = rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
-        if !is_allow {
-            tracing::debug!(
-                "ACL: DENY rule matched for {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr()
-            );
-            return Ok(false);
-        }
-        any_allow = true;
-    }
-
-    if any_allow {
-        tracing::debug!(
-            "ACL: ALLOW rule matched for {} -> {}",
-            caller.to_string_repr(),
-            target_id.to_string_repr()
-        );
-        return Ok(true);
-    }
-
-    // 6. No rule matched - deny by default
-    tracing::warn!(
-        "ACL: No matching rule, denying {} -> {} (default deny)",
-        caller.to_string_repr(),
-        target_id.to_string_repr()
-    );
-    Ok(false)
-}
-
-fn matches_rule(caller: &ActrId, rule: &actr_protocol::AclRule) -> bool {
-    use actr_protocol::acl_rule::SourceRealm;
-
-    // Check type match (exact: manufacturer + name + version)
-    if caller.r#type.manufacturer != rule.from_type.manufacturer
-        || caller.r#type.name != rule.from_type.name
-        || caller.r#type.version != rule.from_type.version
-    {
-        return false;
-    }
-
-    // Check realm match
-    match &rule.source_realm {
-        None | Some(SourceRealm::AnyRealm(_)) => true,
-        Some(SourceRealm::RealmId(id)) => caller.realm.realm_id == *id,
     }
 }
 

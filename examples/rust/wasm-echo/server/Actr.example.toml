@@ -35,7 +35,7 @@ force_relay = false
 stun_urls = ["stun:localhost:3478"]
 turn_urls = ["turn:localhost:3478"]
 
-# ACL configuration - allow echo client
+# ACL configuration - allow wasm echo client
 [acl]
 
 [[acl.rules]]
