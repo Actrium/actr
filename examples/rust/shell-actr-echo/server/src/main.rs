@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr::config::ConfigParser::from_file(&config_path)?;
 
-    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
+    let _obs_guard = init_observability(&config.observability)?;
 
     info!("Echo Server starting");
 

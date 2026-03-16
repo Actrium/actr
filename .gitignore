@@ -36,6 +36,9 @@ actrix-*.toml
 actrix-*.db*
 ACTRIX*.md
 
+# Auto-generated dependency lock files
+**/Actr.lock.toml
+
 # Demo logs
 .demo_logs/
 

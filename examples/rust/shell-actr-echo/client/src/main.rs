@@ -7,7 +7,7 @@ mod client_workload;
 mod generated;
 
 use actr_protocol::ActrType;
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use app_side::AppSide;
 use client_workload::ClientWorkload;
 
@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Echo Client App - Actor-RTC Standard Pattern");
     info!("   [...] (Runtime Compatibility Negotiation)");

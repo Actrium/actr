@@ -63,6 +63,11 @@ pub struct Config {
     /// Owning Realm (Security Realm)
     pub realm: Realm,
 
+    /// Realm secret for AIS registration authentication (optional)
+    ///
+    /// Required when the realm has secret-based access control enabled.
+    pub realm_secret: Option<String>,
+
     /// Whether visible in service discovery
     pub visible_in_discovery: bool,
 
@@ -483,6 +488,7 @@ mod tests {
             ],
             signaling_url: Url::parse("ws://localhost:8081").unwrap(),
             realm: Realm { realm_id: 1001 },
+            realm_secret: None,
             visible_in_discovery: true,
             acl: None,
             mailbox_path: None,

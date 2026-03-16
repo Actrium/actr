@@ -1,4 +1,3 @@
-[workspace]
 
 [package]
 name = "echo-real-server"

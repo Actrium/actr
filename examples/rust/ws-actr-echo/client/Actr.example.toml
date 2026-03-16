@@ -19,6 +19,9 @@ ws-echo-server = { actr_type = "acme:WsEchoService:1.0.0" }
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.deployment]
 realm_id = 1001
 
@@ -39,7 +42,7 @@ tracing_service_name = "ws-echo-client-app"
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme:WsEchoService:1.0.0"]
+type = "acme:WsEchoService:1.0.0"
 
 [scripts]
 dev = "cargo run"

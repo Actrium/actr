@@ -9,6 +9,8 @@ actr-framework = { workspace = true }
 actr-protocol = { workspace = true }
 actr-runtime = { workspace = true }
 actr-config = { workspace = true }
+actr-hyper = { path = "../../../../core/hyper" }
+actr = { path = "../../../..", features = ["opentelemetry"] }
 tokio = { version = "1.41", features = ["full"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

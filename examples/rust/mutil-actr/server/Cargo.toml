@@ -8,10 +8,12 @@ name = "mutil_server"
 path = "src/main.rs"
 
 [dependencies]
-actr-runtime = { path = "../../../actr/crates/runtime" }
-actr-framework = { path = "../../../actr/crates/framework" }
-actr-protocol = { path = "../../../actr/crates/protocol" }
-actr-config = { path = "../../../actr/crates/config" }
+actr = { workspace = true }
+actr-runtime = { workspace = true }
+actr-hyper = { workspace = true }
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-config = { workspace = true }
 
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"

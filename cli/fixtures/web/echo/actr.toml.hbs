@@ -30,6 +30,9 @@ generate_sw_entry = true
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
 
+[system.ais_endpoint]
+url = "{{{AIS_ENDPOINT_URL}}}"
+
 [system.deployment]
 realm_id = {{REALM_ID}}
 
@@ -53,4 +56,3 @@ build-wasm = "cd wasm && bash build.sh"
 [[acl.rules]]
 permission = "allow"
 types = ["{{MANUFACTURER}}:EchoService"]
-

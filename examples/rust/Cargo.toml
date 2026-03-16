@@ -9,17 +9,15 @@ members = [
     # "shell-actr-echo/client",
     "ws-actr-echo/server",
     "ws-actr-echo/client",
-    # "mutil-actr/server",
-    # "mutil-actr/client",
-    # "acl/allowed-client",
-    # "acl/blocked-client",
-    # "acl/server",
-    # "data-stream-peer-concurrent/server",
-    # "data-stream-peer-concurrent/client",
     "wasm-echo/server",
     "wasm-echo/client",
     "dynclib-echo/server",
     "dynclib-echo/client",
+    "mutil-actr/server",
+    "mutil-actr/client",
+    "acl/allowed-client",
+    "acl/blocked-client",
+    "acl/server",
 ]
 resolver = "2"
 
@@ -30,13 +28,12 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Actr Framework Dependencies (used by all members)
+actr = { version = "0.2.0" }
 actr-framework = { version = "0.2.0" }
 actr-protocol = { version = "0.2.0" }
 actr-runtime = { version = "0.2.0" }
+actr-hyper = { version = "0.1.0" }
 actr-config = { version = "0.2.0" }
-
-# Actr infrastructure layer (ActrSystem, ActrNode, ActrRef, WASM engine, transport)
-actr-hyper = { path = "../../core/hyper" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -60,7 +57,9 @@ async-trait = "0.1"
 url = "2.0"
 
 [patch.crates-io]
+actr = { path = "../.." }
 actr-framework = { path = "../../core/framework" }
 actr-protocol = { path = "../../core/protocol" }
 actr-runtime = { path = "../../core/runtime" }
+actr-hyper = { path = "../../core/hyper" }
 actr-config = { path = "../../core/config" }

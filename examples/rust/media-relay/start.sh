@@ -2,8 +2,7 @@
 # Start media-relay example - Using actrix as signaling server
 # Auto-starts actrix, actr-b, and actr-a
 
-set -e
-set -o pipefail
+# Note: not using set -e; we check errors explicitly throughout
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,11 +15,25 @@ echo "🎬 Media Relay Example - Using Actrix"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Determine paths and switch to workspace root
-WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ACTOR_RTC_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
 ACTR_DIR="$ACTOR_RTC_DIR/actr"
 ACTRIX_DIR="$ACTOR_RTC_DIR/actrix"
-ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
+# Try multiple config locations
+ACTRIX_CONFIG=""
+for candidate in "$SCRIPT_DIR/actrix-config.toml" "$WORKSPACE_ROOT/actrix-config.toml" "$ACTRIX_DIR/config.example.toml"; do
+    if [ -f "$candidate" ]; then
+        ACTRIX_CONFIG="$candidate"
+        break
+    fi
+done
+if [ -z "$ACTRIX_CONFIG" ]; then
+    if [ -f "$ACTRIX_DIR/config.example.toml" ]; then
+        ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
+        cp "$ACTRIX_DIR/config.example.toml" "$ACTRIX_CONFIG"
+    fi
+fi
 PROTO_DIR="$WORKSPACE_ROOT/media-relay/proto"
 
 # Switch to workspace root and stay there
@@ -109,24 +122,18 @@ if [ ! -d "$PROTO_DIR" ]; then
     exit 1
 fi
 
-for crate in actr-b actr-a; do
-    CRATE_DIR="$WORKSPACE_ROOT/media-relay/$crate"
-    OUTPUT_FILE="$LOG_DIR/actr-gen-$crate.log"
-    echo "🔧 Running actr gen for $crate..."
-    cd "$CRATE_DIR"
-    GEN_CMD=("$ACTR_GEN_CMD" gen --input="$PROTO_DIR" --output=src/generated --clean)
-    if [ "$crate" = "actr-a" ]; then
-        GEN_CMD+=("--no-scaffold")
-    fi
-    "${GEN_CMD[@]}" > "$OUTPUT_FILE" 2>&1 || {
-        echo -e "${RED}❌ actr gen failed for $crate${NC}"
-        cat "$OUTPUT_FILE"
-        exit 1
-    }
-done
-
+# Generate code for actr-b (receiver/server) only
+CRATE_DIR="$WORKSPACE_ROOT/media-relay/actr-b"
+OUTPUT_FILE="$LOG_DIR/actr-gen-actr-b.log"
+echo "🔧 Running actr gen for actr-b (receiver)..."
+cd "$CRATE_DIR"
+$ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean > "$OUTPUT_FILE" 2>&1 || {
+    echo -e "${RED}❌ actr gen failed for actr-b${NC}"
+    cat "$OUTPUT_FILE"
+    exit 1
+}
 cd "$WORKSPACE_ROOT"
-echo -e "${GREEN}✅ actr gen completed for actr-a and actr-b${NC}"
+echo -e "${GREEN}✅ actr gen completed for actr-b (receiver)${NC}"
 
 # Step 1: Check/Build actrix
 echo ""
@@ -185,46 +192,62 @@ else
     echo -e "${GREEN}✅ Actrix is running on port 8081${NC}"
 fi
 
-# Step 2.5a: Setup realms in actrix from actr.toml files
+# Step 2.5a: Setup realms in actrix (sqlite3)
 echo ""
-echo "🔑 Setting up realms in actrix..."
+echo "🔑 Setting up realms in actrix (sqlite3)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Wait a bit for supervisord gRPC service to be ready (port 50055)
 sleep 2
 
-# Build realm-setup tool if needed
-if ! cargo build -p realm-setup 2>&1 | tail -5; then
-    echo -e "${RED}❌ Failed to build realm-setup tool${NC}"
+SQLITE_PATH=$(grep -E '^sqlite_path' "$ACTRIX_CONFIG" | sed 's/.*= *"\(.*\)".*/\1/' | head -1 || true)
+if [ -z "$SQLITE_PATH" ]; then SQLITE_PATH="database"; fi
+case "$SQLITE_PATH" in
+    /*) ACTRIX_DB="$SQLITE_PATH/actrix.db" ;;
+    *)  ACTRIX_DB="$WORKSPACE_ROOT/$SQLITE_PATH/actrix.db" ;;
+esac
+
+if [ ! -f "$ACTRIX_DB" ]; then
+    echo -e "${RED}❌ Actrix database not found at $ACTRIX_DB${NC}"
     exit 1
 fi
 
-# Run realm-setup with actr.toml files from actr-a and actr-b
-REALM_SETUP_OUTPUT="$LOG_DIR/realm-setup.log"
-if ! cargo run -p realm-setup -- \
-    --actrix-config "$ACTRIX_CONFIG" \
-    --actr-toml "$ACTR_A_DIR/actr.toml" \
-    --actr-toml "$ACTR_B_DIR/actr.toml" \
-    > "$REALM_SETUP_OUTPUT" 2>&1; then
-    echo -e "${RED}❌ Failed to setup realms in actrix${NC}"
-    cat "$REALM_SETUP_OUTPUT"
-    exit 1
-fi
+REALM_ID=$(grep -E '^realm_id' "$ACTR_B_DIR/actr.toml" | sed 's/.*= *//' | tr -d ' ' | head -1 || true)
+REALM_SECRET=$(grep -E '^realm_secret' "$ACTR_B_DIR/actr.toml" | sed 's/.*= *"\(.*\)".*/\1/' | head -1 || true)
+if [ -z "$REALM_ID" ]; then REALM_ID=33554433; fi
+if [ -z "$REALM_SECRET" ]; then echo -e "${RED}❌ Could not parse realm_secret${NC}"; exit 1; fi
 
-echo -e "${GREEN}✅ Realms setup completed${NC}"
-cat "$REALM_SETUP_OUTPUT" | grep -E "(Created|Skipped|Found)" || true
+SECRET_HASH=$(printf '%s' "$REALM_SECRET" | shasum -a 256 | awk '{print $1}')
+echo "   realm_id=$REALM_ID secret_hash=${SECRET_HASH:0:16}..."
 
-# Step 2.5: Build binaries to avoid compilation delay during cargo run
+sqlite3 "$ACTRIX_DB" <<EOF
+INSERT OR REPLACE INTO mfr (name, public_key, status, created_at, verified_at) VALUES ('actr-example', '', 'verified', strftime('%s','now'), strftime('%s','now'));
+INSERT OR REPLACE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at)
+  SELECT id, 'actr-example', 'RelayService', 'v1', 'actr-example:RelayService:v1', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
+  ON CONFLICT(manufacturer, name, version) DO UPDATE SET status='active';
+INSERT OR REPLACE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at)
+  SELECT id, 'actr-example', 'RelayClient', 'v1', 'actr-example:RelayClient:v1', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
+  ON CONFLICT(manufacturer, name, version) DO UPDATE SET status='active';
+INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'MediaRelay Realm', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');
+DELETE FROM actoracl WHERE realm_id = $REALM_ID;
+INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
+VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayClient:v1', 'actr-example:RelayService:v1', 1);
+INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
+VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayService:v1', 'actr-example:RelayClient:v1', 1);
+EOF
+
+echo -e "${GREEN}✅ Realm and ACL setup completed${NC}"
+
+# Step 2.5: Build actr-b (receiver) binary
 echo ""
-echo "🔨 Building binaries..."
+echo "🔨 Building actr-b (receiver) binary..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if ! cargo build --bin actr-b-receiver --bin actr-a-relay 2>&1; then
-    echo -e "${RED}❌ Failed to build binaries${NC}"
+if ! cargo build --bin actr-b-receiver 2>&1; then
+    echo -e "${RED}❌ Failed to build actr-b-receiver${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✅ Binaries built successfully${NC}"
+echo -e "${GREEN}✅ actr-b-receiver binary built successfully${NC}"
 
 # Step 3: Start Actr B (receiver)
 echo ""
@@ -245,7 +268,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
         exit 1
     fi
 
-    if grep -q "Actr B 已完全启动并注册\|ActrNode 启动成功" "$LOG_DIR/actr-b.log" 2>/dev/null; then
+    if grep -q "Actr B fully started and registered\|ActrNode started\|ActrNode started" "$LOG_DIR/actr-b.log" 2>/dev/null; then
         echo -e "${GREEN}✅ Actr B is running${NC}"
         break
     fi
@@ -257,6 +280,45 @@ done
 if [ $COUNTER -eq $MAX_WAIT ]; then
     echo -e "${YELLOW}⚠️  Actr B may still be registering, continuing...${NC}"
 fi
+
+sleep 2
+
+# Step 3.5: Install actr-a dependencies (resolve from actrix registry after actr-b registered)
+echo ""
+echo "📦 Installing actr-a dependencies (actr deps install)..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+cd "$WORKSPACE_ROOT/media-relay/actr-a"
+INSTALL_LOG="$LOG_DIR/actr-install-actr-a.log"
+$ACTR_GEN_CMD deps install > "$INSTALL_LOG" 2>&1 || {
+    echo -e "${YELLOW}⚠️  actr deps install returned non-zero, check log${NC}"
+}
+echo -e "${GREEN}✅ actr-a dependencies resolved${NC}"
+
+# Step 3.6: Generate actr-a code
+echo ""
+echo "🛠️ Generating actr-a code (actr gen)..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+OUTPUT_FILE="$LOG_DIR/actr-gen-actr-a.log"
+$ACTR_GEN_CMD gen --input="$PROTO_DIR" --output=src/generated --clean --no-scaffold > "$OUTPUT_FILE" 2>&1 || {
+    echo -e "${RED}❌ actr gen failed for actr-a${NC}"
+    cat "$OUTPUT_FILE"
+    exit 1
+}
+cd "$WORKSPACE_ROOT"
+echo -e "${GREEN}✅ actr gen completed for actr-a (relay)${NC}"
+
+# Step 3.7: Build actr-a binary
+echo ""
+echo "🔨 Building actr-a (relay) binary..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+if ! cargo build --bin actr-a-relay 2>&1; then
+    echo -e "${RED}❌ Failed to build actr-a-relay${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ actr-a-relay binary built successfully${NC}"
 
 # Step 4: Start Actr A (relay/client)
 echo ""
@@ -277,7 +339,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
         exit 1
     fi
 
-    if grep -q "ActrNode 启动成功" "$LOG_DIR/actr-a.log" 2>/dev/null; then
+    if grep -q "ActrNode started" "$LOG_DIR/actr-a.log" 2>/dev/null; then
         echo -e "${GREEN}✅ Actr A is running${NC}"
         break
     fi
@@ -311,11 +373,11 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # Show last output from both actors
 echo ""
 echo "📋 Actr B Output (last 15 lines):"
-tail -15 "$LOG_DIR/actr-b.log" | grep -E "(Received frame|启动|成功|注册)" || tail -15 "$LOG_DIR/actr-b.log"
+tail -15 "$LOG_DIR/actr-b.log" | grep -E "(Received frame|started|success|register)" || tail -15 "$LOG_DIR/actr-b.log"
 
 echo ""
 echo "📋 Actr A Output (last 20 lines):"
-tail -20 "$LOG_DIR/actr-a.log" | grep -E "(生成帧|已发送|完成|启动|成功)" || tail -20 "$LOG_DIR/actr-a.log"
+tail -20 "$LOG_DIR/actr-a.log" | grep -E "(generate frame|sent|complete|started|success)" || tail -20 "$LOG_DIR/actr-a.log"
 
 # Verify frames were received
 echo ""
