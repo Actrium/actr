@@ -7,6 +7,7 @@
 //! actr pkg sign     --keychain FILE [--package FILE]
 //! actr pkg verify   --package FILE [--pubkey FILE]
 //! actr pkg keygen   [--output FILE] [--force]
+//! actr pkg publish  --package FILE --keychain FILE --endpoint URL
 //! ```
 
 use std::path::PathBuf;
@@ -32,6 +33,8 @@ pub enum PkgCommand {
     Verify(PkgVerifyArgs),
     /// Generate an Ed25519 signing key pair
     Keygen(PkgKeygenArgs),
+    /// Publish an .actr package to the Actrix MFR registry
+    Publish(PkgPublishArgs),
 }
 
 #[derive(Args, Debug)]
@@ -101,12 +104,28 @@ pub struct PkgKeygenArgs {
     pub force: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct PkgPublishArgs {
+    /// .actr package file to publish
+    #[arg(long, short = 'p', value_name = "FILE")]
+    pub package: PathBuf,
+
+    /// Path to MFR keychain JSON file (contains private_key for signing)
+    #[arg(long, short = 'k', value_name = "FILE")]
+    pub keychain: PathBuf,
+
+    /// Actrix MFR endpoint URL (e.g., http://localhost:8081)
+    #[arg(long, short = 'e', value_name = "URL")]
+    pub endpoint: String,
+}
+
 pub async fn execute(args: PkgArgs) -> Result<()> {
     match args.command {
         PkgCommand::Build(a) => execute_build(a).await,
         PkgCommand::Sign(a) => execute_sign(a).await,
         PkgCommand::Verify(a) => execute_verify(a).await,
         PkgCommand::Keygen(a) => execute_keygen(a),
+        PkgCommand::Publish(a) => execute_publish(a).await,
     }
 }
 
@@ -376,6 +395,96 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
     println!("  target:      {}", manifest.binary.target);
     if !manifest.resources.is_empty() {
         println!("  resources:   {}", manifest.resources.len());
+    }
+
+    Ok(())
+}
+
+// --- publish (register package to MFR registry) ---
+
+async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
+    use ed25519_dalek::{Signer, SigningKey as DalekSigningKey};
+
+    // 1. Read .actr package
+    tracing::debug!("reading .actr package: {:?}", args.package);
+    let package_bytes = std::fs::read(&args.package)
+        .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
+
+    // 2. Extract raw manifest TOML from the .actr ZIP
+    let manifest_str = actr_pack::read_manifest_raw(&package_bytes)
+        .with_context(|| "Failed to read manifest from .actr package")?;
+    let manifest = actr_pack::PackageManifest::from_toml(&manifest_str)
+        .with_context(|| "Failed to parse manifest TOML")?;
+
+    println!("📦 Publishing package: {}", manifest.actr_type_str());
+    println!("   manufacturer: {}", manifest.manufacturer);
+    println!("   name:         {}", manifest.name);
+    println!("   version:      {}", manifest.version);
+
+    // 3. Load MFR keychain and extract private key
+    tracing::debug!("loading keychain: {:?}", args.keychain);
+    let keychain_content = std::fs::read_to_string(&args.keychain)
+        .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
+    let keychain: serde_json::Value = serde_json::from_str(&keychain_content)
+        .with_context(|| "Invalid keychain JSON")?;
+    let private_key_b64 = keychain["private_key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
+
+    let private_key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(private_key_b64)
+        .with_context(|| "Invalid private key base64 encoding")?;
+    let key_array: [u8; 32] = private_key_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Private key must be exactly 32 bytes"))?;
+    let signing_key = DalekSigningKey::from_bytes(&key_array);
+
+    // 4. Sign the manifest TOML bytes with MFR private key
+    let signature = signing_key.sign(manifest_str.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    println!("🔐 Manifest signed with MFR key");
+
+    // 5. POST /mfr/pkg/publish
+    let publish_url = format!("{}/mfr/pkg/publish", args.endpoint.trim_end_matches('/'));
+    println!("📡 Publishing to: {}", publish_url);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&publish_url)
+        .json(&serde_json::json!({
+            "manufacturer": manifest.manufacturer,
+            "name": manifest.name,
+            "version": manifest.version,
+            "manifest": manifest_str,
+            "signature": sig_b64,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("Failed to connect to MFR endpoint: {}", publish_url))?;
+
+    // 6. Handle response
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        eprintln!("❌ Publish failed (HTTP {})", status);
+        eprintln!("   Response: {}", body);
+        anyhow::bail!("MFR publish failed with status {}: {}", status, body);
+    }
+
+    // Parse response to show type_str
+    if let Ok(result) = serde_json::from_str::<serde_json::Value>(&body) {
+        let type_str = result["type_str"].as_str().unwrap_or("unknown");
+        let pkg_id = result["id"].as_i64().unwrap_or(0);
+        println!();
+        println!("✅ Package published successfully!");
+        println!("   type_str:  {}", type_str);
+        println!("   pkg_id:    {}", pkg_id);
+        println!("   status:    active");
+    } else {
+        println!();
+        println!("✅ Package published successfully!");
+        println!("   Response: {}", body);
     }
 
     Ok(())
