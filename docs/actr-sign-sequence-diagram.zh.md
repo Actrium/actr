@@ -1,6 +1,97 @@
 # Actr 签名认证全链路时序图
 
-## 阶段一：MFR 制造商注册
+## 概览
+
+### Wasm / Dynclib Mode
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as 开发者
+    participant GitHub as GitHub
+    participant MFR as MFR
+    participant CLI as actr CLI
+    participant Hyper as Hyper
+    participant AIS as AIS
+    participant Signer as Signer
+    participant Sig as Signaling
+
+    rect rgb(240, 230, 250)
+    Note right of Dev: ① MFR 注册
+    Dev->>MFR: POST /mfr/apply
+    MFR-->>Dev: challenge_token + gh CLI 命令
+    Dev->>GitHub: 创建仓库，写入 token
+    Dev->>MFR: POST /mfr/{id}/verify
+    MFR->>GitHub: 验证 token
+    MFR-->>Dev: mfr-keychain.json (Ed25519 密钥对)
+    end
+
+    rect rgb(255, 240, 230)
+    Note right of Dev: ② 打包 + ③ 发布
+    Dev->>CLI: actr pkg build --binary .wasm --key keychain
+    CLI->>CLI: SHA-256(binary) → manifest → Ed25519 sign
+    CLI-->>Dev: .actr 签名包
+    Dev->>CLI: actr pkg publish --package .actr
+    CLI->>MFR: POST /mfr/pkg/publish (manifest + sig)
+    MFR->>MFR: verify_signature → INSERT mfr_package
+    end
+
+    rect rgb(230, 250, 230)
+    Note right of Hyper: ④ 验签 + ⑤ 注册
+    Hyper->>Hyper: verify_package(.actr)<br/>Ed25519 verify_strict + SHA-256 hash
+    Hyper->>AIS: POST /ais/register + Realm Secret
+    AIS->>MFR: lookup_package(actr_type)
+    AIS->>Signer: gRPC Sign(claims)
+    AIS-->>Hyper: credential (AIdCredential)
+    end
+
+    rect rgb(230, 240, 255)
+    Note right of Hyper: ⑥ 上线
+    Hyper->>Sig: WebSocket + credential
+    Sig->>Sig: verify_strict(credential)
+    Sig-->>Hyper: Actor 在线
+    end
+```
+
+---
+
+### Native Mode
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as 源码 Actor (cargo run)
+    participant AIS as AIS
+    participant MFR as MFR
+    participant Signer as Signer
+    participant Sig as Signaling
+
+    App->>App: 加载 actr.toml<br/>ActrSystem::new(config)
+    App->>AIS: POST /ais/register + Realm Secret
+    AIS->>AIS: validate_realm + verify_secret
+    AIS->>MFR: lookup_package(actr_type)
+    alt 保留名 (acme/self/actrix)
+        MFR-->>AIS: ✅ 放行
+    else 非保留名
+        MFR-->>AIS: ❌ 无记录 → 校验失败
+        AIS-->>App: Error: ManufacturerNotVerified
+    end
+    AIS->>Signer: gRPC Sign(claims)
+    AIS-->>App: credential (AIdCredential)
+    App->>Sig: WebSocket + credential
+    Sig->>Sig: verify_strict(credential)
+    Sig-->>App: Actor 在线
+```
+
+---
+
+以下为各阶段详细时序图。
+
+---
+
+## Wasm / Dynclib Mode
+
+### 阶段一：MFR 制造商注册
 
 > 一次性操作。开发者通过 GitHub 身份验证获得 MFR 签名密钥。
 
@@ -27,7 +118,7 @@ sequenceDiagram
 
 ---
 
-## 阶段二：打包签名
+### 阶段二：打包签名
 
 > 开发者使用密钥将 Actor 二进制打包为 `.actr` 文件。
 
@@ -56,7 +147,7 @@ sequenceDiagram
 
 ---
 
-## 阶段三：发布注册
+### 阶段三：发布注册
 
 > 将包元数据注册到 MFR，让 AIS 能查到该 actr_type。
 
@@ -84,7 +175,7 @@ sequenceDiagram
 
 ---
 
-## 阶段四：运行时验签
+### 阶段四：运行时验签
 
 > Hyper 层加载 `.actr` 文件，获取公钥并验证签名和 hash。
 
@@ -126,7 +217,7 @@ sequenceDiagram
 
 ---
 
-## 阶段五：AIS 注册签发 Credential
+### 阶段五：AIS 注册签发 Credential
 
 > Actor 向 AIS 注册，获取身份凭证用于连接 Signaling。
 
@@ -178,7 +269,7 @@ sequenceDiagram
 
 ---
 
-## 阶段六：Signaling 连接认证
+### 阶段六：Signaling 连接认证
 
 > 使用 AIS 签发的 Credential 连接 Signaling，经 Validator 验证后上线。
 
@@ -211,7 +302,7 @@ sequenceDiagram
 
 ---
 
-## 源码模式（Source/Native）
+## Native Mode
 
 > 源码模式不经过阶段一~四（无打包、无发布、无验签），直接从 AIS 注册开始。
 > 当前仅保留名（acme/self/actrix）可通过 `lookup_package` 校验。

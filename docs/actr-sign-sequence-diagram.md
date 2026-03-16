@@ -1,6 +1,97 @@
 # Actr Sign & Auth Full Pipeline Sequence Diagrams
 
-## Phase 1: MFR Manufacturer Registration
+## Overview
+
+### Wasm / Dynclib Mode
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as Developer
+    participant GitHub as GitHub
+    participant MFR as MFR
+    participant CLI as actr CLI
+    participant Hyper as Hyper
+    participant AIS as AIS
+    participant Signer as Signer
+    participant Sig as Signaling
+
+    rect rgb(240, 230, 250)
+    Note right of Dev: Phase 1 MFR Registration
+    Dev->>MFR: POST /mfr/apply
+    MFR-->>Dev: challenge_token + gh CLI command
+    Dev->>GitHub: Create repo, write token
+    Dev->>MFR: POST /mfr/{id}/verify
+    MFR->>GitHub: Verify token
+    MFR-->>Dev: mfr-keychain.json (Ed25519 key pair)
+    end
+
+    rect rgb(255, 240, 230)
+    Note right of Dev: Phase 2 Build + Phase 3 Publish
+    Dev->>CLI: actr pkg build --binary .wasm --key keychain
+    CLI->>CLI: SHA-256(binary) -> manifest -> Ed25519 sign
+    CLI-->>Dev: .actr signed package
+    Dev->>CLI: actr pkg publish --package .actr
+    CLI->>MFR: POST /mfr/pkg/publish (manifest + sig)
+    MFR->>MFR: verify_signature -> INSERT mfr_package
+    end
+
+    rect rgb(230, 250, 230)
+    Note right of Hyper: Phase 4 Verify + Phase 5 Register
+    Hyper->>Hyper: verify_package(.actr)<br/>Ed25519 verify_strict + SHA-256 hash
+    Hyper->>AIS: POST /ais/register + Realm Secret
+    AIS->>MFR: lookup_package(actr_type)
+    AIS->>Signer: gRPC Sign(claims)
+    AIS-->>Hyper: credential (AIdCredential)
+    end
+
+    rect rgb(230, 240, 255)
+    Note right of Hyper: Phase 6 Go Online
+    Hyper->>Sig: WebSocket + credential
+    Sig->>Sig: verify_strict(credential)
+    Sig-->>Hyper: Actor online
+    end
+```
+
+---
+
+### Native Mode
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Source Actor (cargo run)
+    participant AIS as AIS
+    participant MFR as MFR
+    participant Signer as Signer
+    participant Sig as Signaling
+
+    App->>App: Load actr.toml<br/>ActrSystem::new(config)
+    App->>AIS: POST /ais/register + Realm Secret
+    AIS->>AIS: validate_realm + verify_secret
+    AIS->>MFR: lookup_package(actr_type)
+    alt Reserved name (acme/self/actrix)
+        MFR-->>AIS: ok bypass
+    else Non-reserved name
+        MFR-->>AIS: no record
+        AIS-->>App: Error: ManufacturerNotVerified
+    end
+    AIS->>Signer: gRPC Sign(claims)
+    AIS-->>App: credential (AIdCredential)
+    App->>Sig: WebSocket + credential
+    Sig->>Sig: verify_strict(credential)
+    Sig-->>App: Actor online
+```
+
+---
+
+Detailed sequence diagrams for each phase below.
+
+---
+
+## Wasm / Dynclib Mode
+
+### Phase 1: MFR Manufacturer Registration
 
 > One-time operation. Developer verifies GitHub identity to obtain MFR signing keys.
 
@@ -27,7 +118,7 @@ sequenceDiagram
 
 ---
 
-## Phase 2: Package Signing
+### Phase 2: Package Signing
 
 > Developer signs the Actor binary into an `.actr` package using the MFR key.
 
@@ -56,7 +147,7 @@ sequenceDiagram
 
 ---
 
-## Phase 3: Publish to Registry
+### Phase 3: Publish to Registry
 
 > Register package metadata to MFR so AIS can verify the actr_type exists.
 
@@ -84,7 +175,7 @@ sequenceDiagram
 
 ---
 
-## Phase 4: Runtime Verification
+### Phase 4: Runtime Verification
 
 > Hyper layer loads the `.actr` file, fetches the public key, and verifies signature + hash.
 
@@ -126,7 +217,7 @@ sequenceDiagram
 
 ---
 
-## Phase 5: AIS Credential Issuance
+### Phase 5: AIS Credential Issuance
 
 > Actor registers with AIS to obtain an identity credential for Signaling connection.
 
@@ -178,7 +269,7 @@ sequenceDiagram
 
 ---
 
-## Phase 6: Signaling Connection Auth
+### Phase 6: Signaling Connection Auth
 
 > Use the AIS-issued credential to connect to Signaling, verified by the Validator.
 
@@ -211,7 +302,7 @@ sequenceDiagram
 
 ---
 
-## Source Mode (Source/Native)
+## Native Mode
 
 > Source mode skips Phases 1–4 (no packaging, no publishing, no verification), going directly to AIS registration.
 > Currently only reserved names (acme/self/actrix) can pass the `lookup_package` check.
