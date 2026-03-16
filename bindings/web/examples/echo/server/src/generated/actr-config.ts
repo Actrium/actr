@@ -64,7 +64,9 @@ export const system = {
         tracing_enabled: false,
     },
     webrtc: {
+        force_relay: true,
         stun_urls: ['stun:localhost:3478'],
+        turn_urls: ['turn:localhost:3478'],
     },
 } as const;
 
@@ -106,6 +108,8 @@ export const actrConfig: ActorClientConfig = {
     realm: String(system.deployment.realm_id),
     iceServers: [
         ...system.webrtc.stun_urls.map((url) => ({ urls: url })),
+        ...system.webrtc.turn_urls.map((url) => ({ urls: url })),
     ],
+    iceTransportPolicy: system.webrtc.force_relay ? 'relay' : 'all',
     runtimeConfig,
 };

@@ -27,6 +27,8 @@ export class WebRtcCoordinator {
   private forwarder: FastPathForwarder;
   private peers: Map<string, PeerConnectionInfo> = new Map();
   private config: WebRtcConfig;
+  /** Dynamic TURN credentials received from SW (AIS registration) */
+  private turnCredential: { username: string; credential: string } | null = null;
   private laneConfigs = [
     { id: 0, label: 'RPC_RELIABLE', ordered: true, maxRetransmits: undefined },
     { id: 1, label: 'RPC_SIGNAL', ordered: true, maxRetransmits: undefined },
@@ -56,6 +58,12 @@ export class WebRtcCoordinator {
     this.swBridge.onMessage((message) => {
       if (message.type === 'webrtc_command') {
         this.handleWebRtcCommand(message.payload);
+      } else if (message.type === 'update_turn_credential') {
+        this.turnCredential = {
+          username: message.payload.username,
+          credential: message.payload.password,
+        };
+        console.log('[WebRTC] TURN credential received from SW');
       }
     });
   }
@@ -69,8 +77,31 @@ export class WebRtcCoordinator {
       return;
     }
 
+    // Build ICE server list with TURN credentials injected
+    const iceServers = (this.config.iceServers || []).map((server) => {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      const isTurn = urls.some(
+        (url) => url.startsWith('turn:') || url.startsWith('turns:')
+      );
+      if (isTurn && this.turnCredential) {
+        return {
+          urls: server.urls,
+          username: this.turnCredential.username,
+          credential: this.turnCredential.credential,
+        };
+      }
+      return server;
+    });
+
+    const rtcConfig: RTCConfiguration = {
+      iceServers,
+      iceTransportPolicy: this.config.iceTransportPolicy,
+    };
+
+    console.log('[WebRTC] RTCConfiguration:', JSON.stringify(rtcConfig));
+
     //  RTCPeerConnection
-    const connection = new RTCPeerConnection(this.config);
+    const connection = new RTCPeerConnection(rtcConfig);
 
     // TODO: ： 4  negotiated DataChannels ？
     //  .cursor/plans/webrtc-datachannel-negotiation-strategy.md
