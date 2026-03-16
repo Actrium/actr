@@ -14,6 +14,8 @@ members = [
     "acl/allowed-client",
     "acl/blocked-client",
     "acl/server",
+    "wasm-echo/server",
+    "wasm-echo/client",
 ]
 resolver = "2"
 
@@ -30,9 +32,8 @@ actr-protocol = { version = "0.2.0" }
 actr-runtime = { version = "0.2.0" }
 actr-hyper = { version = "0.1.0" }
 actr-config = { version = "0.2.0" }
-
-# Actr infrastructure layer (ActrSystem, ActrNode, ActrRef, WASM engine, transport)
-actr-hyper = { path = "../../core/hyper" }
+actr-platform-native = { version = "0.2.0" }
+actr-pack = { version = "0.2.0" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -62,3 +63,5 @@ actr-protocol = { path = "../../core/protocol" }
 actr-runtime = { path = "../../core/runtime" }
 actr-hyper = { path = "../../core/hyper" }
 actr-config = { path = "../../core/config" }
+actr-platform-native = { path = "../../core/platform-native" }
+actr-pack = { path = "../../core/pack" }

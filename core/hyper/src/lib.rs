@@ -141,7 +141,7 @@ pub use error::{HyperError, HyperResult};
 pub use verify::PackageManifest;
 
 // Core protocol types
-pub use actr_protocol::{ActrId, ActrType};
+pub use actr_protocol::{Acl, ActrId, ActrType, ServiceSpec};
 
 // Re-export MediaSample and MediaType from framework (dependency inversion)
 pub use actr_framework::{MediaSample, MediaType};
@@ -352,6 +352,26 @@ use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Metadata sent to AIS during credential bootstrap.
+///
+/// Hyper manages the authentication material (`manifest_json`, `mfr_signature`, `psk_token`)
+/// internally. The caller only provides the registration metadata that should accompany the
+/// bootstrap request.
+#[derive(Debug, Clone)]
+pub struct CredentialBootstrapRequest {
+    /// Target realm to register into.
+    pub realm: Realm,
+    /// Optional protobuf API metadata published to discovery.
+    pub service_spec: Option<ServiceSpec>,
+    /// Optional access-control policy attached to the actor.
+    pub acl: Option<Acl>,
+    /// Optional compact service reference (`ServiceName:fingerprint`).
+    pub service: Option<String>,
+    /// Optional WebSocket direct-connect address published to discovery.
+    pub ws_address: Option<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Hyper runtime instance
 ///
 /// Process-level singleton, initialized via `Hyper::init()`.
@@ -370,6 +390,51 @@ struct HyperInner {
     verifier: verify::PackageVerifier,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Execution backend selected from a verified `.actr` package target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageExecutionBackend {
+    /// Execute the package binary with the WASM runtime.
+    Wasm,
+    /// Execute the package binary as a native shared library.
+    Cdylib,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Result of verifying a package and preparing a dynamic executor from it.
+pub struct LoadedPackageExecutor {
+    /// Verified package manifest retained for downstream bootstrap and storage operations.
+    pub manifest: PackageManifest,
+    /// Backend selected from `manifest.binary_target`.
+    pub backend: PackageExecutionBackend,
+    /// Ready-to-attach executor adapter for `ActrNode::with_executor()`.
+    pub executor: Box<dyn executor::ExecutorAdapter>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LoadedPackageExecutor {
+    /// Consume the wrapper and return its individual components.
+    pub fn into_parts(
+        self,
+    ) -> (
+        PackageManifest,
+        PackageExecutionBackend,
+        Box<dyn executor::ExecutorAdapter>,
+    ) {
+        (self.manifest, self.backend, self.executor)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for LoadedPackageExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedPackageExecutor")
+            .field("manifest", &self.manifest)
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -474,6 +539,144 @@ impl Hyper {
         self.inner.verifier.verify(bytes)
     }
 
+    /// Verify an `.actr` package, select the execution backend from `binary.target`,
+    /// and prepare a boxed executor ready for `ActrNode::with_executor()`.
+    ///
+    /// For WASM packages, Hyper initialises the guest with an empty credential payload so
+    /// the caller can bootstrap AIS credentials afterwards and inject them before start.
+    /// For dynclib packages, Hyper initialises the guest with an empty JSON object.
+    pub async fn load_package_executor(&self, bytes: &[u8]) -> HyperResult<LoadedPackageExecutor> {
+        let manifest = self.verify_package(bytes).await?;
+        let backend = select_package_execution_backend(&manifest)?;
+        let executor = self.load_executor_for_verified_package(bytes, &manifest, backend)?;
+
+        Ok(LoadedPackageExecutor {
+            manifest,
+            backend,
+            executor,
+        })
+    }
+
+    fn load_executor_for_verified_package(
+        &self,
+        bytes: &[u8],
+        manifest: &PackageManifest,
+        backend: PackageExecutionBackend,
+    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
+        match backend {
+            PackageExecutionBackend::Wasm => self.load_wasm_executor(bytes, manifest),
+            PackageExecutionBackend::Cdylib => self.load_dynclib_executor(bytes, manifest),
+        }
+    }
+
+    fn load_wasm_executor(
+        &self,
+        bytes: &[u8],
+        manifest: &PackageManifest,
+    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
+        #[cfg(feature = "wasm-engine")]
+        {
+            let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to extract package binary `{}` for target `{}`: {e}",
+                    manifest.binary_path, manifest.binary_target
+                ))
+            })?;
+            let host = crate::wasm::WasmHost::compile(&wasm_bytes).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to compile WASM package target `{}`: {e}",
+                    manifest.binary_target
+                ))
+            })?;
+            let mut instance = host.instantiate().map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to instantiate WASM package target `{}`: {e}",
+                    manifest.binary_target
+                ))
+            })?;
+            instance
+                .init(&crate::wasm::WasmActorConfig {
+                    actr_type: manifest.actr_type_str(),
+                    credential_b64: String::new(),
+                    actor_id_b64: String::new(),
+                    realm_id: 0,
+                })
+                .map_err(|e| {
+                    HyperError::Runtime(format!(
+                        "failed to initialize WASM package target `{}`: {e}",
+                        manifest.binary_target
+                    ))
+                })?;
+            Ok(Box::new(instance))
+        }
+
+        #[cfg(not(feature = "wasm-engine"))]
+        {
+            let _ = (bytes, manifest);
+            Err(HyperError::Runtime(
+                "package target requires the `wasm-engine` feature, but it is not enabled"
+                    .to_string(),
+            ))
+        }
+    }
+
+    fn load_dynclib_executor(
+        &self,
+        bytes: &[u8],
+        manifest: &PackageManifest,
+    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
+        #[cfg(feature = "dynclib-engine")]
+        {
+            let binary_bytes = actr_pack::load_binary(bytes).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to extract package binary `{}` for target `{}`: {e}",
+                    manifest.binary_path, manifest.binary_target
+                ))
+            })?;
+
+            let temp_file = tempfile::Builder::new()
+                .prefix("actr-dynclib-")
+                .suffix(dynclib_tempfile_suffix())
+                .tempfile()
+                .map_err(|e| {
+                    HyperError::Runtime(format!("failed to allocate dynclib temp file: {e}"))
+                })?;
+
+            std::fs::write(temp_file.path(), &binary_bytes).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to write dynclib temp file `{}`: {e}",
+                    temp_file.path().display()
+                ))
+            })?;
+
+            let host = crate::dynclib::DynclibHost::load(temp_file.path()).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to load dynclib package target `{}`: {e}",
+                    manifest.binary_target
+                ))
+            })?;
+            let instance = host.instantiate(br#"{}"#).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to initialize dynclib package target `{}`: {e}",
+                    manifest.binary_target
+                ))
+            })?;
+
+            Ok(Box::new(crate::dynclib::DynclibExecutor::with_temp_file(
+                host, instance, temp_file,
+            )))
+        }
+
+        #[cfg(not(feature = "dynclib-engine"))]
+        {
+            let _ = (bytes, manifest);
+            Err(HyperError::Runtime(
+                "package target requires the `dynclib-engine` feature, but it is not enabled"
+                    .to_string(),
+            ))
+        }
+    }
+
     /// Resolve the storage namespace path for a verified manifest
     ///
     /// The path is fixed here; all subsequent storage operations are isolated based on this path.
@@ -489,8 +692,8 @@ impl Hyper {
 
     /// Bootstrap credential registration with AIS (two-phase flow)
     ///
-    /// Hyper completes registration bootstrap on behalf of the Actor to obtain an ActrId credential.
-    /// This credential is then passed to ActrSystem (Native/WASM).
+    /// Hyper completes registration bootstrap on behalf of the Actor and returns the full AIS
+    /// registration payload.
     ///
     /// ## Two-Phase Logic
     ///
@@ -503,16 +706,18 @@ impl Hyper {
     ///
     /// - `manifest`: verified package manifest (from `verify_package`)
     /// - `ais_endpoint`: AIS HTTP address, e.g. `"http://ais.example.com:8080"`
-    /// - `realm_id`: target Realm ID
+    /// - `request`: registration metadata to publish alongside the bootstrap request
     pub async fn bootstrap_credential(
         &self,
         manifest: &PackageManifest,
         ais_endpoint: &str,
-        realm_id: u32,
-    ) -> HyperResult<Vec<u8>> {
+        request: CredentialBootstrapRequest,
+    ) -> HyperResult<register_response::RegisterOk> {
         info!(
             actr_type = manifest.actr_type_str(),
-            ais_endpoint, realm_id, "starting credential bootstrap with AIS"
+            ais_endpoint,
+            realm_id = request.realm.realm_id,
+            "starting credential bootstrap with AIS"
         );
 
         // 1. Open the Actor's storage (platform-agnostic KV store or ActorStore)
@@ -533,30 +738,13 @@ impl Hyper {
         // 3. Build RegisterRequest and send to AIS
         let ais = AisClient::new(ais_endpoint);
 
-        let actr_type = ActrType {
-            manufacturer: manifest.manufacturer.clone(),
-            name: manifest.actr_name.clone(),
-            version: manifest.version.clone(),
-        };
-        let realm = Realm { realm_id };
-
         let response = if let Some(psk_token) = valid_psk {
             // Phase 2: PSK renewal
             debug!(
                 actr_type = manifest.actr_type_str(),
                 "renewing credential using PSK"
             );
-            let req = RegisterRequest {
-                actr_type,
-                realm,
-                service_spec: None,
-                acl: None,
-                service: None,
-                ws_address: None,
-                manifest_json: None,
-                mfr_signature: None,
-                psk_token: Some(psk_token.into()),
-            };
+            let req = build_bootstrap_register_request(manifest, &request, Some(psk_token))?;
             ais.register_with_psk(req).await?
         } else {
             // Phase 1: first registration, carrying MFR manifest
@@ -564,21 +752,7 @@ impl Hyper {
                 actr_type = manifest.actr_type_str(),
                 "first registration: registering with AIS using MFR manifest"
             );
-
-            // serialize manifest to JSON
-            let manifest_json = build_manifest_json(manifest)?;
-
-            let req = RegisterRequest {
-                actr_type,
-                realm,
-                service_spec: None,
-                acl: None,
-                service: None,
-                ws_address: None,
-                manifest_json: Some(manifest_json.into()),
-                mfr_signature: Some(manifest.signature.clone().into()),
-                psk_token: None,
-            };
+            let req = build_bootstrap_register_request(manifest, &request, None)?;
             ais.register_with_manifest(req).await?
         };
 
@@ -656,15 +830,13 @@ impl Hyper {
             "AIS signing public key persisted to ActorStore"
         );
 
-        // 6. Serialize AIdCredential and return (credential is a required field, use directly)
-        let credential_bytes = ok.credential.encode_to_vec();
         info!(
             actr_type = manifest.actr_type_str(),
-            credential_len = credential_bytes.len(),
+            credential_len = ok.credential.encode_to_vec().len(),
             "AIS credential bootstrap succeeded"
         );
 
-        Ok(credential_bytes)
+        Ok(ok)
     }
 
     /// Current instance_id
@@ -695,6 +867,38 @@ async fn load_valid_psk_dyn(store: &dyn KvStore) -> HyperResult<Option<Vec<u8>>>
         .map_err(|e| HyperError::Storage(format!("failed to read PSK expires_at: {e}")))?;
 
     check_psk_expiry(token, expires_at_raw)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_bootstrap_register_request(
+    manifest: &PackageManifest,
+    request: &CredentialBootstrapRequest,
+    psk_token: Option<Vec<u8>>,
+) -> HyperResult<RegisterRequest> {
+    let mut register_request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: manifest.manufacturer.clone(),
+            name: manifest.actr_name.clone(),
+            version: manifest.version.clone(),
+        },
+        realm: request.realm.clone(),
+        service_spec: request.service_spec.clone(),
+        acl: request.acl.clone(),
+        service: request.service.clone(),
+        ws_address: request.ws_address.clone(),
+        manifest_json: None,
+        mfr_signature: None,
+        psk_token: None,
+    };
+
+    if let Some(psk_token) = psk_token {
+        register_request.psk_token = Some(psk_token.into());
+    } else {
+        register_request.manifest_json = Some(build_manifest_json(manifest)?.into());
+        register_request.mfr_signature = Some(manifest.signature.clone().into());
+    }
+
+    Ok(register_request)
 }
 
 /// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
@@ -794,6 +998,69 @@ fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
         return actr_pack::read_manifest(bytes).ok().map(|m| m.manufacturer);
     }
     None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn select_package_execution_backend(
+    manifest: &PackageManifest,
+) -> HyperResult<PackageExecutionBackend> {
+    if manifest.is_wasm_target() {
+        return Ok(PackageExecutionBackend::Wasm);
+    }
+
+    if is_native_target_triple(&manifest.binary_target) {
+        return Ok(PackageExecutionBackend::Cdylib);
+    }
+
+    Err(HyperError::InvalidManifest(format!(
+        "unsupported binary target `{}`; expected `wasm32-*` or a native Rust target triple",
+        manifest.binary_target
+    )))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_native_target_triple(target: &str) -> bool {
+    target
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .count()
+        >= 3
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "dynclib-engine",
+    target_os = "macos"
+))]
+fn dynclib_tempfile_suffix() -> &'static str {
+    ".dylib"
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "dynclib-engine",
+    target_os = "linux"
+))]
+fn dynclib_tempfile_suffix() -> &'static str {
+    ".so"
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "dynclib-engine",
+    target_os = "windows"
+))]
+fn dynclib_tempfile_suffix() -> &'static str {
+    ".dll"
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "dynclib-engine",
+    not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+))]
+fn dynclib_tempfile_suffix() -> &'static str {
+    ".dynlib"
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -967,6 +1234,8 @@ mod tests {
             manufacturer: "acme".to_string(),
             actr_name: "Sensor".to_string(),
             version: "1.0.0".to_string(),
+            binary_path: "bin/actor.wasm".to_string(),
+            binary_target: "wasm32-wasip1".to_string(),
             binary_hash: [0u8; 32],
             capabilities: vec!["storage".to_string()],
             signature: vec![0u8; 64],
@@ -999,6 +1268,8 @@ mod tests {
             manufacturer: "test-mfr".to_string(),
             actr_name: "TestActor".to_string(),
             version: "0.1.0".to_string(),
+            binary_path: "bin/actor.wasm".to_string(),
+            binary_target: "wasm32-wasip1".to_string(),
             binary_hash: [0u8; 32],
             capabilities: vec![],
             signature: vec![0u8; 64],
@@ -1070,6 +1341,62 @@ mod tests {
         .encode_to_vec()
     }
 
+    fn bootstrap_request() -> CredentialBootstrapRequest {
+        CredentialBootstrapRequest {
+            realm: Realm { realm_id: 1 },
+            service_spec: Some(ServiceSpec {
+                name: "EchoService".to_string(),
+                description: Some("test service".to_string()),
+                fingerprint: "fp-123".to_string(),
+                protobufs: vec![],
+                published_at: None,
+                tags: vec!["latest".to_string()],
+            }),
+            acl: Some(Acl { rules: vec![] }),
+            service: Some("EchoService:fp-123".to_string()),
+            ws_address: Some("ws://127.0.0.1:9999".to_string()),
+        }
+    }
+
+    #[test]
+    fn bootstrap_request_carries_registration_metadata() {
+        let manifest = fake_manifest();
+        let request = bootstrap_request();
+
+        let manifest_register =
+            build_bootstrap_register_request(&manifest, &request, None).unwrap();
+        assert_eq!(manifest_register.realm.realm_id, 1);
+        assert_eq!(
+            manifest_register
+                .service_spec
+                .as_ref()
+                .map(|spec| spec.fingerprint.as_str()),
+            Some("fp-123")
+        );
+        assert!(manifest_register.acl.is_some(), "ACL should be forwarded");
+        assert_eq!(
+            manifest_register.service.as_deref(),
+            Some("EchoService:fp-123")
+        );
+        assert_eq!(
+            manifest_register.ws_address.as_deref(),
+            Some("ws://127.0.0.1:9999")
+        );
+        assert!(manifest_register.manifest_json.is_some());
+        assert!(manifest_register.mfr_signature.is_some());
+        assert!(manifest_register.psk_token.is_none());
+
+        let psk_register =
+            build_bootstrap_register_request(&manifest, &request, Some(b"existing-psk".to_vec()))
+                .unwrap();
+        assert_eq!(
+            psk_register.psk_token.as_deref(),
+            Some(&b"existing-psk"[..])
+        );
+        assert!(psk_register.manifest_json.is_none());
+        assert!(psk_register.mfr_signature.is_none());
+    }
+
     /// First registration with no PSK should store the PSK returned by AIS.
     #[tokio::test]
     async fn bootstrap_first_registration_stores_psk() {
@@ -1090,7 +1417,7 @@ mod tests {
 
         let manifest = fake_manifest();
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1)
+            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
             .await;
 
         mock.assert_async().await;
@@ -1150,7 +1477,7 @@ mod tests {
             .unwrap();
 
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1)
+            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
             .await;
 
         mock.assert_async().await;
@@ -1200,7 +1527,7 @@ mod tests {
             .unwrap();
 
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1)
+            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
             .await;
 
         mock.assert_async().await;
@@ -1239,7 +1566,7 @@ mod tests {
 
         let manifest = fake_manifest();
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1)
+            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
             .await;
 
         assert!(

@@ -579,6 +579,27 @@ impl std::fmt::Debug for DynclibInstance {
 // Safety: function pointers reference process-global SO code.
 unsafe impl Send for DynclibInstance {}
 
+/// Executor wrapper that keeps the loaded library alive for the lifetime of the actor instance.
+pub(crate) struct DynclibExecutor {
+    _host: DynclibHost,
+    _temp_file: Option<tempfile::NamedTempFile>,
+    instance: DynclibInstance,
+}
+
+impl DynclibExecutor {
+    pub(crate) fn with_temp_file(
+        host: DynclibHost,
+        instance: DynclibInstance,
+        temp_file: tempfile::NamedTempFile,
+    ) -> Self {
+        Self {
+            _host: host,
+            _temp_file: Some(temp_file),
+            instance,
+        }
+    }
+}
+
 impl DynclibInstance {
     /// Dispatch a request through the guest actor.
     ///
@@ -689,5 +710,17 @@ impl executor::ExecutorAdapter for DynclibInstance {
                 .await
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
         })
+    }
+}
+
+impl executor::ExecutorAdapter for DynclibExecutor {
+    fn dispatch<'a>(
+        &'a mut self,
+        request_bytes: &[u8],
+        ctx: DispatchContext,
+        call_executor: &'a CallExecutorFn,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
+    {
+        self.instance.dispatch(request_bytes, ctx, call_executor)
     }
 }

@@ -647,7 +647,10 @@ run = "cargo run"
         assert_eq!(config.realm.realm_id, 1001);
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
-        assert_eq!(config.ais_endpoint.as_deref(), Some("http://localhost:8081/ais"));
+        assert_eq!(
+            config.ais_endpoint.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
     }
 
     #[test]
@@ -691,7 +694,10 @@ realm_id = 1001
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
         assert!(dep.is_cross_realm(&config.realm));
-        assert_eq!(config.ais_endpoint.as_deref(), Some("http://localhost:8081/ais"));
+        assert_eq!(
+            config.ais_endpoint.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
     }
 
     #[test]

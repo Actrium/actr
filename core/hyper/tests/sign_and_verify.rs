@@ -6,7 +6,7 @@
 //! 3. .actr package: wrong key → signature verification failed
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
-use actr_hyper::{Hyper, HyperConfig, HyperError, TrustMode};
+use actr_hyper::{Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
@@ -15,6 +15,46 @@ use tempfile::TempDir;
 
 fn minimal_wasm() -> Vec<u8> {
     b"\0asm\x01\x00\x00\x00".to_vec()
+}
+
+#[cfg(feature = "wasm-engine")]
+fn echo_guest_wasm() -> Vec<u8> {
+    wat::parse_str(
+        r#"
+(module
+  (memory (export "memory") 2)
+  (global $heap (mut i32) (i32.const 4096))
+  (func $bump (param $n i32) (result i32)
+    (local $p i32)
+    (local.set $p (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $n)))
+    (local.get $p))
+  (func (export "actr_alloc") (param $n i32) (result i32)
+    (call $bump (local.get $n)))
+  (func (export "actr_free") (param $p i32) (param $n i32))
+  (func (export "asyncify_start_unwind") (param i32))
+  (func (export "asyncify_stop_unwind"))
+  (func (export "asyncify_start_rewind") (param i32))
+  (func (export "asyncify_stop_rewind"))
+  (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
+    (i32.const 0))
+  (func (export "actr_handle")
+    (param $req_ptr i32) (param $req_len i32)
+    (param $resp_ptr_out i32) (param $resp_len_out i32)
+    (result i32)
+    (local $resp_ptr i32)
+    (local.set $resp_ptr (call $bump (local.get $req_len)))
+    (memory.copy
+      (local.get $resp_ptr)
+      (local.get $req_ptr)
+      (local.get $req_len))
+    (i32.store (local.get $resp_ptr_out) (local.get $resp_ptr))
+    (i32.store (local.get $resp_len_out) (local.get $req_len))
+    (i32.const 0))
+)
+"#,
+    )
+    .expect("WAT parse failed")
 }
 
 /// Build an .actr ZIP package
@@ -128,4 +168,67 @@ async fn verify_rejects_unknown_format() {
 
     let result = hyper.verify_package(b"this is not a binary").await;
     assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
+}
+
+#[cfg(feature = "wasm-engine")]
+#[tokio::test]
+async fn load_package_executor_selects_wasm_backend() {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let package = build_actr_package(
+        &echo_guest_wasm(),
+        "test-mfr",
+        "Echo",
+        "1.0.0",
+        &signing_key,
+    );
+
+    let dir = TempDir::new().unwrap();
+    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+        .await
+        .unwrap();
+
+    let loaded = hyper.load_package_executor(&package).await.unwrap();
+
+    assert_eq!(loaded.backend, PackageExecutionBackend::Wasm);
+    assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
+}
+
+#[tokio::test]
+async fn load_package_executor_rejects_invalid_target() {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    let manifest = actr_pack::PackageManifest {
+        manufacturer: "test-mfr".to_string(),
+        name: "BrokenActor".to_string(),
+        version: "1.0.0".to_string(),
+        binary: actr_pack::BinaryEntry {
+            path: "bin/actor.wasm".to_string(),
+            target: "invalid-target".to_string(),
+            hash: String::new(),
+            size: None,
+        },
+        signature_algorithm: "ed25519".to_string(),
+        resources: vec![],
+        metadata: actr_pack::ManifestMetadata::default(),
+    };
+    let package = actr_pack::pack(&actr_pack::PackOptions {
+        manifest,
+        binary_bytes: minimal_wasm(),
+        resources: vec![],
+        signing_key: signing_key.clone(),
+    })
+    .unwrap();
+
+    let dir = TempDir::new().unwrap();
+    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+        .await
+        .unwrap();
+
+    let result = hyper.load_package_executor(&package).await;
+    assert!(
+        matches!(result, Err(HyperError::InvalidManifest(ref msg)) if msg.contains("unsupported binary target")),
+        "invalid target should be rejected, got: {result:?}"
+    );
 }

@@ -1,0 +1,6 @@
+[package]
+manufacturer = "acme"
+name = "WasmEchoService"
+version = "0.1.0"
+description = "WASM Echo Service guest actor"
+license = "Apache-2.0"

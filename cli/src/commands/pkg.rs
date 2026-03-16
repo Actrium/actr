@@ -177,11 +177,10 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     tracing::debug!(key_path = %key_path.display(), "signing key loaded");
 
     // 2. Read actr.toml for metadata
-    let config_content = std::fs::read_to_string(&args.config)
+    let config_bytes = std::fs::read(&args.config)
         .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
-    let config_value: toml::Value = config_content
-        .parse()
-        .with_context(|| "Invalid actr.toml")?;
+    let config_value: toml::Value =
+        toml::from_slice(&config_bytes).with_context(|| "Invalid actr.toml")?;
     let pkg = config_value
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;

@@ -98,10 +98,7 @@ fn matches_rule(caller: &ActrId, rule: &AclRule) -> bool {
     use actr_protocol::acl_rule::SourceRealm;
 
     // Exact type match (manufacturer + name + version)
-    if caller.r#type.manufacturer != rule.from_type.manufacturer
-        || caller.r#type.name != rule.from_type.name
-        || caller.r#type.version != rule.from_type.version
-    {
+    if caller.r#type != rule.from_type {
         return false;
     }
 

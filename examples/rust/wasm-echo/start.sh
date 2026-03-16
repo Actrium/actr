@@ -33,11 +33,14 @@ WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 #   examples/rust → actr/examples → actr → Actrium
 ACTRIUM_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
 ACTRIX_DIR="$ACTRIUM_DIR/actrix"
+ACTR_REPO_DIR="$ACTRIUM_DIR/actr"
+ACTR_CLI_MANIFEST="$ACTR_REPO_DIR/cli/Cargo.toml"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 WASM_ECHO_DIR="$WORKSPACE_ROOT/wasm-echo"
 GUEST_DIR="$WASM_ECHO_DIR/guest"
 SERVER_DIR="$WASM_ECHO_DIR/server"
 CLIENT_DIR="$WASM_ECHO_DIR/client"
+DEV_KEY_PATH="$WASM_ECHO_DIR/dev-key.json"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -171,6 +174,42 @@ fi
 
 echo -e "${GREEN}✅ Asyncified WASM: $(du -h "$BUILT_DIR/wasm_echo_guest.wasm" | cut -f1) ${NC}"
 
+# Package the guest as an .actr archive
+echo ""
+echo -e "${BLUE}📦 Packaging guest as ActrPackage...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+PACKAGE_MANIFEST="$GUEST_DIR/package.toml"
+ACTR_PACKAGE="$BUILT_DIR/wasm_echo_guest.actr"
+
+if [ ! -f "$PACKAGE_MANIFEST" ]; then
+    echo -e "${RED}❌ Package manifest not found: $PACKAGE_MANIFEST${NC}"
+    exit 1
+fi
+
+if [ ! -f "$DEV_KEY_PATH" ]; then
+    echo "Generating development signing key..."
+    cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg keygen --output "$DEV_KEY_PATH" >/dev/null
+fi
+
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
+    --binary "$BUILT_DIR/wasm_echo_guest.wasm" \
+    --config "$PACKAGE_MANIFEST" \
+    --key "$DEV_KEY_PATH" \
+    --output "$ACTR_PACKAGE" \
+    --target wasm32-unknown-unknown >/dev/null
+
+if [ ! -f "$ACTR_PACKAGE" ]; then
+    echo -e "${RED}❌ ActrPackage build failed: $ACTR_PACKAGE not found${NC}"
+    exit 1
+fi
+
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
+    --pubkey "$DEV_KEY_PATH" \
+    --package "$ACTR_PACKAGE" >/dev/null
+
+echo -e "${GREEN}✅ ActrPackage ready: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
+
 # Return to workspace root
 cd "$WORKSPACE_ROOT"
 
@@ -291,7 +330,7 @@ echo ""
 echo "🚀 Starting wasm-echo-server..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-RUST_LOG="${RUST_LOG:-info}" cargo run --bin wasm-echo-server > "$LOG_DIR/wasm-echo-server.log" 2>&1 &
+ACTR_PACKAGE_PATH="$ACTR_PACKAGE" RUST_LOG="${RUST_LOG:-info}" cargo run --bin wasm-echo-server > "$LOG_DIR/wasm-echo-server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "Server started (PID: $SERVER_PID)"
@@ -371,6 +410,7 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/wasm-echo-client.lo
     echo "✅ Validated:"
     echo "   • WASM guest actor compiled to wasm32-unknown-unknown"
     echo "   • wasm-opt --asyncify transform applied"
+    echo "   • Guest packaged and verified as .actr"
     echo "   • WasmHost compile → instantiate → init"
     echo "   • ActrNode with WASM ExecutorAdapter"
     echo "   • Real distributed Actor communication (client ↔ WASM server)"

@@ -9,9 +9,14 @@ actr-hyper = { workspace = true, features = ["wasm-engine"] }
 actr-framework = { workspace = true }
 actr-protocol = { workspace = true }
 actr-config = { workspace = true }
+actr-platform-native = { workspace = true }
+actr-pack = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
+anyhow = { workspace = true }
+base64 = "0.22"
+serde_json = "1.0"

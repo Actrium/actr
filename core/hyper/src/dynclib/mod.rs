@@ -8,4 +8,5 @@ mod error;
 mod host;
 
 pub use error::{DynclibError, DynclibResult};
+pub(crate) use host::DynclibExecutor;
 pub use host::{DynclibHost, DynclibInstance};
