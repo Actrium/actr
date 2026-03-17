@@ -1,7 +1,7 @@
-//! Dynclib Echo Client — discovers and communicates with the dynclib echo server
+//! Package Echo Client — discovers and communicates with the package-backed echo server
 //!
 //! Pattern: AppSide → ActrRef.call(EchoRequest) → ClientWorkload.dispatch
-//!          → ctx.call(Dest::Actor(server_id), req) → Dynclib echo server → response
+//!          → ctx.call(Dest::Actor(server_id), req) → package echo server → response
 
 mod app_side;
 mod client_workload;
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
 
     let _obs_guard = init_observability(&config.observability)?;
 
-    info!("🚀 Dynclib Echo Client starting");
+    info!("🚀 Package Echo Client starting");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 2. Register with AIS HTTP to obtain credential
@@ -92,23 +92,23 @@ async fn main() -> Result<()> {
     info!("✅ ActrNode started with ID: {:?}", actr_ref.actor_id());
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. Discover dynclib echo server
+    // 4. Discover package echo server
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🌐 Discovering dynclib echo server via signaling...");
+    info!("🌐 Discovering echo-actr package service via signaling...");
     let target_type = ActrType {
-        manufacturer: "acme".to_string(),
-        name: "DynclibEchoService".to_string(),
+        manufacturer: "actrium".to_string(),
+        name: "EchoService".to_string(),
         version: "0.1.0".to_string(),
     };
 
     let mut candidates = actr_ref
         .discover_route_candidates(&target_type, 1)
         .await
-        .context("Failed to discover dynclib echo server")?;
+        .context("Failed to discover package echo server")?;
 
     let server_id = candidates
         .pop()
-        .ok_or_else(|| anyhow::anyhow!("No dynclib echo server instances found"))?;
+        .ok_or_else(|| anyhow::anyhow!("No package echo server instances found"))?;
 
     info!("🎯 Target server: {:?}", server_id);
     workload.set_server_id(server_id).await;

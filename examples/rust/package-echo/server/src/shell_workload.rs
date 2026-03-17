@@ -1,17 +1,16 @@
-//! Shell Workload — empty placeholder for dynclib executor mode
+//! Shell Workload — empty placeholder for package executor mode
 //!
-//! When a dynclib executor adapter is attached via `ActrNode::with_executor()`,
-//! incoming messages are dispatched through the native shared library instead of the
-//! native `W::Dispatcher::dispatch` path. This shell workload satisfies the type
-//! parameter requirement of `ActrNode<W: Workload>` while never actually handling
-//! messages.
+//! When a package-selected executor is attached via `ActrNode::with_executor()`,
+//! incoming messages are dispatched through that executor instead of the native
+//! `W::Dispatcher::dispatch` path. This shell workload satisfies the type parameter
+//! requirement of `ActrNode<W: Workload>` while never actually handling messages.
 
 use actr_framework::{Context, MessageDispatcher, Workload};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-/// No-op workload used as placeholder when dynclib executor handles all dispatch
+/// No-op workload used as placeholder when the package executor handles all dispatch
 #[derive(Default)]
 pub struct ShellWorkload;
 
@@ -27,9 +26,9 @@ impl MessageDispatcher for ShellDispatcher {
         envelope: RpcEnvelope,
         _ctx: &C,
     ) -> ActorResult<Bytes> {
-        // This should never be reached when dynclib executor is configured
+        // This should never be reached when a package executor is configured
         Err(ActrError::UnknownRoute(format!(
-            "ShellWorkload: dispatch should not be called in dynclib mode (route_key={})",
+            "ShellWorkload: dispatch should not be called in package executor mode (route_key={})",
             envelope.route_key
         )))
     }

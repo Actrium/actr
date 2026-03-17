@@ -12,8 +12,8 @@ pub struct AppSide {
 impl AppSide {
     pub async fn run(self) {
         info!("[App] Started");
-        println!("===== Dynclib Echo Client App =====");
-        println!("Type messages to send to dynclib echo server (type 'quit' to exit):");
+        println!("===== Package Echo Client App =====");
+        println!("Type messages to send to the package echo server (type 'quit' to exit):");
 
         use std::io::Write;
         use tokio::io::{AsyncBufReadExt, BufReader};

@@ -726,6 +726,12 @@ impl executor::ExecutorAdapter for DynclibExecutor {
         call_executor: &'a CallExecutorFn,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
     {
-        self.instance.dispatch(request_bytes, ctx, call_executor)
+        let request_bytes = request_bytes.to_vec();
+        Box::pin(async move {
+            self.instance
+                .dispatch(&request_bytes, ctx, call_executor)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        })
     }
 }

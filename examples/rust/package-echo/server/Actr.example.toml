@@ -2,15 +2,15 @@ edition = 1
 exports = ["../proto/echo.proto"]
 
 [package]
-name = "wasm-echo-server"
-description = "WASM Echo Server - echo service running inside WASM sandbox"
+name = "package-echo-server"
+description = "Package Echo Host - echo service loaded from signed .actr package"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
-tags = ["dev", "example", "wasm"]
+tags = ["dev", "example", "package"]
 
 [package.actr_type]
-manufacturer = "acme"
-name = "WasmEchoService"
+manufacturer = "actrium"
+name = "EchoService"
 version = "0.1.0"
 
 [dependencies]
@@ -21,6 +21,9 @@ url = "ws://localhost:8081/signaling/ws"
 [system.deployment]
 realm_id = 1001
 
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
 [system.discovery]
 visible = true
 
@@ -28,16 +31,16 @@ visible = true
 filter_level = "info"
 tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
-tracing_service_name = "wasm-echo-server"
+tracing_service_name = "package-echo-server"
 
 [system.webrtc]
 force_relay = false
 stun_urls = ["stun:localhost:3478"]
 turn_urls = ["turn:localhost:3478"]
 
-# ACL configuration - allow wasm echo client
+# ACL configuration - allow package echo client
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-type = "acme:wasm-echo-client-app:0.1.0"
+type = "acme:package-echo-client-app:0.1.0"

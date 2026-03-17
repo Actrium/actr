@@ -14,8 +14,8 @@ members = [
     "acl/allowed-client",
     "acl/blocked-client",
     "acl/server",
-    "wasm-echo/server",
-    "wasm-echo/client",
+    "package-echo/server",
+    "package-echo/client",
 ]
 resolver = "2"
 

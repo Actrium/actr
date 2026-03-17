@@ -1,5 +1,5 @@
 [package]
-name = "dynclib-echo-client"
+name = "package-echo-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
