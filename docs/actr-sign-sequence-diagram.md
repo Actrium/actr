@@ -339,4 +339,55 @@ sequenceDiagram
     Signaling-->>App: Actor online
 ```
 
-> ⚠️ **Known issue**: Source mode actors using non-reserved manufacturer names will always fail `verify_actr_type()` because there is no `mfr_package` record. A separate registration channel for source mode is needed.
+---
+
+## Known Issues
+
+### 1. Native Mode cannot register with non-reserved names
+
+Native Mode actors using non-reserved manufacturer names (e.g. `zhj-studio`) will always fail `verify_actr_type()` because there is no `mfr_package` record — they never go through `actr pkg publish`. All current Native Mode demos use the reserved name `acme` to bypass this check.
+
+**Impact**: Native Mode cannot use custom manufacturer names.
+
+**Possible fix**: Provide a separate type registration channel for Native Mode (e.g. `actr register` command that registers metadata only, without requiring an `.actr` package).
+
+### 2. actr pkg publish not fully integrated in demos
+
+`actr pkg publish` is implemented on the CLI side (sign + POST) and the MFR service has the `/mfr/pkg/publish` endpoint. However, current demos (wasm-echo, etc.) only run `actr pkg build` + `actr pkg verify` in `start.sh`, without calling `actr pkg publish`. Under `TrustMode::Development` this is fine (local pubkey verification), but Production mode requires publish for AIS `lookup_package` to pass.
+
+**Impact**: Production mode full pipeline has not been validated end-to-end in demos.
+
+### 3. PSK renewal not implemented
+
+AIS always returns `psk: None` when issuing credentials:
+
+```rust
+// issuer.rs
+psk: None,
+psk_expires_at: None,
+```
+
+By design, Phase 2 renewal should use a PSK token instead of full re-registration (avoiding retransmitting the manifest each time). Currently:
+- AIS does not generate PSK tokens
+- Hyper client's `load_valid_psk()` always returns `None`
+- Every registration goes through Phase 1 full flow
+
+**Impact**: Expired credentials require full re-registration; no lightweight renewal; no identity continuity protection.
+
+### 4. Package distribution logic missing
+
+Currently `actr pkg publish` only registers package **metadata** (manufacturer, name, version, signature) to MFR — it does not upload the `.actr` file itself. MFR is a "registry" (directory), not a package repository.
+
+The full distribution pipeline is missing:
+- **Package storage**: No centralized or decentralized `.actr` package storage service (like npm registry / crates.io)
+- **Package pull**: No `actr pkg pull` or `actr pkg install` command to download `.actr` files from a registry
+- **Version management**: MFR's `mfr_package` table has `type_str` (with version), but no version listing, semver range resolution, etc.
+- **Package discovery**: No `actr pkg search` or public package index page
+
+Currently `.actr` files can only be shared via filesystem or built locally by `start.sh` and loaded directly.
+
+**Impact**: Wasm/Dynclib Mode actors cannot be distributed remotely via a registry — only local build and local use.
+
+### 5. MFR server generates the developer's private key (design question)
+
+During MFR registration, the Ed25519 key pair is generated server-side and the private key is returned via HTTP response ([manager.rs L109](file:///Users/zhj/RustProject/Actrium/actrix/crates/services/mfr/src/manager.rs#L109)). Actrix does not store or use the private key (returned once only), but industry standard (Apple/npm/SSH) is for the developer to generate the key pair locally and only upload the public key. Is this intentional or a design concern?

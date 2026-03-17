@@ -339,4 +339,55 @@ sequenceDiagram
     Signaling-->>App: Actor 在线
 ```
 
-> ⚠️ **已知问题**: 源码模式使用非保留名时，因 `mfr_package` 表无记录，`verify_actr_type()` 校验必定失败，需要为源码模式提供注册通道。
+---
+
+## 已知问题
+
+### 1. Native Mode 非保留名无法注册
+
+源码模式（Native Mode）使用非保留名（如 `zhj-studio`）时，因未经过 `actr pkg publish` 流程，`mfr_package` 表中无对应记录，`verify_actr_type()` 校验必定失败。当前所有 Native Mode 的 demo 均使用保留名 `acme` 绕过。
+
+**影响**: Native Mode 无法使用自定义 manufacturer 名称。
+
+**可能方案**: 为 Native Mode 提供独立的类型注册通道（如 `actr register` 命令仅注册元数据，不需要 `.actr` 包）。
+
+### 2. actr pkg publish 尚未完整集成
+
+`actr pkg publish` 已实现 CLI 端逻辑（签名 + POST），MFR 端也有 `/mfr/pkg/publish` 接口。但当前 demo（wasm-echo 等）的 `start.sh` 中只做了 `actr pkg build` + `actr pkg verify`，没有调用 `actr pkg publish`。在 `TrustMode::Development` 下不需要 publish（使用本地公钥验签），但 Production 模式必须 publish 才能让 AIS `lookup_package` 通过。
+
+**影响**: Production 模式完整链路尚未在 demo 中跑通。
+
+### 3. PSK 续期未实现
+
+AIS 签发 credential 时始终返回 `psk: None`：
+
+```rust
+// issuer.rs
+psk: None,
+psk_expires_at: None,
+```
+
+设计上 Phase 2 续期应使用 PSK token 替代完整注册（避免每次重传 manifest），但目前：
+- AIS 不生成 PSK
+- Hyper 客户端的 `load_valid_psk()` 永远返回 `None`
+- 每次注册都走 Phase 1 完整流程
+
+**影响**: credential 过期后必须重新完整注册，无法轻量续期；无身份连续性保护。
+
+### 4. 包分发逻辑缺失
+
+当前 `actr pkg publish` 只向 MFR 注册包的**元数据**（manufacturer、name、version、签名），但不上传 `.actr` 文件本身。MFR 只是一个"名录"，不是包仓库。
+
+完整的分发链路缺少以下环节：
+- **包存储**: 无中心化或去中心化的 `.actr` 包存储服务（类似 npm registry / crates.io）
+- **包拉取**: 无 `actr pkg pull` 或 `actr pkg install` 命令从 registry 下载 `.actr` 文件
+- **版本管理**: MFR 的 `mfr_package` 表有 `type_str`（含版本），但无版本列表查询、语义化版本范围解析等能力
+- **包发现**: 无 `actr pkg search` 或公共包索引页面
+
+当前 `.actr` 文件只能通过文件系统手动传递，或由 `start.sh` 在本地构建后直接加载。
+
+**影响**: Wasm/Dynclib Mode 的 Actor 无法通过 registry 远程分发，只能本地构建本地使用。
+
+### 5. MFR 服务端生成开发者私钥（设计疑问）
+
+MFR 注册时，Ed25519 密钥对由 Actrix 服务端生成，私钥通过 HTTP 响应返回给开发者（[manager.rs L109](file:///Users/zhj/RustProject/Actrium/actrix/crates/services/mfr/src/manager.rs#L109)）。虽然 Actrix 不存储、不使用该私钥（仅一次性返回），但业界标准做法是开发者本地生成密钥对、仅上传公钥（Apple/npm/SSH 均如此）。这里是故意为之还是存在问题？
