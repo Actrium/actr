@@ -1,5 +1,7 @@
 # Actr 签名认证全链路时序图
 
+> **签名认证核心逻辑：开发者用私钥对安装包签名并发布到平台，平台托管公钥；用户下载包后，用公钥验签——确认包确实由该开发者发布，且内容未被篡改。（目前公私钥是由平台生成的，需要确认）**
+
 ## 概览
 
 ### Wasm / Dynclib Mode
@@ -40,7 +42,7 @@ sequenceDiagram
     Note right of Hyper: ④ 验签 + ⑤ 注册
     Hyper->>Hyper: verify_package(.actr)<br/>Ed25519 verify_strict + SHA-256 hash
     Hyper->>AIS: POST /ais/register + Realm Secret
-    AIS->>MFR: lookup_package(actr_type)
+    AIS->>MFR: verify_manufacturer(manufacturer)
     AIS->>Signer: gRPC Sign(claims)
     AIS-->>Hyper: credential (AIdCredential)
     end
@@ -69,11 +71,13 @@ sequenceDiagram
     App->>App: 加载 actr.toml<br/>ActrSystem::new(config)
     App->>AIS: POST /ais/register + Realm Secret
     AIS->>AIS: validate_realm + verify_secret
-    AIS->>MFR: lookup_package(actr_type)
+    AIS->>MFR: verify_manufacturer(manufacturer)
     alt 保留名 (acme/self/actrix)
         MFR-->>AIS: ✅ 放行
-    else 非保留名
-        MFR-->>AIS: ❌ 无记录 → 校验失败
+    else 已注册且 Active
+        MFR-->>AIS: ✅ 放行
+    else 未注册或非 Active
+        MFR-->>AIS: ❌ 校验失败
         AIS-->>App: Error: ManufacturerNotVerified
     end
     AIS->>Signer: gRPC Sign(claims)
@@ -243,12 +247,12 @@ sequenceDiagram
         Signer-->>Issuer: {key_id, verifying_key, expires_at}
         Issuer->>Validator: persist_key(key_id, verifying_key)<br/>写入 signaling_key_cache.db
     end
-    Issuer->>MFR: lookup_package(actr_type)
+    Issuer->>MFR: verify_manufacturer(manufacturer)
     alt 保留名 (acme/self/actrix)
         MFR-->>Issuer: true（直接放行）
     else 非保留名
-        MFR->>MFR: 查 mfr_package 表
-        MFR-->>Issuer: status == active?
+        MFR->>MFR: 查 mfr 表（Manufacturer）
+        MFR-->>Issuer: 存在且 status == Active?
     end
     Issuer->>Issuer: generate_actr_id()<br/>(Snowflake serial_number)
     Issuer->>Issuer: 构建 IdentityClaims<br/>{realm_id, actor_id, expires_at}
@@ -305,7 +309,7 @@ sequenceDiagram
 ## Native Mode
 
 > 源码模式不经过阶段一~四（无打包、无发布、无验签），直接从 AIS 注册开始。
-> 当前仅保留名（acme/self/actrix）可通过 `lookup_package` 校验。
+> AIS 仅验证 Manufacturer 是否存在且已激活，保留名（acme/self/actrix）直接放行。
 
 ```mermaid
 sequenceDiagram
@@ -322,12 +326,13 @@ sequenceDiagram
     App->>AIS: POST /ais/register (protobuf)<br/>+ X-Realm-Secret header
     AIS->>AIS: validate_realm(realm_id)
     AIS->>AIS: verify_realm_secret
-    AIS->>MFR: lookup_package(actr_type)
+    AIS->>MFR: verify_manufacturer(manufacturer)
     alt 保留名 (acme/self/actrix)
-        MFR-->>AIS: true（放行）
-    else 非保留名
-        MFR->>MFR: 查 mfr_package 表
-        MFR-->>AIS: ❌ 无记录 → 校验失败
+        MFR-->>AIS: ✅ 放行
+    else 已注册且 Active
+        MFR-->>AIS: ✅ 放行
+    else 未注册或非 Active
+        MFR-->>AIS: ❌ 校验失败
         AIS-->>App: Error: ManufacturerNotVerified
     end
     AIS->>Signer: gRPC Sign(key_id, claims_bytes)
@@ -343,51 +348,81 @@ sequenceDiagram
 
 ## 已知问题
 
-### 1. Native Mode 非保留名无法注册
+### 1. AIS 注册授权应验证 Manufacturer 而非包发布记录
 
-源码模式（Native Mode）使用非保留名（如 `zhj-studio`）时，因未经过 `actr pkg publish` 流程，`mfr_package` 表中无对应记录，`verify_actr_type()` 校验必定失败。当前所有 Native Mode 的 demo 均使用保留名 `acme` 绕过。
+当前 `verify_actr_type()` 检查 `mfr_package` 表中是否存在对应的 `type_str` 记录。这导致 Native Mode 使用非保留名时必定失败（因为没经过 `actr pkg publish`）。实际上，Hyper 层已经完成了包完整性验签（Ed25519 签名 + SHA-256 hash），AIS 不需要重复验证包内容，只需确认 **Manufacturer（制造商）是否存在且处于激活状态**。
 
-**影响**: Native Mode 无法使用自定义 manufacturer 名称。
+**解决方案**: 将 `verify_actr_type()` 中的 `lookup_package(type_str)` 改为查询 `mfr` 表（Manufacturer 表），仅验证 `actr_type.manufacturer` 对应的 MFR 记录是否存在且 `status == Active`。保留名（acme/self/actrix）继续直接放行。`mfr_package` 表保留用于包分发和版本管理，不再作为注册授权的前置条件。
 
-**可能方案**: 为 Native Mode 提供独立的类型注册通道（如 `actr register` 命令仅注册元数据，不需要 `.actr` 包）。
-
-### 2. actr pkg publish 尚未完整集成
-
-`actr pkg publish` 已实现 CLI 端逻辑（签名 + POST），MFR 端也有 `/mfr/pkg/publish` 接口。但当前 demo（wasm-echo 等）的 `start.sh` 中只做了 `actr pkg build` + `actr pkg verify`，没有调用 `actr pkg publish`。在 `TrustMode::Development` 下不需要 publish（使用本地公钥验签），但 Production 模式必须 publish 才能让 AIS `lookup_package` 通过。
-
-**影响**: Production 模式完整链路尚未在 demo 中跑通。
-
-### 3. PSK 续期未实现
-
-AIS 签发 credential 时始终返回 `psk: None`：
+**当前实现** ([issuer.rs](file:///Users/zhj/RustProject/Actrium/actrix/crates/services/ais/src/issuer.rs#L604-L637)):
 
 ```rust
-// issuer.rs
-psk: None,
-psk_expires_at: None,
+async fn verify_actr_type(&self, actr_type: &ActrType) -> Result<(), AidError> {
+    let type_str = format!("{}:{}:{}", actr_type.manufacturer, actr_type.name, actr_type.version);
+
+    if actrix_mfr::reserved::is_reserved(&actr_type.manufacturer) {
+        return Ok(());  // 保留名直接放行
+    }
+
+    // ❌ 查 mfr_package 表 — Native Mode 没有发布过包，必定失败
+    let valid = actrix_mfr::manager::lookup_package(&pool, &type_str).await?;
+    if !valid {
+        return Err(AidError::ManufacturerNotVerified);
+    }
+    Ok(())
+}
 ```
 
-设计上 Phase 2 续期应使用 PSK token 替代完整注册（避免每次重传 manifest），但目前：
-- AIS 不生成 PSK
-- Hyper 客户端的 `load_valid_psk()` 永远返回 `None`
-- 每次注册都走 Phase 1 完整流程
+**修改后**:
 
-**影响**: credential 过期后必须重新完整注册，无法轻量续期；无身份连续性保护。
+```rust
+async fn verify_actr_type(&self, actr_type: &ActrType) -> Result<(), AidError> {
+    if actrix_mfr::reserved::is_reserved(&actr_type.manufacturer) {
+        return Ok(());  // 保留名直接放行
+    }
 
-### 4. 包分发逻辑缺失
+    // ✅ 查 mfr 表 — 只验证 Manufacturer 是否存在且激活
+    let mfr = Manufacturer::get_by_name(&pool, &actr_type.manufacturer)
+        .await?
+        .ok_or(AidError::ManufacturerNotVerified)?;
 
-当前 `actr pkg publish` 只向 MFR 注册包的**元数据**（manufacturer、name、version、签名），但不上传 `.actr` 文件本身。MFR 只是一个"名录"，不是包仓库。
+    if mfr.status != MfrStatus::Active {
+        return Err(AidError::ManufacturerNotVerified);
+    }
+    Ok(())
+}
+```
 
-完整的分发链路缺少以下环节：
-- **包存储**: 无中心化或去中心化的 `.actr` 包存储服务（类似 npm registry / crates.io）
-- **包拉取**: 无 `actr pkg pull` 或 `actr pkg install` 命令从 registry 下载 `.actr` 文件
-- **版本管理**: MFR 的 `mfr_package` 表有 `type_str`（含版本），但无版本列表查询、语义化版本范围解析等能力
-- **包发现**: 无 `actr pkg search` 或公共包索引页面
+### 2. PSK 续期未实现
 
-当前 `.actr` 文件只能通过文件系统手动传递，或由 `start.sh` 在本地构建后直接加载。
+AIS 签发 credential 时始终返回 `psk: None`，每次注册都走完整流程，无法轻量续期。
 
-**影响**: Wasm/Dynclib Mode 的 Actor 无法通过 registry 远程分发，只能本地构建本地使用。
+**解决方案**: AIS `issue_credential` 时生成 HMAC-SHA256 PSK（使用 `actr_id + actr_type + realm_id + expires_at` 作为输入），随 `RegisterOk` 返回。Hyper 客户端在 credential 过期前使用 PSK 调用 `/ais/renew` 接口续期。
 
-### 5. MFR 服务端生成开发者私钥（设计疑问）
+### 3. 包分发逻辑缺失
+
+`actr pkg publish` 只向 MFR 注册元数据（manifest 文本 + signature），不上传 `.actr` 文件。MFR 无法向 Hyper 节点分发包，也无法验证 binary_hash 是否真正匹配二进制内容。当前 MFR 的 `publish_package` 只做 manifest 签名验证（`crypto::verify_signature`），不验包内容（actrix 未依赖 `actr_pack` crate）。
+
+**解决方案 — 上传整包**:
+
+1. **`publish` 改为上传整个 `.actr` 包**，由于 `build` 已将签名（`actr.sig`）打包进 `.actr` 文件，publish 请求中不再需要独立的 `signature` 字段：
+   ```bash
+   # 之前: actr pkg publish --package .actr --keychain mfr.json --endpoint URL
+   # 之后: actr pkg publish --package .actr --endpoint URL
+   ```
+   MFR 服务端收到 `.actr` 包后：
+   - 从 ZIP 中提取 `actr.toml` → 得到 manufacturer / name / version
+   - 从 ZIP 中提取 `actr.sig` → 得到签名
+   - 查数据库获取该 manufacturer 的 MFR 公钥
+   - 调用 `actr_pack::verify(&package_bytes, &mfr_pubkey)` 完整验证（包括签名 + binary hash）
+   - 验证通过 → 存储 `.actr` 包到对象存储（S3/MinIO）→ 记录到 `mfr_package` 表
+
+2. **新增 `actr pkg pull <actr_type>` 命令**，从 MFR 下载 `.actr` 包：
+   - MFR 新增 `GET /mfr/pkg/download/{type_str}` 接口
+   - Hyper 节点下载后调用 `actr_pack::verify()` 验证
+
+### 4. MFR 服务端生成开发者私钥（设计疑问）
 
 MFR 注册时，Ed25519 密钥对由 Actrix 服务端生成，私钥通过 HTTP 响应返回给开发者（[manager.rs L109](file:///Users/zhj/RustProject/Actrium/actrix/crates/services/mfr/src/manager.rs#L109)）。虽然 Actrix 不存储、不使用该私钥（仅一次性返回），但业界标准做法是开发者本地生成密钥对、仅上传公钥（Apple/npm/SSH 均如此）。这里是故意为之还是存在问题？
+
+**解决方案**: 改为开发者本地 `actr pkg keygen` 生成密钥对，MFR 注册时通过 `/mfr/apply` 上传公钥，服务端不再生成也不接触私钥。
