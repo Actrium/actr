@@ -327,7 +327,7 @@ sequenceDiagram
     AIS->>AIS: validate_realm(realm_id)
     AIS->>AIS: verify_realm_secret
     AIS->>MFR: verify_manufacturer(manufacturer)
-    alt Reserved name (acme/self/actrix)
+    alt Verified actor belongs to current developer, passed check, self-responsible
         MFR-->>AIS: ✅ bypass
     else Registered and Active
         MFR-->>AIS: ✅ bypass
@@ -401,7 +401,7 @@ AIS always returns `psk: None` when issuing credentials. Every registration goes
 
 ### 3. Package distribution logic missing
 
-`actr pkg publish` only registers metadata (manifest text + signature) to MFR — it does not upload the `.actr` file. MFR cannot distribute packages to Hyper nodes, nor can it verify that binary_hash actually matches the binary content. Currently MFR's `publish_package` only verifies the manifest signature (`crypto::verify_signature`) but not the package contents (actrix does not depend on the `actr_pack` crate).
+`actr pkg publish` only registers metadata (manifest text + signature) to MFR — it does not upload the `.actr` file. MFR has no package storage or download capabilities. Hyper nodes cannot pull packages from MFR; `.actr` files can only be shared via filesystem or built and loaded locally.
 
 **Solution — upload the full package**:
 
