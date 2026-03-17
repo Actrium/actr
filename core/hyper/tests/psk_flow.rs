@@ -9,11 +9,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use actr_hyper::{
-    ActorStore, CredentialBootstrapRequest, Hyper, HyperConfig, HyperError, PackageManifest,
-    TrustMode,
-};
-use actr_protocol::{Acl, Realm, ServiceSpec};
+use actr_hyper::{ActorStore, Hyper, HyperConfig, HyperError, PackageManifest, TrustMode};
+use actr_protocol::{Acl, ServiceSpec};
 use actr_protocol::{ErrorResponse, RegisterResponse, register_response};
 use ed25519_dalek::SigningKey;
 use prost::Message;
@@ -43,21 +40,19 @@ fn fake_manifest() -> PackageManifest {
     }
 }
 
-fn bootstrap_request() -> CredentialBootstrapRequest {
-    CredentialBootstrapRequest {
-        realm: Realm { realm_id: 1 },
-        service_spec: Some(ServiceSpec {
-            name: "EchoService".to_string(),
-            description: Some("integration test service".to_string()),
-            fingerprint: "fp-123".to_string(),
-            protobufs: vec![],
-            published_at: None,
-            tags: vec!["latest".to_string()],
-        }),
-        acl: Some(Acl { rules: vec![] }),
-        service: Some("EchoService:fp-123".to_string()),
-        ws_address: Some("ws://127.0.0.1:9999".to_string()),
-    }
+fn test_service_spec() -> Option<ServiceSpec> {
+    Some(ServiceSpec {
+        name: "EchoService".to_string(),
+        description: Some("integration test service".to_string()),
+        fingerprint: "fp-123".to_string(),
+        protobufs: vec![],
+        published_at: None,
+        tags: vec!["latest".to_string()],
+    })
+}
+
+fn test_acl() -> Option<Acl> {
+    Some(Acl { rules: vec![] })
 }
 
 fn now_secs() -> u64 {
@@ -156,7 +151,7 @@ async fn first_registration_uses_manifest_auth_and_stores_psk() {
     let manifest = fake_manifest();
 
     let credential = hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
 
@@ -209,7 +204,7 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
         .unwrap();
 
     let credential = hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
 
@@ -261,7 +256,7 @@ async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
         .unwrap();
 
     hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
 
@@ -301,7 +296,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
 
     // First registration (manifest auth)
     hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
     mock1.assert_async().await;
@@ -318,7 +313,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
 
     // Second registration (PSK auth, since first already stored PSK)
     hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
     mock2.assert_async().await;
@@ -342,7 +337,13 @@ async fn ais_error_propagates_as_bootstrap_failed() {
     let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
 
     let result = hyper
-        .bootstrap_credential(&fake_manifest(), &server.url(), bootstrap_request())
+        .bootstrap_credential(
+            &fake_manifest(),
+            &server.url(),
+            1,
+            test_service_spec(),
+            test_acl(),
+        )
         .await;
 
     assert!(
@@ -362,7 +363,9 @@ async fn ais_unreachable_propagates_error() {
         .bootstrap_credential(
             &fake_manifest(),
             "http://127.0.0.1:19999",
-            bootstrap_request(),
+            1,
+            test_service_spec(),
+            test_acl(),
         )
         .await;
 
@@ -391,7 +394,7 @@ async fn first_registration_persists_signing_pubkey() {
     let manifest = fake_manifest();
 
     hyper
-        .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+        .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
         .await
         .unwrap();
 

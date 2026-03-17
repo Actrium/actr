@@ -352,26 +352,6 @@ use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Metadata sent to AIS during credential bootstrap.
-///
-/// Hyper manages the authentication material (`manifest_json`, `mfr_signature`, `psk_token`)
-/// internally. The caller only provides the registration metadata that should accompany the
-/// bootstrap request.
-#[derive(Debug, Clone)]
-pub struct CredentialBootstrapRequest {
-    /// Target realm to register into.
-    pub realm: Realm,
-    /// Optional protobuf API metadata published to discovery.
-    pub service_spec: Option<ServiceSpec>,
-    /// Optional access-control policy attached to the actor.
-    pub acl: Option<Acl>,
-    /// Optional compact service reference (`ServiceName:fingerprint`).
-    pub service: Option<String>,
-    /// Optional WebSocket direct-connect address published to discovery.
-    pub ws_address: Option<String>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 /// Hyper runtime instance
 ///
 /// Process-level singleton, initialized via `Hyper::init()`.
@@ -548,25 +528,16 @@ impl Hyper {
     pub async fn load_package_executor(&self, bytes: &[u8]) -> HyperResult<LoadedPackageExecutor> {
         let manifest = self.verify_package(bytes).await?;
         let backend = select_package_execution_backend(&manifest)?;
-        let executor = self.load_executor_for_verified_package(bytes, &manifest, backend)?;
+        let executor = match backend {
+            PackageExecutionBackend::Wasm => self.load_wasm_executor(bytes, &manifest),
+            PackageExecutionBackend::Cdylib => self.load_dynclib_executor(bytes, &manifest),
+        }?;
 
         Ok(LoadedPackageExecutor {
             manifest,
             backend,
             executor,
         })
-    }
-
-    fn load_executor_for_verified_package(
-        &self,
-        bytes: &[u8],
-        manifest: &PackageManifest,
-        backend: PackageExecutionBackend,
-    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
-        match backend {
-            PackageExecutionBackend::Wasm => self.load_wasm_executor(bytes, manifest),
-            PackageExecutionBackend::Cdylib => self.load_dynclib_executor(bytes, manifest),
-        }
     }
 
     fn load_wasm_executor(
@@ -706,18 +677,20 @@ impl Hyper {
     ///
     /// - `manifest`: verified package manifest (from `verify_package`)
     /// - `ais_endpoint`: AIS HTTP address, e.g. `"http://ais.example.com:8080"`
-    /// - `request`: registration metadata to publish alongside the bootstrap request
+    /// - `realm_id`: target Realm ID
+    /// - `service_spec`: optional protobuf API metadata published to discovery
+    /// - `acl`: optional access-control policy attached to the actor
     pub async fn bootstrap_credential(
         &self,
         manifest: &PackageManifest,
         ais_endpoint: &str,
-        request: CredentialBootstrapRequest,
+        realm_id: u32,
+        service_spec: Option<ServiceSpec>,
+        acl: Option<Acl>,
     ) -> HyperResult<register_response::RegisterOk> {
         info!(
             actr_type = manifest.actr_type_str(),
-            ais_endpoint,
-            realm_id = request.realm.realm_id,
-            "starting credential bootstrap with AIS"
+            ais_endpoint, realm_id, "starting credential bootstrap with AIS"
         );
 
         // 1. Open the Actor's storage (platform-agnostic KV store or ActorStore)
@@ -738,13 +711,30 @@ impl Hyper {
         // 3. Build RegisterRequest and send to AIS
         let ais = AisClient::new(ais_endpoint);
 
+        let actr_type = ActrType {
+            manufacturer: manifest.manufacturer.clone(),
+            name: manifest.actr_name.clone(),
+            version: manifest.version.clone(),
+        };
+        let realm = Realm { realm_id };
+
         let response = if let Some(psk_token) = valid_psk {
             // Phase 2: PSK renewal
             debug!(
                 actr_type = manifest.actr_type_str(),
                 "renewing credential using PSK"
             );
-            let req = build_bootstrap_register_request(manifest, &request, Some(psk_token))?;
+            let req = RegisterRequest {
+                actr_type,
+                realm,
+                service_spec,
+                acl,
+                service: None,
+                ws_address: None,
+                manifest_json: None,
+                mfr_signature: None,
+                psk_token: Some(psk_token.into()),
+            };
             ais.register_with_psk(req).await?
         } else {
             // Phase 1: first registration, carrying MFR manifest
@@ -752,7 +742,21 @@ impl Hyper {
                 actr_type = manifest.actr_type_str(),
                 "first registration: registering with AIS using MFR manifest"
             );
-            let req = build_bootstrap_register_request(manifest, &request, None)?;
+
+            // serialize manifest to JSON
+            let manifest_json = build_manifest_json(manifest)?;
+
+            let req = RegisterRequest {
+                actr_type,
+                realm,
+                service_spec,
+                acl,
+                service: None,
+                ws_address: None,
+                manifest_json: Some(manifest_json.into()),
+                mfr_signature: Some(manifest.signature.clone().into()),
+                psk_token: None,
+            };
             ais.register_with_manifest(req).await?
         };
 
@@ -869,38 +873,6 @@ async fn load_valid_psk_dyn(store: &dyn KvStore) -> HyperResult<Option<Vec<u8>>>
     check_psk_expiry(token, expires_at_raw)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn build_bootstrap_register_request(
-    manifest: &PackageManifest,
-    request: &CredentialBootstrapRequest,
-    psk_token: Option<Vec<u8>>,
-) -> HyperResult<RegisterRequest> {
-    let mut register_request = RegisterRequest {
-        actr_type: ActrType {
-            manufacturer: manifest.manufacturer.clone(),
-            name: manifest.actr_name.clone(),
-            version: manifest.version.clone(),
-        },
-        realm: request.realm.clone(),
-        service_spec: request.service_spec.clone(),
-        acl: request.acl.clone(),
-        service: request.service.clone(),
-        ws_address: request.ws_address.clone(),
-        manifest_json: None,
-        mfr_signature: None,
-        psk_token: None,
-    };
-
-    if let Some(psk_token) = psk_token {
-        register_request.psk_token = Some(psk_token.into());
-    } else {
-        register_request.manifest_json = Some(build_manifest_json(manifest)?.into());
-        register_request.mfr_signature = Some(manifest.signature.clone().into());
-    }
-
-    Ok(register_request)
-}
-
 /// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
 ///
 /// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
@@ -1008,23 +980,50 @@ fn select_package_execution_backend(
         return Ok(PackageExecutionBackend::Wasm);
     }
 
-    if is_native_target_triple(&manifest.binary_target) {
+    if is_compatible_native_target(&manifest.binary_target) {
         return Ok(PackageExecutionBackend::Cdylib);
     }
 
     Err(HyperError::InvalidManifest(format!(
-        "unsupported binary target `{}`; expected `wasm32-*` or a native Rust target triple",
-        manifest.binary_target
+        "unsupported binary target `{}` for host `{}-{}`; expected `wasm32-*` or a native target matching this host",
+        manifest.binary_target,
+        std::env::consts::ARCH,
+        std::env::consts::OS,
     )))
 }
 
+/// Check that `target` is a valid Rust target triple compatible with the current host.
+///
+/// A target triple has at least 3 segments (arch-vendor-os or arch-vendor-os-env).
+/// We verify that the arch and OS components match the running host to reject
+/// cross-platform cdylib packages early, rather than failing at `dlopen` time.
 #[cfg(not(target_arch = "wasm32"))]
-fn is_native_target_triple(target: &str) -> bool {
-    target
-        .split('-')
-        .filter(|segment| !segment.is_empty())
-        .count()
-        >= 3
+fn is_compatible_native_target(target: &str) -> bool {
+    let segments: Vec<&str> = target.split('-').filter(|s| !s.is_empty()).collect();
+    if segments.len() < 3 {
+        return false;
+    }
+
+    let target_arch = segments[0];
+    // OS is typically the third segment (arch-vendor-os[-env]).
+    let target_os = segments[2];
+
+    // Normalize arch names: Rust target triples use different names than std::env::consts::ARCH.
+    let arch_matches = match (target_arch, std::env::consts::ARCH) {
+        (a, b) if a == b => true,
+        ("x86_64", "x86_64") => true,
+        ("aarch64", "aarch64") => true,
+        _ => false,
+    };
+
+    // Normalize OS names: Rust target triples use e.g. "darwin" while consts::OS is "macos".
+    let os_matches = match (target_os, std::env::consts::OS) {
+        (a, b) if a == b => true,
+        ("darwin", "macos") | ("macos", "darwin") => true,
+        _ => false,
+    };
+
+    arch_matches && os_matches
 }
 
 #[cfg(all(
@@ -1341,60 +1340,51 @@ mod tests {
         .encode_to_vec()
     }
 
-    fn bootstrap_request() -> CredentialBootstrapRequest {
-        CredentialBootstrapRequest {
-            realm: Realm { realm_id: 1 },
-            service_spec: Some(ServiceSpec {
-                name: "EchoService".to_string(),
-                description: Some("test service".to_string()),
-                fingerprint: "fp-123".to_string(),
-                protobufs: vec![],
-                published_at: None,
-                tags: vec!["latest".to_string()],
-            }),
-            acl: Some(Acl { rules: vec![] }),
-            service: Some("EchoService:fp-123".to_string()),
-            ws_address: Some("ws://127.0.0.1:9999".to_string()),
-        }
+    fn test_service_spec() -> Option<ServiceSpec> {
+        Some(ServiceSpec {
+            name: "EchoService".to_string(),
+            description: Some("test service".to_string()),
+            fingerprint: "fp-123".to_string(),
+            protobufs: vec![],
+            published_at: None,
+            tags: vec!["latest".to_string()],
+        })
+    }
+
+    fn test_acl() -> Option<Acl> {
+        Some(Acl { rules: vec![] })
     }
 
     #[test]
-    fn bootstrap_request_carries_registration_metadata() {
-        let manifest = fake_manifest();
-        let request = bootstrap_request();
+    fn compatible_native_target_matches_current_host() {
+        // Current host should always match itself.
+        let current = format!(
+            "{}-unknown-{}",
+            std::env::consts::ARCH,
+            if std::env::consts::OS == "macos" {
+                "darwin"
+            } else {
+                std::env::consts::OS
+            }
+        );
+        assert!(
+            is_compatible_native_target(&current),
+            "current host target `{current}` should be compatible"
+        );
+    }
 
-        let manifest_register =
-            build_bootstrap_register_request(&manifest, &request, None).unwrap();
-        assert_eq!(manifest_register.realm.realm_id, 1);
-        assert_eq!(
-            manifest_register
-                .service_spec
-                .as_ref()
-                .map(|spec| spec.fingerprint.as_str()),
-            Some("fp-123")
-        );
-        assert!(manifest_register.acl.is_some(), "ACL should be forwarded");
-        assert_eq!(
-            manifest_register.service.as_deref(),
-            Some("EchoService:fp-123")
-        );
-        assert_eq!(
-            manifest_register.ws_address.as_deref(),
-            Some("ws://127.0.0.1:9999")
-        );
-        assert!(manifest_register.manifest_json.is_some());
-        assert!(manifest_register.mfr_signature.is_some());
-        assert!(manifest_register.psk_token.is_none());
+    #[test]
+    fn compatible_native_target_rejects_cross_platform() {
+        // A target for a different arch/os should be rejected.
+        assert!(!is_compatible_native_target("riscv64gc-unknown-linux-gnu"));
+        assert!(!is_compatible_native_target("s390x-unknown-linux-gnu"));
+    }
 
-        let psk_register =
-            build_bootstrap_register_request(&manifest, &request, Some(b"existing-psk".to_vec()))
-                .unwrap();
-        assert_eq!(
-            psk_register.psk_token.as_deref(),
-            Some(&b"existing-psk"[..])
-        );
-        assert!(psk_register.manifest_json.is_none());
-        assert!(psk_register.mfr_signature.is_none());
+    #[test]
+    fn compatible_native_target_rejects_short_triples() {
+        assert!(!is_compatible_native_target("invalid-target"));
+        assert!(!is_compatible_native_target("single"));
+        assert!(!is_compatible_native_target(""));
     }
 
     /// First registration with no PSK should store the PSK returned by AIS.
@@ -1417,7 +1407,7 @@ mod tests {
 
         let manifest = fake_manifest();
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
             .await;
 
         mock.assert_async().await;
@@ -1477,7 +1467,7 @@ mod tests {
             .unwrap();
 
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
             .await;
 
         mock.assert_async().await;
@@ -1527,7 +1517,7 @@ mod tests {
             .unwrap();
 
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
             .await;
 
         mock.assert_async().await;
@@ -1566,7 +1556,7 @@ mod tests {
 
         let manifest = fake_manifest();
         let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), bootstrap_request())
+            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
             .await;
 
         assert!(

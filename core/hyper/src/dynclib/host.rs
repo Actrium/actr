@@ -580,10 +580,15 @@ impl std::fmt::Debug for DynclibInstance {
 unsafe impl Send for DynclibInstance {}
 
 /// Executor wrapper that keeps the loaded library alive for the lifetime of the actor instance.
+///
+/// Field order matters: Rust drops fields in declaration order, so `instance`
+/// (which holds raw function pointers into the loaded library) must be dropped
+/// before `_host` (which unloads the library), and `_host` before `_temp_file`
+/// (which deletes the on-disk shared object).
 pub(crate) struct DynclibExecutor {
+    instance: DynclibInstance,
     _host: DynclibHost,
     _temp_file: Option<tempfile::NamedTempFile>,
-    instance: DynclibInstance,
 }
 
 impl DynclibExecutor {
@@ -593,9 +598,9 @@ impl DynclibExecutor {
         temp_file: tempfile::NamedTempFile,
     ) -> Self {
         Self {
+            instance,
             _host: host,
             _temp_file: Some(temp_file),
-            instance,
         }
     }
 }

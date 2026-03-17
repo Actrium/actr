@@ -12,7 +12,7 @@ mod shell_workload;
 use std::path::PathBuf;
 
 use actr_hyper::{
-    ActrSystem, CredentialBootstrapRequest, Hyper, HyperConfig, TrustMode, init_observability,
+    ActrSystem, Hyper, HyperConfig, TrustMode, init_observability,
 };
 use actr_platform_native::NativePlatformProvider;
 use anyhow::{Context, Result, anyhow, ensure};
@@ -118,13 +118,9 @@ async fn main() -> Result<()> {
         .bootstrap_credential(
             &package_manifest,
             &ais_endpoint,
-            CredentialBootstrapRequest {
-                realm: config.realm.clone(),
-                service_spec: config.calculate_service_spec(),
-                acl: config.acl.clone(),
-                service: None,
-                ws_address: None,
-            },
+            config.realm.realm_id,
+            config.calculate_service_spec(),
+            config.acl.clone(),
         )
         .await
         .inspect_err(|e| {
