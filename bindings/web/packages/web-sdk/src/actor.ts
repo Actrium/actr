@@ -90,6 +90,7 @@ export class Actor {
                 serviceWorkerUrl: this.config.serviceWorkerPath || '/actor.sw.js',
                 webrtcConfig: {
                     iceServers: this.config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
+                    iceTransportPolicy: this.config.iceTransportPolicy,
                 },
                 runtimeConfig: this.config.runtimeConfig as unknown as Record<string, unknown> | undefined,
             });

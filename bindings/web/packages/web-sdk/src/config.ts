@@ -67,6 +67,9 @@ export interface ActorSystemConfig {
   /** STUN/TURN server configuration */
   iceServers?: RTCIceServer[];
 
+  /** ICE transport policy ('all' or 'relay' for force_relay mode) */
+  iceTransportPolicy?: RTCIceTransportPolicy;
+
   /** Runtime config for the Service Worker WASM layer */
   runtimeConfig?: SwRuntimeConfig;
 }
