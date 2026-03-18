@@ -109,6 +109,8 @@ impl PackageVerifier {
             manufacturer: verified.manufacturer,
             actr_name: verified.name,
             version: verified.version,
+            binary_path: verified.binary.path,
+            binary_target: verified.binary.target,
             binary_hash: hex_to_32_bytes(&verified.binary.hash).unwrap_or_default(),
             capabilities: vec![],
             signature: vec![], // not needed after verification

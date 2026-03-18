@@ -1,4 +1,4 @@
-//! Client workload — forwards echo requests to the remote dynclib server
+//! Client workload — forwards echo requests to the remote package-backed server
 
 use bytes::Bytes;
 use std::sync::Arc;
@@ -78,9 +78,9 @@ impl MessageDispatcher for ClientDispatcher {
             }
         };
 
-        info!("[ClientWorkload] Forwarding to dynclib echo server...");
+        info!("[ClientWorkload] Forwarding to package echo server...");
 
-        // Call remote dynclib server via Dest::Actor
+        // Call the remote package-backed server via Dest::Actor
         let response: EchoResponse = ctx.call(&Dest::Actor(server_id), request).await?;
 
         info!(
