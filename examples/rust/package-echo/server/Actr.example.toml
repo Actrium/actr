@@ -15,9 +15,6 @@ version = "0.1.0"
 
 [dependencies]
 
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
 
