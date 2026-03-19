@@ -39,7 +39,7 @@ fn server_type() -> &'static ActrType {
     SERVER_TYPE.get_or_init(|| ActrType {
         manufacturer: "acme".to_string(),
         name: "DataStreamPeerConcurrentServer".to_string(),
-        version: "v1".to_string(),
+        version: "1.0.0".to_string(),
     })
 }
 

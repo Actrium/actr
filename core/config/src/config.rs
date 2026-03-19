@@ -481,7 +481,7 @@ mod tests {
                     actr_type: Some(ActrType {
                         manufacturer: "common".to_string(),
                         name: "logging-service".to_string(),
-                        version: "v1".to_string(),
+                        version: "1.0.0".to_string(),
                     }),
                     service: None,
                 },

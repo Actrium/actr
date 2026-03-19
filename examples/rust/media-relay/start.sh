@@ -222,17 +222,17 @@ echo "   realm_id=$REALM_ID secret_hash=${SECRET_HASH:0:16}..."
 sqlite3 "$ACTRIX_DB" <<EOF
 INSERT OR REPLACE INTO mfr (name, public_key, status, created_at, verified_at) VALUES ('actr-example', '', 'verified', strftime('%s','now'), strftime('%s','now'));
 INSERT OR REPLACE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at)
-  SELECT id, 'actr-example', 'RelayService', 'v1', 'actr-example:RelayService:v1', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
+  SELECT id, 'actr-example', 'RelayService', '1.0.0', 'actr-example:RelayService:1.0.0', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
   ON CONFLICT(manufacturer, name, version) DO UPDATE SET status='active';
 INSERT OR REPLACE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at)
-  SELECT id, 'actr-example', 'RelayClient', 'v1', 'actr-example:RelayClient:v1', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
+  SELECT id, 'actr-example', 'RelayClient', '1.0.0', 'actr-example:RelayClient:1.0.0', '{}', '', 'active', strftime('%s','now') FROM mfr WHERE name='actr-example'
   ON CONFLICT(manufacturer, name, version) DO UPDATE SET status='active';
 INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'MediaRelay Realm', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');
 DELETE FROM actoracl WHERE realm_id = $REALM_ID;
 INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayClient:v1', 'actr-example:RelayService:v1', 1);
+VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayClient:1.0.0', 'actr-example:RelayService:1.0.0', 1);
 INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayService:v1', 'actr-example:RelayClient:v1', 1);
+VALUES ($REALM_ID, $REALM_ID, 'actr-example:RelayService:1.0.0', 'actr-example:RelayClient:1.0.0', 1);
 EOF
 
 echo -e "${GREEN}✅ Realm and ACL setup completed${NC}"

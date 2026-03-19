@@ -46,8 +46,8 @@ object RemoteServiceRegistry {
      * Map of route key prefix to actor type for remote services
      */
     val remoteRoutes: Map<String, ActrType> = mapOf(
-        "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService"),
-        "file_transfer.FileTransfer" to ActrType(manufacturer = "acme", name = "FileTransferService"),
+        "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0"),
+        "file_transfer.FileTransfer" to ActrType(manufacturer = "acme", name = "FileTransferService", version = "1.0.0"),
     )
 
     /**

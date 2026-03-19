@@ -373,7 +373,7 @@ impl NetworkServiceDiscovery {
 
         entry.actr_type.manufacturer == lookup_type.manufacturer
             && entry.actr_type.name == lookup_type.name
-            && (lookup_type.version.is_empty() || entry.actr_type.version == lookup_type.version)
+            && entry.actr_type.version == lookup_type.version
     }
 }
 
@@ -534,7 +534,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "echo".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: Realm { realm_id: 1001 },
         }

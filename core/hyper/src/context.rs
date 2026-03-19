@@ -220,7 +220,7 @@ impl RuntimeContext {
             return Some(dep.fingerprint.clone());
         }
 
-        // Allow lookups without version to match lock entries that include one.
+        // Fallback to scanning dependencies when the exact key is not present.
         for dep in &actr_lock.dependencies {
             if Self::matches_dependency_actr_type(&dep.actr_type, target_type) {
                 return Some(dep.fingerprint.clone());
@@ -232,12 +232,12 @@ impl RuntimeContext {
 
     fn matches_dependency_actr_type(raw: &str, target_type: &ActrType) -> bool {
         let Ok(dep_type) = ActrType::from_string_repr(raw) else {
-            return raw == format!("{}:{}", target_type.manufacturer, target_type.name);
+            return false;
         };
 
         dep_type.manufacturer == target_type.manufacturer
             && dep_type.name == target_type.name
-            && (target_type.version.is_empty() || dep_type.version == target_type.version)
+            && dep_type.version == target_type.version
     }
 
     /// Internal: Send discovery request to signaling server

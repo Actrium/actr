@@ -46,7 +46,7 @@ object RemoteServiceRegistry {
                                     manufacturer = "acme",
                                     name = "DataStreamConcurrentServer"
                             ),
-                    "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService"),
+                    "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0"),
             )
 
     /** Check if a route key belongs to a remote service */

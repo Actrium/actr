@@ -83,11 +83,11 @@ use std::str::FromStr;
 use actr_protocol::uri::{ActrUri, ActrUriBuilder};
 
 // 从字符串解析
-let uri = "actr://101:acme+user-service@v1".parse::<ActrUri>().unwrap();
+let uri = "actr://101:acme+user-service@1.0.0".parse::<ActrUri>().unwrap();
 assert_eq!(uri.realm, 101);
 assert_eq!(uri.manufacturer, "acme");
 assert_eq!(uri.name, "user-service");
-assert_eq!(uri.version, "v1");
+assert_eq!(uri.version, "1.0.0");
 assert_eq!(uri.actor_type(), "acme+user-service");
 
 // 使用构建器创建
@@ -97,7 +97,7 @@ let uri = ActrUriBuilder::new()
     .name("user-service")
     .build()
     .unwrap();
-assert_eq!(uri.to_string(), "actr://101:acme+user-service@v1");
+assert_eq!(uri.to_string(), "actr://101:acme+user-service@1.0.0");
 ```
 
 #### c) 错误处理 (`error.rs`)

@@ -228,7 +228,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                     ActrType {
                         manufacturer: manufacturer.to_string(),
                         name: service_name.clone(),
-                        version: "v1".to_string(),
+                        version: "1.0.0".to_string(),
                     }
                     .to_string_repr()
                 });
@@ -443,7 +443,7 @@ mod tests {
         let request = CodeGeneratorRequest {
             file_to_generate: vec!["local.proto".to_string(), "remote/echo.proto".to_string()],
             parameter: Some(
-                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias:v1"
+                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias:1.0.0"
                     .to_string(),
             ),
             proto_file: vec![

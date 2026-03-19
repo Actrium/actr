@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "greeter.GreeterService".to_string(),
-        version: "v1".to_string(),
+        version: "1.0.0".to_string(),
     };
     
     info!("🔍 Discovering greeter.GreeterService...");

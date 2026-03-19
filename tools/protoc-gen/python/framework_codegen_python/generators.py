@@ -15,7 +15,7 @@ class RemoteServiceInfo:
     """Information about a remote service for proxying."""
     service_name: str
     route_keys: List[str]
-    actr_type: str  # e.g., "acme:DataStreamConcurrentServer[:version]"
+    actr_type: str  # e.g., "acme:DataStreamConcurrentServer:1.0.0"
 
 
 # ============================================================================
@@ -382,7 +382,7 @@ def parse_actr_type(actr_type: str) -> tuple[str, str, str]:
     if len(parts) < 2 or len(parts) > 3 or not parts[0] or not parts[1]:
         raise ValueError(
             f"Invalid actr_type format: '{actr_type}'. "
-            "Expected format: 'manufacturer:name[:version]' (e.g., 'acme:ServiceName')."
+            "Expected format: 'manufacturer:name:version' (e.g., 'acme:ServiceName:1.0.0')."
         )
     version = parts[2] if len(parts) > 2 else ""
     return parts[0], parts[1], version

@@ -247,7 +247,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService:v1"
+actr_type = "acme:EchoService:1.0.0"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -267,7 +267,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService:v1"
+actr_type = "acme:EchoService:1.0.0"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -276,7 +276,7 @@ files = [
 
 [[dependency]]
 name = "profile-service"
-actr_type = "acme:ProfileService:v1"
+actr_type = "acme:ProfileService:1.0.0"
 fingerprint = "service_semantic:789"
 cached_at = "2026-03-03T00:00:00Z"
 files = [

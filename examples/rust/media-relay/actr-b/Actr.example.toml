@@ -9,7 +9,7 @@ authors = ["Actr Dev Team"]
 [package.actr_type]
 manufacturer = "actr-example"
 name = "RelayService"
-version = "v1"
+version = "1.0.0"
 
 [dependencies]
 
@@ -33,7 +33,7 @@ visible = true
 [[acl.rules]]
 permission = "allow"
 # Allow RelayClient to send signaling/data to us (RelayService)
-type = "actr-example:RelayClient:v1"
+type = "actr-example:RelayClient:1.0.0"
 
 [scripts]
 dev = "cargo run"

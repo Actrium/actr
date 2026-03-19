@@ -54,7 +54,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
             throw AudioEngineError.microphoneAccessDenied
         }
 
-        let targetType = ActrType(manufacturer: "acme", name: "AudioRecorder", version: nil)
+        let targetType = ActrType(manufacturer: "acme", name: "AudioRecorder", version: "1.0.0")
         let targets = try await actrRef.discover(targetType: targetType, count: 1)
         guard let target = targets.first else {
             throw ActrError.InternalError(msg: "AudioRecorder not found")
