@@ -217,6 +217,8 @@ impl ParserV1 {
     }
 
     /// Parse an ActrType string: `"manufacturer:name:version"`.
+    ///
+    /// Note: `version` is required.
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {

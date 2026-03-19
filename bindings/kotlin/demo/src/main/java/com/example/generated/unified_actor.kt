@@ -44,7 +44,8 @@ object RemoteServiceRegistry {
                     "data_stream_peer.StreamServer" to
                             ActrType(
                                     manufacturer = "acme",
-                                    name = "DataStreamConcurrentServer"
+                                    name = "DataStreamConcurrentServer",
+                                    version = "1.0.0"
                             ),
                     "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0"),
             )

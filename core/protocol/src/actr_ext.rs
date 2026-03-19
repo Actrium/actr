@@ -51,9 +51,7 @@ pub trait ActrTypeExt: Sized {
 
 impl ActrTypeExt for ActrType {
     fn to_string_repr(&self) -> String {
-        if self.version.is_empty() {
-            panic!("ActrType.version must be non-empty");
-        }
+        debug_assert!(!self.version.is_empty(), "ActrType.version must be non-empty");
 
         format!("{}:{}:{}", self.manufacturer, self.name, self.version)
     }

@@ -379,13 +379,12 @@ def extract_message_type(full_type: str) -> str:
 def parse_actr_type(actr_type: str) -> tuple[str, str, str]:
     """Parse canonical actr_type and return (manufacturer, name, version)."""
     parts = actr_type.split(":")
-    if len(parts) < 2 or len(parts) > 3 or not parts[0] or not parts[1]:
+    if len(parts) != 3 or not parts[0] or not parts[1] or not parts[2]:
         raise ValueError(
             f"Invalid actr_type format: '{actr_type}'. "
             "Expected format: 'manufacturer:name:version' (e.g., 'acme:ServiceName:1.0.0')."
         )
-    version = parts[2] if len(parts) > 2 else ""
-    return parts[0], parts[1], version
+    return parts[0], parts[1], parts[2]
 
 
 def to_snake_case(name: str) -> str:
