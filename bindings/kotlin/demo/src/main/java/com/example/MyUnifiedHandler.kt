@@ -38,7 +38,7 @@ class MyUnifiedHandler : UnifiedHandler {
         }
 
         private val serverType =
-                ActrType(manufacturer = "acme", name = "DataStreamConcurrentServer")
+                ActrType(manufacturer = "acme", name = "DataStreamConcurrentServer", version = "1.0.0")
 
         // ===== StreamClient methods =====
 

@@ -7,7 +7,7 @@
 //!
 //! | Type     | Format                                        | Example                      |
 //! |----------|-----------------------------------------------|------------------------------|
-//! | ActrType | `manufacturer:name` or `manufacturer:name:version` | `acme:echo-service:1.0.0` |
+//! | ActrType | `manufacturer:name:version` | `acme:echo-service:1.0.0` |
 //! | ActrId   | `<serial_hex>@<realm_id>/<actr_type>`         | `1a2b3c@101/acme:echo:1.0.0` |
 
 use crate::{ActrId, ActrType, Realm, name::Name};
@@ -21,14 +21,14 @@ use thiserror::Error;
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ActrIdError {
     #[error(
-        "Invalid Actor ID format: '{0}'. Expected: <serial_hex>@<realm_id>/<manufacturer>:<name>[:<version>]"
+        "Invalid Actor ID format: '{0}'. Expected: <serial_hex>@<realm_id>/<manufacturer>:<name>:<version>"
     )]
     InvalidFormat(String),
 
     #[error("Invalid component in actor identity: {0}")]
     InvalidComponent(String),
 
-    #[error("Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>[:<version>]")]
+    #[error("Invalid actor type format: '{0}'. Expected: <manufacturer>:<name>:<version>")]
     InvalidTypeFormat(String),
 }
 
@@ -36,8 +36,7 @@ pub enum ActrIdError {
 pub trait ActrTypeExt: Sized {
     /// Convert to stable string representation.
     ///
-    /// With non-empty version: `"manufacturer:name:version"`
-    /// With empty version:     `"manufacturer:name"`
+    /// Always returns `"manufacturer:name:version"`.
     fn to_string_repr(&self) -> String;
 
     /// Parse from string representation.
@@ -53,10 +52,10 @@ pub trait ActrTypeExt: Sized {
 impl ActrTypeExt for ActrType {
     fn to_string_repr(&self) -> String {
         if self.version.is_empty() {
-            format!("{}:{}", self.manufacturer, self.name)
-        } else {
-            format!("{}:{}:{}", self.manufacturer, self.name, self.version)
+            panic!("ActrType.version must be non-empty");
         }
+
+        format!("{}:{}:{}", self.manufacturer, self.name, self.version)
     }
 
     fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
@@ -76,6 +75,11 @@ impl ActrTypeExt for ActrType {
             .map_err(|e| ActrIdError::InvalidComponent(format!("Invalid manufacturer: {e}")))?;
         Name::new(name.to_string())
             .map_err(|e| ActrIdError::InvalidComponent(format!("Invalid type name: {e}")))?;
+        if version.is_empty() {
+            return Err(ActrIdError::InvalidComponent(
+                "Invalid version: version cannot be empty".to_string(),
+            ));
+        }
 
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),
@@ -227,12 +231,16 @@ mod tests {
         ));
         // Invalid manufacturer
         assert!(matches!(
-            ActrType::from_string_repr("1acme:echo:v1"),
+            ActrType::from_string_repr("1acme:echo:1.0.0"),
             Err(ActrIdError::InvalidComponent(_))
         ));
         // Invalid name
         assert!(matches!(
-            ActrType::from_string_repr("acme:echo!:v1"),
+            ActrType::from_string_repr("acme:echo!:1.0.0"),
+            Err(ActrIdError::InvalidComponent(_))
+        ));
+        assert!(matches!(
+            ActrType::from_string_repr("acme:echo:"),
             Err(ActrIdError::InvalidComponent(_))
         ));
     }

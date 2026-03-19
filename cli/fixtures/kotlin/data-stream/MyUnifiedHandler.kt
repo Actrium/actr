@@ -37,7 +37,7 @@ class MyUnifiedHandler : UnifiedHandler {
         private const val TAG = "MyUnifiedHandler"
     }
 
-    private val serverType = ActrType(manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer")
+    private val serverType = ActrType(manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer", version = "1.0.0")
 
     // ===== StreamClient methods =====
 

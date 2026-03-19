@@ -23,10 +23,10 @@ export interface SwRuntimeConfig {
   /** Deployment realm ID */
   realm_id: number;
 
-  /** This actor's type (manufacturer:name) */
+  /** This actor's type (manufacturer:name:version) */
   client_actr_type: string;
 
-  /** Target actor type for peer discovery (manufacturer:name) */
+  /** Target actor type for peer discovery (manufacturer:name:version) */
   target_actr_type: string;
 
   /** Service fingerprint for exact matching (optional) */

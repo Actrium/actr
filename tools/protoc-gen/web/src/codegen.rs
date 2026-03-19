@@ -833,7 +833,7 @@ fn gen_client_handler(service: &ServiceInfo, req: &WebCodegenRequest) -> String 
             target.manufacturer
         ));
         out.push_str(&format!("        name: \"{}\".to_string(),\n", target.name));
-        out.push_str("        version: \"v1\".to_string(),\n    })\n}\n\n");
+        out.push_str("        version: \"1.0.0\".to_string(),\n    })\n}\n\n");
     }
 
     let remote_route_key = req

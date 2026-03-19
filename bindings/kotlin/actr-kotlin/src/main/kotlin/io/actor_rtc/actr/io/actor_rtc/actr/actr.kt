@@ -3630,12 +3630,14 @@ public object FfiConverterTypeActrId: FfiConverterRustBuffer<ActrId> {
 
 
 /**
- * Actor type (manufacturer + name)
+ * Actor type (manufacturer + name + version)
  */
 data class ActrType (
     var `manufacturer`: kotlin.String
     , 
     var `name`: kotlin.String
+    , 
+    var `version`: kotlin.String
     
 ){
     
@@ -3654,17 +3656,20 @@ public object FfiConverterTypeActrType: FfiConverterRustBuffer<ActrType> {
         return ActrType(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
     override fun allocationSize(value: ActrType) = (
             FfiConverterString.allocationSize(value.`manufacturer`) +
-            FfiConverterString.allocationSize(value.`name`)
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`version`)
     )
 
     override fun write(value: ActrType, buf: ByteBuffer) {
             FfiConverterString.write(value.`manufacturer`, buf)
             FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`version`, buf)
     }
 }
 
@@ -4645,8 +4650,6 @@ public object FfiConverterSequenceTypeMetadataEntry: FfiConverterRustBuffer<List
         }
     }
 }
-
-
 
 
 

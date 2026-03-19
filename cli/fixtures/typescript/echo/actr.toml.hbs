@@ -16,7 +16,7 @@ name = "echo-client-app"
 {{#if IS_BOTH}}
 echo-service = {}
 {{else}}
-echo-echo-server = { actr_type = "acme:EchoService" }
+echo-echo-server = { actr_type = "acme:EchoService:1.0.0" }
 {{/if}}
 
 [system.signaling]
@@ -49,4 +49,4 @@ dev = "npm run dev"
 
 [[acl.rules]]
 permission = "allow"
-type = "{{MANUFACTURER}}:EchoService:v1"
+type = "{{MANUFACTURER}}:EchoService:1.0.0"

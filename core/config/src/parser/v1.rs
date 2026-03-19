@@ -217,13 +217,9 @@ impl ParserV1 {
     }
 
     /// Parse an ActrType string: `"manufacturer:name:version"`.
-    ///
-    /// The version segment is required. For backward compatibility with configs
-    /// that omit it, the empty string is accepted and stored as-is.
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
-            [m, n] => (*m, *n, ""),
             [m, n, v] => (*m, *n, *v),
             _ => {
                 return Err(ConfigError::InvalidActrType(format!(
@@ -242,6 +238,12 @@ impl ParserV1 {
         Name::new(name.to_string()).map_err(|e| {
             ConfigError::InvalidActrType(format!("Invalid type name '{}' in '{}': {}", name, s, e))
         })?;
+        if version.is_empty() {
+            return Err(ConfigError::InvalidActrType(format!(
+                "Invalid actor type '{}': version must not be empty",
+                s
+            )));
+        }
 
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),

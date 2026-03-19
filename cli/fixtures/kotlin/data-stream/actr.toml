@@ -11,7 +11,7 @@ name = "StreamEchoClient"
 authors = []
 
 [dependencies]
-stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer" }
+stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer:1.0.0" }
 
 [system.signaling]
 url = "{{SIGNALING_URL}}"

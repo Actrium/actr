@@ -103,13 +103,18 @@ pub struct ActrTypePy {
 #[pymethods]
 impl ActrTypePy {
     #[new]
-    #[pyo3(signature = (manufacturer, name, version=None))]
-    fn new(manufacturer: String, name: String, version: Option<String>) -> PyResult<Self> {
+    fn new(manufacturer: String, name: String, version: String) -> PyResult<Self> {
+        if version.is_empty() {
+            return Err(PyValueError::new_err(
+                "ActrType.version must be a non-empty string",
+            ));
+        }
+
         Ok(ActrTypePy {
             inner: ActrType {
                 manufacturer,
                 name,
-                version: version.unwrap_or_default(),
+                version,
             },
         })
     }
@@ -138,17 +143,10 @@ impl ActrTypePy {
     }
 
     fn __repr__(&self) -> String {
-        if self.inner.version.is_empty() {
-            format!(
-                "ActrType(manufacturer={}, name={})",
-                self.inner.manufacturer, self.inner.name
-            )
-        } else {
-            format!(
-                "ActrType(manufacturer={}, name={}, version={})",
-                self.inner.manufacturer, self.inner.name, self.inner.version
-            )
-        }
+        format!(
+            "ActrType(manufacturer={}, name={}, version={})",
+            self.inner.manufacturer, self.inner.name, self.inner.version
+        )
     }
 }
 

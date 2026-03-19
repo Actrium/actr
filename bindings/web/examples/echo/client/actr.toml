@@ -48,5 +48,5 @@ turn_urls = ["turn:localhost:3478"]
 
 [[acl.rules]]
 permission = "allow"
-# Allow server with actr_type = "acme:EchoService"
+# Allow server with actr_type = "acme:EchoService:0.1.0"
 types = ["acme:EchoService:0.1.0"]

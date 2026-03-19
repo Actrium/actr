@@ -113,7 +113,8 @@ pub fn pin_echo_service_dependency_version(project_dir: &Path, manufacturer: &st
     let content = fs::read_to_string(&actr_toml_path)
         .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
     let target = "echo-service = {}";
-    let replacement = format!("echo-service = {{ actr_type = \"{manufacturer}:EchoService:v1\" }}");
+    let replacement =
+        format!("echo-service = {{ actr_type = \"{manufacturer}:EchoService:1.0.0\" }}");
 
     if !content.contains(target) {
         bail!(

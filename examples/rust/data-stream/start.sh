@@ -303,9 +303,9 @@ sqlite3 "$ACTRIX_DB" <<EOF
 INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'DataStream Realm', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');
 DELETE FROM actoracl WHERE realm_id = $REALM_ID;
 INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, $REALM_ID, 'acme:GenericClient:v1', 'acme:FileTransferService:v1', 1);
+VALUES ($REALM_ID, $REALM_ID, 'acme:GenericClient:1.0.0', 'acme:FileTransferService:1.0.0', 1);
 INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, $REALM_ID, 'acme:FileTransferService:v1', 'acme:GenericClient:v1', 1);
+VALUES ($REALM_ID, $REALM_ID, 'acme:FileTransferService:1.0.0', 'acme:GenericClient:1.0.0', 1);
 EOF
 
 echo -e "${GREEN}✅ Realm and ACL setup completed${NC}"

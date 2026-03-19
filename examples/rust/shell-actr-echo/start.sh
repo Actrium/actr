@@ -275,14 +275,14 @@ echo "   secret_hash  = ${SECRET_HASH:0:16}..."
 sqlite3 "$ACTRIX_DB" "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'echo-example', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');"
 
 # Parse ACL rules from actr.toml files and insert into actoracl table
-# Server allows: acme:echo-client-app:v1
-# Client allows: acme:EchoService:v1
+# Server allows: acme:echo-client-app:1.0.0
+# Client allows: acme:EchoService:1.0.0
 # Note: access=1 means allow
 sqlite3 "$ACTRIX_DB" <<EOF
 INSERT OR IGNORE INTO actoracl (realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, 'acme:EchoService:v1', 'acme:echo-client-app:v1', 1);
+VALUES ($REALM_ID, 'acme:EchoService:1.0.0', 'acme:echo-client-app:1.0.0', 1);
 INSERT OR IGNORE INTO actoracl (realm_id, from_type, to_type, access)
-VALUES ($REALM_ID, 'acme:echo-client-app:v1', 'acme:EchoService:v1', 1);
+VALUES ($REALM_ID, 'acme:echo-client-app:1.0.0', 'acme:EchoService:1.0.0', 1);
 EOF
 
 echo -e "${GREEN}✅ Realm and ACL setup completed (via sqlite3)${NC}"
@@ -338,7 +338,7 @@ fi
 sleep 2
 
 # Step 3.5: Install client dependencies and generate code
-# Client depends on server (acme:EchoService:v1), so must be done AFTER server registers
+# Client depends on server (acme:EchoService:1.0.0), so must be done AFTER server registers
 echo ""
 echo "📎 Installing client dependencies (actr deps install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

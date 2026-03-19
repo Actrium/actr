@@ -2145,16 +2145,16 @@ public func FfiConverterTypeActrId_lower(_ value: ActrId) -> RustBuffer {
 
 
 /**
- * Actor type (manufacturer + name + optional version)
+ * Actor type (manufacturer + name + version)
  */
 public struct ActrType: Equatable, Hashable {
     public var manufacturer: String
     public var name: String
-    public var version: String?
+    public var version: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(manufacturer: String, name: String, version: String?) {
+    public init(manufacturer: String, name: String, version: String) {
         self.manufacturer = manufacturer
         self.name = name
         self.version = version
@@ -2176,14 +2176,14 @@ public struct FfiConverterTypeActrType: FfiConverterRustBuffer {
             try ActrType(
                 manufacturer: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
-                version: FfiConverterOptionString.read(from: &buf)
+                version: FfiConverterString.read(from: &buf)
         )
     }
 
     public static func write(_ value: ActrType, into buf: inout [UInt8]) {
         FfiConverterString.write(value.manufacturer, into: &buf)
         FfiConverterString.write(value.name, into: &buf)
-        FfiConverterOptionString.write(value.version, into: &buf)
+        FfiConverterString.write(value.version, into: &buf)
     }
 }
 

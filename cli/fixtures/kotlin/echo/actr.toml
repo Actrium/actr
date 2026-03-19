@@ -35,7 +35,7 @@ visible = false
 
 [[acl.rules]]
 permission = "allow"
-principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService", version = "v1" } }]
+principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService", version = "1.0.0" } }]
 
 [scripts]
 dev = "./gradlew assembleDebug"

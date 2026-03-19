@@ -279,9 +279,10 @@ Actor type classification.
 ```kotlin
 data class ActrType(
     val manufacturer: String,
-    val name: String
+    val name: String,
+    val version: String
 ) {
-    fun toString(): String // Returns "manufacturer:name"
+    fun toString(): String // Returns "manufacturer:name:version"
 }
 ```
 
