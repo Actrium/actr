@@ -584,7 +584,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test-mfg".to_string(),
                 name: "test-device".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
         }
     }

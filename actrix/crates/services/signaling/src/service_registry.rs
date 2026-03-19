@@ -862,9 +862,10 @@ impl ServiceRegistry {
                     continue;
                 }
 
-                // 匹配 ActrType (manufacturer + name)
+                // 精确匹配 ActrType (manufacturer + name + version)
                 if service.actor_id.r#type.manufacturer == target_type.manufacturer
                     && service.actor_id.r#type.name == target_type.name
+                    && service.actor_id.r#type.version == target_type.version
                 {
                     results.push(service.clone());
                 }
@@ -996,7 +997,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         }
@@ -1008,7 +1009,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: manufacturer.to_string(),
                 name: name.to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id },
         }
@@ -1460,7 +1461,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1470,7 +1471,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "worker".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1480,7 +1481,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "other".to_string(),
                 name: "service".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1515,7 +1516,7 @@ mod tests {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "worker".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let results = registry.find_by_actr_type(&target_type);
@@ -1534,7 +1535,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: "service1".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1544,7 +1545,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "vendor".to_string(),
                 name: "service2".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: actr_protocol::Realm { realm_id: 0 },
         };
@@ -1595,13 +1596,13 @@ mod tests {
         let _ = target_realm_entity.save().await;
         let _ = other_realm_entity.save().await;
 
-        let _ = ActorAcl::delete_by_target(target_realm, "acme:worker:v1").await?;
+        let _ = ActorAcl::delete_by_target(target_realm, "acme:worker:1.0.0").await?;
 
         let mut acl = ActorAcl::new_with_source_realm(
             target_realm,
             Some(source_realm),
-            "acme:edge:v1".to_string(),
-            "acme:worker:v1".to_string(),
+            "acme:edge:1.0.0".to_string(),
+            "acme:worker:1.0.0".to_string(),
             true,
         );
         let _ = acl.save().await?;
@@ -1704,5 +1705,38 @@ mod tests {
              \n原因：register_service_full() 没有清除同 service_name 下的旧条目（不同 actor_id）。",
             candidates_after.len()
         );
+    }
+
+    #[test]
+    fn test_find_by_actr_type_requires_exact_version() {
+        let mut registry = ServiceRegistry::new();
+
+        let actor_id = ActrId {
+            serial_number: 1,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "worker".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            realm: actr_protocol::Realm { realm_id: 0 },
+        };
+
+        registry
+            .register_service(
+                actor_id,
+                "worker1".to_string(),
+                vec!["Work".to_string()],
+                None,
+            )
+            .unwrap();
+
+        let target_type = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "worker".to_string(),
+            version: "2.0.0".to_string(),
+        };
+
+        let results = registry.find_by_actr_type(&target_type);
+        assert!(results.is_empty(), "version mismatch must not match");
     }
 }

@@ -18,7 +18,7 @@
 //! let user_service_type = ActrType {
 //!     manufacturer: "acme".to_string(),
 //!     name: "user-service".to_string(),
-//!     version: "v1".to_string(),
+//!     version: "1.0.0".to_string(),
 //! };
 //!
 //! // Actor A 订阅 user-service 类型的上线事件
@@ -292,7 +292,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "test-actor".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: Realm { realm_id: 0 },
         }
@@ -302,7 +302,7 @@ mod tests {
         ActrType {
             manufacturer: "test".to_string(),
             name: name.to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         }
     }
 

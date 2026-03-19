@@ -72,7 +72,7 @@ use crate::storage::{KeyRecord, KeyStorage};
 const KEY_REFRESH_CHECK_INTERVAL_SECS: u64 = 600; // 10 分钟
 
 use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, ActrType, ErrorResponse, IdentityClaims, Realm,
+    AIdCredential, ActrId, ActrIdExt, ActrType, ActrTypeExt, ErrorResponse, IdentityClaims, Realm,
     RegisterRequest, RegisterResponse, register_response,
 };
 use base64::prelude::*;
@@ -606,14 +606,11 @@ impl AIdIssuer {
     /// 保留名称（self / acme / actrix）无需注册，直接放行。
     /// 其他 manufacturer 必须在 MFR 中存在且对应包处于激活状态。
     async fn verify_actr_type(&self, actr_type: &ActrType) -> Result<(), AidError> {
-        let type_str = if actr_type.version.is_empty() {
-            format!("{}:{}", actr_type.manufacturer, actr_type.name)
-        } else {
-            format!(
-                "{}:{}:{}",
-                actr_type.manufacturer, actr_type.name, actr_type.version
-            )
-        };
+        if actr_type.version.is_empty() {
+            return Err(AidError::InvalidFormat);
+        }
+
+        let type_str = actr_type.to_string_repr();
 
         // 保留名（self / acme / actrix）无需查库，直接放行
         if actrix_mfr::reserved::is_reserved(&actr_type.manufacturer) {

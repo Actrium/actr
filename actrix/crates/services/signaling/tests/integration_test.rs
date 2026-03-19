@@ -144,7 +144,7 @@ fn create_test_actr_id(serial: u64) -> actr_protocol::ActrId {
         r#type: ActrType {
             manufacturer: "test".to_string(),
             name: "device".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         },
     }
 }

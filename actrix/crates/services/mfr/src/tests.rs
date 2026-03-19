@@ -527,20 +527,20 @@ async fn test_package_publish_and_get() {
         mfr.id,
         "pkgco",
         "client",
-        "v1",
+        "1.0.0",
         "manifest content",
         "sig123",
     )
     .await
     .unwrap();
 
-    assert_eq!(pkg.type_str, "pkgco:client:v1");
+    assert_eq!(pkg.type_str, "pkgco:client:1.0.0");
     assert_eq!(pkg.status, PkgStatus::Active);
     assert_eq!(pkg.manufacturer, "pkgco");
     assert_eq!(pkg.name, "client");
-    assert_eq!(pkg.version, "v1");
+    assert_eq!(pkg.version, "1.0.0");
 
-    let found = ActrPackage::get_by_type(&pool, "pkgco:client:v1")
+    let found = ActrPackage::get_by_type(&pool, "pkgco:client:1.0.0")
         .await
         .unwrap()
         .expect("should find published package");
@@ -562,10 +562,10 @@ async fn test_package_duplicate_rejected() {
     let mut mfr = Manufacturer::create(&pool, "dupkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "v1", "m", "s")
+    ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "1.0.0", "m", "s")
         .await
         .unwrap();
-    let result = ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "v1", "m2", "s2").await;
+    let result = ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "1.0.0", "m2", "s2").await;
     assert!(
         matches!(result, Err(MfrError::PackageAlreadyPublished)),
         "duplicate publish should return PackageAlreadyPublished"
@@ -578,7 +578,7 @@ async fn test_package_revoke() {
     let mut mfr = Manufacturer::create(&pool, "revpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revpkg", "svc", "v1", "m", "s")
+    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revpkg", "svc", "1.0.0", "m", "s")
         .await
         .unwrap();
     pkg.revoke(&pool).await.unwrap();
@@ -586,7 +586,7 @@ async fn test_package_revoke() {
     assert_eq!(pkg.status, PkgStatus::Revoked);
     assert!(pkg.revoked_at.is_some());
 
-    let found = ActrPackage::get_by_type(&pool, "revpkg:svc:v1")
+    let found = ActrPackage::get_by_type(&pool, "revpkg:svc:1.0.0")
         .await
         .unwrap();
     assert!(
@@ -601,10 +601,10 @@ async fn test_package_list_by_mfr() {
     let mut mfr = Manufacturer::create(&pool, "listpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    ActrPackage::publish(&pool, mfr.id, "listpkg", "alpha", "v1", "m", "s")
+    ActrPackage::publish(&pool, mfr.id, "listpkg", "alpha", "1.0.0", "m", "s")
         .await
         .unwrap();
-    ActrPackage::publish(&pool, mfr.id, "listpkg", "beta", "v1", "m", "s")
+    ActrPackage::publish(&pool, mfr.id, "listpkg", "beta", "1.0.0", "m", "s")
         .await
         .unwrap();
 
@@ -618,13 +618,13 @@ async fn test_package_get_by_id() {
     let mut mfr = Manufacturer::create(&pool, "idpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    let pkg = ActrPackage::publish(&pool, mfr.id, "idpkg", "svc", "v1", "m", "s")
+    let pkg = ActrPackage::publish(&pool, mfr.id, "idpkg", "svc", "1.0.0", "m", "s")
         .await
         .unwrap();
 
     let found = ActrPackage::get_by_id(&pool, pkg.id).await.unwrap();
     assert!(found.is_some());
-    assert_eq!(found.unwrap().type_str, "idpkg:svc:v1");
+    assert_eq!(found.unwrap().type_str, "idpkg:svc:1.0.0");
 }
 
 // ─── manager.rs 测试（需 DB）─────────────────────────────────────────────────
@@ -632,16 +632,16 @@ async fn test_package_get_by_id() {
 #[tokio::test]
 async fn test_lookup_package_reserved() {
     let pool = setup_test_pool().await;
-    assert!(lookup_package(&pool, "self:anything:v1").await.unwrap());
-    assert!(lookup_package(&pool, "acme:client:v1").await.unwrap());
-    assert!(lookup_package(&pool, "actrix:core:v1").await.unwrap());
-    assert!(lookup_package(&pool, "SELF:svc:v1").await.unwrap());
+    assert!(lookup_package(&pool, "self:anything:1.0.0").await.unwrap());
+    assert!(lookup_package(&pool, "acme:client:1.0.0").await.unwrap());
+    assert!(lookup_package(&pool, "actrix:core:1.0.0").await.unwrap());
+    assert!(lookup_package(&pool, "SELF:svc:1.0.0").await.unwrap());
 }
 
 #[tokio::test]
 async fn test_lookup_package_not_registered() {
     let pool = setup_test_pool().await;
-    assert!(!lookup_package(&pool, "unknown:svc:v1").await.unwrap());
+    assert!(!lookup_package(&pool, "unknown:svc:1.0.0").await.unwrap());
 }
 
 #[tokio::test]
@@ -649,11 +649,11 @@ async fn test_lookup_package_active() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "lookco", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
-    ActrPackage::publish(&pool, mfr.id, "lookco", "svc", "v1", "m", "s")
+    ActrPackage::publish(&pool, mfr.id, "lookco", "svc", "1.0.0", "m", "s")
         .await
         .unwrap();
 
-    assert!(lookup_package(&pool, "lookco:svc:v1").await.unwrap());
+    assert!(lookup_package(&pool, "lookco:svc:1.0.0").await.unwrap());
     assert!(!lookup_package(&pool, "lookco:svc:v2").await.unwrap());
 }
 
@@ -664,13 +664,15 @@ async fn test_lookup_package_revoked() {
         .await
         .unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
-    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revokedlook", "svc", "v1", "m", "s")
+    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revokedlook", "svc", "1.0.0", "m", "s")
         .await
         .unwrap();
     pkg.revoke(&pool).await.unwrap();
 
     assert!(
-        !lookup_package(&pool, "revokedlook:svc:v1").await.unwrap(),
+        !lookup_package(&pool, "revokedlook:svc:1.0.0")
+            .await
+            .unwrap(),
         "revoked package should not be found"
     );
 }
@@ -781,7 +783,7 @@ async fn test_manager_publish_invalid_signature() {
         .publish_package(PublishRequest {
             manufacturer: "sigco".to_string(),
             name: "svc".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
             manifest: "manifest content".to_string(),
             signature: bad_sig,
         })
@@ -810,7 +812,7 @@ async fn test_manager_publish_valid_signature() {
     let mut mfr = Manufacturer::create(&pool, "validpub", None).await.unwrap();
     mfr.activate(&pool, pub_b64).await.unwrap();
 
-    let manifest = "type = \"validpub:client:v1\"\nbinary_hash = \"sha256:abc\"";
+    let manifest = "type = \"validpub:client:1.0.0\"\nbinary_hash = \"sha256:abc\"";
     let sig = signing_key.sign(manifest.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
 
@@ -819,14 +821,14 @@ async fn test_manager_publish_valid_signature() {
         .publish_package(PublishRequest {
             manufacturer: "validpub".to_string(),
             name: "client".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
             manifest: manifest.to_string(),
             signature: sig_b64,
         })
         .await
         .unwrap();
 
-    assert_eq!(pkg.type_str, "validpub:client:v1");
+    assert_eq!(pkg.type_str, "validpub:client:1.0.0");
     assert_eq!(pkg.status, PkgStatus::Active);
 }
 
@@ -842,7 +844,7 @@ async fn test_manager_publish_inactive_mfr() {
         .publish_package(PublishRequest {
             manufacturer: "pendingmfr".to_string(),
             name: "svc".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
             manifest: "m".to_string(),
             signature: "s".to_string(),
         })
@@ -888,7 +890,7 @@ async fn test_manager_get_and_revoke_package() {
     let mut mfr = Manufacturer::create(&pool, "revmgr", None).await.unwrap();
     mfr.activate(&pool, pub_b64).await.unwrap();
 
-    let manifest = "type = \"revmgr:svc:v1\"";
+    let manifest = "type = \"revmgr:svc:1.0.0\"";
     let sig = key.sign(manifest.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
 
@@ -897,19 +899,19 @@ async fn test_manager_get_and_revoke_package() {
         .publish_package(PublishRequest {
             manufacturer: "revmgr".to_string(),
             name: "svc".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
             manifest: manifest.to_string(),
             signature: sig_b64,
         })
         .await
         .unwrap();
 
-    let found = manager.get_package("revmgr:svc:v1").await.unwrap();
+    let found = manager.get_package("revmgr:svc:1.0.0").await.unwrap();
     assert_eq!(found.id, pkg.id);
 
     manager.revoke_package(pkg.id).await.unwrap();
 
-    let result = manager.get_package("revmgr:svc:v1").await;
+    let result = manager.get_package("revmgr:svc:1.0.0").await;
     assert!(matches!(result, Err(MfrError::NotFound)));
 }
 
@@ -946,14 +948,14 @@ async fn test_manager_list_packages_by_mfr() {
     let manager = MfrManager::new(pool);
 
     for pkg_name in &["alpha", "beta"] {
-        let manifest = format!("type = \"listmgr:{pkg_name}:v1\"");
+        let manifest = format!("type = \"listmgr:{pkg_name}:1.0.0\"");
         let sig = key.sign(manifest.as_bytes());
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         manager
             .publish_package(PublishRequest {
                 manufacturer: "listmgr".to_string(),
                 name: pkg_name.to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
                 manifest,
                 signature: sig_b64,
             })

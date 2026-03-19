@@ -20,7 +20,6 @@ use tonic::transport::Server;
 
 struct TestEnv {
     issuer_temp_dir: TempDir,
-    validator_temp_dir: TempDir,
     _signer_temp_dir: TempDir,
     signer_handle: Option<JoinHandle<()>>,
     signer_shutdown_tx: Option<oneshot::Sender<()>>,
@@ -110,7 +109,6 @@ async fn start_embedded_signer(
 
 async fn setup_test_environment() -> TestEnv {
     let issuer_temp_dir = TempDir::new().expect("Failed to create issuer temp dir");
-    let validator_temp_dir = TempDir::new().expect("Failed to create validator temp dir");
     let signer_temp_dir = TempDir::new().expect("Failed to create signer temp dir");
     let shared_key = "test-psk-key".to_string();
     let (endpoint, signer_handle, signer_shutdown_tx) =
@@ -128,7 +126,6 @@ async fn setup_test_environment() -> TestEnv {
 
     TestEnv {
         issuer_temp_dir,
-        validator_temp_dir,
         _signer_temp_dir: signer_temp_dir,
         signer_handle: Some(signer_handle),
         signer_shutdown_tx: Some(signer_shutdown_tx),
@@ -146,7 +143,7 @@ fn default_issuer_config(temp_dir: &TempDir) -> IssuerConfig {
         enable_periodic_rotation: false,
         key_rotation_interval_secs: 86400,
         turn_secret: "test-turn-secret".to_string(),
-        sqlite_path: temp_dir.path().join("signaling_key_cache.db"),
+        sqlite_path: temp_dir.path().to_path_buf(),
     }
 }
 
@@ -155,7 +152,7 @@ fn default_issuer_config(temp_dir: &TempDir) -> IssuerConfig {
 async fn test_end_to_end_credential_flow() {
     let env = setup_test_environment().await;
 
-    AIdCredentialValidator::init(env.validator_temp_dir.path())
+    AIdCredentialValidator::init(env.issuer_temp_dir.path())
         .await
         .expect("Failed to initialize validator");
 
@@ -174,13 +171,16 @@ async fn test_end_to_end_credential_flow() {
         actr_type: ActrType {
             manufacturer: "acme".to_string(),
             name: "test-device".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         },
         realm: Realm { realm_id: 1001 },
         service_spec: None,
         acl: None,
         service: None,
         ws_address: None,
+        manifest_json: None,
+        mfr_signature: None,
+        psk_token: None,
     };
 
     let response = issuer
@@ -236,13 +236,16 @@ async fn test_end_to_end_credential_flow() {
             actr_type: ActrType {
                 manufacturer: "acme".to_string(),
                 name: format!("test-device-{idx}"),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: Realm { realm_id: 1001 },
             service_spec: None,
             acl: None,
             service: None,
             ws_address: None,
+            manifest_json: None,
+            mfr_signature: None,
+            psk_token: None,
         };
 
         let rsp = issuer
@@ -352,13 +355,16 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         actr_type: actr_protocol::ActrType {
             manufacturer: "acme".to_string(),
             name: "bad-key-test".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         },
         realm: actr_protocol::Realm { realm_id: 1 },
         service_spec: None,
         acl: None,
         service: None,
         ws_address: None,
+        manifest_json: None,
+        mfr_signature: None,
+        psk_token: None,
     };
     let resp = issuer
         .issue_credential(&request)

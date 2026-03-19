@@ -60,7 +60,7 @@
 // 客户端发送
 SignalingEnvelope {
     flow: PeerToSignaling(RegisterRequest {
-        actr_type: ActrType { manufacturer, name },
+        actr_type: ActrType { manufacturer, name, version },
         realm: Realm { realm_id },
         service_spec: Option,
         acl: Option,

@@ -1,7 +1,9 @@
 //! AIS (Actor Identity Service) HTTP Handler
 
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
-use actr_protocol::{ErrorResponse, RegisterRequest, RegisterResponse, register_response};
+use actr_protocol::{
+    ActrTypeExt, ErrorResponse, RegisterRequest, RegisterResponse, register_response,
+};
 use axum::{Router, body::Bytes, extract::State, http::HeaderMap, response::Json, routing::post};
 use platform::aid::AidError;
 use platform::monitoring::ServiceCounters;
@@ -150,7 +152,7 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
 
                     let realm_id = register_ok.actr_id.realm.realm_id;
                     let t = &register_ok.actr_id.r#type;
-                    let my_type = format!("{}:{}:{}", t.manufacturer, t.name, t.version);
+                    let my_type = t.to_string_repr();
 
                     // Clear stale rules before re-registering (replace, not accumulate)
                     if let Err(e) = ActorAcl::delete_by_target(realm_id, &my_type).await {
@@ -165,7 +167,7 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
                         let allow =
                             rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
                         let ft = &rule.from_type;
-                        let from_type = format!("{}:{}:{}", ft.manufacturer, ft.name, ft.version);
+                        let from_type = ft.to_string_repr();
                         let source_realm_id = match &rule.source_realm {
                             Some(SourceRealm::AnyRealm(_)) => None,
                             Some(SourceRealm::RealmId(id)) => Some(*id),
@@ -425,7 +427,7 @@ mod tests {
         let actr_type = ActrType {
             manufacturer: "apple".to_string(),
             name: "iPhone15".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         };
 
         let realm = Realm { realm_id: 12345 };
@@ -437,6 +439,9 @@ mod tests {
             service_spec: None,
             acl: None,
             ws_address: None,
+            manifest_json: None,
+            mfr_signature: None,
+            psk_token: None,
         };
 
         // 编码
@@ -457,13 +462,16 @@ mod tests {
             actr_type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "actor".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
             realm: Realm { realm_id: 456 },
             service: None,
             service_spec: None,
             acl: None,
             ws_address: None,
+            manifest_json: None,
+            mfr_signature: None,
+            psk_token: None,
         };
 
         // 编码解码循环
@@ -489,7 +497,7 @@ mod tests {
                 r#type: ActrType {
                     manufacturer: "test".to_string(),
                     name: "actor".to_string(),
-                    version: "v1".to_string(),
+                    version: "1.0.0".to_string(),
                 },
             },
             credential: AIdCredential {
@@ -505,6 +513,8 @@ mod tests {
                 nanos: 0,
             }),
             signaling_heartbeat_interval_secs: 30,
+            psk: None,
+            psk_expires_at: None,
         };
 
         let response = RegisterResponse {
@@ -551,5 +561,11 @@ mod tests {
         } else {
             panic!("Expected error result");
         }
+    }
+
+    #[test]
+    fn test_invalid_format_maps_to_400() {
+        let error = aid_error_to_error_response(AidError::InvalidFormat);
+        assert_eq!(error.code, 400);
     }
 }
