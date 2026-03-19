@@ -371,9 +371,7 @@ impl NetworkServiceDiscovery {
             return false;
         };
 
-        entry.actr_type.manufacturer == lookup_type.manufacturer
-            && entry.actr_type.name == lookup_type.name
-            && entry.actr_type.version == lookup_type.version
+        entry.actr_type == lookup_type
     }
 }
 

@@ -564,9 +564,7 @@ impl<W: Workload> ActrNode<W> {
             return false;
         };
 
-        dep_type.manufacturer == target_type.manufacturer
-            && dep_type.name == target_type.name
-            && dep_type.version == target_type.version
+        dep_type == *target_type
     }
 
     /// Internal: Send discovery request to signaling server
