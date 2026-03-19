@@ -92,7 +92,8 @@ export type MessageFromSW =
   | { type: 'webrtc_command'; payload: WebRtcCommandPayload }
   | { type: 'control_response'; payload: RpcResponsePayload }
   | { type: 'subscription_data'; payload: SubscriptionDataPayload }
-  | { type: 'webrtc_event'; payload: WebRtcEventPayload };
+  | { type: 'webrtc_event'; payload: WebRtcEventPayload }
+  | { type: 'update_turn_credential'; payload: { username: string; password: string } };
 
 export type MessageHandler = (message: MessageFromSW) => void;
 
