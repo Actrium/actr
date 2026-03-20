@@ -37,6 +37,8 @@ fn fake_manifest() -> PackageManifest {
         binary_hash: [0u8; 32],
         capabilities: vec![],
         signature: vec![0u8; 64],
+        manifest_raw: vec![],
+        target: "wasm32-wasip1".to_string(),
     }
 }
 

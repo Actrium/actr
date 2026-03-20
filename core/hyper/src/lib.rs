@@ -929,36 +929,6 @@ fn check_psk_expiry(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Serialize a `PackageManifest` into JSON bytes.
-///
-/// AIS verifies the MFR identity using `manifest_raw + mfr_signature`.
-/// The JSON includes `signature` encoded as base64 and `binary_hash` encoded as hex, matching the original package format.
-fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
-    use base64::Engine;
-
-    let binary_hash_hex: String = manifest
-        .binary_hash
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&manifest.signature);
-
-    let json = serde_json::json!({
-        "manufacturer": manifest.manufacturer,
-        "actr_name": manifest.actr_name,
-        "version": manifest.version,
-        "binary_hash": binary_hash_hex,
-        "capabilities": manifest.capabilities,
-        "signature": sig_b64,
-    });
-
-    serde_json::to_vec(&json).map_err(|e| {
-        HyperError::AisBootstrapFailed(format!("failed to serialize manifest to JSON: {e}"))
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 /// Quickly extract the `manufacturer` field from an `.actr` package, used only to prefetch
 /// the MFR public key without full verification.
 ///
