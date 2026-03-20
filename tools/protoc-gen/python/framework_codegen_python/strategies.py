@@ -30,7 +30,7 @@ class RemoteServiceInfo:
     """Information about a remote service for proxying."""
     service_name: str
     route_keys: List[str]
-    actr_type: str  # e.g., "acme:DataStreamConcurrentServer[:version]"
+    actr_type: str  # e.g., "acme:DataStreamConcurrentServer:1.0.0"
 
 
 class GenerationContext:

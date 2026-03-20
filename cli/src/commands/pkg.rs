@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use actr_protocol::{ActrType, ActrTypeExt};
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Subcommand};
@@ -202,10 +203,10 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     tracing::debug!(key_path = %key_path.display(), "signing key loaded");
 
     // 2. Read actr.toml for metadata
-    let config_content = std::fs::read_to_string(&args.config)
+    let config_bytes = std::fs::read(&args.config)
         .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
     let config_value: toml::Value =
-        toml::from_str(&config_content).with_context(|| "Invalid actr.toml")?;
+        toml::from_slice(&config_bytes).with_context(|| "Invalid actr.toml")?;
     let pkg = config_value
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
@@ -225,13 +226,18 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     let manufacturer = get_str("manufacturer")?;
     let name = get_str("name")?;
     let version = get_str("version")?;
+    let actr_type = ActrType {
+        manufacturer: manufacturer.clone(),
+        name: name.clone(),
+        version: version.clone(),
+    };
 
     // 3. Read binary
     let binary_bytes = std::fs::read(&args.binary)
         .with_context(|| format!("Failed to read binary: {}", args.binary.display()))?;
 
     tracing::info!(
-        actr_type = %format!("{}:{}:{}", manufacturer, name, version),
+        actr_type = %actr_type.to_string_repr(),
         binary_size = binary_bytes.len(),
         "building .actr package"
     );

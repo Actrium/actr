@@ -32,7 +32,7 @@ impl MyFileService {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "FileTransferService".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         };
         info!(
             "🌐 Discovering receiver via signaling for type: {}",

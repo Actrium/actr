@@ -418,9 +418,7 @@ impl MockSignalingServer {
                 let mut ws_address_map = Vec::new();
 
                 for entry in registry.iter() {
-                    if entry.actr_type.manufacturer == req.target_type.manufacturer
-                        && entry.actr_type.name == req.target_type.name
-                    {
+                    if entry.actr_type == req.target_type {
                         // Skip self
                         if entry.actr_id.serial_number == actr_msg.source.serial_number {
                             continue;
@@ -725,10 +723,7 @@ impl MockSignalingServer {
 
         // Find the client_id for the target ActrId
         let target_client_id = client_map.iter().find_map(|(cid, aid)| {
-            if aid.serial_number == target_id.serial_number
-                && aid.r#type.manufacturer == target_id.r#type.manufacturer
-                && aid.r#type.name == target_id.r#type.name
-            {
+            if aid == target_id {
                 Some(cid.clone())
             } else {
                 None

@@ -29,6 +29,8 @@ ACTRIX*.md
 .status
 .demo_logs/
 database/
+**/.hyper/
+rust/wasm-echo/dev-key.json
 
 # actr.toml files (use Actr.example.toml as template)
 **/actr.toml

@@ -109,6 +109,8 @@ impl PackageVerifier {
             manufacturer: verified.manifest.manufacturer,
             actr_name: verified.manifest.name,
             version: verified.manifest.version,
+            binary_path: verified.manifest.binary.path,
+            binary_target: verified.manifest.binary.target.clone(),
             binary_hash: hex_to_32_bytes(&verified.manifest.binary.hash).unwrap_or_default(),
             capabilities: vec![],
             signature: verified.sig_raw,

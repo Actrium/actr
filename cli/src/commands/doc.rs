@@ -408,8 +408,8 @@ test = "cargo test""#
 
     fn read_project_version() -> Option<String> {
         // 1. Try Cargo.toml
-        if let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
-            && let Ok(value) = cargo_toml.parse::<toml::Value>()
+        if let Ok(cargo_toml) = std::fs::read("Cargo.toml")
+            && let Ok(value) = toml::from_slice::<toml::Value>(&cargo_toml)
             && let Some(version) = value
                 .get("package")
                 .and_then(|package| package.get("version"))

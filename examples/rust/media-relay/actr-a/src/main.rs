@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_type = ActrType {
         manufacturer: "actr-example".to_string(),
         name: "media_relay.RelayService".to_string(),
-        version: "v1".to_string(),
+        version: "1.0.0".to_string(),
     };
     info!("🌐 via/through signaling server discover Actr B...");
     let mut candidates = actr_ref

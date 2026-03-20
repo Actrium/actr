@@ -64,7 +64,9 @@ export const system = {
         tracing_enabled: false,
     },
     webrtc: {
+        force_relay: true,
         stun_urls: ['stun:localhost:3478'],
+        turn_urls: ['turn:localhost:3478'],
     },
 } as const;
 
@@ -93,6 +95,9 @@ export const runtimeConfig: SwRuntimeConfig = {
     service_fingerprint: '',
     acl_allow_types: ['acme:echo-client-app:0.1.0'],
     is_server: true,
+    // Web load_package_executor — .actr package from echo-actr release
+    package_url: '/packages/echo-server.actr',
+    register_fn: 'register_echo_service',
 };
 
 // ── ActorClientConfig (passed to createActor) ──
@@ -106,6 +111,8 @@ export const actrConfig: ActorClientConfig = {
     realm: String(system.deployment.realm_id),
     iceServers: [
         ...system.webrtc.stun_urls.map((url) => ({ urls: url })),
+        ...system.webrtc.turn_urls.map((url) => ({ urls: url })),
     ],
+    iceTransportPolicy: system.webrtc.force_relay ? 'relay' : 'all',
     runtimeConfig,
 };

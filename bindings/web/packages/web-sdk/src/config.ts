@@ -23,10 +23,10 @@ export interface SwRuntimeConfig {
   /** Deployment realm ID */
   realm_id: number;
 
-  /** This actor's type (manufacturer:name) */
+  /** This actor's type (manufacturer:name:version) */
   client_actr_type: string;
 
-  /** Target actor type for peer discovery (manufacturer:name) */
+  /** Target actor type for peer discovery (manufacturer:name:version) */
   target_actr_type: string;
 
   /** Service fingerprint for exact matching (optional) */
@@ -37,6 +37,26 @@ export interface SwRuntimeConfig {
 
   /** Whether this actor is a server (registers and waits) or client (discovers) */
   is_server: boolean;
+
+  // ── Package loading (Web load_package_executor) ──
+
+  /** URL of the .actr package to load (e.g. "/packages/echo-server.actr").
+   *  The .actr package is a signed ZIP containing WASM binary, JS glue, and actor.sw.js.
+   *  This is the Web equivalent of Rust Hyper's load_package_executor. */
+  package_url?: string;
+
+  /** Name of the wasm_bindgen register function to call after init (e.g. "register_echo_service") */
+  register_fn?: string;
+
+  // ── Legacy: direct file loading (development fallback) ──
+
+  /** Filename or URL of the wasm-bindgen JS glue file (e.g. "echo_server.js").
+   *  Used when package_url is not set. */
+  package_js?: string;
+
+  /** Filename or URL of the WASM binary (e.g. "echo_server_bg.wasm").
+   *  Used when package_url is not set. */
+  package_wasm?: string;
 }
 
 /**
@@ -66,6 +86,9 @@ export interface ActorSystemConfig {
 
   /** STUN/TURN server configuration */
   iceServers?: RTCIceServer[];
+
+  /** ICE transport policy ('all' or 'relay' for force_relay mode) */
+  iceTransportPolicy?: RTCIceTransportPolicy;
 
   /** Runtime config for the Service Worker WASM layer */
   runtimeConfig?: SwRuntimeConfig;

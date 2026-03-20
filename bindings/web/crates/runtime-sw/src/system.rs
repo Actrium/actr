@@ -128,6 +128,7 @@ impl System {
     pub fn init_message_handler(&self) {
         let local_actor_id = Rc::clone(&self.local_actor_id);
         let outgate = Rc::clone(&self.outgate);
+        let host_gate_for_reject = Arc::clone(&self.host_gate);
 
         self.host_gate
             .set_message_handler(move |target_id, envelope| {
@@ -140,6 +141,7 @@ impl System {
                 let local_id = local_actor_id.borrow().clone();
                 let gate = outgate.borrow().clone();
                 let envelope = envelope.clone();
+                let host_gate = Arc::clone(&host_gate_for_reject);
 
                 wasm_bindgen_futures::spawn_local(async move {
                     // Decide whether this is a local or remote invocation.
@@ -154,16 +156,22 @@ impl System {
                             "[System] Local actor calls not yet implemented, request_id={}",
                             envelope.request_id
                         );
+                        host_gate.reject_request(&envelope.request_id);
                     } else {
                         // Remote invocation: send through the gate.
                         match gate {
                             Some(ref g) => {
                                 if let Err(e) = g.send_message(&target_id, envelope.clone()).await {
                                     log::error!("[System] Gate send_message failed: {:?}", e);
+                                    // Reject the pending HostGate oneshot so
+                                    // send_request() returns an error instead of
+                                    // hanging forever.
+                                    host_gate.reject_request(&envelope.request_id);
                                 }
                             }
                             None => {
                                 log::error!("[System] Gate not set, cannot route remote message");
+                                host_gate.reject_request(&envelope.request_id);
                             }
                         }
                     }

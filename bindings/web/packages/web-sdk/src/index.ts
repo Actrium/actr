@@ -14,7 +14,10 @@ export * from './config';
 export * from './errors';
 export * from './types';
 export * from './actor-ref';
+export * from './package-loader';
 
 // Unified API
 export { createActor } from './actor';
 export type { Actor, ActorConfig } from './actor';
+export { loadActrPackage, parseActrPackage } from './package-loader';
+export type { ActrManifest, LoadedActrPackage } from './package-loader';

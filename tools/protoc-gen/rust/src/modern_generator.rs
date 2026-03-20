@@ -331,7 +331,7 @@ impl RpcRequest for {input_type} {{
                     let target_type = actr::protocol::ActrType {
                         manufacturer: #manufacturer.to_string(),
                         name: #name.to_string(),
-                        version: "v1".to_string(),
+                        version: "1.0.0".to_string(),
                     };
                     let target_id = ctx.discover_route_candidate(&target_type).await?;
                     ctx.call_raw(
@@ -731,7 +731,7 @@ mod tests {
             package_name: "echo".to_string(),
             service_name: "EchoService".to_string(),
             methods: vec!["Echo".to_string()],
-            actr_type: "acme:EchoService:v1".to_string(),
+            actr_type: "acme:EchoService:1.0.0".to_string(),
         }];
 
         let code = generator

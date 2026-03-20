@@ -503,6 +503,8 @@ struct SwRuntime {
     signaling: SignalingClient,
     actor_id: Option<ActrId>,
     credential: Option<AIdCredential>,
+    /// TURN credential from AIS registration (time-limited HMAC)
+    turn_credential: Option<actr_protocol::TurnCredential>,
     /// Platform provider for crypto and KV storage
     platform: WebPlatformProvider,
     target_id: Option<ActrId>,
@@ -552,7 +554,7 @@ impl SwRuntime {
         //   Try to restore persisted credentials first; if expired or missing,
         //   perform a fresh AIS HTTP registration.
         let cred_kv_ns = format!("actr_credentials_{}", client_actr_type.to_string_repr());
-        let (actor_id, credential) = Self::obtain_credential_from_ais(
+        let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
             &config.ais_endpoint,
             &client_actr_type,
             config.realm_id,
@@ -591,6 +593,7 @@ impl SwRuntime {
             signaling,
             actor_id: Some(actor_id),
             credential: Some(credential),
+            turn_credential,
             platform,
             target_id: None,
             dom_port: None,
@@ -611,7 +614,7 @@ impl SwRuntime {
     /// Checks IndexedDB for a valid PSK first (renewal path); falls back to
     /// manifest-less initial registration if no PSK is available.
     async fn register_via_ais(&mut self) -> Result<(), JsValue> {
-        let (actor_id, credential) = Self::obtain_credential_from_ais(
+        let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
             &self.ais_endpoint,
             &self.client_actr_type,
             self.realm_id,
@@ -622,6 +625,7 @@ impl SwRuntime {
         .await?;
         self.actor_id = Some(actor_id);
         self.credential = Some(credential);
+        self.turn_credential = turn_credential;
         Ok(())
     }
 
@@ -630,7 +634,7 @@ impl SwRuntime {
     /// 1. Try to load a valid PSK from IndexedDB for renewal
     /// 2. If no PSK, perform initial registration (no manifest for web clients)
     /// 3. Persist PSK and credential to IndexedDB
-    /// 4. Return (actor_id, credential)
+    /// 4. Return (actor_id, credential, turn_credential)
     async fn obtain_credential_from_ais(
         ais_endpoint: &str,
         client_actr_type: &ActrType,
@@ -638,7 +642,7 @@ impl SwRuntime {
         acl: &Option<Acl>,
         platform: &WebPlatformProvider,
         cred_kv_ns: &str,
-    ) -> Result<(ActrId, AIdCredential), JsValue> {
+    ) -> Result<(ActrId, AIdCredential, Option<actr_protocol::TurnCredential>), JsValue> {
         // Try to restore persisted credential if still valid
         if let Some((actor_id, credential)) =
             Self::try_restore_credential_static(platform, cred_kv_ns).await?
@@ -647,7 +651,10 @@ impl SwRuntime {
                 "[SW] credentials restored from IndexedDB (actor_id={})",
                 actor_id.to_string_repr()
             );
-            return Ok((actor_id, credential));
+            // Also try to restore persisted TurnCredential
+            let turn_credential =
+                Self::try_restore_turn_credential_static(platform, cred_kv_ns).await?;
+            return Ok((actor_id, credential, turn_credential));
         }
 
         let ais = WebAisClient::new(ais_endpoint);
@@ -684,6 +691,7 @@ impl SwRuntime {
             Some(actr_protocol::register_response::Result::Success(ok)) => {
                 let actor_id = ok.actr_id.clone();
                 let credential = ok.credential.clone();
+                let turn_credential = Some(ok.turn_credential.clone());
 
                 log::info!(
                     "[SW] AIS registration success: actr_id={}",
@@ -700,7 +708,12 @@ impl SwRuntime {
                 Self::persist_credentials_static(platform, cred_kv_ns, &actor_id, &credential)
                     .await?;
 
-                Ok((actor_id, credential))
+                // Persist TurnCredential
+                if let Some(ref tc) = turn_credential {
+                    Self::persist_turn_credential_static(platform, cred_kv_ns, tc).await?;
+                }
+
+                Ok((actor_id, credential, turn_credential))
             }
             Some(actr_protocol::register_response::Result::Error(err)) => {
                 log::warn!("[SW] AIS register error: {}", err.message);
@@ -842,6 +855,97 @@ impl SwRuntime {
         Ok(())
     }
 
+    /// Persist TurnCredential to IndexedDB (static version).
+    async fn persist_turn_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        turn_credential: &actr_protocol::TurnCredential,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let tc_bytes = turn_credential.encode_to_vec();
+        kv.set("turn_credential", &tc_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist TurnCredential: {e}")))?;
+
+        log::info!("[SW] TurnCredential persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Try to restore a valid TurnCredential from IndexedDB (static version).
+    async fn try_restore_turn_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<actr_protocol::TurnCredential>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(tc_bytes) = kv
+            .get("turn_credential")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read TurnCredential: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let tc = actr_protocol::TurnCredential::decode(&*tc_bytes).map_err(|e| {
+            JsValue::from_str(&format!("Failed to decode persisted TurnCredential: {e}"))
+        })?;
+
+        // Check if TurnCredential is still valid
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        if tc.expires_at <= now_secs {
+            log::info!(
+                "[SW] persisted TurnCredential expired (expires_at={}, now={})",
+                tc.expires_at,
+                now_secs
+            );
+            let _ = kv.delete("turn_credential").await;
+            return Ok(None);
+        }
+
+        log::info!("[SW] TurnCredential restored from IndexedDB");
+        Ok(Some(tc))
+    }
+
+    /// Send TurnCredential to the DOM so the WebRTC coordinator can
+    /// include TURN credentials in ICE server configuration.
+    fn send_turn_credential_to_dom(
+        &self,
+        tc: &actr_protocol::TurnCredential,
+    ) -> Result<(), JsValue> {
+        #[derive(Serialize)]
+        struct TurnCredentialPayload {
+            username: String,
+            password: String,
+        }
+
+        let payload = TurnCredentialPayload {
+            username: tc.username.clone(),
+            password: tc.password.clone(),
+        };
+
+        let msg = SwMessage {
+            msg_type: "update_turn_credential",
+            payload,
+        };
+
+        let js_value = serde_wasm_bindgen::to_value(&msg).map_err(|e| {
+            JsValue::from_str(&format!(
+                "Failed to serialize TurnCredential message: {}",
+                e
+            ))
+        })?;
+
+        log::info!("[SW] Sending TurnCredential to DOM");
+        self.send_dom_message(&js_value)
+    }
+
     /// Try to restore valid credentials from IndexedDB (static version).
     async fn try_restore_credential_static(
         platform: &WebPlatformProvider,
@@ -935,9 +1039,25 @@ impl SwRuntime {
                 log::info!("[SW] restored credentials from IndexedDB, skipping AIS re-register");
                 self.actor_id = Some(actor_id);
                 self.credential = Some(credential);
+                // Also try to restore TurnCredential
+                if let Ok(tc) =
+                    Self::try_restore_turn_credential_static(&self.platform, &cred_kv_ns).await
+                {
+                    self.turn_credential = tc;
+                }
             }
             _ => {
                 self.register_via_ais().await?;
+            }
+        }
+
+        // Send updated TurnCredential to DOM for new peer connections
+        if let Some(ref tc) = self.turn_credential {
+            if let Err(e) = self.send_turn_credential_to_dom(tc) {
+                log::warn!(
+                    "[SW] Failed to send TurnCredential to DOM on reconnect: {:?}",
+                    e
+                );
             }
         }
 
@@ -2471,6 +2591,15 @@ pub async fn register_client(
 
     // Set DOM port
     runtime.dom_port = Some(port);
+
+    // Send TURN credential to DOM so the WebRTC coordinator can use it
+    // for ICE server authentication. This must happen before any create_peer
+    // commands.
+    if let Some(ref tc) = runtime.turn_credential {
+        if let Err(e) = runtime.send_turn_credential_to_dom(tc) {
+            log::warn!("[SW] Failed to send TurnCredential to DOM: {:?}", e);
+        }
+    }
 
     // Fetch `actor_id` for the `System`.
     let actor_id = runtime.actor_id.clone();

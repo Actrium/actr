@@ -1,47 +1,42 @@
 import Foundation
 
 public extension ActrType {
-    /// Returns a string representation of the actor type in the format "manufacturer+name[:version]".
+    /// Returns a string representation of the actor type in the format "manufacturer+name:version".
     ///
-    /// Example: `ActrType(manufacturer: "acme", name: "EchoService", version: "v1").toStringRepr()` returns `"acme+EchoService:v1"`
+    /// Example: `ActrType(manufacturer: "acme", name: "EchoService", version: "1.0.0").toStringRepr()` returns `"acme+EchoService:1.0.0"`
     func toStringRepr() -> String {
-        if let version, !version.isEmpty {
-            return "\(manufacturer)+\(name):\(version)"
+        guard !version.isEmpty else {
+            fatalError("ActrType.version must be non-empty")
         }
-        return "\(manufacturer)+\(name)"
+        return "\(manufacturer)+\(name):\(version)"
     }
 
-    /// Creates an `ActrType` from a string representation in the format "manufacturer+name[:version]".
+    /// Creates an `ActrType` from a string representation in the format "manufacturer+name:version".
     ///
-    /// - Parameter stringRepr: String representation in the format "manufacturer+name[:version]" (e.g., "acme+EchoService:v1")
+    /// - Parameter stringRepr: String representation in the format "manufacturer+name:version" (e.g., "acme+EchoService:1.0.0")
     /// - Returns: An `ActrType` instance
     /// - Throws: `ActrError.ConfigError` if the string format is invalid or contains invalid characters
     ///
     /// Example:
     /// ```swift
-    /// let type = try ActrType.fromStringRepr("acme+EchoService:v1")
+    /// let type = try ActrType.fromStringRepr("acme+EchoService:1.0.0")
     /// // type.manufacturer == "acme"
     /// // type.name == "EchoService"
-    /// // type.version == "v1"
+    /// // type.version == "1.0.0"
     /// ```
     static func fromStringRepr(_ stringRepr: String) throws -> ActrType {
         guard let plusIndex = stringRepr.firstIndex(of: "+") else {
-            throw ActrError.ConfigError(msg: "Invalid ActrType format: '\(stringRepr)'. Expected format: manufacturer+name[:version] (e.g., acme+EchoService:v1)")
+            throw ActrError.ConfigError(msg: "Invalid ActrType format: '\(stringRepr)'. Expected format: manufacturer+name:version (e.g., acme+EchoService:1.0.0)")
         }
 
         let manufacturer = String(stringRepr[..<plusIndex])
         let remainder = String(stringRepr[stringRepr.index(after: plusIndex)...])
-        let name: String
-        let version: String?
-
-        if let colonIndex = remainder.lastIndex(of: ":") {
-            name = String(remainder[..<colonIndex])
-            let parsedVersion = String(remainder[remainder.index(after: colonIndex)...])
-            version = parsedVersion.isEmpty ? nil : parsedVersion
-        } else {
-            name = remainder
-            version = nil
+        guard let colonIndex = remainder.lastIndex(of: ":") else {
+            throw ActrError.ConfigError(msg: "Invalid ActrType format: '\(stringRepr)'. Expected format: manufacturer+name:version (e.g., acme+EchoService:1.0.0)")
         }
+
+        let name = String(remainder[..<colonIndex])
+        let version = String(remainder[remainder.index(after: colonIndex)...])
 
         // Validate that manufacturer and name are not empty
         guard !manufacturer.isEmpty else {
@@ -50,6 +45,10 @@ public extension ActrType {
 
         guard !name.isEmpty else {
             throw ActrError.ConfigError(msg: "Invalid type name: name cannot be empty")
+        }
+
+        guard !version.isEmpty else {
+            throw ActrError.ConfigError(msg: "Invalid version: version cannot be empty")
         }
 
         // Basic validation: manufacturer and name should not contain invalid characters

@@ -1,0 +1,47 @@
+edition = 1
+exports = []
+
+[package]
+name = "package-echo-client"
+description = "Package Echo Client App"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "client"]
+
+[package.actr_type]
+manufacturer = "acme"
+name = "package-echo-client-app"
+version = "0.1.0"
+
+[dependencies]
+package-echo-server = {}
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[system.deployment]
+realm_id = 1001
+
+[system.discovery]
+visible = true
+
+[system.observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "package-echo-client"
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+# ACL configuration - allow package echo server
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "acme:EchoService:0.1.0"

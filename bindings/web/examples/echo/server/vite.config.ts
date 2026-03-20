@@ -13,6 +13,7 @@ export default defineConfig({
     },
     server: {
         port: 5174, // Use a different port than the hello-world example
+        strictPort: true,
         headers: {
             'Cross-Origin-Opener-Policy': 'same-origin',
             'Cross-Origin-Embedder-Policy': 'require-corp',
