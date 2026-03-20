@@ -97,7 +97,7 @@ async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🌐 Discovering WASM echo server via signaling...");
     let target_type = ActrType {
-        manufacturer: "org-zhj".to_string(),
+        manufacturer: "acme".to_string(),
         name: "WasmEchoService".to_string(),
         version: "0.1.0".to_string(),
     };

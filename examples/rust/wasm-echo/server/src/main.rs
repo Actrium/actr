@@ -54,9 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     info!("📦 Package loaded: {} bytes", package_bytes.len());
 
-    // Verify package signature using MFR public key
+    // Verify package signature using MFR public key (set by start.sh from keygen output)
     let mfr_pubkey = std::env::var("MFR_PUBKEY")
-        .unwrap_or_else(|_| "g+6TarZ1VyMsrNr84pPfszT1rtF5ub1AQnrJ+6TxBas=".to_string());
+        .expect("MFR_PUBKEY environment variable is required (base64-encoded Ed25519 public key)");
 
     info!("🔐 Verifying package signature...");
     let hyper = {

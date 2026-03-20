@@ -9,7 +9,7 @@ license = "Apache-2.0"
 tags = ["dev", "client"]
 
 [package.actr_type]
-manufacturer = "org-zhj"
+manufacturer = "acme"
 name = "wasm-echo-client-app"
 version = "0.1.0"
 
@@ -44,4 +44,4 @@ turn_urls = ["turn:localhost:3478"]
 
 [[acl.rules]]
 permission = "allow"
-type = "org-zhj:WasmEchoService:0.1.0"
+type = "acme:WasmEchoService:0.1.0"

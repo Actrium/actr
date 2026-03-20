@@ -114,9 +114,15 @@ pub struct PkgPublishArgs {
     #[arg(long, short = 'k', value_name = "FILE")]
     pub keychain: PathBuf,
 
-    /// Actrix MFR endpoint URL (e.g., http://localhost:8081)
+    /// Actrix MFR endpoint URL (e.g., http://localhost:8081).
+    /// If omitted, reads from [system.ais_endpoint].url in actr.toml.
     #[arg(long, short = 'e', value_name = "URL")]
-    pub endpoint: String,
+    pub endpoint: Option<String>,
+
+    /// Path to actr.toml (used to resolve default endpoint).
+    /// Defaults to ./actr.toml in the current directory.
+    #[arg(long, short = 'c', value_name = "FILE", default_value = "actr.toml")]
+    pub config: PathBuf,
 }
 
 pub async fn execute(args: PkgArgs) -> Result<()> {
@@ -448,8 +454,33 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     println!("🔐 Manifest signed with MFR key");
 
-    // 5. POST /mfr/pkg/publish
-    let publish_url = format!("{}/mfr/pkg/publish", args.endpoint.trim_end_matches('/'));
+    // 5. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
+    let endpoint = if let Some(ep) = args.endpoint {
+        ep
+    } else {
+        let config_content = std::fs::read_to_string(&args.config)
+            .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
+        let config_value: toml::Value =
+            toml::from_str(&config_content).with_context(|| "Invalid actr.toml")?;
+        config_value
+            .get("system")
+            .and_then(|s| s.get("ais_endpoint"))
+            .and_then(|a| a.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|u| {
+                // ais_endpoint url may include /ais path, strip it for base endpoint
+                u.trim_end_matches("/ais").to_string()
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No --endpoint provided and [system.ais_endpoint].url not found in {}",
+                    args.config.display()
+                )
+            })?
+    };
+
+    // 6. POST /mfr/pkg/publish
+    let publish_url = format!("{}/mfr/pkg/publish", endpoint.trim_end_matches('/'));
     println!("📡 Publishing to: {}", publish_url);
 
     let client = reqwest::Client::new();
