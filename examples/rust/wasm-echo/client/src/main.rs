@@ -45,9 +45,10 @@ async fn main() -> Result<()> {
         acl: config.acl.clone(),
         service: None,
         ws_address: None,
-        manifest_json: None,
+        manifest_raw: None,
         mfr_signature: None,
         psk_token: None,
+        target: None,
     };
 
     let ais_response = ais
@@ -96,7 +97,7 @@ async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🌐 Discovering WASM echo server via signaling...");
     let target_type = ActrType {
-        manufacturer: "acme".to_string(),
+        manufacturer: "org-zhj".to_string(),
         name: "WasmEchoService".to_string(),
         version: "0.1.0".to_string(),
     };

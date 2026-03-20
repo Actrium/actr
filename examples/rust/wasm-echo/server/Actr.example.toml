@@ -9,7 +9,7 @@ license = "Apache-2.0"
 tags = ["dev", "example", "wasm"]
 
 [package.actr_type]
-manufacturer = "acme"
+manufacturer = "org-zhj"
 name = "WasmEchoService"
 version = "0.1.0"
 
@@ -17,6 +17,9 @@ version = "0.1.0"
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -40,4 +43,4 @@ turn_urls = ["turn:localhost:3478"]
 
 [[acl.rules]]
 permission = "allow"
-type = "acme:wasm-echo-client-app:0.1.0"
+type = "org-zhj:wasm-echo-client-app:0.1.0"

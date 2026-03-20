@@ -1,19 +1,20 @@
-//! WASM Echo Server — host binary that loads a WASM echo actor
+//! WASM Echo Server — host binary that loads a signed .actr package
 //!
-//! Demonstrates the Actor-RTC WASM executor adapter pattern:
-//! 1. Load pre-built asyncified WASM binary
-//! 2. Compile & instantiate via WasmHost
-//! 3. Register with AIS HTTP to obtain credential
-//! 4. Attach a shell Workload + WASM executor to ActrSystem
-//! 5. Inject credential and start ActrNode
+//! Demonstrates the full Actor-RTC package verification and credential bootstrap flow:
+//! 1. Load a signed `.actr` package (built by `actr pkg build`)
+//! 2. Verify package signature using the MFR public key
+//! 3. Register with AIS using the verified manifest + MFR signature
+//! 4. Compile & instantiate the WASM binary from the verified package
+//! 5. Attach a shell Workload + WASM executor to ActrSystem
+//! 6. Inject credential and start ActrNode
 
 mod shell_workload;
 
 use shell_workload::ShellWorkload;
 
 use actr_hyper::wasm::{WasmActorConfig, WasmHost};
-use actr_hyper::{ActrSystem, AisClient, init_observability};
-use actr_protocol::{RegisterRequest, register_response};
+use actr_hyper::{ActrSystem, AisClient, Hyper, init_observability};
+use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -27,43 +28,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _obs_guard = init_observability(&config.observability)?;
 
-    info!("🚀 WASM Echo Server starting");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📦 Loading WASM echo actor module");
-    info!("📡 Signaling server: ws://localhost:8081/signaling/ws");
+    info!("🚀 WASM Echo Server starting (full package verification flow)");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. Load pre-built asyncified WASM binary
+    // 2. Load and verify the signed .actr package
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    let wasm_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../guest/built/wasm_echo_guest.wasm");
-    let wasm_bytes = std::fs::read(&wasm_path).map_err(|e| {
-        error!("❌ Failed to read WASM binary at {:?}: {}", wasm_path, e);
-        error!("💡 Run the build step first: cd ../guest && ./build.sh");
+    let actr_pkg_path = std::env::var("ACTR_PACKAGE_PATH").unwrap_or_else(|_| {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .join("../guest/built/wasm-echo.actr")
+            .to_string_lossy()
+            .to_string()
+    });
+    let actr_pkg_path = PathBuf::from(&actr_pkg_path);
+
+    info!("📦 Loading .actr package: {:?}", actr_pkg_path);
+    let package_bytes = std::fs::read(&actr_pkg_path).map_err(|e| {
+        error!(
+            "❌ Failed to read .actr package at {:?}: {}",
+            actr_pkg_path, e
+        );
+        error!("💡 Build the package first: actr pkg build -b <wasm> -c actr.toml -k <key>");
         e
     })?;
-    info!("📦 Loaded WASM binary: {} bytes", wasm_bytes.len());
+    info!("📦 Package loaded: {} bytes", package_bytes.len());
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. Compile and instantiate WASM module
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🔧 Compiling WASM module...");
-    let host = WasmHost::compile(&wasm_bytes)?;
-    let mut instance = host.instantiate()?;
+    // Verify package signature using MFR public key
+    let mfr_pubkey = std::env::var("MFR_PUBKEY")
+        .unwrap_or_else(|_| "g+6TarZ1VyMsrNr84pPfszT1rtF5ub1AQnrJ+6TxBas=".to_string());
 
-    // Initialize WASM actor with config
-    let wasm_config = WasmActorConfig {
-        actr_type: "acme:WasmEchoService:0.1.0".to_string(),
-        credential_b64: String::new(),
-        actor_id_b64: String::new(),
-        realm_id: 0,
+    info!("🔐 Verifying package signature...");
+    let hyper = {
+        use actr_hyper::config::{HyperConfig, TrustMode};
+        use base64::Engine;
+
+        let pubkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&mfr_pubkey)
+            .expect("Invalid MFR_PUBKEY base64");
+
+        let hyper_config = HyperConfig::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data"))
+            .with_trust_mode(TrustMode::Development {
+                self_signed_pubkey: pubkey_bytes,
+            });
+
+        Hyper::init(hyper_config).await?
     };
-    instance.init(&wasm_config)?;
-    info!("✅ WASM instance initialized");
+
+    let manifest = hyper.verify_package(&package_bytes).await?;
+    info!(
+        "✅ Package verified: {}:{}:{}",
+        manifest.manufacturer, manifest.actr_name, manifest.version
+    );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. Register with AIS HTTP to obtain credential
+    // 3. Register with AIS using verified manifest + MFR signature
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let ais_endpoint =
         std::env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
@@ -71,15 +90,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ais = AisClient::new(&ais_endpoint);
     let register_req = RegisterRequest {
-        actr_type: config.actr_type().clone(),
-        realm: config.realm.clone(),
+        actr_type: ActrType {
+            manufacturer: manifest.manufacturer.clone(),
+            name: manifest.actr_name.clone(),
+            version: manifest.version.clone(),
+        },
+        realm: Realm {
+            realm_id: config.realm.realm_id,
+        },
         service_spec: config.calculate_service_spec(),
         acl: config.acl.clone(),
         service: None,
         ws_address: None,
-        manifest_json: None,
-        mfr_signature: None,
+        manifest_raw: Some(manifest.manifest_raw.clone().into()),
+        mfr_signature: Some(manifest.signature.clone().into()),
         psk_token: None,
+        target: Some(manifest.target.clone()),
     };
 
     let ais_response = ais
@@ -110,6 +136,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("AIS response missing result".into());
         }
     };
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 4. Extract and compile WASM binary from the verified package
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    info!("🔧 Extracting and compiling WASM from verified package...");
+    let wasm_bytes = actr_pack::load_binary(&package_bytes).map_err(|e| {
+        error!("❌ Failed to extract binary from .actr package: {}", e);
+        e
+    })?;
+    info!("📦 WASM binary extracted: {} bytes", wasm_bytes.len());
+
+    let host = WasmHost::compile(&wasm_bytes)?;
+    let mut instance = host.instantiate()?;
+
+    // Initialize WASM actor with config from verified manifest
+    let wasm_config = WasmActorConfig {
+        actr_type: manifest.actr_type_str().to_string(),
+        credential_b64: String::new(),
+        actor_id_b64: String::new(),
+        realm_id: 0,
+    };
+    instance.init(&wasm_config)?;
+    info!("✅ WASM instance initialized");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 5. Create ActrSystem

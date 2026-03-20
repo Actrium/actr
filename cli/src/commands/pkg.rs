@@ -198,18 +198,22 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     // 2. Read actr.toml for metadata
     let config_content = std::fs::read_to_string(&args.config)
         .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
-    let config_value: toml::Value = config_content
-        .parse()
-        .with_context(|| "Invalid actr.toml")?;
+    let config_value: toml::Value =
+        toml::from_str(&config_content).with_context(|| "Invalid actr.toml")?;
     let pkg = config_value
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
 
+    // Support both [package.actr_type].{manufacturer,name,version} (standard actr.toml)
+    // and flat [package].{manufacturer,name,version} (legacy format)
+    let actr_type_table = pkg.get("actr_type");
     let get_str = |key: &str| -> Result<String> {
-        pkg.get(key)
+        actr_type_table
+            .and_then(|t| t.get(key))
+            .or_else(|| pkg.get(key))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("actr.toml [package].{key} missing"))
+            .ok_or_else(|| anyhow::anyhow!("actr.toml [package.actr_type].{key} missing"))
     };
 
     let manufacturer = get_str("manufacturer")?;
@@ -385,16 +389,16 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
     };
 
     // 3. Verify
-    let manifest = actr_pack::verify(&package_bytes, &pubkey)?;
+    let verified = actr_pack::verify(&package_bytes, &pubkey)?;
 
     println!("Package verification passed");
     println!();
-    println!("  type:        {}", manifest.actr_type_str());
-    println!("  binary:      {}", manifest.binary.path);
-    println!("  binary_hash: {}...", &manifest.binary.hash[..16]);
-    println!("  target:      {}", manifest.binary.target);
-    if !manifest.resources.is_empty() {
-        println!("  resources:   {}", manifest.resources.len());
+    println!("  type:        {}", verified.manifest.actr_type_str());
+    println!("  binary:      {}", verified.manifest.binary.path);
+    println!("  binary_hash: {}...", &verified.manifest.binary.hash[..16]);
+    println!("  target:      {}", verified.manifest.binary.target);
+    if !verified.manifest.resources.is_empty() {
+        println!("  resources:   {}", verified.manifest.resources.len());
     }
 
     Ok(())

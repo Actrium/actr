@@ -54,3 +54,4 @@ __pycache__/
 venv/
 env/
 .env/
+examples/rust/wasm-echo/server/data/

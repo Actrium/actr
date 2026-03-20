@@ -1,15 +1,18 @@
 #!/bin/bash
-# Test script for wasm-echo example — WASM actor loaded via ExecutorAdapter
+# Test script for wasm-echo example — Full package verification flow
 #
-# Demonstrates the full WASM execution flow:
+# Demonstrates the complete signing → verification → AIS registration flow:
 #   1. Build guest actor to wasm32-unknown-unknown
 #   2. Apply wasm-opt --asyncify transform
-#   3. Host server loads the WASM binary and registers with signaling
-#   4. Client discovers WASM echo server, sends messages, verifies responses
+#   3. `actr pkg build` — pack WASM into a signed .actr package
+#   4. Start actrix (signaling + AIS + MFR)
+#   5. Seed MFR manufacturer + package records in DB
+#   6. Server loads .actr package → verify signature → register with AIS → start
+#   7. Client discovers WASM echo server, sends messages, verifies responses
 #
 # Usage:
 #   ./start.sh              # Use default message "TestMsg"
-#   ./start.sh "你好世界"    # Send custom message
+#   ./start.sh "Hello"      # Send custom message
 
 set -e
 set -o pipefail
@@ -22,13 +25,14 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🧪 Testing wasm-echo (WASM ExecutorAdapter echo service)"
-echo "    Using Actrix as signaling server"
+echo "🧪 Testing wasm-echo (Full Package Verification Flow)"
+echo "    sign → verify → AIS register → WASM execute"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Paths ────────────────────────────────────────────────────────────────
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+echo "WORKSPACE_ROOT: "+"$WORKSPACE_ROOT"
 # Actrium root is 3 levels up from WORKSPACE_ROOT (examples/rust):
 #   examples/rust → actr/examples → actr → Actrium
 ACTRIUM_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
@@ -38,6 +42,11 @@ WASM_ECHO_DIR="$WORKSPACE_ROOT/wasm-echo"
 GUEST_DIR="$WASM_ECHO_DIR/guest"
 SERVER_DIR="$WASM_ECHO_DIR/server"
 CLIENT_DIR="$WASM_ECHO_DIR/client"
+
+# MFR keychain for package signing
+MFR_KEYCHAIN="$ACTRIUM_DIR/keys/mfr-org-zhj-keychain.json"
+MFR_PUBKEY="g+6TarZ1VyMsrNr84pPfszT1rtF5ub1AQnrJ+6TxBas="
+MFR_NAME="org-zhj"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -52,7 +61,17 @@ mkdir -p "$LOG_DIR"
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
-# Ensure actr.toml files exist
+# ── Clean stale database and config files ────────────────────────────────
+# Remove DB files from previous runs so actrix starts with fresh keys.
+# Without this, expired signing keys cause "Invalid credential format" errors.
+echo ""
+echo "🗑️  Cleaning stale database files..."
+rm -rf "$WORKSPACE_ROOT/database"
+# Also remove actr.toml files to ensure they are freshly copied from Actr.example.toml
+rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml"
+echo -e "${GREEN}✅ Stale database cleaned${NC}"
+
+# Ensure actr.toml files exist (will copy from Actr.example.toml)
 echo ""
 echo "🔍 Checking actr.toml files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -61,14 +80,6 @@ ensure_actr_toml "$CLIENT_DIR"
 
 # Ensure actrix-config.toml exists
 ensure_actrix_config "$WORKSPACE_ROOT"
-
-# ── Clean stale database files ───────────────────────────────────────────
-# Remove DB files from previous runs so actrix starts with fresh keys.
-# Without this, expired signing keys cause "Invalid credential format" errors.
-echo ""
-echo "🗑️  Cleaning stale database files..."
-rm -rf "$WORKSPACE_ROOT/database"
-echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 
@@ -104,7 +115,7 @@ trap cleanup EXIT INT TERM
 # ── Step 0: Build WASM guest actor ──────────────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Building WASM guest actor (wasm32-unknown-unknown)...${NC}"
+echo -e "${BLUE}📦 Step 0: Building WASM guest actor (wasm32-unknown-unknown)...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Check wasm32 target is installed
@@ -174,10 +185,70 @@ echo -e "${GREEN}✅ Asyncified WASM: $(du -h "$BUILT_DIR/wasm_echo_guest.wasm" 
 # Return to workspace root
 cd "$WORKSPACE_ROOT"
 
-# ── Step 1: Ensure actrix is available ──────────────────────────────────
+# ── Step 1: Build .actr package (sign with MFR key) ─────────────────────
 
 echo ""
-echo "📦 Checking actrix availability..."
+echo -e "${BLUE}📦 Step 1: Building signed .actr package...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Ensure actr CLI is available
+ACTR_CMD=""
+if [ -x "$ACTRIUM_DIR/actr/target/debug/actr" ]; then
+    ACTR_CMD="$ACTRIUM_DIR/actr/target/debug/actr"
+elif [ -x "$ACTRIUM_DIR/actr/target/release/actr" ]; then
+    ACTR_CMD="$ACTRIUM_DIR/actr/target/release/actr"
+elif command -v actr > /dev/null 2>&1; then
+    ACTR_CMD="actr"
+else
+    echo -e "${YELLOW}⚠️  actr CLI not found, building...${NC}"
+    cd "$ACTRIUM_DIR/actr"
+    cargo build --bin actr 2>&1 | tail -5
+    ACTR_CMD="$ACTRIUM_DIR/actr/target/debug/actr"
+    cd "$WORKSPACE_ROOT"
+fi
+
+echo "Using actr CLI: $ACTR_CMD"
+
+if [ ! -f "$MFR_KEYCHAIN" ]; then
+    echo -e "${RED}❌ MFR keychain not found: $MFR_KEYCHAIN${NC}"
+    exit 1
+fi
+
+# Extract private key from keychain to a temp dev-key.json format for actr pkg build
+TEMP_KEY_DIR=$(mktemp -d)
+TEMP_KEY_FILE="$TEMP_KEY_DIR/dev-key.json"
+PRIVATE_KEY=$(python3 -c "import json; print(json.load(open('$MFR_KEYCHAIN'))['private_key'])")
+cat > "$TEMP_KEY_FILE" <<EOF
+{
+    "private_key": "$PRIVATE_KEY",
+    "public_key": "$MFR_PUBKEY",
+    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "note": "Temporary key for wasm-echo build"
+}
+EOF
+
+ACTR_PACKAGE="$BUILT_DIR/wasm-echo.actr"
+
+$ACTR_CMD pkg build \
+    --binary "$BUILT_DIR/wasm_echo_guest.wasm" \
+    --config "$SERVER_DIR/actr.toml" \
+    --key "$TEMP_KEY_FILE" \
+    --output "$ACTR_PACKAGE" \
+    --target "wasm32-unknown-unknown"
+
+rm -rf "$TEMP_KEY_DIR"
+
+if [ ! -f "$ACTR_PACKAGE" ]; then
+    echo -e "${RED}❌ Package build failed${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+
+# ── Step 2: Ensure actrix is available ──────────────────────────────────
+
+echo ""
+echo -e "${BLUE}📦 Step 2: Checking actrix availability...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTRIX_CMD=""
@@ -207,10 +278,10 @@ else
     fi
 fi
 
-# ── Step 2: Start actrix ────────────────────────────────────────────────
+# ── Step 3: Start actrix ────────────────────────────────────────────────
 
 echo ""
-echo "🚀 Starting actrix (signaling server)..."
+echo -e "${BLUE}🚀 Step 3: Starting actrix (signaling + AIS + MFR)...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 $ACTRIX_CMD --config "$ACTRIX_CONFIG" > "$LOG_DIR/actrix.log" 2>&1 &
@@ -243,10 +314,10 @@ if [ $COUNTER -eq $MAX_WAIT ]; then
     exit 1
 fi
 
-# ── Step 2.5: Setup realms ──────────────────────────────────────────────
+# ── Step 3.5: Seed realm + MFR data ────────────────────────────────────
 
 echo ""
-echo "🔑 Setting up realms in actrix..."
+echo -e "${BLUE}🔑 Step 3.5: Seeding realm + MFR data in actrix DB...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 sleep 2
@@ -264,18 +335,41 @@ if [ ! -f "$ACTRIX_DB" ]; then
     exit 1
 fi
 
+NOW=$(date +%s)
+
 for REALM_ID in $SERVER_REALM $CLIENT_REALM; do
     echo "  Creating realm $REALM_ID..."
     sqlite3 "$ACTRIX_DB" \
-        "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'wasm-echo-realm', 'Active', 1, strftime('%s','now'), '');"
+        "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'wasm-echo-realm', 'Active', 1, $NOW, '');"
 done
 
 echo -e "${GREEN}✅ Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_REALM)${NC}"
 
-# ── Step 3: Build host binaries ─────────────────────────────────────────
+# Seed MFR manufacturer record with public key
+echo "  Registering MFR manufacturer '$MFR_NAME' with public key..."
+sqlite3 "$ACTRIX_DB" \
+    "INSERT OR IGNORE INTO mfr (name, public_key, contact, status, created_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', 'dev@example.com', 'Active', $NOW);"
+
+MFR_ID=$(sqlite3 "$ACTRIX_DB" "SELECT id FROM mfr WHERE name = '$MFR_NAME';")
+echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID)${NC}"
+
+# Seed mfr_package for the wasm-echo server
+echo "  Registering package record for org-zhj:WasmEchoService:0.1.0..."
+TYPE_STR="org-zhj:WasmEchoService:0.1.0"
+sqlite3 "$ACTRIX_DB" \
+    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'WasmEchoService', '0.1.0', '$TYPE_STR', '', '', 'active', $NOW);"
+
+# Also register the client package
+CLIENT_TYPE_STR="org-zhj:wasm-echo-client-app:0.1.0"
+sqlite3 "$ACTRIX_DB" \
+    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'wasm-echo-client-app', '0.1.0', '$CLIENT_TYPE_STR', '', '', 'active', $NOW);"
+
+echo -e "${GREEN}✅ Package records seeded${NC}"
+
+# ── Step 4: Build host binaries ─────────────────────────────────────────
 
 echo ""
-echo "🔨 Building host binaries..."
+echo -e "${BLUE}🔨 Step 4: Building host binaries...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if ! cargo build --bin wasm-echo-server --bin wasm-echo-client 2>&1; then
@@ -285,19 +379,22 @@ fi
 
 echo -e "${GREEN}✅ Binaries built successfully${NC}"
 
-# ── Step 4: Start WASM echo server ──────────────────────────────────────
+# ── Step 5: Start WASM echo server (with package verification) ──────────
 
 echo ""
-echo "🚀 Starting wasm-echo-server..."
+echo -e "${BLUE}🚀 Step 5: Starting wasm-echo-server (loading .actr package)...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-RUST_LOG="${RUST_LOG:-info}" cargo run --bin wasm-echo-server > "$LOG_DIR/wasm-echo-server.log" 2>&1 &
+ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
+MFR_PUBKEY="$MFR_PUBKEY" \
+RUST_LOG="${RUST_LOG:-info}" \
+cargo run --bin wasm-echo-server > "$LOG_DIR/wasm-echo-server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "Server started (PID: $SERVER_PID)"
 echo "Waiting for WASM server to register..."
 
-MAX_WAIT=15
+MAX_WAIT=20
 COUNTER=0
 while [ $COUNTER -lt $MAX_WAIT ]; do
     if ! kill -0 $SERVER_PID 2>/dev/null; then
@@ -321,10 +418,10 @@ fi
 
 sleep 2
 
-# ── Step 5: Run client with test input ──────────────────────────────────
+# ── Step 6: Run client with test input ──────────────────────────────────
 
 echo ""
-echo "🚀 Running wasm-echo-client..."
+echo -e "${BLUE}🚀 Step 6: Running wasm-echo-client...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ -n "$1" ]; then
@@ -355,7 +452,7 @@ if kill -0 $CLIENT_PID 2>/dev/null; then
     kill $CLIENT_PID 2>/dev/null || true
 fi
 
-# ── Step 6: Verify output ───────────────────────────────────────────────
+# ── Step 7: Verify output ───────────────────────────────────────────────
 
 echo ""
 echo "🔍 Verifying output..."
@@ -365,15 +462,18 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/wasm-echo-client.lo
     echo -e "${GREEN}✅ Test PASSED: WASM echo server response received${NC}"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🎉 WASM Echo test completed successfully!"
+    echo "🎉 Full Package Verification Flow test completed!"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo "✅ Validated:"
-    echo "   • WASM guest actor compiled to wasm32-unknown-unknown"
-    echo "   • wasm-opt --asyncify transform applied"
-    echo "   • WasmHost compile → instantiate → init"
-    echo "   • ActrNode with WASM ExecutorAdapter"
-    echo "   • Real distributed Actor communication (client ↔ WASM server)"
+    echo "✅ Validated end-to-end flow:"
+    echo "   1. WASM guest compiled to wasm32-unknown-unknown"
+    echo "   2. wasm-opt --asyncify transform applied"
+    echo "   3. actr pkg build → signed .actr package (MFR key: $MFR_NAME)"
+    echo "   4. Server loaded .actr → verified MFR signature"
+    echo "   5. Server registered with AIS (manifest_raw + mfr_signature)"
+    echo "   6. AIS verified MFR identity → issued credential"
+    echo "   7. ActrNode started with verified credential"
+    echo "   8. Client discovered server → echo message confirmed"
     echo ""
     echo "Client output:"
     cat "$LOG_DIR/wasm-echo-client.log" | grep "Received reply" || true
