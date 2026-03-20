@@ -29,4 +29,4 @@ pub use error::PackError;
 pub use load::{load_binary, read_manifest, read_manifest_raw};
 pub use manifest::{BinaryEntry, ManifestMetadata, PackageManifest, ResourceEntry};
 pub use pack::{PackOptions, pack};
-pub use verify::verify;
+pub use verify::{VerifiedPackage, verify};

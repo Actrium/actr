@@ -319,7 +319,10 @@ impl ConfigCommand {
 
                 output.push_str(&format!("  Realm: {}\n", config.realm.realm_id));
                 output.push_str(&format!("  Signaling URL: {}\n", config.signaling_url));
-                output.push_str(&format!("  AIS Endpoint: {}\n", config.ais_endpoint.as_deref().unwrap_or("(not set)")));
+                output.push_str(&format!(
+                    "  AIS Endpoint: {}\n",
+                    config.ais_endpoint.as_deref().unwrap_or("(not set)")
+                ));
                 output.push_str(&format!(
                     "  Visible in discovery: {}\n",
                     config.visible_in_discovery

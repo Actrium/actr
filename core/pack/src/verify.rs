@@ -6,6 +6,20 @@ use sha2::{Digest, Sha256};
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
 
+/// Result of a successful package verification.
+///
+/// Contains the parsed manifest along with the raw bytes needed for
+/// transparent forwarding to AIS for signature verification.
+#[derive(Debug)]
+pub struct VerifiedPackage {
+    /// Parsed package manifest.
+    pub manifest: PackageManifest,
+    /// Raw `actr.toml` bytes as stored in the ZIP (the signed payload).
+    pub manifest_raw: Vec<u8>,
+    /// Raw `actr.sig` bytes (64-byte Ed25519 signature).
+    pub sig_raw: Vec<u8>,
+}
+
 /// Verify an .actr package.
 ///
 /// Verification flow:
@@ -15,21 +29,21 @@ use crate::manifest::PackageManifest;
 /// 4. Parse actr.toml -> PackageManifest
 /// 5. Read binary, verify SHA-256 matches manifest.binary.hash
 /// 6. For each resource, verify SHA-256 matches entry hash
-/// 7. Return PackageManifest
-pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<PackageManifest, PackError> {
+/// 7. Return VerifiedPackage with manifest + raw bytes
+pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackage, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     // 1. Read actr.sig
-    let sig_bytes =
+    let sig_raw =
         read_zip_entry(&mut archive, "actr.sig").map_err(|_| PackError::SignatureNotFound)?;
-    if sig_bytes.len() != 64 {
+    if sig_raw.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
             "actr.sig must be exactly 64 bytes, got {}",
-            sig_bytes.len()
+            sig_raw.len()
         )));
     }
-    let sig_arr: [u8; 64] = sig_bytes.try_into().unwrap();
+    let sig_arr: [u8; 64] = sig_raw.clone().try_into().unwrap();
     let signature = Signature::from_bytes(&sig_arr);
 
     // 2. Read actr.toml
@@ -89,7 +103,11 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<PackageManifes
         "package verification passed"
     );
 
-    Ok(manifest)
+    Ok(VerifiedPackage {
+        manifest,
+        manifest_raw: manifest_bytes,
+        sig_raw,
+    })
 }
 
 fn read_zip_entry<R: Read + std::io::Seek>(
@@ -160,9 +178,11 @@ mod tests {
     fn roundtrip_succeeds() {
         let key = SigningKey::generate(&mut OsRng);
         let pkg = make_package(&key, b"wasm bytes", vec![]);
-        let m = verify(&pkg, &key.verifying_key()).unwrap();
-        assert_eq!(m.manufacturer, "test-mfr");
-        assert_eq!(m.name, "TestActor");
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.manufacturer, "test-mfr");
+        assert_eq!(result.manifest.name, "TestActor");
+        assert_eq!(result.sig_raw.len(), 64);
+        assert!(!result.manifest_raw.is_empty());
     }
 
     #[test]
@@ -240,7 +260,7 @@ mod tests {
             ("config/b.toml".to_string(), b"data_b".to_vec()),
         ];
         let pkg = make_package(&key, b"wasm", resources);
-        let m = verify(&pkg, &key.verifying_key()).unwrap();
-        assert_eq!(m.resources.len(), 2);
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.resources.len(), 2);
     }
 }

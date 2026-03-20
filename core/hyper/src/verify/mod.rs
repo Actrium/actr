@@ -100,18 +100,20 @@ impl PackageVerifier {
         })?;
 
         tracing::info!(
-            actr_type = %verified.actr_type_str(),
+            actr_type = %verified.manifest.actr_type_str(),
             ".actr package verified"
         );
 
-        // Convert actr_pack::PackageManifest to hyper's PackageManifest
+        // Convert actr_pack::VerifiedPackage to hyper's PackageManifest
         Ok(PackageManifest {
-            manufacturer: verified.manufacturer,
-            actr_name: verified.name,
-            version: verified.version,
-            binary_hash: hex_to_32_bytes(&verified.binary.hash).unwrap_or_default(),
+            manufacturer: verified.manifest.manufacturer,
+            actr_name: verified.manifest.name,
+            version: verified.manifest.version,
+            binary_hash: hex_to_32_bytes(&verified.manifest.binary.hash).unwrap_or_default(),
             capabilities: vec![],
-            signature: vec![], // not needed after verification
+            signature: verified.sig_raw,
+            manifest_raw: verified.manifest_raw,
+            target: verified.manifest.binary.target,
         })
     }
 

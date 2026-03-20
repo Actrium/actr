@@ -139,7 +139,8 @@ impl NetworkServiceDiscovery {
             ..Default::default()
         };
 
-        let mut ais_client = AisClient::new(self.config.ais_endpoint.as_deref().unwrap_or_default());
+        let mut ais_client =
+            AisClient::new(self.config.ais_endpoint.as_deref().unwrap_or_default());
         if let Some(realm_secret) = &self.config.realm_secret {
             ais_client = ais_client.with_realm_secret(realm_secret.clone());
         }

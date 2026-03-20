@@ -425,8 +425,8 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     tracing::debug!("loading keychain: {:?}", args.keychain);
     let keychain_content = std::fs::read_to_string(&args.keychain)
         .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
-    let keychain: serde_json::Value = serde_json::from_str(&keychain_content)
-        .with_context(|| "Invalid keychain JSON")?;
+    let keychain: serde_json::Value =
+        serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
     let private_key_b64 = keychain["private_key"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
@@ -455,6 +455,7 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
             "manufacturer": manifest.manufacturer,
             "name": manifest.name,
             "version": manifest.version,
+            "target": manifest.binary.target,
             "manifest": manifest_str,
             "signature": sig_b64,
         }))
