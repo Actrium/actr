@@ -2,19 +2,16 @@ edition = 1
 exports = []
 
 [package]
-name = "allowed-client"
+name = "allowed-greeter-client"
+manufacturer = "acme"
+version = "1.0.0"
 description = "Allowed Greeter Client (should pass ACL)"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
 
-[package.actr_type]
-manufacturer = "acme"
-name = "allowed-greeter-client"
-version = "1.0.0"
-
 [dependencies]
-acl-server = { actr_type = "acme:greeter.GreeterService:1.0.0" }
+greeter.GreeterService = { actr_type = "acme:greeter.GreeterService:1.0.0" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"

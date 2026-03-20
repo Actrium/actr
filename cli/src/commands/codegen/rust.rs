@@ -1050,12 +1050,8 @@ mod tests {
 exports = []
 
 [package]
-name = "demo"
-version = "0.1.0"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "Demo"
+manufacturer = "acme"
 version = "0.1.0"
 
 [dependencies]

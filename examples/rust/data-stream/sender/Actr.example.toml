@@ -2,19 +2,16 @@ edition = 1
 exports = []
 
 [package]
-name = "file-transfer-sender"
+name = "GenericClient"
+manufacturer = "acme"
+version = "1.0.0"
 description = "File transfer sender using DataStream API"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
 
-[package.actr_type]
-manufacturer = "acme"
-name = "GenericClient"
-version = "1.0.0"
-
 [dependencies]
-file-transfer-receiver = { actr_type = "acme:FileTransferService:1.0.0" }
+FileTransferService = { actr_type = "acme:FileTransferService:1.0.0" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"

@@ -4,15 +4,12 @@ exports = ["examples/test.proto"]
 
 [package]
 name = "test-service"
-description = "Test configuration"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test-service"
+description = "Test configuration"
 
 [dependencies]
 user-service = {}
-payment = { actr_type = "acme+payment-service", fingerprint = "service_semantic:abc123..." }
+payment-service = { actr_type = "acme+payment-service", fingerprint = "service_semantic:abc123..." }
 
 [scripts]
 run = "cargo run"

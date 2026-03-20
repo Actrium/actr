@@ -211,16 +211,12 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
 
-    // Support both [package.actr_type].{manufacturer,name,version} (standard actr.toml)
-    // and flat [package].{manufacturer,name,version} (legacy format)
-    let actr_type_table = pkg.get("actr_type");
+    // Read manufacturer, name, version from [package] section
     let get_str = |key: &str| -> Result<String> {
-        actr_type_table
-            .and_then(|t| t.get(key))
-            .or_else(|| pkg.get(key))
+        pkg.get(key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("actr.toml [package.actr_type].{key} missing"))
+            .ok_or_else(|| anyhow::anyhow!("actr.toml [package].{key} missing"))
     };
 
     let manufacturer = get_str("manufacturer")?;

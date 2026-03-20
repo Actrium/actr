@@ -121,24 +121,21 @@ impl ParserV1 {
     }
 
     fn parse_package(&self, raw: &RawPackageConfig) -> Result<PackageInfo> {
-        Name::new(raw.actr_type.manufacturer.clone()).map_err(|e| {
+        Name::new(raw.manufacturer.clone()).map_err(|e| {
             ConfigError::InvalidActrType(format!(
                 "Invalid manufacturer name '{}': {}",
-                raw.actr_type.manufacturer, e
+                raw.manufacturer, e
             ))
         })?;
 
-        Name::new(raw.actr_type.name.clone()).map_err(|e| {
-            ConfigError::InvalidActrType(format!(
-                "Invalid actor type name '{}': {}",
-                raw.actr_type.name, e
-            ))
+        Name::new(raw.name.clone()).map_err(|e| {
+            ConfigError::InvalidActrType(format!("Invalid actor type name '{}': {}", raw.name, e))
         })?;
 
         let actr_type = ActrType {
-            manufacturer: raw.actr_type.manufacturer.clone(),
-            name: raw.actr_type.name.clone(),
-            version: raw.actr_type.version.clone(),
+            manufacturer: raw.manufacturer.clone(),
+            name: raw.name.clone(),
+            version: raw.version.clone(),
         };
 
         Ok(PackageInfo {
@@ -610,10 +607,7 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -664,10 +658,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 version = "1.0.0"
 
 [dependencies]
@@ -711,10 +702,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
@@ -747,10 +735,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
@@ -781,10 +766,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "1acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081"
@@ -817,11 +799,8 @@ realm_id = 1001
 edition = 1
 
 [package]
-name = "test"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "test-"
+manufacturer = "acme"
 
 [system.signaling]
 url = "ws://localhost:8081"
@@ -855,10 +834,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081"
@@ -892,9 +868,7 @@ port_range_end = 50000
                 r#"edition = 1
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [system.signaling]
 url = "ws://localhost:8081"
 [system.ais_endpoint]

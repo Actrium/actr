@@ -2,16 +2,13 @@ edition = 1
 exports = ["protos/local/{{PROJECT_NAME_SNAKE}}.proto"]
 
 [package]
-name = "{{PROJECT_NAME}}-echo-server"
+name = "EchoService"
+manufacturer = "{{MANUFACTURER}}"
+version = "1.0.0"
 description = "Shell echo server (Python demo)"
 authors = []
 license = "Apache-2.0"
 tags = ["dev", "example", "python"]
-
-[package.actr_type]
-manufacturer = "{{MANUFACTURER}}"
-name = "EchoService"
-version = "1.0.0"
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"

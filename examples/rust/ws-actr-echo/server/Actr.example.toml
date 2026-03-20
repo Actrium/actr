@@ -2,17 +2,13 @@ edition = 1
 exports = ["../proto/echo.proto"]
 
 [package]
-name = "ws-echo-server"
+name = "WsEchoService"
+manufacturer = "acme"
+version = "1.0.0"
 description = "WebSocket Echo Server - Echo service over a direct WebSocket transport"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example", "websocket"]
-
-[package.actr_type]
-manufacturer = "acme"
-name = "WsEchoService"
-version = "1.0.0"
-
 
 [dependencies]
 

@@ -20,12 +20,9 @@ fn write_minimal_actr_files(root: &Path) {
 exports = []
 
 [package]
-name = "demo-project"
-description = "Test project"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "demo-service"
+manufacturer = "acme"
+description = "Test project"
 
 [dependencies]
 
