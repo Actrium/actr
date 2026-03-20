@@ -55,6 +55,3 @@ venv/
 env/
 .env/
 
-# Generated web packages
-bindings/web/examples/echo/client/public/packages/
-bindings/web/examples/echo/server/public/packages/
