@@ -9,7 +9,7 @@ license = "Apache-2.0"
 tags = ["dev", "example", "package"]
 
 [package.actr_type]
-manufacturer = "actrium"
+manufacturer = "acme"
 name = "EchoService"
 version = "0.1.0"
 
@@ -18,11 +18,11 @@ version = "0.1.0"
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.deployment]
-realm_id = 1001
-
 [system.ais_endpoint]
 url = "http://localhost:8081/ais"
+
+[system.deployment]
+realm_id = 1001
 
 [system.discovery]
 visible = true

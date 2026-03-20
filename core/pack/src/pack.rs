@@ -148,9 +148,9 @@ mod tests {
             signing_key,
         };
         let package = pack(&opts).unwrap();
-        let manifest = crate::verify::verify(&package, &verifying_key).unwrap();
-        assert_eq!(manifest.manufacturer, "test-mfr");
-        assert_eq!(manifest.name, "TestActor");
-        assert_eq!(manifest.version, "1.0.0");
+        let result = crate::verify::verify(&package, &verifying_key).unwrap();
+        assert_eq!(result.manifest.manufacturer, "test-mfr");
+        assert_eq!(result.manifest.name, "TestActor");
+        assert_eq!(result.manifest.version, "1.0.0");
     }
 }

@@ -298,6 +298,7 @@ mod tests {
             .realm(9999)
             .manufacturer("test")
             .name("service")
+            .version("1.0.0")
             .build()
             .unwrap();
 
