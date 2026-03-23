@@ -6,7 +6,9 @@
 //! 3. .actr package: wrong key → signature verification failed
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
-use actr_hyper::{Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode};
+use actr_hyper::{
+    Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode, WorkloadPackage,
+};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
@@ -109,7 +111,10 @@ async fn actr_package_roundtrip() {
         .await
         .unwrap();
 
-    let manifest = hyper.verify_package(&package).await.unwrap();
+    let manifest = hyper
+        .verify_package(&WorkloadPackage::new(package))
+        .await
+        .unwrap();
     assert_eq!(manifest.manufacturer, "test-mfr");
     assert_eq!(manifest.actr_name, "MyActor");
     assert_eq!(manifest.version, "1.2.3");
@@ -132,7 +137,7 @@ async fn actr_package_tampered_binary() {
     let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
-    let result = hyper.verify_package(&tampered).await;
+    let result = hyper.verify_package(&WorkloadPackage::new(tampered)).await;
     assert!(
         result.is_err(),
         "tampered .actr package should fail verification"
@@ -151,7 +156,7 @@ async fn actr_package_wrong_key() {
     let hyper = Hyper::init(dev_config_with_key(&dir, &wrong_verifying))
         .await
         .unwrap();
-    let result = hyper.verify_package(&package).await;
+    let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
     assert!(
         matches!(result, Err(HyperError::SignatureVerificationFailed(_))),
         "wrong key should return SignatureVerificationFailed, got: {result:?}"
@@ -166,13 +171,15 @@ async fn verify_rejects_unknown_format() {
         .await
         .unwrap();
 
-    let result = hyper.verify_package(b"this is not a binary").await;
+    let result = hyper
+        .verify_package(&WorkloadPackage::new(b"this is not a binary".to_vec()))
+        .await;
     assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
 }
 
 #[cfg(feature = "wasm-engine")]
 #[tokio::test]
-async fn load_package_executor_selects_wasm_backend() {
+async fn load_workload_package_selects_wasm_backend() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let package = build_actr_package(
@@ -188,14 +195,17 @@ async fn load_package_executor_selects_wasm_backend() {
         .await
         .unwrap();
 
-    let loaded = hyper.load_package_executor(&package).await.unwrap();
+    let loaded = hyper
+        .load_workload_package(&WorkloadPackage::new(package))
+        .await
+        .unwrap();
 
     assert_eq!(loaded.backend, PackageExecutionBackend::Wasm);
     assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
 }
 
 #[tokio::test]
-async fn load_package_executor_rejects_invalid_target() {
+async fn load_workload_package_rejects_invalid_target() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
 
@@ -226,7 +236,9 @@ async fn load_package_executor_rejects_invalid_target() {
         .await
         .unwrap();
 
-    let result = hyper.load_package_executor(&package).await;
+    let result = hyper
+        .load_workload_package(&WorkloadPackage::new(package))
+        .await;
     assert!(
         matches!(result, Err(HyperError::InvalidManifest(ref msg)) if msg.contains("unsupported binary target")),
         "invalid target should be rejected, got: {result:?}"

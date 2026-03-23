@@ -1,12 +1,14 @@
-//! Interactive shell — reads from stdin, sends echo requests via ActrRef
+//! Interactive shell — reads from stdin, discovers and calls the remote echo actor directly.
 
-use crate::client_workload::ClientWorkload;
-use crate::echo::EchoRequest;
-use actr_hyper::ActrRef;
+use crate::echo::{EchoRequest, EchoResponse};
+use actr_framework::{Context as _, Dest};
+use actr_hyper::context::RuntimeContext;
+use actr_protocol::ActrId;
 use tracing::{error, info};
 
 pub struct AppSide {
-    pub actr_ref: ActrRef<ClientWorkload>,
+    pub app_ctx: RuntimeContext,
+    pub server_id: ActrId,
 }
 
 impl AppSide {
@@ -42,10 +44,15 @@ impl AppSide {
                 message: line.clone(),
             };
 
-            info!("[App] Sending to local ClientWorkload: {}", line);
+            info!("[App] Sending directly to remote echo actor: {}", line);
 
-            match self.actr_ref.call(request).await {
+            match self
+                .app_ctx
+                .call::<EchoRequest>(&Dest::Actor(self.server_id.clone()), request)
+                .await
+            {
                 Ok(response) => {
+                    let response: EchoResponse = response;
                     println!("\n[Received reply] {}", response.reply);
                 }
                 Err(e) => {

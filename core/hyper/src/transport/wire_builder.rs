@@ -33,7 +33,7 @@ pub struct DefaultWireBuilderConfig {
 
     /// Shared map of discovered WebSocket direct-connect URLs, keyed by ActrId.
     ///
-    /// Populated by `ActrNode::discover_route_candidates` after receiving ws_address info
+    /// Populated by discovery flow after receiving ws_address info
     /// from the signaling server.  When a connection to an ActrId is needed and this map
     /// contains an entry for it, the stored URL is used instead of the url_template.
     pub discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,

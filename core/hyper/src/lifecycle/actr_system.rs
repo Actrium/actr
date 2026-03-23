@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use actr_config::Config;
-use actr_framework::Workload;
 use actr_protocol::ActorResult;
 
 use super::ActrNode;
@@ -31,7 +30,7 @@ type NetworkEventChannels = std::sync::Mutex<
 /// # Design Philosophy
 /// - Phase 1: Create pure runtime framework
 /// - Knows nothing about business logic types
-/// - Transforms into ActrNode<W> via attach()
+/// - Transforms into `ActrNode` via `attach_workload()` or `attach_shell()`
 pub struct ActrSystem {
     /// Runtime configuration
     config: Config,
@@ -52,7 +51,7 @@ pub struct ActrSystem {
     signaling_client: Arc<dyn SignalingClient>,
 
     /// Network event channels (lazily created in create_network_event_handle())
-    /// Taken and passed to ActrNode during attach()
+    /// Taken and passed to ActrNode during attach_workload()/attach_shell()
     network_event_channels: NetworkEventChannels,
 }
 
@@ -66,7 +65,8 @@ impl ActrSystem {
     ///
     /// ```rust,ignore
     /// let system = ActrSystem::from_config("actr.toml").await?;
-    /// let _ref = system.attach(MyWorkload).start().await?;
+    /// let node = system.attach_workload(workload);
+    /// let _ref = node.start().await?;
     /// ```
     pub async fn from_config(config_path: impl AsRef<Path>) -> ActorResult<Self> {
         let path = config_path.as_ref();
@@ -90,7 +90,7 @@ impl ActrSystem {
     /// Create new ActrSystem from an already-parsed config.
     ///
     /// Use this when you need custom observability setup or have already
-    /// parsed the config yourself. For most cases, prefer [`Self::boot`].
+    /// parsed the config yourself. For most cases, prefer [`Self::from_config`].
     ///
     /// # Errors
     /// - Mailbox initialization failed
@@ -164,13 +164,13 @@ impl ActrSystem {
         use crate::transport::HostTransport;
 
         // Create TWO separate HostTransport instances for bidirectional communication
-        // This ensures Shell's pending_requests and Workload's pending_requests are separate
+        // This ensures Shell's pending_requests and Guest's pending_requests are separate
 
-        // Direction 1: Shell → Workload (REQUEST)
+        // Direction 1: Shell → Guest (REQUEST)
         let shell_to_workload = Arc::new(HostTransport::new());
         tracing::debug!("✨ Created shell_to_workload HostTransport");
 
-        // Direction 2: Workload → Shell (RESPONSE)
+        // Direction 2: Guest → Shell (RESPONSE)
         let workload_to_shell = Arc::new(HostTransport::new());
         tracing::debug!("✨ Created workload_to_shell HostTransport");
 
@@ -195,7 +195,7 @@ impl ActrSystem {
             signaling_client.clone(),
         );
 
-        tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Workload)");
+        tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
 
         tracing::info!("✅ ActrSystem initialized");
 
@@ -213,7 +213,7 @@ impl ActrSystem {
     /// Create network event processing infrastructure (called on demand)
     ///
     /// Creates NetworkEventHandle and internal channels.
-    /// Channels are stored in the struct for use by attach().
+    /// Channels are stored in the struct for use by attach_workload()/attach_shell().
     ///
     /// # Parameters
     /// - `debounce_ms`: Debounce window time in milliseconds. If 0, uses default.
@@ -232,7 +232,7 @@ impl ActrSystem {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
         let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
 
-        // Store channels (for use by attach())
+        // Store channels (for use by attach_workload()/attach_shell())
         let mut channels = self
             .network_event_channels
             .lock()
@@ -257,19 +257,7 @@ impl ActrSystem {
         crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
     }
 
-    /// Attach Workload, transform into ActrNode<W>
-    ///
-    /// # Type Inference
-    /// - Infer W::Dispatcher from W
-    /// - Compiler monomorphizes ActrNode<W>
-    /// - Completely zero-dyn, full inline chain
-    ///
-    /// # Consumes self
-    /// - Move ensures can only be called once
-    /// - Embodies one-actor-per-instance principle
-    pub fn attach<W: Workload>(self, workload: W) -> ActrNode<W> {
-        tracing::info!("📦 Attaching workload");
-
+    fn into_node(self, workload: Option<crate::workload::Workload>) -> ActrNode {
         // Try to load Actr.lock.toml from config directory (optional)
         let actr_lock_path = self.config.config_dir.join("Actr.lock.toml");
         let actr_lock = match actr_config::lock::LockFile::from_file(&actr_lock_path) {
@@ -290,6 +278,7 @@ impl ActrSystem {
                 None
             }
         };
+
         // Take channels from network_event_channels (if present)
         let (network_event_rx, network_event_result_tx, network_event_debounce_config) = self
             .network_event_channels
@@ -301,18 +290,17 @@ impl ActrSystem {
 
         ActrNode {
             config: self.config,
-            workload: Arc::new(workload),
             mailbox: self.mailbox,
             dlq: self.dlq,
             context_factory: Some(self.context_factory), // Initialized with inproc_gate ready
             signaling_client: self.signaling_client,
-            actor_id: None,              // Obtained after startup
-            credential_state: None,      // Obtained after startup (includes TurnCredential)
-            webrtc_coordinator: None,    // Pass shared coordinator
-            webrtc_gate: None,           // Created after startup
-            websocket_gate: None,        // Created after startup (if websocket_listen_port is set)
-            inproc_mgr: None,            // Set after startup
-            workload_to_shell_mgr: None, // Set after startup
+            actor_id: None,           // Obtained after startup
+            credential_state: None,   // Obtained after startup (includes TurnCredential)
+            webrtc_coordinator: None, // Pass shared coordinator
+            webrtc_gate: None,        // Created after startup
+            websocket_gate: None,     // Created after startup (if websocket_listen_port is set)
+            inproc_mgr: None,         // Set after startup
+            guest_to_shell_mgr: None, // Set after startup
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             actr_lock,
             network_event_rx,
@@ -321,11 +309,23 @@ impl ActrSystem {
             dedup_state: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::lifecycle::dedup::DedupState::new(),
             )),
+            injected_registration: None, // Set by inject_credential() before start()
             discovered_ws_addresses: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            injected_registration: None, // Set by inject_credential() before start() in Process/Wasm mode
-            executor: None, // Set by with_executor() / with_wasm_instance() after build()
+            workload: workload.map(tokio::sync::Mutex::new),
         }
+    }
+
+    /// Attach workload, transform into `ActrNode`.
+    pub fn attach_workload(self, workload: crate::workload::Workload) -> ActrNode {
+        tracing::info!("📦 Attaching workload");
+        self.into_node(Some(workload))
+    }
+
+    /// Attach no guest workload and create a shell-only node.
+    pub fn attach_shell(self) -> ActrNode {
+        tracing::info!("📦 Attaching shell-only node");
+        self.into_node(None)
     }
 }

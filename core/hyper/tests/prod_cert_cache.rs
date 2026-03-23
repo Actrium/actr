@@ -7,7 +7,7 @@
 //! 4. Different MFRs -> independent caches
 //! 5. HTTP request body and response format validation
 
-use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, TrustMode};
+use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, TrustMode, WorkloadPackage};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -86,7 +86,10 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest = hyper.verify_package(&package).await.unwrap();
+    let manifest = hyper
+        .verify_package(&WorkloadPackage::new(package))
+        .await
+        .unwrap();
 
     mock.assert_async().await;
     assert_eq!(manifest.manufacturer, "acme");
@@ -116,9 +119,15 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
     // First: miss -> HTTP
-    hyper.verify_package(&package).await.unwrap();
+    hyper
+        .verify_package(&WorkloadPackage::new(package.clone()))
+        .await
+        .unwrap();
     // Second: hit -> no HTTP
-    hyper.verify_package(&package).await.unwrap();
+    hyper
+        .verify_package(&WorkloadPackage::new(package))
+        .await
+        .unwrap();
 
     mock.assert_async().await; // verify it was called only once
 }
@@ -140,7 +149,7 @@ async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let result = hyper.verify_package(&package).await;
+    let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
     assert!(
         matches!(result, Err(HyperError::UntrustedManufacturer(_))),
@@ -171,7 +180,7 @@ async fn production_mode_rejects_wrong_cached_key() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let result = hyper.verify_package(&package).await;
+    let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
     assert!(
         matches!(result, Err(HyperError::SignatureVerificationFailed(_))),
@@ -207,8 +216,14 @@ async fn production_mode_independent_caches_per_manufacturer() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest_a = hyper.verify_package(&pkg_a).await.unwrap();
-    let manifest_b = hyper.verify_package(&pkg_b).await.unwrap();
+    let manifest_a = hyper
+        .verify_package(&WorkloadPackage::new(pkg_a))
+        .await
+        .unwrap();
+    let manifest_b = hyper
+        .verify_package(&WorkloadPackage::new(pkg_b))
+        .await
+        .unwrap();
 
     assert_eq!(manifest_a.manufacturer, "mfr-a");
     assert_eq!(manifest_b.manufacturer, "mfr-b");
@@ -259,7 +274,9 @@ async fn production_mode_no_http_for_unknown_format() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
 
-    let result = hyper.verify_package(b"this is not a package").await;
+    let result = hyper
+        .verify_package(&WorkloadPackage::new(b"this is not a package".to_vec()))
+        .await;
     assert!(
         matches!(result, Err(HyperError::InvalidManifest(_))),
         "unknown format should return InvalidManifest, got: {result:?}"

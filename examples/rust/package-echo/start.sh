@@ -1,10 +1,10 @@
 #!/bin/bash
-# Test script for package-echo example — echo-actr package loaded from release
+# Test script for package-echo example — echo-actr package loaded from local build
 #
 # Demonstrates the full package-driven execution flow:
-#   1. Download the echo-actr release package and public key
+#   1. Build the local echo-actr wasm package and reuse its public key
 #   2. Verify the signed .actr archive
-#   3. Host server loads the package and picks the executor from package target
+#   3. Host server loads the package and picks the workload from package target
 #   4. Client discovers the echo service, sends messages, verifies responses
 #
 # Usage:
@@ -22,7 +22,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🧪 Testing package-echo (echo-actr package loader)"
+echo "🧪 Testing package-echo (local echo-actr package loader)"
 echo "    Using Actrix as signaling server"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -39,7 +39,7 @@ ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
 SERVER_DIR="$PACKAGE_ECHO_DIR/server"
 CLIENT_DIR="$PACKAGE_ECHO_DIR/client"
-RELEASE_DIR="$PACKAGE_ECHO_DIR/release"
+ECHO_ACTR_DIR="$ACTRIUM_DIR/echo-actr"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -106,15 +106,13 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Download echo-actr release package ──────────────────────────
+# ── Step 0: Build local echo-actr package ───────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Downloading echo-actr release...${NC}"
+echo -e "${BLUE}📦 Building local echo-actr package...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-ECHO_ACTR_REPO="${ECHO_ACTR_REPO:-Actrium/echo-actr}"
-ECHO_ACTR_TAG="${ECHO_ACTR_TAG:-v0.1.0}"
-ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-${ECHO_ACTR_TAG#v}}"
+ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-0.1.0}"
 ECHO_ACTR_BACKEND="${ECHO_ACTR_BACKEND:-wasm}"
 
 host_target() {
@@ -136,61 +134,45 @@ case "$ECHO_ACTR_BACKEND" in
 esac
 
 ACTR_PACKAGE_NAME="actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
-PUBLIC_KEY_NAME="public-key.json"
-ACTR_PACKAGE="$RELEASE_DIR/$ACTR_PACKAGE_NAME"
-PUBLIC_KEY_PATH="$RELEASE_DIR/$PUBLIC_KEY_NAME"
+ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
+PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
 
-download_release_asset() {
-    local asset_name="$1"
-    local output_path="$2"
-    local asset_url="https://github.com/$ECHO_ACTR_REPO/releases/download/$ECHO_ACTR_TAG/$asset_name"
+if [ ! -d "$ECHO_ACTR_DIR" ]; then
+    echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
+    exit 1
+fi
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$asset_url" -o "$output_path"
-        return 0
-    fi
-
-    if command -v gh >/dev/null 2>&1; then
-        gh release download "$ECHO_ACTR_TAG" -R "$ECHO_ACTR_REPO" -p "$asset_name" -D "$RELEASE_DIR" --clobber >/dev/null
-        return 0
-    fi
-
-    echo -e "${RED}❌ Neither curl nor gh is available for downloading release assets${NC}"
-    return 1
-}
-
-mkdir -p "$RELEASE_DIR"
-
-echo "Release repo: $ECHO_ACTR_REPO"
-echo "Release tag:  $ECHO_ACTR_TAG"
+echo "echo-actr dir: $ECHO_ACTR_DIR"
+echo "Version:       $ECHO_ACTR_VERSION"
 echo "Backend:      $ECHO_ACTR_BACKEND"
 echo "Target:       $ECHO_ACTR_TARGET"
 
-if [ -f "$ACTR_PACKAGE" ] && [ -f "$PUBLIC_KEY_PATH" ] && [ "${ECHO_ACTR_FORCE_DOWNLOAD:-0}" != "1" ]; then
-    echo -e "${GREEN}✅ Using cached release assets from $RELEASE_DIR${NC}"
+"$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
+
+if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
+    WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
 else
-    download_release_asset "$ACTR_PACKAGE_NAME" "$ACTR_PACKAGE"
-    download_release_asset "$PUBLIC_KEY_NAME" "$PUBLIC_KEY_PATH"
+    "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
 fi
 
 if [ ! -f "$ACTR_PACKAGE" ]; then
-    echo -e "${RED}❌ Release package download failed: $ACTR_PACKAGE not found${NC}"
+    echo -e "${RED}❌ Local package build failed: $ACTR_PACKAGE not found${NC}"
     exit 1
 fi
 
 if [ ! -f "$PUBLIC_KEY_PATH" ]; then
-    echo -e "${RED}❌ Public key download failed: $PUBLIC_KEY_PATH not found${NC}"
+    echo -e "${RED}❌ Public key not found: $PUBLIC_KEY_PATH${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✅ Release package ready: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
-echo -e "${GREEN}✅ Release public key ready${NC}"
+echo -e "${GREEN}✅ Local package ready: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
+echo -e "${GREEN}✅ Local public key ready${NC}"
 
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
     --pubkey "$PUBLIC_KEY_PATH" \
     --package "$ACTR_PACKAGE" >/dev/null
 
-echo -e "${GREEN}✅ echo-actr release verified: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
+echo -e "${GREEN}✅ Local echo-actr package verified: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
 
 # ── Step 1: Ensure actrix is available ──────────────────────────────────
 
@@ -376,7 +358,7 @@ finally:
 print(f"Seeded MFR package metadata for {type_str}")
 PY
 
-echo -e "${GREEN}✅ MFR package metadata seeded for echo-actr release${NC}"
+echo -e "${GREEN}✅ MFR package metadata seeded for local echo-actr package${NC}"
 
 # ── Step 3: Build host binaries ─────────────────────────────────────────
 
@@ -475,10 +457,10 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   • echo-actr release downloaded from GitHub Release"
-    echo "   • Release package signature verified with public-key.json"
-    echo "   • Hyper loaded the released .actr package for $ECHO_ACTR_TARGET"
-    echo "   • ActrNode started with the package-selected executor"
+    echo "   • local echo-actr package built from /Users/kaito/Project/Actrium/echo-actr"
+    echo "   • Local package signature verified with public-key.json"
+    echo "   • Hyper loaded the locally built .actr package for $ECHO_ACTR_TARGET"
+    echo "   • ActrNode started with the package-selected workload"
     echo "   • Real distributed Actor communication (client ↔ package-backed server)"
     echo ""
     echo "Client output:"

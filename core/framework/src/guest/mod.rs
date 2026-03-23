@@ -12,7 +12,7 @@
 //! - The host must serialize `actr_handle` calls for the same instance.
 //!
 //! In other words, if the host wants two actors of the same type, it must create
-//! two guest instances (for example, two `WasmInstance`s), not reuse one instance
+//! two guest instances (for example, two `WasmWorkload`s), not reuse one instance
 //! with two independent actor states. The ABI does not expose an instance handle,
 //! so guest-side state is process/module-global within one loaded instance.
 //!
@@ -90,11 +90,30 @@ macro_rules! entry {
                 unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
             }
 
-            /// Initialize actor (host calls before first actr_handle call)
+            /// Initialize actor (host calls before first `actr_handle` call).
             ///
-            /// `config_ptr/len`: JSON-encoded WasmActorConfig (reserved for future extension)
+            /// `init_ptr/len` contains a prost-encoded `InitPayloadV1`.
             #[unsafe(no_mangle)]
-            pub extern "C" fn actr_init(_config_ptr: i32, _config_len: i32) -> i32 {
+            pub extern "C" fn actr_init(init_ptr: i32, init_len: i32) -> i32 {
+                let init_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(init_ptr as *const u8, init_len as usize)
+                };
+
+                // TODO: `actr_init` currently only validates that `InitPayloadV1`
+                // is decodable. The payload fields themselves are not yet
+                // consumed by the guest runtime on either the WASM or dynclib
+                // path. This is a legacy gap carried forward from the previous
+                // init model and should be addressed by either wiring these
+                // fields into guest bootstrap state or shrinking the payload to
+                // the subset with active runtime semantics.
+                if $crate::guest::abi::decode_message::<$crate::guest::abi::InitPayloadV1>(
+                    init_bytes,
+                )
+                .is_err()
+                {
+                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                }
+
                 let workload: $workload_type = $init_expr;
                 unsafe {
                     if __ACTR_WORKLOAD.is_some() {
@@ -105,11 +124,7 @@ macro_rules! entry {
                 $crate::guest::abi::code::SUCCESS
             }
 
-            /// Handle one RPC request
-            ///
-            /// - `req_ptr/len`: protobuf-encoded `RpcEnvelope`
-            /// - `resp_ptr_out`: host-provided `i32*`, WASM writes response buffer address here
-            /// - `resp_len_out`: host-provided `i32*`, WASM writes response data length here
+            /// Handle one runtime ABI frame.
             #[unsafe(no_mangle)]
             pub extern "C" fn actr_handle(
                 req_ptr: i32,
@@ -120,20 +135,32 @@ macro_rules! entry {
                 use actr_protocol::prost::Message as ProstMessage;
                 use $crate::{MessageDispatcher, Workload};
 
-                // Read request envelope
+                // Read runtime frame
                 let req_bytes: &[u8] =
                     unsafe { std::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
 
-                let envelope = match actr_protocol::RpcEnvelope::decode(req_bytes) {
+                let frame = match $crate::guest::abi::decode_message::<
+                    $crate::guest::abi::AbiFrame,
+                >(req_bytes) {
+                    Ok(f) => f,
+                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                };
+
+                if frame.op != $crate::guest::abi::op::GUEST_HANDLE {
+                    return $crate::guest::abi::code::UNSUPPORTED_OP;
+                }
+
+                let handle = match <$crate::guest::abi::GuestHandleV1 as $crate::guest::abi::AbiPayload>::decode_payload(&frame.payload) {
+                    Ok(handle) => handle,
+                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                };
+
+                let envelope = match actr_protocol::RpcEnvelope::decode(handle.rpc_envelope.as_slice()) {
                     Ok(e) => e,
                     Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
                 };
 
-                // Build WasmContext (obtain current call context data from host)
-                let ctx = match $crate::guest::wasm::context::WasmContext::from_host() {
-                    Ok(c) => c,
-                    Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
-                };
+                let ctx = $crate::guest::wasm::context::WasmContext::from_invocation(handle.ctx);
 
                 // Get workload reference
                 let workload = unsafe {
@@ -150,8 +177,17 @@ macro_rules! entry {
                 ));
 
                 let resp_bytes = match resp_result {
-                    Ok(b) => b,
-                    Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
+                    Ok(b) => match $crate::guest::abi::success_reply(b.to_vec()) {
+                        Ok(bytes) => bytes,
+                        Err(code) => return code,
+                    },
+                    Err(err) => match $crate::guest::abi::error_reply(
+                        $crate::guest::abi::code::HANDLE_FAILED,
+                        err.to_string().into_bytes(),
+                    ) {
+                        Ok(bytes) => bytes,
+                        Err(code) => return code,
+                    },
                 };
 
                 // Allocate response buffer in WASM linear memory, return to host
@@ -183,34 +219,52 @@ macro_rules! entry {
 
             /// Initialize actor
             ///
-            /// Host calls this after dlopen, passing HostVTable and optional config data.
+            /// Host calls this after dlopen, passing HostVTable and init payload.
             /// Returns 0 on success, negative on error.
-            /// Note: Multiple calls to actr_init are permitted; each call reinitializes the workload.
+            /// Repeated calls return `INIT_FAILED` (one init per guest instance).
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_init(
                 vtable: *const $crate::guest::vtable::HostVTable,
-                _config_ptr: *const u8,
-                _config_len: usize,
+                init_ptr: *const u8,
+                init_len: usize,
             ) -> i32 {
                 if vtable.is_null() {
                     return $crate::guest::abi::code::INIT_FAILED;
                 }
 
+                let init_bytes = if init_ptr.is_null() || init_len == 0 {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(init_ptr, init_len) }
+                };
+
+                // TODO: `actr_init` currently only validates that `InitPayloadV1`
+                // is decodable. The payload fields themselves are not yet
+                // consumed by the guest runtime on either the WASM or dynclib
+                // path. This is a legacy gap carried forward from the previous
+                // init model and should be addressed by either wiring these
+                // fields into guest bootstrap state or shrinking the payload to
+                // the subset with active runtime semantics.
+                if $crate::guest::abi::decode_message::<$crate::guest::abi::InitPayloadV1>(
+                    init_bytes,
+                )
+                .is_err()
+                {
+                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                }
+
                 let workload: $workload_type = $init_expr;
                 unsafe {
+                    if __ACTR_WORKLOAD.is_some() {
+                        return $crate::guest::abi::code::INIT_FAILED;
+                    }
                     __ACTR_VTABLE = Some(vtable);
                     __ACTR_WORKLOAD = Some(workload);
                 }
                 $crate::guest::abi::code::SUCCESS
             }
 
-            /// Handle one RPC request
-            ///
-            /// - `req_ptr/req_len`: protobuf-encoded `RpcEnvelope`
-            /// - `resp_out`: pointer to `*mut u8`, function writes response buffer address here
-            /// - `resp_len_out`: pointer to `usize`, function writes response data length here
-            ///
-            /// Response buffer is allocated on the guest heap; host must call `actr_free_response` after use.
+            /// Handle one runtime ABI frame.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_handle(
                 req_ptr: *const u8,
@@ -227,20 +281,35 @@ macro_rules! entry {
                     None => return $crate::guest::abi::code::INIT_FAILED,
                 };
 
-                // Read request envelope
+                // Read runtime frame
                 if req_ptr.is_null() {
                     return $crate::guest::abi::code::PROTOCOL_ERROR;
                 }
                 let req_bytes = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
 
-                let envelope = match actr_protocol::RpcEnvelope::decode(req_bytes) {
+                let frame = match $crate::guest::abi::decode_message::<
+                    $crate::guest::abi::AbiFrame,
+                >(req_bytes) {
+                    Ok(f) => f,
+                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                };
+
+                if frame.op != $crate::guest::abi::op::GUEST_HANDLE {
+                    return $crate::guest::abi::code::UNSUPPORTED_OP;
+                }
+
+                let handle = match <$crate::guest::abi::GuestHandleV1 as $crate::guest::abi::AbiPayload>::decode_payload(&frame.payload) {
+                    Ok(handle) => handle,
+                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                };
+
+                let envelope = match actr_protocol::RpcEnvelope::decode(handle.rpc_envelope.as_slice()) {
                     Ok(e) => e,
                     Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
                 };
 
-                // Build DynclibContext (obtain current call context data from vtable)
                 let ctx = match unsafe {
-                    $crate::guest::dynclib::context::DynclibContext::from_vtable(vtable)
+                    $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, handle.ctx)
                 } {
                     Ok(c) => c,
                     Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
@@ -284,8 +353,17 @@ macro_rules! entry {
                 };
 
                 let resp_bytes = match resp_result {
-                    Ok(b) => b,
-                    Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
+                    Ok(b) => match $crate::guest::abi::success_reply(b.to_vec()) {
+                        Ok(bytes) => bytes,
+                        Err(code) => return code,
+                    },
+                    Err(err) => match $crate::guest::abi::error_reply(
+                        $crate::guest::abi::code::HANDLE_FAILED,
+                        err.to_string().into_bytes(),
+                    ) {
+                        Ok(bytes) => bytes,
+                        Err(code) => return code,
+                    },
                 };
 
                 // Allocate response buffer on guest heap

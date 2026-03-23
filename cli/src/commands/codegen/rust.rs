@@ -512,12 +512,11 @@ mod tests {{
    ```rust
    #[tokio::main]
    async fn main() -> ActorResult<()> {{
-       let service = My{service_name_pascal}Service::new(/* dependencies */);
-
-       ActorSystem::new()
-           .attach(service)
-           .start()
-           .await
+       let system = ActrSystem::from_config("actr.toml").await?;
+       let workload = /* load from verified .actr package */;
+       let node = system.attach_workload(workload);
+       node.start().await?;
+       Ok(())
    }}
    ```
 

@@ -1,23 +1,20 @@
-//! Package Echo Host — host binary that loads the released echo-actr package
+//! Package Echo Host — host binary that loads the local echo-actr package
 //!
-//! Demonstrates the Actor-RTC package-driven executor loading pattern:
-//! 1. Load a signed .actr package from the echo-actr release
-//! 2. Let Hyper verify the package and prepare the executor
+//! Demonstrates the Actor-RTC package-driven workload loading pattern:
+//! 1. Load a signed .actr package from the local echo-actr build output
+//! 2. Let Hyper verify the package and prepare the workload
 //! 3. Register with AIS HTTP to obtain credential
-//! 4. Attach a shell Workload + package-selected executor to ActrSystem
+//! 4. Attach the package-selected workload to ActrSystem
 //! 5. Inject credential and start ActrNode
-
-mod shell_workload;
 
 use std::env;
 use std::path::PathBuf;
 
-use actr_hyper::{ActrSystem, Hyper, HyperConfig, TrustMode, init_observability};
+use actr_hyper::{ActrSystem, Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
 use actr_platform_native::NativePlatformProvider;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
 use serde_json::Value;
-use shell_workload::ShellWorkload;
 use tracing::{error, info};
 
 fn package_path() -> PathBuf {
@@ -25,7 +22,7 @@ fn package_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../release/actrium-EchoService-0.1.0-wasm32-unknown-unknown.actr")
+                .join("../../../../../echo-actr/dist/actrium-EchoService-0.1.0-wasm32-unknown-unknown.actr")
         })
 }
 
@@ -33,7 +30,8 @@ fn public_key_path() -> PathBuf {
     env::var("ACTR_PUBLIC_KEY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../release/public-key.json")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../../echo-actr/public-key.json")
         })
 }
 
@@ -42,7 +40,7 @@ fn load_package_public_key() -> Result<Vec<u8>> {
     let value: Value =
         serde_json::from_reader(std::fs::File::open(&key_path).with_context(|| {
             format!(
-                "Failed to read package public key at {}. Run `./start.sh` to download the echo-actr release first.",
+                "Failed to read package public key at {}. Run `./start.sh` to build the local echo-actr package first.",
                 key_path.display(),
             )
         })?)
@@ -70,19 +68,23 @@ async fn main() -> Result<()> {
 
     info!("🚀 Package Echo Host starting");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📦 Loading echo-actr release package");
+    info!("📦 Loading local echo-actr package");
     info!("📡 Signaling server: ws://localhost:8081/signaling/ws");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. Load ActrPackage and initialize Hyper
+    // 2. Load WorkloadPackage and initialize Hyper
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let package_path = package_path();
     let package_bytes = std::fs::read(&package_path).inspect_err(|e| {
-        error!("❌ Failed to read ActrPackage at {:?}: {}", package_path, e);
-        error!("💡 Run ./start.sh to download and verify the echo-actr release first");
+        error!(
+            "❌ Failed to read WorkloadPackage at {:?}: {}",
+            package_path, e
+        );
+        error!("💡 Run ./start.sh to build and verify the local echo-actr package first");
     })?;
-    info!("📦 Loaded ActrPackage: {} bytes", package_bytes.len());
+    info!("📦 Loaded WorkloadPackage: {} bytes", package_bytes.len());
+    let package = WorkloadPackage::new(package_bytes);
 
     let hyper_data_dir = config.config_dir.join(".hyper");
     let hyper = Hyper::init_with_platform(
@@ -104,22 +106,22 @@ async fn main() -> Result<()> {
     );
 
     let loaded_package = hyper
-        .load_package_executor(&package_bytes)
+        .load_workload_package(&package)
         .await
         .inspect_err(|e| {
             error!(
-                "❌ ActrPackage verification or executor preparation failed at {}: {:?}",
+                "❌ WorkloadPackage verification or workload preparation failed at {}: {:?}",
                 package_path.display(),
                 e
             );
         })?;
     let package_manifest = loaded_package.manifest;
     info!(
-        "✅ ActrPackage verified and executor prepared: {} ({:?})",
+        "✅ WorkloadPackage verified and workload prepared: {} ({:?})",
         package_manifest.actr_type_str(),
         loaded_package.backend
     );
-    info!("✅ Package executor initialized");
+    info!("✅ Package workload initialized");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 3. Register with AIS HTTP to obtain credential
@@ -155,11 +157,10 @@ async fn main() -> Result<()> {
     info!("✅ ActrSystem created");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. Attach shell workload + package executor, inject credential, then start
+    // 5. Attach package workload, inject credential, then start
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("📦 Attaching ShellWorkload with package-selected executor...");
-    let shell = ShellWorkload;
-    let mut node = system.attach(shell).with_executor(loaded_package.executor);
+    info!("📦 Attaching package-selected workload...");
+    let mut node = system.attach_workload(loaded_package.workload);
 
     // Inject AIS-issued credential so start() populates signaling identity before connect
     node.inject_credential(register_ok);
@@ -171,7 +172,10 @@ async fn main() -> Result<()> {
     })?;
 
     info!("✅ ActrNode started successfully");
-    info!("🆔 Server ID: {:?}", actr_ref.actor_id());
+    info!(
+        "🆔 Server ID: {}",
+        actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id())
+    );
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("🎉 Package Echo Host fully started and registered");
     info!("📡 Waiting for client connections...");

@@ -2,7 +2,7 @@
 //!
 //! Core Lane abstraction and transport management:
 //! - Lane: Physical embodiment of PayloadType, unified bidirectional channel abstraction
-//! - HostTransport: Intra-process transport management (Workload <-> Shell)
+//! - HostTransport: Intra-process transport management (Guest <-> Shell)
 //! - PeerTransport: Cross-process transport management (WebRTC + WebSocket)
 //! - WireHandle: Unified handle for Wire layer components
 //! - WirePool: Wire connection pool manager (strategy layer)

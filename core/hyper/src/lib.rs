@@ -18,7 +18,7 @@
 //! - Actor bootstrap (registers with AIS on behalf of the Actor, obtains credential)
 //! - Storage namespace isolation (independent SQLite space per Actor)
 //! - Cryptographic primitives (Ed25519 sign/verify, Actor does not hold raw private keys)
-//! - Runtime lifecycle management (ActrSystem lifecycle for Native and WASM execution bodies)
+//! - Runtime lifecycle management (ActrSystem lifecycle for Executor execution bodies)
 //!
 //! ### Runtime Infrastructure (formerly actr-runtime)
 //!
@@ -80,6 +80,8 @@ pub mod verify;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod actr_ref;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod ais_client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod key_cache;
@@ -89,8 +91,6 @@ pub mod runtime;
 pub mod storage;
 
 // Runtime infrastructure modules (native-only)
-#[cfg(not(target_arch = "wasm32"))]
-pub mod actr_ref;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod inbound;
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,9 +112,9 @@ pub mod context;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod context_factory;
 
-// Executor adapter (native-only, WASM/dynclib host)
+// Runtime workload abstraction (native-only, WASM/dynclib host)
 #[cfg(not(target_arch = "wasm32"))]
-pub mod executor;
+pub mod workload;
 
 // WASM actor execution engine (optional, native-only)
 #[cfg(all(not(target_arch = "wasm32"), feature = "wasm-engine"))]
@@ -169,9 +169,9 @@ pub use verify::MfrCertCache;
 #[cfg(not(target_arch = "wasm32"))]
 pub use observability::{ObservabilityGuard, init_observability};
 
-// Runtime core structures
 #[cfg(not(target_arch = "wasm32"))]
 pub use actr_ref::ActrRef;
+// Runtime core structures
 #[cfg(not(target_arch = "wasm32"))]
 pub use lifecycle::{ActrNode, ActrSystem, CredentialState, NetworkEventHandle};
 
@@ -215,10 +215,11 @@ pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfi
 #[cfg(not(target_arch = "wasm32"))]
 pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
 
-// Executor adapter
+// Runtime workload abstraction
 #[cfg(not(target_arch = "wasm32"))]
-pub use executor::{
-    CallExecutorFn, DispatchContext, DispatchResult, ExecutorAdapter, IoResult, PendingCall,
+pub use workload::{
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, Workload,
+    WorkloadDispatchResult,
 };
 
 // AIS key cache
@@ -256,7 +257,6 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::lifecycle::{
         ActrNode, ActrSystem, CompatLockFile, CompatLockManager, CompatibilityCheck,
-        DiscoveryResult,
     };
 
     // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
@@ -383,34 +383,54 @@ pub enum PackageExecutionBackend {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Result of verifying a package and preparing a dynamic executor from it.
-pub struct LoadedPackageExecutor {
+/// Public `.actr` package input object consumed by Hyper.
+#[derive(Debug, Clone)]
+pub struct WorkloadPackage {
+    bytes: bytes::Bytes,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WorkloadPackage {
+    pub fn new(bytes: impl Into<bytes::Bytes>) -> Self {
+        Self {
+            bytes: bytes.into(),
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Result of verifying a package and preparing a runtime workload from it.
+pub struct LoadedWorkload {
     /// Verified package manifest retained for downstream bootstrap and storage operations.
     pub manifest: PackageManifest,
     /// Backend selected from `manifest.binary_target`.
     pub backend: PackageExecutionBackend,
-    /// Ready-to-attach executor adapter for `ActrNode::with_executor()`.
-    pub executor: Box<dyn executor::ExecutorAdapter>,
+    /// Ready-to-attach runtime workload.
+    pub workload: crate::workload::Workload,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl LoadedPackageExecutor {
+impl LoadedWorkload {
     /// Consume the wrapper and return its individual components.
     pub fn into_parts(
         self,
     ) -> (
         PackageManifest,
         PackageExecutionBackend,
-        Box<dyn executor::ExecutorAdapter>,
+        crate::workload::Workload,
     ) {
-        (self.manifest, self.backend, self.executor)
+        (self.manifest, self.backend, self.workload)
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Debug for LoadedPackageExecutor {
+impl std::fmt::Debug for LoadedWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadedPackageExecutor")
+        f.debug_struct("LoadedWorkload")
             .field("manifest", &self.manifest)
             .field("backend", &self.backend)
             .finish_non_exhaustive()
@@ -500,7 +520,7 @@ impl Hyper {
         })
     }
 
-    /// Verify an ActrPackage byte stream and return the verified manifest
+    /// Verify a [`WorkloadPackage`] and return the verified manifest.
     ///
     /// Successful verification means:
     /// - binary_hash matches the recomputed result (package not tampered with)
@@ -508,7 +528,8 @@ impl Hyper {
     ///
     /// In production mode, the MFR public key is fetched asynchronously first (requires AIS reachability);
     /// in development mode, there are no network calls and verification is fully synchronous.
-    pub async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+    pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<PackageManifest> {
+        let bytes = package.bytes();
         // production mode: prefetch MFR public key (write to cert_cache), then verify synchronously
         if matches!(&self.inner.config.trust_mode, TrustMode::Production { .. }) {
             if let Some(manufacturer) = quick_extract_manufacturer(bytes) {
@@ -519,32 +540,53 @@ impl Hyper {
         self.inner.verifier.verify(bytes)
     }
 
-    /// Verify an `.actr` package, select the execution backend from `binary.target`,
-    /// and prepare a boxed executor ready for `ActrNode::with_executor()`.
+    /// Verify a package, select the execution backend from `binary.target`,
+    /// and prepare a runtime workload ready for `ActrSystem::attach_workload()`.
     ///
     /// For WASM packages, Hyper initialises the guest with an empty credential payload so
     /// the caller can bootstrap AIS credentials afterwards and inject them before start.
     /// For dynclib packages, Hyper initialises the guest with an empty JSON object.
-    pub async fn load_package_executor(&self, bytes: &[u8]) -> HyperResult<LoadedPackageExecutor> {
-        let manifest = self.verify_package(bytes).await?;
+    pub async fn load_workload_package(
+        &self,
+        package: &WorkloadPackage,
+    ) -> HyperResult<LoadedWorkload> {
+        let bytes = package.bytes();
+        let manifest = self.verify_package(package).await?;
         let backend = select_package_execution_backend(&manifest)?;
-        let executor = match backend {
-            PackageExecutionBackend::Wasm => self.load_wasm_executor(bytes, &manifest),
-            PackageExecutionBackend::Cdylib => self.load_dynclib_executor(bytes, &manifest),
+        let workload = match backend {
+            PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
+            PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
         }?;
 
-        Ok(LoadedPackageExecutor {
+        Ok(LoadedWorkload {
             manifest,
             backend,
-            executor,
+            workload,
         })
     }
 
-    fn load_wasm_executor(
+    /// Verify and load a [`WorkloadPackage`], then attach the resulting workload to an
+    /// existing [`ActrSystem`].
+    pub async fn attach_package(
+        &self,
+        _system: crate::lifecycle::ActrSystem,
+        package: &WorkloadPackage,
+    ) -> HyperResult<(
+        crate::lifecycle::ActrNode,
+        PackageManifest,
+        PackageExecutionBackend,
+    )> {
+        let loaded = self.load_workload_package(package).await?;
+        let (manifest, backend, workload) = loaded.into_parts();
+        let node = _system.attach_workload(workload);
+        Ok((node, manifest, backend))
+    }
+
+    fn load_wasm_workload(
         &self,
         bytes: &[u8],
         manifest: &PackageManifest,
-    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
+    ) -> HyperResult<crate::workload::Workload> {
         #[cfg(feature = "wasm-engine")]
         {
             let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
@@ -566,10 +608,11 @@ impl Hyper {
                 ))
             })?;
             instance
-                .init(&crate::wasm::WasmActorConfig {
+                .init(&actr_framework::guest::abi::InitPayloadV1 {
+                    version: actr_framework::guest::abi::version::V1,
                     actr_type: manifest.actr_type_str(),
-                    credential_b64: String::new(),
-                    actor_id_b64: String::new(),
+                    credential: Vec::new(),
+                    actor_id: Vec::new(),
                     realm_id: 0,
                 })
                 .map_err(|e| {
@@ -578,7 +621,7 @@ impl Hyper {
                         manifest.binary_target
                     ))
                 })?;
-            Ok(Box::new(instance))
+            Ok(crate::workload::Workload::Wasm(instance))
         }
 
         #[cfg(not(feature = "wasm-engine"))]
@@ -591,11 +634,11 @@ impl Hyper {
         }
     }
 
-    fn load_dynclib_executor(
+    fn load_dynclib_workload(
         &self,
         bytes: &[u8],
         manifest: &PackageManifest,
-    ) -> HyperResult<Box<dyn executor::ExecutorAdapter>> {
+    ) -> HyperResult<crate::workload::Workload> {
         #[cfg(feature = "dynclib-engine")]
         {
             let binary_bytes = actr_pack::load_binary(bytes).map_err(|e| {
@@ -626,16 +669,24 @@ impl Hyper {
                     manifest.binary_target
                 ))
             })?;
-            let instance = host.instantiate(br#"{}"#).map_err(|e| {
-                HyperError::Runtime(format!(
-                    "failed to initialize dynclib package target `{}`: {e}",
-                    manifest.binary_target
-                ))
-            })?;
+            let instance = host
+                .instantiate(&actr_framework::guest::abi::InitPayloadV1 {
+                    version: actr_framework::guest::abi::version::V1,
+                    actr_type: manifest.actr_type_str(),
+                    credential: Vec::new(),
+                    actor_id: Vec::new(),
+                    realm_id: 0,
+                })
+                .map_err(|e| {
+                    HyperError::Runtime(format!(
+                        "failed to initialize dynclib package target `{}`: {e}",
+                        manifest.binary_target
+                    ))
+                })?;
 
-            Ok(Box::new(crate::dynclib::DynclibExecutor::with_temp_file(
-                host, instance, temp_file,
-            )))
+            Ok(crate::workload::Workload::DynClib(
+                crate::dynclib::DynClibWorkload::with_temp_file(host, instance, temp_file),
+            ))
         }
 
         #[cfg(not(feature = "dynclib-engine"))]
@@ -1131,7 +1182,9 @@ mod tests {
     async fn verify_package_rejects_non_wasm() {
         let dir = TempDir::new().unwrap();
         let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
-        let result = hyper.verify_package(b"not a wasm file").await;
+        let result = hyper
+            .verify_package(&WorkloadPackage::new(b"not a wasm file".to_vec()))
+            .await;
         assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
     }
 
@@ -1141,7 +1194,9 @@ mod tests {
         let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
 
         // Non-.actr bytes should return InvalidManifest
-        let result = hyper.verify_package(b"\0asm\x01\x00\x00\x00").await;
+        let result = hyper
+            .verify_package(&WorkloadPackage::new(b"\0asm\x01\x00\x00\x00".to_vec()))
+            .await;
         assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
     }
 

@@ -227,7 +227,7 @@ pub trait DataLane: Send + Sync + std::fmt::Debug {
 /// Mpsc Lane - Intra-process communication (zero serialization)
 ///
 /// Directly passes RpcEnvelope objects via tokio mpsc channels.
-/// Used for Workload <-> Shell communication within a single process.
+/// Used for Guest <-> Shell communication within a single process.
 #[derive(Clone, Debug)]
 pub struct MpscLane {
     /// PayloadType identifier
