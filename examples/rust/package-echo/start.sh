@@ -328,24 +328,19 @@ echo -e "${GREEN}✅ Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_R
 
 # Seed MFR manufacturer record with public key
 echo "  Registering MFR manufacturer '$MFR_NAME' with public key..."
+EXPIRES_AT=$((NOW + 86400 * 365))  # 1 year from now
 sqlite3 "$ACTRIX_DB" \
-    "INSERT OR IGNORE INTO mfr (name, public_key, contact, status, created_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', 'dev@example.com', 'Active', $NOW);"
+    "INSERT OR IGNORE INTO mfr (name, public_key, contact, status, created_at, verified_at, key_expires_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', 'dev@example.com', 'active', $NOW, $NOW, $EXPIRES_AT);"
 
 MFR_ID=$(sqlite3 "$ACTRIX_DB" "SELECT id FROM mfr WHERE name = '$MFR_NAME';")
 echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID)${NC}"
 
-# Seed mfr_package for the package-echo server
-echo "  Registering package record for $MFR_NAME:EchoService:0.1.0..."
-TYPE_STR="$MFR_NAME:EchoService:0.1.0"
-sqlite3 "$ACTRIX_DB" \
-    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'EchoService', '0.1.0', '$TYPE_STR', '', '', 'active', $NOW);"
-
-# Also register the client package
+# Client package: seed directly (no .actr package for client)
 CLIENT_TYPE_STR="$MFR_NAME:package-echo-client-app:0.1.0"
 sqlite3 "$ACTRIX_DB" \
-    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'package-echo-client-app', '0.1.0', '$CLIENT_TYPE_STR', '', '', 'active', $NOW);"
+    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'package-echo-client-app', '0.1.0', '$CLIENT_TYPE_STR', 'native', '', '', 'active', $NOW);"
 
-echo -e "${GREEN}✅ Package records seeded${NC}"
+echo -e "${GREEN}✅ Client package record seeded${NC}"
 
 # ── Step 4: Build host binaries ─────────────────────────────────────────
 
@@ -360,6 +355,29 @@ fi
 
 echo -e "${GREEN}✅ Binaries built successfully${NC}"
 
+# ── Step 4.5: Publish server .actr package via actr pkg publish ─────────
+
+echo ""
+echo -e "${BLUE}📡 Step 4.5: Publishing server .actr package via 'actr pkg publish'...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+$ACTR_CMD pkg publish \
+    --package "$ACTR_PACKAGE" \
+    --keychain "$MFR_KEY_FILE" \
+    --endpoint "http://localhost:8081" \
+    --config "$SERVER_DIR/actr.toml"
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ Package publish failed${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Server package published (with proto filing)${NC}"
+
+# Debug: verify published data
+echo "  [debug] mfr_package contents:"
+sqlite3 "$ACTRIX_DB" "SELECT id, type_str, target, length(proto_files), status FROM mfr_package;"
+
 # ── Step 5: Start WASM echo server (with package verification) ──────────
 
 echo ""
@@ -367,6 +385,8 @@ echo -e "${BLUE}🚀 Step 5: Starting wasm-echo-server (loading .actr package)..
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
+TRUST_MODE="production" \
+AIS_ENDPOINT="http://localhost:8081/ais" \
 RUST_LOG="${RUST_LOG:-info}" \
 cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
 SERVER_PID=$!

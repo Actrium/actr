@@ -11,6 +11,9 @@ pub struct PackageManifest {
     pub signature_algorithm: String,
     #[serde(default)]
     pub resources: Vec<ResourceEntry>,
+    /// Proto files included in the package for service API definition.
+    #[serde(default)]
+    pub proto_files: Vec<ProtoFileEntry>,
     #[serde(default)]
     pub metadata: ManifestMetadata,
 }
@@ -30,6 +33,17 @@ pub struct BinaryEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceEntry {
+    pub path: String,
+    /// SHA-256 hash hex string (64 chars)
+    pub hash: String,
+}
+
+/// Entry for a proto file included in the .actr package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtoFileEntry {
+    /// File name (e.g. "echo.proto")
+    pub name: String,
+    /// Path inside the ZIP (e.g. "proto/echo.proto")
     pub path: String,
     /// SHA-256 hash hex string (64 chars)
     pub hash: String,

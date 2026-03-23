@@ -29,7 +29,8 @@ pub struct VerifiedPackage {
 /// 4. Parse actr.toml -> PackageManifest
 /// 5. Read binary, verify SHA-256 matches manifest.binary.hash
 /// 6. For each resource, verify SHA-256 matches entry hash
-/// 7. Return VerifiedPackage with manifest + raw bytes
+/// 7. For each proto file, verify SHA-256 matches entry hash
+/// 8. Return VerifiedPackage with manifest + raw bytes
 pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackage, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
@@ -97,6 +98,23 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
             });
         }
     }
+    // 7. Verify proto file hashes
+    for proto in &manifest.proto_files {
+        let proto_bytes = read_zip_entry(&mut archive, &proto.path)
+            .map_err(|_| PackError::BinaryNotFound(proto.path.clone()))?;
+        let computed = sha256_hex(&proto_bytes);
+        if computed != proto.hash {
+            tracing::warn!(
+                expected = %proto.hash,
+                computed = %computed,
+                path = %proto.path,
+                "proto file hash mismatch"
+            );
+            return Err(PackError::ProtoHashMismatch {
+                path: proto.path.clone(),
+            });
+        }
+    }
 
     tracing::info!(
         actr_type = %manifest.actr_type_str(),
@@ -148,6 +166,7 @@ mod tests {
             },
             signature_algorithm: "ed25519".to_string(),
             resources: vec![],
+            proto_files: vec![],
             metadata: ManifestMetadata::default(),
         }
     }
@@ -169,6 +188,7 @@ mod tests {
             manifest,
             binary_bytes: binary.to_vec(),
             resources,
+            proto_files: vec![],
             signing_key: signing_key.clone(),
         };
         pack(&opts).unwrap()
@@ -262,5 +282,72 @@ mod tests {
         let pkg = make_package(&key, b"wasm", resources);
         let result = verify(&pkg, &key.verifying_key()).unwrap();
         assert_eq!(result.manifest.resources.len(), 2);
+    }
+
+    fn make_package_with_protos(
+        signing_key: &SigningKey,
+        binary: &[u8],
+        protos: Vec<(String, Vec<u8>)>,
+    ) -> Vec<u8> {
+        use crate::manifest::ProtoFileEntry;
+        let manifest = test_manifest();
+        let proto_entries: Vec<ProtoFileEntry> = protos
+            .iter()
+            .map(|(name, _)| ProtoFileEntry {
+                name: name.clone(),
+                path: format!("proto/{name}"),
+                hash: String::new(),
+            })
+            .collect();
+        let mut m = manifest;
+        m.proto_files = proto_entries;
+        // PackOptions.proto_files uses (name, data) where name is the raw filename
+        // pack() internally creates path as "proto/{name}" and writes to ZIP at that path
+        let opts = PackOptions {
+            manifest: m,
+            binary_bytes: binary.to_vec(),
+            resources: vec![],
+            proto_files: protos,
+            signing_key: signing_key.clone(),
+        };
+        pack(&opts).unwrap()
+    }
+
+    #[test]
+    fn with_proto_files_roundtrip() {
+        let key = SigningKey::generate(&mut OsRng);
+        let protos = vec![
+            (
+                "echo.proto".to_string(),
+                b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+            ),
+            (
+                "common.proto".to_string(),
+                b"syntax = \"proto3\";\nmessage Empty {}".to_vec(),
+            ),
+        ];
+        let pkg = make_package_with_protos(&key, b"wasm", protos);
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.proto_files.len(), 2);
+        assert_eq!(result.manifest.proto_files[0].name, "echo.proto");
+        assert_eq!(result.manifest.proto_files[1].name, "common.proto");
+    }
+
+    #[test]
+    fn tampered_proto_detected() {
+        let key = SigningKey::generate(&mut OsRng);
+        let protos = vec![(
+            "echo.proto".to_string(),
+            b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+        )];
+        let pkg = make_package_with_protos(&key, b"wasm", protos);
+        // Tamper the proto content in the ZIP
+        let mut tampered = pkg.clone();
+        let needle = b"Echo";
+        if let Some(pos) = tampered.windows(needle.len()).position(|w| w == needle) {
+            tampered[pos] ^= 0xFF;
+        }
+        let result = verify(&tampered, &key.verifying_key());
+        assert!(result.is_err(), "tampered proto should fail: {:?}", result);
     }
 }

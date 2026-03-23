@@ -46,12 +46,14 @@ fn make_signed_package(
         },
         signature_algorithm: "ed25519".to_string(),
         resources: vec![],
+        proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: wasm,
         resources: vec![],
+        proto_files: vec![],
         signing_key: signing_key.clone(),
     };
     actr_pack::pack(&opts).unwrap()
