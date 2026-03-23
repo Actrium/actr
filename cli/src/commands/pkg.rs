@@ -255,6 +255,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         },
         signature_algorithm: "ed25519".to_string(),
         resources: vec![],
+        proto_files: vec![], // will be populated below from exports
         metadata: actr_pack::ManifestMetadata {
             description: pkg
                 .get("description")
@@ -267,11 +268,42 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         },
     };
 
-    // 5. Pack
+    // 5. Read proto files from top-level `exports` array
+    //    Format: exports = ["proto/echo.proto", "proto/common.proto"]
+    //    Consistent with actr-config RawConfig.exports: Vec<PathBuf>
+    let config_dir = args
+        .config
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut proto_files: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some(exports) = config_value.get("exports").and_then(|e| e.as_array()) {
+        for export_entry in exports {
+            if let Some(proto_path_str) = export_entry.as_str() {
+                let proto_path = config_dir.join(proto_path_str);
+                match std::fs::read(&proto_path) {
+                    Ok(content) => {
+                        let filename = proto_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown.proto")
+                            .to_string();
+                        println!("  proto:       {}", filename);
+                        proto_files.push((filename, content));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read proto file {:?}: {}", proto_path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Pack
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: binary_bytes.clone(),
         resources: vec![],
+        proto_files,
         signing_key: signing_key.clone(),
     };
     let package_bytes = actr_pack::pack(&opts)?;
@@ -460,6 +492,26 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
     println!("🔐 Manifest signed with MFR key");
 
+    // 4.5. Extract proto files from .actr package for MFR filing
+    let proto_files = actr_pack::read_proto_files(&package_bytes).unwrap_or_default();
+    let proto_filing = if !proto_files.is_empty() {
+        let proto_entries: Vec<serde_json::Value> = proto_files
+            .iter()
+            .map(|(name, content)| {
+                serde_json::json!({
+                    "name": name,
+                    "content": String::from_utf8_lossy(content),
+                })
+            })
+            .collect();
+        println!("📋 Proto files for filing: {} file(s)", proto_entries.len());
+        Some(serde_json::json!({
+            "protobufs": proto_entries,
+        }))
+    } else {
+        None
+    };
+
     // 5. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
     let endpoint = if let Some(ep) = args.endpoint {
         ep
@@ -490,16 +542,23 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     println!("📡 Publishing to: {}", publish_url);
 
     let client = reqwest::Client::new();
+    let mut publish_body = serde_json::json!({
+        "manufacturer": manifest.manufacturer,
+        "name": manifest.name,
+        "version": manifest.version,
+        "target": manifest.binary.target,
+        "manifest": manifest_str,
+        "signature": sig_b64,
+    });
+
+    // Add proto filing fields if present
+    if let Some(filing) = proto_filing {
+        publish_body["proto_files"] = filing;
+    }
+
     let resp = client
         .post(&publish_url)
-        .json(&serde_json::json!({
-            "manufacturer": manifest.manufacturer,
-            "name": manifest.name,
-            "version": manifest.version,
-            "target": manifest.binary.target,
-            "manifest": manifest_str,
-            "signature": sig_b64,
-        }))
+        .json(&publish_body)
         .send()
         .await
         .with_context(|| format!("Failed to connect to MFR endpoint: {}", publish_url))?;

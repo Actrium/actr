@@ -77,12 +77,14 @@ fn build_actr_package(
         },
         signature_algorithm: "ed25519".to_string(),
         resources: vec![],
+        proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: binary.to_vec(),
         resources: vec![],
+        proto_files: vec![],
         signing_key: signing_key.clone(),
     };
     actr_pack::pack(&opts).unwrap()
@@ -211,12 +213,14 @@ async fn load_package_executor_rejects_invalid_target() {
         },
         signature_algorithm: "ed25519".to_string(),
         resources: vec![],
+        proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let package = actr_pack::pack(&actr_pack::PackOptions {
         manifest,
         binary_bytes: minimal_wasm(),
         resources: vec![],
+        proto_files: vec![],
         signing_key: signing_key.clone(),
     })
     .unwrap();

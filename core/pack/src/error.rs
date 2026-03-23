@@ -23,6 +23,9 @@ pub enum PackError {
     #[error("resource hash mismatch: {path}")]
     ResourceHashMismatch { path: String },
 
+    #[error("proto file hash mismatch: {path}")]
+    ProtoHashMismatch { path: String },
+
     #[error("signature verification failed: {0}")]
     SignatureVerificationFailed(String),
 
