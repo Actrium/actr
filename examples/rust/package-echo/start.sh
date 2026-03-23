@@ -385,6 +385,8 @@ echo -e "${BLUE}🚀 Step 5: Starting wasm-echo-server (loading .actr package)..
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
+TRUST_MODE="production" \
+AIS_ENDPOINT="http://localhost:8081/ais" \
 RUST_LOG="${RUST_LOG:-info}" \
 cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
 SERVER_PID=$!

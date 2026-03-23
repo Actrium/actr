@@ -317,8 +317,14 @@ mod tests {
     fn with_proto_files_roundtrip() {
         let key = SigningKey::generate(&mut OsRng);
         let protos = vec![
-            ("echo.proto".to_string(), b"syntax = \"proto3\";\nservice Echo {}".to_vec()),
-            ("common.proto".to_string(), b"syntax = \"proto3\";\nmessage Empty {}".to_vec()),
+            (
+                "echo.proto".to_string(),
+                b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+            ),
+            (
+                "common.proto".to_string(),
+                b"syntax = \"proto3\";\nmessage Empty {}".to_vec(),
+            ),
         ];
         let pkg = make_package_with_protos(&key, b"wasm", protos);
         let result = verify(&pkg, &key.verifying_key()).unwrap();
@@ -330,9 +336,10 @@ mod tests {
     #[test]
     fn tampered_proto_detected() {
         let key = SigningKey::generate(&mut OsRng);
-        let protos = vec![
-            ("echo.proto".to_string(), b"syntax = \"proto3\";\nservice Echo {}".to_vec()),
-        ];
+        let protos = vec![(
+            "echo.proto".to_string(),
+            b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+        )];
         let pkg = make_package_with_protos(&key, b"wasm", protos);
         // Tamper the proto content in the ZIP
         let mut tampered = pkg.clone();
