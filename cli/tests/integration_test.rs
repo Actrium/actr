@@ -17,10 +17,8 @@ exports = []
 
 [package]
 name = "test-service"
-description = "A test service"
-[package.actr_type]
 manufacturer = "test-company"
-name = "test-service"
+description = "A test service"
 
 [dependencies]
 

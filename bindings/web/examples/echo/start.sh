@@ -9,6 +9,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # actr repo root (parent of bindings/web)
 ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
+# echo-actr repo (sibling of Actrium/)
+ECHO_ACTR_DIR="$(cd "$ACTR_ROOT/../../echo-actr" && pwd 2>/dev/null || echo "")"
 
 # Color codes
 RED='\033[0;31m'
@@ -322,28 +324,112 @@ setup_realm() {
 }
 
 build_wasm() {
-    log_step "Checking WASM artifacts..."
+    log_step "Loading .actr packages from echo-actr..."
 
-    # Check if server WASM is already built
-    if [ -f "$SCRIPT_DIR/server/public/echo_server_bg.wasm" ] && [ -f "$SCRIPT_DIR/server/public/echo_server.js" ]; then
-        log_success "Server WASM already built"
-    else
-        log_info "Building server WASM..."
-        cd "$SCRIPT_DIR/server"
-        bash build.sh 2>&1 | tee "$SCRIPT_DIR/wasm-server-build.log"
-        log_success "Server WASM built"
+    local SERVER_PUBLIC="$SCRIPT_DIR/server/public"
+    local CLIENT_PUBLIC="$SCRIPT_DIR/client/public"
+    local SERVER_PKG_DIR="$SERVER_PUBLIC/packages"
+    local CLIENT_PKG_DIR="$CLIENT_PUBLIC/packages"
+
+    mkdir -p "$SERVER_PKG_DIR" "$CLIENT_PKG_DIR"
+
+    # Check if .actr packages already exist
+    local server_ready=0
+    local client_ready=0
+
+    if ls "$SERVER_PKG_DIR"/*.actr 1>/dev/null 2>&1; then
+        log_success "Server .actr package already present"
+        server_ready=1
     fi
 
-    # Check if client WASM is already built
-    if [ -f "$SCRIPT_DIR/client/public/echo_client_bg.wasm" ] && [ -f "$SCRIPT_DIR/client/public/echo_client.js" ]; then
-        log_success "Client WASM already built"
-    else
-        log_info "Building client WASM..."
-        cd "$SCRIPT_DIR/client"
-        bash build.sh 2>&1 | tee "$SCRIPT_DIR/wasm-client-build.log"
-        log_success "Client WASM built"
+    if ls "$CLIENT_PKG_DIR"/*.actr 1>/dev/null 2>&1; then
+        log_success "Client .actr package already present"
+        client_ready=1
     fi
 
+    if [ $server_ready -eq 1 ] && [ $client_ready -eq 1 ]; then
+        log_success "All .actr packages ready (no build needed)"
+        echo ""
+        return 0
+    fi
+
+    # Try to use pre-built .actr packages from echo-actr dist/
+    if [ -n "$ECHO_ACTR_DIR" ] && [ -d "$ECHO_ACTR_DIR" ]; then
+        local DIST_DIR="$ECHO_ACTR_DIR/dist"
+
+        # Find .actr web packages
+        local SERVER_ACTR=""
+        local CLIENT_ACTR=""
+
+        if [ -d "$DIST_DIR" ]; then
+            SERVER_ACTR=$(ls "$DIST_DIR"/actrium-EchoService-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
+            CLIENT_ACTR=$(ls "$DIST_DIR"/actrium-EchoClient-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
+        fi
+
+        if [ -z "$SERVER_ACTR" ] || [ -z "$CLIENT_ACTR" ]; then
+            # Build .actr packages from echo-actr source
+            log_info "Building .actr packages from echo-actr..."
+            log_info "echo-actr directory: $ECHO_ACTR_DIR"
+
+            if [ ! -f "$ECHO_ACTR_DIR/packaging/scripts/build-web.sh" ]; then
+                log_error "echo-actr build-web.sh not found at $ECHO_ACTR_DIR/packaging/scripts/build-web.sh"
+                log_info "Make sure echo-actr repo is at: $ECHO_ACTR_DIR"
+                exit 1
+            fi
+
+            cd "$ECHO_ACTR_DIR"
+            bash packaging/scripts/build-web.sh 2>&1 | tee "$SCRIPT_DIR/wasm-build.log"
+
+            SERVER_ACTR=$(ls "$DIST_DIR"/actrium-EchoService-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
+            CLIENT_ACTR=$(ls "$DIST_DIR"/actrium-EchoClient-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
+        fi
+
+        if [ -z "$SERVER_ACTR" ] || [ -z "$CLIENT_ACTR" ]; then
+            log_error "Failed to find .actr packages after build"
+            exit 1
+        fi
+
+        # Copy .actr packages to public/packages/
+        if [ $server_ready -eq 0 ]; then
+            log_info "Installing server .actr package..."
+            cp "$SERVER_ACTR" "$SERVER_PKG_DIR/echo-server.actr"
+            log_success "Server .actr package installed: $(du -h "$SERVER_PKG_DIR/echo-server.actr" | cut -f1)"
+        fi
+
+        if [ $client_ready -eq 0 ]; then
+            log_info "Installing client .actr package..."
+            cp "$CLIENT_ACTR" "$CLIENT_PKG_DIR/echo-client.actr"
+            log_success "Client .actr package installed: $(du -h "$CLIENT_PKG_DIR/echo-client.actr" | cut -f1)"
+        fi
+    else
+        log_error "echo-actr directory not found"
+        log_info "Expected at: $(cd "$ACTR_ROOT/../.." 2>/dev/null && pwd)/echo-actr"
+        log_info ""
+        log_info "Options:"
+        log_info "  1. Clone echo-actr: git clone https://github.com/Actrium/echo-actr ../../../echo-actr"
+        log_info "  2. Download .actr release packages to server/public/packages/ and client/public/packages/"
+        log_info "  3. Set ECHO_ACTR_DIR environment variable to the echo-actr checkout"
+        exit 1
+    fi
+
+    echo ""
+}
+
+sync_actor_sw() {
+    log_step "Syncing actor.sw.js from web-sdk..."
+
+    local SW_SRC="$PROJECT_ROOT/packages/web-sdk/src/actor.sw.js"
+    local SERVER_PUBLIC="$SCRIPT_DIR/server/public"
+    local CLIENT_PUBLIC="$SCRIPT_DIR/client/public"
+
+    if [ ! -f "$SW_SRC" ]; then
+        log_error "actor.sw.js not found at $SW_SRC"
+        exit 1
+    fi
+
+    cp "$SW_SRC" "$SERVER_PUBLIC/actor.sw.js"
+    cp "$SW_SRC" "$CLIENT_PUBLIC/actor.sw.js"
+    log_success "actor.sw.js synced to server and client public dirs"
     echo ""
 }
 
@@ -524,6 +610,8 @@ main() {
 
     build_wasm
 
+    sync_actor_sw
+
     install_deps
 
     start_server
@@ -537,7 +625,7 @@ main() {
     echo "║  Actrix:   Signaling at http://localhost:8081           ║"
     echo "║  Server:   Echo service at http://localhost:5174        ║"
     echo "║  Client:   Web UI at https://localhost:5173             ║"
-    echo "║  WASM:     SW Runtime + User Workload                   ║"
+    echo "║  WASM:     Loaded from .actr packages (signed ZIP)      ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
     echo ""
 

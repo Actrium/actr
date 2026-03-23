@@ -59,9 +59,10 @@ async fn main() -> Result<()> {
         acl: config.acl.clone(),
         service: None,
         ws_address: None,
-        manifest_json: None,
+        manifest_raw: None,
         mfr_signature: None,
         psk_token: None,
+        target: None,
     };
 
     let ais_response = ais

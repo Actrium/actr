@@ -2,21 +2,18 @@ edition = 1
 exports = []
 
 [package]
-name = "{{PROJECT_NAME}}"
+name = "echo-client-app"
+manufacturer = "{{MANUFACTURER}}"
 description = "An Actor-RTC service"
 authors = []
 license = "Apache-2.0"
 tags = ["dev", "service"]
 
-[package.actr_type]
-manufacturer = "{{MANUFACTURER}}"
-name = "echo-client-app"
-
 [dependencies]
 {{#if IS_BOTH}}
-echo-service = {}
+EchoService = {}
 {{else}}
-echo-echo-server = { actr_type = "{{MANUFACTURER}}:EchoService:1.0.0" }
+EchoService = { actr_type = "{{MANUFACTURER}}:EchoService:1.0.0" }
 {{/if}}
 
 [system.signaling]

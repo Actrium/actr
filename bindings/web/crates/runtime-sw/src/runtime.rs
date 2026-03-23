@@ -669,9 +669,10 @@ impl SwRuntime {
             acl: acl.clone(),
             service: None,
             ws_address: None,
-            manifest_json: None,
+            manifest_raw: None,
             mfr_signature: None,
             psk_token: psk_token.clone().map(|t| t.into()),
+            target: None,
         };
 
         log::info!(

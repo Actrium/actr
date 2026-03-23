@@ -2,15 +2,12 @@ edition = 1
 exports = []
 
 [package]
-name = "{{PROJECT_NAME}}-echo-client"
+name = "echo-client-app"
+manufacturer = "{{MANUFACTURER}}"
 description = "Shell echo client (Python demo)"
 authors = []
 license = "Apache-2.0"
 tags = ["dev", "example", "python"]
-
-[package.actr_type]
-manufacturer = "{{MANUFACTURER}}"
-name = "echo-client-app"
 
 [system.signaling]
 url = "{{{SIGNALING_URL}}}/signaling/ws"
@@ -27,7 +24,7 @@ realm_id = 0
 visible = true
 
 [dependencies]
-echo-echo-server = {}
+EchoService = {}
 
 [acl]
 

@@ -9,12 +9,14 @@ actr-hyper = { workspace = true }
 actr-framework = { workspace = true }
 actr-protocol = { workspace = true }
 actr-config = { workspace = true }
+actr-pack = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 prost = { workspace = true }
+base64 = "0.22"
 bytes = { workspace = true }
 
 [build-dependencies]

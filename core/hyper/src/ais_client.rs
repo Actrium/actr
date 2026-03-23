@@ -2,7 +2,7 @@
 //!
 //! Encapsulates the logic for sending protobuf requests to the AIS `/register` endpoint.
 //! Supports two registration modes:
-//! - Initial registration: authenticate with manifest_json + mfr_signature
+//! - Initial registration: authenticate with manifest_raw + mfr_signature
 //! - PSK renewal: renew directly using an existing PSK token
 
 use prost::Message;
@@ -47,7 +47,7 @@ impl AisClient {
 
     /// Initial registration: authenticate with MFR manifest
     ///
-    /// Sends a RegisterRequest (containing manifest_json + mfr_signature),
+    /// Sends a RegisterRequest (containing manifest_raw + mfr_signature),
     /// receives a RegisterResponse.
     /// On initial registration, AIS returns a PSK in the response for subsequent renewals.
     pub async fn register_with_manifest(

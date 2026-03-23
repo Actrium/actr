@@ -6,6 +6,20 @@ use sha2::{Digest, Sha256};
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
 
+/// Result of a successful package verification.
+///
+/// Contains the parsed manifest along with the raw bytes needed for
+/// transparent forwarding to AIS for signature verification.
+#[derive(Debug)]
+pub struct VerifiedPackage {
+    /// Parsed package manifest.
+    pub manifest: PackageManifest,
+    /// Raw `actr.toml` bytes as stored in the ZIP (the signed payload).
+    pub manifest_raw: Vec<u8>,
+    /// Raw `actr.sig` bytes (64-byte Ed25519 signature).
+    pub sig_raw: Vec<u8>,
+}
+
 /// Verify an .actr package.
 ///
 /// Verification flow:
@@ -15,21 +29,22 @@ use crate::manifest::PackageManifest;
 /// 4. Parse actr.toml -> PackageManifest
 /// 5. Read binary, verify SHA-256 matches manifest.binary.hash
 /// 6. For each resource, verify SHA-256 matches entry hash
-/// 7. Return PackageManifest
-pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<PackageManifest, PackError> {
+/// 7. For each proto file, verify SHA-256 matches entry hash
+/// 8. Return VerifiedPackage with manifest + raw bytes
+pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackage, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     // 1. Read actr.sig
-    let sig_bytes =
+    let sig_raw =
         read_zip_entry(&mut archive, "actr.sig").map_err(|_| PackError::SignatureNotFound)?;
-    if sig_bytes.len() != 64 {
+    if sig_raw.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
             "actr.sig must be exactly 64 bytes, got {}",
-            sig_bytes.len()
+            sig_raw.len()
         )));
     }
-    let sig_arr: [u8; 64] = sig_bytes.try_into().unwrap();
+    let sig_arr: [u8; 64] = sig_raw.clone().try_into().unwrap();
     let signature = Signature::from_bytes(&sig_arr);
 
     // 2. Read actr.toml
@@ -83,13 +98,34 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<PackageManifes
             });
         }
     }
+    // 7. Verify proto file hashes
+    for proto in &manifest.proto_files {
+        let proto_bytes = read_zip_entry(&mut archive, &proto.path)
+            .map_err(|_| PackError::BinaryNotFound(proto.path.clone()))?;
+        let computed = sha256_hex(&proto_bytes);
+        if computed != proto.hash {
+            tracing::warn!(
+                expected = %proto.hash,
+                computed = %computed,
+                path = %proto.path,
+                "proto file hash mismatch"
+            );
+            return Err(PackError::ProtoHashMismatch {
+                path: proto.path.clone(),
+            });
+        }
+    }
 
     tracing::info!(
         actr_type = %manifest.actr_type_str(),
         "package verification passed"
     );
 
-    Ok(manifest)
+    Ok(VerifiedPackage {
+        manifest,
+        manifest_raw: manifest_bytes,
+        sig_raw,
+    })
 }
 
 fn read_zip_entry<R: Read + std::io::Seek>(
@@ -130,6 +166,7 @@ mod tests {
             },
             signature_algorithm: "ed25519".to_string(),
             resources: vec![],
+            proto_files: vec![],
             metadata: ManifestMetadata::default(),
         }
     }
@@ -151,6 +188,7 @@ mod tests {
             manifest,
             binary_bytes: binary.to_vec(),
             resources,
+            proto_files: vec![],
             signing_key: signing_key.clone(),
         };
         pack(&opts).unwrap()
@@ -160,9 +198,11 @@ mod tests {
     fn roundtrip_succeeds() {
         let key = SigningKey::generate(&mut OsRng);
         let pkg = make_package(&key, b"wasm bytes", vec![]);
-        let m = verify(&pkg, &key.verifying_key()).unwrap();
-        assert_eq!(m.manufacturer, "test-mfr");
-        assert_eq!(m.name, "TestActor");
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.manufacturer, "test-mfr");
+        assert_eq!(result.manifest.name, "TestActor");
+        assert_eq!(result.sig_raw.len(), 64);
+        assert!(!result.manifest_raw.is_empty());
     }
 
     #[test]
@@ -240,7 +280,74 @@ mod tests {
             ("config/b.toml".to_string(), b"data_b".to_vec()),
         ];
         let pkg = make_package(&key, b"wasm", resources);
-        let m = verify(&pkg, &key.verifying_key()).unwrap();
-        assert_eq!(m.resources.len(), 2);
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.resources.len(), 2);
+    }
+
+    fn make_package_with_protos(
+        signing_key: &SigningKey,
+        binary: &[u8],
+        protos: Vec<(String, Vec<u8>)>,
+    ) -> Vec<u8> {
+        use crate::manifest::ProtoFileEntry;
+        let manifest = test_manifest();
+        let proto_entries: Vec<ProtoFileEntry> = protos
+            .iter()
+            .map(|(name, _)| ProtoFileEntry {
+                name: name.clone(),
+                path: format!("proto/{name}"),
+                hash: String::new(),
+            })
+            .collect();
+        let mut m = manifest;
+        m.proto_files = proto_entries;
+        // PackOptions.proto_files uses (name, data) where name is the raw filename
+        // pack() internally creates path as "proto/{name}" and writes to ZIP at that path
+        let opts = PackOptions {
+            manifest: m,
+            binary_bytes: binary.to_vec(),
+            resources: vec![],
+            proto_files: protos,
+            signing_key: signing_key.clone(),
+        };
+        pack(&opts).unwrap()
+    }
+
+    #[test]
+    fn with_proto_files_roundtrip() {
+        let key = SigningKey::generate(&mut OsRng);
+        let protos = vec![
+            (
+                "echo.proto".to_string(),
+                b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+            ),
+            (
+                "common.proto".to_string(),
+                b"syntax = \"proto3\";\nmessage Empty {}".to_vec(),
+            ),
+        ];
+        let pkg = make_package_with_protos(&key, b"wasm", protos);
+        let result = verify(&pkg, &key.verifying_key()).unwrap();
+        assert_eq!(result.manifest.proto_files.len(), 2);
+        assert_eq!(result.manifest.proto_files[0].name, "echo.proto");
+        assert_eq!(result.manifest.proto_files[1].name, "common.proto");
+    }
+
+    #[test]
+    fn tampered_proto_detected() {
+        let key = SigningKey::generate(&mut OsRng);
+        let protos = vec![(
+            "echo.proto".to_string(),
+            b"syntax = \"proto3\";\nservice Echo {}".to_vec(),
+        )];
+        let pkg = make_package_with_protos(&key, b"wasm", protos);
+        // Tamper the proto content in the ZIP
+        let mut tampered = pkg.clone();
+        let needle = b"Echo";
+        if let Some(pos) = tampered.windows(needle.len()).position(|w| w == needle) {
+            tampered[pos] ^= 0xFF;
+        }
+        let result = verify(&tampered, &key.verifying_key());
+        assert!(result.is_err(), "tampered proto should fail: {:?}", result);
     }
 }

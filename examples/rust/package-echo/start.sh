@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./start.sh              # Use default message "TestMsg"
-#   ./start.sh "你好世界"    # Send custom message
+#   ./start.sh "Hello"      # Send custom message
 
 set -e
 set -o pipefail
@@ -54,6 +54,16 @@ mkdir -p "$LOG_DIR"
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 
+# ── Clean stale database and config files ────────────────────────────────
+# Remove DB files from previous runs so actrix starts with fresh keys.
+# Without this, expired signing keys cause "Invalid credential format" errors.
+echo ""
+echo "🗑️  Cleaning stale database files..."
+rm -rf "$WORKSPACE_ROOT/database"
+# Also remove actr.toml files to ensure they are freshly copied from Actr.example.toml
+rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml"
+echo -e "${GREEN}✅ Stale database cleaned${NC}"
+
 # Ensure actr.toml files exist
 echo ""
 echo "🔍 Checking actr.toml files..."
@@ -66,14 +76,6 @@ echo -e "${GREEN}✅ Synchronized actr.toml from Actr.example.toml${NC}"
 
 # Ensure actrix-config.toml exists
 ensure_actrix_config "$WORKSPACE_ROOT"
-
-# ── Clean stale database files ───────────────────────────────────────────
-# Remove DB files from previous runs so actrix starts with fresh keys.
-# Without this, expired signing keys cause "Invalid credential format" errors.
-echo ""
-echo "🗑️  Cleaning stale database files..."
-rm -rf "$WORKSPACE_ROOT/database"
-echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 
@@ -106,7 +108,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Build local echo-actr package ───────────────────────────────
+# ── Step 0: Build local echo-actr package ────────────────────────────────
 
 echo ""
 echo -e "${BLUE}📦 Building local echo-actr package...${NC}"
@@ -144,8 +146,8 @@ fi
 
 echo "echo-actr dir: $ECHO_ACTR_DIR"
 echo "Version:       $ECHO_ACTR_VERSION"
-echo "Backend:      $ECHO_ACTR_BACKEND"
-echo "Target:       $ECHO_ACTR_TARGET"
+echo "Backend:       $ECHO_ACTR_BACKEND"
+echo "Target:        $ECHO_ACTR_TARGET"
 
 "$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
 
@@ -165,14 +167,14 @@ if [ ! -f "$PUBLIC_KEY_PATH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✅ Local package ready: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
+echo -e "${GREEN}✅ Local package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
 echo -e "${GREEN}✅ Local public key ready${NC}"
 
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
     --pubkey "$PUBLIC_KEY_PATH" \
     --package "$ACTR_PACKAGE" >/dev/null
 
-echo -e "${GREEN}✅ Local echo-actr package verified: $(du -h "$ACTR_PACKAGE" | cut -f1) ${NC}"
+echo -e "${GREEN}✅ Local echo-actr package verified: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
 
 # ── Step 1: Ensure actrix is available ──────────────────────────────────
 
@@ -360,7 +362,7 @@ PY
 
 echo -e "${GREEN}✅ MFR package metadata seeded for local echo-actr package${NC}"
 
-# ── Step 3: Build host binaries ─────────────────────────────────────────
+# ── Step 3: Build host binaries ──────────────────────────────────────────
 
 echo ""
 echo "🔨 Building host binaries..."
@@ -373,13 +375,16 @@ fi
 
 echo -e "${GREEN}✅ Binaries built successfully${NC}"
 
-# ── Step 4: Start package-backed echo server ────────────────────────────
+# ── Step 4: Start package-backed echo server ─────────────────────────────
 
 echo ""
 echo "🚀 Starting package-echo-server..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-ACTR_PACKAGE_PATH="$ACTR_PACKAGE" ACTR_PUBLIC_KEY_PATH="$PUBLIC_KEY_PATH" RUST_LOG="${RUST_LOG:-info}" cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
+ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
+ACTR_PUBLIC_KEY_PATH="$PUBLIC_KEY_PATH" \
+RUST_LOG="${RUST_LOG:-info}" \
+cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "Server started (PID: $SERVER_PID)"
@@ -394,7 +399,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
         exit 1
     fi
 
-    if grep -q "Echo Server fully started\|ActrNode started" "$LOG_DIR/package-echo-server.log" 2>/dev/null; then
+    if grep -q "Echo Host fully started\|ActrNode started" "$LOG_DIR/package-echo-server.log" 2>/dev/null; then
         echo -e "${GREEN}✅ Package-backed server is running and registered${NC}"
         break
     fi
@@ -409,7 +414,7 @@ fi
 
 sleep 2
 
-# ── Step 5: Run client with test input ──────────────────────────────────
+# ── Step 5: Run client with test input ───────────────────────────────────
 
 echo ""
 echo "🚀 Running package-echo-client..."
@@ -443,7 +448,7 @@ if kill -0 $CLIENT_PID 2>/dev/null; then
     kill $CLIENT_PID 2>/dev/null || true
 fi
 
-# ── Step 6: Verify output ───────────────────────────────────────────────
+# ── Step 6: Verify output ────────────────────────────────────────────────
 
 echo ""
 echo "🔍 Verifying output..."
@@ -457,19 +462,19 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   • local echo-actr package built from /Users/kaito/Project/Actrium/echo-actr"
+    echo "   • Local echo-actr package built from /Users/kaito/Project/Actrium/echo-actr"
     echo "   • Local package signature verified with public-key.json"
     echo "   • Hyper loaded the locally built .actr package for $ECHO_ACTR_TARGET"
     echo "   • ActrNode started with the package-selected workload"
     echo "   • Real distributed Actor communication (client ↔ package-backed server)"
     echo ""
     echo "Client output:"
-    cat "$LOG_DIR/package-echo-client.log" | grep "Received reply" || true
+    grep "Received reply" "$LOG_DIR/package-echo-client.log" || true
     echo ""
     echo "📖 View full logs:"
     echo "   cat $LOG_DIR/package-echo-client.log  # Client logs"
     echo "   cat $LOG_DIR/package-echo-server.log  # Server logs"
-    echo "   tail -f $LOG_DIR/actrix.log        # Actrix logs"
+    echo "   tail -f $LOG_DIR/actrix.log           # Actrix logs"
     echo ""
     exit 0
 else

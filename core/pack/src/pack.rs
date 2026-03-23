@@ -16,6 +16,9 @@ pub struct PackOptions {
     pub binary_bytes: Vec<u8>,
     /// Resources: (path, bytes) pairs
     pub resources: Vec<(String, Vec<u8>)>,
+    /// Proto files: (filename, content) pairs.
+    /// Written to `proto/` directory inside the ZIP.
+    pub proto_files: Vec<(String, Vec<u8>)>,
     /// Ed25519 signing key
     pub signing_key: SigningKey,
 }
@@ -47,6 +50,17 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
             manifest.resources[i].hash = sha256_hex(bytes);
         }
     }
+
+    // 2.5. Compute proto file hashes and build entries
+    manifest.proto_files = opts
+        .proto_files
+        .iter()
+        .map(|(name, content)| crate::manifest::ProtoFileEntry {
+            name: name.clone(),
+            path: format!("proto/{}", name),
+            hash: sha256_hex(content),
+        })
+        .collect();
 
     // 3. Serialize manifest to TOML
     let manifest_toml = manifest.to_toml()?;
@@ -87,6 +101,13 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
         zip.write_all(bytes)?;
     }
 
+    // proto files
+    for (name, content) in &opts.proto_files {
+        let zip_path = format!("proto/{}", name);
+        zip.start_file(&zip_path, store_opts)?;
+        zip.write_all(content)?;
+    }
+
     let cursor = zip.finish()?;
     Ok(cursor.into_inner())
 }
@@ -117,6 +138,7 @@ mod tests {
             },
             signature_algorithm: "ed25519".to_string(),
             resources: vec![],
+            proto_files: vec![],
             metadata: ManifestMetadata::default(),
         }
     }
@@ -128,6 +150,7 @@ mod tests {
             manifest: test_manifest(),
             binary_bytes: b"fake wasm binary".to_vec(),
             resources: vec![],
+            proto_files: vec![],
             signing_key,
         };
         let result = pack(&opts);
@@ -145,12 +168,13 @@ mod tests {
             manifest: test_manifest(),
             binary_bytes: b"hello wasm".to_vec(),
             resources: vec![],
-            signing_key,
+            proto_files: vec![],
+            signing_key: signing_key.clone(),
         };
         let package = pack(&opts).unwrap();
-        let manifest = crate::verify::verify(&package, &verifying_key).unwrap();
-        assert_eq!(manifest.manufacturer, "test-mfr");
-        assert_eq!(manifest.name, "TestActor");
-        assert_eq!(manifest.version, "1.0.0");
+        let result = crate::verify::verify(&package, &verifying_key).unwrap();
+        assert_eq!(result.manifest.manufacturer, "test-mfr");
+        assert_eq!(result.manifest.name, "TestActor");
+        assert_eq!(result.manifest.version, "1.0.0");
     }
 }

@@ -95,6 +95,9 @@ export const runtimeConfig: SwRuntimeConfig = {
     service_fingerprint: '',
     acl_allow_types: ['acme:echo-client-app:0.1.0'],
     is_server: true,
+    // Web load_package_executor — .actr package from echo-actr release
+    package_url: '/packages/echo-server.actr',
+    register_fn: 'register_echo_service',
 };
 
 // ── ActorClientConfig (passed to createActor) ──

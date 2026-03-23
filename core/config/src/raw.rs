@@ -47,8 +47,15 @@ pub struct RawConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
+    /// Package name (also used as the actor type name)
     pub name: String,
-    pub actr_type: RawActrType,
+
+    /// Manufacturer identifier (e.g., "acme")
+    pub manufacturer: String,
+
+    /// Semantic version (e.g., "1.0.0"). Defaults to empty string if not specified.
+    #[serde(default)]
+    pub version: String,
 
     #[serde(default)]
     pub description: Option<String>,
@@ -62,16 +69,6 @@ pub struct RawPackageConfig {
     /// Service tags (e.g., ["latest", "stable", "v1.0"])
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-/// Actor type configuration under [package.actr_type]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawActrType {
-    pub manufacturer: String,
-    pub name: String,
-    /// Semantic version (e.g., "1.0.0"). Defaults to empty string if not specified.
-    #[serde(default)]
-    pub version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,9 +301,7 @@ mod tests {
 edition = 1
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [system.webrtc]
 port_range_start = 50000
 port_range_end = 50100
@@ -328,9 +323,7 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-[package.actr_type]
 manufacturer = "acme"
-name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -359,9 +352,7 @@ edition = 1
 
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
@@ -385,9 +376,7 @@ realm_id = 1001
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 user-service = {}
 "#;
@@ -401,9 +390,7 @@ user-service = {}
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
@@ -428,9 +415,7 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;

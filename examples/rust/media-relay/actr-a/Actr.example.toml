@@ -2,17 +2,14 @@ edition = 1
 exports = []
 
 [package]
-name = "actr-a-relay"
+name = "RelayClient"
+manufacturer = "actr-example"
+version = "1.0.0"
 description = "Media Relay Client - sends media frames to actr-b via WebRTC P2P"
 authors = ["Actr Dev Team"]
 
-[package.actr_type]
-manufacturer = "actr-example"
-name = "RelayClient"
-version = "1.0.0"
-
 [dependencies]
-actr-b-receiver = { actr_type = "actr-example:RelayService:1.0.0" }
+RelayService = { actr_type = "actr-example:RelayService:1.0.0" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"

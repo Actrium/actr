@@ -365,14 +365,11 @@ exports = []
 
 [package]
 name = "my-actor-service"
+manufacturer = "my-company"
 description = "An Actor-RTC service"
 authors = []
 license = "Apache-2.0"
 tags = ["latest"]
-
-[package.actr_type]
-manufacturer = "my-company"
-name = "my-actor-service"
 
 [dependencies]
 

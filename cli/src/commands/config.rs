@@ -165,8 +165,7 @@ impl ConfigCommand {
         // Package settings
         output.push_str(&format!("  {} Package:\n", "📦".blue()));
         output.push_str("    package.name\n");
-        output.push_str("    package.actr_type.manufacturer\n");
-        output.push_str("    package.actr_type.name\n");
+        output.push_str("    package.manufacturer\n");
         if raw_config.package.description.is_some() {
             output.push_str("    package.description\n");
         }
@@ -372,10 +371,7 @@ impl ConfigCommand {
             // Package configuration
             ["package", "name"] => config.package.name = value.to_string(),
             ["package", "description"] => config.package.description = Some(value.to_string()),
-            ["package", "actr_type", "manufacturer"] => {
-                config.package.actr_type.manufacturer = value.to_string()
-            }
-            ["package", "actr_type", "name"] => config.package.actr_type.name = value.to_string(),
+            ["package", "manufacturer"] => config.package.manufacturer = value.to_string(),
 
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
@@ -467,10 +463,7 @@ impl ConfigCommand {
             // Package configuration
             ["package", "name"] => config.package.name.clone(),
             ["package", "description"] => config.package.description.clone().unwrap_or_default(),
-            ["package", "actr_type", "manufacturer"] => {
-                config.package.actr_type.manufacturer.clone()
-            }
-            ["package", "actr_type", "name"] => config.package.actr_type.name.clone(),
+            ["package", "manufacturer"] => config.package.manufacturer.clone(),
 
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
@@ -659,9 +652,7 @@ impl ConfigCommand {
             }
 
             // Cannot unset required fields
-            ["package", "name"]
-            | ["package", "actr_type", "manufacturer"]
-            | ["package", "actr_type", "name"] => {
+            ["package", "name"] | ["package", "manufacturer"] => {
                 bail!("Cannot unset required configuration key: {}", key);
             }
 

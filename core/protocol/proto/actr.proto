@@ -167,12 +167,15 @@ message RegisterRequest {
   optional string ws_address = 6;
 
   // Initial registration with an MFR manifest, used when no PSK is available.
-  // `manifest_json`: JSON-serialized `PackageManifest` containing manufacturer, actr_name, version, binary_hash, and capabilities.
-  optional bytes manifest_json = 10;
+  // Raw manifest bytes (original `actr.toml` from the `.actr` package) for MFR signature verification.
+  optional bytes manifest_raw = 10;
   // Ed25519 signature over the manifest contents produced by the MFR, 64 bytes.
   optional bytes mfr_signature = 11;
   // PSK used during renewal when an existing PSK is available, replacing manifest authentication.
   optional bytes psk_token = 12;
+  // Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu").
+  // Extracted from manifest binary.target for AIS lookup path verification.
+  optional string target = 13;
 }
 
 message RegisterResponse {

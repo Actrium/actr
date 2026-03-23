@@ -3,18 +3,15 @@ exports = []
 
 [package]
 name = "ws-echo-client-app"
+manufacturer = "acme"
+version = "1.0.0"
 description = "WebSocket Echo Client App"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "client", "websocket"]
 
-[package.actr_type]
-manufacturer = "acme"
-name = "ws-echo-client-app"
-version = "1.0.0"
-
 [dependencies]
-ws-echo-server = { actr_type = "acme:WsEchoService:1.0.0" }
+WsEchoService = { actr_type = "acme:WsEchoService:1.0.0" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"

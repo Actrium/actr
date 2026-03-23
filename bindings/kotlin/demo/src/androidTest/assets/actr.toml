@@ -2,19 +2,16 @@ edition = 1
 exports = []
 
 [package]
-name = "android-echo-client"
-description = "Android Echo Client"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "echo-client-app"
+manufacturer = "acme"
+description = "Android Echo Client"
 authors = []
 license = "Apache-2.0"
 tags = ["dev", "example", "android"]
 
 [dependencies]
-echo-echo-server = { actr_type = "acme+EchoService" }
-data-stream-peer-concurrent-server-python = { actr_type = "acme+DataStreamConcurrentServer" }
+EchoService = { actr_type = "acme+EchoService" }
+DataStreamConcurrentServer = { actr_type = "acme+DataStreamConcurrentServer" }
 
 [system.signaling]
 url = "wss://actrix1.develenv.com/signaling/ws"

@@ -7,6 +7,7 @@
 //! actr pkg sign     --keychain FILE [--package FILE]
 //! actr pkg verify   --package FILE [--pubkey FILE]
 //! actr pkg keygen   [--output FILE] [--force]
+//! actr pkg publish  --package FILE --keychain FILE --endpoint URL
 //! ```
 
 use std::path::PathBuf;
@@ -33,6 +34,8 @@ pub enum PkgCommand {
     Verify(PkgVerifyArgs),
     /// Generate an Ed25519 signing key pair
     Keygen(PkgKeygenArgs),
+    /// Publish an .actr package to the Actrix MFR registry
+    Publish(PkgPublishArgs),
 }
 
 #[derive(Args, Debug)]
@@ -102,12 +105,34 @@ pub struct PkgKeygenArgs {
     pub force: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct PkgPublishArgs {
+    /// .actr package file to publish
+    #[arg(long, short = 'p', value_name = "FILE")]
+    pub package: PathBuf,
+
+    /// Path to MFR keychain JSON file (contains private_key for signing)
+    #[arg(long, short = 'k', value_name = "FILE")]
+    pub keychain: PathBuf,
+
+    /// Actrix MFR endpoint URL (e.g., http://localhost:8081).
+    /// If omitted, reads from [system.ais_endpoint].url in actr.toml.
+    #[arg(long, short = 'e', value_name = "URL")]
+    pub endpoint: Option<String>,
+
+    /// Path to actr.toml (used to resolve default endpoint).
+    /// Defaults to ./actr.toml in the current directory.
+    #[arg(long, short = 'c', value_name = "FILE", default_value = "actr.toml")]
+    pub config: PathBuf,
+}
+
 pub async fn execute(args: PkgArgs) -> Result<()> {
     match args.command {
         PkgCommand::Build(a) => execute_build(a).await,
         PkgCommand::Sign(a) => execute_sign(a).await,
         PkgCommand::Verify(a) => execute_verify(a).await,
         PkgCommand::Keygen(a) => execute_keygen(a),
+        PkgCommand::Publish(a) => execute_publish(a).await,
     }
 }
 
@@ -186,6 +211,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
 
+    // Read manufacturer, name, version from [package] section
     let get_str = |key: &str| -> Result<String> {
         pkg.get(key)
             .and_then(|v| v.as_str())
@@ -225,6 +251,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         },
         signature_algorithm: "ed25519".to_string(),
         resources: vec![],
+        proto_files: vec![], // will be populated below from exports
         metadata: actr_pack::ManifestMetadata {
             description: pkg
                 .get("description")
@@ -237,11 +264,42 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         },
     };
 
-    // 5. Pack
+    // 5. Read proto files from top-level `exports` array
+    //    Format: exports = ["proto/echo.proto", "proto/common.proto"]
+    //    Consistent with actr-config RawConfig.exports: Vec<PathBuf>
+    let config_dir = args
+        .config
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut proto_files: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some(exports) = config_value.get("exports").and_then(|e| e.as_array()) {
+        for export_entry in exports {
+            if let Some(proto_path_str) = export_entry.as_str() {
+                let proto_path = config_dir.join(proto_path_str);
+                match std::fs::read(&proto_path) {
+                    Ok(content) => {
+                        let filename = proto_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown.proto")
+                            .to_string();
+                        println!("  proto:       {}", filename);
+                        proto_files.push((filename, content));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read proto file {:?}: {}", proto_path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Pack
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: binary_bytes.clone(),
         resources: vec![],
+        proto_files,
         signing_key: signing_key.clone(),
     };
     let package_bytes = actr_pack::pack(&opts)?;
@@ -371,16 +429,159 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
     };
 
     // 3. Verify
-    let manifest = actr_pack::verify(&package_bytes, &pubkey)?;
+    let verified = actr_pack::verify(&package_bytes, &pubkey)?;
 
     println!("Package verification passed");
     println!();
-    println!("  type:        {}", manifest.actr_type_str());
-    println!("  binary:      {}", manifest.binary.path);
-    println!("  binary_hash: {}...", &manifest.binary.hash[..16]);
-    println!("  target:      {}", manifest.binary.target);
-    if !manifest.resources.is_empty() {
-        println!("  resources:   {}", manifest.resources.len());
+    println!("  type:        {}", verified.manifest.actr_type_str());
+    println!("  binary:      {}", verified.manifest.binary.path);
+    println!("  binary_hash: {}...", &verified.manifest.binary.hash[..16]);
+    println!("  target:      {}", verified.manifest.binary.target);
+    if !verified.manifest.resources.is_empty() {
+        println!("  resources:   {}", verified.manifest.resources.len());
+    }
+
+    Ok(())
+}
+
+// --- publish (register package to MFR registry) ---
+
+async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
+    use ed25519_dalek::{Signer, SigningKey as DalekSigningKey};
+
+    // 1. Read .actr package
+    tracing::debug!("reading .actr package: {:?}", args.package);
+    let package_bytes = std::fs::read(&args.package)
+        .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
+
+    // 2. Extract raw manifest TOML from the .actr ZIP
+    let manifest_str = actr_pack::read_manifest_raw(&package_bytes)
+        .with_context(|| "Failed to read manifest from .actr package")?;
+    let manifest = actr_pack::PackageManifest::from_toml(&manifest_str)
+        .with_context(|| "Failed to parse manifest TOML")?;
+
+    println!("📦 Publishing package: {}", manifest.actr_type_str());
+    println!("   manufacturer: {}", manifest.manufacturer);
+    println!("   name:         {}", manifest.name);
+    println!("   version:      {}", manifest.version);
+
+    // 3. Load MFR keychain and extract private key
+    tracing::debug!("loading keychain: {:?}", args.keychain);
+    let keychain_content = std::fs::read_to_string(&args.keychain)
+        .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
+    let keychain: serde_json::Value =
+        serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
+    let private_key_b64 = keychain["private_key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
+
+    let private_key_bytes = base64::engine::general_purpose::STANDARD
+        .decode(private_key_b64)
+        .with_context(|| "Invalid private key base64 encoding")?;
+    let key_array: [u8; 32] = private_key_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Private key must be exactly 32 bytes"))?;
+    let signing_key = DalekSigningKey::from_bytes(&key_array);
+
+    // 4. Sign the manifest TOML bytes with MFR private key
+    let signature = signing_key.sign(manifest_str.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    println!("🔐 Manifest signed with MFR key");
+
+    // 4.5. Extract proto files from .actr package for MFR filing
+    let proto_files = actr_pack::read_proto_files(&package_bytes).unwrap_or_default();
+    let proto_filing = if !proto_files.is_empty() {
+        let proto_entries: Vec<serde_json::Value> = proto_files
+            .iter()
+            .map(|(name, content)| {
+                serde_json::json!({
+                    "name": name,
+                    "content": String::from_utf8_lossy(content),
+                })
+            })
+            .collect();
+        println!("📋 Proto files for filing: {} file(s)", proto_entries.len());
+        Some(serde_json::json!({
+            "protobufs": proto_entries,
+        }))
+    } else {
+        None
+    };
+
+    // 5. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
+    let endpoint = if let Some(ep) = args.endpoint {
+        ep
+    } else {
+        let config_content = std::fs::read_to_string(&args.config)
+            .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
+        let config_value: toml::Value =
+            toml::from_str(&config_content).with_context(|| "Invalid actr.toml")?;
+        config_value
+            .get("system")
+            .and_then(|s| s.get("ais_endpoint"))
+            .and_then(|a| a.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|u| {
+                // ais_endpoint url may include /ais path, strip it for base endpoint
+                u.trim_end_matches("/ais").to_string()
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No --endpoint provided and [system.ais_endpoint].url not found in {}",
+                    args.config.display()
+                )
+            })?
+    };
+
+    // 6. POST /mfr/pkg/publish
+    let publish_url = format!("{}/mfr/pkg/publish", endpoint.trim_end_matches('/'));
+    println!("📡 Publishing to: {}", publish_url);
+
+    let client = reqwest::Client::new();
+    let mut publish_body = serde_json::json!({
+        "manufacturer": manifest.manufacturer,
+        "name": manifest.name,
+        "version": manifest.version,
+        "target": manifest.binary.target,
+        "manifest": manifest_str,
+        "signature": sig_b64,
+    });
+
+    // Add proto filing fields if present
+    if let Some(filing) = proto_filing {
+        publish_body["proto_files"] = filing;
+    }
+
+    let resp = client
+        .post(&publish_url)
+        .json(&publish_body)
+        .send()
+        .await
+        .with_context(|| format!("Failed to connect to MFR endpoint: {}", publish_url))?;
+
+    // 6. Handle response
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        eprintln!("❌ Publish failed (HTTP {})", status);
+        eprintln!("   Response: {}", body);
+        anyhow::bail!("MFR publish failed with status {}: {}", status, body);
+    }
+
+    // Parse response to show type_str
+    if let Ok(result) = serde_json::from_str::<serde_json::Value>(&body) {
+        let type_str = result["type_str"].as_str().unwrap_or("unknown");
+        let pkg_id = result["id"].as_i64().unwrap_or(0);
+        println!();
+        println!("✅ Package published successfully!");
+        println!("   type_str:  {}", type_str);
+        println!("   pkg_id:    {}", pkg_id);
+        println!("   status:    active");
+    } else {
+        println!();
+        println!("✅ Package published successfully!");
+        println!("   Response: {}", body);
     }
 
     Ok(())

@@ -782,9 +782,10 @@ impl Hyper {
                 acl,
                 service: None,
                 ws_address: None,
-                manifest_json: None,
+                manifest_raw: None,
                 mfr_signature: None,
                 psk_token: Some(psk_token.into()),
+                target: Some(manifest.target.clone()),
             };
             ais.register_with_psk(req).await?
         } else {
@@ -794,9 +795,6 @@ impl Hyper {
                 "first registration: registering with AIS using MFR manifest"
             );
 
-            // serialize manifest to JSON
-            let manifest_json = build_manifest_json(manifest)?;
-
             let req = RegisterRequest {
                 actr_type,
                 realm,
@@ -804,9 +802,10 @@ impl Hyper {
                 acl,
                 service: None,
                 ws_address: None,
-                manifest_json: Some(manifest_json.into()),
+                manifest_raw: Some(manifest.manifest_raw.clone().into()),
                 mfr_signature: Some(manifest.signature.clone().into()),
                 psk_token: None,
+                target: Some(manifest.target.clone()),
             };
             ais.register_with_manifest(req).await?
         };
@@ -978,36 +977,6 @@ fn check_psk_expiry(
             Ok(None)
         }
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Serialize a `PackageManifest` into JSON bytes.
-///
-/// AIS verifies the MFR identity using `manifest_json + mfr_signature`.
-/// The JSON includes `signature` encoded as base64 and `binary_hash` encoded as hex, matching the original package format.
-fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
-    use base64::Engine;
-
-    let binary_hash_hex: String = manifest
-        .binary_hash
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&manifest.signature);
-
-    let json = serde_json::json!({
-        "manufacturer": manifest.manufacturer,
-        "actr_name": manifest.actr_name,
-        "version": manifest.version,
-        "binary_hash": binary_hash_hex,
-        "capabilities": manifest.capabilities,
-        "signature": sig_b64,
-    });
-
-    serde_json::to_vec(&json).map_err(|e| {
-        HyperError::AisBootstrapFailed(format!("failed to serialize manifest to JSON: {e}"))
-    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1293,6 +1262,8 @@ mod tests {
             binary_hash: [0u8; 32],
             capabilities: vec!["storage".to_string()],
             signature: vec![0u8; 64],
+            manifest_raw: vec![],
+            target: "wasm32-wasip1".to_string(),
         };
 
         let json_bytes = build_manifest_json(&manifest).unwrap();
@@ -1327,6 +1298,8 @@ mod tests {
             binary_hash: [0u8; 32],
             capabilities: vec![],
             signature: vec![0u8; 64],
+            manifest_raw: vec![],
+            target: "wasm32-wasip1".to_string(),
         }
     }
 

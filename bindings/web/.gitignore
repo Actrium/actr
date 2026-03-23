@@ -48,6 +48,10 @@ examples/*/public/actr_runtime_*.js
 
 # IDE
 .vscode/
+
+# Generated web packages
+examples/echo/client/public/packages/
+examples/echo/server/public/packages/
 .idea/
 .cargo/
 .cursor/

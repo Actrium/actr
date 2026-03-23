@@ -2,16 +2,13 @@ edition = 1
 exports = ["../proto/file_transfer.proto"]
 
 [package]
-name = "file-transfer-receiver"
+name = "FileTransferService"
+manufacturer = "acme"
+version = "1.0.0"
 description = "File transfer receiver using DataStream API"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
-
-[package.actr_type]
-manufacturer = "acme"
-name = "FileTransferService"
-version = "1.0.0"
 
 [dependencies]
 

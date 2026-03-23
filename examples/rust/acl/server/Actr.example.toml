@@ -2,16 +2,13 @@ edition = 1
 exports = ["../proto/greeter.proto"]
 
 [package]
-name = "acl-server"
+name = "greeter.GreeterService"
+manufacturer = "acme"
+version = "1.0.0"
 description = "ACL Protected Greeter Server"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
-
-[package.actr_type]
-manufacturer = "acme"
-name = "greeter.GreeterService"
-version = "1.0.0"
 
 [dependencies]
 

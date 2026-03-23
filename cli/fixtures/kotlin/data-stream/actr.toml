@@ -2,16 +2,13 @@ edition = 1
 exports = []
 
 [package]
-name = "{{PROJECT_NAME}}"
-description = "An Actor-RTC Android DataStream client"
-
-[package.actr_type]
-manufacturer = "{{MANUFACTURER}}"
 name = "StreamEchoClient"
+manufacturer = "{{MANUFACTURER}}"
+description = "An Actor-RTC Android DataStream client"
 authors = []
 
 [dependencies]
-stream-echo-server-python = { actr_type = "{{MANUFACTURER}}:StreamEchoServer:1.0.0" }
+StreamEchoServer = { actr_type = "{{MANUFACTURER}}:StreamEchoServer:1.0.0" }
 
 [system.signaling]
 url = "{{SIGNALING_URL}}"
@@ -35,7 +32,9 @@ visible = false
 
 [[acl.rules]]
 permission = "allow"
-principals = [{ actr_type = { manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer" } }]
+principals = [
+    { actr_type = { manufacturer = "{{MANUFACTURER}}", name = "StreamEchoServer" } },
+]
 
 [scripts]
 dev = "./gradlew assembleDebug"
