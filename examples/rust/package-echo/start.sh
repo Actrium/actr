@@ -329,11 +329,22 @@ echo -e "${GREEN}✅ Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_R
 # Seed MFR manufacturer record with public key
 echo "  Registering MFR manufacturer '$MFR_NAME' with public key..."
 EXPIRES_AT=$((NOW + 86400 * 365))  # 1 year from now
+
+# Compute key_id = "mfr-" + sha256(public_key_bytes)[..16hex]
+# This MUST match the algorithm in actr_pack::compute_key_id and actrix-mfr::crypto::compute_key_id
+MFR_KEY_ID=$(python3 -c "
+import base64, hashlib
+pub_bytes = base64.b64decode('$MFR_PUBKEY')
+h = hashlib.sha256(pub_bytes).hexdigest()[:16]
+print(f'mfr-{h}')
+")
+echo "  Computed key_id: $MFR_KEY_ID"
+
 sqlite3 "$ACTRIX_DB" \
-    "INSERT OR IGNORE INTO mfr (name, public_key, contact, status, created_at, verified_at, key_expires_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', 'dev@example.com', 'active', $NOW, $NOW, $EXPIRES_AT);"
+    "INSERT OR IGNORE INTO mfr (name, public_key, key_id, contact, status, created_at, verified_at, key_expires_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', '$MFR_KEY_ID', 'dev@example.com', 'active', $NOW, $NOW, $EXPIRES_AT);"
 
 MFR_ID=$(sqlite3 "$ACTRIX_DB" "SELECT id FROM mfr WHERE name = '$MFR_NAME';")
-echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID)${NC}"
+echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID, key_id=$MFR_KEY_ID)${NC}"
 
 # Client package: seed directly (no .actr package for client)
 CLIENT_TYPE_STR="$MFR_NAME:package-echo-client-app:0.1.0"

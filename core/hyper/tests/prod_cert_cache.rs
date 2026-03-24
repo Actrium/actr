@@ -34,6 +34,7 @@ fn make_signed_package(
     signing_key: &SigningKey,
 ) -> Vec<u8> {
     let wasm = minimal_wasm();
+    let key_id = actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes());
     let manifest = actr_pack::PackageManifest {
         manufacturer: manufacturer.to_string(),
         name: actr_name.to_string(),
@@ -45,6 +46,7 @@ fn make_signed_package(
             size: None,
         },
         signature_algorithm: "ed25519".to_string(),
+        signing_key_id: Some(key_id),
         resources: vec![],
         proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
@@ -73,9 +75,14 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
 
+    let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
+
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/mfr/acme/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/acme/verifying_key?key_id={}", key_id).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&verifying_key))
@@ -102,9 +109,14 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
 
+    let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
+
     let mut server = mockito::Server::new_async().await;
     let mock = server
-        .mock("GET", "/mfr/cached-mfr/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/cached-mfr/verifying_key?key_id={}", key_id).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&verifying_key))
@@ -130,9 +142,14 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
 async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let signing_key = SigningKey::generate(&mut OsRng);
 
+    let key_id = actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes());
+
     let mut server = mockito::Server::new_async().await;
     server
-        .mock("GET", "/mfr/unknown-mfr/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/unknown-mfr/verifying_key?key_id={}", key_id).as_str(),
+        )
         .with_status(404)
         .create_async()
         .await;
@@ -156,11 +173,15 @@ async fn production_mode_rejects_wrong_cached_key() {
     let real_signing_key = SigningKey::generate(&mut OsRng);
     let wrong_key = SigningKey::generate(&mut OsRng); // different key
 
+    let key_id = actr_pack::compute_key_id(&real_signing_key.verifying_key().to_bytes());
     let mut server = mockito::Server::new_async().await;
 
     // AIS returns wrong_key's public key
     server
-        .mock("GET", "/mfr/mfr-x/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/mfr-x/verifying_key?key_id={}", key_id).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&wrong_key.verifying_key()))
@@ -187,16 +208,25 @@ async fn production_mode_independent_caches_per_manufacturer() {
     let key_a = SigningKey::generate(&mut OsRng);
     let key_b = SigningKey::generate(&mut OsRng);
 
+    let key_id_a = actr_pack::compute_key_id(&key_a.verifying_key().to_bytes());
+    let key_id_b = actr_pack::compute_key_id(&key_b.verifying_key().to_bytes());
+
     let mut server = mockito::Server::new_async().await;
     server
-        .mock("GET", "/mfr/mfr-a/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/mfr-a/verifying_key?key_id={}", key_id_a).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&key_a.verifying_key()))
         .create_async()
         .await;
     server
-        .mock("GET", "/mfr/mfr-b/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/mfr-b/verifying_key?key_id={}", key_id_b).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&key_b.verifying_key()))
@@ -224,9 +254,14 @@ async fn cert_cache_get_from_cache_after_prefetch() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
 
+    let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
+
     let mut server = mockito::Server::new_async().await;
     server
-        .mock("GET", "/mfr/sync-mfr/verifying_key")
+        .mock(
+            "GET",
+            format!("/mfr/sync-mfr/verifying_key?key_id={}", key_id).as_str(),
+        )
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(verifying_key_response(&verifying_key))
@@ -236,14 +271,14 @@ async fn cert_cache_get_from_cache_after_prefetch() {
     let cache = MfrCertCache::new(server.url());
 
     // get_from_cache returns None before prefetch
-    let before = cache.get_from_cache("sync-mfr");
+    let before = cache.get_from_cache("sync-mfr", Some(&key_id));
     assert!(before.is_none(), "cache should be empty before prefetch");
 
     // prefetch
-    cache.get_or_fetch("sync-mfr").await.unwrap();
+    cache.get_or_fetch("sync-mfr", Some(&key_id)).await.unwrap();
 
     // get_from_cache now synchronously returns the public key
-    let after: Option<VerifyingKey> = cache.get_from_cache("sync-mfr");
+    let after: Option<VerifyingKey> = cache.get_from_cache("sync-mfr", Some(&key_id));
     assert!(after.is_some(), "cache should hit after prefetch");
     assert_eq!(
         after.unwrap().to_bytes(),

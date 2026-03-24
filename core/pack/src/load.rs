@@ -52,6 +52,20 @@ fn read_zip_entry<R: Read + std::io::Seek>(
     Ok(buf)
 }
 
+/// Read the raw 64-byte Ed25519 signature from an .actr package.
+pub fn read_signature(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
+    let cursor = Cursor::new(actr_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)?;
+    let sig = read_zip_entry(&mut archive, "actr.sig").map_err(|_| PackError::SignatureNotFound)?;
+    if sig.len() != 64 {
+        return Err(PackError::SignatureVerificationFailed(format!(
+            "actr.sig must be exactly 64 bytes, got {}",
+            sig.len()
+        )));
+    }
+    Ok(sig)
+}
+
 /// Read all proto files from the `proto/` directory in an .actr package.
 ///
 /// Returns a list of (filename, content) pairs.

@@ -9,6 +9,9 @@ pub struct PackageManifest {
     pub binary: BinaryEntry,
     #[serde(default = "default_sig_algorithm")]
     pub signature_algorithm: String,
+    /// ID of the public key used for signing (allows key rotation and lookup of historical keys).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key_id: Option<String>,
     #[serde(default)]
     pub resources: Vec<ResourceEntry>,
     /// Proto files included in the package for service API definition.

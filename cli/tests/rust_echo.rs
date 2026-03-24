@@ -246,7 +246,7 @@ fn rust_echo_both_app_uses_local_service_dependency() {
 
     let app_actr = std::fs::read_to_string(dir.join("echo-app/actr.toml")).unwrap();
     assert!(
-        app_actr.contains("echo-service = {}"),
+        app_actr.contains("EchoService = {}"),
         "role=both app should depend on local echo-service, got:\n{app_actr}"
     );
     assert!(

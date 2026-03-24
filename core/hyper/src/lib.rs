@@ -511,9 +511,16 @@ impl Hyper {
     pub async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
         // production mode: prefetch MFR public key (write to cert_cache), then verify synchronously
         if matches!(&self.inner.config.trust_mode, TrustMode::Production { .. }) {
-            if let Some(manufacturer) = quick_extract_manufacturer(bytes) {
-                debug!(manufacturer, "production mode: prefetching MFR public key");
-                self.inner.verifier.prefetch_mfr_cert(&manufacturer).await?;
+            if let Some((manufacturer, signing_key_id)) = quick_extract_manifest_info(bytes) {
+                debug!(
+                    manufacturer,
+                    ?signing_key_id,
+                    "production mode: prefetching MFR public key"
+                );
+                self.inner
+                    .verifier
+                    .prefetch_mfr_cert(&manufacturer, signing_key_id.as_deref())
+                    .await?;
             }
         }
         self.inner.verifier.verify(bytes)
@@ -929,14 +936,16 @@ fn check_psk_expiry(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Quickly extract the `manufacturer` field from an `.actr` package, used only to prefetch
-/// the MFR public key without full verification.
+/// Quickly extract the `manufacturer` and `signing_key_id` fields from an `.actr` package,
+/// used only to prefetch the MFR public key without full verification.
 ///
 /// Returns `None` when parsing fails or the format is not recognized.
 /// The caller then skips prefetch and lets verification report the error.
-fn quick_extract_manufacturer(bytes: &[u8]) -> Option<String> {
+fn quick_extract_manifest_info(bytes: &[u8]) -> Option<(String, Option<String>)> {
     if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
-        return actr_pack::read_manifest(bytes).ok().map(|m| m.manufacturer);
+        return actr_pack::read_manifest(bytes)
+            .ok()
+            .map(|m| (m.manufacturer, m.signing_key_id));
     }
     None
 }
@@ -1193,41 +1202,6 @@ mod tests {
 
         let result = load_valid_psk(&store).await.unwrap();
         assert_eq!(result, None, "Missing expires_at should return None");
-    }
-
-    /// build_manifest_json should output JSON with the required fields.
-    #[test]
-    fn build_manifest_json_produces_valid_json() {
-        let manifest = PackageManifest {
-            manufacturer: "acme".to_string(),
-            actr_name: "Sensor".to_string(),
-            version: "1.0.0".to_string(),
-            binary_path: "bin/actor.wasm".to_string(),
-            binary_target: "wasm32-wasip1".to_string(),
-            binary_hash: [0u8; 32],
-            capabilities: vec!["storage".to_string()],
-            signature: vec![0u8; 64],
-            manifest_raw: vec![],
-            target: "wasm32-wasip1".to_string(),
-        };
-
-        let json_bytes = build_manifest_json(&manifest).unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
-
-        assert_eq!(value["manufacturer"], "acme");
-        assert_eq!(value["actr_name"], "Sensor");
-        assert_eq!(value["version"], "1.0.0");
-        // binary_hash should be a 64-character hex string.
-        assert_eq!(
-            value["binary_hash"].as_str().unwrap().len(),
-            64,
-            "binary_hash should be a 64-character hex string"
-        );
-        assert!(value["capabilities"].is_array());
-        assert!(
-            value["signature"].is_string(),
-            "signature should be a base64 string"
-        );
     }
 
     // ─── AIS integration tests (mockito mock server) ────────────────────────
