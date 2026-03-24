@@ -160,7 +160,7 @@ impl WebRtcGate {
         }
     }
 
-    /// Start message receive loop (called by ActrSystem/ActrNode)
+    /// Start message receive loop (called by the runtime node)
     ///
     /// # Arguments
     /// - `mailbox`: message queue for persisting inbound requests

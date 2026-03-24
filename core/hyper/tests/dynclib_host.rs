@@ -3,15 +3,16 @@
 //! Tests basic host operations:
 //! - Loading a non-existent library -> error
 //! - Loading and instantiating a valid SO -> success
-//! - Basic dispatch through the loaded instance
+//! - Basic request handling through the loaded instance
 
 #![cfg(feature = "dynclib-engine")]
 
+use actr_framework::guest::abi::{InitPayloadV1, version};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::{DynclibError, DynclibHost};
-use actr_hyper::executor::{CallExecutorFn, DispatchContext, IoResult, PendingCall};
+use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
 // ---- helpers ---------------------------------------------------------------
@@ -58,11 +59,21 @@ fn test_actr_id() -> ActrId {
     }
 }
 
-fn test_ctx() -> DispatchContext {
-    DispatchContext {
+fn test_ctx() -> InvocationContext {
+    InvocationContext {
         self_id: test_actr_id(),
         caller_id: None,
         request_id: "test".to_string(),
+    }
+}
+
+fn test_config() -> InitPayloadV1 {
+    InitPayloadV1 {
+        version: version::V1,
+        actr_type: "test:fixture:0.1.0".to_string(),
+        credential: Vec::new(),
+        actor_id: Vec::new(),
+        realm_id: 1,
     }
 }
 
@@ -86,7 +97,9 @@ fn test_load_nonexistent_library() {
 fn test_load_and_instantiate() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load should succeed");
-    let _instance = host.instantiate(b"{}").expect("instantiate should succeed");
+    let _instance = host
+        .instantiate(&test_config())
+        .expect("instantiate should succeed");
 }
 
 /// Basic echo dispatch through loaded instance
@@ -95,15 +108,15 @@ fn test_load_and_instantiate() {
 async fn test_basic_echo_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     let payload = b"hello dynclib".to_vec();
     let req_bytes = make_envelope("test/echo", payload.clone());
 
-    let executor: CallExecutorFn = Box::new(|_| Box::pin(async { IoResult::Error(-1) }));
+    let executor: HostAbiFn = Box::new(|_| Box::pin(async { HostOperationResult::Error(-1) }));
 
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), &executor)
+        .handle(&req_bytes, test_ctx(), &executor)
         .await
         .expect("echo dispatch should succeed");
 
@@ -116,25 +129,30 @@ async fn test_basic_echo_dispatch() {
 async fn test_basic_double_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     let x: i32 = 21;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    let executor: CallExecutorFn = Box::new(|pending| {
+    let executor: HostAbiFn = Box::new(|pending| {
         Box::pin(async move {
             match pending {
-                PendingCall::Call { payload, .. } => {
-                    let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                    IoResult::Bytes((val * 2).to_le_bytes().to_vec())
+                HostOperation::Call(req) => {
+                    let val = i32::from_le_bytes([
+                        req.payload[0],
+                        req.payload[1],
+                        req.payload[2],
+                        req.payload[3],
+                    ]);
+                    HostOperationResult::Bytes((val * 2).to_le_bytes().to_vec())
                 }
-                _ => IoResult::Error(-1),
+                _ => HostOperationResult::Error(-1),
             }
         })
     });
 
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), &executor)
+        .handle(&req_bytes, test_ctx(), &executor)
         .await
         .expect("double dispatch should succeed");
 

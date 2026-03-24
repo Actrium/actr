@@ -30,22 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📡 willvia/through WebRTC P2P send[...] Actr B");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // 2. Create ActrSystem
-    info!("🏗️  create ActrSystem...");
-
-    let system = ActrSystem::new(config).await?;
-
-    info!("✅ ActrSystem createsuccess");
-
-    // 3. Create RelayClientWorkload and set target server
+    // 2. Create RelayClientWorkload and set target server
     info!("📦 create RelayClientWorkload...");
 
     let workload = RelayClientWorkload::new();
-    let node = system.attach(workload.clone());
+    let node = ActrNode::new(config, workload.clone()).await?;
 
-    info!("✅ RelayClientWorkload attached");
+    info!("✅ ActrNode createsuccess");
 
-    // 4. Start ActrNode
+    // 3. Start ActrNode
     info!("🚀 start ActrNode...");
 
     let actr_ref = node.start().await?;
@@ -53,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("✅ ActrNode startsuccess！");
     info!("📍 [...] Actor ID: {:?}", actr_ref.actor_id());
 
-    // 4.1 Discover remote actr-b
+    // 3.1 Discover remote actr-b
     let target_type = ActrType {
         manufacturer: "actr-example".to_string(),
         name: "media_relay.RelayService".to_string(),

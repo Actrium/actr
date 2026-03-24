@@ -1,6 +1,6 @@
 //! Echo Real Server - real Actor server
 //!
-//! using/use ActorSystem start，via/through signaling server register
+//! using/use ActrNode start，via/through signaling server register
 
 mod echo_service;
 mod generated;
@@ -30,33 +30,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. create ActorSystem
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  create ActorSystem...");
-
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
-        Err(e) => {
-            error!("❌ ActrSystem createfailed: {:?}", e);
-            return Err(e.into());
-        }
-    };
-
-    info!("✅ ActrSystem createsuccess");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. create EchoService [...]attach Workload
+    // 2. create workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 create EchoService...");
 
     let echo_service = EchoService::new();
     let workload = EchoServiceWorkload::new(echo_service);
-    let node = system.attach(workload);
+    let node = match ActrNode::new(config, workload).await {
+        Ok(node) => node,
+        Err(e) => {
+            error!("❌ ActrNode createfailed: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    info!("✅ EchoService attached");
+    info!("✅ ActrNode createsuccess");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. start ActrNode (connection signaling server, register, startreceive)
+    // 3. start ActrNode (connection signaling server, register, startreceive)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🚀 start ActrNode...");
 

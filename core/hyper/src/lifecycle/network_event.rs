@@ -535,7 +535,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 /// Network Event Handle
 ///
 /// Lightweight handle for sending network events and receiving processing results.
-/// Created by `ActrSystem::create_network_event_handle()`.
+/// Created before `ActrNode::start()` to bridge platform network events.
 pub struct NetworkEventHandle {
     /// Event sender (to ActrNode)
     event_tx: tokio::sync::mpsc::Sender<NetworkEvent>,

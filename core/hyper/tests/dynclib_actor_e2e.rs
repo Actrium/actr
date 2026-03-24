@@ -1,8 +1,8 @@
 //! Dynclib actor e2e integration tests
 //!
 //! Validates the full call chain:
-//! host (DynclibHost/DynclibInstance) -> actr_handle -> DynclibContext::call_raw()
-//!                                   -> vtable trampoline -> call_executor -> response
+//! host (DynclibHost/DynClibWorkload) -> actr_handle -> DynclibContext::call_raw()
+//!                                    -> vtable trampoline -> host ABI -> response
 //!
 //! # Test scenarios
 //!
@@ -13,11 +13,12 @@
 
 #![cfg(feature = "dynclib-engine")]
 
+use actr_framework::guest::abi::{InitPayloadV1, version};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::DynclibHost;
-use actr_hyper::executor::{CallExecutorFn, DispatchContext, IoResult, PendingCall};
+use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
 // ---- helpers ---------------------------------------------------------------
@@ -65,16 +66,26 @@ fn test_actr_id() -> ActrId {
     }
 }
 
-fn test_ctx() -> DispatchContext {
-    DispatchContext {
+fn test_ctx() -> InvocationContext {
+    InvocationContext {
         self_id: test_actr_id(),
         caller_id: None,
         request_id: "test-req-001".to_string(),
     }
 }
 
-fn noop_executor() -> CallExecutorFn {
-    Box::new(|_pending| Box::pin(async { IoResult::Error(-1) }))
+fn test_config() -> InitPayloadV1 {
+    InitPayloadV1 {
+        version: version::V1,
+        actr_type: "test:fixture:0.1.0".to_string(),
+        credential: Vec::new(),
+        actor_id: Vec::new(),
+        realm_id: 1,
+    }
+}
+
+fn noop_executor() -> HostAbiFn {
+    Box::new(|_pending| Box::pin(async { HostOperationResult::Error(-1) }))
 }
 
 // ---- tests -----------------------------------------------------------------
@@ -85,12 +96,12 @@ fn noop_executor() -> CallExecutorFn {
 async fn dynclib_unknown_route_returns_error() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
     let executor = noop_executor();
 
-    let result = instance.dispatch(&req_bytes, test_ctx(), &executor).await;
+    let result = instance.handle(&req_bytes, test_ctx(), &executor).await;
 
     assert!(result.is_err(), "unknown route should return error");
 }
@@ -101,14 +112,14 @@ async fn dynclib_unknown_route_returns_error() {
 async fn dynclib_echo_returns_payload() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let req_bytes = make_envelope("test/echo", payload.clone());
     let executor = noop_executor();
 
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), &executor)
+        .handle(&req_bytes, test_ctx(), &executor)
         .await
         .expect("echo dispatch failed");
 
@@ -121,32 +132,35 @@ async fn dynclib_echo_returns_payload() {
 async fn dynclib_double_dispatch() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     let x: i32 = 7;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    // call_executor: handle the vtable call from guest's ctx.call_raw()
+    // host ABI: handle the vtable call from guest's ctx.call_raw()
     // DynclibContext::call_raw encodes Dest::Actor and routes through vtable.call,
-    // which produces PendingCall::Call { route_key, dest_bytes, payload }.
-    let executor: CallExecutorFn = Box::new(|pending| {
+    // which produces HostOperation::Call(HostCallV1 { route_key, dest, payload }).
+    let executor: HostAbiFn = Box::new(|pending| {
         Box::pin(async move {
             match pending {
-                PendingCall::Call {
-                    route_key, payload, ..
-                } => {
-                    assert_eq!(route_key, "test/double_impl", "route_key mismatch");
-                    assert_eq!(payload.len(), 4, "payload should be 4 bytes");
+                HostOperation::Call(req) => {
+                    assert_eq!(req.route_key, "test/double_impl", "route_key mismatch");
+                    assert_eq!(req.payload.len(), 4, "payload should be 4 bytes");
 
-                    let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let val = i32::from_le_bytes([
+                        req.payload[0],
+                        req.payload[1],
+                        req.payload[2],
+                        req.payload[3],
+                    ]);
                     assert_eq!(val, 7, "guest should pass x=7");
 
                     // mock: return x * 2
                     let doubled = (val * 2).to_le_bytes().to_vec();
-                    IoResult::Bytes(doubled)
+                    HostOperationResult::Bytes(doubled)
                 }
                 other => panic!(
-                    "expected PendingCall::Call, got {:?}",
+                    "expected HostOperation::Call, got {:?}",
                     std::mem::discriminant(&other)
                 ),
             }
@@ -154,7 +168,7 @@ async fn dynclib_double_dispatch() {
     });
 
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), &executor)
+        .handle(&req_bytes, test_ctx(), &executor)
         .await
         .expect("double dispatch failed");
 
@@ -169,26 +183,30 @@ async fn dynclib_double_dispatch() {
 async fn dynclib_multiple_dispatches() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(b"{}").expect("instantiate");
+    let mut instance = host.instantiate(&test_config()).expect("instantiate");
 
     for x in [1i32, 5, 42, 100] {
         let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-        let executor: CallExecutorFn = Box::new(|pending| {
+        let executor: HostAbiFn = Box::new(|pending| {
             Box::pin(async move {
                 match pending {
-                    PendingCall::Call { payload, .. } => {
-                        let val =
-                            i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                        IoResult::Bytes((val * 2).to_le_bytes().to_vec())
+                    HostOperation::Call(req) => {
+                        let val = i32::from_le_bytes([
+                            req.payload[0],
+                            req.payload[1],
+                            req.payload[2],
+                            req.payload[3],
+                        ]);
+                        HostOperationResult::Bytes((val * 2).to_le_bytes().to_vec())
                     }
-                    _ => IoResult::Error(-1),
+                    _ => HostOperationResult::Error(-1),
                 }
             })
         });
 
         let result = instance
-            .dispatch(&req_bytes, test_ctx(), &executor)
+            .handle(&req_bytes, test_ctx(), &executor)
             .await
             .expect("dispatch failed");
 

@@ -7,13 +7,13 @@ use url::Url;
 
 /// Actor execution mode
 ///
-/// Determines how ActrSystem obtains credentials and cooperates with the Hyper host layer.
+/// Determines how the actor runtime obtains credentials and cooperates with the Hyper host layer.
 /// Specified via the `mode` field in `[system.deployment]` section of `actr.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ActrMode {
     /// Native process mode (default)
     ///
-    /// ActrSystem runs in a standalone process, registers with the signaling server
+    /// The actor runtime runs in a standalone process, registers with the signaling server
     /// and obtains credentials on its own.
     /// Suitable for development/debugging or deployments not managed by Hyper.
     #[default]
@@ -21,7 +21,7 @@ pub enum ActrMode {
 
     /// Subprocess mode
     ///
-    /// ActrSystem is launched as a subprocess by the Hyper layer.
+    /// The actor runtime is launched as a subprocess by the Hyper layer.
     /// Credentials are injected by Hyper via `inject_credential()` or
     /// `ACTR_REGISTER_OK` environment variable; skips signaling registration
     /// at startup and directly uses the issued credentials.
@@ -29,7 +29,7 @@ pub enum ActrMode {
 
     /// WASM module mode
     ///
-    /// ActrSystem runs as a WASM module inside the Hyper host.
+    /// The actor runtime runs as a WASM module inside the Hyper host.
     /// Credentials are injected via host functions or `inject_credential()` (TBD).
     Wasm,
 }

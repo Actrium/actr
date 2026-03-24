@@ -29,11 +29,10 @@ impl {{PROJECT_NAME_PASCAL}}ClientAppHandler for ClientApp {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let system = ActrSystem::from_config("actr.toml").await?;
-
     info!("{} starting", env!("CARGO_PKG_NAME"));
 
-    let node = system.attach({{PROJECT_NAME_PASCAL}}ClientAppWorkload(ClientApp));
+    let config = actr::config::ConfigParser::from_file("actr.toml")?;
+    let node = ActrNode::new(config, {{PROJECT_NAME_PASCAL}}ClientAppWorkload(ClientApp)).await?;
     let actr_ref = node.start().await?;
 
     // Send one echo RPC (remote forwarding is handled by generated local_actor.rs)

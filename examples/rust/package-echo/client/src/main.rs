@@ -1,22 +1,43 @@
-//! Package Echo Client — discovers and communicates with the package-backed echo server
+//! Package Echo Client — discovers the remote echo server and calls it directly.
 //!
-//! Pattern: AppSide → ActrRef.call(EchoRequest) → ClientWorkload.dispatch
-//!          → ctx.call(Dest::Actor(server_id), req) → package echo server → response
+//! Pattern: AppSide -> ActrRef.call_remote(server_id, EchoRequest)
+//!          -> PeerGate -> WebRTC -> remote echo server -> EchoResponse
 
 mod app_side;
-mod client_workload;
 
 /// Generated protobuf types from echo.proto
 pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));
 }
 
-use actr_hyper::{ActrSystem, AisClient, init_observability};
-use actr_protocol::{ActrType, RegisterRequest, register_response};
-use anyhow::{Context, Result};
-use client_workload::ClientWorkload;
+use std::env;
 use std::path::PathBuf;
-use tracing::info;
+
+use actr_hyper::{Hyper, HyperConfig, TrustMode, init_observability};
+use actr_platform_native::NativePlatformProvider;
+use actr_protocol::{ActrType, RpcRequest};
+use anyhow::{Context, Result};
+use tracing::{error, info};
+
+use crate::echo::{EchoRequest, EchoResponse};
+
+const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1-beta";
+
+fn echo_actr_version() -> String {
+    env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| DEFAULT_ECHO_ACTR_VERSION.to_string())
+}
+
+impl RpcRequest for EchoRequest {
+    type Response = EchoResponse;
+
+    fn route_key() -> &'static str {
+        "echo.EchoService.Echo"
+    }
+
+    fn payload_type() -> actr_protocol::PayloadType {
+        actr_protocol::PayloadType::RpcReliable
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,98 +50,90 @@ async fn main() -> Result<()> {
     let _obs_guard = init_observability(&config.observability)?;
 
     info!("🚀 Package Echo Client starting");
+    info!("📡 Signaling server: {}", config.signaling_url);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. Register with AIS HTTP to obtain credential
+    // 2. Initialize Hyper (for credential bootstrap)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let hyper_data_dir = config.config_dir.join(".hyper");
+    // Client has no guest package; trust_mode is only used for package verification
+    // which is never called here. Use Development mode with a dummy key as placeholder.
+    let trust_mode = TrustMode::Development {
+        self_signed_pubkey: vec![0u8; 32],
+    };
+
+    let hyper = Hyper::init_with_platform(
+        HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
+        std::sync::Arc::new(NativePlatformProvider::new()),
+    )
+    .await
+    .context("Hyper initialization failed")?;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 3. Register with AIS using config (no package manifest)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let ais_endpoint =
-        std::env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
+        env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
     info!("🔐 Registering with AIS at {}", ais_endpoint);
 
-    let ais = AisClient::new(&ais_endpoint);
-    let register_req = RegisterRequest {
-        actr_type: config.actr_type().clone(),
-        realm: config.realm.clone(),
-        service_spec: config.calculate_service_spec(),
-        acl: config.acl.clone(),
-        service: None,
-        ws_address: None,
-        manifest_raw: None,
-        mfr_signature: None,
-        psk_token: None,
-        target: None,
-    };
-
-    let ais_response = ais
-        .register_with_manifest(register_req)
+    let register_ok = hyper
+        .bootstrap_credential_from_config(&config, &ais_endpoint)
         .await
-        .context("AIS registration failed")?;
-
-    let register_ok = match ais_response.result {
-        Some(register_response::Result::Success(ok)) => {
-            info!(
-                "✅ AIS registration successful, ActrId: {}",
-                actr_protocol::ActrIdExt::to_string_repr(&ok.actr_id)
-            );
-            ok
-        }
-        Some(register_response::Result::Error(e)) => {
-            anyhow::bail!(
-                "AIS registration rejected: code={}, message={}",
-                e.code,
-                e.message
-            );
-        }
-        None => {
-            anyhow::bail!("AIS response missing result");
-        }
-    };
+        .inspect_err(|e| error!("❌ AIS registration failed: {:?}", e))?;
+    info!(
+        "✅ AIS registration successful, ActrId: {}",
+        actr_protocol::ActrIdExt::to_string_repr(&register_ok.actr_id)
+    );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. Create ActrSystem and start node
+    // 4. Attach no-op workload, start node
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem created");
-
-    let workload = ClientWorkload::new();
-    let mut node = system.attach(workload.clone());
-
-    // Inject AIS-issued credential so start() can authenticate with signaling
+    let mut node = hyper.attach_none(config).await?;
     node.inject_credential(register_ok);
 
     info!("🚀 Starting ActrNode...");
-    let actr_ref = node.start().await?;
-    info!("✅ ActrNode started with ID: {:?}", actr_ref.actor_id());
+    let actr_ref = node.start().await.inspect_err(|e| {
+        error!("❌ ActrNode start failed: {:?}", e);
+    })?;
+    info!(
+        "✅ ActrNode started with ID: {}",
+        actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id())
+    );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. Discover package echo server
+    // 5. Discover remote echo server
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🌐 Discovering echo-actr package service via signaling...");
     let target_type = ActrType {
-        manufacturer: "acme".to_string(),
+        manufacturer: "actrium".to_string(),
         name: "EchoService".to_string(),
-        version: "0.1.0".to_string(),
+        version: echo_actr_version(),
     };
 
+    info!("🔍 Discovering echo server...");
     let mut candidates = actr_ref
         .discover_route_candidates(&target_type, 1)
         .await
-        .context("Failed to discover package echo server")?;
+        .context("Failed to discover echo server")?;
 
     let server_id = candidates
         .pop()
-        .ok_or_else(|| anyhow::anyhow!("No package echo server instances found"))?;
-
-    info!("🎯 Target server: {:?}", server_id);
-    workload.set_server_id(server_id).await;
+        .ok_or_else(|| anyhow::anyhow!("No echo server found"))?;
+    info!(
+        "🎯 Found server: {}",
+        actr_protocol::ActrIdExt::to_string_repr(&server_id)
+    );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. Run interactive app
+    // 6. Run interactive app
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let app_side = app_side::AppSide {
         actr_ref: actr_ref.clone(),
+        server_id,
     };
     app_side.run().await;
+
+    actr_ref.shutdown();
+    actr_ref.wait_for_shutdown().await;
 
     info!("👋 Client shut down");
     Ok(())

@@ -9,7 +9,7 @@ final class ActrService: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .disconnected
     @Published var errorMessage: String?
 
-    internal var actrSystem: ActrSystem?
+    internal var system: ActrSystem?
     internal var actrNode: ActrNode?
     internal var actr: ActrRef?
     private var workload: ClientWorkload?
@@ -40,7 +40,7 @@ final class ActrService: ObservableObject {
             }.value
 
             let (system, node, actr, workload) = result
-            actrSystem = system
+            self.system = system
             actrNode = node
             self.actr = actr
             self.workload = workload
@@ -70,7 +70,7 @@ final class ActrService: ObservableObject {
 
         actr = nil
         actrNode = nil
-        actrSystem = nil
+        system = nil
         workload = nil
 
         connectionStatus = .disconnected

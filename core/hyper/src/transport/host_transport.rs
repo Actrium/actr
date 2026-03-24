@@ -1,20 +1,20 @@
 //! HostTransport - Intra-process transport manager
 //!
-//! Manages mpsc channel communication between Workload and Shell
+//! Manages mpsc channel communication between Guest and Shell
 //!
 //! # Usage Examples
 //!
-//! ## Workload Side (Subscribe to data streams)
+//! ## Guest Side (Subscribe to data streams)
 //!
 //! ```rust,ignore
 //! use actr_hyper::HostTransport;
 //! use std::sync::Arc;
 //!
-//! struct MyWorkload {
+//! struct MyGuest {
 //!     host_transport: Arc<HostTransport>,
 //! }
 //!
-//! impl MyWorkload {
+//! impl MyGuest {
 //!     pub async fn subscribe_metrics_stream(&self) -> NetworkResult<()> {
 //!         // Create LatencyFirst channel
 //!         let rx = self.host_transport
@@ -63,10 +63,10 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 /// Host Transport - manages intra-process transport (mpsc channels)
 ///
 /// # Design Philosophy
-/// - **Workload <-> Shell communication bridge** (not for arbitrary Actor-to-Actor communication)
+/// - **Guest <-> Shell communication bridge** (not for arbitrary Actor-to-Actor communication)
 /// - **Reliable is mandatory, others are created on-demand**
 /// - **Dynamic multi-channel management**: HashMap<String, Channel>
-/// - **Bi-directional sharing**: Shell and Workload share the same Manager
+/// - **Bi-directional sharing**: Shell and Guest share the same Manager
 pub struct HostTransport {
     // ========== Mandatory base channel ==========
     /// Reliable channel (must exist)
@@ -117,7 +117,7 @@ impl Default for HostTransport {
 impl HostTransport {
     /// Create new instance (only creates Reliable channel, others are lazy-initialized)
     ///
-    /// HostTransport manages intra-process communication channels between Workload and Shell.
+    /// HostTransport manages intra-process communication channels between Guest and Shell.
     /// It does not need ActorId as all communication is within a single process.
     pub fn new() -> Self {
         let (reliable_tx, reliable_rx) = mpsc::channel(1024);

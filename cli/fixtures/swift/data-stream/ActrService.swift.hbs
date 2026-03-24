@@ -13,7 +13,7 @@ final class ActrService: ObservableObject {
     @Published var errorMessage: String?
     @Published var streamMessages: [String] = []
 
-    var actrSystem: ActrSystem?
+    var system: ActrSystem?
     var actrNode: ActrNode?
     var actr: ActrRef?
     private var workload: {{SERVICE_NAME}}Workload<{{SERVICE_NAME}}HandlerImpl>?
@@ -49,7 +49,7 @@ final class ActrService: ObservableObject {
             }.value
 
             let (system, node, actr, workload) = result
-            actrSystem = system
+            self.system = system
             actrNode = node
             self.actr = actr
             self.workload = workload
@@ -79,7 +79,7 @@ final class ActrService: ObservableObject {
 
         actr = nil
         actrNode = nil
-        actrSystem = nil
+        system = nil
         workload = nil
 
         connectionStatus = .disconnected

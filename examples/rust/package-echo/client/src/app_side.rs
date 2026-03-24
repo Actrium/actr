@@ -1,19 +1,20 @@
-//! Interactive shell — reads from stdin, sends echo requests via ActrRef
+//! Interactive shell — reads from stdin and calls the remote echo server directly.
 
-use crate::client_workload::ClientWorkload;
-use crate::echo::EchoRequest;
+use crate::echo::{EchoRequest, EchoResponse};
 use actr_hyper::ActrRef;
+use actr_protocol::ActrId;
 use tracing::{error, info};
 
 pub struct AppSide {
-    pub actr_ref: ActrRef<ClientWorkload>,
+    pub actr_ref: ActrRef,
+    pub server_id: ActrId,
 }
 
 impl AppSide {
     pub async fn run(self) {
         info!("[App] Started");
         println!("===== Package Echo Client App =====");
-        println!("Type messages to send to the package echo server (type 'quit' to exit):");
+        println!("Type messages to send to the echo server (type 'quit' to exit):");
 
         use std::io::Write;
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -42,14 +43,19 @@ impl AppSide {
                 message: line.clone(),
             };
 
-            info!("[App] Sending to local ClientWorkload: {}", line);
+            info!("[App] Sending to remote echo server: {}", line);
 
-            match self.actr_ref.call(request).await {
+            match self
+                .actr_ref
+                .call_remote(self.server_id.clone(), request)
+                .await
+            {
                 Ok(response) => {
+                    let response: EchoResponse = response;
                     println!("\n[Received reply] {}", response.reply);
                 }
                 Err(e) => {
-                    error!("[App] Failed to call: {:?}", e);
+                    error!("[App] Failed to call remote: {:?}", e);
                     println!("\n[Error] {}", e);
                 }
             }

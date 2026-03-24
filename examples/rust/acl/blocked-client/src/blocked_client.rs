@@ -84,11 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
-    let system = ActrSystem::new(config).await?;
-    
     let workload = BlockedClientWorkload::new();
-    
-    let node = system.attach(workload.clone());
+
+    let node = ActrNode::new(config, workload.clone()).await?;
     let actr_ref = node.start().await?;
     
     info!("✅ Blocked client registered");

@@ -35,7 +35,7 @@ actr-runtime/
 ```
 actr-hyper/
 ├── lifecycle/          # Actor Lifecycle Management
-│   ├── actr_system.rs  # ActrSystem (generic-agnostic infrastructure)
+│   ├── actr_node.rs    # ActrNode runtime infrastructure
 │   └── actr_node.rs    # ActrNode<W> (complete node)
 ├── inbound/            # Inbound Message Processing
 │   ├── data_stream_registry.rs     # DataStream fast path registry
@@ -62,7 +62,7 @@ actr-hyper/
 │       ├── connection.rs    # WebSocket connection
 │       ├── gate.rs          # WebSocket inbound gate
 │       └── server.rs        # WebSocket server
-├── executor.rs         # ExecutorAdapter trait (WASM/Dynclib unified dispatch interface)
+├── workload.rs         # Workload runtime abstraction (WASM/Dynclib unified dispatch interface)
 ├── wasm/               # WASM engine (feature: wasm-engine)
 ├── dynclib/            # Dynclib engine (feature: dynclib-engine)
 ├── context.rs          # Context implementation
@@ -73,41 +73,26 @@ actr-hyper/
 
 ---
 
-## 2. Three Actor Integration Modes
+## 2. Runtime Workload Backends
 
-Actor-RTC supports three Workload integration methods, covering the full spectrum from highest performance to highest isolation:
+Hyper currently supports two runtime workload backends.
 
-### 2.1 Source Integration (Static Compilation)
-
-The Workload trait is compiled into the same binary, achieving static dispatch via generic `ActrNode<W>`.
-
-- **Dispatch Path**: `ActrNode::handle_incoming` → `ActrDispatch<W>::dispatch` → `W::Dispatcher::dispatch`
-- **Scheduling**: Compile-time monomorphization, zero virtual function calls
-- **Performance**: Optimal — no serialization, no IPC, fully inlined
-- **Use Case**: Performance-sensitive services, Actors maintained by the same team
-
-```rust
-// Source Mode: Workload compiled directly into host binary
-let system = ActrSystem::from_config("actr.toml").await?;
-let _ref = system.attach(MyWorkload::new()).start().await?;
-```
-
-### 2.2 WASM Integration
+### 2.1 WASM Integration
 
 .wasm modules are loaded by WasmHost, implementing asynchronous I/O via asyncify suspend/resume.
 
-- **Dispatch Path**: `ActrNode::handle_incoming` → `ExecutorAdapter::dispatch` → `WasmInstance` (wasmtime)
-- **Scheduling**: Dynamic dispatch via `Box<dyn ExecutorAdapter>`
+- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `WasmWorkload` (wasmtime)
+- **Scheduling**: Dynamic dispatch via `Workload` enum
 - **Feature Gate**: `wasm-engine`
-- **I/O Model**: Guest calls `hyper_send`/`hyper_recv` host import → asyncify suspend → Host completes I/O → Resume execution
+- **I/O Model**: Guest calls `actr_host_invoke` host import → asyncify suspend → Host completes I/O → Resume execution
 - **Use Case**: Third-party Actor sandbox isolation, cross-platform distribution
 
-### 2.3 Dynclib Integration (Planned)
+### 2.2 Dynclib Integration
 
 .so / .dylib / .dll native shared libraries loaded by DynclibHost, invoked via C ABI + VTable.
 
-- **Dispatch Path**: `ActrNode::handle_incoming` → `ExecutorAdapter::dispatch` → DynclibInstance (dlopen)
-- **Scheduling**: Dynamic dispatch via `Box<dyn ExecutorAdapter>`
+- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `DynClibWorkload` (dlopen)
+- **Scheduling**: Dynamic dispatch via `Workload` enum
 - **Feature Gate**: `dynclib-engine`
 - **Performance**: Close to Source mode (native code), but with FFI boundary overhead
 - **Use Case**: Actors requiring native performance while maintaining independent deployment
@@ -117,11 +102,11 @@ let _ref = system.attach(MyWorkload::new()).start().await?;
 ```
 handle_incoming(envelope)
     │
-    ├── self.executor == Some(adapter)
-    │   └── adapter.dispatch(bytes, ctx, call_executor)     // WASM / Dynclib
+    ├── self.workload == Some(workload)
+    │   └── workload.handle(bytes, ctx, host_abi)           // WASM / Dynclib
     │
-    └── self.executor == None
-        └── ActrDispatch<W>::dispatch(self_id, caller, envelope, ctx)  // Source
+    └── self.workload == None
+        └── shell-only node (no guest inbound dispatch)
 ```
 
 ---
@@ -149,27 +134,32 @@ Transport strategies are orthogonal to integration modes — any integration mod
 
 ---
 
-## 4. ExecutorAdapter trait
+## 4. Workload runtime abstraction
 
-`ExecutorAdapter` is the unified dispatch interface for WASM and Dynclib. Source mode does not go through this trait, using generic static dispatch directly.
+`Workload` is the unified runtime entry for WASM and Dynclib.
 
 ```rust
-pub trait ExecutorAdapter: Send {
-    fn dispatch<'a>(
+pub enum Workload {
+    Wasm(WasmWorkload),
+    DynClib(DynClibWorkload),
+}
+
+impl Workload {
+    fn handle<'a>(
         &'a mut self,
         request_bytes: &[u8],
-        ctx: DispatchContext,
-        call_executor: &'a CallExecutorFn,
+        ctx: InvocationContext,
+        host_abi: &'a HostAbiFn,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ...>> + Send + 'a>>;
 }
 ```
 
 ### Shared Types
 
-- **DispatchContext**: Context for each request (self_id, caller_id, request_id)
-- **PendingCall**: Outbound call enumeration initiated by Guest (Call / Tell / Discover / CallRaw)
-- **IoResult**: Outbound I/O operation result (Bytes / Done / Error)
-- **CallExecutorFn**: Closure for executing outbound calls on the host side
+- **InvocationContext**: Context for each request (self_id, caller_id, request_id)
+- **HostOperation**: Outbound call enumeration initiated by Guest (Call / Tell / Discover / CallRaw)
+- **HostOperationResult**: Outbound I/O operation result (Bytes / Done / Error)
+- **HostAbiFn**: Closure for executing outbound calls on the host side
 
 ---
 
@@ -234,16 +224,16 @@ Design Advantage: enum dispatch provides static dispatch with zero virtual funct
 
 ### 6.2 Lifecycle Management (actr-hyper/lifecycle/)
 
-**ActrSystem**：
-- Responsibility: Provides generic-agnostic infrastructure (Mailbox, SignalingClient, ContextFactory)
-- Lifecycle: Converts to ActrNode from creation to attach(workload)
-- Key methods: `from_config()`, `new()`, `attach<W>()`
+**ActrNode**：
+- Responsibility: Provides runtime infrastructure (Mailbox, SignalingClient, ContextFactory)
+- Lifecycle: Built directly from config, then started into a running actor reference
+- Key methods: `new()`, `new_client()`, `start()`
 
-**ActrNode<W>**：
-- Responsibility: Generic complete node, holding Workload and runtime components
-- Dispatch Path: Selects Source direct dispatch or ExecutorAdapter dynamic dispatch based on `executor` field
+**ActrNode**：
+- Responsibility: Runtime node, optionally holding one guest workload plus runtime components
+- Dispatch Path: Uses `Workload::handle(...)` when a workload is attached
 - Key methods: `start()`, `handle_incoming()`, `shutdown()`
-- Key fields: `executor: Option<Mutex<Box<dyn ExecutorAdapter>>>`
+- Key fields: `workload: Option<Mutex<Workload>>`
 
 ### 6.3 Inbound Processing (actr-hyper/inbound/)
 
@@ -436,11 +426,11 @@ Design Constraints:
 
 ```rust
 1. handle_incoming(envelope)
-2. Detect self.executor == Some(adapter)
+2. Detect self.workload == Some(workload)
 3. Serialize envelope → bytes
-4. adapter.dispatch(bytes, DispatchContext, call_executor)
-5. WASM guest execution → encounter hyper_send → asyncify suspend
-6. call_executor(PendingCall::Call { ... }) → IoResult::Bytes(response)
+4. workload.handle(bytes, InvocationContext, host_abi)
+5. WASM guest execution → encounter actr_host_invoke → asyncify suspend
+6. host_abi(HostOperation::Call { ... }) → HostOperationResult::Bytes(response)
 7. asyncify resume → guest continues execution → return result bytes
 ```
 
@@ -501,7 +491,7 @@ RuntimeError
 
 - `actr-hyper/tests/wasm_actor_e2e.rs`: WASM actor end-to-end tests
 - `actr-hyper/tests/asyncify_poc.rs`: asyncify suspend/resume verification
-- `actr-hyper/tests/wasm_host.rs`: WasmHost/WasmInstance tests
+- `actr-hyper/tests/wasm_host.rs`: WasmHost/WasmWorkload tests
 
 ---
 
@@ -545,7 +535,7 @@ actr-runtime
 - **Registry**: Callback registration management component (e.g., DataStreamRegistry)
 - **Gate**: Message entry/exit abstraction (e.g., WebRtcGate, Gate)
 - **Coordinator**: Component coordinating multiple related components (e.g., WebRtcCoordinator)
-- **Adapter**: Unified interface adapter (e.g., ExecutorAdapter)
+- **Bridge**: ABI bridge or transport bridge component
 
 ### 12.3 Pre-PR Checklist
 

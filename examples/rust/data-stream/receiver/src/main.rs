@@ -26,23 +26,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🚀 DataStream Receiver starting - 100% Real Implementation");
     info!("📋 Config: type={}", config.package.actr_type.name);
 
-    // Create ActrSystem
-    info!("🏗️  Creating ActrSystem...");
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
+    // Build ActrNode
+    info!("🏗️  Building ActrNode...");
+    let service = FileTransferService::new();
+    let workload = FileTransferServiceWorkload::new(service);
+    let node = match ActrNode::new(config, workload).await {
+        Ok(node) => node,
         Err(e) => {
-            error!("❌ ActrSystem creation failed: {:?}", e);
+            error!("❌ ActrNode creation failed: {:?}", e);
             return Err(e.into());
         }
     };
-    info!("✅ ActrSystem created");
-
-    // Create service and wrap in Workload
-    let service = FileTransferService::new();
-    let workload = FileTransferServiceWorkload::new(service);
-
-    // Attach workload
-    let node = system.attach(workload);
+    info!("✅ ActrNode created");
 
     // Start node
     info!("🚀 Starting ActrNode...");

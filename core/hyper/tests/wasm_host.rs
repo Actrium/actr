@@ -1,4 +1,4 @@
-//! Integration tests: WasmHost + WasmInstance ABI verification
+//! Integration tests: WasmHost + WasmWorkload ABI verification
 //!
 //! Uses inline WAT (WebAssembly Text Format) to construct a minimal guest module:
 //! - bump allocator (satisfies actr_alloc / actr_free interface)
@@ -7,7 +7,9 @@
 
 #![cfg(feature = "wasm-engine")]
 
-use actr_hyper::wasm::{DispatchContext, IoResult, WasmActorConfig, WasmHost};
+use actr_framework::guest::abi::{InitPayloadV1, version};
+use actr_hyper::wasm::WasmHost;
+use actr_hyper::workload::{HostOperationResult, InvocationContext};
 use actr_protocol::ActrId;
 
 // ─── Minimal guest WAT module ──────────────────────────────────────────────────
@@ -49,8 +51,8 @@ fn echo_guest_wasm() -> Vec<u8> {
   (func (export "asyncify_start_rewind") (param i32))
   (func (export "asyncify_stop_rewind"))
 
-  ;; actr_init(config_ptr, config_len) -> i32
-  ;; This guest ignores config and returns 0 (SUCCESS) directly
+  ;; actr_init(init_ptr, init_len) -> i32
+  ;; This guest ignores the init payload and returns 0 (SUCCESS) directly
   (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
     (i32.const 0))
 
@@ -83,19 +85,20 @@ fn echo_guest_wasm() -> Vec<u8> {
     .expect("WAT parse failed")
 }
 
-/// Minimal valid `WasmActorConfig`
-fn test_config() -> WasmActorConfig {
-    WasmActorConfig {
+/// Minimal valid init payload
+fn test_config() -> InitPayloadV1 {
+    InitPayloadV1 {
+        version: version::V1,
         actr_type: "test-mfr:echo-actor:0.1.0".to_string(),
-        credential_b64: "dGVzdA==".to_string(), // base64("test")
-        actor_id_b64: "aWQ=".to_string(),       // base64("id")
+        credential: b"test".to_vec(),
+        actor_id: b"id".to_vec(),
         realm_id: 1,
     }
 }
 
-/// Echo guest does not call host imports; call_executor will not be triggered
-fn noop_ctx() -> DispatchContext {
-    DispatchContext {
+/// Echo guest does not call host imports; host ABI will not be triggered.
+fn noop_ctx() -> InvocationContext {
+    InvocationContext {
         self_id: ActrId::default(),
         caller_id: None,
         request_id: "test".to_string(),
@@ -116,7 +119,9 @@ async fn wasm_host_compile_and_echo() {
 
     let request = b"hello, wasm!".to_vec();
     let response = instance
-        .dispatch(&request, noop_ctx(), |_| async { IoResult::Done })
+        .handle(&request, noop_ctx(), |_| async {
+            HostOperationResult::Done
+        })
         .await
         .expect("dispatch should succeed");
 
@@ -137,7 +142,7 @@ async fn wasm_host_multiple_dispatches() {
     for i in 0u8..10 {
         let req = vec![i; 64];
         let resp = instance
-            .dispatch(&req, noop_ctx(), |_| async { IoResult::Done })
+            .handle(&req, noop_ctx(), |_| async { HostOperationResult::Done })
             .await
             .expect("each dispatch should succeed");
         assert_eq!(resp, req, "dispatch #{i} should echo correctly");
@@ -193,7 +198,7 @@ async fn wasm_host_empty_dispatch() {
     instance.init(&test_config()).unwrap();
 
     let response = instance
-        .dispatch(&[], noop_ctx(), |_| async { IoResult::Done })
+        .handle(&[], noop_ctx(), |_| async { HostOperationResult::Done })
         .await
         .expect("empty request dispatch should succeed");
     assert!(
@@ -212,7 +217,9 @@ async fn wasm_host_large_dispatch() {
 
     let large_req: Vec<u8> = (0..16384u16).map(|i| (i % 251) as u8).collect();
     let resp = instance
-        .dispatch(&large_req, noop_ctx(), |_| async { IoResult::Done })
+        .handle(&large_req, noop_ctx(), |_| async {
+            HostOperationResult::Done
+        })
         .await
         .expect("large request dispatch should succeed");
     assert_eq!(

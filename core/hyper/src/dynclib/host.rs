@@ -1,23 +1,30 @@
-//! DynclibHost / DynclibInstance — native shared-library actor execution engine
+//! DynclibHost / DynClibWorkload — native shared-library actor execution engine
 //!
 //! Loads a cdylib SO/dylib/DLL and resolves the standard ABI symbols:
 //!
-//! - `actr_init(vtable, config_ptr, config_len) -> i32`
+//! - `actr_init(vtable, init_ptr, init_len) -> i32`
 //! - `actr_handle(req_ptr, req_len, resp_out, resp_len_out) -> i32`
 //! - `actr_free_response(ptr, len)`
 //!
 //! The guest library calls back into the host through a `HostVTable` passed at
 //! init time. VTable trampolines bridge the synchronous C ABI with the async
-//! Rust `CallExecutorFn` via thread-local storage and `tokio::runtime::Handle`.
+//! Rust host ABI bridge via thread-local storage and `tokio::runtime::Handle`.
 //!
-//! Each `DynclibInstance` is one logical actor instance. If the host wants to
-//! run two actors from the same shared library, it loads/initializes two
-//! independent instances and keeps dispatch serialized per instance.
+//! Each loaded shared-library image currently supports exactly one logical actor
+//! instance. If the host wants to run two actors from the same dynclib package,
+//! it must load two independent library images and keep dispatch serialized per
+//! workload.
+//!
+//! TODO: Decide whether Dynclib should eventually support a "one host loads once,
+//! many workloads instantiate independently" model like WASM. That requires an
+//! explicit instance design at the ABI/runtime boundary instead of relying on
+//! module-global guest state.
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::ptr;
 
+use actr_framework::guest::abi::{self as guest_abi, AbiReply, InitPayloadV1};
 use libloading::Library;
 
 /// Wrapper around a raw pointer that is `Send`.
@@ -27,7 +34,7 @@ use libloading::Library;
 /// rules are upheld externally).
 struct SendPtr<T>(*const T);
 
-// Safety: we ensure the pointed-to `CallExecutorFn` outlives the
+// Safety: we ensure the pointed-to host ABI closure outlives the
 // `spawn_blocking` task by awaiting the task's completion before the
 // reference goes out of scope.
 unsafe impl<T> Send for SendPtr<T> {}
@@ -40,7 +47,9 @@ impl<T> SendPtr<T> {
 
 use actr_framework::guest::vtable::HostVTable;
 
-use crate::executor::{self, CallExecutorFn, DispatchContext, IoResult, PendingCall, error_code};
+use crate::workload::{
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, encode_guest_handle_request,
+};
 
 use super::error::{DynclibError, DynclibResult};
 
@@ -48,9 +57,12 @@ use super::error::{DynclibError, DynclibResult};
 // C ABI function signatures expected from the guest SO
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `actr_init(vtable: *const HostVTable, config_ptr: *const u8, config_len: usize) -> i32`
-type InitFn =
-    unsafe extern "C" fn(vtable: *const HostVTable, config: *const u8, config_len: usize) -> i32;
+/// `actr_init(vtable: *const HostVTable, init_ptr: *const u8, init_len: usize) -> i32`
+type InitFn = unsafe extern "C" fn(
+    vtable: *const HostVTable,
+    init_payload: *const u8,
+    init_len: usize,
+) -> i32;
 
 /// `actr_handle(req_ptr: *const u8, req_len: usize, resp_out: *mut *mut u8, resp_len_out: *mut usize) -> i32`
 type HandleFn = unsafe extern "C" fn(
@@ -68,31 +80,22 @@ type FreeResponseFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 // ─────────────────────────────────────────────────────────────────────────────
 
 thread_local! {
-    /// Pointer to the active `CallExecutorFn` for the current dispatch.
-    static CURRENT_EXECUTOR: RefCell<Option<*const CallExecutorFn>> = const { RefCell::new(None) };
-
-    /// Dispatch context for the current request (self_id, caller_id, request_id).
-    static CURRENT_CONTEXT: RefCell<Option<DispatchContext>> = const { RefCell::new(None) };
+    /// Pointer to the active `HostAbiFn` for the current dispatch.
+    static CURRENT_EXECUTOR: RefCell<Option<*const HostAbiFn>> = const { RefCell::new(None) };
 
     /// Tokio runtime handle used by trampolines to block on async futures.
     static TOKIO_HANDLE: RefCell<Option<tokio::runtime::Handle>> = const { RefCell::new(None) };
 }
 
 /// Install thread-local state before calling into the guest SO.
-fn install_thread_locals(
-    executor: *const CallExecutorFn,
-    ctx: DispatchContext,
-    handle: tokio::runtime::Handle,
-) {
+fn install_thread_locals(executor: *const HostAbiFn, handle: tokio::runtime::Handle) {
     CURRENT_EXECUTOR.with(|cell| *cell.borrow_mut() = Some(executor));
-    CURRENT_CONTEXT.with(|cell| *cell.borrow_mut() = Some(ctx));
     TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = Some(handle));
 }
 
 /// Clear thread-local state after the guest SO returns.
 fn clear_thread_locals() {
     CURRENT_EXECUTOR.with(|cell| *cell.borrow_mut() = None);
-    CURRENT_CONTEXT.with(|cell| *cell.borrow_mut() = None);
     TOKIO_HANDLE.with(|cell| *cell.borrow_mut() = None);
 }
 
@@ -127,13 +130,13 @@ unsafe fn host_alloc_and_write(data: &[u8], out_ptr: *mut *mut u8, out_len: *mut
     }
 }
 
-/// Execute a `PendingCall` through the thread-local `CallExecutorFn`.
+/// Execute a host operation through the thread-local `HostAbiFn`.
 ///
 /// This blocks the current (blocking) thread by calling `Handle::block_on`
 /// on the tokio runtime handle saved in thread-local storage.
 ///
-/// Returns the `IoResult` or an error code if the thread-local state is missing.
-fn trampoline_execute(pending: PendingCall) -> IoResult {
+/// Returns the host operation result or an error code if the thread-local state is missing.
+fn trampoline_execute(pending: HostOperation) -> HostOperationResult {
     let maybe_result = TOKIO_HANDLE.with(|h_cell| {
         let h_borrow = h_cell.borrow();
         let handle = match h_borrow.as_ref() {
@@ -155,16 +158,16 @@ fn trampoline_execute(pending: PendingCall) -> IoResult {
             };
 
             // Safety: the pointer is valid for the duration of the dispatch
-            // (set in `DynclibInstance::dispatch` and cleared after the guest
+            // (set in `DynclibInstance::handle` and cleared after the guest
             // call returns).
-            let executor: &CallExecutorFn = unsafe { &*executor_ptr };
+            let executor: &HostAbiFn = unsafe { &*executor_ptr };
             let future = executor(pending);
             // Block on the async future. This is safe because we are running
             // inside `spawn_blocking`, not on a tokio worker thread.
             Some(handle.block_on(future))
         })
     });
-    maybe_result.unwrap_or(IoResult::Error(error_code::GENERIC_ERROR))
+    maybe_result.unwrap_or(HostOperationResult::Error(guest_abi::code::GENERIC_ERROR))
 }
 
 /// Read bytes from raw pointer + length, returning an empty Vec on null/zero.
@@ -179,192 +182,54 @@ unsafe fn read_raw_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
 }
 
-/// Read a UTF-8 string from raw pointer + length.
-///
-/// # Safety
-/// Same as `read_raw_bytes`.
-unsafe fn read_raw_string(ptr: *const u8, len: usize) -> String {
-    // Safety: caller guarantees ptr/len validity; delegated to read_raw_bytes.
-    String::from_utf8(unsafe { read_raw_bytes(ptr, len) }).unwrap_or_default()
-}
+use crate::workload::decode_host_operation;
 
-// ── VTable::call ────────────────────────────────────────────────────────────
-
-unsafe extern "C" fn vtable_call(
-    route_key_ptr: *const u8,
-    route_key_len: usize,
-    dest_ptr: *const u8,
-    dest_len: usize,
-    payload_ptr: *const u8,
-    payload_len: usize,
+unsafe extern "C" fn vtable_invoke(
+    frame_ptr: *const u8,
+    frame_len: usize,
     resp_ptr_out: *mut *mut u8,
     resp_len_out: *mut usize,
 ) -> i32 {
-    // Safety: all pointer parameters originate from the guest SO which holds
-    // valid heap/stack memory for the duration of this synchronous call.
-    let route_key = unsafe { read_raw_string(route_key_ptr, route_key_len) };
-    let dest_bytes = unsafe { read_raw_bytes(dest_ptr, dest_len) };
-    let payload = unsafe { read_raw_bytes(payload_ptr, payload_len) };
+    if resp_ptr_out.is_null() || resp_len_out.is_null() {
+        return guest_abi::code::PROTOCOL_ERROR;
+    }
 
-    let pending = PendingCall::Call {
-        route_key,
-        dest_bytes,
-        payload,
+    let frame_bytes = unsafe { read_raw_bytes(frame_ptr, frame_len) };
+    let frame = match guest_abi::decode_message::<guest_abi::AbiFrame>(&frame_bytes) {
+        Ok(frame) => frame,
+        Err(code) => return code,
     };
-    let result = trampoline_execute(pending);
 
-    match result {
-        IoResult::Bytes(bytes) => {
-            if resp_ptr_out.is_null() || resp_len_out.is_null() {
-                tracing::warn!("vtable_call: resp output pointers are null");
-                return error_code::PROTOCOL_ERROR;
-            }
-            // Safety: resp_ptr_out / resp_len_out are valid pointers provided
-            // by the guest caller.
-            unsafe { host_alloc_and_write(&bytes, resp_ptr_out, resp_len_out) };
-            0
-        }
-        IoResult::Error(code) => code,
-        IoResult::Done => 0,
-    }
-}
-
-// ── VTable::tell ────────────────────────────────────────────────────────────
-
-unsafe extern "C" fn vtable_tell(
-    route_key_ptr: *const u8,
-    route_key_len: usize,
-    dest_ptr: *const u8,
-    dest_len: usize,
-    payload_ptr: *const u8,
-    payload_len: usize,
-) -> i32 {
-    // Safety: pointer parameters are valid for the duration of this call.
-    let route_key = unsafe { read_raw_string(route_key_ptr, route_key_len) };
-    let dest_bytes = unsafe { read_raw_bytes(dest_ptr, dest_len) };
-    let payload = unsafe { read_raw_bytes(payload_ptr, payload_len) };
-
-    let pending = PendingCall::Tell {
-        route_key,
-        dest_bytes,
-        payload,
+    let pending = match decode_host_operation(frame) {
+        Ok(pending) => pending,
+        Err(code) => return code,
     };
-    let result = trampoline_execute(pending);
 
-    match result {
-        IoResult::Done => 0,
-        IoResult::Error(code) => code,
-        _ => 0,
-    }
-}
+    let reply = match trampoline_execute(pending) {
+        HostOperationResult::Bytes(bytes) => AbiReply {
+            abi_version: guest_abi::version::V1,
+            status: guest_abi::code::SUCCESS,
+            payload: bytes,
+        },
+        HostOperationResult::Done => AbiReply {
+            abi_version: guest_abi::version::V1,
+            status: guest_abi::code::SUCCESS,
+            payload: Vec::new(),
+        },
+        HostOperationResult::Error(code) => AbiReply {
+            abi_version: guest_abi::version::V1,
+            status: code,
+            payload: Vec::new(),
+        },
+    };
 
-// ── VTable::discover ────────────────────────────────────────────────────────
+    let reply_bytes = match guest_abi::encode_message(&reply) {
+        Ok(reply_bytes) => reply_bytes,
+        Err(code) => return code,
+    };
 
-unsafe extern "C" fn vtable_discover(
-    type_ptr: *const u8,
-    type_len: usize,
-    resp_ptr_out: *mut *mut u8,
-    resp_len_out: *mut usize,
-) -> i32 {
-    // Safety: pointer parameters are valid for the duration of this call.
-    let type_bytes = unsafe { read_raw_bytes(type_ptr, type_len) };
-
-    let pending = PendingCall::Discover { type_bytes };
-    let result = trampoline_execute(pending);
-
-    match result {
-        IoResult::Bytes(bytes) => {
-            if resp_ptr_out.is_null() || resp_len_out.is_null() {
-                tracing::warn!("vtable_discover: resp output pointers are null");
-                return error_code::PROTOCOL_ERROR;
-            }
-            // Safety: output pointers are guest-provided and valid.
-            unsafe { host_alloc_and_write(&bytes, resp_ptr_out, resp_len_out) };
-            0
-        }
-        IoResult::Error(code) => code,
-        IoResult::Done => 0,
-    }
-}
-
-// ── VTable::self_id ─────────────────────────────────────────────────────────
-
-unsafe extern "C" fn vtable_self_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
-    if out_ptr.is_null() || out_len.is_null() {
-        return error_code::PROTOCOL_ERROR;
-    }
-
-    let bytes = CURRENT_CONTEXT.with(|cell| {
-        let borrow = cell.borrow();
-        match borrow.as_ref() {
-            Some(ctx) => {
-                use actr_protocol::prost::Message;
-                ctx.self_id.encode_to_vec()
-            }
-            None => {
-                tracing::error!("vtable_self_id: CURRENT_CONTEXT not set");
-                Vec::new()
-            }
-        }
-    });
-
-    // Safety: out_ptr / out_len are guest-provided valid pointers.
-    unsafe { host_alloc_and_write(&bytes, out_ptr, out_len) };
-    0
-}
-
-// ── VTable::caller_id ───────────────────────────────────────────────────────
-
-unsafe extern "C" fn vtable_caller_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
-    if out_ptr.is_null() || out_len.is_null() {
-        return error_code::PROTOCOL_ERROR;
-    }
-
-    let maybe_bytes = CURRENT_CONTEXT.with(|cell| {
-        let borrow = cell.borrow();
-        match borrow.as_ref() {
-            Some(ctx) => ctx.caller_id.as_ref().map(|id| {
-                use actr_protocol::prost::Message;
-                id.encode_to_vec()
-            }),
-            None => {
-                tracing::error!("vtable_caller_id: CURRENT_CONTEXT not set");
-                None
-            }
-        }
-    });
-
-    match maybe_bytes {
-        Some(bytes) => {
-            // Safety: out_ptr / out_len are valid.
-            unsafe { host_alloc_and_write(&bytes, out_ptr, out_len) };
-            0
-        }
-        None => 1, // no caller (matches guest convention: 1 = absent)
-    }
-}
-
-// ── VTable::request_id ──────────────────────────────────────────────────────
-
-unsafe extern "C" fn vtable_request_id(out_ptr: *mut *mut u8, out_len: *mut usize) -> i32 {
-    if out_ptr.is_null() || out_len.is_null() {
-        return error_code::PROTOCOL_ERROR;
-    }
-
-    let bytes = CURRENT_CONTEXT.with(|cell| {
-        let borrow = cell.borrow();
-        match borrow.as_ref() {
-            Some(ctx) => ctx.request_id.as_bytes().to_vec(),
-            None => {
-                tracing::error!("vtable_request_id: CURRENT_CONTEXT not set");
-                Vec::new()
-            }
-        }
-    });
-
-    // Safety: out_ptr / out_len are valid.
-    unsafe { host_alloc_and_write(&bytes, out_ptr, out_len) };
-    0
+    unsafe { host_alloc_and_write(&reply_bytes, resp_ptr_out, resp_len_out) };
+    guest_abi::code::SUCCESS
 }
 
 // ── VTable::free_host_buf ───────────────────────────────────────────────────
@@ -382,12 +247,7 @@ unsafe extern "C" fn vtable_free_host_buf(ptr: *mut u8, len: usize) {
 
 /// Static VTable instance with all trampolines wired up.
 static HOST_VTABLE: HostVTable = HostVTable {
-    call: vtable_call,
-    tell: vtable_tell,
-    discover: vtable_discover,
-    self_id: vtable_self_id,
-    caller_id: vtable_caller_id,
-    request_id: vtable_request_id,
+    invoke: vtable_invoke,
     free_host_buf: vtable_free_host_buf,
 };
 
@@ -397,10 +257,15 @@ static HOST_VTABLE: HostVTable = HostVTable {
 
 /// Native shared-library host engine.
 ///
-/// Loads and holds a single `.so` / `.dylib` / `.dll`. Resolves ABI symbols
-/// once at load time. Multiple [`DynclibInstance`]s can be created from the
-/// same host (each `actr_init` call initialises independent actor state in the
-/// guest library, assuming the guest uses global or TLS-based state).
+/// Loads and holds a single `.so` / `.dylib` / `.dll` image. Resolves ABI
+/// symbols once at load time.
+///
+/// Under the current guest ABI, a loaded dynclib image supports only one
+/// successful `actr_init` because guest state is module-global and no instance
+/// handle is exposed back to the host. To create multiple independent
+/// `DynClibWorkload`s today, Hyper must load multiple library images.
+///
+/// TODO: Revisit this contract if Dynclib gains a real per-instance ABI.
 pub struct DynclibHost {
     /// Loaded shared library handle. Must outlive all resolved function pointers.
     _library: Library,
@@ -527,19 +392,21 @@ impl DynclibHost {
 
     /// Initialise an actor instance inside the loaded library.
     ///
-    /// Calls the guest's `actr_init(vtable, config_ptr, config_len)`.
-    /// The config bytes are typically JSON (same format as `WasmActorConfig`).
-    pub fn instantiate(&self, config: &[u8]) -> DynclibResult<DynclibInstance> {
-        let config_ptr = if config.is_empty() {
+    /// Calls the guest's `actr_init(vtable, init_ptr, init_len)`.
+    pub fn instantiate(&self, init_payload: &InitPayloadV1) -> DynclibResult<DynclibInstance> {
+        let init_bytes = guest_abi::encode_message(init_payload).map_err(|code| {
+            DynclibError::DispatchFailed(format!("init payload encode failed: {code}"))
+        })?;
+        let init_ptr = if init_bytes.is_empty() {
             ptr::null()
         } else {
-            config.as_ptr()
+            init_bytes.as_ptr()
         };
 
         // Safety: `actr_init` is a C function resolved from the shared
-        // library. `HOST_VTABLE` is a static with stable address. `config_ptr`
-        // and `config.len()` describe a valid byte slice (or null/0).
-        let result = unsafe { (self.init_fn)(&HOST_VTABLE, config_ptr, config.len()) };
+        // library. `HOST_VTABLE` is a static with stable address. `init_ptr`
+        // and `init_bytes.len()` describe a valid byte slice (or null/0).
+        let result = unsafe { (self.init_fn)(&HOST_VTABLE, init_ptr, init_bytes.len()) };
 
         if result != 0 {
             tracing::error!(code = result, "actr_init failed");
@@ -563,7 +430,7 @@ impl DynclibHost {
 ///
 /// Holds cached function pointers for `actr_handle` and `actr_free_response`.
 /// `actr_init` initializes exactly one logical actor state inside this instance.
-/// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynclibInstance>`)
+/// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynClibWorkload>`)
 /// and must not enter `actr_handle` concurrently for the same instance.
 pub struct DynclibInstance {
     handle_fn: HandleFn,
@@ -579,28 +446,22 @@ impl std::fmt::Debug for DynclibInstance {
 // Safety: function pointers reference process-global SO code.
 unsafe impl Send for DynclibInstance {}
 
-/// Executor wrapper that keeps the loaded library alive for the lifetime of the actor instance.
+/// Workload wrapper that keeps the loaded library alive for the lifetime of the actor instance.
 ///
 /// Field order matters: Rust drops fields in declaration order, so `instance`
 /// (which holds raw function pointers into the loaded library) must be dropped
-/// before `_host` (which unloads the library), and `_host` before `_temp_file`
-/// (which deletes the on-disk shared object).
-pub(crate) struct DynclibExecutor {
+/// before `_host` (which unloads the library).
+#[derive(Debug)]
+pub struct DynClibWorkload {
     instance: DynclibInstance,
     _host: DynclibHost,
-    _temp_file: Option<tempfile::NamedTempFile>,
 }
 
-impl DynclibExecutor {
-    pub(crate) fn with_temp_file(
-        host: DynclibHost,
-        instance: DynclibInstance,
-        temp_file: tempfile::NamedTempFile,
-    ) -> Self {
+impl DynClibWorkload {
+    pub(crate) fn new(host: DynclibHost, instance: DynclibInstance) -> Self {
         Self {
             instance,
             _host: host,
-            _temp_file: Some(temp_file),
         }
     }
 }
@@ -618,15 +479,17 @@ impl DynclibInstance {
     /// `actr_handle`. Those trampolines use `Handle::block_on` to execute the
     /// async `call_executor` — this is safe because `actr_handle` runs inside
     /// `spawn_blocking` (off the tokio worker pool).
-    pub async fn dispatch(
+    pub async fn handle(
         &mut self,
         request_bytes: &[u8],
-        ctx: DispatchContext,
-        call_executor: &CallExecutorFn,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
     ) -> DynclibResult<Vec<u8>> {
         let handle_fn = self.handle_fn;
         let free_response_fn = self.free_response_fn;
-        let request_owned = request_bytes.to_vec();
+        let request_owned = encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
+            DynclibError::DispatchFailed(format!("guest handle frame serialization failed: {code}"))
+        })?;
 
         // Obtain a handle to the current tokio runtime so trampolines can
         // block on async futures from the blocking thread.
@@ -634,11 +497,11 @@ impl DynclibInstance {
 
         // Erase lifetime: the pointer is valid for the duration of the
         // `spawn_blocking` task because we await its completion below.
-        let executor_ptr = SendPtr(call_executor as *const CallExecutorFn);
+        let executor_ptr = SendPtr(call_executor as *const HostAbiFn);
 
         let result = tokio::task::spawn_blocking(move || {
             // Install thread-local state for VTable trampolines.
-            install_thread_locals(executor_ptr.as_ptr(), ctx, rt_handle);
+            install_thread_locals(executor_ptr.as_ptr(), rt_handle);
 
             // Prepare output pointers.
             let mut resp_ptr: *mut u8 = ptr::null_mut();
@@ -693,45 +556,31 @@ impl DynclibInstance {
         .await
         .map_err(|e| DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}")))??;
 
-        Ok(result)
+        let reply = guest_abi::decode_message::<AbiReply>(&result).map_err(|code| {
+            DynclibError::DispatchFailed(format!(
+                "guest returned malformed AbiReply with code {code}"
+            ))
+        })?;
+
+        if reply.status != guest_abi::code::SUCCESS {
+            let message = String::from_utf8(reply.payload)
+                .unwrap_or_else(|_| format!("guest returned status {}", reply.status));
+            return Err(DynclibError::DispatchFailed(message));
+        }
+
+        Ok(reply.payload)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ExecutorAdapter implementation
-// ─────────────────────────────────────────────────────────────────────────────
-
-impl executor::ExecutorAdapter for DynclibInstance {
-    fn dispatch<'a>(
-        &'a mut self,
+impl DynClibWorkload {
+    pub async fn handle(
+        &mut self,
         request_bytes: &[u8],
-        ctx: DispatchContext,
-        call_executor: &'a CallExecutorFn,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
-    {
-        let request_bytes = request_bytes.to_vec();
-        Box::pin(async move {
-            self.dispatch(&request_bytes, ctx, call_executor)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })
-    }
-}
-
-impl executor::ExecutorAdapter for DynclibExecutor {
-    fn dispatch<'a>(
-        &'a mut self,
-        request_bytes: &[u8],
-        ctx: DispatchContext,
-        call_executor: &'a CallExecutorFn,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
-    {
-        let request_bytes = request_bytes.to_vec();
-        Box::pin(async move {
-            self.instance
-                .dispatch(&request_bytes, ctx, call_executor)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<Vec<u8>> {
+        self.instance
+            .handle(request_bytes, ctx, call_executor)
+            .await
     }
 }

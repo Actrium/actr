@@ -1,7 +1,7 @@
 //! WASM actor end-to-end integration tests
 //!
 //! Validates the complete call chain:
-//! host (WasmHost/WasmInstance) -> actr_handle -> WasmContext::call_raw()
+//! host (WasmHost/WasmWorkload) -> actr_handle -> WasmContext::call_raw()
 //!                            -> asyncify unwind -> drive loop -> mock IO
 //!                            -> asyncify rewind -> return response
 //!
@@ -13,11 +13,11 @@
 
 #![cfg(feature = "wasm-engine")]
 
+use actr_framework::guest::abi::{InitPayloadV1, version};
 include!("wasm_actor_fixture.rs");
 
-use actr_hyper::wasm::{
-    DispatchContext, IoResult, PendingCall, WasmActorConfig, WasmError, WasmHost,
-};
+use actr_hyper::wasm::{WasmError, WasmHost};
+use actr_hyper::workload::{HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
 // ─── Helper: build test RpcEnvelope bytes ──────────────────────────────────────
@@ -31,13 +31,23 @@ fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
     envelope.encode_to_vec()
 }
 
-// ─── Helper: build DispatchContext ──────────────────────────────────────────────
+// ─── Helper: build InvocationContext ───────────────────────────────────────────
 
-fn test_ctx() -> DispatchContext {
-    DispatchContext {
+fn test_ctx() -> InvocationContext {
+    InvocationContext {
         self_id: ActrId::default(),
         caller_id: None,
         request_id: "test-req-001".to_string(),
+    }
+}
+
+fn test_config() -> InitPayloadV1 {
+    InitPayloadV1 {
+        version: version::V1,
+        actr_type: "test:double:0.1.0".to_string(),
+        credential: Vec::new(),
+        actor_id: Vec::new(),
+        realm_id: 0,
     }
 }
 
@@ -48,19 +58,15 @@ async fn wasm_actor_unknown_route_returns_error() {
     let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
-    let config = WasmActorConfig {
-        actr_type: "test:double:0.1.0".to_string(),
-        credential_b64: String::new(),
-        actor_id_b64: String::new(),
-        realm_id: 0,
-    };
-    instance.init(&config).expect("init failed");
+    instance.init(&test_config()).expect("init failed");
 
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
 
     // This route does not exist; should return error (dispatch returns Err, actr_handle returns HANDLE_FAILED)
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), |_pending| async { IoResult::Done })
+        .handle(&req_bytes, test_ctx(), |_pending| async {
+            HostOperationResult::Done
+        })
         .await;
 
     // Should fail (WASM returns HANDLE_FAILED error code)
@@ -75,12 +81,7 @@ fn wasm_actor_repeated_init_returns_error() {
     let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
-    let config = WasmActorConfig {
-        actr_type: "test:double:0.1.0".to_string(),
-        credential_b64: String::new(),
-        actor_id_b64: String::new(),
-        realm_id: 0,
-    };
+    let config = test_config();
 
     instance.init(&config).expect("first init failed");
 
@@ -106,13 +107,7 @@ async fn wasm_actor_call_raw_triggers_asyncify() {
     let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
-    let config = WasmActorConfig {
-        actr_type: "test:double:0.1.0".to_string(),
-        credential_b64: String::new(),
-        actor_id_b64: String::new(),
-        realm_id: 0,
-    };
-    instance.init(&config).expect("init failed");
+    instance.init(&test_config()).expect("init failed");
 
     // Send x = 7 (4-byte little-endian i32)
     let x: i32 = 7;
@@ -122,24 +117,27 @@ async fn wasm_actor_call_raw_triggers_asyncify() {
     // Expects route_key = "test/double_impl", payload = x's bytes
     // Returns x * 2 bytes
     let result = instance
-        .dispatch(&req_bytes, test_ctx(), |pending| async move {
+        .handle(&req_bytes, test_ctx(), |pending| async move {
             match pending {
-                PendingCall::CallRaw {
-                    route_key, payload, ..
-                } => {
-                    assert_eq!(route_key, "test/double_impl", "route_key mismatch");
-                    assert_eq!(payload.len(), 4, "payload should be 4 bytes");
+                HostOperation::CallRaw(req) => {
+                    assert_eq!(req.route_key, "test/double_impl", "route_key mismatch");
+                    assert_eq!(req.payload.len(), 4, "payload should be 4 bytes");
 
-                    let val = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    let val = i32::from_le_bytes([
+                        req.payload[0],
+                        req.payload[1],
+                        req.payload[2],
+                        req.payload[3],
+                    ]);
                     assert_eq!(val, 7, "WASM should pass x=7");
 
                     // mock IO: return x * 2
                     let doubled = (val * 2).to_le_bytes().to_vec();
                     tracing::info!(val, doubled = val * 2, "mock IO done");
-                    IoResult::Bytes(doubled)
+                    HostOperationResult::Bytes(doubled)
                 }
                 other => panic!(
-                    "expected PendingCall::CallRaw, got {:?}",
+                    "expected HostOperation::CallRaw, got {:?}",
                     std::mem::discriminant(&other)
                 ),
             }
@@ -162,26 +160,24 @@ async fn wasm_actor_multiple_dispatches() {
     let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
-    let config = WasmActorConfig {
-        actr_type: "test:double:0.1.0".to_string(),
-        credential_b64: String::new(),
-        actor_id_b64: String::new(),
-        realm_id: 0,
-    };
-    instance.init(&config).expect("init failed");
+    instance.init(&test_config()).expect("init failed");
 
     for x in [1i32, 5, 42, 100] {
         let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
         let result = instance
-            .dispatch(&req_bytes, test_ctx(), |pending| async move {
+            .handle(&req_bytes, test_ctx(), |pending| async move {
                 match pending {
-                    PendingCall::CallRaw { payload, .. } => {
-                        let val =
-                            i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                        IoResult::Bytes((val * 2).to_le_bytes().to_vec())
+                    HostOperation::CallRaw(req) => {
+                        let val = i32::from_le_bytes([
+                            req.payload[0],
+                            req.payload[1],
+                            req.payload[2],
+                            req.payload[3],
+                        ]);
+                        HostOperationResult::Bytes((val * 2).to_le_bytes().to_vec())
                     }
-                    _ => IoResult::Error(-1),
+                    _ => HostOperationResult::Error(-1),
                 }
             })
             .await

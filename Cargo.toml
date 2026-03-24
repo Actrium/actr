@@ -27,7 +27,7 @@ async-trait.workspace = true
 [features]
 default = ["runtime", "config"]
 
-# Runtime support - includes the full ActrSystem/ActrNode/ActrRef runtime
+# Runtime support - includes the full ActrNode/ActrRef runtime
 runtime = ["dep:actr-runtime", "dep:actr-hyper", "config"]
 
 # Config support - includes configuration file parsing

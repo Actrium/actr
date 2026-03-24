@@ -2,9 +2,9 @@
 //!
 //! Implements the full lifecycle from WASM byte loading, compilation, instantiation to
 //! message dispatch. A single `WasmHost` corresponds to one WASM module (compiled once),
-//! from which multiple `WasmInstance`s can be derived.
+//! from which multiple `WasmWorkload`s can be derived.
 //!
-//! Each `WasmInstance` is one logical actor instance. If the host wants to run two
+//! Each `WasmWorkload` is one logical actor instance. If the host wants to run two
 //! actors of the same WASM type, it instantiates the module twice and keeps the
 //! resulting instances isolated.
 //!
@@ -20,10 +20,16 @@
 use actr_protocol::prost::Message as ProstMessage;
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
-use crate::executor::{self, DispatchContext, IoResult, PendingCall};
 use crate::wasm::error::{WasmError, WasmResult};
+use crate::workload::{
+    HostOperation, HostOperationResult, InvocationContext, encode_guest_handle_request,
+};
+use actr_framework::guest::abi::{self as guest_abi, AbiReply, InitPayloadV1};
 
-use super::abi::{self, WasmActorConfig};
+use super::abi;
+
+/// Re-bind the canonical error code module for concise usage within this file.
+use actr_framework::guest::abi::code as abi_code;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HostData — runtime state stored in Store
@@ -44,12 +50,12 @@ struct HostData {
     // ── asyncify protocol ─────────────────────────────────────────────────
     asyncify_mode: AsyncifyMode,
     asyncify_data_ptr: i32,
-    // ── current request context (set at dispatch start) ───────────────────
-    ctx: DispatchContext,
+    // ── current invocation context for legacy getter imports ──────────────
+    current_invocation: Option<InvocationContext>,
     // ── pending IO saved when host import suspends ────────────────────────
-    pending_call: Option<PendingCall>,
+    pending_call: Option<HostOperation>,
     // ── drive loop writes IO result here, host import reads during rewind ─
-    io_result: Option<IoResult>,
+    io_result: Option<HostOperationResult>,
 }
 
 // asyncify data buffer layout (fixed address, WASM page 0)
@@ -116,10 +122,11 @@ impl WasmHost {
         }
     }
 
-    /// Instantiate the WASM module, register all host imports, return an executable `WasmInstance`
-    pub fn instantiate(&self) -> WasmResult<WasmInstance> {
+    /// Instantiate the WASM module, register all host imports, return an executable `WasmWorkload`
+    pub fn instantiate(&self) -> WasmResult<WasmWorkload> {
         let mut linker = Linker::<HostData>::new(&self.engine);
         register_host_imports(&mut linker)?;
+        let legacy_handle_payload = uses_legacy_handle_payload(&self.module);
 
         let mut store = Store::new(&self.engine, HostData::default());
 
@@ -151,7 +158,7 @@ impl WasmHost {
 
         tracing::info!("WASM instantiation succeeded, all ABI export functions verified");
 
-        Ok(WasmInstance {
+        Ok(WasmWorkload {
             store,
             _instance: instance,
             actr_init,
@@ -161,6 +168,7 @@ impl WasmHost {
             memory,
             asyncify_stop_unwind,
             asyncify_start_rewind,
+            legacy_handle_payload,
         })
     }
 }
@@ -170,15 +178,16 @@ impl WasmHost {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
-    // ── synchronous context accessors ─────────────────────────────────────
-
     linker
         .func_wrap(
             "env",
             "actr_host_self_id",
-            |mut caller: Caller<HostData>, out_ptr: i32, out_max: i32| -> i32 {
-                let bytes = caller.data().ctx.self_id.encode_to_vec();
-                write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
+            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
+                let Some(ctx) = caller.data().current_invocation.as_ref() else {
+                    return abi_code::GENERIC_ERROR;
+                };
+                let bytes = ctx.self_id.encode_to_vec();
+                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
             },
         )
         .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_self_id: {e}")))?;
@@ -187,14 +196,16 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
         .func_wrap(
             "env",
             "actr_host_caller_id",
-            |mut caller: Caller<HostData>, out_ptr: i32, out_max: i32| -> i32 {
-                match &caller.data().ctx.caller_id {
-                    None => -1, // no caller
-                    Some(id) => {
-                        let bytes = id.encode_to_vec();
-                        write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
-                    }
-                }
+            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
+                let Some(ctx) = caller.data().current_invocation.as_ref() else {
+                    return abi_code::GENERIC_ERROR;
+                };
+                let bytes = ctx
+                    .caller_id
+                    .as_ref()
+                    .map(ProstMessage::encode_to_vec)
+                    .unwrap_or_default();
+                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
             },
         )
         .map_err(|e| {
@@ -205,212 +216,114 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
         .func_wrap(
             "env",
             "actr_host_request_id",
-            |mut caller: Caller<HostData>, out_ptr: i32, out_max: i32| -> i32 {
-                let bytes = caller.data().ctx.request_id.as_bytes().to_vec();
-                write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
+            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
+                let Some(ctx) = caller.data().current_invocation.as_ref() else {
+                    return abi_code::GENERIC_ERROR;
+                };
+                let bytes = ctx.request_id.as_bytes().to_vec();
+                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
             },
         )
         .map_err(|e| {
             WasmError::LoadFailed(format!("failed to register actr_host_request_id: {e}"))
         })?;
 
-    // ── async communication (asyncify driven) ─────────────────────────────
-
     linker
         .func_wrap(
             "env",
-            "actr_host_call",
+            "actr_host_invoke",
             |mut caller: Caller<HostData>,
-             route_key_ptr: i32,
-             route_key_len: i32,
-             dest_ptr: i32,
-             dest_len: i32,
-             payload_ptr: i32,
-             payload_len: i32,
-             out_ptr: i32,
-             out_max: i32,
-             out_len_ptr: i32|
+             frame_ptr: i32,
+             frame_len: i32,
+             reply_buf_ptr: i32,
+             reply_buf_cap: i32,
+             reply_len_out: i32|
              -> i32 {
-                let mode = caller.data().asyncify_mode.clone();
-                match mode {
+                match caller.data().asyncify_mode.clone() {
                     AsyncifyMode::Normal => {
-                        let route_key =
-                            read_string_from_wasm(&mut caller, route_key_ptr, route_key_len);
-                        let dest_bytes = read_bytes_from_wasm(&mut caller, dest_ptr, dest_len);
-                        let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call = Some(PendingCall::Call {
-                            route_key,
-                            dest_bytes,
-                            payload,
-                        });
+                        let frame_bytes = read_bytes_from_wasm(&mut caller, frame_ptr, frame_len);
+                        let frame =
+                            match guest_abi::decode_message::<guest_abi::AbiFrame>(&frame_bytes) {
+                                Ok(frame) => frame,
+                                Err(code) => return code,
+                            };
+
+                        let pending = match decode_host_operation(frame) {
+                            Ok(pending) => pending,
+                            Err(code) => return code,
+                        };
+
+                        caller.data_mut().pending_call = Some(pending);
                         caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
                         trigger_unwind(&mut caller);
-                        0
+                        abi_code::SUCCESS
                     }
                     AsyncifyMode::Rewinding => {
-                        // rewind: take response bytes from io_result, write to WASM memory, set length
-                        let code = match caller.data_mut().io_result.take() {
-                            Some(IoResult::Bytes(bytes)) => {
-                                let written = write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
-                                write_i32_to_wasm(&mut caller, out_len_ptr, written);
-                                abi::code::SUCCESS
+                        let reply_bytes = match caller.data_mut().io_result.take() {
+                            Some(HostOperationResult::Bytes(bytes)) => {
+                                match guest_abi::encode_message(&AbiReply {
+                                    abi_version: guest_abi::version::V1,
+                                    status: guest_abi::code::SUCCESS,
+                                    payload: bytes,
+                                }) {
+                                    Ok(reply) => reply,
+                                    Err(code) => return code,
+                                }
                             }
-                            Some(IoResult::Error(c)) => c,
-                            _ => abi::code::GENERIC_ERROR,
-                        };
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
-                        trigger_stop_rewind(&mut caller);
-                        code
-                    }
-                    AsyncifyMode::Unwinding => 0,
-                }
-            },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_call: {e}")))?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_tell",
-            |mut caller: Caller<HostData>,
-             route_key_ptr: i32,
-             route_key_len: i32,
-             dest_ptr: i32,
-             dest_len: i32,
-             payload_ptr: i32,
-             payload_len: i32|
-             -> i32 {
-                let mode = caller.data().asyncify_mode.clone();
-                match mode {
-                    AsyncifyMode::Normal => {
-                        let route_key =
-                            read_string_from_wasm(&mut caller, route_key_ptr, route_key_len);
-                        let dest_bytes = read_bytes_from_wasm(&mut caller, dest_ptr, dest_len);
-                        let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call = Some(PendingCall::Tell {
-                            route_key,
-                            dest_bytes,
-                            payload,
-                        });
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
-                        trigger_unwind(&mut caller);
-                        0
-                    }
-                    AsyncifyMode::Rewinding => {
-                        let code = match caller.data_mut().io_result.take() {
-                            Some(IoResult::Done) => abi::code::SUCCESS,
-                            Some(IoResult::Error(c)) => c,
-                            _ => abi::code::GENERIC_ERROR,
-                        };
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
-                        trigger_stop_rewind(&mut caller);
-                        code
-                    }
-                    AsyncifyMode::Unwinding => 0,
-                }
-            },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_tell: {e}")))?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_call_raw",
-            |mut caller: Caller<HostData>,
-             route_key_ptr: i32,
-             route_key_len: i32,
-             target_ptr: i32,
-             target_len: i32,
-             payload_ptr: i32,
-             payload_len: i32,
-             out_ptr: i32,
-             out_max: i32,
-             out_len_ptr: i32|
-             -> i32 {
-                let mode = caller.data().asyncify_mode.clone();
-                match mode {
-                    AsyncifyMode::Normal => {
-                        let route_key =
-                            read_string_from_wasm(&mut caller, route_key_ptr, route_key_len);
-                        let target_bytes =
-                            read_bytes_from_wasm(&mut caller, target_ptr, target_len);
-                        let payload = read_bytes_from_wasm(&mut caller, payload_ptr, payload_len);
-                        caller.data_mut().pending_call = Some(PendingCall::CallRaw {
-                            route_key,
-                            target_bytes,
-                            payload,
-                        });
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
-                        trigger_unwind(&mut caller);
-                        0
-                    }
-                    AsyncifyMode::Rewinding => {
-                        let code = match caller.data_mut().io_result.take() {
-                            Some(IoResult::Bytes(bytes)) => {
-                                let written = write_to_wasm(&mut caller, &bytes, out_ptr, out_max);
-                                write_i32_to_wasm(&mut caller, out_len_ptr, written);
-                                abi::code::SUCCESS
+                            Some(HostOperationResult::Done) => {
+                                match guest_abi::encode_message(&AbiReply {
+                                    abi_version: guest_abi::version::V1,
+                                    status: guest_abi::code::SUCCESS,
+                                    payload: Vec::new(),
+                                }) {
+                                    Ok(reply) => reply,
+                                    Err(code) => return code,
+                                }
                             }
-                            Some(IoResult::Error(c)) => c,
-                            _ => abi::code::GENERIC_ERROR,
-                        };
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
-                        trigger_stop_rewind(&mut caller);
-                        code
-                    }
-                    AsyncifyMode::Unwinding => 0,
-                }
-            },
-        )
-        .map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register actr_host_call_raw: {e}"))
-        })?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_discover",
-            |mut caller: Caller<HostData>,
-             type_ptr: i32,
-             type_len: i32,
-             out_ptr: i32,
-             out_max: i32|
-             -> i32 {
-                let mode = caller.data().asyncify_mode.clone();
-                match mode {
-                    AsyncifyMode::Normal => {
-                        let type_bytes = read_bytes_from_wasm(&mut caller, type_ptr, type_len);
-                        caller.data_mut().pending_call = Some(PendingCall::Discover { type_bytes });
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
-                        trigger_unwind(&mut caller);
-                        0
-                    }
-                    AsyncifyMode::Rewinding => {
-                        // return actual bytes written (discover's return value is the length)
-                        let code = match caller.data_mut().io_result.take() {
-                            Some(IoResult::Bytes(bytes)) => {
-                                write_to_wasm(&mut caller, &bytes, out_ptr, out_max)
+                            Some(HostOperationResult::Error(code)) => {
+                                match guest_abi::encode_message(&AbiReply {
+                                    abi_version: guest_abi::version::V1,
+                                    status: code,
+                                    payload: Vec::new(),
+                                }) {
+                                    Ok(reply) => reply,
+                                    Err(code) => return code,
+                                }
                             }
-                            Some(IoResult::Error(c)) => c,
-                            _ => abi::code::GENERIC_ERROR,
+                            None => return abi_code::GENERIC_ERROR,
                         };
+
+                        let reply_len = reply_bytes.len();
+                        let reply_len_i32 = match i32::try_from(reply_len) {
+                            Ok(len) => len,
+                            Err(_) => return guest_abi::code::GENERIC_ERROR,
+                        };
+
+                        write_i32_to_wasm(&mut caller, reply_len_out, reply_len_i32);
+                        if reply_len > reply_buf_cap.max(0) as usize {
+                            caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
+                            trigger_stop_rewind(&mut caller);
+                            return guest_abi::code::BUFFER_TOO_SMALL;
+                        }
+
+                        let written =
+                            write_to_wasm(&mut caller, &reply_bytes, reply_buf_ptr, reply_buf_cap);
+                        write_i32_to_wasm(&mut caller, reply_len_out, written);
                         caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
                         trigger_stop_rewind(&mut caller);
-                        code
+                        abi_code::SUCCESS
                     }
-                    AsyncifyMode::Unwinding => 0,
+                    AsyncifyMode::Unwinding => abi_code::SUCCESS,
                 }
             },
         )
-        .map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register actr_host_discover: {e}"))
-        })?;
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_invoke: {e}")))?;
 
     Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WasmInstance
+// WasmWorkload
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Single WASM actor instance
@@ -418,9 +331,9 @@ fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
 /// Wraps a Wasmtime `Store<HostData>` and cached export function handles.
 /// `actr_init` initializes exactly one logical actor state inside this instance.
 /// **Not `Sync`**: the caller is responsible for concurrency protection
-/// (typically `Mutex<WasmInstance>`), and must not drive `dispatch()` concurrently
+/// (typically `Mutex<WasmWorkload>`), and must not drive `handle()` concurrently
 /// on the same instance.
-pub struct WasmInstance {
+pub struct WasmWorkload {
     store: Store<HostData>,
     _instance: Instance,
     actr_init: TypedFunc<(i32, i32), i32>,
@@ -430,22 +343,23 @@ pub struct WasmInstance {
     memory: Memory,
     asyncify_stop_unwind: TypedFunc<(), ()>,
     asyncify_start_rewind: TypedFunc<i32, ()>,
+    legacy_handle_payload: bool,
 }
 
-impl std::fmt::Debug for WasmInstance {
+impl std::fmt::Debug for WasmWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WasmInstance").finish_non_exhaustive()
+        f.debug_struct("WasmWorkload").finish_non_exhaustive()
     }
 }
 
-impl WasmInstance {
+impl WasmWorkload {
     /// Initialize the WASM actor (calls `actr_init`)
-    pub fn init(&mut self, config: &WasmActorConfig) -> WasmResult<()> {
-        let config_json = serde_json::to_vec(config)
-            .map_err(|e| WasmError::InitFailed(format!("config serialization failed: {e}")))?;
+    pub fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
+        let init_bytes = guest_abi::encode_message(init_payload)
+            .map_err(|code| WasmError::InitFailed(format!("init payload encode failed: {code}")))?;
 
-        let ptr = self.wasm_write(&config_json)?;
-        let len = config_json.len() as i32;
+        let ptr = self.wasm_write(&init_bytes)?;
+        let len = init_bytes.len() as i32;
 
         let result = self
             .actr_init
@@ -454,7 +368,7 @@ impl WasmInstance {
 
         self.wasm_free(ptr, len)?;
 
-        if result != abi::code::SUCCESS {
+        if result != abi_code::SUCCESS {
             return Err(WasmError::InitFailed(format!(
                 "actr_init returned error code {result} ({})",
                 abi::describe_error_code(result)
@@ -465,34 +379,44 @@ impl WasmInstance {
         Ok(())
     }
 
-    /// Dispatch an RPC request, using asyncify drive loop to handle outbound IO
+    /// Handle one RPC request, using the asyncify drive loop to service outbound IO.
     ///
     /// `ctx`: context data for this call (self_id, caller_id, request_id)
-    /// `call_executor`: handles outbound calls initiated by the guest (returns `IoResult`)
+    /// `call_executor`: handles outbound calls initiated by the guest
     ///
     /// Note: `call_executor` needs to perform real async IO, but Wasmtime host imports are synchronous.
     /// The asyncify protocol exposes the "IO needed" moment to the drive loop (this function),
     /// where `call_executor` (async) can be called.
-    pub async fn dispatch<F, Fut>(
+    pub async fn handle<F, Fut>(
         &mut self,
         request_bytes: &[u8],
-        ctx: DispatchContext,
+        ctx: InvocationContext,
         call_executor: F,
     ) -> WasmResult<Vec<u8>>
     where
-        F: Fn(PendingCall) -> Fut,
-        Fut: std::future::Future<Output = IoResult>,
+        F: Fn(HostOperation) -> Fut,
+        Fut: std::future::Future<Output = HostOperationResult>,
     {
         // Reset asyncify data buffer before each dispatch
         // (previous unwind may have written to the buffer; must reset the write pointer before a new handle call)
         reset_asyncify_data(&mut self.store, &self.memory);
 
-        // Set this call's context
-        self.store.data_mut().ctx = ctx;
         self.store.data_mut().asyncify_mode = AsyncifyMode::Normal;
 
+        self.store.data_mut().current_invocation = Some(ctx.clone());
+
+        let request_bytes = if self.legacy_handle_payload {
+            request_bytes.to_vec()
+        } else {
+            encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
+                WasmError::ExecutionFailed(format!(
+                    "guest handle frame serialization failed: {code}"
+                ))
+            })?
+        };
+
         // Write request to WASM memory
-        let req_ptr = self.wasm_write(request_bytes)?;
+        let req_ptr = self.wasm_write(&request_bytes)?;
         let req_len = request_bytes.len() as i32;
 
         // Allocate output area for response pointer and length (2 x i32 = 8 bytes)
@@ -543,7 +467,8 @@ impl WasmInstance {
                 }
                 AsyncifyMode::Normal => {
                     // Normal completion (including completion after rewind)
-                    if result != abi::code::SUCCESS {
+                    if result != abi_code::SUCCESS {
+                        self.store.data_mut().current_invocation = None;
                         self.free_raw(out_area_ptr, 8)?;
                         self.wasm_free(req_ptr, req_len)?;
                         return Err(WasmError::ExecutionFailed(format!(
@@ -564,16 +489,39 @@ impl WasmInstance {
                     let data = self.wasm_read(resp_ptr, resp_len as usize)?;
                     self.wasm_free(resp_ptr, resp_len)?;
 
+                    if self.legacy_handle_payload {
+                        tracing::debug!(
+                            req_bytes = request_bytes.len(),
+                            resp_bytes = data.len(),
+                            "legacy actr_handle completed"
+                        );
+                        break data;
+                    }
+
+                    let reply = guest_abi::decode_message::<AbiReply>(&data).map_err(|code| {
+                        WasmError::ExecutionFailed(format!(
+                            "guest returned malformed AbiReply with code {code}"
+                        ))
+                    })?;
+
+                    if reply.status != guest_abi::code::SUCCESS {
+                        self.store.data_mut().current_invocation = None;
+                        let message = String::from_utf8(reply.payload)
+                            .unwrap_or_else(|_| format!("guest returned status {}", reply.status));
+                        return Err(WasmError::ExecutionFailed(message));
+                    }
+
                     tracing::debug!(
                         req_bytes = request_bytes.len(),
-                        resp_bytes = data.len(),
+                        resp_bytes = reply.payload.len(),
                         "actr_handle completed"
                     );
 
-                    break data;
+                    break reply.payload;
                 }
                 AsyncifyMode::Rewinding => {
                     // Should not be in Rewinding state when actr_handle returns
+                    self.store.data_mut().current_invocation = None;
                     return Err(WasmError::ExecutionFailed(
                         "drive loop: actr_handle returned while still in Rewinding state".into(),
                     ));
@@ -581,24 +529,8 @@ impl WasmInstance {
             }
         };
 
+        self.store.data_mut().current_invocation = None;
         Ok(response)
-    }
-}
-
-impl executor::ExecutorAdapter for WasmInstance {
-    fn dispatch<'a>(
-        &'a mut self,
-        request_bytes: &[u8],
-        ctx: DispatchContext,
-        call_executor: &'a executor::CallExecutorFn,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = executor::DispatchResult> + Send + 'a>>
-    {
-        let request_bytes = request_bytes.to_vec();
-        Box::pin(async move {
-            self.dispatch(&request_bytes, ctx, call_executor)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-        })
     }
 }
 
@@ -606,7 +538,7 @@ impl executor::ExecutorAdapter for WasmInstance {
 // Memory operation helper methods
 // ─────────────────────────────────────────────────────────────────────────────
 
-impl WasmInstance {
+impl WasmWorkload {
     fn alloc_raw(&mut self, size: i32) -> WasmResult<i32> {
         let ptr = self
             .actr_alloc
@@ -715,6 +647,8 @@ fn reset_asyncify_data(store: &mut Store<HostData>, memory: &Memory) {
 // Host import helper functions (called within Caller context)
 // ─────────────────────────────────────────────────────────────────────────────
 
+use crate::workload::decode_host_operation;
+
 /// Read bytes from the specified range in WASM linear memory
 fn read_bytes_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> Vec<u8> {
     if ptr == 0 || len <= 0 {
@@ -737,12 +671,6 @@ fn read_bytes_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> Ve
         return Vec::new();
     }
     data[start..end].to_vec()
-}
-
-/// Read a UTF-8 string from WASM linear memory
-fn read_string_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> String {
-    let bytes = read_bytes_from_wasm(caller, ptr, len);
-    String::from_utf8(bytes).unwrap_or_default()
 }
 
 /// Write bytes to the specified address in WASM linear memory, return actual bytes written
@@ -772,6 +700,18 @@ fn write_i32_to_wasm(caller: &mut Caller<HostData>, ptr: i32, value: i32) {
         return;
     }
     write_to_wasm(caller, &value.to_le_bytes(), ptr, 4);
+}
+
+fn write_legacy_context_bytes(
+    caller: &mut Caller<HostData>,
+    bytes: &[u8],
+    buf_ptr: i32,
+    buf_cap: i32,
+) -> i32 {
+    if buf_cap < bytes.len() as i32 {
+        return bytes.len() as i32;
+    }
+    write_to_wasm(caller, bytes, buf_ptr, buf_cap)
 }
 
 /// Trigger asyncify unwind within a host import
@@ -821,4 +761,14 @@ where
                 "export function '{name}' missing or signature mismatch: {e}"
             ))
         })
+}
+
+fn uses_legacy_handle_payload(module: &Module) -> bool {
+    module.imports().any(|import| {
+        import.module() == "env"
+            && matches!(
+                import.name(),
+                "actr_host_self_id" | "actr_host_caller_id" | "actr_host_request_id"
+            )
+    })
 }

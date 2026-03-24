@@ -7,10 +7,10 @@
 //! # Guest must implement these exported functions
 //!
 //! ```text
-//! /// Initialize the actor (receives JSON-encoded config, see WasmActorConfig)
-//! actr_init(config_ptr: i32, config_len: i32) -> i32
+//! /// Initialize the actor (receives prost-encoded InitPayloadV1)
+//! actr_init(init_ptr: i32, init_len: i32) -> i32
 //!
-//! /// Handle one request message (protobuf-encoded RpcEnvelope)
+//! /// Handle one runtime frame (prost-encoded AbiFrame)
 //! /// - req_ptr / req_len: start address and length of request data in linear memory
 //! /// - resp_ptr_out: Host-allocated i32 pointer where WASM writes the response data address
 //! /// - resp_len_out: Host-allocated i32 pointer where WASM writes the response data length
@@ -64,43 +64,20 @@ pub const EXPORT_ALLOC: &str = "actr_alloc";
 pub const EXPORT_FREE: &str = "actr_free";
 pub const EXPORT_MEMORY: &str = "memory";
 
-/// ABI error codes
-pub mod code {
-    pub const SUCCESS: i32 = 0;
-    pub const GENERIC_ERROR: i32 = -1;
-    pub const INIT_FAILED: i32 = -2;
-    pub const HANDLE_FAILED: i32 = -3;
-    pub const ALLOC_FAILED: i32 = -4;
-    pub const PROTOCOL_ERROR: i32 = -5;
-}
-
-/// Convert an ABI error code to a human-readable description
+/// Convert an ABI error code to a human-readable description.
+///
+/// Error codes are defined in [`actr_framework::guest::abi::code`].
 pub fn describe_error_code(code: i32) -> &'static str {
+    use actr_framework::guest::abi::code;
     match code {
-        self::code::SUCCESS => "success",
-        self::code::GENERIC_ERROR => "generic error",
-        self::code::INIT_FAILED => "initialization failed",
-        self::code::HANDLE_FAILED => "message handling failed",
-        self::code::ALLOC_FAILED => "memory allocation failed",
-        self::code::PROTOCOL_ERROR => "protocol error (malformed message)",
+        code::SUCCESS => "success",
+        code::GENERIC_ERROR => "generic error",
+        code::INIT_FAILED => "initialization failed",
+        code::HANDLE_FAILED => "message handling failed",
+        code::ALLOC_FAILED => "memory allocation failed",
+        code::PROTOCOL_ERROR => "protocol error (malformed message)",
+        code::BUFFER_TOO_SMALL => "reply buffer too small",
+        code::UNSUPPORTED_OP => "unsupported operation code",
         _ => "unknown error",
     }
-}
-
-/// WasmActorConfig - JSON structure passed to actr_init during initialization
-///
-/// The guest side parses this and initializes its internal state.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct WasmActorConfig {
-    /// Actor type (manufacturer:name:version)
-    pub actr_type: String,
-
-    /// AID credential (protobuf bytes, base64-encoded)
-    pub credential_b64: String,
-
-    /// Actor ID (protobuf bytes, base64-encoded)
-    pub actor_id_b64: String,
-
-    /// Realm ID
-    pub realm_id: u32,
 }
