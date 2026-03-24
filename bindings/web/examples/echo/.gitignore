@@ -19,6 +19,10 @@ client/public/echo_client.js
 client/public/echo_client.d.ts
 client/src/generated/
 
+# Release directory (ignore everything except dev-key.json)
+/release/*
+!/release/dev-key.json
+
 # Development certificates
 client/.certs/
 

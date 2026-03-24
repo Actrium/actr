@@ -202,14 +202,99 @@ function parseActrZip(buffer) {
 }
 
 /**
+ * Verify an .actr package signature and binary hash.
+ *
+ * This is the Web equivalent of Rust Hyper's verify_package:
+ *   1. Read actr.sig (64 bytes Ed25519 signature)
+ *   2. Read actr.toml (signed manifest)
+ *   3. Verify Ed25519 signature: crypto.subtle.verify('Ed25519', pubkey, sig, manifest)
+ *   4. Read binary, compute SHA-256, compare with manifest binary.hash
+ *
+ * @param {Map<string, Uint8Array>} entries - ZIP entries from parseActrZip
+ * @param {string} mfrPubkeyB64 - Base64-encoded Ed25519 MFR public key (32 bytes)
+ * @returns {Promise<void>} Resolves if verification passes, throws on failure
+ */
+async function verifyActrPackage(entries, mfrPubkeyB64) {
+    // 1. Read actr.sig
+    const sigBytes = entries.get('actr.sig');
+    if (!sigBytes || sigBytes.byteLength !== 64) {
+        throw new Error('[SW] Package verification failed: actr.sig missing or invalid (expected 64 bytes)');
+    }
+
+    // 2. Read actr.toml
+    const manifestBytes = entries.get('actr.toml');
+    if (!manifestBytes) {
+        throw new Error('[SW] Package verification failed: actr.toml missing');
+    }
+
+    // 3. Import MFR public key and verify Ed25519 signature
+    const pubkeyRaw = Uint8Array.from(atob(mfrPubkeyB64), c => c.charCodeAt(0));
+    if (pubkeyRaw.byteLength !== 32) {
+        throw new Error('[SW] Package verification failed: MFR public key must be 32 bytes');
+    }
+
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        pubkeyRaw,
+        { name: 'Ed25519' },
+        false,
+        ['verify']
+    );
+
+    const sigValid = await crypto.subtle.verify(
+        { name: 'Ed25519' },
+        cryptoKey,
+        sigBytes,
+        manifestBytes
+    );
+
+    if (!sigValid) {
+        throw new Error('[SW] Package verification failed: Ed25519 signature invalid');
+    }
+
+    // 4. Parse manifest to get binary hash
+    const manifestText = new TextDecoder().decode(manifestBytes);
+    const hashMatch = manifestText.match(/hash\s*=\s*"([0-9a-fA-F]+)"/);
+    if (!hashMatch) {
+        throw new Error('[SW] Package verification failed: binary hash not found in manifest');
+    }
+    const expectedHash = hashMatch[1].toLowerCase();
+
+    // 5. Find binary and compute SHA-256
+    let binaryBytes = null;
+    for (const [name, data] of entries) {
+        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
+            binaryBytes = data;
+            break;
+        }
+    }
+    if (!binaryBytes) {
+        throw new Error('[SW] Package verification failed: no WASM binary in package');
+    }
+
+    const hashBuffer = await crypto.subtle.digest('SHA-256', binaryBytes);
+    const hashArray = new Uint8Array(hashBuffer);
+    const actualHash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (actualHash !== expectedHash) {
+        throw new Error(
+            '[SW] Package verification failed: binary hash mismatch\n' +
+            '  expected: ' + expectedHash + '\n' +
+            '  actual:   ' + actualHash
+        );
+    }
+}
+
+/**
  * Load WASM package from a .actr ZIP package.
  *
  * 1. Fetch the .actr package from package_url
  * 2. Parse the ZIP (STORE entries)
- * 3. Find bin/*.wasm and resources/*.js (glue, not actor.sw.js)
- * 4. Eval the JS glue to register wasm_bindgen in global scope
- * 5. Initialize WASM with the binary bytes
- * 6. Call the register function
+ * 3. Verify package signature and binary hash (if mfr_pubkey provided)
+ * 4. Find bin/*.wasm and resources/*.js (glue, not actor.sw.js)
+ * 5. Eval the JS glue to register wasm_bindgen in global scope
+ * 6. Initialize WASM with the binary bytes
+ * 7. Call the register function
  */
 async function loadFromActrPackage(packageUrl, registerFn) {
     emitSwLog('info', 'actr_package_fetch', packageUrl);
@@ -224,6 +309,23 @@ async function loadFromActrPackage(packageUrl, registerFn) {
 
     const entries = parseActrZip(buffer);
     emitSwLog('info', 'actr_zip_entries', Array.from(entries.keys()));
+
+    // ── Package verification (Web verify_package) ──
+    // If mfr_pubkey is provided in RUNTIME_CONFIG, verify the .actr package
+    // signature and binary hash before loading — equivalent to Rust Hyper's verify_package.
+    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
+    if (mfrPubkey) {
+        emitSwLog('info', 'actr_verify_start', 'verifying package signature and binary hash');
+        try {
+            await verifyActrPackage(entries, mfrPubkey);
+            emitSwLog('info', 'actr_verify_ok', 'package signature and binary hash verified');
+        } catch (verifyError) {
+            emitSwLog('error', 'actr_verify_failed', String(verifyError));
+            throw verifyError;
+        }
+    } else {
+        emitSwLog('info', 'actr_verify_skip', 'no mfr_pubkey in config, skipping verification');
+    }
 
     // Find the WASM binary (bin/*.wasm or bin/actor.wasm)
     let wasmBytes = null;

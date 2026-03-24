@@ -64,7 +64,7 @@ export const system = {
         tracing_enabled: false,
     },
     webrtc: {
-        force_relay: true,
+        force_relay: false,
         stun_urls: ['stun:localhost:3478'],
         turn_urls: ['turn:localhost:3478'],
     },
@@ -95,9 +95,11 @@ export const runtimeConfig: SwRuntimeConfig = {
     service_fingerprint: '',
     acl_allow_types: ['acme:echo-client-app:0.1.0'],
     is_server: true,
-    // Web load_package_executor — .actr package from echo-actr release
+    // Web load_package_executor — .actr package built by start.sh
     package_url: '/packages/echo-server.actr',
     register_fn: 'register_echo_service',
+    // MFR public key for package verification (injected by start.sh)
+    mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',
 };
 
 // ── ActorClientConfig (passed to createActor) ──
@@ -113,6 +115,6 @@ export const actrConfig: ActorClientConfig = {
         ...system.webrtc.stun_urls.map((url) => ({ urls: url })),
         ...system.webrtc.turn_urls.map((url) => ({ urls: url })),
     ],
-    iceTransportPolicy: system.webrtc.force_relay ? 'relay' : 'all',
+    iceTransportPolicy: 'all',
     runtimeConfig,
 };

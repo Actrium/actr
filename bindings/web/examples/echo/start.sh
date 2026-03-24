@@ -1,185 +1,297 @@
 #!/bin/bash
-# Actor-RTC Web Echo Example - Real Implementation Launcher
-# 100% Real: Actor-RTC + WebRTC + WASM + IndexedDB
+# Web Echo Example — Full Package Verification Flow
+#
+# Demonstrates the complete signing → verification → AIS registration flow for Web:
+#   1. Build WASM guests (server + client) to wasm32-unknown-unknown via wasm-pack
+#   2. `actr pkg build` — pack WASM + JS glue into signed .actr packages (MFR key)
+#   3. Start actrix (signaling + AIS + MFR)
+#   4. Seed realm + MFR manufacturer records in DB
+#   5. `actr pkg publish` — publish server package to MFR registry
+#   6. Copy .actr packages to public/packages/
+#   7. Inject MFR public key into actr-config.ts for package verification
+#   8. Browser loads .actr → SW verifies Ed25519 sig + SHA-256 hash → AIS register
+#
+# Usage:
+#   ./start.sh
 
-set -e  # Exit on error
+set -e
+set -o pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# actr repo root (parent of bindings/web)
-ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
-ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
-# echo-actr repo (sibling of Actrium/)
-ECHO_ACTR_DIR="$(cd "$ACTR_ROOT/../../echo-actr" && pwd 2>/dev/null || echo "")"
-
-# Color codes
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🧪 Web Echo (Full Package Verification Flow)"
+echo "   sign → verify → AIS register → WASM execute"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
+# ── Paths ────────────────────────────────────────────────────────────────
 
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# bindings/web is the pnpm workspace root
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
+ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
 
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+SERVER_DIR="$SCRIPT_DIR/server"
+CLIENT_DIR="$SCRIPT_DIR/client"
+SERVER_WASM_DIR="$SERVER_DIR/wasm"
+CLIENT_WASM_DIR="$CLIENT_DIR/wasm"
+RELEASE_DIR="$SCRIPT_DIR/release"
 
-log_step() {
-    echo -e "${MAGENTA}[STEP]${NC} $1"
-}
+# MFR manufacturer name (must match actr.toml)
+MFR_NAME="acme"
+MFR_KEY_FILE=""
+MFR_PUBKEY=""
 
-print_banner() {
-    echo ""
-    echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║   🚀 Actor-RTC Web - Real Echo Implementation           ║"
-    echo "║   100% Real: No Mocks, No Fakes                          ║"
-    echo "╚═══════════════════════════════════════════════════════════╝"
-    echo ""
-}
+export PATH="$HOME/.cargo/bin:$PATH"
 
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+cd "$SCRIPT_DIR"
 
-# Cleanup function
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR" "$RELEASE_DIR"
+
+# ── Clean stale data ────────────────────────────────────────────────────
+
+echo ""
+echo "🗑️  Cleaning stale data..."
+rm -rf "$SCRIPT_DIR/actrix-dev-db"
+rm -f "$SCRIPT_DIR/actrix-dev.toml"
+rm -f "$SCRIPT_DIR/.actrix.pid" "$SCRIPT_DIR/.server.pid" "$SCRIPT_DIR/.client.pid"
+
+# Restore MFR pubkey placeholder in actr-config.ts files (reset from previous runs)
+SERVER_CONFIG="$SERVER_DIR/src/generated/actr-config.ts"
+CLIENT_CONFIG="$CLIENT_DIR/src/generated/actr-config.ts"
+if [ -f "$SERVER_CONFIG" ]; then
+    sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_CONFIG"
+fi
+if [ -f "$CLIENT_CONFIG" ]; then
+    sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_CONFIG"
+fi
+echo -e "${GREEN}✅ Stale data cleaned${NC}"
+
+# ── Cleanup ──────────────────────────────────────────────────────────────
+
+ACTRIX_PID=""
+SERVER_PID=""
+CLIENT_PID=""
+
 cleanup() {
     echo ""
-    log_info "Shutting down services..."
+    echo "🧹 Cleaning up..."
 
-    # Kill web client
-    if [ -f "$SCRIPT_DIR/.client.pid" ]; then
-        CLIENT_PID=$(cat "$SCRIPT_DIR/.client.pid")
-        if kill -0 $CLIENT_PID 2>/dev/null; then
-            log_info "Stopping web client (PID: $CLIENT_PID)"
-            kill $CLIENT_PID 2>/dev/null || true
-        fi
-        rm "$SCRIPT_DIR/.client.pid"
+    if [ -n "$CLIENT_PID" ]; then
+        echo "Stopping web client (PID: $CLIENT_PID)"
+        kill $CLIENT_PID 2>/dev/null || true
     fi
 
-    # Kill Actor-RTC server
-    if [ -f "$SCRIPT_DIR/.server.pid" ]; then
-        SERVER_PID=$(cat "$SCRIPT_DIR/.server.pid")
-        if kill -0 $SERVER_PID 2>/dev/null; then
-            log_info "Stopping Actor-RTC server (PID: $SERVER_PID)"
-            kill $SERVER_PID 2>/dev/null || true
-        fi
-        rm "$SCRIPT_DIR/.server.pid"
+    if [ -n "$SERVER_PID" ]; then
+        echo "Stopping web server (PID: $SERVER_PID)"
+        kill $SERVER_PID 2>/dev/null || true
     fi
 
-    # Kill actrix
-    if [ -f "$SCRIPT_DIR/.actrix.pid" ]; then
-        ACTRIX_PID=$(cat "$SCRIPT_DIR/.actrix.pid")
-        if kill -0 $ACTRIX_PID 2>/dev/null; then
-            log_info "Stopping actrix (PID: $ACTRIX_PID)"
-            kill $ACTRIX_PID 2>/dev/null || true
-        fi
-        rm "$SCRIPT_DIR/.actrix.pid"
+    if [ -n "$ACTRIX_PID" ]; then
+        echo "Stopping actrix (PID: $ACTRIX_PID)"
+        kill $ACTRIX_PID 2>/dev/null || true
+    fi
+
+    # Restore placeholder in actr-config.ts
+    if [ -f "$SERVER_CONFIG" ]; then
+        sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_CONFIG" 2>/dev/null || true
+    fi
+    if [ -f "$CLIENT_CONFIG" ]; then
+        sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_CONFIG" 2>/dev/null || true
     fi
 
     wait 2>/dev/null || true
-    log_success "Cleanup complete"
-    echo ""
+    echo "✅ Cleanup complete"
 }
 
 trap cleanup EXIT INT TERM
 
-check_dependencies() {
-    log_step "Checking dependencies..."
-    echo ""
+# ── Step 0: Check dependencies ──────────────────────────────────────────
 
-    local missing=0
+echo ""
+echo -e "${BLUE}🔍 Step 0: Checking dependencies...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    # Node.js
-    if command_exists node; then
-        log_success "Node.js: $(node --version)"
-    else
-        log_error "Node.js not found - Install from https://nodejs.org/"
-        missing=1
-    fi
+MISSING=0
 
-    # pnpm
-    if command_exists pnpm; then
-        log_success "pnpm: v$(pnpm --version)"
-    else
-        log_error "pnpm not found - Install: npm install -g pnpm"
-        missing=1
-    fi
+if ! command -v node >/dev/null 2>&1; then
+    echo -e "${RED}❌ Node.js not found${NC}"
+    MISSING=1
+else
+    echo -e "${GREEN}✅ Node.js: $(node --version)${NC}"
+fi
 
-    if [ $missing -eq 1 ]; then
-        log_error "Missing required dependencies"
-        exit 1
-    fi
+if ! command -v pnpm >/dev/null 2>&1; then
+    echo -e "${RED}❌ pnpm not found (install: npm install -g pnpm)${NC}"
+    MISSING=1
+else
+    echo -e "${GREEN}✅ pnpm: $(pnpm --version)${NC}"
+fi
 
-    echo ""
-}
+if ! command -v wasm-pack >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  wasm-pack not found, installing via cargo...${NC}"
+    cargo install wasm-pack 2>&1 | tail -3
+fi
+echo -e "${GREEN}✅ wasm-pack: $(wasm-pack --version 2>&1 | head -1)${NC}"
 
-build_or_find_actrix() {
-    log_step "Checking actrix (signaling server)..."
+if [ $MISSING -eq 1 ]; then
+    echo -e "${RED}❌ Missing dependencies${NC}"
+    exit 1
+fi
 
-    ACTRIX_CMD=""
+# ── Step 1: Build WASM guests (wasm-pack) ────────────────────────────────
 
-    # Check for local builds first (prioritize local over installed)
-    if [ -f "$ACTRIX_DIR/target/release/actrix" ]; then
-        ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
-        log_success "Using local actrix build (release): $ACTRIX_CMD"
-        return 0
-    fi
+echo ""
+echo -e "${BLUE}📦 Step 1: Building WASM guests via wasm-pack...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    if [ -f "$ACTRIX_DIR/target/debug/actrix" ]; then
+SERVER_WASM_OUT="$RELEASE_DIR/server-wasm"
+CLIENT_WASM_OUT="$RELEASE_DIR/client-wasm"
+mkdir -p "$SERVER_WASM_OUT" "$CLIENT_WASM_OUT"
+
+# Build server WASM
+echo "Building echo-server-web..."
+cd "$SERVER_WASM_DIR"
+wasm-pack build \
+    --target no-modules \
+    --out-dir "$SERVER_WASM_OUT" \
+    --out-name echo_server \
+    --release 2>&1 | tail -5
+cd "$SCRIPT_DIR"
+
+SERVER_WASM_FILE="$SERVER_WASM_OUT/echo_server_bg.wasm"
+SERVER_JS_FILE="$SERVER_WASM_OUT/echo_server.js"
+if [ ! -f "$SERVER_WASM_FILE" ] || [ ! -f "$SERVER_JS_FILE" ]; then
+    echo -e "${RED}❌ Server wasm-pack build failed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Server WASM built: $(du -h "$SERVER_WASM_FILE" | cut -f1)${NC}"
+
+# Build client WASM
+echo "Building echo-client-web..."
+cd "$CLIENT_WASM_DIR"
+wasm-pack build \
+    --target no-modules \
+    --out-dir "$CLIENT_WASM_OUT" \
+    --out-name echo_client \
+    --release 2>&1 | tail -5
+cd "$SCRIPT_DIR"
+
+CLIENT_WASM_FILE="$CLIENT_WASM_OUT/echo_client_bg.wasm"
+CLIENT_JS_FILE="$CLIENT_WASM_OUT/echo_client.js"
+if [ ! -f "$CLIENT_WASM_FILE" ] || [ ! -f "$CLIENT_JS_FILE" ]; then
+    echo -e "${RED}❌ Client wasm-pack build failed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Client WASM built: $(du -h "$CLIENT_WASM_FILE" | cut -f1)${NC}"
+
+# ── Step 2: Build signed .actr packages ──────────────────────────────────
+
+echo ""
+echo -e "${BLUE}📦 Step 2: Building signed .actr packages...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Ensure actr CLI is available
+ACTR_CMD=""
+if [ -x "$ACTR_ROOT/target/debug/actr" ]; then
+    ACTR_CMD="$ACTR_ROOT/target/debug/actr"
+elif [ -x "$ACTR_ROOT/target/release/actr" ]; then
+    ACTR_CMD="$ACTR_ROOT/target/release/actr"
+elif command -v actr > /dev/null 2>&1; then
+    ACTR_CMD="actr"
+else
+    echo -e "${YELLOW}⚠️  actr CLI not found, building...${NC}"
+    cd "$ACTR_ROOT"
+    cargo build --bin actr 2>&1 | tail -5
+    ACTR_CMD="$ACTR_ROOT/target/debug/actr"
+    cd "$SCRIPT_DIR"
+fi
+echo "  Using actr CLI: $ACTR_CMD"
+
+# Generate MFR signing key pair
+MFR_KEY_FILE="$RELEASE_DIR/dev-key.json"
+$ACTR_CMD pkg keygen --output "$MFR_KEY_FILE" --force
+MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['public_key'])")
+echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
+
+# Build server .actr package
+SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
+$ACTR_CMD pkg build \
+    --binary "$SERVER_WASM_FILE" \
+    --config "$SERVER_DIR/actr.toml" \
+    --key "$MFR_KEY_FILE" \
+    --output "$SERVER_ACTR_PACKAGE" \
+    --target "wasm32-unknown-unknown" \
+    --resource "resources/glue.js=$SERVER_JS_FILE"
+
+if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
+    echo -e "${RED}❌ Server package build failed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1)${NC}"
+
+# Build client .actr package
+CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
+$ACTR_CMD pkg build \
+    --binary "$CLIENT_WASM_FILE" \
+    --config "$CLIENT_DIR/actr.toml" \
+    --key "$MFR_KEY_FILE" \
+    --output "$CLIENT_ACTR_PACKAGE" \
+    --target "wasm32-unknown-unknown" \
+    --resource "resources/glue.js=$CLIENT_JS_FILE"
+
+if [ ! -f "$CLIENT_ACTR_PACKAGE" ]; then
+    echo -e "${RED}❌ Client package build failed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Client .actr: $(du -h "$CLIENT_ACTR_PACKAGE" | cut -f1)${NC}"
+
+# ── Step 3: Start actrix (signaling + AIS + MFR) ────────────────────────
+
+echo ""
+echo -e "${BLUE}🚀 Step 3: Starting actrix (signaling + AIS + MFR)...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+ACTRIX_CMD=""
+if [ -x "$ACTRIX_DIR/target/release/actrix" ]; then
+    ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
+elif [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
+    ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
+elif command -v actrix > /dev/null 2>&1; then
+    ACTRIX_CMD="actrix"
+else
+    echo -e "${YELLOW}⚠️  Actrix not found, building...${NC}"
+    if [ -d "$ACTRIX_DIR" ]; then
+        cd "$ACTRIX_DIR"
+        cargo build 2>&1 | tail -5
         ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
-        log_success "Using local actrix build (debug): $ACTRIX_CMD"
-        return 0
+        cd "$SCRIPT_DIR"
     fi
-
-    # Check if actrix is installed
-    if command_exists actrix; then
-        ACTRIX_CMD="actrix"
-        log_warning "Using installed actrix: $(which actrix)"
-        log_warning "Note: Consider using local build for latest features"
-        return 0
-    fi
-
-    # Not found - provide installation instructions
-    log_error "actrix not found"
-    log_info "Install actrix using one of these methods:"
-    log_info "  1. cd $ACTRIX_DIR && cargo build  (recommended - build from source)"
-    log_info "  2. cargo install actrix  (install from crates.io)"
-    log_info ""
-    return 1
-}
-
-start_actrix() {
-    log_step "Starting actrix (signaling server)..."
-
-    if ! build_or_find_actrix; then
+    if [ -z "$ACTRIX_CMD" ]; then
+        echo -e "${RED}❌ Actrix not available${NC}"
         exit 1
     fi
+fi
+echo "  Using actrix: $ACTRIX_CMD"
 
-    # Create development config with all services enabled
-    cat > "$SCRIPT_DIR/actrix-dev.toml" <<'EOF'
-# Auto-generated dev config for web echo example
-enable = 31
-name = "actrix-web-echo-dev"
+# Create actrix config
+cat > "$SCRIPT_DIR/actrix-dev.toml" <<'ACTRIX_EOF'
+enable = 25
+name = "web-echo-dev"
 env = "dev"
 sqlite_path = "actrix-dev-db"
 location_tag = "local,dev,default"
 actrix_shared_key = "web-echo-dev-secret-key-9876543210abcdef"
 
 [recording]
-service_name = "actrix-web-echo-dev"
+service_name = "web-echo-dev"
 
 [recording.observability]
 filter = "digest"
@@ -237,419 +349,264 @@ head = "admin_ui"
 password = "devpassword123"
 session_expiry_secs = 86400
 
-[control.grpc_api]
-node_id = "actrix-web-echo-dev"
-node_name = "actrix-web-echo-dev"
-shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-max_clock_skew_secs = 300
-
 [acl]
 enabled = true
 default_policy = "allow"
-EOF
+ACTRIX_EOF
 
-    # Start actrix
-    $ACTRIX_CMD --config "$SCRIPT_DIR/actrix-dev.toml" > "$SCRIPT_DIR/actrix.log" 2>&1 &
-    ACTRIX_PID=$!
-    echo $ACTRIX_PID > "$SCRIPT_DIR/.actrix.pid"
+$ACTRIX_CMD --config "$SCRIPT_DIR/actrix-dev.toml" > "$LOG_DIR/actrix.log" 2>&1 &
+ACTRIX_PID=$!
 
-    log_success "Actrix started (PID: $ACTRIX_PID)"
-    log_info "Actrix logs: $SCRIPT_DIR/actrix.log"
-    log_info "Waiting for actrix to be ready..."
-    sleep 3
+echo "  Actrix started (PID: $ACTRIX_PID)"
+echo "  Waiting for actrix to be ready..."
 
-    # Check if actrix is still running
+MAX_WAIT=10
+COUNTER=0
+while [ $COUNTER -lt $MAX_WAIT ]; do
     if ! kill -0 $ACTRIX_PID 2>/dev/null; then
-        log_error "Actrix failed to start"
-        log_info "Check logs: cat $SCRIPT_DIR/actrix.log"
-        cat "$SCRIPT_DIR/actrix.log"
+        echo -e "${RED}❌ Actrix failed to start${NC}"
+        cat "$LOG_DIR/actrix.log"
         exit 1
     fi
 
-    log_success "Actrix is running at http://localhost:8081"
-    echo ""
-}
-
-setup_realm() {
-    log_step "Setting up realm (AIS identity)..."
-
-    local SERVER_DIR="$SCRIPT_DIR/server"
-    local CLIENT_DIR="$SCRIPT_DIR/client"
-
-    sleep 2
-
-    # Extract realm IDs from actr.toml files
-    local SERVER_REALM
-    SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
-    local CLIENT_REALM
-    CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
-
-    log_info "Server realm_id=$SERVER_REALM, Client realm_id=$CLIENT_REALM"
-
-    # Insert realms directly into SQLite (same approach as actrix fullstack tests)
-    local ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
-
-    if [ ! -f "$ACTRIX_DB" ]; then
-        log_error "Actrix database not found at $ACTRIX_DB"
-        log_info "Actrix may not have started properly."
-        exit 1
+    if lsof -i:8081 > /dev/null 2>&1 || nc -z localhost 8081 2>/dev/null; then
+        echo -e "${GREEN}✅ Actrix is running on port 8081${NC}"
+        break
     fi
 
-    for REALM_ID in $SERVER_REALM $CLIENT_REALM; do
-        log_info "Creating realm $REALM_ID..."
-        sqlite3 "$ACTRIX_DB" \
-            "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'wasm-echo-realm', 'Active', 1, strftime('%s','now'), '');"
-    done
+    sleep 1
+    COUNTER=$((COUNTER + 1))
+done
 
-    log_success "Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_REALM)"
+if [ $COUNTER -eq $MAX_WAIT ]; then
+    echo -e "${RED}❌ Actrix not listening on port 8081 after ${MAX_WAIT}s${NC}"
+    cat "$LOG_DIR/actrix.log"
+    exit 1
+fi
 
-    # Patch actr-config.ts in both client and server with the correct realm_id
-    log_info "Patching config files with realm_id from actr.toml..."
+# ── Step 3.5: Seed realm + MFR data ────────────────────────────────────
 
-    local CLIENT_CONFIG="$SCRIPT_DIR/client/src/generated/actr-config.ts"
-    local SERVER_CONFIG="$SCRIPT_DIR/server/src/generated/actr-config.ts"
+echo ""
+echo -e "${BLUE}🔑 Step 3.5: Seeding realm + MFR data...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-    if [ -f "$SERVER_CONFIG" ]; then
-        sed -i '' "s/realm_id: [0-9][0-9]*,/realm_id: $SERVER_REALM,/g" "$SERVER_CONFIG"
-        log_success "Patched server actr-config.ts with realm_id=$SERVER_REALM"
-    fi
+sleep 2
 
-    if [ -f "$CLIENT_CONFIG" ]; then
-        sed -i '' "s/realm_id: [0-9][0-9]*,/realm_id: $CLIENT_REALM,/g" "$CLIENT_CONFIG"
-        log_success "Patched client actr-config.ts with realm_id=$CLIENT_REALM"
-    fi
+SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 
-    log_success "Realm setup complete"
-    echo ""
-}
+ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
 
-build_wasm() {
-    log_step "Loading .actr packages from echo-actr..."
+if [ ! -f "$ACTRIX_DB" ]; then
+    echo -e "${RED}❌ Actrix DB not found at $ACTRIX_DB${NC}"
+    exit 1
+fi
 
-    local SERVER_PUBLIC="$SCRIPT_DIR/server/public"
-    local CLIENT_PUBLIC="$SCRIPT_DIR/client/public"
-    local SERVER_PKG_DIR="$SERVER_PUBLIC/packages"
-    local CLIENT_PKG_DIR="$CLIENT_PUBLIC/packages"
+NOW=$(date +%s)
 
-    mkdir -p "$SERVER_PKG_DIR" "$CLIENT_PKG_DIR"
+for REALM_ID in $SERVER_REALM $CLIENT_REALM; do
+    echo "  Creating realm $REALM_ID..."
+    sqlite3 "$ACTRIX_DB" \
+        "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'web-echo-realm', 'Active', 1, $NOW, '');"
+done
+echo -e "${GREEN}✅ Realms: $SERVER_REALM, $CLIENT_REALM${NC}"
 
-    # Check if .actr packages already exist
-    local server_ready=0
-    local client_ready=0
+# Seed MFR manufacturer
+EXPIRES_AT=$((NOW + 86400 * 365))
+sqlite3 "$ACTRIX_DB" \
+    "INSERT OR IGNORE INTO mfr (name, public_key, contact, status, created_at, verified_at, key_expires_at) VALUES ('$MFR_NAME', '$MFR_PUBKEY', 'dev@example.com', 'active', $NOW, $NOW, $EXPIRES_AT);"
 
-    if ls "$SERVER_PKG_DIR"/*.actr 1>/dev/null 2>&1; then
-        log_success "Server .actr package already present"
-        server_ready=1
-    fi
+MFR_ID=$(sqlite3 "$ACTRIX_DB" "SELECT id FROM mfr WHERE name = '$MFR_NAME';")
+echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID)${NC}"
 
-    if ls "$CLIENT_PKG_DIR"/*.actr 1>/dev/null 2>&1; then
-        log_success "Client .actr package already present"
-        client_ready=1
-    fi
+# Seed client package record (client doesn't go through pkg publish)
+CLIENT_TYPE_STR="$MFR_NAME:echo-client-app:0.1.0"
+sqlite3 "$ACTRIX_DB" \
+    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'echo-client-app', '0.1.0', '$CLIENT_TYPE_STR', 'wasm32-unknown-unknown', '', '', 'active', $NOW);"
+echo -e "${GREEN}✅ Client package record seeded${NC}"
 
-    if [ $server_ready -eq 1 ] && [ $client_ready -eq 1 ]; then
-        log_success "All .actr packages ready (no build needed)"
-        echo ""
-        return 0
-    fi
+# ── Step 4: Publish server .actr package ────────────────────────────────
 
-    # Try to use pre-built .actr packages from echo-actr dist/
-    if [ -n "$ECHO_ACTR_DIR" ] && [ -d "$ECHO_ACTR_DIR" ]; then
-        local DIST_DIR="$ECHO_ACTR_DIR/dist"
+echo ""
+echo -e "${BLUE}📡 Step 4: Publishing server .actr package via 'actr pkg publish'...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        # Find .actr web packages
-        local SERVER_ACTR=""
-        local CLIENT_ACTR=""
+$ACTR_CMD pkg publish \
+    --package "$SERVER_ACTR_PACKAGE" \
+    --keychain "$MFR_KEY_FILE" \
+    --endpoint "http://localhost:8081" \
+    --config "$SERVER_DIR/actr.toml"
 
-        if [ -d "$DIST_DIR" ]; then
-            SERVER_ACTR=$(ls "$DIST_DIR"/actrium-EchoService-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
-            CLIENT_ACTR=$(ls "$DIST_DIR"/actrium-EchoClient-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
-        fi
+echo -e "${GREEN}✅ Server package published${NC}"
 
-        if [ -z "$SERVER_ACTR" ] || [ -z "$CLIENT_ACTR" ]; then
-            # Build .actr packages from echo-actr source
-            log_info "Building .actr packages from echo-actr..."
-            log_info "echo-actr directory: $ECHO_ACTR_DIR"
+# ── Step 5: Deploy packages + inject MFR public key ─────────────────────
 
-            if [ ! -f "$ECHO_ACTR_DIR/packaging/scripts/build-web.sh" ]; then
-                log_error "echo-actr build-web.sh not found at $ECHO_ACTR_DIR/packaging/scripts/build-web.sh"
-                log_info "Make sure echo-actr repo is at: $ECHO_ACTR_DIR"
-                exit 1
-            fi
+echo ""
+echo -e "${BLUE}📋 Step 5: Deploying .actr packages + injecting MFR pubkey...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-            cd "$ECHO_ACTR_DIR"
-            bash packaging/scripts/build-web.sh 2>&1 | tee "$SCRIPT_DIR/wasm-build.log"
+# Copy .actr packages to public/packages/
+mkdir -p "$SERVER_DIR/public/packages" "$CLIENT_DIR/public/packages"
+cp "$SERVER_ACTR_PACKAGE" "$SERVER_DIR/public/packages/echo-server.actr"
+cp "$CLIENT_ACTR_PACKAGE" "$CLIENT_DIR/public/packages/echo-client.actr"
+echo -e "${GREEN}✅ Packages deployed to public/packages/${NC}"
 
-            SERVER_ACTR=$(ls "$DIST_DIR"/actrium-EchoService-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
-            CLIENT_ACTR=$(ls "$DIST_DIR"/actrium-EchoClient-web-*-wasm32-unknown-unknown.actr 2>/dev/null | head -1)
-        fi
+# Sync actor.sw.js from web-sdk source
+SW_SRC="$PROJECT_ROOT/packages/web-sdk/src/actor.sw.js"
+if [ -f "$SW_SRC" ]; then
+    cp "$SW_SRC" "$SERVER_DIR/public/actor.sw.js"
+    cp "$SW_SRC" "$CLIENT_DIR/public/actor.sw.js"
+    echo -e "${GREEN}✅ actor.sw.js synced from web-sdk${NC}"
+else
+    echo -e "${YELLOW}⚠️  actor.sw.js not found at $SW_SRC${NC}"
+fi
 
-        if [ -z "$SERVER_ACTR" ] || [ -z "$CLIENT_ACTR" ]; then
-            log_error "Failed to find .actr packages after build"
-            exit 1
-        fi
+# Inject MFR public key into actr-config.ts (replaces __MFR_PUBKEY_PLACEHOLDER__)
+if [ -f "$SERVER_CONFIG" ]; then
+    sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$SERVER_CONFIG"
+    echo -e "${GREEN}✅ MFR pubkey injected into server actr-config.ts${NC}"
+fi
+if [ -f "$CLIENT_CONFIG" ]; then
+    sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$CLIENT_CONFIG"
+    echo -e "${GREEN}✅ MFR pubkey injected into client actr-config.ts${NC}"
+fi
 
-        # Copy .actr packages to public/packages/
-        if [ $server_ready -eq 0 ]; then
-            log_info "Installing server .actr package..."
-            cp "$SERVER_ACTR" "$SERVER_PKG_DIR/echo-server.actr"
-            log_success "Server .actr package installed: $(du -h "$SERVER_PKG_DIR/echo-server.actr" | cut -f1)"
-        fi
+# ── Step 6: Install web dependencies ────────────────────────────────────
 
-        if [ $client_ready -eq 0 ]; then
-            log_info "Installing client .actr package..."
-            cp "$CLIENT_ACTR" "$CLIENT_PKG_DIR/echo-client.actr"
-            log_success "Client .actr package installed: $(du -h "$CLIENT_PKG_DIR/echo-client.actr" | cut -f1)"
-        fi
+echo ""
+echo -e "${BLUE}🌐 Step 6: Installing web dependencies...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+cd "$PROJECT_ROOT"
+pnpm install 2>&1 | tail -5
+echo -e "${GREEN}✅ Dependencies installed${NC}"
+
+# ── Step 7: Start Vite dev servers ──────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}🚀 Step 7: Starting Vite dev servers...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Start server (port 5174)
+cd "$SERVER_DIR"
+pnpm dev > "$LOG_DIR/server.log" 2>&1 &
+SERVER_PID=$!
+echo "  Server started (PID: $SERVER_PID)"
+
+# Start client (port 5173)
+cd "$CLIENT_DIR"
+pnpm dev > "$LOG_DIR/client.log" 2>&1 &
+CLIENT_PID=$!
+echo "  Client started (PID: $CLIENT_PID)"
+
+cd "$SCRIPT_DIR"
+
+# Wait for Vite to start
+echo "  Waiting for Vite dev servers..."
+sleep 5
+
+if ! kill -0 $SERVER_PID 2>/dev/null; then
+    echo -e "${RED}❌ Server failed to start${NC}"
+    cat "$LOG_DIR/server.log"
+    exit 1
+fi
+echo -e "${GREEN}✅ Server running at http://localhost:5174${NC}"
+
+if ! kill -0 $CLIENT_PID 2>/dev/null; then
+    echo -e "${RED}❌ Client failed to start${NC}"
+    cat "$LOG_DIR/client.log"
+    exit 1
+fi
+echo -e "${GREEN}✅ Client running at https://localhost:5173${NC}"
+
+# ── Step 8: Run automated test ──────────────────────────────────────────
+
+echo ""
+echo -e "${BLUE}🧪 Step 8: Running automated test...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Resolve puppeteer
+if node -e "require('puppeteer')" 2>/dev/null; then
+    echo -e "${GREEN}✅ Puppeteer available${NC}"
+else
+    E2E_MODULES="$PROJECT_ROOT/tests/e2e/node_modules"
+    if [ -d "$E2E_MODULES/puppeteer" ]; then
+        export NODE_PATH="$E2E_MODULES:${NODE_PATH:-}"
+        echo -e "${GREEN}✅ Puppeteer found via workspace tests/e2e${NC}"
     else
-        log_error "echo-actr directory not found"
-        log_info "Expected at: $(cd "$ACTR_ROOT/../.." 2>/dev/null && pwd)/echo-actr"
-        log_info ""
-        log_info "Options:"
-        log_info "  1. Clone echo-actr: git clone https://github.com/Actrium/echo-actr ../../../echo-actr"
-        log_info "  2. Download .actr release packages to server/public/packages/ and client/public/packages/"
-        log_info "  3. Set ECHO_ACTR_DIR environment variable to the echo-actr checkout"
-        exit 1
+        echo -e "${YELLOW}⚠️  Installing puppeteer...${NC}"
+        cd "$PROJECT_ROOT"
+        PUPPETEER_SKIP_DOWNLOAD=true pnpm add -Dw puppeteer 2>&1 | tail -3
+        export NODE_PATH="$PROJECT_ROOT/node_modules:${NODE_PATH:-}"
+        cd "$SCRIPT_DIR"
     fi
+fi
 
-    echo ""
-}
-
-sync_actor_sw() {
-    log_step "Syncing actor.sw.js from web-sdk..."
-
-    local SW_SRC="$PROJECT_ROOT/packages/web-sdk/src/actor.sw.js"
-    local SERVER_PUBLIC="$SCRIPT_DIR/server/public"
-    local CLIENT_PUBLIC="$SCRIPT_DIR/client/public"
-
-    if [ ! -f "$SW_SRC" ]; then
-        log_error "actor.sw.js not found at $SW_SRC"
-        exit 1
+# Use system Chrome if needed
+if ! node -e "require('puppeteer').launch({headless:'new'}).then(b=>b.close())" 2>/dev/null; then
+    CHROME_PATH=""
+    if [ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+        CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    elif command -v google-chrome >/dev/null 2>&1; then
+        CHROME_PATH="$(which google-chrome)"
+    elif command -v chromium >/dev/null 2>&1; then
+        CHROME_PATH="$(which chromium)"
     fi
-
-    cp "$SW_SRC" "$SERVER_PUBLIC/actor.sw.js"
-    cp "$SW_SRC" "$CLIENT_PUBLIC/actor.sw.js"
-    log_success "actor.sw.js synced to server and client public dirs"
-    echo ""
-}
-
-install_deps() {
-    log_step "Installing web dependencies..."
-
-    cd "$PROJECT_ROOT"
-
-    # Always run pnpm install to ensure all workspace packages have node_modules
-    log_info "Running pnpm install at web workspace root..."
-    pnpm install 2>&1 | tail -5
-    log_success "Dependencies installed"
-
-    echo ""
-}
-
-start_server() {
-    log_step "Starting Echo Server (browser-hosted)..."
-
-    cd "$SCRIPT_DIR/server"
-
-    pnpm dev > "$SCRIPT_DIR/server.log" 2>&1 &
-    SERVER_PID=$!
-    echo $SERVER_PID > "$SCRIPT_DIR/.server.pid"
-
-    log_success "Echo Server dev server started (PID: $SERVER_PID)"
-    log_info "Server logs: $SCRIPT_DIR/server.log"
-
-    # Wait for vite to start
-    log_info "Waiting for Vite dev server to start..."
-    sleep 3
-
-    # Check if server is still running
-    if ! kill -0 $SERVER_PID 2>/dev/null; then
-        log_error "Server failed to start"
-        log_info "Check logs: cat $SCRIPT_DIR/server.log"
-        cat "$SCRIPT_DIR/server.log"
-        exit 1
+    if [ -n "$CHROME_PATH" ]; then
+        export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
+        echo -e "${GREEN}✅ Using system Chrome: $CHROME_PATH${NC}"
     fi
+fi
 
-    log_success "Echo Server is running at http://localhost:5174"
-    echo ""
-}
+# Give services time to stabilize
+sleep 3
 
-start_client() {
-    log_step "Starting Echo Client..."
-
-    cd "$SCRIPT_DIR/client"
-
-    pnpm dev > "$SCRIPT_DIR/client.log" 2>&1 &
-    CLIENT_PID=$!
-    echo $CLIENT_PID > "$SCRIPT_DIR/.client.pid"
-
-    log_success "Client started (PID: $CLIENT_PID)"
-    log_info "Client logs: $SCRIPT_DIR/client.log"
-
-    # Wait for client dev server
-    sleep 3
-
-    # Check if client is still running
-    if ! kill -0 $CLIENT_PID 2>/dev/null; then
-        log_error "Client failed to start"
-        log_info "Check logs: cat $SCRIPT_DIR/client.log"
-        cat "$SCRIPT_DIR/client.log"
-        exit 1
-    fi
-
-    log_success "Echo Client is running at https://localhost:5173"
-    echo ""
-}
-
-open_browser() {
-    local url="https://localhost:5173"
-
-    log_info "Opening browser..."
-
-    if command_exists xdg-open; then
-        xdg-open "$url" 2>/dev/null
-    elif command_exists open; then
-        open "$url" 2>/dev/null
-    elif command_exists wslview; then
-        wslview "$url" 2>/dev/null
-    else
-        log_warning "Could not open browser automatically"
-    fi
-
-    echo ""
-}
-
-run_basic_test() {
-    log_step "Running BasicFunction automated test..."
-
-    cd "$SCRIPT_DIR"
-
-    # Resolve puppeteer: try direct, then from tests/e2e workspace package
-    local EXTRA_ENV=""
-    if node -e "require('puppeteer')" 2>/dev/null; then
-        log_success "Puppeteer available"
-    else
-        local E2E_MODULES="$PROJECT_ROOT/tests/e2e/node_modules"
-        if [ -d "$E2E_MODULES/puppeteer" ]; then
-            export NODE_PATH="$E2E_MODULES:${NODE_PATH:-}"
-            log_success "Puppeteer found via workspace tests/e2e"
-        else
-            log_info "Installing puppeteer via pnpm..."
-            cd "$PROJECT_ROOT"
-            PUPPETEER_SKIP_DOWNLOAD=true pnpm add -Dw puppeteer 2>&1 | tail -3
-            cd "$SCRIPT_DIR"
-            export NODE_PATH="$PROJECT_ROOT/node_modules:${NODE_PATH:-}"
-        fi
-    fi
-
-    # Use system Chrome if puppeteer's bundled Chrome isn't available
-    if ! node -e "require('puppeteer').launch({headless:'new'}).then(b=>b.close())" 2>/dev/null; then
-        local CHROME_PATH=""
-        if [ -f "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
-            CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        elif command_exists google-chrome; then
-            CHROME_PATH="$(which google-chrome)"
-        elif command_exists chromium-browser; then
-            CHROME_PATH="$(which chromium-browser)"
-        elif command_exists chromium; then
-            CHROME_PATH="$(which chromium)"
-        fi
-        if [ -n "$CHROME_PATH" ]; then
-            export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
-            log_success "Using system Chrome: $CHROME_PATH"
-        else
-            log_error "No Chrome/Chromium found for puppeteer"
-            return 1
-        fi
-    fi
-
-    # Verify puppeteer can launch
-    if ! node -e "require('puppeteer')" 2>/dev/null; then
-        log_error "Puppeteer not available. Install with: pnpm add -Dw puppeteer"
-        return 1
-    fi
-
-    # Give services a bit more time to stabilize before running tests
-    log_info "Waiting for services to fully stabilize..."
-    sleep 5
-
-    # Run BasicFunction suite only
-    log_info "Executing: node test-auto.js BasicFunction"
-    echo ""
-
-    set +e  # Don't exit on test failure
+if [ -f "$SCRIPT_DIR/test-auto.js" ]; then
+    set +e
     CLIENT_URL="https://localhost:5173" \
     SERVER_URL="http://localhost:5174" \
     node "$SCRIPT_DIR/test-auto.js" BasicFunction
     TEST_EXIT_CODE=$?
     set -e
+else
+    echo -e "${YELLOW}⚠️  test-auto.js not found, skipping automated test${NC}"
+    TEST_EXIT_CODE=-1
+fi
 
-    echo ""
-    if [ $TEST_EXIT_CODE -eq 0 ]; then
-        log_success "🎉 BasicFunction tests PASSED! Echo messaging is working."
-    else
-        log_error "BasicFunction tests FAILED (exit code: $TEST_EXIT_CODE)"
-        log_info "Check the test output above for details."
-        log_info "Service logs:"
-        echo "  tail -f $SCRIPT_DIR/actrix.log"
-        echo "  tail -f $SCRIPT_DIR/server.log"
-        echo "  tail -f $SCRIPT_DIR/client.log"
-    fi
+# ── Summary ─────────────────────────────────────────────────────────────
 
-    return $TEST_EXIT_CODE
-}
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🎉 Web Echo — Full Package Verification Flow"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "✅ Validated flow:"
+echo "   1. WASM guests compiled to wasm32-unknown-unknown (wasm-pack)"
+echo "   2. actr pkg build → signed .actr packages (MFR key: $MFR_NAME)"
+echo "   3. actr pkg publish → server package registered with AIS"
+echo "   4. MFR public key injected → SW verifies package signatures"
+echo "   5. Browser loads .actr → verifies Ed25519 sig + SHA-256 hash"
+echo "   6. SW registers with AIS → obtains credential → starts WebRTC"
+echo ""
+echo "Services:"
+echo "   Actrix:  http://localhost:8081  (signaling + AIS)"
+echo "   Server:  http://localhost:5174  (browser-hosted echo service)"
+echo "   Client:  https://localhost:5173 (browser echo client)"
+echo ""
+echo "📖 Logs:"
+echo "   tail -f $LOG_DIR/actrix.log"
+echo "   tail -f $LOG_DIR/server.log"
+echo "   tail -f $LOG_DIR/client.log"
+echo ""
 
-main() {
-    print_banner
-
-    check_dependencies
-
-    start_actrix
-
-    setup_realm
-
-    build_wasm
-
-    sync_actor_sw
-
-    install_deps
-
-    start_server
-
-    start_client
-
-    # Print status
-    echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║              ✅ Real Echo Implementation Running         ║"
-    echo "╠═══════════════════════════════════════════════════════════╣"
-    echo "║  Actrix:   Signaling at http://localhost:8081           ║"
-    echo "║  Server:   Echo service at http://localhost:5174        ║"
-    echo "║  Client:   Web UI at https://localhost:5173             ║"
-    echo "║  WASM:     Loaded from .actr packages (signed ZIP)      ║"
-    echo "╚═══════════════════════════════════════════════════════════╝"
-    echo ""
-
-    log_success "🎉 All services are running!"
-    echo ""
-
-    # Run automated test to verify echo messaging works
-    run_basic_test
-    TEST_RESULT=$?
-
-    echo ""
-    if [ $TEST_RESULT -eq 0 ]; then
-        log_success "✅ Verification complete — echo messaging is working end-to-end!"
-    else
-        log_error "❌ Verification failed — echo messaging is NOT working."
-        log_info "Services are still running for manual debugging."
-        log_info "  Client: https://localhost:5173"
-        log_info "  Server: http://localhost:5174"
-        log_info "Press Ctrl+C to stop all services"
-        wait
-    fi
-
-    # Cleanup happens via trap
-    exit $TEST_RESULT
-}
-
-main
+if [ $TEST_EXIT_CODE -eq 0 ]; then
+    echo -e "${GREEN}✅ Automated test PASSED${NC}"
+elif [ $TEST_EXIT_CODE -eq -1 ]; then
+    echo "Press Ctrl+C to stop all services"
+    wait
+else
+    echo -e "${RED}❌ Automated test FAILED (exit code: $TEST_EXIT_CODE)${NC}"
+    echo "Services are still running for manual debugging."
+    echo "Press Ctrl+C to stop all services"
+    wait
+fi

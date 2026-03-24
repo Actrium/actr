@@ -59,6 +59,11 @@ pub struct PkgBuildArgs {
     /// Target platform (e.g., wasm32-wasip1, x86_64-unknown-linux-gnu)
     #[arg(long, short = 't', default_value = "wasm32-wasip1")]
     pub target: String,
+
+    /// Add a resource file to the package: --resource zip_path=local_path
+    /// Can be specified multiple times.
+    #[arg(long, value_parser = parse_resource_arg)]
+    pub resource: Vec<(String, PathBuf)>,
 }
 
 #[derive(Args, Debug)]
@@ -191,6 +196,14 @@ fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
     Ok(())
 }
 
+/// Parse a `zip_path=local_path` resource argument.
+fn parse_resource_arg(s: &str) -> Result<(String, PathBuf), String> {
+    let (zip_path, local_path) = s
+        .split_once('=')
+        .ok_or_else(|| "resource must be in format 'zip_path=local_path'".to_string())?;
+    Ok((zip_path.to_string(), PathBuf::from(local_path)))
+}
+
 // --- build (.actr package creation) ---
 
 async fn execute_build(args: PkgBuildArgs) -> Result<()> {
@@ -296,11 +309,23 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         }
     }
 
+    // 5b. Read resource files (--resource zip_path=local_path)
+    let resources: Vec<(String, Vec<u8>)> = args
+        .resource
+        .iter()
+        .map(|(zip_path, local_path)| {
+            let bytes = std::fs::read(local_path)
+                .with_context(|| format!("Failed to read resource: {}", local_path.display()))?;
+            println!("  resource:    {} ({} bytes)", zip_path, bytes.len());
+            Ok((zip_path.clone(), bytes))
+        })
+        .collect::<Result<_, anyhow::Error>>()?;
+
     // 6. Pack
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: binary_bytes.clone(),
-        resources: vec![],
+        resources,
         proto_files,
         signing_key: signing_key.clone(),
     };

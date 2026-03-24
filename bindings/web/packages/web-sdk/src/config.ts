@@ -57,6 +57,14 @@ export interface SwRuntimeConfig {
   /** Filename or URL of the WASM binary (e.g. "echo_server_bg.wasm").
    *  Used when package_url is not set. */
   package_wasm?: string;
+
+  // ── Package verification (Web verify_package) ──
+
+  /** Base64-encoded Ed25519 MFR public key for package signature verification.
+   *  When provided, the Service Worker verifies the .actr package signature
+   *  and binary hash before loading — the Web equivalent of Rust Hyper's verify_package.
+   *  When omitted, verification is skipped (backward-compatible). */
+  mfr_pubkey?: string;
 }
 
 /**
