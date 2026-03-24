@@ -167,16 +167,24 @@ impl Database {
                 name         TEXT    NOT NULL,
                 version      TEXT    NOT NULL,
                 type_str     TEXT    NOT NULL,
+                target       TEXT    NOT NULL,
                 manifest     TEXT    NOT NULL,
                 signature    TEXT    NOT NULL,
                 status       TEXT    NOT NULL DEFAULT 'active',
                 published_at INTEGER NOT NULL,
                 revoked_at   INTEGER,
-                UNIQUE(manufacturer, name, version)
+                UNIQUE(manufacturer, name, version, target)
             )",
         )
         .execute(&self.pool)
         .await?;
+
+        // Migrate: add target column if it doesn't exist (for existing databases)
+        let _ = sqlx::query(
+            "ALTER TABLE mfr_package ADD COLUMN target TEXT NOT NULL DEFAULT 'wasm32-wasip1'",
+        )
+        .execute(&self.pool)
+        .await; // intentionally ignore error (column may already exist)
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_mfr_package_type ON mfr_package(type_str)")
             .execute(&self.pool)
@@ -187,6 +195,11 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+
+        // Migrate: add proto_files column for proto filing (JSON text, nullable)
+        let _ = sqlx::query("ALTER TABLE mfr_package ADD COLUMN proto_files TEXT")
+            .execute(&self.pool)
+            .await; // intentionally ignore error (column may already exist)
 
         Ok(())
     }

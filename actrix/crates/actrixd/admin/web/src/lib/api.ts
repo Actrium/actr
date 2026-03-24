@@ -340,8 +340,10 @@ export interface ActrPackage {
   name: string;
   version: string;
   type_str: string;
+  target: string;
   manifest: string;
   signature: string;
+  proto_files?: string;
   status: 'active' | 'revoked';
   published_at: number;
   revoked_at?: number;
@@ -354,8 +356,12 @@ export interface MfrCertificate {
   expires_at: number;
 }
 
-export interface MfrKeychain {
-  private_key: string;
+export type KeySource = 'generated' | 'uploaded';
+
+export interface ActivateResponse {
+  key_source: KeySource;
+  /** Present ONLY when key_source == 'generated'. */
+  private_key?: string;
   certificate: MfrCertificate;
 }
 
@@ -385,14 +391,20 @@ export const mfrApi = {
       body: JSON.stringify(req),
     }),
 
-  verify: (id: number) =>
-    request<MfrKeychain>(`/mfr/${id}/verify`, { method: 'POST' }),
+  verify: (id: number, publicKey?: string) =>
+    request<ActivateResponse>(`/mfr/${id}/verify`, {
+      method: 'POST',
+      body: publicKey ? JSON.stringify({ public_key: publicKey }) : undefined,
+    }),
 
   getChallenge: (id: number) =>
     request<ApplyResponse>(`/mfr/${id}/challenge`),
 
-  approve: (id: number) =>
-    request<MfrKeychain>(`/mfr/admin/${id}/approve`, { method: 'POST' }),
+  approve: (id: number, publicKey?: string) =>
+    request<ActivateResponse>(`/mfr/admin/${id}/approve`, {
+      method: 'POST',
+      body: publicKey ? JSON.stringify({ public_key: publicKey }) : undefined,
+    }),
 
   suspend: (id: number) =>
     request<void>(`/mfr/admin/${id}/suspend`, { method: 'POST' }),

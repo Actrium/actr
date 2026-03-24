@@ -439,9 +439,10 @@ mod tests {
             service_spec: None,
             acl: None,
             ws_address: None,
-            manifest_json: None,
+            manifest_raw: None,
             mfr_signature: None,
             psk_token: None,
+            target: None,
         };
 
         // 编码
@@ -469,9 +470,10 @@ mod tests {
             service_spec: None,
             acl: None,
             ws_address: None,
-            manifest_json: None,
+            manifest_raw: None,
             mfr_signature: None,
             psk_token: None,
+            target: None,
         };
 
         // 编码解码循环

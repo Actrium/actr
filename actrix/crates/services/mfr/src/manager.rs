@@ -6,10 +6,23 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KeySource {
+    /// Server generated the keypair; private_key is present.
+    Generated,
+    /// User uploaded their own public key; private_key is absent.
+    Uploaded,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MfrKeychain {
-    /// Ed25519 private key, base64. Returned ONCE — never stored by actrix.
-    pub private_key: String,
+pub struct ActivateResponse {
+    /// How the key was provisioned.
+    pub key_source: KeySource,
+    /// Ed25519 private key, base64. Present ONLY when key_source == Generated.
+    /// Returned ONCE — never stored by actrix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
     pub certificate: MfrCertificate,
 }
 
@@ -26,10 +39,20 @@ pub struct PublishRequest {
     pub manufacturer: String,
     pub name: String,
     pub version: String,
+    /// Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu")
+    #[serde(default = "default_target")]
+    pub target: String,
     /// Full content of actr.toml (with binary_hash field populated)
     pub manifest: String,
     /// base64 Ed25519 signature by MFR private key over manifest bytes
     pub signature: String,
+    /// Proto files JSON for filing/audit (optional)
+    #[serde(default)]
+    pub proto_files: Option<serde_json::Value>,
+}
+
+fn default_target() -> String {
+    "wasm32-wasip1".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,7 +105,14 @@ impl MfrManager {
     /// Step 2: Verify ownership by checking a public GitHub repo.
     ///
     /// Looks for `{mfr.name}/actr-mfr-verify/{domain}.txt` containing the challenge token.
-    pub async fn verify_github(&self, mfr_id: i64) -> Result<MfrKeychain, MfrError> {
+    ///
+    /// If `user_public_key` is Some, the user's own Ed25519 public key is used (uploaded mode).
+    /// If None, a new keypair is generated and the private key is returned once (generated mode).
+    pub async fn verify_github(
+        &self,
+        mfr_id: i64,
+        user_public_key: Option<&str>,
+    ) -> Result<ActivateResponse, MfrError> {
         let mut mfr = Manufacturer::get(&self.pool, mfr_id)
             .await?
             .ok_or(MfrError::NotFound)?;
@@ -106,42 +136,67 @@ impl MfrManager {
             )));
         }
 
-        let (private_key, public_key) = crypto::generate_keypair();
         let url = github::repo_url(&mfr.name);
         challenge.mark_verified(&self.pool, &url).await?;
-        mfr.activate(&self.pool, public_key.clone()).await?;
 
-        let keychain = self.build_keychain(&mfr, private_key)?;
+        let response = self.activate_with_key(&mut mfr, user_public_key).await?;
         platform::recording::info!(
-            "MFR verified via GitHub repo and keychain issued: mfr_id={}, name={}",
+            "MFR verified via GitHub repo: mfr_id={}, name={}, key_source={:?}",
             mfr_id,
-            mfr.name
+            mfr.name,
+            response.key_source
         );
-        Ok(keychain)
+        Ok(response)
     }
 
     /// Admin: manually approve without GitHub verification (for private deployments).
-    pub async fn admin_approve(&self, mfr_id: i64) -> Result<MfrKeychain, MfrError> {
+    ///
+    /// If `user_public_key` is Some, the user's own Ed25519 public key is used (uploaded mode).
+    /// If None, a new keypair is generated and the private key is returned once (generated mode).
+    pub async fn admin_approve(
+        &self,
+        mfr_id: i64,
+        user_public_key: Option<&str>,
+    ) -> Result<ActivateResponse, MfrError> {
         let mut mfr = Manufacturer::get(&self.pool, mfr_id)
             .await?
             .ok_or(MfrError::NotFound)?;
-        let (private_key, public_key) = crypto::generate_keypair();
-        mfr.activate(&self.pool, public_key).await?;
+
+        let response = self.activate_with_key(&mut mfr, user_public_key).await?;
         platform::recording::info!(
-            "MFR manually approved by admin: mfr_id={}, name={}",
+            "MFR manually approved by admin: mfr_id={}, name={}, key_source={:?}",
             mfr_id,
-            mfr.name
+            mfr.name,
+            response.key_source
         );
-        Ok(self.build_keychain(&mfr, private_key)?)
+        Ok(response)
     }
 
-    fn build_keychain(
+    /// Common key provisioning logic for both verify_github and admin_approve.
+    ///
+    /// - `user_public_key = None` → generate a new Ed25519 keypair, return private key.
+    /// - `user_public_key = Some(b64)` → validate and use the provided public key, no private key returned.
+    async fn activate_with_key(
         &self,
-        mfr: &Manufacturer,
-        private_key: String,
-    ) -> Result<MfrKeychain, MfrError> {
+        mfr: &mut Manufacturer,
+        user_public_key: Option<&str>,
+    ) -> Result<ActivateResponse, MfrError> {
+        let (key_source, private_key, public_key) = match user_public_key {
+            Some(pk) => {
+                crypto::validate_public_key(pk)?;
+                (KeySource::Uploaded, None, pk.to_string())
+            }
+            None => {
+                let (priv_key, pub_key) = crypto::generate_keypair();
+                (KeySource::Generated, Some(priv_key), pub_key)
+            }
+        };
+
+        mfr.activate(&self.pool, public_key).await?;
+
         let expires_at = mfr.key_expires_at.ok_or(MfrError::CertificateExpired)?;
-        Ok(MfrKeychain {
+        Ok(ActivateResponse {
+            key_source,
             private_key,
             certificate: MfrCertificate {
                 mfr_name: mfr.name.clone(),
@@ -224,21 +279,35 @@ impl MfrManager {
             return Err(MfrError::InvalidSignature);
         }
 
+        // Serialize proto_files JSON to string for storage
+        let proto_files_str = req.proto_files.as_ref().map(|v| v.to_string());
+
         let pkg = ActrPackage::publish(
             &self.pool,
             mfr.id,
             &req.manufacturer,
             &req.name,
             &req.version,
+            &req.target,
             &req.manifest,
             &req.signature,
+            proto_files_str.as_deref(),
         )
         .await?;
-        platform::recording::info!(
-            "actor package published: type_str={}, mfr_id={}",
-            pkg.type_str,
-            mfr.id
-        );
+
+        if req.proto_files.is_some() {
+            platform::recording::info!(
+                "actor package published with proto filing: type_str={}, mfr_id={}",
+                pkg.type_str,
+                mfr.id
+            );
+        } else {
+            platform::recording::info!(
+                "actor package published: type_str={}, mfr_id={}",
+                pkg.type_str,
+                mfr.id
+            );
+        }
         Ok(pkg)
     }
 
@@ -322,12 +391,40 @@ impl MfrManager {
 
 /// Public API for AIS integration: check if a type_str is a valid, active package.
 /// Reserved names always return true.
-pub async fn lookup_package(pool: &SqlitePool, type_str: &str) -> Result<bool, MfrError> {
-    // Extract manufacturer from "manufacturer:name:version"
-    let manufacturer = type_str.split(':').next().unwrap_or("");
-    if reserved::is_reserved(manufacturer) {
-        return Ok(true);
+///
+/// When `target` is provided, lookup is narrowed to that specific platform.
+/// When `manifest_hash` is provided, the stored manifest is SHA-256 compared for content integrity.
+pub async fn lookup_package(
+    pool: &SqlitePool,
+    type_str: &str,
+    target: Option<&str>,
+    manifest_hash: Option<&[u8]>,
+) -> Result<bool, MfrError> {
+    let pkg = if let Some(t) = target {
+        ActrPackage::get_by_type_and_target(pool, type_str, t).await?
+    } else {
+        ActrPackage::get_by_type(pool, type_str).await?
+    };
+
+    match pkg {
+        Some(p) if p.status == PkgStatus::Active => {
+            // C1: manifest hash comparison (defense-in-depth)
+            if let Some(expected_hash) = manifest_hash {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(p.manifest.as_bytes());
+                let stored_hash = hasher.finalize();
+                if stored_hash.as_slice() != expected_hash {
+                    platform::recording::warn!(
+                        "manifest hash mismatch for type_str={}, target={:?}",
+                        type_str,
+                        target
+                    );
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
     }
-    let pkg = ActrPackage::get_by_type(pool, type_str).await?;
-    Ok(pkg.map(|p| p.status == PkgStatus::Active).unwrap_or(false))
 }

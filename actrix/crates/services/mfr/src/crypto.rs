@@ -38,3 +38,17 @@ pub fn generate_keypair() -> (String, String) {
     let public_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
     (private_b64, public_b64)
 }
+
+/// Validate that a base64-encoded string is a valid Ed25519 public key.
+/// Returns Ok(()) if valid, or a descriptive Crypto error.
+pub fn validate_public_key(public_key_b64: &str) -> Result<(), MfrError> {
+    let pubkey_bytes = base64::engine::general_purpose::STANDARD
+        .decode(public_key_b64)
+        .map_err(|e| MfrError::Crypto(format!("invalid public key encoding: {e}")))?;
+    let pubkey_arr: [u8; 32] = pubkey_bytes
+        .try_into()
+        .map_err(|_| MfrError::Crypto("public key must be 32 bytes".to_string()))?;
+    VerifyingKey::from_bytes(&pubkey_arr)
+        .map_err(|e| MfrError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
+    Ok(())
+}

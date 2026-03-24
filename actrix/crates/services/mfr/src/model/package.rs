@@ -28,8 +28,13 @@ pub struct ActrPackage {
     pub name: String,
     pub version: String,
     pub type_str: String,
+    /// Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu")
+    pub target: String,
     pub manifest: String,
     pub signature: String,
+    /// Proto files JSON for filing/audit (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proto_files: Option<String>,
     pub status: PkgStatus,
     pub published_at: i64,
     pub revoked_at: Option<i64>,
@@ -50,8 +55,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ActrPackage {
             name: row.try_get("name")?,
             version: row.try_get("version")?,
             type_str: row.try_get("type_str")?,
+            target: row.try_get("target").unwrap_or_default(),
             manifest: row.try_get("manifest")?,
             signature: row.try_get("signature")?,
+            proto_files: row.try_get("proto_files").unwrap_or_default(),
             status,
             published_at: row.try_get("published_at")?,
             revoked_at: row.try_get("revoked_at")?,
@@ -66,22 +73,26 @@ impl ActrPackage {
         manufacturer: &str,
         name: &str,
         version: &str,
+        target: &str,
         manifest: &str,
         signature: &str,
+        proto_files: Option<&str>,
     ) -> Result<Self, MfrError> {
         let type_str = format!("{}:{}:{}", manufacturer, name, version);
         let now = Utc::now().timestamp();
         let id = sqlx::query(
-            "INSERT INTO mfr_package (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            "INSERT INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, proto_files, status, published_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
         )
         .bind(mfr_id)
         .bind(manufacturer)
         .bind(name)
         .bind(version)
         .bind(&type_str)
+        .bind(target)
         .bind(manifest)
         .bind(signature)
+        .bind(proto_files)
         .bind(now)
         .execute(pool)
         .await
@@ -111,6 +122,21 @@ impl ActrPackage {
             "SELECT * FROM mfr_package WHERE type_str = ? AND status = 'active'",
         )
         .bind(type_str)
+        .fetch_optional(pool)
+        .await?)
+    }
+
+    /// Lookup by type_str + target platform, for cross-platform package distribution.
+    pub async fn get_by_type_and_target(
+        pool: &SqlitePool,
+        type_str: &str,
+        target: &str,
+    ) -> Result<Option<Self>, MfrError> {
+        Ok(sqlx::query_as::<_, ActrPackage>(
+            "SELECT * FROM mfr_package WHERE type_str = ? AND target = ? AND status = 'active'",
+        )
+        .bind(type_str)
+        .bind(target)
         .fetch_optional(pool)
         .await?)
     }

@@ -114,6 +114,13 @@ async fn setup_test_environment() -> TestEnv {
     let (endpoint, signer_handle, signer_shutdown_tx) =
         start_embedded_signer(&shared_key, signer_temp_dir.path()).await;
 
+    // Initialize the global database (required by verify_mfr_identity)
+    if !platform::storage::db::is_database_initialized() {
+        platform::storage::db::set_db_path(issuer_temp_dir.path())
+            .await
+            .expect("Failed to initialize test database");
+    }
+
     let signer_config = SignerClientConfig {
         endpoint,
         timeout_seconds: 10,
@@ -167,6 +174,43 @@ async fn test_end_to_end_credential_flow() {
     .await
     .expect("Failed to create issuer");
 
+    // Seed database with MFR and package data so verify_mfr_identity path-1 passes
+    {
+        let pool = platform::storage::db::get_database().get_pool();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        sqlx::query(
+            "INSERT OR IGNORE INTO mfr (name, public_key, status, created_at) VALUES (?, '', 'active', ?)",
+        )
+        .bind("acme")
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("Failed to insert test MFR");
+
+        let mfr_id: i64 = sqlx::query_scalar("SELECT id FROM mfr WHERE name = ?")
+            .bind("acme")
+            .fetch_one(pool)
+            .await
+            .expect("Failed to get MFR id");
+
+        sqlx::query(
+            "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at) VALUES (?, ?, ?, ?, ?, ?, '', '', 'active', ?)",
+        )
+        .bind(mfr_id)
+        .bind("acme")
+        .bind("test-device")
+        .bind("1.0.0")
+        .bind("acme:test-device:1.0.0")
+        .bind("wasm32-wasip1")
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("Failed to insert test package");
+    }
+
     let request = RegisterRequest {
         actr_type: ActrType {
             manufacturer: "acme".to_string(),
@@ -178,9 +222,10 @@ async fn test_end_to_end_credential_flow() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_json: None,
+        manifest_raw: None,
         mfr_signature: None,
         psk_token: None,
+        target: None,
     };
 
     let response = issuer
@@ -235,7 +280,7 @@ async fn test_end_to_end_credential_flow() {
         let req = RegisterRequest {
             actr_type: ActrType {
                 manufacturer: "acme".to_string(),
-                name: format!("test-device-{idx}"),
+                name: "test-device".to_string(),
                 version: "1.0.0".to_string(),
             },
             realm: Realm { realm_id: 1001 },
@@ -243,9 +288,10 @@ async fn test_end_to_end_credential_flow() {
             acl: None,
             service: None,
             ws_address: None,
-            manifest_json: None,
+            manifest_raw: None,
             mfr_signature: None,
             psk_token: None,
+            target: None,
         };
 
         let rsp = issuer
@@ -362,9 +408,10 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_json: None,
+        manifest_raw: None,
         mfr_signature: None,
         psk_token: None,
+        target: None,
     };
     let resp = issuer
         .issue_credential(&request)

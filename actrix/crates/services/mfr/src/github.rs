@@ -39,7 +39,7 @@ pub async fn verify_repo(
 
     let client = reqwest::Client::builder()
         .user_agent("actrix-mfr/0.1")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| MfrError::GitHub(format!("http client error: {e}")))?;
 

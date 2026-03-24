@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Building2, CheckCircle, Clock, XCircle, AlertTriangle, Package, Key, Copy, Plus, Terminal, Download } from 'lucide-react';
-import { mfrApi, type Manufacturer, type ActrPackage, type MfrKeychain, type ApplyResponse } from '../../lib/api';
+import { mfrApi, type Manufacturer, type ActrPackage, type ActivateResponse, type ApplyResponse } from '../../lib/api';
 
 function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -62,9 +62,10 @@ function StatusBadge({ status }: { status: Manufacturer['status'] }) {
 
 // ── Keychain modal ────────────────────────────────────────────────
 
-function KeychainModal({ keychain, onClose }: { keychain: MfrKeychain; onClose: () => void }) {
-  const json = JSON.stringify(keychain, null, 2);
-  const name = keychain.certificate.mfr_name;
+function KeychainModal({ response, onClose }: { response: ActivateResponse; onClose: () => void }) {
+  const json = JSON.stringify(response, null, 2);
+  const name = response.certificate.mfr_name;
+  const isGenerated = response.key_source === 'generated';
   const filename = `mfr-${name}-keychain.json`;
   const saveCommand = `mkdir -p ~/.config/actrix && cat > ~/.config/actrix/${filename} << 'KEYCHAIN'\n${json}\nKEYCHAIN`;
 
@@ -83,21 +84,38 @@ function KeychainModal({ keychain, onClose }: { keychain: MfrKeychain; onClose: 
       <div className="bg-white rounded-xl shadow-xl p-6 max-w-2xl w-full mx-4">
         <div className="flex items-center gap-2 mb-4">
           <Key className="text-amber-500" size={20} />
-          <h2 className="text-lg font-semibold">MFR Keychain Issued</h2>
-        </div>
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm text-amber-800">
-          Save this private key now. It will NOT be shown again.
+          <h2 className="text-lg font-semibold">
+            {isGenerated ? 'MFR Keychain Issued' : 'MFR Certificate Issued'}
+          </h2>
+          <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+            isGenerated ? 'bg-amber-100 text-amber-800' : 'bg-teal-100 text-teal-800'
+          }`}>
+            {isGenerated ? 'Server Generated' : 'Key Uploaded'}
+          </span>
         </div>
 
-        {/* One-liner save command */}
-        <div className="mb-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Terminal size={12} className="text-gray-400" />
-            <label className="text-xs text-gray-500">Save to ~/.config/actrix/</label>
-            <CopyButton text={saveCommand} className="text-xs text-blue-600 hover:text-blue-800 ml-auto relative" />
+        {isGenerated ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm text-amber-800">
+            <p className="font-medium">Save this private key now. It will NOT be shown again.</p>
+            <p className="mt-1 text-amber-700">The platform only stores your public key for signature verification. Your private key is never stored, logged, or backed up — if lost, it cannot be recovered.</p>
           </div>
-          <pre className="bg-gray-900 text-green-400 rounded-lg p-3 text-xs overflow-x-auto whitespace-pre-wrap font-mono max-h-40">{saveCommand}</pre>
-        </div>
+        ) : (
+          <div className="bg-teal-50 border border-teal-200 rounded-lg p-3 mb-4 text-sm text-teal-800">
+            Your uploaded public key has been registered. Use your own private key to sign packages.
+          </div>
+        )}
+
+        {/* One-liner save command (only for generated mode) */}
+        {isGenerated && (
+          <div className="mb-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Terminal size={12} className="text-gray-400" />
+              <label className="text-xs text-gray-500">Save to ~/.config/actrix/</label>
+              <CopyButton text={saveCommand} className="text-xs text-blue-600 hover:text-blue-800 ml-auto relative" />
+            </div>
+            <pre className="bg-gray-900 text-green-400 rounded-lg p-3 text-xs overflow-x-auto whitespace-pre-wrap font-mono max-h-40">{saveCommand}</pre>
+          </div>
+        )}
 
         {/* Raw JSON (collapsed) */}
         <details className="mb-4">
@@ -440,7 +458,7 @@ function CreateModal({
   resumeMfr,
 }: {
   onClose: () => void;
-  onDone: (keychain: MfrKeychain) => void;
+  onDone: (response: ActivateResponse) => void;
   resumeMfr?: Manufacturer;
 }) {
   const [step, setStep] = useState<CreateStep>(resumeMfr ? 'verify' : 'input');
@@ -451,6 +469,8 @@ function CreateModal({
   const [applyResult, setApplyResult] = useState<ApplyResponse | null>(null);
   const [cooldown, setCooldown] = useState(0);
   const [verifyAttempted, setVerifyAttempted] = useState(false);
+  const [useOwnKey, setUseOwnKey] = useState(false);
+  const [publicKey, setPublicKey] = useState('');
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Resume: fetch existing challenge
@@ -516,7 +536,7 @@ function CreateModal({
     setLoading(true);
     setError(null);
     try {
-      const kc = await mfrApi.verify(applyResult.mfr_id);
+      const kc = await mfrApi.verify(applyResult.mfr_id, useOwnKey && publicKey.trim() ? publicKey.trim() : undefined);
       onDone(kc);
     } catch (e) {
       setError(String(e));
@@ -565,7 +585,7 @@ function CreateModal({
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 mb-4">{error}</div>
         )}
 
-        {/* Step 1: Input */}
+        {/* Step 1: Input + Key Mode */}
         {step === 'input' && (
           <div className="space-y-4">
             <div>
@@ -592,11 +612,45 @@ function CreateModal({
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-400"
               />
             </div>
+
+            {/* Signing Key Mode */}
+            <div className="border border-gray-200 rounded-lg p-3">
+              <div className="flex items-center gap-3 mb-2">
+                <label className="text-sm font-medium text-gray-700">Signing Key</label>
+                <div className="flex bg-gray-100 rounded-lg p-0.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setUseOwnKey(false)}
+                    className={`px-3 py-1 rounded-md transition-all ${!useOwnKey ? 'bg-white shadow text-gray-900 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+                  >Generate for me</button>
+                  <button
+                    type="button"
+                    onClick={() => setUseOwnKey(true)}
+                    className={`px-3 py-1 rounded-md transition-all ${useOwnKey ? 'bg-white shadow text-gray-900 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+                  >Use my own key</button>
+                </div>
+              </div>
+              {useOwnKey ? (
+                <div>
+                  <input
+                    type="text"
+                    value={publicKey}
+                    onChange={e => setPublicKey(e.target.value)}
+                    placeholder="Base64-encoded Ed25519 public key (32 bytes)"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-gray-400"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Paste your Ed25519 public key. The private key stays with you — the platform will never see it.</p>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">The platform will generate an Ed25519 keypair. The private key will be shown <strong>once</strong> and is never stored on the server.</p>
+              )}
+            </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={handleCancel} className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
               <button
                 onClick={() => void handleApply()}
-                disabled={loading || !name.trim()}
+                disabled={loading || !name.trim() || (useOwnKey && !publicKey.trim())}
                 className="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm hover:bg-gray-700 disabled:opacity-50"
               >
                 {loading ? 'Submitting...' : 'Next'}
@@ -663,6 +717,95 @@ function CreateModal({
   );
 }
 
+// ── Proto expandable row ──────────────────────────────────────────
+
+function ProtoExpandableRow({
+  pkg,
+  protoData,
+  protoCount,
+  hasProto,
+  ts,
+  onRevoke,
+}: {
+  pkg: ActrPackage;
+  protoData: { protobufs?: { name: string; content: string }[] } | null;
+  protoCount: number;
+  hasProto: boolean;
+  ts: (t: number) => string;
+  onRevoke: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <>
+      <tr className={`hover:bg-gray-50 ${expanded ? 'bg-blue-50/30' : ''}`}>
+        <td className="px-4 py-3 font-mono text-gray-900">{pkg.type_str}</td>
+        <td className="px-4 py-3 text-gray-500 font-mono text-xs">{pkg.target || '—'}</td>
+        <td className="px-4 py-3 text-gray-600">{pkg.manufacturer}</td>
+        <td className="px-4 py-3">
+          {hasProto && protoCount > 0 ? (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors ${
+                expanded
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-blue-100 text-blue-800 hover:bg-blue-200'
+              }`}
+            >
+              <span className="text-[10px]">{expanded ? '▼' : '▶'}</span>
+              {protoCount} file{protoCount > 1 ? 's' : ''}
+            </button>
+          ) : (
+            <span className="text-gray-300 text-xs">—</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+            pkg.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+          }`}>{pkg.status}</span>
+        </td>
+        <td className="px-4 py-3 text-gray-500">{ts(pkg.published_at)}</td>
+        <td className="px-4 py-3">
+          {pkg.status === 'active' && (
+            <button
+              onClick={onRevoke}
+              className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
+            >Revoke</button>
+          )}
+        </td>
+      </tr>
+      {expanded && protoData?.protobufs && (
+        <tr>
+          <td colSpan={7} className="px-0 py-0">
+            <div className="bg-gray-900 border-t border-gray-700">
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-700">
+                <span className="text-gray-400 text-xs font-medium">Proto Files — {pkg.type_str}</span>
+              </div>
+              <div className="divide-y divide-gray-700">
+                {protoData.protobufs.map((proto, i) => (
+                  <div key={i}>
+                    <div className="flex items-center justify-between px-4 py-1.5 bg-gray-800">
+                      <span className="text-xs font-mono text-teal-400">{proto.name}</span>
+                      <CopyButton
+                        text={proto.content}
+                        label="Copy"
+                        className="text-[10px] text-gray-400 hover:text-gray-200 relative"
+                      />
+                    </div>
+                    <pre className="px-4 py-3 text-xs font-mono text-green-400 overflow-x-auto whitespace-pre leading-relaxed max-h-80 overflow-y-auto">
+                      {proto.content}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────
 
 export function MfrService() {
@@ -671,7 +814,7 @@ export function MfrService() {
   const [selectedMfr, setSelectedMfr] = useState<Manufacturer | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [keychain, setKeychain] = useState<MfrKeychain | null>(null);
+  const [activateResult, setActivateResult] = useState<ActivateResponse | null>(null);
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [resumeMfr, setResumeMfr] = useState<Manufacturer | null>(null);
@@ -723,8 +866,8 @@ export function MfrService() {
     catch (e) { setError(String(e)); }
   };
 
-  const handleCreateDone = (kc: MfrKeychain) => {
-    setKeychain(kc);
+  const handleCreateDone = (res: ActivateResponse) => {
+    setActivateResult(res);
     setShowCreate(false);
     setResumeMfr(null);
     void loadData();
@@ -747,7 +890,7 @@ export function MfrService() {
 
   return (
     <div className="p-6 space-y-6">
-      {keychain && <KeychainModal keychain={keychain} onClose={() => setKeychain(null)} />}
+      {activateResult && <KeychainModal response={activateResult} onClose={() => setActivateResult(null)} />}
       {(showCreate || resumeMfr) && (
         <CreateModal
           onClose={() => { setShowCreate(false); setResumeMfr(null); }}
@@ -877,35 +1020,34 @@ export function MfrService() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
             <tr>
-              {['Type', 'Manufacturer', 'Status', 'Published', 'Actions'].map(h => (
+              {['Type', 'Target', 'Manufacturer', 'Proto', 'Status', 'Published', 'Actions'].map(h => (
                 <th key={h} className="px-4 py-2 text-left font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {filteredPackages.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No packages</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No packages</td></tr>
             )}
-            {filteredPackages.map(pkg => (
-              <tr key={pkg.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-mono text-gray-900">{pkg.type_str}</td>
-                <td className="px-4 py-3 text-gray-600">{pkg.manufacturer}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                    pkg.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                  }`}>{pkg.status}</span>
-                </td>
-                <td className="px-4 py-3 text-gray-500">{ts(pkg.published_at)}</td>
-                <td className="px-4 py-3">
-                  {pkg.status === 'active' && (
-                    <button
-                      onClick={() => void handleRevokePackage(pkg)}
-                      className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-                    >Revoke</button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {filteredPackages.map(pkg => {
+              const hasProto = !!pkg.proto_files;
+              let protoData: { protobufs?: { name: string; content: string }[] } | null = null;
+              if (hasProto) {
+                try { protoData = JSON.parse(pkg.proto_files!); } catch { /* ignore */ }
+              }
+              const protoCount = protoData?.protobufs?.length ?? 0;
+              return (
+                <ProtoExpandableRow
+                  key={pkg.id}
+                  pkg={pkg}
+                  protoData={protoData}
+                  protoCount={protoCount}
+                  hasProto={hasProto}
+                  ts={ts}
+                  onRevoke={() => void handleRevokePackage(pkg)}
+                />
+              );
+            })}
           </tbody>
         </table>
       </div>

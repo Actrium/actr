@@ -537,8 +537,10 @@ impl AIdIssuer {
         // 确保有可用的密钥
         self.ensure_key_loaded().await?;
 
-        // 验证 MFR 包注册状态（保留名称自动跳过）
-        self.verify_actr_type(&request.actr_type).await?;
+        // verify MFR identity (check mfr_package table; pass if registered and active (published package))
+        // otherwise try signature verification (own package, not yet published)
+        // otherwise reject
+        self.verify_mfr_identity(request).await?;
 
         // 生成 ActrId
         let actr_id = self.generate_actr_id(&request.actr_type, &request.realm)?;
@@ -601,36 +603,95 @@ impl AIdIssuer {
         })
     }
 
-    /// 验证 ActrType 是否已在 MFR 注册且处于激活状态
+    /// verify MFR identity
     ///
-    /// 保留名称（self / acme / actrix）无需注册，直接放行。
-    /// 其他 manufacturer 必须在 MFR 中存在且对应包处于激活状态。
-    async fn verify_actr_type(&self, actr_type: &ActrType) -> Result<(), AidError> {
+    /// Path 1: check mfr_package table; pass if registered and active (published package)
+    /// Path 2: not in table, try signature verification (own package, not yet published)
+    /// Otherwise reject
+    async fn verify_mfr_identity(&self, request: &RegisterRequest) -> Result<(), AidError> {
+        let actr_type = &request.actr_type;
         if actr_type.version.is_empty() {
             return Err(AidError::InvalidFormat);
         }
 
         let type_str = actr_type.to_string_repr();
+        let mfr_name = &actr_type.manufacturer;
 
-        // 保留名（self / acme / actrix）无需查库，直接放行
-        if actrix_mfr::reserved::is_reserved(&actr_type.manufacturer) {
-            platform::recording::debug!("MFR 保留名，跳过验证，type_str={}", type_str);
-            return Ok(());
-        }
-
+        // Path 1: check mfr_package table (with target + manifest hash defense-in-depth)
         let pool = platform::storage::db::get_database().get_pool().clone();
+        let target_ref = request.target.as_deref();
 
-        let valid = actrix_mfr::manager::lookup_package(&pool, &type_str)
+        // If the request carries manifest bytes, compute SHA-256 for defense-in-depth comparison
+        let manifest_hash = request.manifest_raw.as_ref().map(|m| {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(m.as_ref());
+            hasher.finalize().to_vec()
+        });
+        let hash_ref = manifest_hash.as_deref();
+
+        let found = actrix_mfr::manager::lookup_package(&pool, &type_str, target_ref, hash_ref)
             .await
             .map_err(|e| AidError::GenerationFailed(format!("MFR lookup failed: {e}")))?;
 
-        if !valid {
-            platform::recording::warn!("MFR 验证失败：包未注册或已被吊销，type_str={}", type_str);
-            return Err(AidError::ManufacturerNotVerified);
+        if found {
+            platform::recording::debug!("MFR table lookup passed, type_str={}", type_str);
+            return Ok(());
         }
 
-        platform::recording::debug!("MFR 验证通过，type_str={}", type_str);
-        Ok(())
+        // Path 2: not in table -> verify signature (own package, not yet published)
+        if let (Some(manifest_bytes), Some(mfr_signature)) =
+            (&request.manifest_raw, &request.mfr_signature)
+        {
+            // Look up the manufacturer's public key
+            let mfr_info = actrix_mfr::MfrManager::new(pool)
+                .resolve_by_name(mfr_name)
+                .await
+                .map_err(|e| {
+                    platform::recording::warn!(
+                        "MFR public key lookup failed: manufacturer={}, err={}",
+                        mfr_name,
+                        e
+                    );
+                    AidError::GenerationFailed(format!("MFR lookup failed: {e}"))
+                })?;
+
+            // Verify signature using the manufacturer's public key
+            let sig_b64 = base64::prelude::BASE64_STANDARD.encode(mfr_signature.as_ref());
+            let valid = actrix_mfr::crypto::verify_signature(
+                manifest_bytes.as_ref(),
+                &sig_b64,
+                &mfr_info.public_key,
+            )
+            .map_err(|e| {
+                platform::recording::warn!(
+                    "MFR signature verification error: manufacturer={}, err={}",
+                    mfr_name,
+                    e
+                );
+                AidError::GenerationFailed(format!("Signature verification error: {e}"))
+            })?;
+
+            if valid {
+                platform::recording::debug!(
+                    "MFR signature verification passed, type_str={}",
+                    type_str
+                );
+                return Ok(());
+            }
+
+            platform::recording::warn!(
+                "MFR signature verification failed: invalid signature, type_str={}",
+                type_str
+            );
+        } else {
+            platform::recording::warn!(
+                "MFR verification failed: package not registered and no signature provided, type_str={}",
+                type_str
+            );
+        }
+
+        Err(AidError::ManufacturerNotVerified)
     }
 
     /// 生成 ActrId

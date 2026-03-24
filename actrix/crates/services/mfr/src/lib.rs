@@ -1,4 +1,4 @@
-mod crypto;
+pub mod crypto;
 pub mod error;
 pub mod github;
 pub mod handlers;

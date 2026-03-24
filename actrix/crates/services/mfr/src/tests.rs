@@ -5,9 +5,9 @@ use sqlx::SqlitePool;
 
 use crate::{
     MfrError, crypto,
-    manager::{MfrManager, PublishRequest, lookup_package},
+    manager::{KeySource, MfrManager, PublishRequest, lookup_package},
     model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus},
-    reserved::{is_reserved, validate_github_login},
+    reserved::validate_github_login,
 };
 
 // ─── 测试辅助 ────────────────────────────────────────────────────────────────
@@ -60,12 +60,14 @@ async fn setup_test_pool() -> SqlitePool {
             name TEXT NOT NULL,
             version TEXT NOT NULL,
             type_str TEXT NOT NULL,
+            target TEXT NOT NULL,
             manifest TEXT NOT NULL,
             signature TEXT NOT NULL,
+            proto_files TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             published_at INTEGER NOT NULL,
             revoked_at INTEGER,
-            UNIQUE(manufacturer, name, version)
+            UNIQUE(manufacturer, name, version, target)
         )",
     )
     .execute(&pool)
@@ -75,43 +77,14 @@ async fn setup_test_pool() -> SqlitePool {
     pool
 }
 
-// ─── reserved.rs 纯单元测试 ──────────────────────────────────────────────────
+// ─── reserved.rs tests ──────────────────────────────────────────────────
 
 #[test]
-fn test_reserved_names_exact() {
-    assert!(is_reserved("self"));
-    assert!(is_reserved("acme"));
-    assert!(is_reserved("actrix"));
-}
-
-#[test]
-fn test_reserved_names_case_insensitive() {
-    assert!(is_reserved("SELF"));
-    assert!(is_reserved("Acme"));
-    assert!(is_reserved("ACTRIX"));
-}
-
-#[test]
-fn test_non_reserved_names() {
-    assert!(!is_reserved("mycompany"));
-    assert!(!is_reserved("apple"));
-    assert!(!is_reserved("openai"));
-}
-
-#[test]
-fn test_validate_github_login_reserved() {
-    assert!(matches!(
-        validate_github_login("self"),
-        Err(MfrError::ReservedName(_))
-    ));
-    assert!(matches!(
-        validate_github_login("acme"),
-        Err(MfrError::ReservedName(_))
-    ));
-    assert!(matches!(
-        validate_github_login("actrix"),
-        Err(MfrError::ReservedName(_))
-    ));
+fn test_validate_github_login_accepts_former_reserved() {
+    // Previously reserved names are now valid manufacturer names
+    assert!(validate_github_login("self").is_ok());
+    assert!(validate_github_login("acme").is_ok());
+    assert!(validate_github_login("actrix").is_ok());
 }
 
 #[test]
@@ -528,8 +501,10 @@ async fn test_package_publish_and_get() {
         "pkgco",
         "client",
         "1.0.0",
+        "wasm32-wasip1",
         "manifest content",
         "sig123",
+        None,
     )
     .await
     .unwrap();
@@ -562,10 +537,31 @@ async fn test_package_duplicate_rejected() {
     let mut mfr = Manufacturer::create(&pool, "dupkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "1.0.0", "m", "s")
-        .await
-        .unwrap();
-    let result = ActrPackage::publish(&pool, mfr.id, "dupkg", "svc", "1.0.0", "m2", "s2").await;
+    ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "dupkg",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
+    let result = ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "dupkg",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m2",
+        "s2",
+        None,
+    )
+    .await;
     assert!(
         matches!(result, Err(MfrError::PackageAlreadyPublished)),
         "duplicate publish should return PackageAlreadyPublished"
@@ -578,9 +574,19 @@ async fn test_package_revoke() {
     let mut mfr = Manufacturer::create(&pool, "revpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revpkg", "svc", "1.0.0", "m", "s")
-        .await
-        .unwrap();
+    let mut pkg = ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "revpkg",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
     pkg.revoke(&pool).await.unwrap();
 
     assert_eq!(pkg.status, PkgStatus::Revoked);
@@ -601,12 +607,32 @@ async fn test_package_list_by_mfr() {
     let mut mfr = Manufacturer::create(&pool, "listpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    ActrPackage::publish(&pool, mfr.id, "listpkg", "alpha", "1.0.0", "m", "s")
-        .await
-        .unwrap();
-    ActrPackage::publish(&pool, mfr.id, "listpkg", "beta", "1.0.0", "m", "s")
-        .await
-        .unwrap();
+    ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "listpkg",
+        "alpha",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
+    ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "listpkg",
+        "beta",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
 
     let pkgs = ActrPackage::list_by_mfr(&pool, mfr.id).await.unwrap();
     assert_eq!(pkgs.len(), 2);
@@ -618,9 +644,19 @@ async fn test_package_get_by_id() {
     let mut mfr = Manufacturer::create(&pool, "idpkg", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
 
-    let pkg = ActrPackage::publish(&pool, mfr.id, "idpkg", "svc", "1.0.0", "m", "s")
-        .await
-        .unwrap();
+    let pkg = ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "idpkg",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
 
     let found = ActrPackage::get_by_id(&pool, pkg.id).await.unwrap();
     assert!(found.is_some());
@@ -630,18 +666,34 @@ async fn test_package_get_by_id() {
 // ─── manager.rs 测试（需 DB）─────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_lookup_package_reserved() {
+async fn test_lookup_package_no_reserved_shortcut() {
     let pool = setup_test_pool().await;
-    assert!(lookup_package(&pool, "self:anything:1.0.0").await.unwrap());
-    assert!(lookup_package(&pool, "acme:client:1.0.0").await.unwrap());
-    assert!(lookup_package(&pool, "actrix:core:1.0.0").await.unwrap());
-    assert!(lookup_package(&pool, "SELF:svc:1.0.0").await.unwrap());
+    // No reserved names anymore; unregistered names return false
+    assert!(
+        !lookup_package(&pool, "self:anything:1.0.0", None, None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !lookup_package(&pool, "acme:client:1.0.0", None, None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !lookup_package(&pool, "actrix:core:1.0.0", None, None)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
 async fn test_lookup_package_not_registered() {
     let pool = setup_test_pool().await;
-    assert!(!lookup_package(&pool, "unknown:svc:1.0.0").await.unwrap());
+    assert!(
+        !lookup_package(&pool, "unknown:svc:1.0.0", None, None)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -649,12 +701,30 @@ async fn test_lookup_package_active() {
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "lookco", None).await.unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
-    ActrPackage::publish(&pool, mfr.id, "lookco", "svc", "1.0.0", "m", "s")
-        .await
-        .unwrap();
+    ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "lookco",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
 
-    assert!(lookup_package(&pool, "lookco:svc:1.0.0").await.unwrap());
-    assert!(!lookup_package(&pool, "lookco:svc:v2").await.unwrap());
+    assert!(
+        lookup_package(&pool, "lookco:svc:1.0.0", None, None)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !lookup_package(&pool, "lookco:svc:v2", None, None)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -664,13 +734,23 @@ async fn test_lookup_package_revoked() {
         .await
         .unwrap();
     mfr.activate(&pool, "pk".to_string()).await.unwrap();
-    let mut pkg = ActrPackage::publish(&pool, mfr.id, "revokedlook", "svc", "1.0.0", "m", "s")
-        .await
-        .unwrap();
+    let mut pkg = ActrPackage::publish(
+        &pool,
+        mfr.id,
+        "revokedlook",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        "m",
+        "s",
+        None,
+    )
+    .await
+    .unwrap();
     pkg.revoke(&pool).await.unwrap();
 
     assert!(
-        !lookup_package(&pool, "revokedlook:svc:1.0.0")
+        !lookup_package(&pool, "revokedlook:svc:1.0.0", None, None)
             .await
             .unwrap(),
         "revoked package should not be found"
@@ -678,11 +758,12 @@ async fn test_lookup_package_revoked() {
 }
 
 #[tokio::test]
-async fn test_manager_apply_reserved_rejected() {
+async fn test_manager_apply_formerly_reserved_accepted() {
     let pool = setup_test_pool().await;
     let manager = MfrManager::new(pool);
+    // Previously reserved names are now accepted
     let result = manager.apply("acme", None).await;
-    assert!(matches!(result, Err(MfrError::ReservedName(_))));
+    assert!(result.is_ok());
 }
 
 #[tokio::test]
@@ -734,11 +815,13 @@ async fn test_manager_admin_approve() {
     let manager = MfrManager::new(pool);
     let (mfr, _) = manager.apply("approveco", None).await.unwrap();
 
-    let keychain = manager.admin_approve(mfr.id).await.unwrap();
-    assert_eq!(keychain.certificate.mfr_name, "approveco");
-    assert!(!keychain.private_key.is_empty());
-    assert!(!keychain.certificate.mfr_pubkey.is_empty());
-    assert!(keychain.certificate.expires_at > keychain.certificate.issued_at);
+    let response = manager.admin_approve(mfr.id, None).await.unwrap();
+    assert_eq!(response.certificate.mfr_name, "approveco");
+    assert_eq!(response.key_source, KeySource::Generated);
+    assert!(response.private_key.is_some());
+    assert!(!response.private_key.as_ref().unwrap().is_empty());
+    assert!(!response.certificate.mfr_pubkey.is_empty());
+    assert!(response.certificate.expires_at > response.certificate.issued_at);
 }
 
 #[tokio::test]
@@ -746,7 +829,7 @@ async fn test_manager_admin_suspend_reinstate() {
     let pool = setup_test_pool().await;
     let manager = MfrManager::new(pool);
     let (mfr, _) = manager.apply("suspco", None).await.unwrap();
-    manager.admin_approve(mfr.id).await.unwrap();
+    manager.admin_approve(mfr.id, None).await.unwrap();
 
     manager.admin_suspend(mfr.id).await.unwrap();
     let status = manager.get_status(mfr.id).await.unwrap();
@@ -776,7 +859,7 @@ async fn test_manager_publish_invalid_signature() {
     let pool = setup_test_pool().await;
     let manager = MfrManager::new(pool);
     let (mfr, _) = manager.apply("sigco", None).await.unwrap();
-    manager.admin_approve(mfr.id).await.unwrap();
+    manager.admin_approve(mfr.id, None).await.unwrap();
 
     let bad_sig = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
     let result = manager
@@ -784,8 +867,10 @@ async fn test_manager_publish_invalid_signature() {
             manufacturer: "sigco".to_string(),
             name: "svc".to_string(),
             version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
             manifest: "manifest content".to_string(),
             signature: bad_sig,
+            proto_files: None,
         })
         .await;
     assert!(
@@ -822,8 +907,10 @@ async fn test_manager_publish_valid_signature() {
             manufacturer: "validpub".to_string(),
             name: "client".to_string(),
             version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
             manifest: manifest.to_string(),
             signature: sig_b64,
+            proto_files: None,
         })
         .await
         .unwrap();
@@ -845,8 +932,10 @@ async fn test_manager_publish_inactive_mfr() {
             manufacturer: "pendingmfr".to_string(),
             name: "svc".to_string(),
             version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
             manifest: "m".to_string(),
             signature: "s".to_string(),
+            proto_files: None,
         })
         .await;
     assert!(
@@ -860,7 +949,7 @@ async fn test_manager_resolve_by_name() {
     let pool = setup_test_pool().await;
     let manager = MfrManager::new(pool);
     let (mfr, _) = manager.apply("resolveco", None).await.unwrap();
-    manager.admin_approve(mfr.id).await.unwrap();
+    manager.admin_approve(mfr.id, None).await.unwrap();
 
     let info = manager.resolve_by_name("resolveco").await.unwrap();
     assert_eq!(info.name, "resolveco");
@@ -900,8 +989,10 @@ async fn test_manager_get_and_revoke_package() {
             manufacturer: "revmgr".to_string(),
             name: "svc".to_string(),
             version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
             manifest: manifest.to_string(),
             signature: sig_b64,
+            proto_files: None,
         })
         .await
         .unwrap();
@@ -922,7 +1013,7 @@ async fn test_manager_admin_list() {
 
     manager.apply("adminlist1", None).await.unwrap();
     let (mfr2, _) = manager.apply("adminlist2", None).await.unwrap();
-    manager.admin_approve(mfr2.id).await.unwrap();
+    manager.admin_approve(mfr2.id, None).await.unwrap();
 
     let all = manager.admin_list(None).await.unwrap();
     assert_eq!(all.len(), 2);
@@ -956,8 +1047,10 @@ async fn test_manager_list_packages_by_mfr() {
                 manufacturer: "listmgr".to_string(),
                 name: pkg_name.to_string(),
                 version: "1.0.0".to_string(),
+                target: "wasm32-wasip1".to_string(),
                 manifest,
                 signature: sig_b64,
+                proto_files: None,
             })
             .await
             .unwrap();
@@ -968,4 +1061,154 @@ async fn test_manager_list_packages_by_mfr() {
 
     let all = manager.list_packages(None).await.unwrap();
     assert_eq!(all.len(), 2);
+}
+
+// ─── dual key mode 测试 ──────────────────────────────────────────────────────
+
+#[test]
+fn test_validate_public_key_valid() {
+    let (_, pub_b64) = crypto::generate_keypair();
+    assert!(crypto::validate_public_key(&pub_b64).is_ok());
+}
+
+#[test]
+fn test_validate_public_key_bad_base64() {
+    let result = crypto::validate_public_key("not-valid-base64!!!");
+    assert!(
+        matches!(result, Err(MfrError::Crypto(_))),
+        "bad base64 should return Crypto error"
+    );
+}
+
+#[test]
+fn test_validate_public_key_wrong_length() {
+    use base64::Engine as _;
+    let short = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
+    let result = crypto::validate_public_key(&short);
+    assert!(
+        matches!(result, Err(MfrError::Crypto(_))),
+        "16-byte key should be rejected"
+    );
+}
+
+#[test]
+fn test_validate_public_key_all_zeros() {
+    use base64::Engine as _;
+    let zeros = base64::engine::general_purpose::STANDARD.encode([0u8; 32]);
+    // All-zero bytes may or may not be a valid curve point depending on the library.
+    // We just verify it does not panic — either Ok or Err(Crypto) is acceptable.
+    let result = crypto::validate_public_key(&zeros);
+    assert!(
+        result.is_ok() || matches!(result, Err(MfrError::Crypto(_))),
+        "all-zero key should return Ok or Crypto error, not panic"
+    );
+}
+
+#[tokio::test]
+async fn test_manager_admin_approve_with_uploaded_key() {
+    use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool);
+    let (mfr, _) = manager.apply("uploadco", None).await.unwrap();
+
+    // User generates their own keypair
+    let user_key = SigningKey::generate(&mut OsRng);
+    let user_pub_b64 =
+        base64::engine::general_purpose::STANDARD.encode(user_key.verifying_key().to_bytes());
+
+    let response = manager
+        .admin_approve(mfr.id, Some(&user_pub_b64))
+        .await
+        .unwrap();
+
+    assert_eq!(response.key_source, KeySource::Uploaded);
+    assert!(
+        response.private_key.is_none(),
+        "uploaded mode should NOT return a private key"
+    );
+    assert_eq!(response.certificate.mfr_pubkey, user_pub_b64);
+    assert_eq!(response.certificate.mfr_name, "uploadco");
+}
+
+#[tokio::test]
+async fn test_manager_admin_approve_with_invalid_key_rejected() {
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool);
+    let (mfr, _) = manager.apply("badkeyco", None).await.unwrap();
+
+    let result = manager.admin_approve(mfr.id, Some("not-a-valid-key")).await;
+    assert!(
+        matches!(result, Err(MfrError::Crypto(_))),
+        "invalid public key should be rejected with Crypto error: {result:?}"
+    );
+
+    // Verify MFR is still pending (not corrupted)
+    let status = manager.get_status(mfr.id).await.unwrap();
+    assert_eq!(
+        status.status,
+        MfrStatus::Pending,
+        "MFR should remain pending after failed activation"
+    );
+}
+
+#[tokio::test]
+async fn test_manager_admin_approve_generated_mode_default() {
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool);
+    let (mfr, _) = manager.apply("gendefault", None).await.unwrap();
+
+    // No public_key passed => generated mode
+    let response = manager.admin_approve(mfr.id, None).await.unwrap();
+
+    assert_eq!(response.key_source, KeySource::Generated);
+    assert!(
+        response.private_key.is_some(),
+        "generated mode should return a private key"
+    );
+    assert!(!response.private_key.as_ref().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_manager_uploaded_key_can_publish() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool);
+    let (mfr, _) = manager.apply("pubupload", None).await.unwrap();
+
+    // User generates their own keypair and uploads only the public key
+    let user_key = SigningKey::generate(&mut OsRng);
+    let user_pub_b64 =
+        base64::engine::general_purpose::STANDARD.encode(user_key.verifying_key().to_bytes());
+
+    manager
+        .admin_approve(mfr.id, Some(&user_pub_b64))
+        .await
+        .unwrap();
+
+    // Now sign and publish using the user's private key
+    let manifest = "type = \"pubupload:widget:1.0.0\"\nbinary_hash = \"sha256:def\"";
+    let sig = user_key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let pkg = manager
+        .publish_package(PublishRequest {
+            manufacturer: "pubupload".to_string(),
+            name: "widget".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: manifest.to_string(),
+            signature: sig_b64,
+            proto_files: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(pkg.type_str, "pubupload:widget:1.0.0");
+    assert_eq!(pkg.status, PkgStatus::Active);
 }
