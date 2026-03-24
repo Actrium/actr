@@ -44,7 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📦 GreeterService workload created");
 
     // Build node with workload
-    let node = ActrNode::new(config, workload).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
     info!("✅ ActrNode created with workload");
 
     // Start the node

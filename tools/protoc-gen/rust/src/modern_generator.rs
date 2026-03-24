@@ -521,14 +521,11 @@ impl {handler_trait} for MyService {{
 #[tokio::main]
 async fn main() -> ActorResult<()> {{
     let config = actr_config::Config::from_file("actr.toml")?;
-    let service = MyService {{ /* ... */ }};
-
-    ActorSystem::new(config)?
-        .attach(service)  // <- automatically gets Workload + Dispatcher
-        .start()
-        .await?
-        .wait_for_shutdown()
-        .await
+    let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
+    let package = WorkloadPackage::new(std::fs::read("dist/my-service.actr")?);
+    let (node, _manifest) = hyper.attach(&package, config).await?;
+    let actr_ref = node.start().await?;
+    actr_ref.wait_for_shutdown().await
 }}
 ```
 
@@ -536,7 +533,7 @@ async fn main() -> ActorResult<()> {{
 
 - **{handler_trait}**: user-implemented business logic interface
 - **{}Dispatcher**: zero-sized type static dispatcher (auto-generated)
-- **Workload**: automatically obtained via blanket impl (auto-generated)
+- **Package host**: runtime entry now comes from `Hyper.attach(...)`
 
 Users only need to implement {handler_trait}; the framework auto-provides routing and workload capabilities.
 */

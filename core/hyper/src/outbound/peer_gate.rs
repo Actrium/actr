@@ -126,6 +126,19 @@ impl PeerGate {
                         ..
                     }
                     | ConnectionEvent::ConnectionClosed { peer_id, .. } => {
+                        let dest = Dest::actor(peer_id.clone());
+
+                        // A close event may belong to a failed intermediate WebRTC attempt while
+                        // the factory is still retrying. In that case the original RPC should keep
+                        // waiting instead of being failed as "connection closed".
+                        if transport_manager.is_connecting(&dest).await {
+                            tracing::debug!(
+                                "Ignoring transient close for peer {} while connection factory is still running",
+                                peer_id.to_string_repr()
+                            );
+                            continue;
+                        }
+
                         // Mark peer as closing (release lock immediately to avoid deadlock)
                         {
                             closing_peers.write().await.insert(peer_id.clone());
@@ -135,7 +148,6 @@ impl PeerGate {
                         // Note: We don't hold closing_peers lock here to avoid deadlock when
                         // close_transport needs to acquire its own locks or when multiple
                         // connections are closing simultaneously during shutdown.
-                        let dest = Dest::actor(peer_id.clone());
                         match transport_manager.close_transport(&dest).await {
                             Ok(_) => {
                                 tracing::info!(

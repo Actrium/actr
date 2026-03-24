@@ -18,8 +18,8 @@ napi-derive = "3.5.1"
 # actr dependencies
 actr-protocol = { path = "../../core/protocol" }
 actr-framework = { path = "../../core/framework" }
-actr-runtime = { path = "../../core/runtime" }
 actr-config = { path = "../../core/config" }
+actr-hyper = { path = "../../core/hyper" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -29,8 +29,6 @@ bytes = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-async-trait = "0.1"
-parking_lot = "0.12"
 
 [build-dependencies]
 napi-build = "2"

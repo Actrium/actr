@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let node = ActrNode::new(config, workload).await?;
+//! let node = Hyper::init(hyper_config).await?.attach_none(config).await?;
 //! let actr = node.start().await?;
 //!
 //! println!("actor id = {:?}", actr.actor_id());

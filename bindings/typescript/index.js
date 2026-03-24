@@ -578,6 +578,4 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.ActrNode = nativeBinding.ActrNode
 module.exports.ActrRef = nativeBinding.ActrRef
-module.exports.ActrSystem = nativeBinding.ActrSystem
-module.exports.ContextBridge = nativeBinding.ContextBridge
 module.exports.PayloadType = nativeBinding.PayloadType

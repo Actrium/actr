@@ -6,7 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
-from actr import ActrSystem
+from actr import ActrNode, ActrType, Dest
 
 APP_NAME = "EchoClient"
 PROJECT_NAME = "echo"
@@ -16,9 +16,6 @@ SIGNALING_URL = "ws://localhost:8080"
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Import generated code
-# Note: Run 'actr gen' to generate the workload and remote service stubs
-from generated.echo_workload import EchoWorkload
 from generated.remote.echo_echo_server import echo_pb2 as pb2
 
 
@@ -38,7 +35,17 @@ async def _run_app(ref) -> None:
 
         request = pb2.EchoRequest(message=line)
         try:
-            response_bytes = await ref.call(f"echo.EchoService.Echo", request)
+            targets = await ref.discover(
+                ActrType("actrium", "EchoService", "0.2.1-beta"),
+                1,
+            )
+            if not targets:
+                raise RuntimeError("No EchoService target discovered")
+            response_bytes = await ref.call(
+                Dest.actor(targets[0]),
+                "echo.EchoService.Echo",
+                request,
+            )
             response = pb2.EchoResponse.FromString(response_bytes)
             print(f"[Received reply] {response.reply}")
         except Exception as e:
@@ -51,9 +58,7 @@ async def main() -> int:
     ap.add_argument("--actr-toml", required=True)
     args = ap.parse_args()
 
-    system = await ActrSystem.from_toml(args.actr_toml)
-    workload = EchoWorkload()
-    node = system.attach(workload)
+    node = await ActrNode.from_toml(args.actr_toml)
     ref = await node.start()
     logger.info("✅ %s started! Actor ID: %s", APP_NAME, ref.actor_id())
     logger.info("signaling: %s", SIGNALING_URL)

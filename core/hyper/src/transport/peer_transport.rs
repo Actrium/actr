@@ -132,6 +132,12 @@ impl PeerTransport {
         self.closing_peers.read().await.contains(dest)
     }
 
+    /// Check whether a destination is currently in the Connecting state.
+    pub async fn is_connecting(&self, dest: &Dest) -> bool {
+        let transports = self.transports.read().await;
+        matches!(transports.get(dest), Some(Either::Left(_)))
+    }
+
     /// Get or create DestTransport for specified Dest
     ///
     /// # Arguments
@@ -347,35 +353,52 @@ impl PeerTransport {
         // 1. Mark as closing
         self.closing_peers.write().await.insert(dest.clone());
 
-        // 2. Cancel in-progress connection creation
-        {
-            let mut tokens = self.pending_tokens.lock().await;
-            if let Some(token) = tokens.remove(dest) {
-                tracing::info!("Cancelling in-progress connection for {:?}", dest);
-                token.cancel();
+        // 2. Inspect current state first.
+        //    If the destination is still in Connecting state, let the current creator
+        //    finish its internal retry/cleanup path instead of converting a failed
+        //    single attempt into a whole-operation cancellation.
+        let current_state = {
+            let transports = self.transports.read().await;
+            transports.get(dest).cloned()
+        };
+
+        match current_state {
+            Some(Either::Left(_)) => {
+                tracing::debug!(
+                    "Ignoring close request for connecting destination {:?}; creator owns retry/cleanup",
+                    dest
+                );
             }
-        }
+            Some(Either::Right(_)) => {
+                // 3. Cancel any auxiliary pending connection creation state.
+                {
+                    let mut tokens = self.pending_tokens.lock().await;
+                    if let Some(token) = tokens.remove(dest) {
+                        tracing::info!("Cancelling in-progress connection for {:?}", dest);
+                        token.cancel();
+                    }
+                }
 
-        // 3. Remove and close the transport
-        let mut transports = self.transports.write().await;
+                // 4. Remove and close the established transport.
+                let state = {
+                    let mut transports = self.transports.write().await;
+                    transports.remove(dest)
+                };
 
-        if let Some(state) = transports.remove(dest) {
-            drop(transports); // Release lock before calling close()
-
-            match state {
-                Either::Right(transport) => {
+                if let Some(Either::Right(transport)) = state {
                     tracing::info!("Closing DestTransport: {:?}", dest);
                     transport.close().await?;
                 }
-                Either::Left(notify) => {
-                    tracing::debug!("Removed Connecting state for: {:?}", dest);
-                    // Notify waiters that connection was cancelled
-                    notify.notify_waiters();
-                }
+            }
+            None => {
+                tracing::debug!(
+                    "Ignoring close request for {:?}; no transport state exists",
+                    dest
+                );
             }
         }
 
-        // 4. Remove from closing set after cleanup completes
+        // 5. Remove from closing set after cleanup completes
         self.closing_peers.write().await.remove(dest);
 
         Ok(())

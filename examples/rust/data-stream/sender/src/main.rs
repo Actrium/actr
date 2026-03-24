@@ -29,7 +29,9 @@ async fn main() -> anyhow::Result<()> {
     // Build node with sender workload
     info!("🏗️  Building ActrNode...");
     let workload = LocalFileServiceWorkload::new(MyFileService::new());
-    let node = ActrNode::new(config, workload).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
     info!("✅ ActrNode created");
 
     info!("🚀 Starting ActrNode...");

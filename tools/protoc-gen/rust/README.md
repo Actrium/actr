@@ -20,7 +20,7 @@ Generates:
 
 1. **Handler trait** - User implements business logic
 2. **MessageDispatcher** - Routes messages to handler methods
-3. **Workload wrapper** - Integrates with ActrSystem
+3. **Package host entry** - Loads a verified `.actr` package via `Hyper.attach(...)`
 4. **Message trait impl** - Enables Context::call() type inference
 
 ## Architecture

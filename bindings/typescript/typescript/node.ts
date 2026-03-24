@@ -4,10 +4,21 @@ import { ActrRef } from './ref';
 /**
  * ActrNode – an actor node that has not been started yet.
  *
- * Created via ActrSystem.attach(); call start() to start the node.
+ * Create it from config with `ActrNode.fromConfig()`, then call `start()`.
  */
 export class ActrNode {
   constructor(private native: NativeActrNode) {}
+
+  /**
+   * Create a client-only ActrNode directly from a TOML config file path.
+   *
+   * @param configPath - Path to actr.toml
+   * @returns ActrNode instance
+   */
+  static async fromConfig(configPath: string): Promise<ActrNode> {
+    const nativeNode = await NativeActrNode.fromFile(configPath);
+    return new ActrNode(nativeNode);
+  }
 
   /**
    * Start the node and return ActrRef.

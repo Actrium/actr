@@ -513,8 +513,9 @@ mod tests {{
    #[tokio::main]
    async fn main() -> ActorResult<()> {{
        let config = actr::config::ConfigParser::from_file("actr.toml")?;
-       let workload = /* load from verified .actr package */;
-       let node = ActrNode::new(config, workload).await?;
+       let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
+       let package = WorkloadPackage::new(std::fs::read("dist/service.actr")?);
+       let (node, _manifest) = hyper.attach(&package, config).await?;
        node.start().await?;
        Ok(())
    }}

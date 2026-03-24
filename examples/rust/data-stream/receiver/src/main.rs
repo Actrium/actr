@@ -30,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🏗️  Building ActrNode...");
     let service = FileTransferService::new();
     let workload = FileTransferServiceWorkload::new(service);
-    let node = match ActrNode::new(config, workload).await {
+    let node = match unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    ) {
         Ok(node) => node,
         Err(e) => {
             error!("❌ ActrNode creation failed: {:?}", e);

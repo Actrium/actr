@@ -32,7 +32,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let relay_service = RelayService::new();
     let workload = RelayServiceWorkload::new(relay_service);
-    let node = ActrNode::new(config, workload).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
     info!("✅ ActrNode createsuccess");
 

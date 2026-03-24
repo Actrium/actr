@@ -18,10 +18,8 @@ name = "actr_python"
 [dependencies]
 actr-config = { path = "../../core/config" }
 actr-framework = { path = "../../core/framework" }
+actr-hyper = { path = "../../core/hyper" }
 actr-protocol = { path = "../../core/protocol" }
-actr-runtime = { path = "../../core/runtime" }
-anyhow = "1.0"
-async-trait = "0.1"
 bytes = "1.10"
 # Force vendored OpenSSL for all platforms to avoid system dependency issues
 openssl = { version = "0.10", features = ["vendored"] }

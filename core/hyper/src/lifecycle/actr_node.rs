@@ -87,6 +87,9 @@ pub struct ActrNode {
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 
+    /// Verified package manifest for package-backed nodes.
+    pub(crate) package_manifest: Option<crate::verify::PackageManifest>,
+
     /// Pre-injected registration result from the Hyper layer
     ///
     /// When Hyper calls `inject_credential()` before `start()`, `start()` skips
@@ -290,18 +293,13 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 }
 
 impl ActrNode {
-    /// Build a new node from config and a native Rust workload.
-    pub async fn new<W>(config: actr_config::Config, workload: W) -> ActorResult<Self>
-    where
-        W: actr_framework::Workload + Send + Sync + 'static,
-    {
-        let acl = config.acl.clone();
-        Self::build(config, crate::workload::Workload::native(workload, acl)).await
+    pub(crate) fn package_manifest(&self) -> Option<&crate::verify::PackageManifest> {
+        self.package_manifest.as_ref()
     }
 
     /// Build a new client-only node with no local workload attached.
     pub async fn new_client(config: actr_config::Config) -> ActorResult<Self> {
-        Self::build(config, crate::workload::Workload::None).await
+        Self::build(config, crate::workload::Workload::None, None).await
     }
 
     /// Get Inproc Transport Manager
@@ -590,6 +588,7 @@ impl ActrNode {
     pub(crate) async fn build(
         config: actr_config::Config,
         workload: crate::workload::Workload,
+        package_manifest: Option<crate::verify::PackageManifest>,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -709,6 +708,7 @@ impl ActrNode {
             network_event_result_tx: None,
             network_event_debounce_config: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
+            package_manifest,
             injected_registration: None,
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),

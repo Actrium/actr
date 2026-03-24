@@ -1,33 +1,13 @@
-//! {{PROJECT_NAME}} — Actor-RTC EchoService provider
+//! {{PROJECT_NAME}} — package-backed Actor-RTC EchoService host
 //!
-//! Run `actr gen -l rust` to populate `src/generated/` before building.
-//!
-//! Usage: cargo run
-//!   Registers the EchoService actor, waits for RPC calls, and echoes messages back.
+//! Build a verified `.actr` package first, then host it via `Hyper.attach(...)`.
 
-mod generated;
-mod echo_service;
-
-use tracing::info;
-
-use actr::prelude::*;
-
-use crate::generated::echo_actor::EchoServiceWorkload;
-use echo_service::EchoServiceImpl;
+use tracing::error;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    info!("{} starting (EchoService)", env!("CARGO_PKG_NAME"));
-
-    let config = actr::config::ConfigParser::from_file("actr.toml")?;
-    let _actr_ref = ActrNode::new(config, EchoServiceWorkload::new(EchoServiceImpl::new()))
-        .await?
-        .start()
-        .await?;
-
-    info!("EchoService registered, waiting for RPC calls...");
-
-    tokio::signal::ctrl_c().await?;
-    info!("Shutting down");
+    error!(
+        "Source-defined Rust service workloads were removed. Build a verified .actr package and host it with Hyper.attach(...)."
+    );
     Ok(())
 }

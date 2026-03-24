@@ -5,10 +5,8 @@ describe('ACTR Module Loading', () => {
   it('should import the module successfully', () => {
     const actr = require('../index.js');
     expect(actr).toBeDefined();
-    expect(actr.ActrSystem).toBeDefined();
     expect(actr.ActrNode).toBeDefined();
     expect(actr.ActrRef).toBeDefined();
-    expect(actr.ContextBridge).toBeDefined();
     expect(actr.PayloadType).toBeDefined();
   });
 

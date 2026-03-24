@@ -11,8 +11,8 @@ pub fn init_observability(config: ObservabilityConfig) {
         .with_target(true)
         .with_thread_ids(true);
 
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(filter)
         .with(fmt_layer)
-        .init();
+        .try_init();
 }

@@ -44,6 +44,7 @@ export class ActrRef {
   /**
    * Call remote actor (RPC).
    *
+   * @param target - Target actor ID
    * @param routeKey - Route key (e.g. 'service.Method')
    * @param payloadType - Payload type
    * @param requestPayload - Request payload (protobuf-encoded)
@@ -54,6 +55,7 @@ export class ActrRef {
    * ```typescript
    * const request = Buffer.from('Hello');
    * const response = await actorRef.call(
+   *   serverId,
    *   'echo_twice.EchoTwiceService.EchoTwice',
    *   PayloadType.RpcReliable,
    *   request,
@@ -62,12 +64,14 @@ export class ActrRef {
    * ```
    */
   async call(
+    target: ActrId,
     routeKey: string,
     payloadType: PayloadType,
     requestPayload: Buffer,
     timeoutMs: number = 30000,
   ): Promise<Buffer> {
     return await this.native.call(
+      target,
       routeKey,
       payloadType,
       requestPayload,
@@ -91,6 +95,7 @@ export class ActrRef {
    *
    * const request = new EchoTwiceRequest({ message: 'Hello' });
    * const response = await actorRef.callTyped(
+   *   serverId,
    *   'echo_twice.EchoTwiceService.EchoTwice',
    *   request,
    *   EchoTwiceResponse,
@@ -101,6 +106,7 @@ export class ActrRef {
    * ```
    */
   async callTyped<Req, Res>(
+    target: ActrId,
     routeKey: string,
     request: Req & EncodableRequest,
     responseType: { decode: (buf: Buffer) => Res },
@@ -109,6 +115,7 @@ export class ActrRef {
   ): Promise<Res> {
     const requestBuf = request.encode();
     const responseBuf = await this.call(
+      target,
       routeKey,
       payloadType,
       requestBuf,
@@ -120,6 +127,7 @@ export class ActrRef {
   /**
    * Send one-way message (fire-and-forget).
    *
+   * @param target - Target actor ID
    * @param routeKey - Route key
    * @param payloadType - Payload type
    * @param messagePayload - Message payload
@@ -127,6 +135,7 @@ export class ActrRef {
    * @example
    * ```typescript
    * await actorRef.tell(
+   *   serverId,
    *   'notification.Service/Notify',
    *   PayloadType.RpcSignal,
    *   Buffer.from('Event occurred')
@@ -134,11 +143,12 @@ export class ActrRef {
    * ```
    */
   async tell(
+    target: ActrId,
     routeKey: string,
     payloadType: PayloadType,
     messagePayload: Buffer,
   ): Promise<void> {
-    await this.native.tell(routeKey, payloadType, messagePayload);
+    await this.native.tell(target, routeKey, payloadType, messagePayload);
   }
 
   /**

@@ -1,49 +1,21 @@
 //! {{PROJECT_NAME}} — Actor-RTC echo client
 //!
-//! Run `actr install` then `actr gen -l rust` to populate `src/generated/`
-//! before building this binary.
-//!
-//! Usage: cargo run
-//!   Connects to the signaling server, discovers the echo service,
-//!   sends one "hello" message, prints the reply, and exits.
+//! This scaffold is client-only. Discover a remote service and call it directly.
 
-mod generated;
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tracing::info;
 
 use actr::prelude::*;
-
-use crate::generated::echo::EchoRequest;
-use crate::generated::local_actor::{
-    {{PROJECT_NAME_PASCAL}}ClientAppHandler, {{PROJECT_NAME_PASCAL}}ClientAppWorkload,
-};
-
-struct ClientApp;
-
-impl {{PROJECT_NAME_PASCAL}}ClientAppHandler for ClientApp {}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<()> {
     info!("{} starting", env!("CARGO_PKG_NAME"));
 
     let config = actr::config::ConfigParser::from_file("actr.toml")?;
-    let node = ActrNode::new(config, {{PROJECT_NAME_PASCAL}}ClientAppWorkload(ClientApp)).await?;
+    let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
+    let node = hyper.attach_none(config).await?;
     let actr_ref = node.start().await?;
 
-    // Send one echo RPC (remote forwarding is handled by generated local_actor.rs)
-    let request = EchoRequest {
-        message: "hello".to_string(),
-    };
-
-    info!("Sending echo request: {:?}", request.message);
-    let response = actr_ref.call(request).await.context("Echo RPC failed")?;
-    println!("Echo reply: {}", response.reply);
-    info!("Echo RPC succeeded");
-
+    info!("Client started with id {}", actr_ref.actor_id().to_string_repr());
     Ok(())
 }

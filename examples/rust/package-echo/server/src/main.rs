@@ -132,14 +132,14 @@ async fn main() -> Result<()> {
     // 4. Attach package workload, inject credential, then start
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching package workload...");
-    // Extract values needed for bootstrap_credential before config is moved into attach()
+    // Extract values needed for bootstrap_credential before config is moved into attach_package()
     let realm_id = config.realm.realm_id;
     let service_spec = config.calculate_service_spec();
     let acl = config.acl.clone();
-    let (mut node, package_manifest) = hyper
-        .attach(&package, config)
+    let mut node = hyper
+        .attach_package(&package, config)
         .await
-        .inspect_err(|e| error!("❌ hyper.attach failed: {:?}", e))?;
+        .inspect_err(|e| error!("❌ hyper.attach_package failed: {:?}", e))?;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 5. Register with AIS HTTP to obtain credential
@@ -149,13 +149,7 @@ async fn main() -> Result<()> {
     info!("🔐 Registering with AIS at {}", ais_endpoint);
 
     let register_ok = hyper
-        .bootstrap_credential(
-            &package_manifest,
-            &ais_endpoint,
-            realm_id,
-            service_spec,
-            acl,
-        )
+        .bootstrap_node_credential(&node, &ais_endpoint, realm_id, service_spec, acl)
         .await
         .inspect_err(|e| {
             error!("❌ AIS registration failed: {:?}", e);

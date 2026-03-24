@@ -31,6 +31,7 @@
 //! the receiver strips the header and returns the payload directly.
 
 use super::error::{NetworkError, NetworkResult};
+use crate::INITIAL_CONNECTION_TIMEOUT;
 use actr_protocol::PayloadType;
 use async_trait::async_trait;
 use futures_util::SinkExt;
@@ -346,7 +347,7 @@ impl DataLane for WebRtcDataLane {
     async fn send(&self, data: bytes::Bytes) -> NetworkResult<()> {
         use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
-        // Wait for DataChannel to open (max 5 seconds)
+        // Keep the lane wait aligned with initial WebRTC connection readiness.
         let start = tokio::time::Instant::now();
         loop {
             let state = self.data_channel.ready_state();
@@ -358,7 +359,7 @@ impl DataLane for WebRtcDataLane {
                     "DataChannel closed: {state:?}"
                 )));
             }
-            if start.elapsed() > std::time::Duration::from_secs(5) {
+            if start.elapsed() > INITIAL_CONNECTION_TIMEOUT {
                 return Err(NetworkError::DataChannelError(format!(
                     "DataChannel open timeout: {state:?}"
                 )));

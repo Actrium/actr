@@ -1,8 +1,10 @@
 use actr_config::ConfigParser;
 use actr_framework::{Bytes, Context};
+use actr_hyper::context::RuntimeContext;
+use actr_hyper::{
+    ActrNode as RuntimeActrNode, ActrRef, Hyper, HyperConfig, TrustMode,
+};
 use actr_protocol::{ActrError, PayloadType as RpPayloadType};
-use actr_runtime::context::RuntimeContext;
-use actr_runtime::prelude::{ActrNode, ActrRef, ActrSystem};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -10,65 +12,10 @@ use pyo3::types::PyBytes;
 use crate::errors::map_protocol_error;
 use crate::observability::ensure_observability_initialized;
 use crate::types::{DataStreamPy, DestPy, PayloadType};
-use crate::workload::PyWorkloadWrapper;
 use crate::{ActrIdPy, ActrTypePy};
 
-type WrappedWorkload = PyWorkloadWrapper;
-type WrappedNode = ActrNode<WrappedWorkload>;
-type WrappedRef = ActrRef<WrappedWorkload>;
-
-#[pyclass(name = "ActrSystem")]
-pub struct ActrSystemPy {
-    pub(crate) inner: Option<ActrSystem>,
-}
-
-#[pymethods]
-impl ActrSystemPy {
-    #[staticmethod]
-    fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            eprintln!("[py] Loading config from: {}", path);
-            let config =
-                ConfigParser::from_file(&path).map_err(|e| PyValueError::new_err(e.to_string()))?;
-            ensure_observability_initialized(Some(config.observability.clone()));
-            eprintln!("[py] Config loaded, creating ActrSystem...");
-            let system = ActrSystem::new(config).await.map_err(map_protocol_error)?;
-            eprintln!("[py] ActrSystem created successfully");
-            Python::attach(|py| {
-                Py::new(
-                    py,
-                    ActrSystemPy {
-                        inner: Some(system),
-                    },
-                )
-                .map(Py::into_any)
-            })
-        })
-    }
-
-    fn attach(&mut self, workload: Py<PyAny>) -> PyResult<ActrNodePy> {
-        eprintln!("[py] attach: taking system...");
-        let system = self.inner.take().ok_or_else(|| {
-            PyRuntimeError::new_err("ActrSystem already consumed (attach called twice)")
-        })?;
-
-        let event_loop = Python::attach(|py| -> PyResult<Py<PyAny>> {
-            let asyncio = py.import("asyncio")?;
-            let get_event_loop = asyncio.getattr("get_event_loop")?;
-            let loop_obj = get_event_loop.call0()?;
-            Ok(loop_obj.extract::<Py<PyAny>>()?)
-        })
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to get event loop: {e}")))?;
-
-        eprintln!("[py] attach: creating PyWorkloadWrapper...");
-        let mut py_workload = PyWorkloadWrapper::new(workload)?;
-        py_workload.set_event_loop(event_loop);
-        eprintln!("[py] attach: calling system.attach...");
-        let node = system.attach(py_workload);
-        eprintln!("[py] attach: system.attach completed");
-        Ok(ActrNodePy { inner: Some(node) })
-    }
-}
+type WrappedNode = RuntimeActrNode;
+type WrappedRef = ActrRef;
 
 #[pyclass(name = "ActrNode")]
 pub struct ActrNodePy {
@@ -77,15 +24,35 @@ pub struct ActrNodePy {
 
 #[pymethods]
 impl ActrNodePy {
+    #[staticmethod]
+    fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let config =
+                ConfigParser::from_file(&path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+            ensure_observability_initialized(Some(config.observability.clone()));
+            let hyper_data_dir = config.config_dir.join(".hyper");
+            let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+                TrustMode::Development {
+                    self_signed_pubkey: vec![0u8; 32],
+                },
+            ))
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let node = hyper
+                .attach_none(config)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Python::attach(|py| Py::new(py, ActrNodePy { inner: Some(node) }).map(Py::into_any))
+        })
+    }
+
     fn start<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let node = self.inner.take().ok_or_else(|| {
             PyRuntimeError::new_err("ActrNode already consumed (start called twice)")
         })?;
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            eprintln!("[py] ActrNode.start: calling node.start()...");
             let actr_ref = node.start().await.map_err(map_protocol_error)?;
-            eprintln!("[py] ActrNode.start: node.start() completed");
             Python::attach(|py| {
                 Py::new(
                     py,
@@ -132,6 +99,34 @@ impl ActrRefPy {
         Ok(ActrIdPy::from_rust(inner.actor_id().clone()))
     }
 
+    #[pyo3(signature = (actr_type, count=1))]
+    fn discover<'py>(
+        &self,
+        py: Python<'py>,
+        actr_type: ActrTypePy,
+        count: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("ActrRef has been consumed"))?
+            .clone();
+        let target_type = actr_type.inner().clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let ids = inner
+                .discover_route_candidates(&target_type, count)
+                .await
+                .map_err(map_protocol_error)?;
+            Python::attach(|py| {
+                ids.into_iter()
+                    .map(ActrIdPy::from_rust)
+                    .map(|id| Py::new(py, id))
+                    .collect::<PyResult<Vec<_>>>()
+            })
+        })
+    }
+
     fn shutdown(&self) -> PyResult<()> {
         let inner = self
             .inner
@@ -170,10 +165,11 @@ impl ActrRefPy {
         })
     }
 
-    #[pyo3(signature = (route_key, request, timeout_ms=30000, payload_type=PayloadType::RpcReliable))]
+    #[pyo3(signature = (target, route_key, request, timeout_ms=30000, payload_type=PayloadType::RpcReliable))]
     fn call<'py>(
         &self,
         py: Python<'py>,
+        target: &DestPy,
         route_key: String,
         request: &[u8],
         timeout_ms: i64,
@@ -184,11 +180,19 @@ impl ActrRefPy {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("ActrRef has been consumed"))?
             .clone();
+        let target_dest = target.inner().clone();
         let request_bytes = Bytes::from(request.to_vec());
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response_bytes = inner
-                .call_raw(route_key, request_bytes, timeout_ms, payload_type.to_rust())
+            let ctx = inner.app_context().await;
+            let response_bytes = ctx
+                .call_raw(
+                    &target_dest,
+                    route_key,
+                    payload_type.to_rust(),
+                    request_bytes,
+                    timeout_ms,
+                )
                 .await
                 .map_err(map_protocol_error)?;
 
@@ -197,10 +201,11 @@ impl ActrRefPy {
         })
     }
 
-    #[pyo3(signature = (route_key, message, payload_type=PayloadType::RpcReliable))]
+    #[pyo3(signature = (target, route_key, message, payload_type=PayloadType::RpcReliable))]
     fn tell<'py>(
         &self,
         py: Python<'py>,
+        target: &DestPy,
         route_key: String,
         message: &[u8],
         payload_type: PayloadType,
@@ -210,11 +215,12 @@ impl ActrRefPy {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("ActrRef has been consumed"))?
             .clone();
+        let target_dest = target.inner().clone();
         let message_bytes = Bytes::from(message.to_vec());
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            inner
-                .tell_raw(route_key, message_bytes, payload_type.to_rust())
+            let ctx = inner.app_context().await;
+            ctx.tell_raw(&target_dest, route_key, payload_type.to_rust(), message_bytes)
                 .await
                 .map_err(map_protocol_error)?;
             Ok(Python::attach(|py| py.None()))

@@ -23,8 +23,7 @@ async fn main() -> Result<()> {
     info!("🚀 WS Echo Client App");
     info!("   via/throughsignalingservice[...]discoverserver WebSocket address[...]direct connection");
 
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem createsuccess");
+    info!("✅ config loaded");
 
     // [...] workload
     let workload = ClientWorkload::new();
@@ -36,7 +35,9 @@ async fn main() -> Result<()> {
         version: "1.0.0".to_string(),
     };
 
-    let node = system.attach(workload.clone());
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
     info!("🚀 start ActrNode...");
     let actr_ref = node.start().await?;

@@ -580,20 +580,17 @@ impl Hyper {
     ///
     /// This is the primary entry point for package-driven actors. It replaces the manual
     /// sequence of package loading followed by node construction.
-    ///
-    /// Returns `(ActrNode, PackageManifest)`. The manifest is needed for
-    /// `bootstrap_credential()` before calling `node.start()`.
-    pub async fn attach(
+    pub async fn attach_package(
         &self,
         package: &WorkloadPackage,
         config: actr_config::Config,
-    ) -> HyperResult<(crate::lifecycle::ActrNode, PackageManifest)> {
+    ) -> HyperResult<crate::lifecycle::ActrNode> {
         let loaded = self.load_workload_package(package).await?;
-        let manifest = loaded.manifest.clone();
-        let node = crate::lifecycle::ActrNode::build(config, loaded.workload)
-            .await
-            .map_err(|e| HyperError::Runtime(e.to_string()))?;
-        Ok((node, manifest))
+        let node =
+            crate::lifecycle::ActrNode::build(config, loaded.workload, Some(loaded.manifest))
+                .await
+                .map_err(|e| HyperError::Runtime(e.to_string()))?;
+        Ok(node)
     }
 
     /// Build a fully initialized [`ActrNode`] with no guest workload (pure client node).
@@ -603,9 +600,27 @@ impl Hyper {
         &self,
         config: actr_config::Config,
     ) -> HyperResult<crate::lifecycle::ActrNode> {
-        crate::lifecycle::ActrNode::build(config, crate::workload::Workload::None)
+        crate::lifecycle::ActrNode::build(config, crate::workload::Workload::None, None)
             .await
             .map_err(|e| HyperError::Runtime(e.to_string()))
+    }
+
+    /// Bootstrap credential registration with AIS using the package manifest stored in `node`.
+    pub async fn bootstrap_node_credential(
+        &self,
+        node: &crate::lifecycle::ActrNode,
+        ais_endpoint: &str,
+        realm_id: u32,
+        service_spec: Option<ServiceSpec>,
+        acl: Option<Acl>,
+    ) -> HyperResult<register_response::RegisterOk> {
+        let manifest = node.package_manifest().ok_or_else(|| {
+            HyperError::InvalidManifest(
+                "node does not carry a verified package manifest".to_string(),
+            )
+        })?;
+        self.bootstrap_credential(manifest, ais_endpoint, realm_id, service_spec, acl)
+            .await
     }
 
     fn load_wasm_workload(

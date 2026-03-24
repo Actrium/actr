@@ -3,7 +3,7 @@
 **Status**: ✅ **Fully Functional - Production-Ready Pattern**
 
 This example demonstrates **real Actor-RTC distributed communication** using:
-- Real ActrSystem lifecycle
+- Real `ActrNode` lifecycle
 - Real WebRTC P2P connections
 - Real RPC with protobuf
 - Real message routing and dispatch
@@ -37,7 +37,7 @@ Notes:
 ```
 Actr A (Relay)          WebRTC P2P          Actr B (Receiver)
 ┌─────────────────┐    ─────────────>    ┌──────────────────┐
-│ ActrSystem +    │                      │  ActrSystem +    │
+│ ActrNode +      │                      │  ActrNode +      │
 │ ClientWorkload  │     RPC Request      │  RelayService    │
 │       ↓         │                      │       ↓          │
 │ ActrRef Shell   │                      │  RPC Handler     │

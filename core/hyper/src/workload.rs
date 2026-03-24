@@ -7,14 +7,12 @@ use actr_framework::guest::abi::{
     self as guest_abi, AbiPayload, GuestHandleV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
     HostTellV1,
 };
-use actr_protocol::{Acl, ActorResult, ActrError, ActrId, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use bytes::Bytes;
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 use prost::Message;
-use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 /// ABI-stable invocation context passed into guest runtime on each request.
 pub type InvocationContext = guest_abi::InvocationContextV1;
@@ -46,78 +44,12 @@ pub type HostAbiFn = Box<
 /// Result type for runtime workload handling.
 pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
-/// Host-side trait object for native Rust workloads.
-#[async_trait::async_trait]
-pub trait NativeRuntimeWorkload: Debug + Send + Sync {
-    /// Lifecycle hook triggered when the node is fully initialized.
-    async fn on_start(&self, ctx: &crate::context::RuntimeContext) -> ActorResult<()>;
-
-    /// Lifecycle hook triggered when the node is shutting down.
-    async fn on_stop(&self, ctx: &crate::context::RuntimeContext) -> ActorResult<()>;
-
-    /// Dispatch one inbound RPC envelope.
-    async fn dispatch(
-        &self,
-        self_id: &ActrId,
-        caller_id: Option<&ActrId>,
-        envelope: RpcEnvelope,
-        ctx: &crate::context::RuntimeContext,
-    ) -> ActorResult<Bytes>;
-}
-
-/// Adapter that bridges a native Rust `Workload` into the runtime workload enum.
-pub struct NativeWorkloadAdapter<W: actr_framework::Workload> {
-    dispatch: actr_runtime::ActrDispatch<W>,
-}
-
-impl<W: actr_framework::Workload> NativeWorkloadAdapter<W> {
-    pub fn new(workload: W, acl: Option<Acl>) -> Self {
-        Self {
-            dispatch: actr_runtime::ActrDispatch::new(Arc::new(workload), acl),
-        }
-    }
-}
-
-impl<W: actr_framework::Workload> Debug for NativeWorkloadAdapter<W> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeWorkloadAdapter").finish()
-    }
-}
-
-#[async_trait::async_trait]
-impl<W> NativeRuntimeWorkload for NativeWorkloadAdapter<W>
-where
-    W: actr_framework::Workload + Send + Sync + 'static,
-{
-    async fn on_start(&self, ctx: &crate::context::RuntimeContext) -> ActorResult<()> {
-        self.dispatch.on_start(ctx).await
-    }
-
-    async fn on_stop(&self, ctx: &crate::context::RuntimeContext) -> ActorResult<()> {
-        self.dispatch.on_stop(ctx).await
-    }
-
-    async fn dispatch(
-        &self,
-        self_id: &ActrId,
-        caller_id: Option<&ActrId>,
-        envelope: RpcEnvelope,
-        ctx: &crate::context::RuntimeContext,
-    ) -> ActorResult<Bytes> {
-        self.dispatch
-            .dispatch(self_id, caller_id, envelope, ctx)
-            .await
-    }
-}
-
 /// Runtime workload enum.
 #[derive(Debug)]
 pub enum Workload {
     /// No guest workload attached. Inbound messages return an error immediately.
     /// Use this for pure client nodes that only make outbound calls.
     None,
-    /// Native Rust workload attached directly to the runtime.
-    Native(Box<dyn NativeRuntimeWorkload>),
     #[cfg(feature = "wasm-engine")]
     Wasm(crate::wasm::WasmWorkload),
     #[cfg(feature = "dynclib-engine")]
@@ -125,23 +57,14 @@ pub enum Workload {
 }
 
 impl Workload {
-    /// Build a runtime workload from a native Rust `Workload`.
-    pub fn native<W>(workload: W, acl: Option<Acl>) -> Self
-    where
-        W: actr_framework::Workload + Send + Sync + 'static,
-    {
-        Self::Native(Box::new(NativeWorkloadAdapter::new(workload, acl)))
-    }
-
     /// Run the workload start hook.
     pub fn on_start<'a>(
         &'a self,
-        ctx: &'a crate::context::RuntimeContext,
+        _ctx: &'a crate::context::RuntimeContext,
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
             match self {
                 Workload::None => Ok(()),
-                Workload::Native(workload) => workload.on_start(ctx).await,
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(_) => Ok(()),
                 #[cfg(feature = "dynclib-engine")]
@@ -153,12 +76,11 @@ impl Workload {
     /// Run the workload stop hook.
     pub fn on_stop<'a>(
         &'a self,
-        ctx: &'a crate::context::RuntimeContext,
+        _ctx: &'a crate::context::RuntimeContext,
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
             match self {
                 Workload::None => Ok(()),
-                Workload::Native(workload) => workload.on_stop(ctx).await,
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(_) => Ok(()),
                 #[cfg(feature = "dynclib-engine")]
@@ -171,25 +93,16 @@ impl Workload {
     pub fn dispatch_envelope<'a>(
         &'a mut self,
         envelope: RpcEnvelope,
-        ctx: crate::context::RuntimeContext,
+        _ctx: crate::context::RuntimeContext,
         invocation: InvocationContext,
         _host_abi: &'a HostAbiFn,
     ) -> Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send + 'a>> {
         Box::pin(async move {
+            let _ = (&envelope, &invocation);
             match self {
                 Workload::None => Err(ActrError::Internal(
                     "no workload attached to this node".to_string(),
                 )),
-                Workload::Native(workload) => {
-                    workload
-                        .dispatch(
-                            &invocation.self_id,
-                            invocation.caller_id.as_ref(),
-                            envelope,
-                            &ctx,
-                        )
-                        .await
-                }
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => {
                     let request_bytes = envelope.encode_to_vec();
@@ -230,10 +143,6 @@ impl Workload {
             match self {
                 Workload::None => Err(Box::new(std::io::Error::other(
                     "no workload attached to this node",
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>),
-                Workload::Native(_) => Err(Box::new(std::io::Error::other(
-                    "native workloads must be dispatched with an RpcEnvelope",
                 ))
                     as Box<dyn std::error::Error + Send + Sync>),
                 #[cfg(feature = "wasm-engine")]

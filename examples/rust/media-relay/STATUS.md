@@ -23,7 +23,7 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 
 **Status**: ✅ **Fully implemented and compiled successfully**
 
-- ✅ Real ActrSystem::new()
+- ✅ Migrated away from source-defined `ActrNode::new()`
 - ✅ Real ActrNode::start()
 - ✅ Real WebRTC P2P connection (via signaling server)
 - ✅ Real RPC handling (RelayServiceHandler)
@@ -31,7 +31,7 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 - ✅ Business logic: receives and logs media frames
 
 **Implementation**: `actr-b/src/`
-- `main.rs` - ActrSystem setup and lifecycle
+- `main.rs` - ActrNode setup and lifecycle
 - `relay_service.rs` - RelayServiceHandler implementation
 - `generated/` - Auto-generated code from proto
 
@@ -50,7 +50,7 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 **What's missing**:
 - ActrRef instance to call actr-b
 - Either:
-  1. Implement Shell client with embedded ActrSystem, or
+  1. Implement Shell client with embedded ActrNode bootstrap flow, or
   2. Convert to Workload that auto-sends on startup
 
 **Current behavior**: Generates frames and logs them (mock send)
@@ -69,7 +69,7 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 
 **Before**:
 - Simple logging, no real communication
-- No ActrSystem, no WebRTC
+- No ActrNode, no WebRTC
 - Fake implementation
 
 **After**:
@@ -77,12 +77,12 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 - Real WebRTC P2P connections
 - Real RPC with protobuf
 - Auto-generated Workload code
-- Proper ActrSystem lifecycle
+- Proper ActrNode lifecycle
 
 ### Proof of System Functionality
 
 **Validated**:
-- ✅ ActrSystem::new() works
+- ✅ Source-defined `ActrNode::new()` removed
 - ✅ ActrNode::start() works
 - ✅ WebRTC connection establishment works
 - ✅ RPC message routing works
@@ -96,8 +96,9 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 **Option 1: Shell Client (Recommended)**
 ```rust
 // In actr-a/src/main.rs
-let system = ActrSystem::new_shell(config).await?;
-let actr_ref = system.get_shell_ref().await?;
+let workload = RelayClientWorkload::new();
+let node = hyper.attach_none(config).await?;
+let actr_ref = node.start().await?;
 
 for frame in video_source {
     let request = RelayFrameRequest { frame: Some(frame) };
@@ -138,10 +139,10 @@ cargo run
 🚀 Actr B (Receiver) started
 ⚙️  Creating configuration...
 ✅ Configuration created
-🏗️  Creating ActrSystem...
-✅ ActrSystem created successfully
+🏗️  Creating ActrNode...
+✅ ActrNode created successfully
 📦 Creating RelayService...
-✅ RelayService attached
+✅ RelayService workload created
 🚀 Starting ActrNode...
 ✅ ActrNode started successfully
 🎉 Actr B is fully started and registered with the signaling server
@@ -198,7 +199,7 @@ media-relay/
 
 ## Lessons Learned
 
-1. **ActrSystem lifecycle is robust** - Works perfectly
+1. **ActrNode lifecycle is robust** - Works perfectly
 2. **Code generation is powerful** - Saves 90% boilerplate
 3. **WebRTC P2P works** - Automatic NAT traversal
 4. **RPC is type-safe** - Protobuf + generated code

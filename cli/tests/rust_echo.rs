@@ -152,16 +152,16 @@ fn rust_echo_app_scaffold() {
         "main.rs should not declare mod echo_app"
     );
     assert!(
-        main.contains("MyEchoAppClientAppHandler"),
-        "main.rs should use the generated handler trait"
+        main.contains("attach_none(config)"),
+        "main.rs should start a client-only node"
     );
     assert!(
-        main.contains("MyEchoAppClientAppWorkload"),
-        "main.rs should use the generated workload type"
+        !main.contains("MyEchoAppClientAppHandler"),
+        "main.rs should not depend on generated handler traits"
     );
     assert!(
-        main.contains("impl MyEchoAppClientAppHandler for ClientApp {}"),
-        "main.rs should define the bridge handler"
+        !main.contains("MyEchoAppClientAppWorkload"),
+        "main.rs should not depend on generated workload types"
     );
 }
 
@@ -207,12 +207,12 @@ fn rust_echo_service_scaffold() {
         "service should not discover"
     );
     assert!(
-        main.contains("EchoServiceWorkload"),
-        "should register EchoServiceWorkload"
+        main.contains("package-backed Actor-RTC EchoService host"),
+        "service main should describe the package-backed host flow"
     );
     assert!(
-        main.contains("echo_actor::EchoServiceWorkload"),
-        "import from echo_actor"
+        main.contains("Source-defined Rust service workloads were removed"),
+        "service main should explain that source-defined workloads were removed"
     );
 
     // -- echo_service.rs --

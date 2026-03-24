@@ -33,7 +33,9 @@ async fn main() -> Result<()> {
         version: "1.0.0".to_string(),
     };
 
-    let node = ActrNode::new(config, workload.clone()).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
     info!("✅ ActrNode created");
 
     info!("🚀 Starting ActrNode...");

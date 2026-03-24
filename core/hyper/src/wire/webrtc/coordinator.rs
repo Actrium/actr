@@ -61,6 +61,7 @@ const ICE_RESTART_MAX_BACKOFF_MS: u64 = 10000; // 10s max (5s -> 10s -> 10s -> .
 const ICE_RESTART_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
 const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const DATA_CHANNEL_READY_TIMEOUT: Duration = INITIAL_CONNECTION_TIMEOUT;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -1771,7 +1772,7 @@ impl WebRtcCoordinator {
             from.to_string_repr()
         );
 
-        // Wait for DataChannel to be ready (max 5 seconds)
+        // Wait for DataChannel to be ready using the same window as initial connection setup.
         let peers = Arc::clone(&self.peers);
         let from_id = from.clone();
         let webrtc_conn_for_wait = webrtc_conn.clone();
@@ -1786,7 +1787,7 @@ impl WebRtcCoordinator {
                 &from_id,
                 &event_broadcaster,
                 &webrtc_conn_for_wait,
-                Duration::from_secs(5), // Total timeout for connection to be ready
+                DATA_CHANNEL_READY_TIMEOUT,
             )
             .await
             {
@@ -1798,13 +1799,14 @@ impl WebRtcCoordinator {
                     s.ice_restart_inflight = false;
                     s.ice_restart_attempts = 0;
                 }
+                if let Some(tx) = ready_tx {
+                    let _ = tx.send(());
+                }
             } else {
-                tracing::warn!("⚠️ DataChannel failed to open within 5s timeout");
-            }
-
-            // Notify initiate_connection that connection is ready (or failed)
-            if let Some(tx) = ready_tx {
-                let _ = tx.send(());
+                tracing::warn!(
+                    "⚠️ DataChannel failed to open within {:?}",
+                    DATA_CHANNEL_READY_TIMEOUT
+                );
             }
         });
 

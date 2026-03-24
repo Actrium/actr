@@ -3,59 +3,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import time
-
-from actr import ActrSystem, WorkloadBase, Context
 
 APP_NAME = "{{PROJECT_NAME_PASCAL}}Server"
-PROJECT_NAME = "{{PROJECT_NAME}}"
-PROJECT_NAME_SNAKE = "{{PROJECT_NAME_SNAKE}}"
-SIGNALING_URL = "{{{SIGNALING_URL}}}"
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-from generated.local import {{PROJECT_NAME_SNAKE}}_pb2 as pb2
-from generated import echo_service_actor as server_actor
-
-
-class {{PROJECT_NAME_PASCAL}}Service(server_actor.EchoServiceHandler):
-    async def echo(self, req: pb2.EchoRequest, ctx: Context) -> pb2.EchoResponse:
-        logger.info("server received: %s", req.message)
-        return pb2.EchoResponse(
-            reply=f"Echo: {req.message}",
-            timestamp=int(time.time()),
-        )
-
-
-class {{PROJECT_NAME_PASCAL}}ServerWorkload(WorkloadBase):
-    def __init__(self, handler: {{PROJECT_NAME_PASCAL}}Service):
-        self.handler = handler
-        super().__init__(server_actor.EchoServiceDispatcher())
-
-    async def on_start(self, ctx: Context) -> None:
-        logger.info("{{PROJECT_NAME_PASCAL}}ServerWorkload on_start")
-
-    async def on_stop(self, ctx: Context) -> None:
-        logger.info("{{PROJECT_NAME_PASCAL}}ServerWorkload on_stop")
 
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--actr-toml", required=True)
-    args = ap.parse_args()
+    ap.parse_args()
 
-    system = await ActrSystem.from_toml(args.actr_toml)
-    logger.info("[%s] %s starting... actr-toml: %s", PROJECT_NAME_SNAKE, APP_NAME, args.actr_toml)
-    logger.info("signaling: %s", SIGNALING_URL)
-    workload = {{PROJECT_NAME_PASCAL}}ServerWorkload({{PROJECT_NAME_PASCAL}}Service())
-    node = system.attach(workload)
-    ref = await node.start()
-    logger.info("✅ %s started! Actor ID: %s", APP_NAME, ref.actor_id())
-
-    await ref.wait_for_ctrl_c_and_shutdown()
-    logger.info("%s shutting down...", APP_NAME)
-    return 0
+    logger.error(
+        "%s source-defined workload entry was removed. "
+        "Build a verified .actr package and host it with Rust Hyper.attach(...).",
+        APP_NAME,
+    )
+    return 1
 
 
 if __name__ == "__main__":

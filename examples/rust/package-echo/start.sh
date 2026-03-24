@@ -232,6 +232,14 @@ ACTRIX_PID=$!
 echo "Actrix started (PID: $ACTRIX_PID)"
 echo "Waiting for actrix to be ready..."
 
+actrix_http_ready() {
+    lsof -nP -iTCP:8081 -sTCP:LISTEN > /dev/null 2>&1 || nc -z localhost 8081 2>/dev/null
+}
+
+actrix_ice_ready() {
+    lsof -nP -iUDP:3478 > /dev/null 2>&1
+}
+
 MAX_WAIT=10
 COUNTER=0
 while [ $COUNTER -lt $MAX_WAIT ]; do
@@ -241,8 +249,8 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
         exit 1
     fi
 
-    if lsof -i:8081 > /dev/null 2>&1 || nc -z localhost 8081 2>/dev/null; then
-        echo -e "${GREEN}✅ Actrix is running and listening on port 8081${NC}"
+    if actrix_http_ready && actrix_ice_ready; then
+        echo -e "${GREEN}✅ Actrix is running and listening on ports 8081/tcp and 3478/udp${NC}"
         break
     fi
 
@@ -251,7 +259,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
 done
 
 if [ $COUNTER -eq $MAX_WAIT ]; then
-    echo -e "${RED}❌ Actrix not listening on port 8081 after ${MAX_WAIT} seconds${NC}"
+    echo -e "${RED}❌ Actrix not listening on 8081/tcp and 3478/udp after ${MAX_WAIT} seconds${NC}"
     cat "$LOG_DIR/actrix.log"
     exit 1
 fi
@@ -450,15 +458,17 @@ echo "Sending test message: \"$TEST_INPUT\""
     cargo run --bin package-echo-client > "$LOG_DIR/package-echo-client.log" 2>&1 &
 CLIENT_PID=$!
 
-# Wait for client to finish (max 15 seconds)
+# Wait long enough for the WebRTC connection factory to use its built-in retry path.
+# A single attempt can take 10s, and the factory may back off before retrying.
+CLIENT_TIMEOUT_SECONDS="${CLIENT_TIMEOUT_SECONDS:-40}"
 COUNTER=0
-while kill -0 $CLIENT_PID 2>/dev/null && [ $COUNTER -lt 15 ]; do
+while kill -0 $CLIENT_PID 2>/dev/null && [ $COUNTER -lt "$CLIENT_TIMEOUT_SECONDS" ]; do
     sleep 1
     COUNTER=$((COUNTER + 1))
 done
 
 if kill -0 $CLIENT_PID 2>/dev/null; then
-    echo -e "${YELLOW}⚠️  Client still running after 15 seconds, killing...${NC}"
+    echo -e "${YELLOW}⚠️  Client still running after ${CLIENT_TIMEOUT_SECONDS} seconds, killing...${NC}"
     kill $CLIENT_PID 2>/dev/null || true
 fi
 

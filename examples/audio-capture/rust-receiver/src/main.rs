@@ -230,10 +230,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("🎙️ Audio Capture Receiver starting");
     info!("📋 Using config: {}", config_path.display());
 
-    let system = ActrSystem::new(config).await?;
     let recorder = AudioRecorder::new()?;
     let workload = AudioRecorderWorkload::new(recorder);
-    let node = system.attach(workload);
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
     let actr_ref = node.start().await?;
     info!("✅ AudioRecorder ready, waiting for audio from Swift app...");

@@ -1,7 +1,7 @@
 //! Echo Server — minimal echo service example
 //!
 //! Demonstrates the standard Actor startup flow:
-//! config → ActrNode::new(workload) → node.start() → serve
+//! config → package-backed `Hyper.attach_package(...)` → node.start() → serve
 
 mod echo_service;
 mod generated;
@@ -25,7 +25,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Build ActrNode with EchoService workload
     let workload = EchoServiceWorkload::new(EchoService);
-    let node = ActrNode::new(config, workload).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
     // 3. Start ActrNode (connect signaling, register, begin serving)
     let actr_ref = match node.start().await {

@@ -36,7 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let echo_service = EchoService::new();
     let workload = EchoServiceWorkload::new(echo_service);
-    let node = match ActrNode::new(config, workload).await {
+    let node = match unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    ) {
         Ok(node) => node,
         Err(e) => {
             error!("❌ ActrNode createfailed: {:?}", e);

@@ -86,7 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
     let workload = BlockedClientWorkload::new();
 
-    let node = ActrNode::new(config, workload.clone()).await?;
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
     let actr_ref = node.start().await?;
     
     info!("✅ Blocked client registered");

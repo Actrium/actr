@@ -2,57 +2,43 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::types::{ActrId, ActrType, PayloadType};
-use crate::workload::DynamicWorkload;
+use actr_framework::Dest;
+use actr_hyper::{
+    ActrNode as RuntimeActrNode, ActrRef as RuntimeActrRef, Hyper, HyperConfig, TrustMode,
+};
 
 #[napi]
-pub struct ActrSystem {
-    inner: Option<actr_runtime::ActrSystem>,
-    #[allow(dead_code)]
-    config: actr_config::Config,
+pub struct ActrNode {
+    inner: Option<RuntimeActrNode>,
 }
 
 #[napi]
-impl ActrSystem {
-    /// Create ActrSystem from a config file path.
+impl ActrNode {
+    /// Create a client-only ActrNode directly from a config file path.
     #[napi(factory)]
-    pub async fn from_file(config_path: String) -> Result<ActrSystem> {
+    pub async fn from_file(config_path: String) -> Result<ActrNode> {
         let config = actr_config::ConfigParser::from_file(&config_path)
             .map_err(crate::error::config_error_to_napi)?;
 
         crate::logger::init_observability(config.observability.clone());
 
-        let system = actr_runtime::ActrSystem::new(config.clone())
+        let hyper_data_dir = config.config_dir.join(".hyper");
+        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+            TrustMode::Development {
+                self_signed_pubkey: vec![0u8; 32],
+            },
+        ))
             .await
-            .map_err(crate::error::protocol_error_to_napi)?;
+            .map_err(crate::error::hyper_error_to_napi)?;
+        let node = hyper
+            .attach_none(config)
+            .await
+            .map_err(crate::error::hyper_error_to_napi)?;
 
-        Ok(ActrSystem {
-            inner: Some(system),
-            config,
+        Ok(ActrNode {
+            inner: Some(node),
         })
     }
-
-    /// Attach a workload and create ActrNode.
-    #[napi]
-    pub fn attach(&mut self, callback: Object) -> Result<ActrNode> {
-        let system = self
-            .inner
-            .take()
-            .ok_or_else(|| Error::from_reason("System already consumed"))?;
-
-        let workload = DynamicWorkload::new(callback)?;
-        let node = system.attach(workload);
-
-        Ok(ActrNode { inner: Some(node) })
-    }
-}
-
-#[napi]
-pub struct ActrNode {
-    inner: Option<actr_runtime::ActrNode<DynamicWorkload>>,
-}
-
-#[napi]
-impl ActrNode {
     /// Start the node and return ActrRef.
     ///
     /// # Safety
@@ -77,7 +63,7 @@ impl ActrNode {
 
 #[napi]
 pub struct ActrRef {
-    inner: actr_runtime::ActrRef<DynamicWorkload>,
+    inner: RuntimeActrRef,
 }
 
 #[napi]
@@ -94,7 +80,7 @@ impl ActrRef {
         let proto_type: actr_protocol::ActrType = target_type.into();
         let ids = self
             .inner
-            .discover_route_candidates(&proto_type, count)
+            .discover_route_candidates(&proto_type, count as usize)
             .await
             .map_err(crate::error::protocol_error_to_napi)?;
 
@@ -105,19 +91,22 @@ impl ActrRef {
     #[napi]
     pub async fn call(
         &self,
+        target: ActrId,
         route_key: String,
         payload_type: PayloadType,
         request_payload: Buffer,
         timeout_ms: i64,
     ) -> Result<Buffer> {
+        let target_id: actr_protocol::ActrId = target.into();
         let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
-        let response = self
-            .inner
+        let ctx = self.inner.app_context().await;
+        let response = ctx
             .call_raw(
+                &Dest::Actor(target_id),
                 route_key,
+                proto_payload_type,
                 bytes::Bytes::from(request_payload.to_vec()),
                 timeout_ms,
-                proto_payload_type,
             )
             .await
             .map_err(crate::error::protocol_error_to_napi)?;
@@ -129,17 +118,20 @@ impl ActrRef {
     #[napi]
     pub async fn tell(
         &self,
+        target: ActrId,
         route_key: String,
         payload_type: PayloadType,
         message_payload: Buffer,
     ) -> Result<()> {
+        let target_id: actr_protocol::ActrId = target.into();
         let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
-        self.inner
-            .tell_raw(
-                route_key,
-                bytes::Bytes::from(message_payload.to_vec()),
-                proto_payload_type,
-            )
+        let ctx = self.inner.app_context().await;
+        ctx.tell_raw(
+            &Dest::Actor(target_id),
+            route_key,
+            proto_payload_type,
+            bytes::Bytes::from(message_payload.to_vec()),
+        )
             .await
             .map_err(crate::error::protocol_error_to_napi)?;
 

@@ -667,7 +667,7 @@ impl TypeScriptGenerator {
         output.push('\n');
         output.push_str(SCAFFOLD_HINT);
         output.push_str(
-            "\n\nimport {\n  ActrSystem,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actor-rtc/actr';\n",
+            "\n\nimport {\n  ActrNode,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actor-rtc/actr';\n",
         );
 
         if has_dispatcher {
@@ -755,7 +755,7 @@ impl TypeScriptGenerator {
         output.push_str("  }\n}\n");
 
         output.push_str(
-            "\nasync function main(): Promise<void> {\n  const system = await ActrSystem.fromConfig('./actr.toml');\n  const node = system.attach(new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
+            "\nasync function main(): Promise<void> {\n  const node = await ActrNode.fromConfig('./actr.toml', new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
         );
         output.push_str(&local_methods.len().to_string());
         output.push_str(");\n  console.log('Remote RPC methods:', ");

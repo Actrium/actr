@@ -42,33 +42,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. create ActorSystem
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  create ActrSystem...");
-
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
-        Err(e) => {
-            error!("❌ ActrSystem createfailed: {:?}", e);
-            return Err(e.into());
-        }
-    };
-
-    info!("✅ ActrSystem createsuccess");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. create EchoService [...]attach Workload
+    // 2. create workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 create EchoService...");
 
     let echo_service = EchoService::new();
     let workload = EchoServiceWorkload::new(echo_service);
-    let node = system.attach(workload);
+    let node = match unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    ) {
+        Ok(node) => node,
+        Err(e) => {
+            error!("❌ ActrNode createfailed: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
-    info!("✅ EchoService attached");
+    info!("✅ EchoService workload created");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. start ActrNode（connectionsignalingservice[...]、register ws_address、listenport）
+    // 3. start ActrNode（connectionsignalingservice[...]、register ws_address、listenport）
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🚀 start ActrNode...");
     info!("   (nodewill[...] WebSocket addressregister[...]signalingservice[...])");

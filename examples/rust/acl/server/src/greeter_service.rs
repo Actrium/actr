@@ -88,11 +88,11 @@ mod tests {
    #[tokio::main]
    async fn main() -> ActorResult<()> {
        let service = MyGreeterService::new(/* [...] */);
-       
-       ActorSystem::new()
-           .attach(service)
-           .start()
-           .await
+       let workload = GreeterServiceWorkload::new(service);
+       let node = unimplemented!(
+           "source-defined workload examples were removed; migrate this example to a package-backed host"
+       );
+       node.start().await?;
    }
    ```
 

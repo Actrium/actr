@@ -248,8 +248,14 @@ impl WebRtcNegotiator {
         setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
     ) {
         use std::time::Duration;
+        use webrtc::ice::network_type::NetworkType;
 
         let advanced = &self.config.advanced;
+
+        // Limit local ICE gathering to IPv4 UDP candidates. On local/dev setups
+        // with localhost STUN/TURN, unusable UDP6 probes can stall gathering and
+        // make DataChannel readiness flaky.
+        setting_engine.set_network_types(vec![NetworkType::Udp4]);
 
         setting_engine.set_host_acceptance_min_wait(Some(Duration::from_millis(
             advanced.ice_host_acceptance_min_wait,
