@@ -21,6 +21,12 @@ use tracing::{error, info};
 
 use crate::echo::{EchoRequest, EchoResponse};
 
+const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1-beta";
+
+fn echo_actr_version() -> String {
+    env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| DEFAULT_ECHO_ACTR_VERSION.to_string())
+}
+
 impl RpcRequest for EchoRequest {
     type Response = EchoResponse;
 
@@ -100,7 +106,7 @@ async fn main() -> Result<()> {
     let target_type = ActrType {
         manufacturer: "actrium".to_string(),
         name: "EchoService".to_string(),
-        version: "0.2.0-beta".to_string(),
+        version: echo_actr_version(),
     };
 
     info!("🔍 Discovering echo server...");

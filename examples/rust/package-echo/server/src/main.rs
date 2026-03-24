@@ -16,15 +16,20 @@ use base64::Engine;
 use serde_json::Value;
 use tracing::{error, info};
 
-const ECHO_ACTR_VERSION: &str = "0.2.0-beta";
+const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1-beta";
+
+fn echo_actr_version() -> String {
+    env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| DEFAULT_ECHO_ACTR_VERSION.to_string())
+}
 
 fn package_path() -> PathBuf {
     env::var("ACTR_PACKAGE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
+            let echo_actr_version = echo_actr_version();
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(format!(
-                    "../../../../../echo-actr/dist/actrium-EchoService-{ECHO_ACTR_VERSION}-wasm32-unknown-unknown.actr"
+                    "../../../../../echo-actr/dist/actrium-EchoService-{echo_actr_version}-wasm32-unknown-unknown.actr"
                 ))
         })
 }

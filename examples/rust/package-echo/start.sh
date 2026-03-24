@@ -157,6 +157,9 @@ echo "Version:       $ECHO_ACTR_VERSION"
 echo "Backend:       $ECHO_ACTR_BACKEND"
 echo "Target:        $ECHO_ACTR_TARGET"
 
+perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
+    "$CLIENT_DIR/actr.toml"
+
 "$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
 
 if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
@@ -389,6 +392,7 @@ echo ""
 echo "🚀 Starting package-echo-server..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+ECHO_ACTR_VERSION="$ECHO_ACTR_VERSION" \
 ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
 ACTR_PUBLIC_KEY_PATH="$PUBLIC_KEY_PATH" \
 RUST_LOG="${RUST_LOG:-info}" \
@@ -441,7 +445,9 @@ echo "Sending test message: \"$TEST_INPUT\""
     echo "$TEST_INPUT"
     sleep 2
     echo "quit"
-) | RUST_LOG="${RUST_LOG:-info}" cargo run --bin package-echo-client > "$LOG_DIR/package-echo-client.log" 2>&1 &
+) | ECHO_ACTR_VERSION="$ECHO_ACTR_VERSION" \
+    RUST_LOG="${RUST_LOG:-info}" \
+    cargo run --bin package-echo-client > "$LOG_DIR/package-echo-client.log" 2>&1 &
 CLIENT_PID=$!
 
 # Wait for client to finish (max 15 seconds)
