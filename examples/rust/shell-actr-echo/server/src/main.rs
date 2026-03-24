@@ -1,7 +1,7 @@
 //! Echo Server — minimal echo service example
 //!
 //! Demonstrates the standard Actor startup flow:
-//! config → ActrSystem → attach Workload → node.start() → serve
+//! config → ActrNode::new(workload) → node.start() → serve
 
 mod echo_service;
 mod generated;
@@ -23,14 +23,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Echo Server starting");
 
-    // 2. Create ActrSystem
-    let system = ActrSystem::new(config).await?;
-
-    // 3. Attach EchoService workload
+    // 2. Build ActrNode with EchoService workload
     let workload = EchoServiceWorkload::new(EchoService);
-    let node = system.attach(workload);
+    let node = ActrNode::new(config, workload).await?;
 
-    // 4. Start ActrNode (connect signaling, register, begin serving)
+    // 3. Start ActrNode (connect signaling, register, begin serving)
     let actr_ref = match node.start().await {
         Ok(r) => r,
         Err(e) => {
@@ -41,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(id = ?actr_ref.actor_id(), "Echo Server ready, waiting for requests...");
 
-    // 5. Wait for Ctrl+C
+    // 4. Wait for Ctrl+C
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
     info!("Echo Server stopped");

@@ -35,7 +35,7 @@ actr-runtime/
 ```
 actr-hyper/
 ├── lifecycle/          # Actor Lifecycle Management
-│   ├── actr_system.rs  # ActrSystem (generic-agnostic infrastructure)
+│   ├── actr_node.rs    # ActrNode runtime infrastructure
 │   └── actr_node.rs    # ActrNode<W> (complete node)
 ├── inbound/            # Inbound Message Processing
 │   ├── data_stream_registry.rs     # DataStream fast path registry
@@ -224,10 +224,10 @@ Design Advantage: enum dispatch provides static dispatch with zero virtual funct
 
 ### 6.2 Lifecycle Management (actr-hyper/lifecycle/)
 
-**ActrSystem**：
-- Responsibility: Provides workload-agnostic infrastructure (Mailbox, SignalingClient, ContextFactory)
-- Lifecycle: Converts to ActrNode from creation to `attach_workload()` or `attach_shell()`
-- Key methods: `from_config()`, `new()`, `attach_workload()`, `attach_shell()`
+**ActrNode**：
+- Responsibility: Provides runtime infrastructure (Mailbox, SignalingClient, ContextFactory)
+- Lifecycle: Built directly from config, then started into a running actor reference
+- Key methods: `new()`, `new_client()`, `start()`
 
 **ActrNode**：
 - Responsibility: Runtime node, optionally holding one guest workload plus runtime components

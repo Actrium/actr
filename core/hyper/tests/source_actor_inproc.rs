@@ -75,7 +75,7 @@ impl MessageDispatcher for DoubleDispatcher {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Helper: build the inproc infrastructure that ActrSystem::create normally sets up
+// Helper: build the inproc infrastructure that node construction normally sets up
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 struct InprocTestHarness {
@@ -90,7 +90,7 @@ struct InprocTestHarness {
 impl InprocTestHarness {
     /// Build and start the full Shell <-> Workload plumbing.
     ///
-    /// This mirrors what ActrSystem::create + ActrNode::start does for the inproc path,
+    /// This mirrors what node construction + `ActrNode::start()` does for the inproc path,
     /// but without signaling, WebRTC, or any network components.
     async fn build() -> Self {
         // Direction 1: Shell -> Workload (REQUEST)

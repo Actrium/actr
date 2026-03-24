@@ -3,7 +3,7 @@
 //! Platform abstraction traits for Actor-RTC.
 //!
 //! This crate defines the boundary between platform-agnostic orchestration logic
-//! (Hyper, ActrSystem) and platform-specific implementations (native, web).
+//! (Hyper, ActrNode runtime) and platform-specific implementations (native, web).
 //!
 //! ## Traits
 //!

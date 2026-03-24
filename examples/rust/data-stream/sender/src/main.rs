@@ -26,14 +26,11 @@ async fn main() -> anyhow::Result<()> {
     // Initialize observability (logging/tracing) using config
     let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
-    // Create ActrSystem
-    info!("🏗️  Creating ActrSystem...");
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem created");
-
-    // Attach sender workload
+    // Build node with sender workload
+    info!("🏗️  Building ActrNode...");
     let workload = LocalFileServiceWorkload::new(MyFileService::new());
-    let node = system.attach(workload);
+    let node = ActrNode::new(config, workload).await?;
+    info!("✅ ActrNode created");
 
     info!("🚀 Starting ActrNode...");
     let actr_ref = node.start().await?;

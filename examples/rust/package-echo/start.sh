@@ -114,7 +114,15 @@ echo ""
 echo -e "${BLUE}📦 Building local echo-actr package...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-0.1.0}"
+echo_actr_version() {
+    python3 - <<'PY' "$ECHO_ACTR_DIR/Cargo.toml"
+import pathlib, sys, tomllib
+data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+print(data["package"]["version"])
+PY
+}
+
+ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-$(echo_actr_version)}"
 ECHO_ACTR_BACKEND="${ECHO_ACTR_BACKEND:-wasm}"
 
 host_target() {

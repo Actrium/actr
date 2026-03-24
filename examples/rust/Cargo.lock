@@ -2652,19 +2652,15 @@ name = "package-echo-client"
 version = "0.2.0"
 dependencies = [
  "actr-config",
- "actr-framework",
  "actr-hyper",
- "actr-pack",
+ "actr-platform-native",
  "actr-protocol",
  "anyhow",
- "async-trait",
- "base64",
  "bytes",
  "prost 0.14.3",
  "prost-build",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

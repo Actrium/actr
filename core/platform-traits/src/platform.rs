@@ -11,7 +11,7 @@ use crate::storage::KvStore;
 /// Composite platform provider
 ///
 /// Groups all platform-specific services behind a single injectable interface.
-/// `ActrSystem` and `Hyper` accept `Arc<dyn PlatformProvider>` to decouple
+/// `ActrNode` builders and `Hyper` accept `Arc<dyn PlatformProvider>` to decouple
 /// from concrete native/web implementations.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

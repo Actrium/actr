@@ -38,18 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
     info!("✅ Configuration loaded");
 
-    // Create ActrSystem
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem created");
-
     // Create workload
     let handler = GreeterService;
     let workload = GreeterServiceWorkload::new(handler);
     info!("📦 GreeterService workload created");
 
-    // Attach workload to system
-    let node = system.attach(workload);
-    info!("✅ Workload attached to system");
+    // Build node with workload
+    let node = ActrNode::new(config, workload).await?;
+    info!("✅ ActrNode created with workload");
 
     // Start the node
     let _actr_ref = node.start().await?;

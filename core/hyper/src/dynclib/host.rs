@@ -446,29 +446,22 @@ impl std::fmt::Debug for DynclibInstance {
 // Safety: function pointers reference process-global SO code.
 unsafe impl Send for DynclibInstance {}
 
-/// Executor wrapper that keeps the loaded library alive for the lifetime of the actor instance.
+/// Workload wrapper that keeps the loaded library alive for the lifetime of the actor instance.
 ///
 /// Field order matters: Rust drops fields in declaration order, so `instance`
 /// (which holds raw function pointers into the loaded library) must be dropped
-/// before `_host` (which unloads the library), and `_host` before `_temp_file`
-/// (which deletes the on-disk shared object).
+/// before `_host` (which unloads the library).
 #[derive(Debug)]
 pub struct DynClibWorkload {
     instance: DynclibInstance,
     _host: DynclibHost,
-    _temp_file: Option<tempfile::NamedTempFile>,
 }
 
 impl DynClibWorkload {
-    pub(crate) fn with_temp_file(
-        host: DynclibHost,
-        instance: DynclibInstance,
-        temp_file: tempfile::NamedTempFile,
-    ) -> Self {
+    pub(crate) fn new(host: DynclibHost, instance: DynclibInstance) -> Self {
         Self {
             instance,
             _host: host,
-            _temp_file: Some(temp_file),
         }
     }
 }
@@ -563,7 +556,19 @@ impl DynclibInstance {
         .await
         .map_err(|e| DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}")))??;
 
-        Ok(result)
+        let reply = guest_abi::decode_message::<AbiReply>(&result).map_err(|code| {
+            DynclibError::DispatchFailed(format!(
+                "guest returned malformed AbiReply with code {code}"
+            ))
+        })?;
+
+        if reply.status != guest_abi::code::SUCCESS {
+            let message = String::from_utf8(reply.payload)
+                .unwrap_or_else(|_| format!("guest returned status {}", reply.status));
+            return Err(DynclibError::DispatchFailed(message));
+        }
+
+        Ok(reply.payload)
     }
 }
 

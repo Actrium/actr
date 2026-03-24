@@ -20,9 +20,6 @@ async fn main() -> Result<()> {
 
     info!("🚀 Echo Client App - [...]");
 
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem createsuccess");
-
     // [...] workload [...]configservice[...]
     let workload = ClientWorkload::new();
 
@@ -33,7 +30,8 @@ async fn main() -> Result<()> {
         version: "1.0.0".to_string(),
     };
 
-    let node = system.attach(workload.clone());
+    let node = ActrNode::new(config, workload.clone()).await?;
+    info!("✅ ActrNode createsuccess");
 
     info!("🚀 start ActrNode...");
     let actr_ref = node.start().await?;

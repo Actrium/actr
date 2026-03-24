@@ -512,9 +512,9 @@ mod tests {{
    ```rust
    #[tokio::main]
    async fn main() -> ActorResult<()> {{
-       let system = ActrSystem::from_config("actr.toml").await?;
+       let config = actr::config::ConfigParser::from_file("actr.toml")?;
        let workload = /* load from verified .actr package */;
-       let node = system.attach_workload(workload);
+       let node = ActrNode::new(config, workload).await?;
        node.start().await?;
        Ok(())
    }}

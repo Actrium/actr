@@ -7,7 +7,7 @@
 //! The actr framework uses complex Rust features (generics, traits, async) that don't map
 //! directly to UniFFI. This crate provides a "facade" layer that:
 //!
-//! 1. Exposes `ActrSystem` and network lifecycle handles to UniFFI consumers
+//! 1. Exposes runtime wrappers and network lifecycle handles to UniFFI consumers
 //! 2. Keeps callback interfaces for guest authoring APIs
 //! 3. Exposes simplified APIs for creating and managing actors
 

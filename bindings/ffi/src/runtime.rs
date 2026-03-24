@@ -3,15 +3,15 @@
 use crate::error::{ActrError, ActrResult};
 use crate::types::NetworkEventResult;
 use actr_config::Config;
-use actr_hyper::{ActrSystem, NetworkEventHandle};
+use actr_hyper::{ActrNode, Hyper, HyperConfig, NetworkEventHandle, TrustMode};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{error, info};
 
-/// Wrapper for ActrSystem - the entry point for creating actors
+/// Wrapper for pre-start actor runtime state.
 #[derive(uniffi::Object)]
 pub struct ActrSystemWrapper {
-    inner: Mutex<Option<ActrSystem>>,
+    inner: Mutex<Option<ActrNode>>,
     #[allow(dead_code)]
     config: Config,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
@@ -19,7 +19,7 @@ pub struct ActrSystemWrapper {
 
 #[uniffi::export]
 impl ActrSystemWrapper {
-    /// Create a new ActrSystem from configuration file
+    /// Create a new runtime wrapper from configuration file.
     #[uniffi::constructor(async_runtime = "tokio")]
     pub async fn new_from_file(config_path: String) -> ActrResult<Arc<Self>> {
         // Parse configuration first to get observability settings
@@ -33,21 +33,36 @@ impl ActrSystemWrapper {
         crate::logger::init_observability(config.observability.clone());
 
         info!(
-            "Creating ActrSystem with signaling_url={}, realm_id={}",
+            "Creating runtime wrapper with signaling_url={}, realm_id={}",
             config.signaling_url, config.realm.realm_id
         );
 
-        let system = ActrSystem::new(config.clone()).await.map_err(|e| {
-            error!("Failed to create ActrSystem: {}", e);
+        let hyper_data_dir = config.config_dir.join(".hyper");
+        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+            TrustMode::Development {
+                // Pure runtime setup does not verify packages, so a placeholder key is sufficient.
+                self_signed_pubkey: vec![0u8; 32],
+            },
+        ))
+        .await
+        .map_err(|e| {
+            error!("Failed to initialize Hyper shell: {}", e);
             ActrError::InternalError {
-                msg: format!("Failed to create ActrSystem: {e}"),
+                msg: format!("Failed to initialize Hyper shell: {e}"),
             }
         })?;
 
-        info!("ActrSystem created successfully");
+        let node = hyper.attach_none(config.clone()).await.map_err(|e| {
+            error!("Failed to create runtime node: {}", e);
+            ActrError::InternalError {
+                msg: format!("Failed to create runtime node: {e}"),
+            }
+        })?;
+
+        info!("Runtime wrapper created successfully");
 
         Ok(Arc::new(Self {
-            inner: Mutex::new(Some(system)),
+            inner: Mutex::new(Some(node)),
             config,
             network_event_handle: Mutex::new(None),
         }))
@@ -64,20 +79,20 @@ impl ActrSystemWrapper {
             }));
         }
 
-        let system_guard = self.inner.lock();
-        let system = system_guard.as_ref().ok_or_else(|| ActrError::StateError {
-            msg: "ActrSystem already consumed".to_string(),
+        let mut node_guard = self.inner.lock();
+        let node = node_guard.as_mut().ok_or_else(|| ActrError::StateError {
+            msg: "runtime node is no longer available".to_string(),
         })?;
 
         // Use default debounce behavior (0 = default).
-        let handle = system.create_network_event_handle(0);
+        let handle = node.create_network_event_handle(0);
         *handle_guard = Some(handle.clone());
 
         Ok(Arc::new(NetworkEventHandleWrapper { inner: handle }))
     }
 }
 
-/// Wrapper for NetworkEventHandle - network lifecycle callbacks
+/// Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
 #[derive(uniffi::Object)]
 pub struct NetworkEventHandleWrapper {
     inner: NetworkEventHandle,

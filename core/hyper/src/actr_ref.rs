@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let node = system.attach_workload(workload);
+//! let node = ActrNode::new(config, workload).await?;
 //! let actr = node.start().await?;
 //!
 //! println!("actor id = {:?}", actr.actor_id());
@@ -21,7 +21,8 @@
 use crate::context::RuntimeContext;
 use crate::context_factory::ContextFactory;
 use crate::lifecycle::CredentialState;
-use actr_protocol::{ActorResult, ActrError, ActrId};
+use actr_framework::{Context as _, Dest};
+use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -64,6 +65,54 @@ impl ActrRef {
     /// Get Actor ID
     pub fn actor_id(&self) -> &ActrId {
         &self.shared.actor_id
+    }
+
+    /// Call the local workload with a typed RPC request.
+    ///
+    /// Convenience wrapper around `app_context().call(&Dest::Local, request)`.
+    /// Use this from app-side code to invoke the local guest workload.
+    pub async fn call<R: RpcRequest>(&self, request: R) -> ActorResult<R::Response> {
+        self.app_context().await.call(&Dest::Local, request).await
+    }
+
+    /// Call a remote actor directly with a typed RPC request.
+    ///
+    /// Convenience wrapper around `app_context().call(&Dest::Actor(target), request)`.
+    /// Use this when the client has no local guest workload and calls the remote actor directly.
+    pub async fn call_remote<R: RpcRequest>(
+        &self,
+        target: ActrId,
+        request: R,
+    ) -> ActorResult<R::Response> {
+        self.app_context()
+            .await
+            .call(&Dest::Actor(target), request)
+            .await
+    }
+
+    /// Discover route candidates for the given actor type.
+    ///
+    /// Returns up to `count` actor IDs registered under `target_type`.
+    /// Convenience wrapper for app-side discovery without holding a `RuntimeContext`.
+    pub async fn discover_route_candidates(
+        &self,
+        target_type: &ActrType,
+        count: usize,
+    ) -> ActorResult<Vec<ActrId>> {
+        let ctx = self.app_context().await;
+        let mut results = Vec::with_capacity(count);
+        for _ in 0..count {
+            match ctx.discover_route_candidate(target_type).await {
+                Ok(id) => {
+                    if !results.contains(&id) {
+                        results.push(id);
+                    }
+                    break; // signaling returns one candidate per request; stop after first
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(results)
     }
 
     /// Create an application-side runtime context bound to this running actor.

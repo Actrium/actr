@@ -1,13 +1,12 @@
-//! Interactive shell — reads from stdin, discovers and calls the remote echo actor directly.
+//! Interactive shell — reads from stdin and calls the remote echo server directly.
 
 use crate::echo::{EchoRequest, EchoResponse};
-use actr_framework::{Context as _, Dest};
-use actr_hyper::context::RuntimeContext;
+use actr_hyper::ActrRef;
 use actr_protocol::ActrId;
 use tracing::{error, info};
 
 pub struct AppSide {
-    pub app_ctx: RuntimeContext,
+    pub actr_ref: ActrRef,
     pub server_id: ActrId,
 }
 
@@ -15,7 +14,7 @@ impl AppSide {
     pub async fn run(self) {
         info!("[App] Started");
         println!("===== Package Echo Client App =====");
-        println!("Type messages to send to the package echo server (type 'quit' to exit):");
+        println!("Type messages to send to the echo server (type 'quit' to exit):");
 
         use std::io::Write;
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -44,11 +43,11 @@ impl AppSide {
                 message: line.clone(),
             };
 
-            info!("[App] Sending directly to remote echo actor: {}", line);
+            info!("[App] Sending to remote echo server: {}", line);
 
             match self
-                .app_ctx
-                .call::<EchoRequest>(&Dest::Actor(self.server_id.clone()), request)
+                .actr_ref
+                .call_remote(self.server_id.clone(), request)
                 .await
             {
                 Ok(response) => {
@@ -56,7 +55,7 @@ impl AppSide {
                     println!("\n[Received reply] {}", response.reply);
                 }
                 Err(e) => {
-                    error!("[App] Failed to call: {:?}", e);
+                    error!("[App] Failed to call remote: {:?}", e);
                     println!("\n[Error] {}", e);
                 }
             }

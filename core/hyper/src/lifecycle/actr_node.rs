@@ -1,4 +1,4 @@
-//! ActrNode - ActrSystem + optional attached workload
+//! ActrNode - runtime node with optional workload
 
 use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 
-/// ActrNode - running node created from an `ActrSystem`
+/// ActrNode - runtime node with optional workload
 pub struct ActrNode {
     /// Runtime configuration
     pub(crate) config: actr_config::Config,
@@ -103,11 +103,10 @@ pub struct ActrNode {
 
     /// Runtime workload (WASM, dynclib, etc.)
     ///
-    /// `handle_incoming` dispatches through this workload when present.
+    /// `handle_incoming` dispatches through this workload.
     ///
     /// The `Mutex` serializes dispatch into a single guest actor instance.
-    /// Shell-only nodes keep this as `None`.
-    pub(crate) workload: Option<Mutex<crate::workload::Workload>>,
+    pub(crate) workload: Mutex<crate::workload::Workload>,
 }
 
 /// Credential state for shared access between tasks
@@ -291,6 +290,20 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 }
 
 impl ActrNode {
+    /// Build a new node from config and a native Rust workload.
+    pub async fn new<W>(config: actr_config::Config, workload: W) -> ActorResult<Self>
+    where
+        W: actr_framework::Workload + Send + Sync + 'static,
+    {
+        let acl = config.acl.clone();
+        Self::build(config, crate::workload::Workload::native(workload, acl)).await
+    }
+
+    /// Build a new client-only node with no local workload attached.
+    pub async fn new_client(config: actr_config::Config) -> ActorResult<Self> {
+        Self::build(config, crate::workload::Workload::None).await
+    }
+
     /// Get Inproc Transport Manager
     ///
     /// # Returns
@@ -529,7 +542,6 @@ impl ActrNode {
             );
 
         // 2. Dispatch
-        let envelope_bytes = envelope.encode_to_vec();
         let dispatch_ctx = crate::workload::InvocationContext {
             self_id: actor_id.clone(),
             caller_id: caller_id.cloned(),
@@ -541,17 +553,10 @@ impl ActrNode {
             Box::pin(async move { host_operation_handler(ctx, pending).await })
         });
 
-        let workload = self.workload.as_ref().ok_or_else(|| {
-            ActrError::Internal(
-                "shell-only node does not accept inbound guest dispatch".to_string(),
-            )
-        })?;
-
-        let mut guard = workload.lock().await;
+        let mut guard = self.workload.lock().await;
         let result = guard
-            .handle(&envelope_bytes, dispatch_ctx, &call_executor)
+            .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
             .await
-            .map(Bytes::from)
             .map_err(|e| ActrError::Internal(format!("workload dispatch failed: {e:?}")));
 
         match &result {
@@ -576,6 +581,173 @@ impl ActrNode {
             .complete(&envelope.request_id, result.clone());
 
         result
+    }
+
+    /// Build a new ActrNode from config and runtime workload.
+    ///
+    /// This is the internal constructor behind the public node builders and
+    /// Hyper package attach helpers.
+    pub(crate) async fn build(
+        config: actr_config::Config,
+        workload: crate::workload::Workload,
+    ) -> ActorResult<Self> {
+        use crate::outbound::{Gate, HostGate};
+        use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
+
+        tracing::info!("🚀 Initializing ActrNode");
+
+        // Initialize Mailbox
+        let mailbox_path = config
+            .mailbox_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ":memory:".to_string());
+
+        tracing::info!("📂 Mailbox database path: {}", mailbox_path);
+
+        let mailbox: Arc<dyn actr_runtime_mailbox::Mailbox> = Arc::new(
+            actr_runtime_mailbox::SqliteMailbox::new(&mailbox_path)
+                .await
+                .map_err(|e| {
+                    actr_protocol::ActrError::Unavailable(format!("Mailbox init failed: {e}"))
+                })?,
+        );
+
+        // Initialize Dead Letter Queue
+        let dlq_path = if mailbox_path == ":memory:" {
+            ":memory:".to_string()
+        } else {
+            format!("{mailbox_path}.dlq")
+        };
+
+        let dlq: Arc<dyn actr_runtime_mailbox::DeadLetterQueue> = Arc::new(
+            actr_runtime_mailbox::SqliteDeadLetterQueue::new_standalone(&dlq_path)
+                .await
+                .map_err(|e| {
+                    actr_protocol::ActrError::Unavailable(format!("DLQ init failed: {e}"))
+                })?,
+        );
+        tracing::info!("✅ Dead Letter Queue initialized");
+
+        // Initialize signaling client
+        let webrtc_role = if config.webrtc.advanced.prefer_answerer() {
+            Some("answer".to_string())
+        } else {
+            None
+        };
+
+        let signaling_config = SignalingConfig {
+            server_url: config.signaling_url.clone(),
+            connection_timeout: 30,
+            heartbeat_interval: 30,
+            reconnect_config: ReconnectConfig::default(),
+            auth_config: None,
+            webrtc_role,
+        };
+
+        let client = Arc::new(WebSocketSignalingClient::new(signaling_config));
+        client.start_reconnect_manager();
+        let signaling_client: Arc<dyn crate::wire::webrtc::SignalingClient> = client;
+
+        // Initialize inproc infrastructure (Shell ↔ Guest)
+        let shell_to_workload = Arc::new(HostTransport::new());
+        let workload_to_shell = Arc::new(HostTransport::new());
+        let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
+
+        let data_stream_registry = Arc::new(crate::inbound::DataStreamRegistry::new());
+        let media_frame_registry = Arc::new(crate::inbound::MediaFrameRegistry::new());
+
+        let context_factory = ContextFactory::new(
+            inproc_gate,
+            shell_to_workload.clone(),
+            workload_to_shell.clone(),
+            data_stream_registry,
+            media_frame_registry,
+            signaling_client.clone(),
+        );
+
+        tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
+
+        // Load Actr.lock.toml (optional)
+        let actr_lock_path = config.config_dir.join("Actr.lock.toml");
+        let actr_lock = match actr_config::lock::LockFile::from_file(&actr_lock_path) {
+            Ok(lock) => {
+                tracing::info!(
+                    "📋 Loaded Actr.lock.toml with {} dependencies",
+                    lock.dependencies.len()
+                );
+                Some(lock)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "⚠️ Actr.lock.toml not loaded (path: {:?}, ERR: {}). Continuing without dependency fingerprints.",
+                    actr_lock_path,
+                    e
+                );
+                None
+            }
+        };
+
+        tracing::info!("✅ ActrNode initialized");
+
+        Ok(Self {
+            config,
+            mailbox,
+            dlq,
+            context_factory: Some(context_factory),
+            signaling_client,
+            actor_id: None,
+            credential_state: None,
+            webrtc_coordinator: None,
+            webrtc_gate: None,
+            websocket_gate: None,
+            inproc_mgr: None,
+            guest_to_shell_mgr: None,
+            shutdown_token: CancellationToken::new(),
+            actr_lock,
+            network_event_rx: None,
+            network_event_result_tx: None,
+            network_event_debounce_config: None,
+            dedup_state: Arc::new(Mutex::new(DedupState::new())),
+            injected_registration: None,
+            discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            workload: Mutex::new(workload),
+        })
+    }
+
+    /// Create network event processing infrastructure (called on demand, before `start()`).
+    ///
+    /// # Parameters
+    /// - `debounce_ms`: Debounce window in milliseconds. If 0, no debounce.
+    ///
+    /// # Panics
+    /// Panics if called more than once.
+    pub fn create_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        if self.network_event_rx.is_some() {
+            panic!("create_network_event_handle() can only be called once");
+        }
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
+
+        let debounce_config = if debounce_ms > 0 {
+            Some(crate::lifecycle::network_event::DebounceConfig {
+                window: std::time::Duration::from_millis(debounce_ms),
+            })
+        } else {
+            None
+        };
+
+        self.network_event_rx = Some(event_rx);
+        self.network_event_result_tx = Some(result_tx);
+        self.network_event_debounce_config = debounce_config;
+
+        crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
     }
 
     /// Inject a pre-issued registration credential
@@ -772,7 +944,7 @@ impl ActrNode {
             }
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // 1.3. Store references to both inproc managers (already created in ActrSystem::new())
+            // 1.3. Store references to both inproc managers (created in ActrNode::build())
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             let shell_to_guest = self
                 .context_factory
@@ -786,7 +958,7 @@ impl ActrNode {
                 .workload_to_shell();
             self.inproc_mgr = Some(shell_to_guest);
             self.guest_to_shell_mgr = Some(guest_to_shell);
-            tracing::info!("✅ Inproc infrastructure already ready (created in ActrSystem::new())");
+            tracing::info!("✅ Inproc infrastructure already ready (created in ActrNode::build())");
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.5. Create WebRTC infrastructure
@@ -1128,6 +1300,33 @@ impl ActrNode {
             .expect("CredentialState must be initialized in start()");
         let shutdown_token = self.shutdown_token.clone();
         let node_ref = Arc::new(self);
+
+        {
+            let startup_ctx =
+                context_factory.create_bootstrap(&actor_id, &credential_state.credential().await);
+            let workload = node_ref.workload.lock().await;
+            workload.on_start(&startup_ctx).await?;
+        }
+
+        {
+            let node = node_ref.clone();
+            let actor_id = actor_id.clone();
+            let credential_state = credential_state.clone();
+            let shutdown = shutdown_token.clone();
+            let on_stop_handle = tokio::spawn(async move {
+                shutdown.cancelled().await;
+                let stop_ctx = node
+                    .context_factory
+                    .as_ref()
+                    .expect("ContextFactory must be initialized in start()")
+                    .create_bootstrap(&actor_id, &credential_state.credential().await);
+                let workload = node.workload.lock().await;
+                if let Err(err) = workload.on_stop(&stop_ctx).await {
+                    tracing::warn!("workload on_stop hook failed: {err:?}");
+                }
+            });
+            task_handles.push(on_stop_handle);
+        }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 3.5. Start WebRTC background loops

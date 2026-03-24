@@ -6,9 +6,9 @@
 //! 3. .actr package: wrong key → signature verification failed
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
-use actr_hyper::{
-    Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode, WorkloadPackage,
-};
+#[cfg(feature = "wasm-engine")]
+use actr_hyper::PackageExecutionBackend;
+use actr_hyper::{Hyper, HyperConfig, HyperError, TrustMode, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;

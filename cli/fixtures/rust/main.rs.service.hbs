@@ -17,12 +17,11 @@ use echo_service::EchoServiceImpl;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let system = ActrSystem::from_config("actr.toml").await?;
-
     info!("{} starting (EchoService)", env!("CARGO_PKG_NAME"));
 
-    let _actr_ref = system
-        .attach(EchoServiceWorkload::new(EchoServiceImpl::new()))
+    let config = actr::config::ConfigParser::from_file("actr.toml")?;
+    let _actr_ref = ActrNode::new(config, EchoServiceWorkload::new(EchoServiceImpl::new()))
+        .await?
         .start()
         .await?;
 

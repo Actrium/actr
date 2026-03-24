@@ -2,29 +2,29 @@ use async_trait::async_trait;
 
 use crate::error::HyperResult;
 
-/// ActrSystem handle trait (Native / WASM)
+/// Runtime handle trait (Native / WASM)
 ///
-/// Hyper manages in-process ActrSystem lifecycle through this interface.
-/// Native: ActrSystem+Workload compiled into the same binary, directly implements this trait.
-/// WASM: ActrSystem native shell wraps a WASM instance and implements this trait.
+/// Hyper manages in-process runtime lifecycle through this interface.
+/// Native: node runtime compiled into the same binary, directly implements this trait.
+/// WASM: native shell wraps a WASM instance and implements this trait.
 #[async_trait]
 pub trait ActrSystemHandle: Send + Sync {
-    /// Start the ActrSystem
+    /// Start the runtime
     async fn start(&self) -> HyperResult<()>;
 
-    /// Gracefully shut down the ActrSystem, wait for in-flight messages to complete
+    /// Gracefully shut down the runtime, wait for in-flight messages to complete
     async fn shutdown(&self) -> HyperResult<()>;
 
     /// Whether healthy (used for Hyper-side monitoring)
     fn is_healthy(&self) -> bool;
 
-    /// ActrSystem unique identifier (for debugging)
+    /// Runtime unique identifier (for debugging)
     fn id(&self) -> &str;
 }
 
 /// WASM instance handle
 ///
-/// Created and held by the ActrSystem native shell.
+/// Created and held by the native shell runtime.
 /// On hot update, the old instance is unloaded and a new instance handle is created.
 #[derive(Debug)]
 pub struct WasmInstanceHandle {

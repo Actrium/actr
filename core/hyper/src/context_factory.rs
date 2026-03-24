@@ -58,7 +58,7 @@ impl ContextFactory {
     ///
     /// # Design Notes
     ///
-    /// - **inproc_gate**: created during `ActrSystem::new()` and available immediately
+    /// - **inproc_gate**: created during node construction and available immediately
     /// - **outproc_gate**: starts as `None` and is set after WebRTC initialization in `ActrNode::start()`
     /// - **bidirectional HostTransport**: keeps pending request state fully separated between Shell and Workload
     /// - **data_stream_registry**: manages callbacks for application data streams

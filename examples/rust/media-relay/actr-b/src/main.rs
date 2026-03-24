@@ -23,25 +23,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Actr B (Receiver) start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 using/usereal ActrSystem + WebRTC P2P");
+    info!("📝 using/usereal ActrNode + WebRTC P2P");
     info!("📡 need/require signaling-server [...] ws://localhost:8081");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // 2. Create ActrSystem
-    info!("🏗️  create ActrSystem...");
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem createsuccess");
-
-    // 3. Create RelayService and attach Workload
+    // 2. Create RelayService and build node
     info!("📦 create RelayService...");
 
     let relay_service = RelayService::new();
     let workload = RelayServiceWorkload::new(relay_service);
-    let node = system.attach(workload);
+    let node = ActrNode::new(config, workload).await?;
 
-    info!("✅ RelayService attached");
+    info!("✅ ActrNode createsuccess");
 
-    // 4. Start ActrNode (connect to signaling, register, start receiving)
+    // 3. Start ActrNode (connect to signaling, register, start receiving)
     info!("🚀 start ActrNode...");
     let actr_ref = node.start().await?;
     info!("✅ ActrNode startsuccess！");
@@ -50,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("📥 waiting/wait for Actr A send[...]...");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // 5. Wait for Ctrl+C and shutdown
+    // 4. Wait for Ctrl+C and shutdown
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
     info!("✅ Actr B closed");

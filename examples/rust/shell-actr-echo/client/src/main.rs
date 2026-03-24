@@ -23,9 +23,6 @@ async fn main() -> Result<()> {
     info!("🚀 Echo Client App - Actor-RTC Standard Pattern");
     info!("   [...] (Runtime Compatibility Negotiation)");
 
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem created");
-
     // prepare workload and configure server target
     let workload = ClientWorkload::new();
 
@@ -36,7 +33,8 @@ async fn main() -> Result<()> {
         version: "1.0.0".to_string(),
     };
 
-    let node = system.attach(workload.clone());
+    let node = ActrNode::new(config, workload.clone()).await?;
+    info!("✅ ActrNode created");
 
     info!("🚀 Starting ActrNode...");
     let actr_ref = node.start().await?;

@@ -2,27 +2,30 @@
 //!
 //! Demonstrates the Actor-RTC package-driven workload loading pattern:
 //! 1. Load a signed .actr package from the local echo-actr build output
-//! 2. Let Hyper verify the package and prepare the workload
+//! 2. Let Hyper verify the package and build an ActrNode (attach)
 //! 3. Register with AIS HTTP to obtain credential
-//! 4. Attach the package-selected workload to ActrSystem
-//! 5. Inject credential and start ActrNode
+//! 4. Inject credential and start ActrNode
 
 use std::env;
 use std::path::PathBuf;
 
-use actr_hyper::{ActrSystem, Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
+use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
 use actr_platform_native::NativePlatformProvider;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
 use serde_json::Value;
 use tracing::{error, info};
 
+const ECHO_ACTR_VERSION: &str = "0.2.0-beta";
+
 fn package_path() -> PathBuf {
     env::var("ACTR_PACKAGE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../../../echo-actr/dist/actrium-EchoService-0.1.0-wasm32-unknown-unknown.actr")
+                .join(format!(
+                    "../../../../../echo-actr/dist/actrium-EchoService-{ECHO_ACTR_VERSION}-wasm32-unknown-unknown.actr"
+                ))
         })
 }
 
@@ -120,26 +123,21 @@ async fn main() -> Result<()> {
         hyper_data_dir.display()
     );
 
-    let loaded_package = hyper
-        .load_workload_package(&package)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 4. Attach package workload, inject credential, then start
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    info!("📦 Attaching package workload...");
+    // Extract values needed for bootstrap_credential before config is moved into attach()
+    let realm_id = config.realm.realm_id;
+    let service_spec = config.calculate_service_spec();
+    let acl = config.acl.clone();
+    let (mut node, package_manifest) = hyper
+        .attach(&package, config)
         .await
-        .inspect_err(|e| {
-            error!(
-                "❌ WorkloadPackage verification or workload preparation failed at {}: {:?}",
-                package_path.display(),
-                e
-            );
-        })?;
-    let package_manifest = loaded_package.manifest;
-    info!(
-        "✅ WorkloadPackage verified and workload prepared: {} ({:?})",
-        package_manifest.actr_type_str(),
-        loaded_package.backend
-    );
-    info!("✅ Package workload initialized");
+        .inspect_err(|e| error!("❌ hyper.attach failed: {:?}", e))?;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. Register with AIS HTTP to obtain credential
+    // 5. Register with AIS HTTP to obtain credential
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let ais_endpoint =
         std::env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
@@ -149,9 +147,9 @@ async fn main() -> Result<()> {
         .bootstrap_credential(
             &package_manifest,
             &ais_endpoint,
-            config.realm.realm_id,
-            config.calculate_service_spec(),
-            config.acl.clone(),
+            realm_id,
+            service_spec,
+            acl,
         )
         .await
         .inspect_err(|e| {
@@ -161,21 +159,6 @@ async fn main() -> Result<()> {
         "✅ AIS registration successful, ActrId: {}",
         actr_protocol::ActrIdExt::to_string_repr(&register_ok.actr_id)
     );
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. Create ActrSystem
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  Creating ActrSystem...");
-    let system = ActrSystem::new(config).await.inspect_err(|e| {
-        error!("❌ ActrSystem creation failed: {:?}", e);
-    })?;
-    info!("✅ ActrSystem created");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. Attach package workload, inject credential, then start
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("📦 Attaching package-selected workload...");
-    let mut node = system.attach_workload(loaded_package.workload);
 
     // Inject AIS-issued credential so start() populates signaling identity before connect
     node.inject_credential(register_ok);

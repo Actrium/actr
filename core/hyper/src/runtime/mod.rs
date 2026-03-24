@@ -4,23 +4,23 @@ pub use handle::{ActrSystemHandle, WasmInstanceHandle};
 
 use std::sync::Arc;
 
-/// Hyper's internal representation of the managed ActrSystem+Workload stack
+/// Hyper's internal representation of the managed node runtime stack.
 ///
 /// Hyper's involvement depth differs across the execution body types:
-/// - Native: in-process, holds ActrSystem handle
-/// - Wasm: ActrSystem native shell holds the WASM engine (WasmEngine is an ActrSystem internal trait)
+/// - Native: in-process, holds a runtime handle
+/// - Wasm: native shell holds the WASM engine
 pub enum ActorRuntime {
     /// Native — source integration
     ///
-    /// ActrSystem+Workload compiled into the same binary (or FFI statically linked), runs as coroutines.
-    /// Hyper directly holds the ActrSystem handle, manages lifecycle via `ActrSystemHandle` trait.
+    /// Native node runtime compiled into the same binary (or FFI statically linked), runs as coroutines.
+    /// Hyper directly holds the runtime handle, manages lifecycle via `ActrSystemHandle` trait.
     Native(Arc<dyn ActrSystemHandle>),
 
     /// WASM — runtime-loaded .wasm module
     ///
-    /// ActrSystem+Workload compiled as .wasm, loaded and executed by ActrSystem native shell.
-    /// WASM engine is an ActrSystem internal concern; Hyper is unaware of the specific engine implementation.
-    /// The ActrSystem inside WASM accesses external capabilities (storage, crypto, network I/O)
+    /// Workload compiled as `.wasm`, loaded and executed by the native shell.
+    /// WASM engine selection is a shell concern; Hyper is unaware of the specific engine implementation.
+    /// The runtime inside WASM accesses external capabilities (storage, crypto, network I/O)
     /// through Hyper host functions.
     Wasm(WasmInstanceHandle),
 }
@@ -38,7 +38,7 @@ impl ActorRuntime {
     pub fn is_healthy(&self) -> bool {
         match self {
             ActorRuntime::Native(h) => h.is_healthy(),
-            ActorRuntime::Wasm(_) => true, // WASM health status maintained by ActrSystem shell
+            ActorRuntime::Wasm(_) => true, // WASM health status maintained by the native shell
         }
     }
 
