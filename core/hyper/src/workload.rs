@@ -9,6 +9,8 @@ use actr_framework::guest::abi::{
 };
 use actr_protocol::{Acl, ActorResult, ActrError, ActrId, RpcEnvelope};
 use bytes::Bytes;
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+use prost::Message;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
