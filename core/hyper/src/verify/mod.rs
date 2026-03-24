@@ -82,7 +82,21 @@ impl PackageVerifier {
             _ => HyperError::InvalidManifest(e.to_string()),
         })?;
 
-        let pubkey = self.resolve_mfr_pubkey(&pack_manifest.manufacturer)?;
+        // Production mode: signing_key_id is mandatory (no degradation)
+        if matches!(&self.trust_mode, TrustMode::Production { .. }) {
+            if pack_manifest.signing_key_id.is_none() {
+                return Err(HyperError::InvalidManifest(
+                    "Package missing 'signing_key_id' in manifest. \
+                     Rebuild with the latest 'actr pkg build' command."
+                        .to_string(),
+                ));
+            }
+        }
+
+        let pubkey = self.resolve_mfr_pubkey(
+            &pack_manifest.manufacturer,
+            pack_manifest.signing_key_id.as_deref(),
+        )?;
 
         let verified = actr_pack::verify(bytes, &pubkey).map_err(|e| match &e {
             actr_pack::PackError::SignatureVerificationFailed(msg) => {
@@ -120,7 +134,11 @@ impl PackageVerifier {
     }
 
     /// Resolve the Ed25519 public key for the MFR synchronously, used only on cache-hit paths.
-    fn resolve_mfr_pubkey(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
+    fn resolve_mfr_pubkey(
+        &self,
+        manufacturer: &str,
+        key_id: Option<&str>,
+    ) -> HyperResult<VerifyingKey> {
         match &self.trust_mode {
             TrustMode::Development { self_signed_pubkey } => {
                 let bytes: [u8; 32] = self_signed_pubkey.as_slice().try_into().map_err(|_| {
@@ -137,7 +155,7 @@ impl PackageVerifier {
                     .cert_cache
                     .as_ref()
                     .expect("cert_cache must not be None in production mode");
-                cache.get_from_cache(manufacturer).ok_or_else(|| {
+                cache.get_from_cache(manufacturer, key_id).ok_or_else(|| {
                     HyperError::UntrustedManufacturer(format!(
                         "MFR public key missing from cache for manufacturer={manufacturer}; call Hyper::verify_package first"
                     ))
@@ -147,9 +165,13 @@ impl PackageVerifier {
     }
 
     /// In production, prefetch the MFR public key over async HTTP and store it in `cert_cache`.
-    pub async fn prefetch_mfr_cert(&self, manufacturer: &str) -> HyperResult<()> {
+    pub async fn prefetch_mfr_cert(
+        &self,
+        manufacturer: &str,
+        key_id: Option<&str>,
+    ) -> HyperResult<()> {
         if let Some(cache) = &self.cert_cache {
-            cache.get_or_fetch(manufacturer).await?;
+            cache.get_or_fetch(manufacturer, key_id).await?;
         }
         Ok(())
     }

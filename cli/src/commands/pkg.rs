@@ -28,7 +28,7 @@ pub struct PkgArgs {
 pub enum PkgCommand {
     /// Build an .actr package from binary and config
     Build(PkgBuildArgs),
-    /// Sign an .actr package with MFR private key
+    /// Sign an actr.toml manifest with MFR private key (offline signing)
     Sign(PkgSignArgs),
     /// Verify an .actr package
     Verify(PkgVerifyArgs),
@@ -63,23 +63,23 @@ pub struct PkgBuildArgs {
 
 #[derive(Args, Debug)]
 pub struct PkgSignArgs {
-    /// Path to MFR keychain JSON file
-    #[arg(long, short = 'k', value_name = "FILE")]
-    pub keychain: PathBuf,
-
-    /// .actr package file to sign
-    #[arg(long, short = 'p', value_name = "FILE")]
-    pub package: Option<PathBuf>,
-
-    /// Path to actr.toml (used if --package not specified)
+    /// Path to actr.toml config file
     #[arg(long, short = 'c', default_value = "actr.toml", value_name = "FILE")]
     pub config: PathBuf,
 
-    /// Path to actor binary (optional, for hash computation)
+    /// Path to MFR signing key file (default: ~/.actr/dev-key.json)
+    #[arg(long, short = 'k', value_name = "FILE")]
+    pub key: Option<PathBuf>,
+
+    /// Path to actor binary (for hash computation)
     #[arg(long, short = 'b', value_name = "FILE")]
     pub binary: Option<PathBuf>,
 
-    /// Output signature file
+    /// Target platform (e.g., wasm32-wasip1, x86_64-unknown-linux-gnu)
+    #[arg(long, short = 't', default_value = "wasm32-wasip1")]
+    pub target: String,
+
+    /// Output signature file (default: <config>.sig)
     #[arg(long, short = 'o', value_name = "FILE")]
     pub output: Option<PathBuf>,
 }
@@ -111,7 +111,7 @@ pub struct PkgPublishArgs {
     #[arg(long, short = 'p', value_name = "FILE")]
     pub package: PathBuf,
 
-    /// Path to MFR keychain JSON file (contains private_key for signing)
+    /// Path to MFR keychain JSON file (used to verify publisher identity)
     #[arg(long, short = 'k', value_name = "FILE")]
     pub keychain: PathBuf,
 
@@ -211,7 +211,8 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         .get("package")
         .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
 
-    // Read manufacturer, name, version from [package] section
+    // Support both [package.actr_type].{manufacturer,name,version} (standard actr.toml)
+    // and flat [package].{manufacturer,name,version} (legacy format)
     let get_str = |key: &str| -> Result<String> {
         pkg.get(key)
             .and_then(|v| v.as_str())
@@ -250,6 +251,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
             size: None,
         },
         signature_algorithm: "ed25519".to_string(),
+        signing_key_id: Some(actr_pack::compute_key_id(&verifying_key.to_bytes())),
         resources: vec![],
         proto_files: vec![], // will be populated below from exports
         metadata: actr_pack::ManifestMetadata {
@@ -335,33 +337,28 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     Ok(())
 }
 
-// --- sign (MFR signing, adapted from old pkg sign) ---
+// --- sign (offline signing of actr.toml config → manifest + .sig) ---
+//
+// Parses actr.toml (same config format as `build`), reads binary + proto files,
+// builds a PackageManifest, serializes via to_toml(), and signs.
+// Output:
+//   1. Manifest TOML file (actr.manifest.toml) — the exact bytes that were signed
+//   2. A .sig file — 64 bytes raw Ed25519 signature
+//
+// The signed content is byte-level identical to what `actr pkg build` produces.
 
 async fn execute_sign(args: PkgSignArgs) -> Result<()> {
-    use ed25519_dalek::{Signer, SigningKey as DalekSigningKey};
+    use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
-    // 1. Read keychain JSON
-    tracing::debug!("reading keychain file: {:?}", args.keychain);
-    let keychain_content = std::fs::read_to_string(&args.keychain)
-        .map_err(|e| anyhow::anyhow!("failed to read keychain file {:?}: {}", args.keychain, e))?;
-    let keychain: serde_json::Value = serde_json::from_str(&keychain_content)
-        .map_err(|e| anyhow::anyhow!("invalid keychain JSON: {}", e))?;
-    let private_key_b64 = keychain["private_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("keychain missing 'private_key' field"))?;
+    // 1. Load signing key
+    let key_path = resolve_key_path(args.key.as_deref())?;
+    let signing_key = load_signing_key(&key_path)?;
+    let verifying_key = signing_key.verifying_key();
+    let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
 
-    // 2. Decode private key
-    let private_key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(private_key_b64)
-        .map_err(|e| anyhow::anyhow!("invalid private key base64: {}", e))?;
-    let key_array: [u8; 32] = private_key_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("private key must be exactly 32 bytes"))?;
-    let signing_key = DalekSigningKey::from_bytes(&key_array);
-
-    // 3. Read actr.toml
+    // 2. Read actr.toml as config (same parsing as build)
     let config_path = &args.config;
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
@@ -369,45 +366,135 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
             config_path.display()
         ));
     }
-    let config_content = std::fs::read_to_string(config_path)?;
+    let config_bytes = std::fs::read(config_path)?;
+    let config_value: toml::Value =
+        toml::from_slice(&config_bytes).with_context(|| "Invalid actr.toml")?;
+    let pkg = config_value
+        .get("package")
+        .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
 
-    // 4. If binary specified, compute sha256
-    let final_config = if let Some(binary_path) = &args.binary {
-        let binary_data = std::fs::read(binary_path)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&binary_data);
-        let hash_hex = hex::encode(hasher.finalize());
-        let binary_hash = format!("sha256:{}", hash_hex);
-        println!("binary_hash = \"{}\"", binary_hash);
-        // Insert/update binary_hash in config
-        insert_binary_hash(&config_content, &binary_hash)?
-    } else {
-        config_content
+    let get_str = |key: &str| -> Result<String> {
+        pkg.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("actr.toml [package].{key} missing"))
     };
 
-    // 5. Sign
-    let manifest_bytes = final_config.as_bytes();
-    let signature = signing_key.sign(manifest_bytes);
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    let manufacturer = get_str("manufacturer")?;
+    let name = get_str("name")?;
+    let version = get_str("version")?;
 
-    // 6. Write signature file
+    // 3. Compute binary hash if binary provided
+    let (binary_hash, binary_size) = if let Some(binary_path) = &args.binary {
+        let binary_data = std::fs::read(binary_path)
+            .with_context(|| format!("Failed to read binary: {}", binary_path.display()))?;
+        let hash = Sha256::digest(&binary_data);
+        println!(
+            "  binary:    {} ({} bytes)",
+            binary_path.display(),
+            binary_data.len()
+        );
+        (hex::encode(hash), Some(binary_data.len() as u64))
+    } else {
+        (String::new(), None)
+    };
+
+    // 4. Read proto files from `exports` array (same as build)
+    let config_dir = args
+        .config
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut proto_entries = vec![];
+    if let Some(exports) = config_value.get("exports").and_then(|e| e.as_array()) {
+        for export_entry in exports {
+            if let Some(proto_path_str) = export_entry.as_str() {
+                let proto_path = config_dir.join(proto_path_str);
+                match std::fs::read(&proto_path) {
+                    Ok(content) => {
+                        let filename = proto_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown.proto")
+                            .to_string();
+                        let hash = hex::encode(Sha256::digest(&content));
+                        println!("  proto:     {} (hash: {}...)", filename, &hash[..16]);
+                        proto_entries.push(actr_pack::ProtoFileEntry {
+                            name: filename.clone(),
+                            path: format!("proto/{}", filename),
+                            hash,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read proto file {:?}: {}", proto_path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Build PackageManifest (same structure as build)
+    let manifest = actr_pack::PackageManifest {
+        manufacturer: manufacturer.clone(),
+        name: name.clone(),
+        version: version.clone(),
+        binary: actr_pack::BinaryEntry {
+            path: "bin/actor.wasm".to_string(),
+            target: args.target.clone(),
+            hash: binary_hash,
+            size: binary_size,
+        },
+        signature_algorithm: "ed25519".to_string(),
+        signing_key_id: Some(key_id.clone()),
+        resources: vec![],
+        proto_files: proto_entries,
+        metadata: actr_pack::ManifestMetadata {
+            description: pkg
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            license: pkg
+                .get("license")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        },
+    };
+
+    // 6. Serialize via to_toml() (byte-level consistent with build)
+    let manifest_toml = manifest
+        .to_toml()
+        .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {e}"))?;
+    let manifest_bytes = manifest_toml.as_bytes();
+
+    // 7. Sign (raw 64-byte Ed25519, same as actr_pack::pack)
+    let signature = signing_key.sign(manifest_bytes);
+    let sig_bytes = signature.to_bytes();
+
+    // 8. Write manifest TOML (the exact bytes that were signed)
+    let manifest_path = {
+        let mut p = args.config.clone();
+        p.set_file_name("actr.manifest.toml");
+        p
+    };
+    std::fs::write(&manifest_path, manifest_bytes)
+        .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
+
+    // 9. Write .sig file (64 bytes raw Ed25519 signature)
     let sig_path = args.output.unwrap_or_else(|| {
         let mut p = args.config.clone();
-        let new_name = format!(
-            "{}.sig",
-            p.file_name().unwrap_or_default().to_string_lossy()
-        );
-        p.set_file_name(new_name);
+        p.set_file_name("actr.toml.sig");
         p
     });
     {
         let mut f = std::fs::File::create(&sig_path)?;
-        writeln!(f, "{}", sig_b64)?;
+        f.write_all(&sig_bytes)?;
     }
 
-    println!("Package signed successfully");
-    println!("  signature: {}...", &sig_b64[..16]);
-    println!("  sig file:  {}", sig_path.display());
+    println!("✅ Manifest signed successfully");
+    println!("  manifest:  {} (signed content)", manifest_path.display());
+    println!("  sig file:  {} (64 bytes raw Ed25519)", sig_path.display());
+    println!("  key_id:    {}", key_id);
+    println!("  actr_type: {}:{}:{}", manufacturer, name, version);
+    println!("  target:    {}", args.target);
 
     Ok(())
 }
@@ -431,64 +518,132 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
     // 3. Verify
     let verified = actr_pack::verify(&package_bytes, &pubkey)?;
 
+    // 4. Check signing_key_id consistency with the provided public key
+    if let Some(ref manifest_key_id) = verified.manifest.signing_key_id {
+        let expected_key_id = actr_pack::compute_key_id(&pubkey.to_bytes());
+        if manifest_key_id != &expected_key_id {
+            anyhow::bail!(
+                "signing_key_id mismatch: manifest says '{}' but the provided public key fingerprint is '{}'. \
+                 This package will fail verification in Production mode. \
+                 Rebuild with 'actr pkg build' using the correct signing key.",
+                manifest_key_id,
+                expected_key_id,
+            );
+        }
+    } else {
+        anyhow::bail!(
+            "Package manifest has no 'signing_key_id'. \
+             This package will be rejected in Production mode. \
+             Rebuild with the latest 'actr pkg build' to embed a signing_key_id."
+        );
+    }
+
     println!("Package verification passed");
     println!();
-    println!("  type:        {}", verified.manifest.actr_type_str());
-    println!("  binary:      {}", verified.manifest.binary.path);
-    println!("  binary_hash: {}...", &verified.manifest.binary.hash[..16]);
-    println!("  target:      {}", verified.manifest.binary.target);
+    println!("  manufacturer: {}", verified.manifest.manufacturer);
+    println!("  type:         {}", verified.manifest.actr_type_str());
+    println!("  binary:       {}", verified.manifest.binary.path);
+    println!(
+        "  binary_hash:  {}...",
+        &verified.manifest.binary.hash[..16]
+    );
+    println!("  target:       {}", verified.manifest.binary.target);
+    if let Some(ref key_id) = verified.manifest.signing_key_id {
+        println!("  signing_key:  {}", key_id);
+    }
     if !verified.manifest.resources.is_empty() {
-        println!("  resources:   {}", verified.manifest.resources.len());
+        println!("  resources:    {}", verified.manifest.resources.len());
     }
 
     Ok(())
 }
 
 // --- publish (register package to MFR registry) ---
+//
+// Extracts the manifest (actr.toml) and signature (actr.sig) that were
+// already created during `actr pkg build`, then forwards them to the
+// MFR registry as-is.  No re-signing is performed.
+//
+// This guarantees that the signature MFR validates is the exact same
+// signature the Hyper runtime will verify at load time.
 
 async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
-    use ed25519_dalek::{Signer, SigningKey as DalekSigningKey};
-
     // 1. Read .actr package
     tracing::debug!("reading .actr package: {:?}", args.package);
     let package_bytes = std::fs::read(&args.package)
         .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
 
-    // 2. Extract raw manifest TOML from the .actr ZIP
+    // 2. Extract manifest TOML and signature from the .actr ZIP
     let manifest_str = actr_pack::read_manifest_raw(&package_bytes)
         .with_context(|| "Failed to read manifest from .actr package")?;
     let manifest = actr_pack::PackageManifest::from_toml(&manifest_str)
         .with_context(|| "Failed to parse manifest TOML")?;
+    let sig_raw = actr_pack::read_signature(&package_bytes)
+        .with_context(|| "Failed to read actr.sig from .actr package")?;
+
+    // 3. Identity verification: keychain private key proves publisher is MFR owner.
+    //    We only check that the package's signing_key_id matches the keychain,
+    //    ensuring the package was built with the same key.
+    //    The MFR server performs the real signature verification.
+    tracing::debug!(
+        "loading keychain for identity verification: {:?}",
+        args.keychain
+    );
+    let keychain_content = std::fs::read_to_string(&args.keychain)
+        .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
+    let keychain: serde_json::Value =
+        serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
+
+    // Derive public key from keychain private key
+    let kc_key_id = {
+        use ed25519_dalek::SigningKey;
+        let privkey_b64 = keychain["private_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
+        let privkey_bytes = base64::engine::general_purpose::STANDARD
+            .decode(privkey_b64)
+            .with_context(|| "Invalid private key in keychain")?;
+        let arr: [u8; 32] = privkey_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Private key must be 32 bytes"))?;
+        let signing_key = SigningKey::from_bytes(&arr);
+        actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes())
+    };
+
+    // Check signing_key_id consistency: package must be built with the same key
+    match manifest.signing_key_id {
+        Some(ref manifest_key_id) if manifest_key_id == &kc_key_id => {
+            // OK — build key matches publish key
+        }
+        Some(ref manifest_key_id) => {
+            anyhow::bail!(
+                "Key mismatch: package was built with '{}' but keychain key is '{}'. \
+                 Rebuild with the correct MFR key, or use the matching keychain.",
+                manifest_key_id,
+                kc_key_id
+            );
+        }
+        None => {
+            anyhow::bail!(
+                "Package manifest has no 'signing_key_id'. \
+                 Rebuild with the latest 'actr pkg build' to embed a signing_key_id."
+            );
+        }
+    }
+
+    // Encode raw 64-byte signature as base64 for the MFR API
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig_raw);
 
     println!("📦 Publishing package: {}", manifest.actr_type_str());
     println!("   manufacturer: {}", manifest.manufacturer);
     println!("   name:         {}", manifest.name);
     println!("   version:      {}", manifest.version);
+    println!("   target:       {}", manifest.binary.target);
+    println!("   signing_key:  {}", kc_key_id);
+    println!("✅ Identity verified (keychain matches package)");
+    println!("🔐 Forwarding original signature (no re-signing)");
 
-    // 3. Load MFR keychain and extract private key
-    tracing::debug!("loading keychain: {:?}", args.keychain);
-    let keychain_content = std::fs::read_to_string(&args.keychain)
-        .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
-    let keychain: serde_json::Value =
-        serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
-    let private_key_b64 = keychain["private_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
-
-    let private_key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(private_key_b64)
-        .with_context(|| "Invalid private key base64 encoding")?;
-    let key_array: [u8; 32] = private_key_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Private key must be exactly 32 bytes"))?;
-    let signing_key = DalekSigningKey::from_bytes(&key_array);
-
-    // 4. Sign the manifest TOML bytes with MFR private key
-    let signature = signing_key.sign(manifest_str.as_bytes());
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
-    println!("🔐 Manifest signed with MFR key");
-
-    // 4.5. Extract proto files from .actr package for MFR filing
+    // 3. Extract proto files from .actr package for MFR filing
     let proto_files = actr_pack::read_proto_files(&package_bytes).unwrap_or_default();
     let proto_filing = if !proto_files.is_empty() {
         let proto_entries: Vec<serde_json::Value> = proto_files
@@ -508,7 +663,7 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
         None
     };
 
-    // 5. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
+    // 4. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
     let endpoint = if let Some(ep) = args.endpoint {
         ep
     } else {
@@ -533,7 +688,7 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
             })?
     };
 
-    // 6. POST /mfr/pkg/publish
+    // 5. POST /mfr/pkg/publish
     let publish_url = format!("{}/mfr/pkg/publish", endpoint.trim_end_matches('/'));
     println!("📡 Publishing to: {}", publish_url);
 
@@ -639,73 +794,4 @@ fn load_verifying_key_from_dev_key(path: &std::path::Path) -> Result<ed25519_dal
         );
     }
     load_verifying_key(path)
-}
-
-/// Insert or update `binary_hash` in actr.toml (same logic as old pkg.rs)
-fn insert_binary_hash(content: &str, binary_hash: &str) -> Result<String> {
-    let hash_line = format!("binary_hash = \"{}\"", binary_hash);
-
-    if content.contains("binary_hash") {
-        let replaced = content
-            .lines()
-            .map(|line| {
-                if line.trim_start().starts_with("binary_hash") {
-                    hash_line.clone()
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let trailing = if content.ends_with('\n') { "\n" } else { "" };
-        return Ok(format!("{}{}", replaced, trailing));
-    }
-
-    let mut result = String::with_capacity(content.len() + hash_line.len() + 2);
-    let mut in_package = false;
-    let mut inserted = false;
-    for line in content.lines() {
-        if !inserted {
-            let trimmed = line.trim();
-            if trimmed == "[package]" {
-                in_package = true;
-            } else if in_package && trimmed.starts_with('[') && trimmed.ends_with(']') {
-                result.push_str(&hash_line);
-                result.push('\n');
-                inserted = true;
-                in_package = false;
-            }
-        }
-        result.push_str(line);
-        result.push('\n');
-    }
-    if !inserted {
-        result.push_str(&hash_line);
-        result.push('\n');
-    }
-    Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_insert_binary_hash_new() {
-        let content = "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n\n[dependencies]\n";
-        let result = insert_binary_hash(content, "sha256:abc123").unwrap();
-        assert!(result.contains("binary_hash = \"sha256:abc123\""));
-        // Should be before [dependencies]
-        let hash_pos = result.find("binary_hash").unwrap();
-        let dep_pos = result.find("[dependencies]").unwrap();
-        assert!(hash_pos < dep_pos);
-    }
-
-    #[test]
-    fn test_insert_binary_hash_replace() {
-        let content = "[package]\nname = \"foo\"\nbinary_hash = \"sha256:old\"\n";
-        let result = insert_binary_hash(content, "sha256:new").unwrap();
-        assert!(result.contains("binary_hash = \"sha256:new\""));
-        assert!(!result.contains("sha256:old"));
-    }
 }

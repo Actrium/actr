@@ -43,13 +43,15 @@ impl MfrCertCache {
         })
     }
 
-    /// Look up from memory cache only, without triggering HTTP fetch (synchronous)
-    ///
     /// Used in `PackageVerifier::resolve_mfr_pubkey` synchronous path;
     /// caller must ensure the cache has been warmed via `get_or_fetch` beforehand.
-    pub fn get_from_cache(&self, manufacturer: &str) -> Option<VerifyingKey> {
+    pub fn get_from_cache(&self, manufacturer: &str, key_id: Option<&str>) -> Option<VerifyingKey> {
+        let cache_key = match key_id {
+            Some(id) => format!("{}:{}", manufacturer, id),
+            None => manufacturer.to_string(),
+        };
         let cache = self.cache.read().expect("cert_cache read lock poisoned");
-        cache.get(manufacturer).and_then(|entry| {
+        cache.get(&cache_key).and_then(|entry| {
             if entry.fetched_at.elapsed() < self.ttl {
                 Some(entry.key)
             } else {
@@ -61,23 +63,35 @@ impl MfrCertCache {
     /// Get the Ed25519 verifying key for the specified manufacturer
     ///
     /// Reads from cache first (if not expired); on miss, fetches from AIS and updates cache.
-    pub async fn get_or_fetch(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
+    pub async fn get_or_fetch(
+        &self,
+        manufacturer: &str,
+        key_id: Option<&str>,
+    ) -> HyperResult<VerifyingKey> {
         // fast path: read cache
-        if let Some(key) = self.get_from_cache(manufacturer) {
-            tracing::debug!(manufacturer, "MFR pubkey cache hit");
+        if let Some(key) = self.get_from_cache(manufacturer, key_id) {
+            tracing::debug!(manufacturer, ?key_id, "MFR pubkey cache hit");
             return Ok(key);
         }
 
-        tracing::debug!(manufacturer, "MFR pubkey cache miss, fetching from AIS");
+        tracing::debug!(
+            manufacturer,
+            ?key_id,
+            "MFR pubkey cache miss, fetching from AIS"
+        );
 
         // slow path: HTTP fetch
-        let key = self.fetch_from_ais(manufacturer).await?;
+        let key = self.fetch_from_ais(manufacturer, key_id).await?;
 
         // write to cache (brief blocking lock, just a HashMap insert)
+        let cache_key = match key_id {
+            Some(id) => format!("{}:{}", manufacturer, id),
+            None => manufacturer.to_string(),
+        };
         {
             let mut cache = self.cache.write().expect("cert_cache write lock poisoned");
             cache.insert(
-                manufacturer.to_string(),
+                cache_key,
                 CacheEntry {
                     key,
                     fetched_at: Instant::now(),
@@ -85,13 +99,28 @@ impl MfrCertCache {
             );
         }
 
-        tracing::info!(manufacturer, "MFR pubkey fetched from AIS and cached");
+        tracing::info!(
+            manufacturer,
+            ?key_id,
+            "MFR pubkey fetched from AIS and cached"
+        );
         Ok(key)
     }
 
     /// Fetch public key from AIS `GET /mfr/{manufacturer}/verifying_key`
-    async fn fetch_from_ais(&self, manufacturer: &str) -> HyperResult<VerifyingKey> {
-        let url = format!("{}/mfr/{}/verifying_key", self.ais_endpoint, manufacturer);
+    async fn fetch_from_ais(
+        &self,
+        manufacturer: &str,
+        key_id: Option<&str>,
+    ) -> HyperResult<VerifyingKey> {
+        let url = if let Some(id) = key_id {
+            format!(
+                "{}/mfr/{}/verifying_key?key_id={}",
+                self.ais_endpoint, manufacturer, id
+            )
+        } else {
+            format!("{}/mfr/{}/verifying_key", self.ais_endpoint, manufacturer)
+        };
         tracing::debug!(url, "fetching MFR pubkey from AIS");
 
         let resp = self.http.get(&url).send().await.map_err(|e| {
@@ -175,9 +204,9 @@ mod tests {
         let cache = MfrCertCache::new(server.url());
 
         // first miss -> calls HTTP
-        let k1 = cache.get_or_fetch("test-mfr").await.unwrap();
+        let k1 = cache.get_or_fetch("test-mfr", None).await.unwrap();
         // second hit -> no HTTP call
-        let k2 = cache.get_or_fetch("test-mfr").await.unwrap();
+        let k2 = cache.get_or_fetch("test-mfr", None).await.unwrap();
 
         mock.assert_async().await;
         assert_eq!(k1.to_bytes(), k2.to_bytes());
@@ -194,7 +223,7 @@ mod tests {
             .await;
 
         let cache = MfrCertCache::new(server.url());
-        let result = cache.get_or_fetch("unknown-mfr").await;
+        let result = cache.get_or_fetch("unknown-mfr", None).await;
 
         assert!(
             matches!(result, Err(HyperError::UntrustedManufacturer(_))),

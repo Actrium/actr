@@ -165,6 +165,7 @@ mod tests {
                 size: None,
             },
             signature_algorithm: "ed25519".to_string(),
+            signing_key_id: None,
             resources: vec![],
             proto_files: vec![],
             metadata: ManifestMetadata::default(),
