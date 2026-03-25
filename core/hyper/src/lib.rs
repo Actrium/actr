@@ -337,7 +337,7 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -358,8 +358,8 @@ use actr_protocol::{Realm, RegisterRequest, register_response};
 #[cfg(not(target_arch = "wasm32"))]
 /// Hyper runtime instance
 ///
-/// Process-level singleton, initialized via `Hyper::init()`.
-/// Holds resolved configuration, instance_id, namespace resolver, and other process-level state.
+/// Process-level runtime container, initialized via `Hyper::init()`.
+/// Holds resolved configuration, instance_id, namespace resolver, and exactly one workload slot.
 #[derive(Clone)]
 pub struct Hyper {
     inner: Arc<HyperInner>,
@@ -374,6 +374,16 @@ struct HyperInner {
     verifier: verify::PackageVerifier,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
+    /// Hyper is a single-workload container. Loading is a one-shot operation.
+    workload_state: Mutex<WorkloadLoadState>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkloadLoadState {
+    Unloaded,
+    Loading,
+    Loaded,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -520,6 +530,7 @@ impl Hyper {
                 instance_id,
                 verifier,
                 platform,
+                workload_state: Mutex::new(WorkloadLoadState::Unloaded),
             }),
         })
     }
@@ -552,7 +563,10 @@ impl Hyper {
     }
 
     /// Verify a package, select the execution backend from `binary.target`,
-    /// and prepare a runtime workload ready for node attachment.
+    /// and prepare the single runtime workload owned by this Hyper instance.
+    ///
+    /// Hyper is a one-shot workload container. After the first successful load,
+    /// subsequent calls return an error instead of creating another workload.
     ///
     /// For WASM packages, Hyper initialises the guest with an empty credential payload so
     /// the caller can bootstrap AIS credentials afterwards and inject them before start.
@@ -561,25 +575,35 @@ impl Hyper {
         &self,
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {
-        let bytes = package.bytes();
-        let manifest = self.verify_package(package).await?;
-        let backend = select_package_execution_backend(&manifest)?;
-        let workload = match backend {
-            PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
-            PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
-        }?;
+        self.begin_workload_load()?;
 
-        Ok(LoadedWorkload {
-            manifest,
-            backend,
-            workload,
-        })
+        let bytes = package.bytes();
+        let result = async {
+            let manifest = self.verify_package(package).await?;
+            let backend = select_package_execution_backend(&manifest)?;
+            let workload = match backend {
+                PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
+                PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
+            }?;
+
+            Ok(LoadedWorkload {
+                manifest,
+                backend,
+                workload,
+            })
+        }
+        .await;
+
+        self.finish_workload_load(result.is_ok());
+        result
     }
 
-    /// Verify and load a [`WorkloadPackage`], then build a fully initialized [`ActrNode`].
+    /// Verify and load the single [`WorkloadPackage`] owned by this Hyper instance,
+    /// then build a fully initialized [`ActrNode`].
     ///
-    /// This is the primary entry point for package-driven actors. It replaces the manual
-    /// sequence of package loading followed by node construction.
+    /// This is the primary entry point for package-driven actors.
+    /// Like [`Hyper::load_workload_package`], this is a one-shot operation per Hyper.
+    /// Reuse the resulting node or create a new Hyper instance for another package.
     pub async fn attach_package(
         &self,
         package: &WorkloadPackage,
@@ -591,6 +615,37 @@ impl Hyper {
                 .await
                 .map_err(|e| HyperError::Runtime(e.to_string()))?;
         Ok(node)
+    }
+
+    fn begin_workload_load(&self) -> HyperResult<()> {
+        let mut state =
+            self.inner.workload_state.lock().map_err(|_| {
+                HyperError::Runtime("failed to lock Hyper workload state".to_string())
+            })?;
+
+        match *state {
+            WorkloadLoadState::Unloaded => {
+                *state = WorkloadLoadState::Loading;
+                Ok(())
+            }
+            WorkloadLoadState::Loading => Err(HyperError::Runtime(
+                "Hyper is already loading its workload".to_string(),
+            )),
+            WorkloadLoadState::Loaded => Err(HyperError::Runtime(
+                "Hyper already loaded a workload; create a new Hyper instance for another package"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn finish_workload_load(&self, success: bool) {
+        if let Ok(mut state) = self.inner.workload_state.lock() {
+            *state = if success {
+                WorkloadLoadState::Loaded
+            } else {
+                WorkloadLoadState::Unloaded
+            };
+        }
     }
 
     /// Bootstrap credential registration with AIS using the package manifest stored in `node`.

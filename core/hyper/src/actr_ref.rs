@@ -17,6 +17,9 @@
 //! // Wait for process signals and then perform a graceful shutdown.
 //! actr.wait_for_ctrl_c_and_shutdown().await?;
 //! ```
+//!
+//! `Hyper::attach_package()` is a one-shot operation. Create a new `Hyper`
+//! instance when hosting another package.
 
 use crate::context::RuntimeContext;
 use crate::context_factory::ContextFactory;
