@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package client;
+
+// Local client request — host sends this to the client-guest workload
+message SendMessageRequest {
+  string message = 1;
+}
+
+// Local client response — client-guest returns this to the host
+message SendMessageResponse {
+  string reply = 1;
+}
+
+// Local client service — implemented by client-guest, called by host
+service ClientService {
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+}

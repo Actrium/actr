@@ -16,6 +16,7 @@ members = [
     "acl/server",
     "package-echo/server",
     "package-echo/client",
+    "package-echo/client-guest",
 ]
 resolver = "2"
 

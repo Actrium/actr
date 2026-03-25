@@ -39,9 +39,12 @@ impl ActrNodePy {
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let node = hyper
-                .attach_none(config)
+                .attach_package(
+                    &actr_hyper::WorkloadPackage::new(vec![]),
+                    config,
+                )
                 .await
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("attach_package failed: {e}")))?;
             Python::attach(|py| Py::new(py, ActrNodePy { inner: Some(node) }).map(Py::into_any))
         })
     }

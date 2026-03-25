@@ -2652,15 +2652,31 @@ name = "package-echo-client"
 version = "0.2.0"
 dependencies = [
  "actr-config",
+ "actr-framework",
  "actr-hyper",
+ "actr-pack",
  "actr-platform-native",
  "actr-protocol",
  "anyhow",
+ "base64",
  "bytes",
  "prost 0.14.3",
  "prost-build",
+ "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "package-echo-client-guest"
+version = "0.2.0"
+dependencies = [
+ "actr-framework",
+ "actr-protocol",
+ "async-trait",
+ "bytes",
+ "prost 0.14.3",
+ "prost-build",
 ]
 
 [[package]]

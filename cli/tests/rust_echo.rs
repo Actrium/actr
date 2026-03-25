@@ -152,8 +152,8 @@ fn rust_echo_app_scaffold() {
         "main.rs should not declare mod echo_app"
     );
     assert!(
-        main.contains("attach_none(config)"),
-        "main.rs should start a client-only node"
+        main.contains("attach_package"),
+        "main.rs should reference attach_package for package-backed node"
     );
     assert!(
         !main.contains("MyEchoAppClientAppHandler"),

@@ -98,13 +98,21 @@ async fn main() -> Result<()> {
 
     // Determine trust mode: TRUST_MODE=production uses MFR cert cache (fetches keys from AIS),
     // otherwise use development mode with local self-signed public key
-    let trust_mode = if env::var("TRUST_MODE").map(|v| v == "production").unwrap_or(false) {
+    let trust_mode = if env::var("TRUST_MODE")
+        .map(|v| v == "production")
+        .unwrap_or(false)
+    {
         let ais_endpoint =
             env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
         // cert_cache needs base URL without /ais path suffix
         let base_endpoint = ais_endpoint.trim_end_matches("/ais").to_string();
-        info!("🔐 Using Production trust mode (base endpoint: {})", base_endpoint);
-        TrustMode::Production { ais_endpoint: base_endpoint }
+        info!(
+            "🔐 Using Production trust mode (base endpoint: {})",
+            base_endpoint
+        );
+        TrustMode::Production {
+            ais_endpoint: base_endpoint,
+        }
     } else {
         info!("🔐 Using Development trust mode (local public key)");
         TrustMode::Development {

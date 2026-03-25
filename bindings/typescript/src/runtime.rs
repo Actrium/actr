@@ -31,7 +31,10 @@ impl ActrNode {
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
         let node = hyper
-            .attach_none(config)
+            .attach_package(
+                &actr_hyper::WorkloadPackage::new(vec![]),
+                config,
+            )
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
 

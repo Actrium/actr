@@ -2,10 +2,10 @@ edition = 1
 exports = []
 
 [package]
-name = "package-echo-client-app"
+name = "package-echo-client-guest"
 manufacturer = "acme"
 version = "0.1.0"
-description = "Package Echo Client App"
+description = "Package Echo Client Host — loads client-guest package"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "client"]

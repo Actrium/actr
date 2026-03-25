@@ -47,9 +47,6 @@ pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Se
 /// Runtime workload enum.
 #[derive(Debug)]
 pub enum Workload {
-    /// No guest workload attached. Inbound messages return an error immediately.
-    /// Use this for pure client nodes that only make outbound calls.
-    None,
     #[cfg(feature = "wasm-engine")]
     Wasm(crate::wasm::WasmWorkload),
     #[cfg(feature = "dynclib-engine")]
@@ -64,11 +61,12 @@ impl Workload {
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
             match self {
-                Workload::None => Ok(()),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(_) => Ok(()),
                 #[cfg(feature = "dynclib-engine")]
                 Workload::DynClib(_) => Ok(()),
+                #[allow(unreachable_patterns)]
+                _ => Ok(()),
             }
         })
     }
@@ -80,11 +78,12 @@ impl Workload {
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
             match self {
-                Workload::None => Ok(()),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(_) => Ok(()),
                 #[cfg(feature = "dynclib-engine")]
                 Workload::DynClib(_) => Ok(()),
+                #[allow(unreachable_patterns)]
+                _ => Ok(()),
             }
         })
     }
@@ -100,9 +99,6 @@ impl Workload {
         Box::pin(async move {
             let _ = (&envelope, &invocation);
             match self {
-                Workload::None => Err(ActrError::Internal(
-                    "no workload attached to this node".to_string(),
-                )),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => {
                     let request_bytes = envelope.encode_to_vec();
@@ -141,10 +137,6 @@ impl Workload {
         Box::pin(async move {
             #[allow(unreachable_patterns)]
             match self {
-                Workload::None => Err(Box::new(std::io::Error::other(
-                    "no workload attached to this node",
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => workload
                     .handle(&request_bytes, ctx, host_abi)

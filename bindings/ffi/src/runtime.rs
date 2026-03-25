@@ -38,9 +38,8 @@ impl ActrSystemWrapper {
         );
 
         let hyper_data_dir = config.config_dir.join(".hyper");
-        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+        let _hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
             TrustMode::Development {
-                // Pure runtime setup does not verify packages, so a placeholder key is sufficient.
                 self_signed_pubkey: vec![0u8; 32],
             },
         ))
@@ -52,20 +51,12 @@ impl ActrSystemWrapper {
             }
         })?;
 
-        let node = hyper.attach_none(config.clone()).await.map_err(|e| {
-            error!("Failed to create runtime node: {}", e);
-            ActrError::InternalError {
-                msg: format!("Failed to create runtime node: {e}"),
-            }
-        })?;
-
-        info!("Runtime wrapper created successfully");
-
-        Ok(Arc::new(Self {
-            inner: Mutex::new(Some(node)),
-            config,
-            network_event_handle: Mutex::new(None),
-        }))
+        // FFI bindings require a package-backed node. This constructor is a
+        // placeholder; callers must use a package-aware entry point.
+        Err(ActrError::InternalError {
+            msg: "FFI runtime requires a package-backed node; provide a package via attach_package"
+                .to_string(),
+        })
     }
 
     /// Create a network event handle for platform callbacks.
