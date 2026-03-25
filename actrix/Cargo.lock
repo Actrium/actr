@@ -5,6 +5,7 @@ version = 4
 [[package]]
 name = "actr-framework"
 version = "0.2.0"
+source = "git+https://github.com/Actrium/actr.git?rev=61fe00abe4e86b91f246eef1a03a60e7ebac8ae0#61fe00abe4e86b91f246eef1a03a60e7ebac8ae0"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -19,6 +20,7 @@ dependencies = [
 [[package]]
 name = "actr-protocol"
 version = "0.2.0"
+source = "git+https://github.com/Actrium/actr.git?rev=61fe00abe4e86b91f246eef1a03a60e7ebac8ae0#61fe00abe4e86b91f246eef1a03a60e7ebac8ae0"
 dependencies = [
  "anyhow",
  "base64",
@@ -38,6 +40,7 @@ dependencies = [
 [[package]]
 name = "actr-runtime"
 version = "0.2.0"
+source = "git+https://github.com/Actrium/actr.git?rev=61fe00abe4e86b91f246eef1a03a60e7ebac8ae0#61fe00abe4e86b91f246eef1a03a60e7ebac8ae0"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -50,6 +53,7 @@ dependencies = [
 [[package]]
 name = "actr-runtime-mailbox"
 version = "0.2.0"
+source = "git+https://github.com/Actrium/actr.git?rev=61fe00abe4e86b91f246eef1a03a60e7ebac8ae0#61fe00abe4e86b91f246eef1a03a60e7ebac8ae0"
 dependencies = [
  "actr-protocol",
  "anyhow",

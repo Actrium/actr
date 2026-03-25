@@ -10,12 +10,10 @@ members = [
 resolver = "2"
 
 [patch.crates-io]
-# Use local actr monorepo for integration testing
-actr-protocol = { path = "../actr/core/protocol" }
-actr-runtime = { path = "../actr/core/runtime" }
-actr-runtime-mailbox = { path = "../actr/core/runtime-mailbox" }
-# actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "17688176e610ccc20747aabd4f6dfc1afe201f05" }
-# actr-version = { git = "https://github.com/Actrium/actr.git", rev = "17688176e610ccc20747aabd4f6dfc1afe201f05" }
+# Use actr main branch
+actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0" }
+actr-runtime = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0" }
+actr-runtime-mailbox = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0" }
 
 [workspace.package]
 version = "0.1.1"

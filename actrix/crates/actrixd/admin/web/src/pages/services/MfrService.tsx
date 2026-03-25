@@ -316,7 +316,7 @@ function HowItWorks() {
           {/* Row 1: Registration & Identity */}
           <div>
             <div className="text-xs font-medium text-gray-500 mb-2">Registration & Identity Verification</div>
-            <svg viewBox="0 0 760 120" className="w-full" xmlns="http://www.w3.org/2000/svg">
+            <svg viewBox="0 0 760 145" className="w-full" xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f8fafc"/><stop offset="100%" stopColor="#e2e8f0"/></linearGradient>
                 <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#fefce8"/><stop offset="100%" stopColor="#fef08a"/></linearGradient>
@@ -335,6 +335,9 @@ function HowItWorks() {
                 <text x="50" y="84" textAnchor="middle" fontSize="8" fill="#94a3b8">GitHub name</text>
               </g>
 
+              {/* Register desc */}
+              <text x="80" y="116" textAnchor="middle" fontSize="7.5" fill="#94a3b8">Account or Org</text>
+
               {/* Curved arrow 1 */}
               <path d="M138,57 C158,57 158,57 178,57" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="4 2"/>
               <polygon points="176,53 184,57 176,61" fill="#cbd5e1"/>
@@ -349,6 +352,9 @@ function HowItWorks() {
                 <text x="50" y="72" textAnchor="middle" fontSize="10" fontWeight="600" fill="#92400e">Challenge</text>
                 <text x="50" y="84" textAnchor="middle" fontSize="8" fill="#b45309">Unique token</text>
               </g>
+
+              {/* Challenge desc */}
+              <text x="240" y="116" textAnchor="middle" fontSize="7.5" fill="#94a3b8">{'actrix-verify={…} · 24h'}</text>
 
               {/* Curved arrow 2 */}
               <path d="M298,57 C318,57 318,57 338,57" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="4 2"/>
@@ -368,6 +374,9 @@ function HowItWorks() {
                 <text x="50" y="84" textAnchor="middle" fontSize="8" fill="#3b82f6">Public repo</text>
               </g>
 
+              {/* Prove desc */}
+              <text x="400" y="116" textAnchor="middle" fontSize="7.5" fill="#94a3b8">{'actr-mfr-verify/{domain}.txt'}</text>
+
               {/* Curved arrow 3 */}
               <path d="M458,57 C478,57 478,57 498,57" fill="none" stroke="#cbd5e1" strokeWidth="1.5" strokeDasharray="4 2"/>
               <polygon points="496,53 504,57 496,61" fill="#cbd5e1"/>
@@ -380,6 +389,9 @@ function HowItWorks() {
                 <text x="50" y="72" textAnchor="middle" fontSize="10" fontWeight="600" fill="#166534">Verified</text>
                 <text x="50" y="84" textAnchor="middle" fontSize="8" fill="#16a34a">Server confirms</text>
               </g>
+
+              {/* Verified desc */}
+              <text x="560" y="116" textAnchor="middle" fontSize="7.5" fill="#94a3b8">via GitHub API</text>
 
               {/* Arrow 4 */}
               <path d="M618,57 C638,57 638,57 658,57" fill="none" stroke="#22c55e" strokeWidth="1.5"/>
@@ -398,13 +410,17 @@ function HowItWorks() {
                 <text x="40" y="70" textAnchor="middle" fontSize="7.5" fill="#16a34a">Ed25519</text>
                 <text x="40" y="80" textAnchor="middle" fontSize="7.5" fill="#16a34a">keypair</text>
               </g>
+
+              {/* Keychain desc */}
+              <text x="710" y="116" textAnchor="middle" fontSize="7.5" fill="#94a3b8">+ Certificate · 365 days</text>
+
             </svg>
           </div>
 
           {/* Row 2: Digital Signature — sign & verify */}
           <div>
             <div className="text-xs font-medium text-gray-500 mb-2">Package Signing & Verification</div>
-            <svg viewBox="0 0 760 380" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
+            <svg viewBox="0 0 760 340" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
               <defs>
                 <marker id="ar" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
                   <path d="M0,0 L10,3.5 L0,7Z" fill="#3b82f6"/>
@@ -439,46 +455,46 @@ function HowItWorks() {
               </g>
               <text x="124" y="102" textAnchor="middle" fontSize="10" fill="#475569">Manifest</text>
 
-              {/* Arrow: manifest → hash */}
-              <line x1="156" y1="67" x2="228" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="192" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">Hash</text>
-              <text x="192" y="72" textAnchor="middle" fontSize="8" fill="#94a3b8">Algorithm</text>
+              {/* Arrow: manifest → sign */}
+              <line x1="156" y1="67" x2="248" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              <text x="202" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">Sign</text>
 
-              {/* Hash box */}
-              <g transform="translate(236,52)">
-                <rect width="90" height="30" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
-                <text x="45" y="19" textAnchor="middle" fontSize="9" fontFamily="monospace" fill="#1e40af">a7c3f09b...</text>
-              </g>
-              <text x="281" y="98" textAnchor="middle" fontSize="9" fill="#6b7280">Hash</text>
-
-              {/* Arrow: hash → encryption */}
-              <line x1="334" y1="67" x2="406" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="370" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">Encryption</text>
-
-              {/* Private key icon */}
-              <g transform="translate(358,82)">
+              {/* Private key icon below the arrow */}
+              <g transform="translate(178,76)">
                 <circle cx="12" cy="12" r="9" fill="none" stroke="#f59e0b" strokeWidth="2"/>
                 <circle cx="12" cy="12" r="3.5" fill="#fbbf24" opacity="0.4"/>
                 <line x1="21" y1="12" x2="38" y2="12" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
                 <line x1="30" y1="12" x2="30" y2="18" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
                 <line x1="36" y1="12" x2="36" y2="18" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round"/>
               </g>
-              <text x="378" y="118" textAnchor="middle" fontSize="9" fill="#b45309">Private Key</text>
+              <text x="202" y="112" textAnchor="middle" fontSize="9" fill="#b45309">Private Key</text>
 
-              {/* Signed package (right) — box with seal */}
-              <g transform="translate(414,36)">
-                <polygon points="24,0 48,12 24,24 0,12" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <polygon points="0,12 24,24 24,52 0,40" fill="#93c5fd" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <polygon points="24,24 48,12 48,40 24,52" fill="#bfdbfe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                {/* Signature seal on front */}
-                <circle cx="12" cy="33" r="7" fill="#1e40af" opacity="0.2" stroke="#1e40af" strokeWidth="0.8"/>
-                <path d="M9,33 L11,35 L15,30" fill="none" stroke="#1e40af" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              {/* Sign box */}
+              <g transform="translate(256,52)">
+                <rect width="100" height="30" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
+                <text x="50" y="19" textAnchor="middle" fontSize="9" fontWeight="600" fill="#92400e">Ed25519 Sign</text>
               </g>
-              <text x="438" y="102" textAnchor="middle" fontSize="10" fill="#475569">Signed</text>
-              <text x="438" y="114" textAnchor="middle" fontSize="10" fill="#475569">Package</text>
+
+              {/* Arrow: sign → signature */}
+              <line x1="364" y1="67" x2="416" y2="67" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              <text x="390" y="60" textAnchor="middle" fontSize="9" fill="#3b82f6">base64</text>
+
+              {/* Signature — envelope with wax seal */}
+              <g transform="translate(418,42)">
+                {/* Envelope body */}
+                <rect width="48" height="34" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
+                {/* Envelope flap (triangle) */}
+                <polygon points="0,0 24,14 48,0" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
+                {/* Wax seal */}
+                <circle cx="24" cy="14" r="8" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.5"/>
+                <text x="24" y="18" textAnchor="middle" fontSize="9" fontWeight="700" fill="#b45309">S</text>
+                {/* String label */}
+                <text x="24" y="28" textAnchor="middle" fontSize="6" fill="#64748b">string</text>
+              </g>
+              <text x="442" y="92" textAnchor="middle" fontSize="10" fill="#475569">Signature</text>
 
               {/* Keypair: private (amber) + public (teal) */}
-              <g transform="translate(490,40)">
+              <g transform="translate(540,40)">
                 {/* Private key — amber */}
                 <circle cx="12" cy="12" r="8" fill="none" stroke="#f59e0b" strokeWidth="1.8"/>
                 <circle cx="12" cy="12" r="3" fill="#fbbf24" opacity="0.4"/>
@@ -501,11 +517,13 @@ function HowItWorks() {
                 <text x="54" y="54" fontSize="8" fill="#6b7280">Keypair</text>
               </g>
 
-              {/* Long arrow across top: manifest directly to signed doc */}
-              <path d="M148,40 L148,32 L430,32 L430,40" fill="none" stroke="#93c5fd" strokeWidth="1.2" strokeDasharray="4 2"/>
-              <polygon points="426,40 430,48 434,40" fill="#93c5fd"/>
-
               {/* ====== MIDDLE: Network ====== */}
+              {/* Downward arrows: Manifest & Signature through Network */}
+              <line x1="124" y1="102" x2="80" y2="140" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2"/>
+              <line x1="80" y1="170" x2="64" y2="196" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2" markerEnd="url(#ar)"/>
+              <line x1="442" y1="92" x2="200" y2="140" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2"/>
+              <line x1="200" y1="170" x2="64" y2="274" stroke="#94a3b8" strokeWidth="1.2" strokeDasharray="4 2" markerEnd="url(#ar)"/>
+
               <g transform="translate(0,140)">
                 <line x1="20" y1="20" x2="740" y2="20" stroke="none"/>
                 <rect x="20" y="6" width="720" height="28" rx="14" fill="none" stroke="#cbd5e1" strokeWidth="1.2" strokeDasharray="6 3"/>
@@ -521,79 +539,84 @@ function HowItWorks() {
                 <text x="380" y="24" textAnchor="middle" fontSize="10" fontWeight="500" fill="#94a3b8">Network</text>
               </g>
 
-              {/* ====== BOTTOM HALF: Hyper Node (Verifier) ====== */}
+              {/* ====== BOTTOM HALF: MFR Service (Verifier) ====== */}
 
-              {/* Signed package (bottom-left, received) */}
-              <g transform="translate(28,206)">
+              {/* MFR Service label + server icon (top-right of bottom half) */}
+              <text x="680" y="204" textAnchor="middle" fontSize="13" fontWeight="700" fill="#16a34a">MFR Service</text>
+              <g transform="translate(650,212)">
+                {/* Server rack */}
+                <rect x="10" y="0" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
+                <circle cx="44" cy="7" r="2" fill="#22c55e"/>
+                <rect x="10" y="17" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
+                <circle cx="44" cy="24" r="2" fill="#22c55e"/>
+                <rect x="10" y="34" width="40" height="14" rx="2" fill="#d1fae5" stroke="#22c55e" strokeWidth="1"/>
+                <circle cx="44" cy="41" r="2" fill="#22c55e"/>
+              </g>
+
+              {/* Manifest (bottom, received) — top-left */}
+              <g transform="translate(40,196)">
                 <polygon points="24,0 48,12 24,24 0,12" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
                 <polygon points="0,12 24,24 24,52 0,40" fill="#93c5fd" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
                 <polygon points="24,24 48,12 48,40 24,52" fill="#bfdbfe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
-                <circle cx="12" cy="33" r="7" fill="#1e40af" opacity="0.2" stroke="#1e40af" strokeWidth="0.8"/>
-                <path d="M9,33 L11,35 L15,30" fill="none" stroke="#1e40af" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                <text x="12" y="32" fontSize="7" fill="#1e40af" fontWeight="600">actr</text>
+                <text x="12" y="40" fontSize="6" fill="#2563eb">.toml</text>
               </g>
-              <text x="52" y="272" textAnchor="middle" fontSize="9" fill="#475569">Signed Package</text>
+              <text x="64" y="262" textAnchor="middle" fontSize="9" fill="#475569">Manifest</text>
 
-              {/* === Path 1 (top): manifest → hash === */}
-              <line x1="82" y1="230" x2="180" y2="230" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="131" y="223" textAnchor="middle" fontSize="9" fill="#3b82f6">Hash</text>
-              <text x="131" y="235" textAnchor="middle" fontSize="8" fill="#94a3b8">Algorithm</text>
-
-              {/* Hash result 1 */}
-              <g transform="translate(188,215)">
-                <rect width="90" height="30" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
-                <text x="45" y="19" textAnchor="middle" fontSize="9" fontFamily="monospace" fill="#1e40af">a7c3f09b...</text>
+              {/* Signature (bottom, received) — bottom-left, envelope with seal */}
+              <g transform="translate(40,274)">
+                <rect width="48" height="34" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
+                <polygon points="0,0 24,14 48,0" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1" strokeLinejoin="round"/>
+                <circle cx="24" cy="14" r="8" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.5"/>
+                <text x="24" y="18" textAnchor="middle" fontSize="9" fontWeight="700" fill="#b45309">S</text>
+                <text x="24" y="28" textAnchor="middle" fontSize="6" fill="#64748b">string</text>
               </g>
-              <text x="233" y="260" textAnchor="middle" fontSize="9" fill="#6b7280">Hash</text>
+              <text x="64" y="322" textAnchor="middle" fontSize="9" fill="#475569">Signature</text>
 
-              {/* === Path 2 (bottom): signature → decrypt with pubkey === */}
-              <line x1="82" y1="255" x2="180" y2="310" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
-              <text x="131" y="296" textAnchor="middle" fontSize="9" fill="#3b82f6">Decryption</text>
+              {/* Arrow: Signature → base64 decode */}
+              <line x1="96" y1="290" x2="156" y2="290" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              <text x="126" y="283" textAnchor="middle" fontSize="8" fill="#3b82f6">base64 decode</text>
 
-              {/* Public key icon — teal (matches top) */}
-              <g transform="translate(112,316)">
+              {/* Ed25519 Sign box */}
+              <g transform="translate(166,273)">
+                <rect width="60" height="30" rx="4" fill="#f0fdfa" stroke="#14b8a6" strokeWidth="1.2"/>
+                <text x="30" y="19" textAnchor="middle" fontSize="8" fontWeight="600" fill="#0f766e">Ed25519 Sign</text>
+              </g>
+
+              {/* Arrow: decode → Verify */}
+              <line x1="232" y1="288" x2="240" y2="260" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+
+              {/* Converging arrows: Manifest & Signature → Verify */}
+              <line x1="96" y1="224" x2="240" y2="244" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
+
+              {/* Ed25519 Verify box */}
+              <g transform="translate(246,237)">
+                <rect width="120" height="30" rx="6" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2"/>
+                <text x="60" y="19" textAnchor="middle" fontSize="9" fontWeight="600" fill="#92400e">Ed25519 Verify</text>
+              </g>
+
+              {/* Public Key (from DB) — below Verify box */}
+              <g transform="translate(280,282)">
                 <circle cx="12" cy="12" r="9" fill="none" stroke="#0d9488" strokeWidth="2"/>
                 <circle cx="12" cy="12" r="3.5" fill="#5eead4" opacity="0.4"/>
                 <line x1="21" y1="12" x2="38" y2="12" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
                 <line x1="30" y1="12" x2="30" y2="18" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
                 <line x1="36" y1="12" x2="36" y2="18" stroke="#0d9488" strokeWidth="2" strokeLinecap="round"/>
               </g>
-              <text x="134" y="352" textAnchor="middle" fontSize="9" fill="#0f766e">Public Key</text>
-              <text x="134" y="363" textAnchor="middle" fontSize="8" fill="#0d9488">(from Registry)</text>
+              {/* Arrow: Public Key → Verify box */}
+              <line x1="302" y1="282" x2="302" y2="272" stroke="#0d9488" strokeWidth="1.5" markerEnd="url(#ar)"/>
+              <text x="302" y="316" textAnchor="middle" fontSize="9" fill="#0f766e">Public Key</text>
+              <text x="302" y="327" textAnchor="middle" fontSize="8" fill="#0d9488">(from DB)</text>
 
-              {/* Hash result 2 */}
-              <g transform="translate(188,295)">
-                <rect width="90" height="30" rx="4" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.2"/>
-                <text x="45" y="19" textAnchor="middle" fontSize="9" fontFamily="monospace" fill="#1e40af">a7c3f09b...</text>
-              </g>
-              <text x="233" y="340" textAnchor="middle" fontSize="9" fill="#6b7280">Hash</text>
+              {/* Arrow: Verify → result */}
+              <line x1="372" y1="252" x2="440" y2="252" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#ar)"/>
 
-              {/* Curly brace between two hashes */}
-              <path d="M286,230 C300,230 296,260 296,270 C296,280 300,310 286,310" fill="none" stroke="#6b7280" strokeWidth="1.2"/>
-              {/* Brace point */}
-              <circle cx="300" cy="270" r="2" fill="#6b7280"/>
-
-              {/* Comparison text */}
-              <text x="365" y="262" textAnchor="middle" fontSize="10" fill="#475569">Signature is valid</text>
-              <text x="365" y="276" textAnchor="middle" fontSize="10" fill="#475569">when hash values</text>
-              <text x="365" y="290" textAnchor="middle" fontSize="10" fill="#475569">are equal.</text>
-
-              {/* Verifier: Hyper Node */}
-              <text x="650" y="244" textAnchor="middle" fontSize="13" fontWeight="700" fill="#16a34a">Hyper Node</text>
-
-              {/* Server icon */}
-              <g transform="translate(620,256)">
-                {/* Monitor */}
-                <rect x="10" y="0" width="40" height="30" rx="3" fill="#d1fae5" stroke="#22c55e" strokeWidth="1.2"/>
-                <rect x="14" y="4" width="32" height="20" rx="2" fill="white"/>
-                {/* Screen content - checkmark */}
-                <path d="M24,12 L28,17 L36,8" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                {/* Stand */}
-                <rect x="26" y="30" width="8" height="4" fill="#a7f3d0"/>
-                <rect x="20" y="34" width="20" height="3" rx="1.5" fill="#86efac"/>
-                {/* Person */}
-                <circle cx="60" cy="14" r="8" fill="#bbf7d0"/>
-                <circle cx="60" cy="11" r="4" fill="#f0fdf4"/>
-                <ellipse cx="60" cy="19" rx="6" ry="3.5" fill="#f0fdf4"/>
+              {/* Verification result */}
+              <g transform="translate(448,238)">
+                <text x="0" y="12" fontSize="16">✅</text>
+                <text x="22" y="14" fontSize="10" fill="#16a34a" fontWeight="600">Valid</text>
+                <text x="0" y="32" fontSize="16">❌</text>
+                <text x="22" y="34" fontSize="10" fill="#dc2626" fontWeight="600">Invalid</text>
               </g>
 
             </svg>
