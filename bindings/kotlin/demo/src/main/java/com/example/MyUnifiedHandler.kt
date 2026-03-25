@@ -162,7 +162,11 @@ class MyUnifiedHandler : UnifiedHandler {
 
                                         Log.i(TAG, "client sending $i/$messageCount: $message")
                                         try {
-                                                ctx.sendDataStream(serverId, dataStream)
+                                                ctx.sendDataStream(
+                                                        serverId,
+                                                        dataStream,
+                                                        PayloadType.STREAM_RELIABLE
+                                                )
                                         } catch (e: Exception) {
                                                 Log.e(
                                                         TAG,

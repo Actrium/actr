@@ -5,6 +5,7 @@ import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.DataStream
+import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
 import io.actor_rtc.actr.WorkloadBridge
@@ -112,7 +113,11 @@ open class SimpleWorkload(
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
             for (request in dataStreamChannel) {
                 try {
-                    ctx.sendDataStream(request.target, request.dataStream)
+                    ctx.sendDataStream(
+                        request.target,
+                        request.dataStream,
+                        PayloadType.STREAM_RELIABLE,
+                    )
                 } catch (e: Exception) {
                     // Log error but continue processing
                     println("Failed to send DataStream: ${e.message}")

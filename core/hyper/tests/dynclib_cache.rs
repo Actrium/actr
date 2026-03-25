@@ -66,6 +66,7 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
             size: None,
         },
         signature_algorithm: "ed25519".to_string(),
+        signing_key_id: None,
         resources: vec![],
         proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
