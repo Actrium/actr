@@ -35,6 +35,11 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
         ".gitignore",
     )?;
     ProjectTemplate::load_file(
+        &fixtures_root.join("swift/dist.keep.hbs"),
+        files,
+        "dist/.keep",
+    )?;
+    ProjectTemplate::load_file(
         &fixtures_root.join("swift/echo/README.md.hbs"),
         files,
         "README.md",

@@ -17,32 +17,25 @@ The Low Level API is located in the `Actr` module and consists of UniFFI-generat
 
 #### `ActrSystemWrapper`
 
-System-level wrapper for creating and managing ACTR systems.
+System-level wrapper for creating and starting package-backed ACTR systems.
 
 **Methods:**
 
-- `static func newFromFile(configPath: String) async throws -> ActrSystemWrapper`
-  - Creates a new ACTR system from a TOML configuration file
+- `static func newFromPackageFile(configPath: String, packagePath: String) async throws -> ActrSystemWrapper`
+  - Creates a new ACTR system from a TOML configuration file and a `.actr` package file
   - **Parameters:**
     - `configPath`: Path to the TOML configuration file
+    - `packagePath`: Path to the `.actr` package file
   - **Returns:** An `ActrSystemWrapper` instance
   - **Throws:** `ActrError.ConfigError` if the configuration is invalid
 
-- `func attach(callback: WorkloadBridge) throws -> ActrNodeWrapper`
-  - Attaches a workload callback and creates a node ready to start
-  - **Parameters:**
-    - `callback`: A `WorkloadBridge` implementation that handles actor lifecycle
-  - **Returns:** An `ActrNodeWrapper` instance
-  - **Throws:** `ActrError` if attachment fails
-
-#### `ActrNodeWrapper`
-
-Wrapper for a configured node that can be started to obtain a running actor reference.
-
-**Methods:**
+- `func createNetworkEventHandle() throws -> NetworkEventHandleWrapper`
+  - Creates a network event handle for platform callbacks before startup
+  - **Returns:** A `NetworkEventHandleWrapper` instance
+  - **Throws:** `ActrError` if the runtime node is unavailable
 
 - `func start() async throws -> ActrRefWrapper`
-  - Starts the actor node and returns a reference to the running actor
+  - Starts the package-backed actor and returns a running reference
   - **Returns:** An `ActrRefWrapper` instance
   - **Throws:** `ActrError` if startup fails
 
@@ -147,34 +140,7 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
 
 #### `WorkloadBridge`
 
-Protocol that workloads must implement to handle actor lifecycle events.
-Note: In the `Actr` module, `Context` and `RpcEnvelope` are typealiases for the bridge types used here.
-
-**Methods:**
-
-- `func serverId() async -> ActrId`
-  - Returns the server actor ID for this workload
-  - **Returns:** The server's `ActrId`
-
-- `func onStart(ctx: ContextBridge) async throws`
-  - Called when the actor starts
-  - **Parameters:**
-    - `ctx`: `ContextBridge` providing access to RPC and discovery
-  - **Throws:** `ActrError.WorkloadError` if initialization fails
-
-- `func onStop(ctx: ContextBridge) async throws`
-  - Called when the actor is stopping
-  - **Parameters:**
-    - `ctx`: `ContextBridge` providing access to RPC and discovery
-  - **Throws:** `ActrError.WorkloadError` if cleanup fails
-
-- `func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data`
-  - Called when an RPC message is received and needs handling
-  - **Parameters:**
-    - `ctx`: `ContextBridge` providing access to RPC and discovery
-    - `envelope`: `RpcEnvelopeBridge` containing `routeKey`, `payload`, and `requestId`
-  - **Returns:** Response payload bytes (protobuf encoded)
-  - **Throws:** `ActrError.WorkloadError` if dispatch fails
+Low-level callback interface retained in the generated bindings. The package-first runtime flow does not use it directly.
 
 ### Data Types
 
@@ -281,39 +247,28 @@ The High Level API is located in the `Actr` module and provides Swift-friendly w
 
 #### `ActrSystem`
 
-High-level entry point for creating an ACTR system and spawning nodes. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
+High-level entry point for creating and starting a package-backed ACTR system. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
 
 **Methods:**
 
-- `static func from(tomlConfig path: String) async throws -> ActrSystem`
-  - Creates a system from a TOML config file path
+- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrSystem`
+  - Creates a system from a TOML config file path and `.actr` package path
   - **Parameters:**
     - `path`: Path to the TOML configuration file
+    - `packagePath`: Path to the `.actr` package file
   - **Returns:** An `ActrSystem` instance
   - **Throws:** `ActrError.ConfigError` if the configuration is invalid
 
-- `static func from(tomlConfig url: URL) async throws -> ActrSystem`
-  - Creates a system from a TOML config file URL
+- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrSystem`
+  - Creates a system from TOML config and `.actr` package URLs
   - **Parameters:**
-    - `url`: File URL to the TOML configuration file
+    - `configURL`: File URL to the TOML configuration file
+    - `packageURL`: File URL to the `.actr` package file
   - **Returns:** An `ActrSystem` instance
   - **Throws:** `ActrError.ConfigError` if the URL is not a file URL or configuration is invalid
 
-- `func spawn(workload: Workload) throws -> ActrNode`
-  - Attaches a workload and returns a node that can be started
-  - **Parameters:**
-    - `workload`: A `Workload` (type alias for `WorkloadBridge`) implementation
-  - **Returns:** An `ActrNode` instance
-  - **Throws:** `ActrError` if attachment fails
-
-#### `ActrNode`
-
-A configured node that can be started to obtain a running actor reference. This is a `Sendable` class.
-
-**Methods:**
-
 - `func start() async throws -> ActrRef`
-  - Starts the node and returns a high-level actor reference
+  - Starts the package-backed actor and returns a high-level actor reference
   - **Returns:** An `ActrRef` actor instance
   - **Throws:** `ActrError` if startup fails
 
@@ -370,7 +325,7 @@ The following types are available in the `Actr` module:
 - `MetadataEntry`
 - `Context` (alias of `ContextBridge`)
 - `RpcEnvelope` (alias of `RpcEnvelopeBridge`)
-- `Workload` (alias of `WorkloadBridge`)
+- `Workload` (alias of `WorkloadBridge`, low-level only)
 - `RpcRequest` (built into `Actr`)
 
 ## API Comparison
@@ -407,14 +362,14 @@ The following types are available in the `Actr` module:
 import Actr
 import SwiftProtobuf
 
-// Create system from config
-let system = try await ActrSystem.from(tomlConfig: "/path/to/config.toml")
+// Create system from config + package
+let system = try await ActrSystem.from(
+    packageConfig: "/path/to/config.toml",
+    packagePath: "/path/to/app.actr"
+)
 
-// Spawn a workload
-let node = try system.spawn(workload: MyWorkload())
-
-// Start the node
-let actrRef = try await node.start()
+// Start the package-backed actor
+let actrRef = try await system.start()
 
 // Type-safe RPC call with Protobuf
 let request = EchoRequest.with { $0.message = "Hello" }
@@ -434,13 +389,13 @@ await actrRef.stop()
 import Actr
 
 // Create system
-let systemWrapper = try await ActrSystemWrapper.newFromFile(configPath: "/path/to/config.toml")
+let systemWrapper = try await ActrSystemWrapper.newFromPackageFile(
+    configPath: "/path/to/config.toml",
+    packagePath: "/path/to/app.actr"
+)
 
-// Attach workload
-let nodeWrapper = try systemWrapper.attach(callback: MyWorkloadBridge())
-
-// Start node
-let refWrapper = try await nodeWrapper.start()
+// Start actor
+let refWrapper = try await systemWrapper.start()
 
 // Raw RPC call with Data
 let requestData = try request.serializedData()
