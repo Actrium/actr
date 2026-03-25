@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Subcommand};
 use ed25519_dalek::SigningKey;
+use serde::Serialize;
 
 #[derive(Args, Debug)]
 pub struct PkgArgs {
@@ -129,6 +130,33 @@ pub struct PkgPublishArgs {
     /// Defaults to ./actr.toml in the current directory.
     #[arg(long, short = 'c', value_name = "FILE", default_value = "actr.toml")]
     pub config: PathBuf,
+}
+
+#[derive(Serialize)]
+struct SignablePublishBody<'a> {
+    manufacturer: &'a str,
+    name: &'a str,
+    version: &'a str,
+    target: &'a str,
+    manifest: &'a str,
+    signature: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proto_files: Option<&'a serde_json::Value>,
+    nonce: &'a str,
+}
+
+#[derive(Serialize)]
+struct FinalPublishBody<'a> {
+    manufacturer: &'a str,
+    name: &'a str,
+    version: &'a str,
+    target: &'a str,
+    manifest: &'a str,
+    signature: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proto_files: Option<&'a serde_json::Value>,
+    nonce: &'a str,
+    nonce_sig: &'a str,
 }
 
 pub async fn execute(args: PkgArgs) -> Result<()> {
@@ -619,21 +647,18 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     let keychain: serde_json::Value =
         serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
 
-    // Derive public key from keychain private key
-    let kc_key_id = {
-        use ed25519_dalek::SigningKey;
-        let privkey_b64 = keychain["private_key"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
-        let privkey_bytes = base64::engine::general_purpose::STANDARD
-            .decode(privkey_b64)
-            .with_context(|| "Invalid private key in keychain")?;
-        let arr: [u8; 32] = privkey_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Private key must be 32 bytes"))?;
-        let signing_key = SigningKey::from_bytes(&arr);
-        actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes())
-    };
+    // Derive signing key and key_id from keychain private key
+    let kc_privkey_b64 = keychain["private_key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
+    let kc_privkey_bytes = base64::engine::general_purpose::STANDARD
+        .decode(kc_privkey_b64)
+        .with_context(|| "Invalid private key in keychain")?;
+    let kc_arr: [u8; 32] = kc_privkey_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Private key must be 32 bytes"))?;
+    let kc_signing_key = ed25519_dalek::SigningKey::from_bytes(&kc_arr);
+    let kc_key_id = actr_pack::compute_key_id(&kc_signing_key.verifying_key().to_bytes());
 
     // Check signing_key_id consistency: package must be built with the same key
     match manifest.signing_key_id {
@@ -713,28 +738,89 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
             })?
     };
 
-    // 5. POST /mfr/pkg/publish
-    let publish_url = format!("{}/mfr/pkg/publish", endpoint.trim_end_matches('/'));
+    // 5. Request Challenge-Response nonce from MFR server
+    let base_url = endpoint.trim_end_matches('/');
+    let nonce_url = format!("{}/mfr/pkg/nonce", base_url);
+    let client = reqwest::Client::new();
+
+    println!("🔑 Requesting publish nonce...");
+    let nonce_resp = client
+        .post(&nonce_url)
+        .json(&serde_json::json!({ "manufacturer": manifest.manufacturer }))
+        .send()
+        .await
+        .with_context(|| format!("Failed to request nonce from: {}", nonce_url))?;
+
+    if !nonce_resp.status().is_success() {
+        let status = nonce_resp.status();
+        let body = nonce_resp.text().await.unwrap_or_default();
+        anyhow::bail!("Nonce request failed (HTTP {}): {}", status, body);
+    }
+
+    let nonce_json: serde_json::Value = nonce_resp
+        .json()
+        .await
+        .with_context(|| "Failed to parse nonce response")?;
+    let nonce_b64 = nonce_json["nonce"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Nonce response missing 'nonce' field"))?
+        .to_string();
+
+    // Build the signable publish body (everything except nonce_sig) and authorize it
+    // with the one-time nonce.
+    let nonce_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&nonce_b64)
+        .with_context(|| "Invalid nonce base64 from server")?;
+
+    let signable_body = SignablePublishBody {
+        manufacturer: &manifest.manufacturer,
+        name: &manifest.name,
+        version: &manifest.version,
+        target: &manifest.binary.target,
+        manifest: &manifest_str,
+        signature: &sig_b64,
+        proto_files: proto_filing.as_ref(),
+        nonce: &nonce_b64,
+    };
+    let signable_body_bytes = serde_json::to_vec(&signable_body)
+        .with_context(|| "Failed to serialize signable publish body")?;
+
+    let nonce_sig_b64 = {
+        use ed25519_dalek::Signer;
+        use sha2::{Digest, Sha256};
+
+        let body_hash = hex::encode(Sha256::digest(&signable_body_bytes));
+        let nonce_hex = hex::encode(&nonce_bytes);
+        let payload = format!(
+            "ACTR-PUBLISH-V1\nmanufacturer={}\nmethod=POST\npath=/mfr/pkg/publish\nnonce={}\nbody_sha256={}",
+            manifest.manufacturer, nonce_hex, body_hash
+        );
+        let sig = kc_signing_key.sign(payload.as_bytes());
+        base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
+    };
+    println!("✅ Nonce signed (challenge-response)");
+
+    // 6. POST /mfr/pkg/publish
+    let publish_url = format!("{}/mfr/pkg/publish", base_url);
     println!("📡 Publishing to: {}", publish_url);
 
-    let client = reqwest::Client::new();
-    let mut publish_body = serde_json::json!({
-        "manufacturer": manifest.manufacturer,
-        "name": manifest.name,
-        "version": manifest.version,
-        "target": manifest.binary.target,
-        "manifest": manifest_str,
-        "signature": sig_b64,
-    });
-
-    // Add proto filing fields if present
-    if let Some(filing) = proto_filing {
-        publish_body["proto_files"] = filing;
-    }
+    let publish_body_bytes = serde_json::to_vec(&FinalPublishBody {
+        manufacturer: &manifest.manufacturer,
+        name: &manifest.name,
+        version: &manifest.version,
+        target: &manifest.binary.target,
+        manifest: &manifest_str,
+        signature: &sig_b64,
+        proto_files: proto_filing.as_ref(),
+        nonce: &nonce_b64,
+        nonce_sig: &nonce_sig_b64,
+    })
+    .with_context(|| "Failed to serialize publish request body")?;
 
     let resp = client
         .post(&publish_url)
-        .json(&publish_body)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(publish_body_bytes)
         .send()
         .await
         .with_context(|| format!("Failed to connect to MFR endpoint: {}", publish_url))?;
