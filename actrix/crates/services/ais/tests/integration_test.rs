@@ -5,6 +5,7 @@
 use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
 use ais::issuer::{AIdIssuer, IssuerConfig};
 use ais::signer_client_wrapper::create_signer_client;
+use base64::Engine as _;
 use nonce_auth::storage::MemoryStorage;
 use platform::aid::credential::validator::AIdCredentialValidator;
 use platform::config::signer::SignerClientConfig;
@@ -108,15 +109,21 @@ async fn start_embedded_signer(
 }
 
 async fn setup_test_environment() -> TestEnv {
+    use std::sync::OnceLock;
+    static DB_DIR: OnceLock<TempDir> = OnceLock::new();
+
     let issuer_temp_dir = TempDir::new().expect("Failed to create issuer temp dir");
     let signer_temp_dir = TempDir::new().expect("Failed to create signer temp dir");
     let shared_key = "test-psk-key".to_string();
     let (endpoint, signer_handle, signer_shutdown_tx) =
         start_embedded_signer(&shared_key, signer_temp_dir.path()).await;
 
-    // Initialize the global database (required by verify_mfr_identity)
+    // Initialize the global database once with a persistent temp dir.
+    // The OnceLock ensures the TempDir (and its SQLite file) lives for the
+    // entire process, avoiding "unable to open database file" in serial tests.
+    let db_dir = DB_DIR.get_or_init(|| TempDir::new().expect("Failed to create DB temp dir"));
     if !platform::storage::db::is_database_initialized() {
-        platform::storage::db::set_db_path(issuer_temp_dir.path())
+        platform::storage::db::set_db_path(db_dir.path())
             .await
             .expect("Failed to initialize test database");
     }
@@ -502,4 +509,323 @@ async fn test_issuer_rotate_key_fails_when_ks_is_unavailable() {
     }
 
     panic!("rotate_key should fail after embedded KS shutdown");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Path 2 tests: verify_mfr_identity with manifest_raw + mfr_signature
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: build a signed manifest TOML string and its Ed25519 signature.
+fn build_signed_manifest(
+    signing_key: &ed25519_dalek::SigningKey,
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
+) -> (Vec<u8>, Vec<u8>) {
+    use ed25519_dalek::Signer;
+
+    let key_id = actrix_mfr::crypto::compute_key_id(&signing_key.verifying_key().to_bytes());
+    let manifest = format!(
+        r#"manufacturer = "{manufacturer}"
+name = "{name}"
+version = "{version}"
+signing_key_id = "{key_id}"
+
+[binary]
+path = "bin/actor.wasm"
+target = "{target}"
+hash = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    );
+    let manifest_bytes = manifest.into_bytes();
+    let signature = signing_key.sign(&manifest_bytes);
+    (manifest_bytes, signature.to_bytes().to_vec())
+}
+
+/// Helper: seed an MFR with a specific keypair and return (mfr_id, key_id, public_key_b64).
+async fn seed_mfr_with_key(
+    pool: &sqlx::SqlitePool,
+    mfr_name: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> (i64, String) {
+    let pub_b64 = base64::prelude::BASE64_STANDARD.encode(signing_key.verifying_key().to_bytes());
+    let key_id = actrix_mfr::crypto::compute_key_id(&signing_key.verifying_key().to_bytes());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let expires_at = now + 86400 * 365;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO mfr (name, public_key, key_id, contact, status, created_at, verified_at, key_expires_at) \
+         VALUES (?, ?, ?, 'test@example.com', 'active', ?, ?, ?)"
+    )
+    .bind(mfr_name)
+    .bind(&pub_b64)
+    .bind(&key_id)
+    .bind(now)
+    .bind(now)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .expect("seed mfr");
+
+    let mfr_id: i64 = sqlx::query_scalar("SELECT id FROM mfr WHERE name = ?")
+        .bind(mfr_name)
+        .fetch_one(pool)
+        .await
+        .expect("get mfr id");
+
+    (mfr_id, key_id)
+}
+
+/// Helper: archive a key into mfr_key_history with given status.
+async fn archive_key_to_history(
+    pool: &sqlx::SqlitePool,
+    mfr_id: i64,
+    key_id: &str,
+    public_key_b64: &str,
+    status: &str,
+) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    sqlx::query(
+        "INSERT INTO mfr_key_history (mfr_id, key_id, public_key, status, created_at, retired_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(mfr_id)
+    .bind(key_id)
+    .bind(public_key_b64)
+    .bind(status)
+    .bind(now - 1000)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("archive key to history");
+}
+
+/// Path 2: historical (retired) key passes signature verification.
+#[tokio::test]
+#[serial]
+async fn test_path2_historical_retired_key_passes() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let pool = platform::storage::db::get_database().get_pool();
+
+    // Key A (old) and Key B (current)
+    let key_a = SigningKey::generate(&mut OsRng);
+    let key_b = SigningKey::generate(&mut OsRng);
+
+    let key_a_pub_b64 = base64::prelude::BASE64_STANDARD.encode(key_a.verifying_key().to_bytes());
+    let key_a_id = actrix_mfr::crypto::compute_key_id(&key_a.verifying_key().to_bytes());
+
+    // Seed MFR with Key B as current
+    let (mfr_id, _key_b_id) = seed_mfr_with_key(pool, "histmfr", &key_b).await;
+
+    // Archive Key A as retired
+    archive_key_to_history(pool, mfr_id, &key_a_id, &key_a_pub_b64, "retired").await;
+
+    // Seed realm
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    sqlx::query("INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES (1001, 'test', 'Active', 1, ?, '')")
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("seed realm");
+
+    // Build manifest signed by Key A (the retired key)
+    let (manifest_bytes, sig_bytes) =
+        build_signed_manifest(&key_a, "histmfr", "HistService", "1.0.0", "wasm32-wasip1");
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "histmfr".to_string(),
+            name: "HistService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_bytes)),
+        mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+    };
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Success(_) => {} // expected
+        register_response::Result::Error(err) => {
+            panic!("Path 2 with retired historical key should succeed, got error: {err:?}")
+        }
+    }
+}
+
+/// Path 2: revoked key is rejected.
+#[tokio::test]
+#[serial]
+async fn test_path2_revoked_key_rejected() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let pool = platform::storage::db::get_database().get_pool();
+
+    // Seed realm
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    sqlx::query("INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES (1001, 'test', 'Active', 1, ?, '')")
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("seed realm");
+
+    let key_revoked = SigningKey::generate(&mut OsRng);
+    let key_current = SigningKey::generate(&mut OsRng);
+
+    let revoked_pub_b64 =
+        base64::prelude::BASE64_STANDARD.encode(key_revoked.verifying_key().to_bytes());
+    let revoked_key_id =
+        actrix_mfr::crypto::compute_key_id(&key_revoked.verifying_key().to_bytes());
+
+    // Seed MFR with current key
+    let (mfr_id, _) = seed_mfr_with_key(pool, "revmfr", &key_current).await;
+
+    // Archive revoked key
+    archive_key_to_history(pool, mfr_id, &revoked_key_id, &revoked_pub_b64, "revoked").await;
+
+    // Build manifest signed by the revoked key
+    let (manifest_bytes, sig_bytes) = build_signed_manifest(
+        &key_revoked,
+        "revmfr",
+        "RevService",
+        "1.0.0",
+        "wasm32-wasip1",
+    );
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "revmfr".to_string(),
+            name: "RevService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_bytes)),
+        mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+    };
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Error(_) => {} // expected: revoked key rejected
+        register_response::Result::Success(_) => {
+            panic!("Path 2 with revoked key should be rejected, but got success")
+        }
+    }
+}
+
+/// Path 2: manifest identity mismatch (actr_type spoofing) is rejected.
+#[tokio::test]
+#[serial]
+async fn test_path2_identity_mismatch_rejected() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let pool = platform::storage::db::get_database().get_pool();
+
+    // Seed realm (shared global DB may not have it if run in isolation)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    sqlx::query("INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES (1001, 'test', 'Active', 1, ?, '')")
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("seed realm");
+
+    let key = SigningKey::generate(&mut OsRng);
+    let (_mfr_id, _key_id) = seed_mfr_with_key(pool, "spoofmfr", &key).await;
+
+    // Build manifest for ServiceA
+    let (manifest_bytes, sig_bytes) =
+        build_signed_manifest(&key, "spoofmfr", "ServiceA", "1.0.0", "wasm32-wasip1");
+
+    // But register as ServiceB — identity mismatch!
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "spoofmfr".to_string(),
+            name: "ServiceB".to_string(), // ← does not match manifest
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_bytes)),
+        mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+    };
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Error(_) => {} // expected: identity mismatch rejected
+        register_response::Result::Success(_) => {
+            panic!("Path 2 with identity mismatch should be rejected, but got success")
+        }
+    }
 }

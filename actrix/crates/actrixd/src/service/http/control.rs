@@ -124,7 +124,7 @@ async fn build_admin_ui_router(
     let mfr_router = {
         use actrix_mfr::{
             MfrManager,
-            handlers::{MfrState, create_router},
+            handlers::{MfrState, create_admin_router},
         };
         let pool = platform::storage::db::get_database().get_pool().clone();
         let domain = config
@@ -137,7 +137,7 @@ async fn build_admin_ui_router(
         let mfr_state = MfrState {
             manager: Arc::new(manager),
         };
-        create_router(mfr_state)
+        create_admin_router(mfr_state)
     };
 
     Ok((

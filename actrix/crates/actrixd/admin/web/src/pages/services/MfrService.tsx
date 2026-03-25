@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Building2, CheckCircle, Clock, XCircle, AlertTriangle, Package, Key, Copy, Plus, Terminal, Download } from 'lucide-react';
-import { mfrApi, type Manufacturer, type ActrPackage, type ActivateResponse, type ApplyResponse } from '../../lib/api';
+import { Building2, CheckCircle, Clock, XCircle, AlertTriangle, Package, Key, Copy, Plus, Terminal, Download, ShieldOff, Timer } from 'lucide-react';
+import { mfrApi, type Manufacturer, type ActrPackage, type ActivateResponse, type ApplyResponse, type MfrKeyHistory } from '../../lib/api';
 
 function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -60,6 +60,154 @@ function StatusBadge({ status }: { status: Manufacturer['status'] }) {
   );
 }
 
+// ── Key Expiry Badge ──────────────────────────────────────────────
+
+function KeyExpiryBadge({ expiresAt }: { expiresAt?: number }) {
+  if (!expiresAt) {
+    return <span className="text-gray-300 text-xs">—</span>;
+  }
+
+  const now = Date.now() / 1000;
+  const remaining = expiresAt - now;
+  const days = Math.ceil(remaining / 86400);
+  const expiryDate = new Date(expiresAt * 1000);
+  const dateStr = expiryDate.toLocaleDateString();
+
+  let colorClass: string;
+  let label: string;
+  let Icon = Timer;
+
+  if (remaining <= 0) {
+    // Expired
+    colorClass = 'bg-red-600 text-white';
+    label = 'Expired';
+    Icon = XCircle;
+  } else if (days <= 7) {
+    // ≤ 7 days — critical
+    colorClass = 'bg-red-100 text-red-800 ring-1 ring-red-300';
+    label = `${days}d left`;
+    Icon = AlertTriangle;
+  } else if (days <= 15) {
+    // ≤ 15 days — warning
+    colorClass = 'bg-orange-100 text-orange-800 ring-1 ring-orange-300';
+    label = `${days}d left`;
+    Icon = AlertTriangle;
+  } else if (days <= 30) {
+    // ≤ 30 days — attention
+    colorClass = 'bg-yellow-100 text-yellow-800 ring-1 ring-yellow-200';
+    label = `${days}d left`;
+    Icon = Clock;
+  } else {
+    // Healthy
+    colorClass = 'bg-green-50 text-green-700';
+    label = dateStr;
+    Icon = CheckCircle;
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${colorClass}`}
+      title={`Expires: ${expiryDate.toLocaleString()}${remaining > 0 ? ` (${days} days remaining)` : ' (EXPIRED)'}`}
+    >
+      <Icon size={11} />
+      {label}
+    </span>
+  );
+}
+
+// ── Key History Panel ────────────────────────────────────────────────
+
+function KeyHistoryPanel({ mfr, onRevoked }: { mfr: Manufacturer; onRevoked: () => void }) {
+  const [keys, setKeys] = useState<MfrKeyHistory[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<number | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    mfrApi.listKeys(mfr.id)
+      .then(setKeys)
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false));
+  }, [mfr.id]);
+
+  const handleRevoke = async (k: MfrKeyHistory) => {
+    if (!confirm(`Revoke key ${k.key_id}?\n\nThis is an emergency action. All packages signed with this key will fail verification immediately.`)) return;
+    setRevoking(k.id);
+    try {
+      await mfrApi.revokeHistoricalKey(k.id);
+      setKeys(prev => prev ? prev.map(x => x.id === k.id ? { ...x, status: 'revoked' } : x) : prev);
+      onRevoked();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  const ts = (t: number) => new Date(t * 1000).toLocaleDateString();
+
+  return (
+    <div className="bg-gray-50 border-t border-gray-100 px-6 py-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Key size={13} className="text-gray-400" />
+        <span className="text-xs font-semibold text-gray-600 uppercase">Key History — {mfr.name}</span>
+        <span className="text-xs text-gray-400 ml-1">(Retired keys still verify old packages until manually revoked)</span>
+      </div>
+      {loading && <div className="text-xs text-gray-400">Loading...</div>}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      {!loading && keys !== null && keys.length === 0 && (
+        <div className="text-xs text-gray-400">No historical keys.</div>
+      )}
+      {!loading && keys && keys.length > 0 && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-400 uppercase">
+              <th className="text-left pb-1 pr-4 font-medium">Key ID</th>
+              <th className="text-left pb-1 pr-4 font-medium">Status</th>
+              <th className="text-left pb-1 pr-4 font-medium">Active from</th>
+              <th className="text-left pb-1 pr-4 font-medium">Retired at</th>
+              <th className="text-left pb-1 font-medium">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {keys.map(k => (
+              <tr key={k.id} className="hover:bg-white">
+                <td className="py-1.5 pr-4 font-mono text-gray-800">{k.key_id}</td>
+                <td className="py-1.5 pr-4">
+                  {k.status === 'retired' ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
+                      <Clock size={10} /> retired
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-red-100 rounded text-red-700">
+                      <XCircle size={10} /> revoked
+                    </span>
+                  )}
+                </td>
+                <td className="py-1.5 pr-4 text-gray-500">{ts(k.created_at)}</td>
+                <td className="py-1.5 pr-4 text-gray-500">{ts(k.retired_at)}</td>
+                <td className="py-1.5">
+                  {k.status === 'retired' && (
+                    <button
+                      onClick={() => void handleRevoke(k)}
+                      disabled={revoking === k.id}
+                      title="Emergency revoke: packages signed with this key will fail verification"
+                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500 text-white rounded text-[11px] hover:bg-red-600 disabled:opacity-50"
+                    >
+                      <ShieldOff size={10} /> Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ── Keychain modal ────────────────────────────────────────────────
 
 function KeychainModal({ response, onClose }: { response: ActivateResponse; onClose: () => void }) {
@@ -92,6 +240,14 @@ function KeychainModal({ response, onClose }: { response: ActivateResponse; onCl
           }`}>
             {isGenerated ? 'Server Generated' : 'Key Uploaded'}
           </span>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs text-gray-500 uppercase font-semibold mb-1">Key ID (Fingerprint)</label>
+          <div className="flex items-center gap-2">
+            <code className="text-sm bg-gray-100 border border-gray-200 rounded px-2 py-1 text-gray-800">{response.certificate.key_id}</code>
+            <CopyButton text={response.certificate.key_id} label="Copy ID" className="text-xs text-gray-500 hover:text-gray-700" />
+          </div>
         </div>
 
         {isGenerated ? (
@@ -806,6 +962,90 @@ function ProtoExpandableRow({
   );
 }
 
+// ── Rotate key modal ──────────────────────────────────────────────
+
+function RotateKeyModal({ mfr, onClose, onDone }: { mfr: Manufacturer; onClose: () => void; onDone: (res: ActivateResponse) => void }) {
+  const [useOwnKey, setUseOwnKey] = useState(false);
+  const [publicKey, setPublicKey] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await mfrApi.renewKey(mfr.id, useOwnKey && publicKey.trim() ? publicKey.trim() : undefined);
+      onDone(res);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl p-6 max-w-lg w-full mx-4">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <Key size={20} className="text-blue-500" /> Rotate Key — {mfr.name}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+        </div>
+
+        {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 mb-4">{error}</div>}
+
+        <div className="mb-4 text-sm text-gray-600">
+          <p>Rotating the key will instantly invalidate the current public key for signing any <strong>NEW</strong> packages.</p>
+          <p className="mt-2">Packages signed with the old key will still verify successfully using the key history.</p>
+        </div>
+
+        <div className="border border-gray-200 rounded-lg p-3 mb-4">
+          <div className="flex items-center gap-3 mb-2">
+            <label className="text-sm font-medium text-gray-700">New Signing Key</label>
+            <div className="flex bg-gray-100 rounded-lg p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setUseOwnKey(false)}
+                className={`px-3 py-1 rounded-md transition-all ${!useOwnKey ? 'bg-white shadow text-gray-900 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+              >Generate for me</button>
+              <button
+                type="button"
+                onClick={() => setUseOwnKey(true)}
+                className={`px-3 py-1 rounded-md transition-all ${useOwnKey ? 'bg-white shadow text-gray-900 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+              >Use my own key</button>
+            </div>
+          </div>
+          {useOwnKey ? (
+            <div>
+              <input
+                type="text"
+                value={publicKey}
+                onChange={e => setPublicKey(e.target.value)}
+                placeholder="Base64-encoded Ed25519 public key (32 bytes)"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">The platform will generate a new Ed25519 keypair and display the private key once.</p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} disabled={loading} className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+          <button
+            onClick={() => void handleSubmit()}
+            disabled={loading || (useOwnKey && !publicKey.trim())}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? 'Rotating...' : 'Rotate Key'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────
 
 export function MfrService() {
@@ -818,6 +1058,7 @@ export function MfrService() {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [resumeMfr, setResumeMfr] = useState<Manufacturer | null>(null);
+  const [rotateMfr, setRotateMfr] = useState<Manufacturer | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -898,6 +1139,17 @@ export function MfrService() {
           resumeMfr={resumeMfr ?? undefined}
         />
       )}
+      {rotateMfr && (
+        <RotateKeyModal
+          mfr={rotateMfr}
+          onClose={() => setRotateMfr(null)}
+          onDone={(res) => {
+            setRotateMfr(null);
+            setActivateResult(res);
+            void loadData();
+          }}
+        />
+      )}
 
       <div className="flex items-start justify-between">
         <div>
@@ -948,62 +1200,81 @@ export function MfrService() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
             <tr>
-              {['Name', 'Status', 'Verified', 'Packages', 'Actions'].map(h => (
+              {['Name', 'Status', 'Key ID', 'Key Expires', 'Packages', 'Actions'].map(h => (
                 <th key={h} className="px-4 py-2 text-left font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {manufacturers.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No manufacturers registered</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No manufacturers registered</td></tr>
             )}
             {manufacturers.map(mfr => {
               const pkgCount = packages.filter(p => p.mfr_id === mfr.id).length;
               const isSelected = selectedMfr?.id === mfr.id;
               return (
-                <tr
-                  key={mfr.id}
-                  className={`hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`}
-                  onClick={() => setSelectedMfr(isSelected ? null : mfr)}
-                >
-                  <td className="px-4 py-3 font-mono font-medium text-gray-900">{mfr.name}</td>
-                  <td className="px-4 py-3"><StatusBadge status={mfr.status} /></td>
-                  <td className="px-4 py-3 text-gray-500">{mfr.verified_at ? ts(mfr.verified_at) : '—'}</td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center gap-1 text-gray-600">
-                      <Package size={12} /> {pkgCount}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                    <div className="flex gap-1">
-                      {mfr.status === 'pending' && (
+                <>
+                  <tr
+                    key={mfr.id}
+                    className={`hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`}
+                    onClick={() => setSelectedMfr(isSelected ? null : mfr)}
+                  >
+                    <td className="px-4 py-3 font-mono font-medium text-gray-900">{mfr.name}</td>
+                    <td className="px-4 py-3"><StatusBadge status={mfr.status} /></td>
+                    <td className="px-4 py-3 text-gray-500 font-mono text-[11px] truncate max-w-[120px]" title={mfr.key_id}>{mfr.key_id || '—'}</td>
+                    <td className="px-4 py-3">
+                      <KeyExpiryBadge expiresAt={mfr.key_expires_at} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1 text-gray-600">
+                        <Package size={12} /> {pkgCount}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                      <div className="flex gap-1">
+                        {mfr.status === 'pending' && (
+                          <button
+                            onClick={() => setResumeMfr(mfr)}
+                            className="px-2 py-1 text-xs bg-gray-800 text-white rounded hover:bg-gray-700"
+                          >Continue</button>
+                        )}
+                        {mfr.status === 'active' && (
+                          <>
+                            <button
+                              onClick={() => setRotateMfr(mfr)}
+                              disabled={actionLoading === mfr.id}
+                              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                            >Rotate Key</button>
+                            <button
+                              onClick={() => void handleSuspend(mfr)}
+                              disabled={actionLoading === mfr.id}
+                              className="px-2 py-1 text-xs bg-orange-500 text-white rounded hover:bg-orange-600 disabled:opacity-50"
+                            >Suspend</button>
+                          </>
+                        )}
+                        {mfr.status === 'suspended' && (
+                          <button
+                            onClick={() => void handleReinstate(mfr)}
+                            disabled={actionLoading === mfr.id}
+                            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                          >Reinstate</button>
+                        )}
                         <button
-                          onClick={() => setResumeMfr(mfr)}
-                          className="px-2 py-1 text-xs bg-gray-800 text-white rounded hover:bg-gray-700"
-                        >Continue</button>
-                      )}
-                      {mfr.status === 'active' && (
-                        <button
-                          onClick={() => void handleSuspend(mfr)}
+                          onClick={() => void handleDelete(mfr)}
                           disabled={actionLoading === mfr.id}
-                          className="px-2 py-1 text-xs bg-orange-500 text-white rounded hover:bg-orange-600 disabled:opacity-50"
-                        >Suspend</button>
-                      )}
-                      {mfr.status === 'suspended' && (
-                        <button
-                          onClick={() => void handleReinstate(mfr)}
-                          disabled={actionLoading === mfr.id}
-                          className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-                        >Reinstate</button>
-                      )}
-                      <button
-                        onClick={() => void handleDelete(mfr)}
-                        disabled={actionLoading === mfr.id}
-                        className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50"
-                      >Delete</button>
-                    </div>
-                  </td>
-                </tr>
+                          className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600 disabled:opacity-50"
+                        >Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                  {isSelected && (
+                    <tr key={`${mfr.id}-history`}>
+                      <td colSpan={6} className="p-0">
+                        <KeyHistoryPanel mfr={mfr} onRevoked={() => void loadData()} />
+                      </td>
+                    </tr>
+                  )}
+                </>
               );
             })}
           </tbody>

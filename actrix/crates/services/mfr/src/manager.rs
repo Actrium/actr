@@ -1,6 +1,6 @@
 use crate::{
     MfrError, crypto, github,
-    model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus},
+    model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus, PublishNonce},
     reserved,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,7 @@ pub struct ActivateResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MfrCertificate {
+    pub key_id: String,
     pub mfr_name: String,
     pub mfr_pubkey: String,
     pub issued_at: i64,
@@ -49,15 +50,68 @@ pub struct PublishRequest {
     /// Proto files JSON for filing/audit (optional)
     #[serde(default)]
     pub proto_files: Option<serde_json::Value>,
+    /// Challenge-Response nonce (base64-encoded 32 bytes, obtained from POST /mfr/pkg/nonce)
+    #[serde(default)]
+    pub nonce: Option<String>,
+    /// Ed25519 signature over the request authorization payload:
+    /// ACTR-PUBLISH-V1 + manufacturer + method + path + hex(nonce) + sha256(signable_body)
+    #[serde(default)]
+    pub nonce_sig: Option<String>,
+}
+
+/// Request body for POST /mfr/pkg/nonce
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NonceRequest {
+    pub manufacturer: String,
 }
 
 fn default_target() -> String {
     "wasm32-wasip1".to_string()
 }
 
+#[derive(Serialize)]
+struct SignablePublishBody<'a> {
+    manufacturer: &'a str,
+    name: &'a str,
+    version: &'a str,
+    target: &'a str,
+    manifest: &'a str,
+    signature: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proto_files: Option<&'a serde_json::Value>,
+    nonce: &'a str,
+}
+
+fn signable_publish_body_bytes(req: &PublishRequest, nonce: &str) -> Result<Vec<u8>, MfrError> {
+    serde_json::to_vec(&SignablePublishBody {
+        manufacturer: &req.manufacturer,
+        name: &req.name,
+        version: &req.version,
+        target: &req.target,
+        manifest: &req.manifest,
+        signature: &req.signature,
+        proto_files: req.proto_files.as_ref(),
+        nonce,
+    })
+    .map_err(|e| {
+        MfrError::InvalidRequest(format!("failed to serialize signable publish body: {e}"))
+    })
+}
+
+fn build_publish_auth_payload(
+    manufacturer: &str,
+    nonce_hex: &str,
+    body_sha256_hex: &str,
+) -> String {
+    format!(
+        "ACTR-PUBLISH-V1\nmanufacturer={manufacturer}\nmethod=POST\npath=/mfr/pkg/publish\nnonce={nonce_hex}\nbody_sha256={body_sha256_hex}"
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MfrPublicInfo {
     pub id: i64,
+    pub key_id: String,
     pub name: String,
     pub public_key: String,
     pub certificate: MfrCertificate,
@@ -67,6 +121,9 @@ pub struct MfrManager {
     pool: SqlitePool,
     /// Domain of this actrix node, used as the verification filename.
     domain: String,
+    /// How long (seconds) to retain expired/used nonce records for auditing.
+    /// Default: 86400 (24 hours).
+    nonce_retain_secs: i64,
 }
 
 impl MfrManager {
@@ -74,6 +131,7 @@ impl MfrManager {
         Self {
             pool,
             domain: String::new(),
+            nonce_retain_secs: 86400, // 24 hours
         }
     }
 
@@ -82,8 +140,52 @@ impl MfrManager {
         self
     }
 
+    /// Set nonce retention duration in seconds (for cleanup of expired/used nonces).
+    pub fn with_nonce_retain_secs(mut self, secs: i64) -> Self {
+        self.nonce_retain_secs = secs;
+        self
+    }
+
     pub fn domain(&self) -> &str {
         &self.domain
+    }
+
+    /// Access the underlying database pool (used by tests for nonce setup).
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    // ========== Publish Nonce Challenge-Response ==========
+
+    /// Request a one-time nonce for publish authentication.
+    ///
+    /// Also performs lazy cleanup of old nonce records.
+    pub async fn request_nonce(&self, manufacturer: &str) -> Result<Vec<u8>, MfrError> {
+        // Validate manufacturer exists and is active
+        let mfr = Manufacturer::get_by_name(&self.pool, manufacturer)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+        if mfr.status != MfrStatus::Active {
+            return Err(MfrError::InvalidStatus(format!(
+                "MFR '{}' is not active",
+                manufacturer
+            )));
+        }
+
+        // Lazy cleanup of old nonces
+        let cleaned = PublishNonce::cleanup(&self.pool, self.nonce_retain_secs).await?;
+        if cleaned > 0 {
+            platform::recording::debug!("cleaned up {} expired publish nonces", cleaned);
+        }
+
+        // Create new nonce
+        let nonce = PublishNonce::create(&self.pool, mfr.id).await?;
+        platform::recording::info!(
+            "publish nonce issued for manufacturer '{}' (mfr_id={})",
+            manufacturer,
+            mfr.id
+        );
+        Ok(nonce)
     }
 
     /// Step 1: Apply for manufacturer registration via GitHub identity.
@@ -199,6 +301,7 @@ impl MfrManager {
             key_source,
             private_key,
             certificate: MfrCertificate {
+                key_id: mfr.key_id.clone(),
                 mfr_name: mfr.name.clone(),
                 mfr_pubkey: mfr.public_key.clone(),
                 issued_at: mfr.verified_at.unwrap_or(mfr.created_at),
@@ -241,6 +344,7 @@ impl MfrManager {
         }
         let expires_at = mfr.key_expires_at.ok_or(MfrError::CertificateExpired)?;
         let cert = MfrCertificate {
+            key_id: mfr.key_id.clone(),
             mfr_name: mfr.name.clone(),
             mfr_pubkey: mfr.public_key.clone(),
             issued_at: mfr.verified_at.unwrap_or(mfr.created_at),
@@ -248,9 +352,93 @@ impl MfrManager {
         };
         Ok(MfrPublicInfo {
             id: mfr.id,
+            key_id: mfr.key_id.clone(),
             name: mfr.name,
             public_key: mfr.public_key,
             certificate: cert,
+        })
+    }
+
+    /// Resolve a specific historical (or active) key by exact key_id.
+    pub async fn resolve_key_by_id(
+        &self,
+        name: &str,
+        key_id: &str,
+    ) -> Result<MfrPublicInfo, MfrError> {
+        let mfr = Manufacturer::get_by_name(&self.pool, name)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+
+        // Is it the current key?
+        if mfr.key_id == key_id {
+            return self.resolve_by_name(name).await;
+        }
+
+        use crate::model::key_history::MfrKeyHistory;
+        let history = MfrKeyHistory::get_by_key_id(&self.pool, mfr.id, key_id)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+
+        let cert = MfrCertificate {
+            key_id: history.key_id.clone(),
+            mfr_name: mfr.name.clone(),
+            mfr_pubkey: history.public_key.clone(),
+            issued_at: history.created_at,
+            expires_at: history.retired_at, // Old keys technically "expired" at retirement time
+        };
+
+        Ok(MfrPublicInfo {
+            id: mfr.id,
+            key_id: history.key_id.clone(),
+            name: mfr.name,
+            public_key: history.public_key,
+            certificate: cert,
+        })
+    }
+
+    /// Admin: Rotate the signing key for a manufacturer.
+    pub async fn renew_key(
+        &self,
+        mfr_id: i64,
+        user_public_key: Option<&str>,
+    ) -> Result<ActivateResponse, MfrError> {
+        let mut mfr = Manufacturer::get(&self.pool, mfr_id)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+
+        let (key_source, private_key, public_key) = match user_public_key {
+            Some(pk) => {
+                crypto::validate_public_key(pk)?;
+                (KeySource::Uploaded, None, pk.to_string())
+            }
+            None => {
+                let (priv_key, pub_key) = crypto::generate_keypair();
+                (KeySource::Generated, Some(priv_key), pub_key)
+            }
+        };
+
+        mfr.renew_key(&self.pool, public_key).await?;
+
+        let expires_at = mfr.key_expires_at.ok_or(MfrError::CertificateExpired)?;
+
+        platform::recording::info!(
+            "MFR key renewed: mfr_id={}, name={}, new_key_id={}, key_source={:?}",
+            mfr_id,
+            mfr.name,
+            mfr.key_id,
+            key_source
+        );
+
+        Ok(ActivateResponse {
+            key_source,
+            private_key,
+            certificate: MfrCertificate {
+                key_id: mfr.key_id.clone(),
+                mfr_name: mfr.name.clone(),
+                mfr_pubkey: mfr.public_key.clone(),
+                issued_at: mfr.updated_at.unwrap_or(mfr.created_at),
+                expires_at,
+            },
         })
     }
 
@@ -272,11 +460,134 @@ impl MfrManager {
             return Err(MfrError::CertificateExpired);
         }
 
-        // Verify signature: MFR's Ed25519 private key signed the manifest bytes
+        // --- Challenge-Response nonce verification ---
+        // Flow: find_pending → verify nonce_sig over the full signable request body
+        //       → verify manifest_sig → atomic consume.
+        let nonce_entry = match (&req.nonce, &req.nonce_sig) {
+            (Some(nonce_b64), Some(nonce_sig_b64)) => {
+                use base64::Engine as _;
+                use sha2::{Digest, Sha256};
+
+                // Decode nonce
+                let nonce_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(nonce_b64)
+                    .map_err(|_| MfrError::InvalidRequest("invalid nonce base64".to_string()))?;
+
+                // Step 1: Read-only lookup — does NOT consume the nonce
+                let entry = PublishNonce::find_pending(&self.pool, &nonce_bytes).await?;
+
+                // Ensure nonce was issued for this manufacturer
+                if entry.mfr_id != mfr.id {
+                    platform::recording::warn!(
+                        "publish nonce mfr_id mismatch: nonce={}, request={}",
+                        entry.mfr_id,
+                        mfr.id
+                    );
+                    return Err(MfrError::Unauthorized);
+                }
+
+                // Step 2: Verify nonce signature (before consuming).
+                // The signature authorizes this exact publish request body (excluding nonce_sig).
+                let body_bytes = signable_publish_body_bytes(&req, nonce_b64)?;
+                let body_sha256 = hex::encode(Sha256::digest(&body_bytes));
+                let nonce_hex = hex::encode(&nonce_bytes);
+                let payload =
+                    build_publish_auth_payload(&req.manufacturer, &nonce_hex, &body_sha256);
+
+                let valid =
+                    crypto::verify_signature(payload.as_bytes(), nonce_sig_b64, &mfr.public_key)?;
+                if !valid {
+                    platform::recording::warn!(
+                        "publish nonce signature invalid: manufacturer={}",
+                        req.manufacturer
+                    );
+                    return Err(MfrError::Unauthorized);
+                }
+
+                entry
+            }
+            _ => {
+                platform::recording::warn!(
+                    "publish request missing nonce/nonce_sig: manufacturer={}",
+                    req.manufacturer
+                );
+                return Err(MfrError::Unauthorized);
+            }
+        };
+
+        // Step 3: Verify manifest signature
         let valid =
             crypto::verify_signature(req.manifest.as_bytes(), &req.signature, &mfr.public_key)?;
         if !valid {
             return Err(MfrError::InvalidSignature);
+        }
+
+        // Step 4: Atomically consume nonce (only after both signatures verified)
+        PublishNonce::consume(&self.pool, nonce_entry.id).await?;
+        platform::recording::info!(
+            "publish nonce verified and consumed: manufacturer={}",
+            req.manufacturer
+        );
+
+        // Step 5: Verify outer fields match manifest content (parse as TOML)
+        let manifest_toml: toml::Value = toml::from_str(&req.manifest)
+            .map_err(|e| MfrError::InvalidRequest(format!("manifest is not valid TOML: {}", e)))?;
+
+        // Check manufacturer
+        let m = manifest_toml
+            .get("manufacturer")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MfrError::InvalidRequest("manifest missing required field 'manufacturer'".into())
+            })?;
+        if m != req.manufacturer {
+            return Err(MfrError::InvalidRequest(format!(
+                "manifest manufacturer '{}' != request '{}'",
+                m, req.manufacturer
+            )));
+        }
+
+        // Check name
+        let n = manifest_toml
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MfrError::InvalidRequest("manifest missing required field 'name'".into())
+            })?;
+        if n != req.name {
+            return Err(MfrError::InvalidRequest(format!(
+                "manifest name '{}' != request '{}'",
+                n, req.name
+            )));
+        }
+
+        // Check version
+        let v = manifest_toml
+            .get("version")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MfrError::InvalidRequest("manifest missing required field 'version'".into())
+            })?;
+        if v != req.version {
+            return Err(MfrError::InvalidRequest(format!(
+                "manifest version '{}' != request '{}'",
+                v, req.version
+            )));
+        }
+
+        // Check target (nested under [binary])
+        let t = manifest_toml
+            .get("binary")
+            .and_then(|b| b.get("target"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                MfrError::InvalidRequest("manifest missing required field 'binary.target'".into())
+            })?;
+        if t != req.target {
+            return Err(MfrError::InvalidRequest(format!(
+                "manifest binary.target '{}' != request '{}'",
+                t, req.target
+            )));
         }
 
         // Serialize proto_files JSON to string for storage
@@ -379,6 +690,23 @@ impl MfrManager {
             mfr_id,
             mfr.name
         );
+        Ok(())
+    }
+
+    pub async fn admin_list_keys(
+        &self,
+        mfr_id: i64,
+    ) -> Result<Vec<crate::model::key_history::MfrKeyHistory>, MfrError> {
+        // ensure MFR exists
+        let _ = Manufacturer::get(&self.pool, mfr_id)
+            .await?
+            .ok_or(MfrError::NotFound)?;
+        crate::model::key_history::MfrKeyHistory::list_by_mfr(&self.pool, mfr_id).await
+    }
+
+    pub async fn admin_revoke_historical_key(&self, history_id: i64) -> Result<(), MfrError> {
+        crate::model::key_history::MfrKeyHistory::revoke(&self.pool, history_id).await?;
+        platform::recording::warn!("MFR historical key revoked: history_id={}", history_id);
         Ok(())
     }
 

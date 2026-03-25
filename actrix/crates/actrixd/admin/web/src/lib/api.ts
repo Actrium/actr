@@ -324,6 +324,7 @@ export interface Manufacturer {
   id: number;
   name: string;
   public_key: string;
+  key_id: string;
   contact?: string;
   status: 'pending' | 'active' | 'suspended' | 'revoked';
   created_at: number;
@@ -331,6 +332,7 @@ export interface Manufacturer {
   verified_at?: number;
   suspended_at?: number;
   revoked_at?: number;
+  key_expires_at?: number;
 }
 
 export interface ActrPackage {
@@ -350,10 +352,21 @@ export interface ActrPackage {
 }
 
 export interface MfrCertificate {
+  key_id: string;
   mfr_name: string;
   mfr_pubkey: string;
   issued_at: number;
   expires_at: number;
+}
+
+export interface MfrKeyHistory {
+  id: number;
+  mfr_id: number;
+  key_id: string;
+  public_key: string;
+  status: 'retired' | 'revoked';
+  created_at: number;
+  retired_at: number;
 }
 
 export type KeySource = 'generated' | 'uploaded';
@@ -409,6 +422,12 @@ export const mfrApi = {
   suspend: (id: number) =>
     request<void>(`/mfr/admin/${id}/suspend`, { method: 'POST' }),
 
+  renewKey: (id: number, publicKey?: string) =>
+    request<ActivateResponse>(`/mfr/admin/${id}/renew`, {
+      method: 'POST',
+      body: publicKey ? JSON.stringify({ public_key: publicKey }) : undefined,
+    }),
+
   reinstate: (id: number) =>
     request<void>(`/mfr/admin/${id}/reinstate`, { method: 'POST' }),
 
@@ -422,4 +441,10 @@ export const mfrApi = {
 
   revokePackage: (id: number) =>
     request<void>(`/mfr/pkg/${id}/revoke`, { method: 'POST' }),
+
+  listKeys: (mfrId: number) =>
+    request<MfrKeyHistory[]>(`/mfr/admin/${mfrId}/keys`),
+
+  revokeHistoricalKey: (historyId: number) =>
+    request<void>(`/mfr/admin/keys/${historyId}/revoke`, { method: 'POST' }),
 };

@@ -11,6 +11,8 @@ pub enum MfrError {
     Database(#[from] sqlx::Error),
     #[error("not found")]
     NotFound,
+    #[error("key revoked: {0}")]
+    KeyRevoked(String),
     #[error("already exists: {0}")]
     AlreadyExists(String),
     #[error("reserved name: {0}")]
@@ -35,6 +37,8 @@ pub enum MfrError {
     Unauthorized,
     #[error("certificate expired: signing key has expired, please renew")]
     CertificateExpired,
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 impl IntoResponse for MfrError {
@@ -44,7 +48,7 @@ impl IntoResponse for MfrError {
             MfrError::AlreadyExists(_) | MfrError::PackageAlreadyPublished => {
                 (StatusCode::CONFLICT, self.to_string())
             }
-            MfrError::ReservedName(_) | MfrError::InvalidName(_) => {
+            MfrError::ReservedName(_) | MfrError::InvalidName(_) | MfrError::InvalidRequest(_) => {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
             MfrError::InvalidStatus(_) => (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()),

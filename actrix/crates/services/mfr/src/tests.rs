@@ -6,9 +6,22 @@ use sqlx::SqlitePool;
 use crate::{
     MfrError, crypto,
     manager::{KeySource, MfrManager, PublishRequest, lookup_package},
-    model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus},
+    model::{ActrPackage, GitHubRepoChallenge, Manufacturer, MfrStatus, PkgStatus, PublishNonce},
     reserved::validate_github_login,
 };
+
+#[derive(serde::Serialize)]
+struct SignablePublishBody<'a> {
+    manufacturer: &'a str,
+    name: &'a str,
+    version: &'a str,
+    target: &'a str,
+    manifest: &'a str,
+    signature: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proto_files: Option<&'a serde_json::Value>,
+    nonce: &'a str,
+}
 
 // ─── 测试辅助 ────────────────────────────────────────────────────────────────
 
@@ -23,6 +36,7 @@ async fn setup_test_pool() -> SqlitePool {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             public_key TEXT NOT NULL DEFAULT '',
+            key_id TEXT NOT NULL DEFAULT '',
             contact TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at INTEGER NOT NULL,
@@ -61,6 +75,7 @@ async fn setup_test_pool() -> SqlitePool {
             version TEXT NOT NULL,
             type_str TEXT NOT NULL,
             target TEXT NOT NULL,
+            key_id INTEGER NOT NULL DEFAULT 1,
             manifest TEXT NOT NULL,
             signature TEXT NOT NULL,
             proto_files TEXT,
@@ -74,7 +89,93 @@ async fn setup_test_pool() -> SqlitePool {
     .await
     .expect("failed to create mfr_package table");
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mfr_key_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mfr_id INTEGER NOT NULL REFERENCES mfr(id),
+            key_id TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            fingerprint TEXT,
+            status TEXT NOT NULL DEFAULT 'Active',
+            created_at INTEGER NOT NULL,
+            retired_at INTEGER NOT NULL DEFAULT 0,
+            revoked_at INTEGER
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to create mfr_key_history table");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mfr_publish_nonce (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            mfr_id     INTEGER NOT NULL REFERENCES mfr(id),
+            nonce      BLOB    NOT NULL UNIQUE,
+            status     TEXT    NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("failed to create mfr_publish_nonce table");
+
     pool
+}
+
+/// Generate a valid nonce + nonce_sig for publish requests in tests.
+///
+/// Creates a real nonce in the DB, then signs the challenge payload with the given key.
+/// Returns (nonce_b64, nonce_sig_b64) ready to use in PublishRequest.
+async fn make_publish_nonce(
+    pool: &SqlitePool,
+    mfr_id: i64,
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
+    manifest: &str,
+    signature: &str,
+    proto_files: Option<&serde_json::Value>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> (String, String) {
+    use base64::Engine as _;
+    use ed25519_dalek::Signer;
+    use sha2::{Digest, Sha256};
+
+    let nonce_bytes = PublishNonce::create(pool, mfr_id)
+        .await
+        .expect("failed to create test nonce");
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(&nonce_bytes);
+
+    let signable_body = SignablePublishBody {
+        manufacturer,
+        name,
+        version,
+        target,
+        manifest,
+        signature,
+        proto_files,
+        nonce: &nonce_b64,
+    };
+    let signable_body_bytes =
+        serde_json::to_vec(&signable_body).expect("failed to serialize signable publish body");
+    let body_hash = hex::encode(Sha256::digest(&signable_body_bytes));
+    let nonce_hex = hex::encode(&nonce_bytes);
+    let payload = format!(
+        "ACTR-PUBLISH-V1\nmanufacturer={}\nmethod=POST\npath=/mfr/pkg/publish\nnonce={}\nbody_sha256={}",
+        manufacturer, nonce_hex, body_hash
+    );
+    let sig = signing_key.sign(payload.as_bytes());
+    let nonce_sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    (nonce_b64, nonce_sig_b64)
+}
+
+fn test_manifest(manufacturer: &str, name: &str, version: &str, target: &str) -> String {
+    format!(
+        "manufacturer = \"{manufacturer}\"\nname = \"{name}\"\nversion = \"{version}\"\n\n[binary]\npath = \"bin/actor.wasm\"\ntarget = \"{target}\"\nhash = \"sha256:abc123\"\n"
+    )
 }
 
 // ─── reserved.rs tests ──────────────────────────────────────────────────
@@ -491,9 +592,15 @@ async fn test_challenge_token_unique() {
 
 #[tokio::test]
 async fn test_package_publish_and_get() {
+    use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
     let pool = setup_test_pool().await;
     let mut mfr = Manufacturer::create(&pool, "pkgco", None).await.unwrap();
-    mfr.activate(&pool, "pubkey".to_string()).await.unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+    mfr.activate(&pool, pub_b64).await.unwrap();
 
     let pkg = ActrPackage::publish(
         &pool,
@@ -855,22 +962,46 @@ async fn test_manager_admin_delete() {
 #[tokio::test]
 async fn test_manager_publish_invalid_signature() {
     use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
 
     let pool = setup_test_pool().await;
-    let manager = MfrManager::new(pool);
-    let (mfr, _) = manager.apply("sigco", None).await.unwrap();
-    manager.admin_approve(mfr.id, None).await.unwrap();
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
 
+    let manager = MfrManager::new(pool.clone());
+    let (mfr, _) = manager.apply("sigco", None).await.unwrap();
+    manager.admin_approve(mfr.id, Some(&pub_b64)).await.unwrap();
+
+    let manifest = test_manifest("sigco", "svc", "1.0.0", "wasm32-wasip1");
     let bad_sig = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+
+    // Valid nonce but bad manifest signature
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "sigco",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &bad_sig,
+        None,
+        &key,
+    )
+    .await;
+
     let result = manager
         .publish_package(PublishRequest {
             manufacturer: "sigco".to_string(),
             name: "svc".to_string(),
             version: "1.0.0".to_string(),
             target: "wasm32-wasip1".to_string(),
-            manifest: "manifest content".to_string(),
+            manifest,
             signature: bad_sig,
             proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
         })
         .await;
     assert!(
@@ -897,9 +1028,23 @@ async fn test_manager_publish_valid_signature() {
     let mut mfr = Manufacturer::create(&pool, "validpub", None).await.unwrap();
     mfr.activate(&pool, pub_b64).await.unwrap();
 
-    let manifest = "type = \"validpub:client:1.0.0\"\nbinary_hash = \"sha256:abc\"";
+    let manifest = test_manifest("validpub", "client", "1.0.0", "wasm32-wasip1");
     let sig = signing_key.sign(manifest.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "validpub",
+        "client",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &sig_b64,
+        None,
+        &signing_key,
+    )
+    .await;
 
     let manager = MfrManager::new(pool);
     let pkg = manager
@@ -908,9 +1053,11 @@ async fn test_manager_publish_valid_signature() {
             name: "client".to_string(),
             version: "1.0.0".to_string(),
             target: "wasm32-wasip1".to_string(),
-            manifest: manifest.to_string(),
+            manifest,
             signature: sig_b64,
             proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
         })
         .await
         .unwrap();
@@ -936,6 +1083,8 @@ async fn test_manager_publish_inactive_mfr() {
             manifest: "m".to_string(),
             signature: "s".to_string(),
             proto_files: None,
+            nonce: None,
+            nonce_sig: None,
         })
         .await;
     assert!(
@@ -979,9 +1128,23 @@ async fn test_manager_get_and_revoke_package() {
     let mut mfr = Manufacturer::create(&pool, "revmgr", None).await.unwrap();
     mfr.activate(&pool, pub_b64).await.unwrap();
 
-    let manifest = "type = \"revmgr:svc:1.0.0\"";
+    let manifest = test_manifest("revmgr", "svc", "1.0.0", "wasm32-wasip1");
     let sig = key.sign(manifest.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "revmgr",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &sig_b64,
+        None,
+        &key,
+    )
+    .await;
 
     let manager = MfrManager::new(pool);
     let pkg = manager
@@ -990,9 +1153,11 @@ async fn test_manager_get_and_revoke_package() {
             name: "svc".to_string(),
             version: "1.0.0".to_string(),
             target: "wasm32-wasip1".to_string(),
-            manifest: manifest.to_string(),
+            manifest,
             signature: sig_b64,
             proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
         })
         .await
         .unwrap();
@@ -1036,12 +1201,25 @@ async fn test_manager_list_packages_by_mfr() {
     let mut mfr = Manufacturer::create(&pool, "listmgr", None).await.unwrap();
     mfr.activate(&pool, pub_b64).await.unwrap();
 
-    let manager = MfrManager::new(pool);
+    let manager = MfrManager::new(pool.clone());
 
     for pkg_name in &["alpha", "beta"] {
-        let manifest = format!("type = \"listmgr:{pkg_name}:1.0.0\"");
+        let manifest = test_manifest("listmgr", pkg_name, "1.0.0", "wasm32-wasip1");
         let sig = key.sign(manifest.as_bytes());
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+            &pool,
+            mfr.id,
+            "listmgr",
+            pkg_name,
+            "1.0.0",
+            "wasm32-wasip1",
+            &manifest,
+            &sig_b64,
+            None,
+            &key,
+        )
+        .await;
         manager
             .publish_package(PublishRequest {
                 manufacturer: "listmgr".to_string(),
@@ -1051,6 +1229,8 @@ async fn test_manager_list_packages_by_mfr() {
                 manifest,
                 signature: sig_b64,
                 proto_files: None,
+                nonce: Some(nonce_b64),
+                nonce_sig: Some(nonce_sig_b64),
             })
             .await
             .unwrap();
@@ -1192,9 +1372,23 @@ async fn test_manager_uploaded_key_can_publish() {
         .unwrap();
 
     // Now sign and publish using the user's private key
-    let manifest = "type = \"pubupload:widget:1.0.0\"\nbinary_hash = \"sha256:def\"";
+    let manifest = test_manifest("pubupload", "widget", "1.0.0", "wasm32-wasip1");
     let sig = user_key.sign(manifest.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        manager.pool(),
+        mfr.id,
+        "pubupload",
+        "widget",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &sig_b64,
+        None,
+        &user_key,
+    )
+    .await;
 
     let pkg = manager
         .publish_package(PublishRequest {
@@ -1202,13 +1396,710 @@ async fn test_manager_uploaded_key_can_publish() {
             name: "widget".to_string(),
             version: "1.0.0".to_string(),
             target: "wasm32-wasip1".to_string(),
-            manifest: manifest.to_string(),
+            manifest,
             signature: sig_b64,
             proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
         })
         .await
         .unwrap();
 
     assert_eq!(pkg.type_str, "pubupload:widget:1.0.0");
     assert_eq!(pkg.status, PkgStatus::Active);
+}
+
+// ─── Key rotation + publish/verify tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_key_rotation_then_publish_with_new_key() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool.clone());
+
+    // Step 1: Apply and approve with initial key (key_A)
+    let (mfr, _) = manager.apply("rotpub", None).await.unwrap();
+    let key_a = SigningKey::generate(&mut OsRng);
+    let pub_a = base64::engine::general_purpose::STANDARD.encode(key_a.verifying_key().to_bytes());
+    manager.admin_approve(mfr.id, Some(&pub_a)).await.unwrap();
+
+    // Step 2: Publish with key_A — should succeed
+    let manifest_a = test_manifest("rotpub", "svc", "1.0.0", "wasm32-wasip1");
+    let sig_a = key_a.sign(manifest_a.as_bytes());
+    let sig_a_b64 = base64::engine::general_purpose::STANDARD.encode(sig_a.to_bytes());
+    let (nonce_a, nonce_sig_a) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "rotpub",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest_a,
+        &sig_a_b64,
+        None,
+        &key_a,
+    )
+    .await;
+    let pkg_a = manager
+        .publish_package(PublishRequest {
+            manufacturer: "rotpub".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: manifest_a,
+            signature: sig_a_b64,
+            proto_files: None,
+            nonce: Some(nonce_a),
+            nonce_sig: Some(nonce_sig_a),
+        })
+        .await
+        .unwrap();
+    assert_eq!(pkg_a.type_str, "rotpub:svc:1.0.0");
+
+    // Step 3: Rotate key → key_B
+    let key_b = SigningKey::generate(&mut OsRng);
+    let pub_b = base64::engine::general_purpose::STANDARD.encode(key_b.verifying_key().to_bytes());
+    manager.renew_key(mfr.id, Some(&pub_b)).await.unwrap();
+
+    // Step 4: Publish with key_B — should succeed (new version)
+    let manifest_b = test_manifest("rotpub", "svc", "2.0.0", "wasm32-wasip1");
+    let sig_b = key_b.sign(manifest_b.as_bytes());
+    let sig_b_b64 = base64::engine::general_purpose::STANDARD.encode(sig_b.to_bytes());
+    let (nonce_b, nonce_sig_b) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "rotpub",
+        "svc",
+        "2.0.0",
+        "wasm32-wasip1",
+        &manifest_b,
+        &sig_b_b64,
+        None,
+        &key_b,
+    )
+    .await;
+    let pkg_b = manager
+        .publish_package(PublishRequest {
+            manufacturer: "rotpub".to_string(),
+            name: "svc".to_string(),
+            version: "2.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: manifest_b,
+            signature: sig_b_b64,
+            proto_files: None,
+            nonce: Some(nonce_b),
+            nonce_sig: Some(nonce_sig_b),
+        })
+        .await
+        .unwrap();
+    assert_eq!(pkg_b.type_str, "rotpub:svc:2.0.0");
+
+    // Step 5: Publish with OLD key_A — should FAIL
+    // After key rotation, MFR's public_key is key_B. The nonce_sig signed by key_A
+    // won't verify against key_B → Unauthorized before reaching manifest sig check.
+    let manifest_c = test_manifest("rotpub", "svc", "3.0.0", "wasm32-wasip1");
+    let sig_c = key_a.sign(manifest_c.as_bytes());
+    let sig_c_b64 = base64::engine::general_purpose::STANDARD.encode(sig_c.to_bytes());
+    // Sign nonce with old key_a — verification will fail since MFR now uses key_b
+    let (nonce_c, nonce_sig_c) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "rotpub",
+        "svc",
+        "3.0.0",
+        "wasm32-wasip1",
+        &manifest_c,
+        &sig_c_b64,
+        None,
+        &key_a,
+    )
+    .await;
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "rotpub".to_string(),
+            name: "svc".to_string(),
+            version: "3.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: manifest_c,
+            signature: sig_c_b64,
+            proto_files: None,
+            nonce: Some(nonce_c),
+            nonce_sig: Some(nonce_sig_c),
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::Unauthorized)),
+        "old key should be rejected after rotation (nonce sig fails): {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_key_rotation_historical_key_resolved() {
+    use base64::Engine as _;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let manager = MfrManager::new(pool);
+
+    // Apply + approve with key_A
+    let (mfr, _) = manager.apply("histkey", None).await.unwrap();
+    let key_a = SigningKey::generate(&mut OsRng);
+    let pub_a = base64::engine::general_purpose::STANDARD.encode(key_a.verifying_key().to_bytes());
+    let resp_a = manager.admin_approve(mfr.id, Some(&pub_a)).await.unwrap();
+    let key_id_a = resp_a.certificate.key_id.clone();
+
+    // Rotate to key_B
+    let key_b = SigningKey::generate(&mut OsRng);
+    let pub_b = base64::engine::general_purpose::STANDARD.encode(key_b.verifying_key().to_bytes());
+    let resp_b = manager.renew_key(mfr.id, Some(&pub_b)).await.unwrap();
+    let key_id_b = resp_b.certificate.key_id.clone();
+
+    // Resolve current key (key_B)
+    let current = manager.resolve_by_name("histkey").await.unwrap();
+    assert_eq!(current.key_id, key_id_b);
+    assert_eq!(current.public_key, pub_b);
+
+    // Resolve old key (key_A) by key_id — should still work
+    let historical = manager
+        .resolve_key_by_id("histkey", &key_id_a)
+        .await
+        .unwrap();
+    assert_eq!(historical.key_id, key_id_a);
+    assert_eq!(historical.public_key, pub_a);
+
+    // Resolve non-existent key_id — should fail
+    let result = manager
+        .resolve_key_by_id("histkey", "mfr-nonexistent")
+        .await;
+    assert!(matches!(result, Err(MfrError::NotFound)));
+}
+
+// ─── Error path tests ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_publish_with_expired_key_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    // Create and activate manufacturer
+    let mut mfr = Manufacturer::create(&pool, "expiredco", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+
+    // Force key_expires_at to past (already expired)
+    sqlx::query("UPDATE mfr SET key_expires_at = ? WHERE id = ?")
+        .bind(1000i64) // Unix timestamp year ~1970
+        .bind(mfr.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let manifest = test_manifest("expiredco", "svc", "1.0.0", "wasm32-wasip1");
+    let sig = key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "expiredco".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest,
+            signature: sig_b64,
+            proto_files: None,
+            nonce: None,
+            nonce_sig: None,
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::CertificateExpired)),
+        "expired key should be rejected: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_with_wrong_key_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key_registered = SigningKey::generate(&mut OsRng);
+    let key_attacker = SigningKey::generate(&mut OsRng);
+    let pub_registered =
+        base64::engine::general_purpose::STANDARD.encode(key_registered.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "wrongkeyco", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_registered).await.unwrap();
+
+    // Attacker signs with their own key, not the registered one
+    let manifest = test_manifest("wrongkeyco", "svc", "1.0.0", "wasm32-wasip1");
+    let sig = key_attacker.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    // Attacker signs nonce with their key — nonce_sig won't verify against registered key
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "wrongkeyco",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &sig_b64,
+        None,
+        &key_attacker,
+    )
+    .await;
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "wrongkeyco".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest,
+            signature: sig_b64,
+            proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::Unauthorized)),
+        "wrong key should be rejected (nonce sig fails): {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_for_revoked_mfr_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "revokedmfr", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+    mfr.revoke(&pool).await.unwrap();
+
+    let manifest = test_manifest("revokedmfr", "svc", "1.0.0", "wasm32-wasip1");
+    let sig = key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "revokedmfr".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest,
+            signature: sig_b64,
+            proto_files: None,
+            nonce: None,
+            nonce_sig: None,
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::InvalidStatus(_))),
+        "revoked MFR should not be able to publish: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_for_suspended_mfr_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "suspendedmfr", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+    mfr.suspend(&pool).await.unwrap();
+
+    let manifest = test_manifest("suspendedmfr", "svc", "1.0.0", "wasm32-wasip1");
+    let sig = key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "suspendedmfr".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest,
+            signature: sig_b64,
+            proto_files: None,
+            nonce: None,
+            nonce_sig: None,
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::InvalidStatus(_))),
+        "suspended MFR should not be able to publish: {result:?}"
+    );
+}
+
+// ─── Multi-manufacturer / multi-package tests ────────────────────────────────
+
+#[tokio::test]
+async fn test_multi_manufacturer_independent_publish() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+
+    // Create two independent manufacturers with different keys
+    let key_alpha = SigningKey::generate(&mut OsRng);
+    let key_beta = SigningKey::generate(&mut OsRng);
+    let pub_alpha =
+        base64::engine::general_purpose::STANDARD.encode(key_alpha.verifying_key().to_bytes());
+    let pub_beta =
+        base64::engine::general_purpose::STANDARD.encode(key_beta.verifying_key().to_bytes());
+
+    let mut mfr_alpha = Manufacturer::create(&pool, "alpha-corp", None)
+        .await
+        .unwrap();
+    mfr_alpha.activate(&pool, pub_alpha).await.unwrap();
+    let mut mfr_beta = Manufacturer::create(&pool, "beta-corp", None)
+        .await
+        .unwrap();
+    mfr_beta.activate(&pool, pub_beta).await.unwrap();
+
+    let manager = MfrManager::new(pool.clone());
+
+    // Alpha publishes services
+    for (name, ver) in &[("gateway", "1.0.0"), ("analytics", "2.0.0")] {
+        let manifest = test_manifest("alpha-corp", name, ver, "wasm32-wasip1");
+        let sig = key_alpha.sign(manifest.as_bytes());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+            &pool,
+            mfr_alpha.id,
+            "alpha-corp",
+            name,
+            ver,
+            "wasm32-wasip1",
+            &manifest,
+            &sig_b64,
+            None,
+            &key_alpha,
+        )
+        .await;
+        manager
+            .publish_package(PublishRequest {
+                manufacturer: "alpha-corp".to_string(),
+                name: name.to_string(),
+                version: ver.to_string(),
+                target: "wasm32-wasip1".to_string(),
+                manifest,
+                signature: sig_b64,
+                proto_files: None,
+                nonce: Some(nonce_b64),
+                nonce_sig: Some(nonce_sig_b64),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Beta publishes services
+    for (name, ver) in &[("stream", "1.0.0"), ("auth", "1.0.0"), ("cache", "3.0.0")] {
+        let manifest = test_manifest("beta-corp", name, ver, "wasm32-wasip1");
+        let sig = key_beta.sign(manifest.as_bytes());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+            &pool,
+            mfr_beta.id,
+            "beta-corp",
+            name,
+            ver,
+            "wasm32-wasip1",
+            &manifest,
+            &sig_b64,
+            None,
+            &key_beta,
+        )
+        .await;
+        manager
+            .publish_package(PublishRequest {
+                manufacturer: "beta-corp".to_string(),
+                name: name.to_string(),
+                version: ver.to_string(),
+                target: "wasm32-wasip1".to_string(),
+                manifest,
+                signature: sig_b64,
+                proto_files: None,
+                nonce: Some(nonce_b64),
+                nonce_sig: Some(nonce_sig_b64),
+            })
+            .await
+            .unwrap();
+    }
+
+    // Verify isolation: each MFR sees only their own packages
+    let alpha_pkgs = manager.list_packages(Some("alpha-corp")).await.unwrap();
+    assert_eq!(alpha_pkgs.len(), 2);
+    assert!(alpha_pkgs.iter().all(|p| p.manufacturer == "alpha-corp"));
+
+    let beta_pkgs = manager.list_packages(Some("beta-corp")).await.unwrap();
+    assert_eq!(beta_pkgs.len(), 3);
+    assert!(beta_pkgs.iter().all(|p| p.manufacturer == "beta-corp"));
+
+    // All packages visible in global listing
+    let all = manager.list_packages(None).await.unwrap();
+    assert_eq!(all.len(), 5);
+
+    // Cross-manufacturer publish should FAIL: alpha's key signing for beta's name
+    // The nonce is issued for beta-corp (mfr_beta.id), but signed with alpha's key.
+    // Nonce sig verification will fail since MFR beta-corp uses beta's public key.
+    let cross_manifest = test_manifest("beta-corp", "hack", "1.0.0", "wasm32-wasip1");
+    let cross_sig = key_alpha.sign(cross_manifest.as_bytes());
+    let cross_sig_b64 = base64::engine::general_purpose::STANDARD.encode(cross_sig.to_bytes());
+    let (nonce_cross, nonce_sig_cross) = make_publish_nonce(
+        &pool,
+        mfr_beta.id,
+        "beta-corp",
+        "hack",
+        "1.0.0",
+        "wasm32-wasip1",
+        &cross_manifest,
+        &cross_sig_b64,
+        None,
+        &key_alpha,
+    )
+    .await;
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "beta-corp".to_string(),
+            name: "hack".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: cross_manifest,
+            signature: cross_sig_b64,
+            proto_files: None,
+            nonce: Some(nonce_cross),
+            nonce_sig: Some(nonce_sig_cross),
+        })
+        .await;
+    assert!(
+        matches!(result, Err(MfrError::Unauthorized)),
+        "cross-manufacturer publish should fail (nonce sig mismatch): {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_multi_target_same_package() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "multiarch", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+
+    let manager = MfrManager::new(pool.clone());
+
+    // Same package name+version, different targets
+    for target in &[
+        "wasm32-wasip1",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    ] {
+        let manifest = format!(
+            "manufacturer = \"multiarch\"\nname = \"server\"\nversion = \"1.0.0\"\n\n[binary]\npath = \"server.wasm\"\ntarget = \"{target}\"\nhash = \"sha256:abc123\""
+        );
+        let sig = key.sign(manifest.as_bytes());
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+        let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+            &pool,
+            mfr.id,
+            "multiarch",
+            "server",
+            "1.0.0",
+            target,
+            &manifest,
+            &sig_b64,
+            None,
+            &key,
+        )
+        .await;
+        manager
+            .publish_package(PublishRequest {
+                manufacturer: "multiarch".to_string(),
+                name: "server".to_string(),
+                version: "1.0.0".to_string(),
+                target: target.to_string(),
+                manifest,
+                signature: sig_b64,
+                proto_files: None,
+                nonce: Some(nonce_b64),
+                nonce_sig: Some(nonce_sig_b64),
+            })
+            .await
+            .unwrap();
+    }
+
+    let pkgs = manager.list_packages(Some("multiarch")).await.unwrap();
+    assert_eq!(
+        pkgs.len(),
+        3,
+        "same package with 3 targets should produce 3 entries"
+    );
+    let targets: Vec<&str> = pkgs.iter().map(|p| p.target.as_str()).collect();
+    assert!(targets.contains(&"wasm32-wasip1"));
+    assert!(targets.contains(&"x86_64-unknown-linux-gnu"));
+    assert!(targets.contains(&"aarch64-apple-darwin"));
+}
+
+#[tokio::test]
+async fn test_publish_tampered_proto_files_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "protoco", None).await.unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+
+    let manifest = test_manifest("protoco", "svc", "1.0.0", "wasm32-wasip1");
+    let sig = key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+    let proto_original = serde_json::json!({
+        "protobufs": [
+            { "relative_path": "api/v1/service.proto", "content_b64": "YWJj" }
+        ]
+    });
+    let proto_tampered = serde_json::json!({
+        "protobufs": [
+            { "relative_path": "api/v1/service.proto", "content_b64": "ZGVm" }
+        ]
+    });
+
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "protoco",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        &manifest,
+        &sig_b64,
+        Some(&proto_original),
+        &key,
+    )
+    .await;
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "protoco".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest,
+            signature: sig_b64,
+            proto_files: Some(proto_tampered),
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
+        })
+        .await;
+
+    assert!(
+        matches!(result, Err(MfrError::Unauthorized)),
+        "tampered proto_files should invalidate nonce authorization: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_manifest_missing_required_field_rejected() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let pool = setup_test_pool().await;
+    let key = SigningKey::generate(&mut OsRng);
+    let pub_b64 = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_bytes());
+
+    let mut mfr = Manufacturer::create(&pool, "missingfield", None)
+        .await
+        .unwrap();
+    mfr.activate(&pool, pub_b64).await.unwrap();
+
+    let manifest = r#"manufacturer = "missingfield"
+name = "svc"
+
+[binary]
+path = "bin/actor.wasm"
+target = "wasm32-wasip1"
+hash = "sha256:abc123"
+"#;
+    let sig = key.sign(manifest.as_bytes());
+    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
+    let (nonce_b64, nonce_sig_b64) = make_publish_nonce(
+        &pool,
+        mfr.id,
+        "missingfield",
+        "svc",
+        "1.0.0",
+        "wasm32-wasip1",
+        manifest,
+        &sig_b64,
+        None,
+        &key,
+    )
+    .await;
+
+    let manager = MfrManager::new(pool);
+    let result = manager
+        .publish_package(PublishRequest {
+            manufacturer: "missingfield".to_string(),
+            name: "svc".to_string(),
+            version: "1.0.0".to_string(),
+            target: "wasm32-wasip1".to_string(),
+            manifest: manifest.to_string(),
+            signature: sig_b64,
+            proto_files: None,
+            nonce: Some(nonce_b64),
+            nonce_sig: Some(nonce_sig_b64),
+        })
+        .await;
+
+    assert!(
+        matches!(result, Err(MfrError::InvalidRequest(ref msg)) if msg.contains("missing required field 'version'")),
+        "manifest missing version should be rejected: {result:?}"
+    );
 }

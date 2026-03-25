@@ -201,6 +201,83 @@ impl Database {
             .execute(&self.pool)
             .await; // intentionally ignore error (column may already exist)
 
+        // Migrate: add key_id column (auto-assigned on activate/renew)
+        let _ = sqlx::query("ALTER TABLE mfr ADD COLUMN key_id TEXT NOT NULL DEFAULT ''")
+            .execute(&self.pool)
+            .await;
+
+        // MFR key history: stores retired public keys for JWKS-style rotation
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS mfr_key_history (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                mfr_id       INTEGER NOT NULL REFERENCES mfr(id),
+                key_id       TEXT    NOT NULL,
+                public_key   TEXT    NOT NULL,
+                status       TEXT    NOT NULL DEFAULT 'retired',
+                created_at   INTEGER NOT NULL,
+                retired_at   INTEGER NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_mfr_key_history_lookup
+             ON mfr_key_history(mfr_id, key_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Publish nonce table for Challenge-Response authentication on /mfr/pkg/publish
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS mfr_publish_nonce (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                mfr_id     INTEGER NOT NULL REFERENCES mfr(id),
+                nonce      BLOB    NOT NULL UNIQUE,
+                status     TEXT    NOT NULL DEFAULT 'pending',
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_mfr_publish_nonce_expires
+             ON mfr_publish_nonce(expires_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Backfill key_id for existing MFRs that have a public_key but empty key_id.
+        // This runs on every startup but is a no-op when all rows already have a key_id.
+        {
+            use base64::Engine as _;
+            use sha2::{Digest, Sha256};
+
+            let rows: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT id, public_key FROM mfr WHERE key_id = '' AND public_key != ''",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+            for (id, public_key_b64) in rows {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&public_key_b64)
+                {
+                    let hash = Sha256::digest(&bytes);
+                    let hex_str: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+                    let key_id = format!("mfr-{}", &hex_str[..16]);
+                    let _ = sqlx::query("UPDATE mfr SET key_id = ? WHERE id = ?")
+                        .bind(&key_id)
+                        .bind(id)
+                        .execute(&self.pool)
+                        .await;
+                    tracing::info!(id, key_id, "backfilled key_id from public_key fingerprint");
+                }
+            }
+        }
+
         Ok(())
     }
 

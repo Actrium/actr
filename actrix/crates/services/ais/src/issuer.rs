@@ -643,14 +643,51 @@ impl AIdIssuer {
         if let (Some(manifest_bytes), Some(mfr_signature)) =
             (&request.manifest_raw, &request.mfr_signature)
         {
-            // Look up the manufacturer's public key
-            let mfr_info = actrix_mfr::MfrManager::new(pool)
-                .resolve_by_name(mfr_name)
+            // Parse manifest using standard TOML. Reject if not valid UTF-8/TOML —
+            // unparseable manifests must not bypass the identity binding check below.
+            let manifest_str = std::str::from_utf8(manifest_bytes.as_ref()).map_err(|_| {
+                platform::recording::warn!("MFR manifest_raw is not valid UTF-8");
+                AidError::InvalidFormat
+            })?;
+            let manifest_toml: toml::Value = manifest_str.parse().map_err(|e| {
+                platform::recording::warn!("MFR manifest_raw is not valid TOML: {}", e);
+                AidError::InvalidFormat
+            })?;
+
+            // Extract signing_key_id — mandatory for all modern packages.
+            // Without it, we cannot reliably resolve the correct MFR key after rotation.
+            let signing_key_id = manifest_toml
+                .get("signing_key_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    platform::recording::warn!(
+                        "MFR manifest_raw missing 'signing_key_id', manufacturer={}",
+                        mfr_name
+                    );
+                    AidError::InvalidFormat
+                })?
+                .to_string();
+
+            // Look up the manufacturer's public key by key_id (supports current + historical)
+            let manager = actrix_mfr::MfrManager::new(pool);
+            let mfr_info = manager
+                .resolve_key_by_id(mfr_name, &signing_key_id)
                 .await
                 .map_err(|e| {
+                    // Distinguish revoked keys from other lookup failures:
+                    // KeyRevoked → clear rejection, not an internal error
+                    if matches!(e, actrix_mfr::MfrError::KeyRevoked(_)) {
+                        platform::recording::warn!(
+                            "MFR signing key has been revoked: manufacturer={}, key_id={}",
+                            mfr_name,
+                            signing_key_id
+                        );
+                        return AidError::ManufacturerNotVerified;
+                    }
                     platform::recording::warn!(
-                        "MFR public key lookup failed: manufacturer={}, err={}",
+                        "MFR public key lookup failed: manufacturer={}, key_id={}, err={}",
                         mfr_name,
+                        signing_key_id,
                         e
                     );
                     AidError::GenerationFailed(format!("MFR lookup failed: {e}"))
@@ -673,6 +710,55 @@ impl AIdIssuer {
             })?;
 
             if valid {
+                // SECURITY: Verify that manifest identity matches the RegisterRequest.
+                // Without this check, an attacker holding any valid signed manifest from
+                // the same MFR could reuse it to register a different actr_type/target.
+                let m_manufacturer = manifest_toml
+                    .get("manufacturer")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let m_name = manifest_toml
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let m_version = manifest_toml
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let m_target = manifest_toml
+                    .get("binary")
+                    .and_then(|b| b.get("target"))
+                    .and_then(|v| v.as_str());
+
+                // Check manufacturer/name/version match actr_type
+                if m_manufacturer != actr_type.manufacturer
+                    || m_name != actr_type.name
+                    || m_version != actr_type.version
+                {
+                    platform::recording::warn!(
+                        "MFR manifest identity mismatch: manifest={}:{}:{}, request={}",
+                        m_manufacturer,
+                        m_name,
+                        m_version,
+                        type_str
+                    );
+                    return Err(AidError::ManufacturerNotVerified);
+                }
+
+                // Check target if provided in both request and manifest
+                if let (Some(req_target), Some(manifest_target)) =
+                    (request.target.as_deref(), m_target)
+                {
+                    if req_target != manifest_target {
+                        platform::recording::warn!(
+                            "MFR manifest target mismatch: manifest={}, request={}",
+                            manifest_target,
+                            req_target
+                        );
+                        return Err(AidError::ManufacturerNotVerified);
+                    }
+                }
+
                 platform::recording::debug!(
                     "MFR signature verification passed, type_str={}",
                     type_str

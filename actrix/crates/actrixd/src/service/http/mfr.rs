@@ -5,7 +5,7 @@
 use crate::service::HttpRouterService;
 use actrix_mfr::{
     MfrManager,
-    handlers::{MfrState, create_router},
+    handlers::{MfrState, create_public_router},
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -50,11 +50,12 @@ impl HttpRouterService for MfrService {
         platform::recording::info!("Building MFR router");
 
         let pool = platform::storage::db::get_database().get_pool().clone();
-        let manager = MfrManager::new(pool);
+        let nonce_retain_secs = self.config.services.mfr.nonce_retain_secs;
+        let manager = MfrManager::new(pool).with_nonce_retain_secs(nonce_retain_secs);
         let state = MfrState {
             manager: Arc::new(manager),
         };
-        let mfr_router = create_router(state);
+        let mfr_router = create_public_router(state);
         let router = Router::new().merge(mfr_router);
 
         platform::recording::info!("MFR router built successfully");

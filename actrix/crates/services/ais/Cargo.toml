@@ -38,6 +38,7 @@ sqlx = { workspace = true, default-features = false, features = ["runtime-tokio-
 ## Utilities
 base64 = { workspace = true }
 rand = "0.8.5"
+toml = { workspace = true }
 
 ## Rate limiting
 tower_governor = "0.8"
@@ -55,3 +56,5 @@ tempfile = { workspace = true }
 nonce-auth = { workspace = true }
 tonic = { workspace = true }
 serial_test = { workspace = true }
+rand = "0.8.5"
+prost = { workspace = true }

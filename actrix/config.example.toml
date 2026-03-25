@@ -177,6 +177,13 @@ key_ttl_seconds = 3600
 # [services.ais.dependencies.ks]
 # endpoint = "http://remote-ks:8080"  # gRPC endpoint（复用该实例主端口）
 
+# MFR (Manufacturer Registry) Configuration (optional)
+# Controls publish nonce retention for audit / replay investigation.
+[services.mfr]
+# How long to retain expired/used publish nonces, in seconds.
+# Default: 86400 (24 hours)
+# nonce_retain_secs = 86400
+
 # Signaling Service Configuration (optional)
 # Service enablement is controlled by the bitmask (enable field)
 # Set ENABLE_SIGNALING bit (1) in the enable field to enable this service
