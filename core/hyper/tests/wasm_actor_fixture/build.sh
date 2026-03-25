@@ -2,10 +2,15 @@
 # Rebuild wasm_actor_fixture, apply the asyncify transform, and update wasm_actor_fixture.rs.
 set -euo pipefail
 
-WASM_OPT="${WASM_OPT:-/home/l/.cache/.wasm-pack/wasm-opt-1ceaaea8b7b5f7e0/bin/wasm-opt}"
+WASM_OPT="${WASM_OPT:-$(command -v wasm-opt || true)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR/built"
 BYTES_FILE="$SCRIPT_DIR/../wasm_actor_fixture.rs"
+
+if [[ -z "$WASM_OPT" ]]; then
+  echo "wasm-opt not found; set WASM_OPT or install wasm-opt" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT_DIR"
 
