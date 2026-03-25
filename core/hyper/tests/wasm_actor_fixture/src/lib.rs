@@ -6,6 +6,7 @@
 //!
 //! # Test protocol
 //!
+//! - route `test/echo`: returns the inbound payload as-is without outbound IO
 //! - request: raw bytes containing a 4-byte little-endian i32 value `x`
 //! - actor calls `ctx.call_raw(self_id, "test/double", payload_bytes)`
 //! - host mock returns `x * 2` (4-byte little-endian i32)
@@ -37,6 +38,9 @@ impl MessageDispatcher for DoubleDispatcher {
         ctx: &C,
     ) -> ActorResult<Bytes> {
         match envelope.route_key.as_str() {
+            "test/echo" => Ok(Bytes::from(
+                envelope.payload.unwrap_or_default().to_vec(),
+            )),
             "test/double" => {
                 // payload: 4-byte little-endian i32 (RpcEnvelope.payload is optional)
                 let payload = envelope.payload.unwrap_or_default();
