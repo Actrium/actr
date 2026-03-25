@@ -81,7 +81,7 @@ class NetworkMonitor(
          * monitor.startMonitoring()
          *
          * // Initialize system later
-         * system = ActrSystem.fromFile("config.toml")
+         * system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
          * ```
          */
         fun create(

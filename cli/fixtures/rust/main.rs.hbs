@@ -13,9 +13,11 @@ async fn main() -> Result<()> {
 
     let config = actr::config::ConfigParser::from_file("actr.toml")?;
     let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
-    let node = hyper.attach_none(config).await?;
-    let actr_ref = node.start().await?;
+    // Load your client-guest package and attach it:
+    // let package = WorkloadPackage::new(std::fs::read("path/to/client-guest.actr")?);
+    // let node = hyper.attach_package(&package, config).await?;
+    // let actr_ref = node.start().await?;
 
-    info!("Client started with id {}", actr_ref.actor_id().to_string_repr());
+    info!("Client started with id {}", env!("CARGO_PKG_NAME"));
     Ok(())
 }

@@ -10,7 +10,6 @@ import SwiftProtobuf
 
 // Re-export core wrapper types used by the high-level API
 public typealias ActrSystemWrapper = ActrBindings.ActrSystemWrapper
-public typealias ActrNodeWrapper = ActrBindings.ActrNodeWrapper
 public typealias ActrRefWrapper = ActrBindings.ActrRefWrapper
 public typealias NetworkEventHandleWrapper = ActrBindings.NetworkEventHandleWrapper
 

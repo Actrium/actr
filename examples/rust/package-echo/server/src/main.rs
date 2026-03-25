@@ -16,7 +16,7 @@ use base64::Engine;
 use serde_json::Value;
 use tracing::{error, info};
 
-const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1-beta";
+const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1";
 
 fn echo_actr_version() -> String {
     env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| DEFAULT_ECHO_ACTR_VERSION.to_string())
@@ -98,13 +98,21 @@ async fn main() -> Result<()> {
 
     // Determine trust mode: TRUST_MODE=production uses MFR cert cache (fetches keys from AIS),
     // otherwise use development mode with local self-signed public key
-    let trust_mode = if env::var("TRUST_MODE").map(|v| v == "production").unwrap_or(false) {
+    let trust_mode = if env::var("TRUST_MODE")
+        .map(|v| v == "production")
+        .unwrap_or(false)
+    {
         let ais_endpoint =
             env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
         // cert_cache needs base URL without /ais path suffix
         let base_endpoint = ais_endpoint.trim_end_matches("/ais").to_string();
-        info!("🔐 Using Production trust mode (base endpoint: {})", base_endpoint);
-        TrustMode::Production { ais_endpoint: base_endpoint }
+        info!(
+            "🔐 Using Production trust mode (base endpoint: {})",
+            base_endpoint
+        );
+        TrustMode::Production {
+            ais_endpoint: base_endpoint,
+        }
     } else {
         info!("🔐 Using Development trust mode (local public key)");
         TrustMode::Development {

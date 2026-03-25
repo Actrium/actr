@@ -8,33 +8,39 @@ import UIKit
 import AppKit
 #endif
 
-/// A high-level entry point for creating an ACTR system and spawning nodes.
+/// A high-level entry point for creating and starting a package-backed ACTR system.
 public final class ActrSystem: Sendable {
     private let inner: ActrSystemWrapper
     private let networkEventMonitor: NetworkEventMonitor
     private let appLifecycleMonitor: AppLifecycleMonitor
 
-    /// Creates a system from a TOML config file path.
-    public static func from(tomlConfig path: String) async throws -> ActrSystem {
-        let wrapper = try await ActrSystemWrapper.newFromFile(configPath: path)
+    /// Creates a package-backed system from config and package file paths.
+    public static func from(packageConfig configPath: String, packagePath: String) async throws -> ActrSystem {
+        let wrapper = try await ActrSystemWrapper.newFromPackageFile(
+            configPath: configPath,
+            packagePath: packagePath
+        )
         let handle = try wrapper.createNetworkEventHandle()
         let monitor = NetworkEventMonitor(handle: handle)
         let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
         return ActrSystem(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
     }
 
-    /// Creates a system from a TOML config file URL.
-    public static func from(tomlConfig url: URL) async throws -> ActrSystem {
-        guard url.isFileURL else {
-            throw ActrError.ConfigError(msg: "tomlConfig URL must be a file URL")
+    /// Creates a package-backed system from config and package file URLs.
+    public static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrSystem {
+        guard configURL.isFileURL else {
+            throw ActrError.ConfigError(msg: "packageConfig URL must be a file URL")
         }
-        return try await from(tomlConfig: url.path)
+        guard packageURL.isFileURL else {
+            throw ActrError.ConfigError(msg: "packageURL must be a file URL")
+        }
+        return try await from(packageConfig: configURL.path, packagePath: packageURL.path)
     }
 
-    /// Attaches a workload and returns a node that can be started.
-    public func spawn(workload: Workload) throws -> ActrNode {
-        let nodeWrapper = try inner.attach(callback: workload)
-        return ActrNode(inner: nodeWrapper)
+    /// Starts the package-backed actor and returns a running reference.
+    public func start() async throws -> ActrRef {
+        let refWrapper = try await inner.start()
+        return ActrRef(inner: refWrapper)
     }
 
     fileprivate init(inner: ActrSystemWrapper, networkEventMonitor: NetworkEventMonitor, appLifecycleMonitor: AppLifecycleMonitor) {

@@ -201,7 +201,7 @@ async fn host_operation_handler(
                     req.route_key,
                     PayloadType::RpcReliable,
                     bytes::Bytes::from(req.payload),
-                    0,
+                    30_000,
                 )
                 .await
             {
@@ -227,7 +227,7 @@ async fn host_operation_handler(
                     req.route_key,
                     PayloadType::RpcReliable,
                     bytes::Bytes::from(req.payload),
-                    0,
+                    30_000,
                 )
                 .await
             {
@@ -295,11 +295,6 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 impl ActrNode {
     pub(crate) fn package_manifest(&self) -> Option<&crate::verify::PackageManifest> {
         self.package_manifest.as_ref()
-    }
-
-    /// Build a new client-only node with no local workload attached.
-    pub async fn new_client(config: actr_config::Config) -> ActorResult<Self> {
-        Self::build(config, crate::workload::Workload::None, None).await
     }
 
     /// Get Inproc Transport Manager

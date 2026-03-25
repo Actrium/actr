@@ -16,8 +16,6 @@ import android.content.Context
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.example.MyUnifiedHandler
-import com.example.UnifiedWorkload
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import io.actor_rtc.actr.PayloadType
@@ -55,6 +53,17 @@ class UnifiedIntegrationTest {
             outputFile.outputStream().use { output -> input.copyTo(output) }
         }
         return outputFile.absolutePath
+    }
+
+    private fun copyFirstPackageAssetToInternalStorage(): String {
+        val sourceContext = InstrumentationRegistry.getInstrumentation().context
+        val packageName =
+                sourceContext
+                        .assets
+                        .list("")!!
+                        .firstOrNull { it.endsWith(".actr") }
+                        ?: error("No .actr package found in androidTest assets")
+        return copyAssetToInternalStorage(packageName)
     }
 
     // ==================== Protobuf Encoding/Decoding Helpers ====================
@@ -113,17 +122,12 @@ class UnifiedIntegrationTest {
         val clientConfigPath = copyAssetToInternalStorage("actr.toml")
         // Actr.lock.toml is required by the runtime now
         copyAssetToInternalStorage("Actr.lock.toml")
+        val packagePath = copyFirstPackageAssetToInternalStorage()
         var clientRef: ActrRef? = null
 
         try {
-            val clientSystem = createActrSystem(clientConfigPath)
-
-            // Create UnifiedWorkload
-            val handler = MyUnifiedHandler()
-            val clientWorkload = UnifiedWorkload(handler)
-
-            val clientNode = clientSystem.attach(clientWorkload)
-            clientRef = clientNode.start()
+            val clientSystem = createActrSystem(clientConfigPath, packagePath)
+            clientRef = clientSystem.start()
             Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
 
             // Wait for onStart to complete (auto-discover all remote services)

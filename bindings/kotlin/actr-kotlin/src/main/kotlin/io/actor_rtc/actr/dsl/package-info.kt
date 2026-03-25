@@ -9,10 +9,10 @@
  * ```
  *
  * This gives you access to:
- * - Type aliases: ActrSystem, ActrNode, ActrRef, Workload
+ * - Type aliases: ActrSystem, ActrRef, Workload
  * - DSL builders: actrType(), actrId(), dataStream(), workload()
  * - Extensions: String.toActrType(), ActrRef.discover(String), etc.
- * - Utilities: withRetry(), SimpleWorkload, RoutedWorkload
+ * - Utilities: withRetry(), withStartedActor(), SimpleWorkload, RoutedWorkload
  *
  * For direct access to generated types, use:
  * ```kotlin

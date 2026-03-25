@@ -39,6 +39,7 @@ ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
 SERVER_DIR="$PACKAGE_ECHO_DIR/server"
 CLIENT_DIR="$PACKAGE_ECHO_DIR/client"
+CLIENT_GUEST_DIR="$PACKAGE_ECHO_DIR/client-guest"
 ECHO_ACTR_DIR="$ACTRIUM_DIR/echo-actr"
 
 # Ensure ~/.cargo/bin is in PATH
@@ -61,7 +62,7 @@ echo ""
 echo "🗑️  Cleaning stale database files..."
 rm -rf "$WORKSPACE_ROOT/database"
 # Also remove actr.toml files to ensure they are freshly copied from Actr.example.toml
-rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml"
+rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
 # Ensure actr.toml files exist
@@ -72,6 +73,7 @@ ensure_actr_toml "$SERVER_DIR"
 ensure_actr_toml "$CLIENT_DIR"
 cp "$SERVER_DIR/Actr.example.toml" "$SERVER_DIR/actr.toml"
 cp "$CLIENT_DIR/Actr.example.toml" "$CLIENT_DIR/actr.toml"
+cp "$CLIENT_GUEST_DIR/Actr.example.toml" "$CLIENT_GUEST_DIR/actr.toml"
 echo -e "${GREEN}✅ Synchronized actr.toml from Actr.example.toml${NC}"
 
 # Ensure actrix-config.toml exists
@@ -108,10 +110,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Build local echo-actr package ────────────────────────────────
+# ── Step 0: Prepare echo-actr package ────────────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Building local echo-actr package...${NC}"
+echo -e "${BLUE}📦 Preparing echo-actr package...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo_actr_version() {
@@ -144,10 +146,12 @@ case "$ECHO_ACTR_BACKEND" in
 esac
 
 ACTR_PACKAGE_NAME="actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
-ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
-PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
+DEFAULT_ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
+DEFAULT_PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
+ACTR_PACKAGE="${ACTR_PACKAGE_PATH:-$DEFAULT_ACTR_PACKAGE}"
+PUBLIC_KEY_PATH="${ACTR_PUBLIC_KEY_PATH:-$DEFAULT_PUBLIC_KEY_PATH}"
 
-if [ ! -d "$ECHO_ACTR_DIR" ]; then
+if [ ! -d "$ECHO_ACTR_DIR" ] && [ -z "${ACTR_PACKAGE_PATH:-}" ]; then
     echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
     exit 1
 fi
@@ -158,18 +162,23 @@ echo "Backend:       $ECHO_ACTR_BACKEND"
 echo "Target:        $ECHO_ACTR_TARGET"
 
 perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
-    "$CLIENT_DIR/actr.toml"
+    "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 
-"$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
-
-if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
-    WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
+if [ -n "${ACTR_PACKAGE_PATH:-}" ]; then
+    echo "Using prebuilt release package: $ACTR_PACKAGE"
+    echo "Using public key:             $PUBLIC_KEY_PATH"
 else
-    "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
+    "$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
+
+    if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
+        WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
+    else
+        "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
+    fi
 fi
 
 if [ ! -f "$ACTR_PACKAGE" ]; then
-    echo -e "${RED}❌ Local package build failed: $ACTR_PACKAGE not found${NC}"
+    echo -e "${RED}❌ echo-actr package not found: $ACTR_PACKAGE${NC}"
     exit 1
 fi
 
@@ -178,14 +187,83 @@ if [ ! -f "$PUBLIC_KEY_PATH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✅ Local package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
-echo -e "${GREEN}✅ Local public key ready${NC}"
+echo -e "${GREEN}✅ echo-actr package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ echo-actr public key ready${NC}"
 
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
     --pubkey "$PUBLIC_KEY_PATH" \
     --package "$ACTR_PACKAGE" >/dev/null
 
 echo -e "${GREEN}✅ Local echo-actr package verified: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+
+# ── Step 0.5: Build client-guest cdylib package ──────────────────────────
+
+echo ""
+echo -e "${BLUE}📦 Building client-guest cdylib package...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+CLIENT_GUEST_VERSION="0.1.0"
+CLIENT_GUEST_TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
+CLIENT_GUEST_DIST_DIR="$CLIENT_GUEST_DIR/dist"
+mkdir -p "$CLIENT_GUEST_DIST_DIR"
+
+# Build the cdylib (runs in workspace root, so target is at workspace level)
+WORKSPACE_TARGET_DIR="$WORKSPACE_ROOT/target"
+if ! cargo build --manifest-path "$CLIENT_GUEST_DIR/Cargo.toml" 2>&1; then
+    echo -e "${RED}❌ Failed to build client-guest cdylib${NC}"
+    exit 1
+fi
+
+# Locate the built dylib/so (workspace target dir)
+if [ "$(uname)" = "Darwin" ]; then
+    CLIENT_GUEST_BINARY="$WORKSPACE_TARGET_DIR/debug/libpackage_echo_client_guest.dylib"
+elif [ "$(uname)" = "Linux" ]; then
+    CLIENT_GUEST_BINARY="$WORKSPACE_TARGET_DIR/debug/libpackage_echo_client_guest.so"
+else
+    CLIENT_GUEST_BINARY="$WORKSPACE_TARGET_DIR/debug/package_echo_client_guest.dll"
+fi
+
+if [ ! -f "$CLIENT_GUEST_BINARY" ]; then
+    echo -e "${RED}❌ client-guest binary not found: $CLIENT_GUEST_BINARY${NC}"
+    exit 1
+fi
+
+CLIENT_GUEST_DEV_KEY="$PACKAGE_ECHO_DIR/dev-key.json"
+CLIENT_GUEST_PACKAGE_NAME="acme-package-echo-client-guest-${CLIENT_GUEST_VERSION}-cdylib.actr"
+CLIENT_GUEST_PACKAGE="$CLIENT_GUEST_DIST_DIR/$CLIENT_GUEST_PACKAGE_NAME"
+CLIENT_GUEST_PUBLIC_KEY="$CLIENT_GUEST_DIST_DIR/public-key.json"
+
+# Package the client-guest binary
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
+    --binary "$CLIENT_GUEST_BINARY" \
+    --config "$CLIENT_GUEST_DIR/actr.toml" \
+    --key "$CLIENT_GUEST_DEV_KEY" \
+    --target "$CLIENT_GUEST_TARGET" \
+    --output "$CLIENT_GUEST_PACKAGE"
+
+if [ ! -f "$CLIENT_GUEST_PACKAGE" ]; then
+    echo -e "${RED}❌ client-guest package build failed: $CLIENT_GUEST_PACKAGE not found${NC}"
+    exit 1
+fi
+
+# Extract public key from dev-key.json for client-guest
+python3 - <<'PY' "$CLIENT_GUEST_DEV_KEY" "$CLIENT_GUEST_PUBLIC_KEY"
+import json, sys
+key_path, out_path = sys.argv[1:]
+with open(key_path) as f:
+    key = json.load(f)
+with open(out_path, "w") as f:
+    json.dump({"public_key": key["public_key"]}, f)
+PY
+
+echo -e "${GREEN}✅ client-guest package ready: $(du -h "$CLIENT_GUEST_PACKAGE" | cut -f1)${NC}"
+
+# Verify client-guest package
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
+    --pubkey "$CLIENT_GUEST_PUBLIC_KEY" \
+    --package "$CLIENT_GUEST_PACKAGE" >/dev/null
+
+echo -e "${GREEN}✅ client-guest package verified${NC}"
 
 # ── Step 1: Ensure actrix is available ──────────────────────────────────
 
@@ -225,6 +303,18 @@ fi
 echo ""
 echo "🚀 Starting actrix (signaling server)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Ensure we do not talk to a stale actrix from another working directory.
+if lsof -tiTCP:8081 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Removing stale listener on 8081..."
+    kill $(lsof -tiTCP:8081 -sTCP:LISTEN) 2>/dev/null || true
+    sleep 1
+fi
+if lsof -tiUDP:3478 >/dev/null 2>&1; then
+    echo "Removing stale listener on 3478/udp..."
+    kill $(lsof -tiUDP:3478) 2>/dev/null || true
+    sleep 1
+fi
 
 $ACTRIX_CMD --config "$ACTRIX_CONFIG" > "$LOG_DIR/actrix.log" 2>&1 &
 ACTRIX_PID=$!
@@ -270,7 +360,73 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-sleep 2
+# Wait until nonce auth storage is initialized, then force a verified AIS key load.
+MAX_KEY_WAIT=30
+KEY_COUNTER=0
+NONCE_DB="$WORKSPACE_ROOT/database/nonce.db"
+AIS_KEY_DB="$WORKSPACE_ROOT/database/ais_keys.db"
+SIGNER_KEY_DB="$WORKSPACE_ROOT/database/signer_keys.db"
+echo "Warming up actrix AIS signing key..."
+while [ $KEY_COUNTER -lt $MAX_KEY_WAIT ]; do
+    NONCE_READY=0
+    if [ -f "$NONCE_DB" ] && sqlite3 "$NONCE_DB" ".tables" 2>/dev/null | grep -q "nonce_entries"; then
+        NONCE_READY=1
+    fi
+
+    if [ $NONCE_READY -eq 1 ]; then
+        CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+        CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
+import json, sys
+raw = sys.argv[1]
+if not raw:
+    print("missing")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print("invalid")
+    raise SystemExit(0)
+print(data.get("status", "missing"))
+PY
+)
+
+        if [ "$CURRENT_KEY_STATUS" != "success" ]; then
+            curl -sf -X POST "http://localhost:8081/ais/rotate-key" >/dev/null 2>&1 || true
+            CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+            CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
+import json, sys
+raw = sys.argv[1]
+if not raw:
+    print("missing")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print("invalid")
+    raise SystemExit(0)
+print(data.get("status", "missing"))
+PY
+)
+        fi
+
+        if [ "$CURRENT_KEY_STATUS" = "success" ] \
+            && [ -f "$AIS_KEY_DB" ] \
+            && [ -f "$SIGNER_KEY_DB" ] \
+            && [ "$(sqlite3 "$AIS_KEY_DB" 'select count(*) from current_key;' 2>/dev/null || echo 0)" -ge 1 ] \
+            && [ "$(sqlite3 "$SIGNER_KEY_DB" 'select count(*) from keys;' 2>/dev/null || echo 0)" -ge 1 ]; then
+            echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
+            break
+        fi
+    fi
+
+    sleep 1
+    KEY_COUNTER=$((KEY_COUNTER + 1))
+done
+if [ $KEY_COUNTER -eq $MAX_KEY_WAIT ]; then
+    echo -e "${RED}❌ AIS key warmup timed out after ${MAX_KEY_WAIT}s${NC}"
+    grep -aEn "Initial KS key load deferred|Background key rotation failed|GenerateSigningKey|Failed to get key record|Authentication failed" "$LOG_DIR/actrix.log" || true
+    exit 1
+fi
 
 # Extract realm IDs from actr.toml files
 SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
@@ -323,6 +479,7 @@ manifest_data = tomllib.loads(manifest)
 manufacturer = manifest_data["manufacturer"]
 name = manifest_data["name"]
 version = manifest_data["version"]
+target = manifest_data.get("binary", {}).get("target", "wasm32-unknown-unknown")
 type_str = f"{manufacturer}:{name}:{version}"
 
 conn = sqlite3.connect(db_path)
@@ -359,9 +516,9 @@ try:
     cur.execute(
         """
         INSERT INTO mfr_package
-            (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
-        ON CONFLICT(manufacturer, name, version) DO UPDATE SET
+            (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
+        ON CONFLICT(manufacturer, name, version, target) DO UPDATE SET
             mfr_id = excluded.mfr_id,
             type_str = excluded.type_str,
             manifest = excluded.manifest,
@@ -370,7 +527,7 @@ try:
             published_at = excluded.published_at,
             revoked_at = NULL
         """,
-        (mfr_id, manufacturer, name, version, type_str, manifest, signature, now),
+        (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, now),
     )
     conn.commit()
 finally:
@@ -380,6 +537,95 @@ print(f"Seeded MFR package metadata for {type_str}")
 PY
 
 echo -e "${GREEN}✅ MFR package metadata seeded for local echo-actr package${NC}"
+
+# ── Step 2.7: Seed client-guest MFR package metadata ────────────────────
+
+echo ""
+echo "🏷️  Seeding client-guest MFR package metadata..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+python3 - <<'PY' "$ACTRIX_DB" "$CLIENT_GUEST_PACKAGE" "$CLIENT_GUEST_PUBLIC_KEY"
+import base64
+import json
+import sqlite3
+import sys
+import time
+import tomllib
+import zipfile
+
+db_path, package_path, public_key_path = sys.argv[1:]
+now = int(time.time())
+key_expires_at = now + 365 * 24 * 3600
+
+with open(public_key_path, "r", encoding="utf-8") as fh:
+    public_key = json.load(fh)["public_key"]
+
+with zipfile.ZipFile(package_path, "r") as zf:
+    manifest = zf.read("actr.toml").decode("utf-8")
+    signature = base64.b64encode(zf.read("actr.sig")).decode("ascii")
+
+manifest_data = tomllib.loads(manifest)
+manufacturer = manifest_data["manufacturer"]
+name = manifest_data["name"]
+version = manifest_data["version"]
+target = manifest_data.get("binary", {}).get("target", "cdylib")
+type_str = f"{manufacturer}:{name}:{version}"
+
+conn = sqlite3.connect(db_path)
+try:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO mfr
+            (name, public_key, contact, status, created_at, updated_at, verified_at, key_expires_at)
+        VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+        """,
+        (manufacturer, public_key, "examples@actrium.local", now, now, now, key_expires_at),
+    )
+    cur.execute(
+        """
+        UPDATE mfr
+           SET public_key = ?,
+               status = 'active',
+               updated_at = ?,
+               verified_at = ?,
+               key_expires_at = ?,
+               suspended_at = NULL,
+               revoked_at = NULL
+         WHERE name = ?
+        """,
+        (public_key, now, now, key_expires_at, manufacturer),
+    )
+    cur.execute("SELECT id FROM mfr WHERE name = ?", (manufacturer,))
+    row = cur.fetchone()
+    if row is None:
+        raise RuntimeError(f"failed to seed manufacturer {manufacturer}")
+    mfr_id = row[0]
+
+    cur.execute(
+        """
+        INSERT INTO mfr_package
+            (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
+        ON CONFLICT(manufacturer, name, version, target) DO UPDATE SET
+            mfr_id = excluded.mfr_id,
+            type_str = excluded.type_str,
+            manifest = excluded.manifest,
+            signature = excluded.signature,
+            status = 'active',
+            published_at = excluded.published_at,
+            revoked_at = NULL
+        """,
+        (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, now),
+    )
+    conn.commit()
+finally:
+    conn.close()
+
+print(f"Seeded MFR package metadata for {type_str}")
+PY
+
+echo -e "${GREEN}✅ MFR package metadata seeded for client-guest package${NC}"
 
 # ── Step 3: Build host binaries ──────────────────────────────────────────
 
@@ -454,6 +700,8 @@ echo "Sending test message: \"$TEST_INPUT\""
     sleep 2
     echo "quit"
 ) | ECHO_ACTR_VERSION="$ECHO_ACTR_VERSION" \
+    CLIENT_GUEST_PACKAGE_PATH="$CLIENT_GUEST_PACKAGE" \
+    CLIENT_GUEST_PUBLIC_KEY_PATH="$CLIENT_GUEST_PUBLIC_KEY" \
     RUST_LOG="${RUST_LOG:-info}" \
     cargo run --bin package-echo-client > "$LOG_DIR/package-echo-client.log" 2>&1 &
 CLIENT_PID=$!
