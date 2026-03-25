@@ -1,5 +1,5 @@
 edition = 1
-exports = ["../proto/client.proto"]
+exports = []
 
 [package]
 name = "package-echo-client-guest"
