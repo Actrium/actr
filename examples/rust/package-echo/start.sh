@@ -297,6 +297,18 @@ echo ""
 echo "🚀 Starting actrix (signaling server)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Ensure we do not talk to a stale actrix from another working directory.
+if lsof -tiTCP:8081 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Removing stale listener on 8081..."
+    kill $(lsof -tiTCP:8081 -sTCP:LISTEN) 2>/dev/null || true
+    sleep 1
+fi
+if lsof -tiUDP:3478 >/dev/null 2>&1; then
+    echo "Removing stale listener on 3478/udp..."
+    kill $(lsof -tiUDP:3478) 2>/dev/null || true
+    sleep 1
+fi
+
 $ACTRIX_CMD --config "$ACTRIX_CONFIG" > "$LOG_DIR/actrix.log" 2>&1 &
 ACTRIX_PID=$!
 
@@ -341,7 +353,73 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-sleep 2
+# Wait until nonce auth storage is initialized, then force a verified AIS key load.
+MAX_KEY_WAIT=30
+KEY_COUNTER=0
+NONCE_DB="$WORKSPACE_ROOT/database/nonce.db"
+AIS_KEY_DB="$WORKSPACE_ROOT/database/ais_keys.db"
+SIGNER_KEY_DB="$WORKSPACE_ROOT/database/signer_keys.db"
+echo "Warming up actrix AIS signing key..."
+while [ $KEY_COUNTER -lt $MAX_KEY_WAIT ]; do
+    NONCE_READY=0
+    if [ -f "$NONCE_DB" ] && sqlite3 "$NONCE_DB" ".tables" 2>/dev/null | grep -q "nonce_entries"; then
+        NONCE_READY=1
+    fi
+
+    if [ $NONCE_READY -eq 1 ]; then
+        CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+        CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
+import json, sys
+raw = sys.argv[1]
+if not raw:
+    print("missing")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print("invalid")
+    raise SystemExit(0)
+print(data.get("status", "missing"))
+PY
+)
+
+        if [ "$CURRENT_KEY_STATUS" != "success" ]; then
+            curl -sf -X POST "http://localhost:8081/ais/rotate-key" >/dev/null 2>&1 || true
+            CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+            CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
+import json, sys
+raw = sys.argv[1]
+if not raw:
+    print("missing")
+    raise SystemExit(0)
+try:
+    data = json.loads(raw)
+except Exception:
+    print("invalid")
+    raise SystemExit(0)
+print(data.get("status", "missing"))
+PY
+)
+        fi
+
+        if [ "$CURRENT_KEY_STATUS" = "success" ] \
+            && [ -f "$AIS_KEY_DB" ] \
+            && [ -f "$SIGNER_KEY_DB" ] \
+            && [ "$(sqlite3 "$AIS_KEY_DB" 'select count(*) from current_key;' 2>/dev/null || echo 0)" -ge 1 ] \
+            && [ "$(sqlite3 "$SIGNER_KEY_DB" 'select count(*) from keys;' 2>/dev/null || echo 0)" -ge 1 ]; then
+            echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
+            break
+        fi
+    fi
+
+    sleep 1
+    KEY_COUNTER=$((KEY_COUNTER + 1))
+done
+if [ $KEY_COUNTER -eq $MAX_KEY_WAIT ]; then
+    echo -e "${RED}❌ AIS key warmup timed out after ${MAX_KEY_WAIT}s${NC}"
+    grep -aEn "Initial KS key load deferred|Background key rotation failed|GenerateSigningKey|Failed to get key record|Authentication failed" "$LOG_DIR/actrix.log" || true
+    exit 1
+fi
 
 # Extract realm IDs from actr.toml files
 SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
@@ -394,6 +472,7 @@ manifest_data = tomllib.loads(manifest)
 manufacturer = manifest_data["manufacturer"]
 name = manifest_data["name"]
 version = manifest_data["version"]
+target = manifest_data.get("binary", {}).get("target", "wasm32-unknown-unknown")
 type_str = f"{manufacturer}:{name}:{version}"
 
 conn = sqlite3.connect(db_path)
@@ -430,9 +509,9 @@ try:
     cur.execute(
         """
         INSERT INTO mfr_package
-            (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
-        ON CONFLICT(manufacturer, name, version) DO UPDATE SET
+            (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
+        ON CONFLICT(manufacturer, name, version, target) DO UPDATE SET
             mfr_id = excluded.mfr_id,
             type_str = excluded.type_str,
             manifest = excluded.manifest,
@@ -441,7 +520,7 @@ try:
             published_at = excluded.published_at,
             revoked_at = NULL
         """,
-        (mfr_id, manufacturer, name, version, type_str, manifest, signature, now),
+        (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, now),
     )
     conn.commit()
 finally:
@@ -482,6 +561,7 @@ manifest_data = tomllib.loads(manifest)
 manufacturer = manifest_data["manufacturer"]
 name = manifest_data["name"]
 version = manifest_data["version"]
+target = manifest_data.get("binary", {}).get("target", "cdylib")
 type_str = f"{manufacturer}:{name}:{version}"
 
 conn = sqlite3.connect(db_path)
@@ -518,9 +598,9 @@ try:
     cur.execute(
         """
         INSERT INTO mfr_package
-            (mfr_id, manufacturer, name, version, type_str, manifest, signature, status, published_at, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
-        ON CONFLICT(manufacturer, name, version) DO UPDATE SET
+            (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
+        ON CONFLICT(manufacturer, name, version, target) DO UPDATE SET
             mfr_id = excluded.mfr_id,
             type_str = excluded.type_str,
             manifest = excluded.manifest,
@@ -529,7 +609,7 @@ try:
             published_at = excluded.published_at,
             revoked_at = NULL
         """,
-        (mfr_id, manufacturer, name, version, type_str, manifest, signature, now),
+        (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, now),
     )
     conn.commit()
 finally:
