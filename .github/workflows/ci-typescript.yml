@@ -1,17 +1,14 @@
 name: CI (TypeScript)
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'bindings/typescript/**'
-      - 'tools/protoc-gen/typescript/**'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'bindings/typescript/**'
-      - 'tools/protoc-gen/typescript/**'
+  workflow_call:
   workflow_dispatch:
+
+env:
+  PROTOC_VERSION: "29.3"
+
+permissions:
+  contents: read
 
 jobs:
   lint-and-build:
@@ -19,23 +16,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install dependencies
         working-directory: bindings/typescript
-        run: npm install --no-package-lock
+        run: npm ci
+
       - name: Check formatting
         working-directory: bindings/typescript
         run: npm run format
+
       - name: Run lint
         working-directory: bindings/typescript
         run: npm run lint
+
       - name: Build
         working-directory: bindings/typescript
         run: npm run build
+
+      - name: Cargo check
+        working-directory: bindings/typescript
+        run: cargo check --locked --manifest-path Cargo.toml

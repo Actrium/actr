@@ -7,7 +7,7 @@
 ## 快速开始
 
 ```typescript
-import { ActrNode, ActrType, PayloadType } from '@actor-rtc/actr';
+import { ActrNode, PayloadType } from '@actrium/actr';
 
 async function main() {
   const node = await ActrNode.fromConfig('./actr.toml');

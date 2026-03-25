@@ -1,0 +1,41 @@
+name: CI (Web)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  PROTOC_VERSION: "29.3"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  format-and-check:
+    name: Web Format And Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        working-directory: bindings/web
+        run: cargo fmt --all -- --check
+
+      - name: Check web workspace
+        working-directory: bindings/web
+        run: cargo check --workspace --target wasm32-unknown-unknown --locked

@@ -55,3 +55,5 @@ venv/
 env/
 .env/
 
+# Release train reports
+release/reports/

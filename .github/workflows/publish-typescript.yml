@@ -1,0 +1,124 @@
+name: Publish TypeScript Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Version already committed in package.json and Cargo.toml
+        required: true
+        type: string
+      dry_run:
+        description: Validate and package without publishing to npm
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  preflight:
+    name: Preflight TypeScript CI
+    uses: ./.github/workflows/ci-typescript.yml
+
+  publish-typescript:
+    name: Publish bindings/typescript
+    needs: preflight
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/typescript
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Show Node.js and npm versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate package name
+        run: |
+          actual_name="$(node -p "require('./package.json').name")"
+          if [ "$actual_name" != "@actrium/actr" ]; then
+            echo "Expected package name @actrium/actr, got $actual_name"
+            exit 1
+          fi
+
+      - name: Validate committed version
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs');
+          const expectedVersion = process.env.EXPECTED_VERSION;
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const cargoToml = fs.readFileSync('Cargo.toml', 'utf8');
+          const cargoVersionMatch = cargoToml.match(/^version = "([^"]+)"$/m);
+          if (!cargoVersionMatch) {
+            throw new Error('Failed to read Cargo.toml version');
+          }
+
+          if (packageJson.version !== cargoVersionMatch[1]) {
+            throw new Error(
+              `Version mismatch: package.json=${packageJson.version}, Cargo.toml=${cargoVersionMatch[1]}`,
+            );
+          }
+
+          if (packageJson.version !== expectedVersion) {
+            throw new Error(
+              `Expected version ${expectedVersion}, but repository version is ${packageJson.version}`,
+            );
+          }
+
+          console.log(`Publishing committed version ${expectedVersion}`);
+          EOF
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+      - name: Show committed version
+        run: |
+          echo "package.json version: $(node -p "require('./package.json').version")"
+          echo "Cargo.toml version: $(grep '^version = ' Cargo.toml | head -n 1)"
+
+      - name: Dry run package publish
+        if: ${{ inputs.dry_run }}
+        run: npm publish --access public --dry-run
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --access public
+
+      - name: Verify npm package version
+        if: ${{ !inputs.dry_run }}
+        run: |
+          expected_version="${{ inputs.expected_version }}"
+          published_version="$(npm view @actrium/actr version)"
+          if [ "$published_version" != "$expected_version" ]; then
+            echo "Expected published version $expected_version, got $published_version"
+            exit 1
+          fi

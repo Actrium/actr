@@ -10,7 +10,6 @@ index.d.ts
 
 # Lock files
 Actr.lock.toml
-package-lock.json
 yarn.lock
 
 # OS files

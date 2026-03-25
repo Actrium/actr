@@ -1,27 +1,14 @@
 name: CI (Swift)
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - '.github/workflows/ci-swift.yml'
-      - 'bindings/swift/**'
-      - 'bindings/ffi/**'
-      - 'tools/protoc-gen/swift/**'
-      - 'core/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/ci-swift.yml'
-      - 'bindings/swift/**'
-      - 'bindings/ffi/**'
-      - 'tools/protoc-gen/swift/**'
-      - 'core/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+  workflow_call:
   workflow_dispatch:
+
+env:
+  PROTOC_VERSION: "29.3"
+
+permissions:
+  contents: read
 
 jobs:
   lint-and-build:
@@ -37,7 +24,7 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ github.token }}
       - name: Install UniFFI bindgen
         run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
       - name: Install Swift tools and libraries

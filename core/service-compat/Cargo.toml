@@ -21,7 +21,7 @@ workspace = true
 [dependencies]
 # Core dependencies for service compatibility analysis
 actr-protocol.workspace = true
-proto-fingerprint = { git = "https://github.com/Actrium/proto-kit.git", rev = "5649988f2bc67fb1f8f56ec7eedf044422696b5d" }
+proto-fingerprint.workspace = true
 
 # Serialization support
 serde = { version = "1.0", features = ["derive"] }

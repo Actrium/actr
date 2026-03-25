@@ -3425,7 +3425,8 @@ dependencies = [
 [[package]]
 name = "proto-fingerprint"
 version = "0.1.0"
-source = "git+https://github.com/Actrium/proto-kit.git?rev=5649988f2bc67fb1f8f56ec7eedf044422696b5d#5649988f2bc67fb1f8f56ec7eedf044422696b5d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68666fbbaa7b4b84a8af24dbc08dd76405b0b55af3418831dcb2467b4b8b1289"
 dependencies = [
  "anyhow",
  "clap",

@@ -4,9 +4,27 @@ plugins {
     id("maven-publish")
 }
 
-group = "io.actorrtc"
+group = providers
+    .gradleProperty("actrGroup")
+    .orElse("io.actrium")
+    .get()
 
-version = "0.1.0"
+version = providers
+    .gradleProperty("actrVersion")
+    .orElse("0.0.0-dev")
+    .get()
+
+val publishUrl = providers
+    .gradleProperty("actrPublishUrl")
+    .orElse("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+
+val githubPackagesUsername = providers
+    .gradleProperty("gpr.user")
+    .orElse(providers.environmentVariable("GITHUB_ACTOR"))
+
+val githubPackagesToken = providers
+    .gradleProperty("gpr.key")
+    .orElse(providers.environmentVariable("GITHUB_TOKEN"))
 
 android {
     namespace = "io.actorrtc.actr"
@@ -57,9 +75,9 @@ publishing {
             }
 
             pom {
-                name.set("actr-kotlin")
-                description.set("Kotlin bindings for the Actor-RTC framework")
-                url.set("https://github.com/actor-rtc/actr-kotlin")
+                name.set("actr")
+                description.set("Kotlin/Android SDK for the Actor-RTC framework")
+                url.set("https://github.com/Actrium/actr-kotlin-package-sync")
 
                 licenses {
                     license {
@@ -67,6 +85,17 @@ publishing {
                         url.set("https://www.apache.org/licenses/LICENSE-2.0")
                     }
                 }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri(publishUrl.get())
+            credentials {
+                username = githubPackagesUsername.orNull
+                password = githubPackagesToken.orNull
             }
         }
     }
