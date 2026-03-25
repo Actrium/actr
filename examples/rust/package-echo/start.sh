@@ -110,46 +110,28 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Prepare echo-actr package ────────────────────────────────────
+# ── Step 0: Compile echo-actr WASM ──────────────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Preparing echo-actr package...${NC}"
+echo -e "${BLUE}📦 Step 0: Compiling echo-actr WASM...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo_actr_version() {
-    python3 - <<'PY' "$ECHO_ACTR_DIR/Cargo.toml"
-import pathlib, sys, tomllib
-data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
-print(data["package"]["version"])
-PY
+    awk '
+        /^\[package\]/ { in_package = 1; next }
+        /^\[/ && in_package { exit }
+        in_package && $1 == "version" {
+            gsub(/"/, "", $3)
+            print $3
+            exit
+        }
+    ' "$ECHO_ACTR_DIR/Cargo.toml"
 }
 
 ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-$(echo_actr_version)}"
-ECHO_ACTR_BACKEND="${ECHO_ACTR_BACKEND:-wasm}"
-
-host_target() {
-    rustc -vV | awk '/host:/ {print $2}'
-}
-
-case "$ECHO_ACTR_BACKEND" in
-    wasm)
-        ECHO_ACTR_TARGET="wasm32-unknown-unknown"
-        ;;
-    cdylib)
-        ECHO_ACTR_TARGET="${ECHO_ACTR_TARGET:-$(host_target)}"
-        ;;
-    *)
-        echo -e "${RED}❌ Unsupported ECHO_ACTR_BACKEND: $ECHO_ACTR_BACKEND${NC}"
-        echo "Supported values: wasm, cdylib"
-        exit 1
-        ;;
-esac
-
-ACTR_PACKAGE_NAME="actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
-DEFAULT_ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
-DEFAULT_PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
-ACTR_PACKAGE="${ACTR_PACKAGE_PATH:-$DEFAULT_ACTR_PACKAGE}"
-PUBLIC_KEY_PATH="${ACTR_PUBLIC_KEY_PATH:-$DEFAULT_PUBLIC_KEY_PATH}"
+ECHO_ACTR_TARGET="wasm32-unknown-unknown"
+SIGNING_KEY="$ECHO_ACTR_DIR/packaging/keys/dev-signing-key.json"
+PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
 
 if [ ! -d "$ECHO_ACTR_DIR" ] && [ -z "${ACTR_PACKAGE_PATH:-}" ]; then
     echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
@@ -158,43 +140,75 @@ fi
 
 echo "echo-actr dir: $ECHO_ACTR_DIR"
 echo "Version:       $ECHO_ACTR_VERSION"
-echo "Backend:       $ECHO_ACTR_BACKEND"
 echo "Target:        $ECHO_ACTR_TARGET"
 
+# Patch client actr.toml ACL to reference the correct EchoService version
 perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
     "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 
-if [ -n "${ACTR_PACKAGE_PATH:-}" ]; then
-    echo "Using prebuilt release package: $ACTR_PACKAGE"
-    echo "Using public key:             $PUBLIC_KEY_PATH"
-else
-    "$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
+# 1. Compile to WASM
+rustup target add "$ECHO_ACTR_TARGET" >/dev/null
+cargo build --manifest-path "$ECHO_ACTR_DIR/Cargo.toml" \
+    --lib --release --target "$ECHO_ACTR_TARGET" 2>&1 | tail -5
 
-    if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
-        WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
-    else
-        "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
-    fi
+RAW_WASM="$ECHO_ACTR_DIR/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm"
+if [ ! -f "$RAW_WASM" ]; then
+    echo -e "${RED}❌ WASM compilation failed${NC}"
+    exit 1
 fi
+echo -e "${GREEN}✅ WASM compiled: $(du -h "$RAW_WASM" | cut -f1)${NC}"
+
+# 2. wasm-opt --asyncify
+WASM_OPT_CMD="${WASM_OPT:-wasm-opt}"
+if ! command -v "$WASM_OPT_CMD" >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  wasm-opt not found, installing via cargo...${NC}"
+    cargo install wasm-opt 2>&1 | tail -3
+fi
+mkdir -p "$ECHO_ACTR_DIR/dist"
+OPTIMIZED_WASM="$ECHO_ACTR_DIR/dist/echo-actr-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.wasm"
+"$WASM_OPT_CMD" --asyncify -O "$RAW_WASM" -o "$OPTIMIZED_WASM"
+echo -e "${GREEN}✅ wasm-opt done: $(du -h "$OPTIMIZED_WASM" | cut -f1)${NC}"
+
+# ── Step 0.5: Pack .actr with actr pkg build ──────────────────────────────
+
+echo ""
+echo -e "${BLUE}📦 Step 0.5: Packing signed .actr package via actr pkg build...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
+BUILD_CONFIG="$ECHO_ACTR_DIR/dist/build-config.toml"
+
+# Generate a temporary build config that matches echo-actr's package identity
+cat > "$BUILD_CONFIG" << TOML
+edition = 1
+exports = ["$ECHO_ACTR_DIR/proto/echo.proto"]
+
+[package]
+manufacturer = "actrium"
+name = "EchoService"
+version = "$ECHO_ACTR_VERSION"
+description = "Signed Echo guest actor"
+license = "Apache-2.0"
+TOML
+
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
+    --binary "$OPTIMIZED_WASM" \
+    --config "$BUILD_CONFIG" \
+    --key "$SIGNING_KEY" \
+    --target "$ECHO_ACTR_TARGET" \
+    --output "$ACTR_PACKAGE"
 
 if [ ! -f "$ACTR_PACKAGE" ]; then
-    echo -e "${RED}❌ echo-actr package not found: $ACTR_PACKAGE${NC}"
+    echo -e "${RED}❌ actr pkg build failed: $ACTR_PACKAGE not found${NC}"
     exit 1
 fi
+echo -e "${GREEN}✅ .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
 
-if [ ! -f "$PUBLIC_KEY_PATH" ]; then
-    echo -e "${RED}❌ Public key not found: $PUBLIC_KEY_PATH${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}✅ echo-actr package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
-echo -e "${GREEN}✅ echo-actr public key ready${NC}"
-
+# Verify the package signature
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
     --pubkey "$PUBLIC_KEY_PATH" \
     --package "$ACTR_PACKAGE" >/dev/null
-
-echo -e "${GREEN}✅ Local echo-actr package verified: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Package signature verified${NC}"
 
 # ── Step 0.5: Build client-guest cdylib package ──────────────────────────
 
@@ -330,7 +344,8 @@ actrix_ice_ready() {
     lsof -nP -iUDP:3478 > /dev/null 2>&1
 }
 
-MAX_WAIT=10
+# Wait for HTTP first (hard requirement)
+MAX_WAIT=20
 COUNTER=0
 while [ $COUNTER -lt $MAX_WAIT ]; do
     if ! kill -0 $ACTRIX_PID 2>/dev/null; then
@@ -339,8 +354,8 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
         exit 1
     fi
 
-    if actrix_http_ready && actrix_ice_ready; then
-        echo -e "${GREEN}✅ Actrix is running and listening on ports 8081/tcp and 3478/udp${NC}"
+    if actrix_http_ready; then
+        echo -e "${GREEN}✅ Actrix HTTP is ready on port 8081/tcp${NC}"
         break
     fi
 
@@ -349,9 +364,23 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
 done
 
 if [ $COUNTER -eq $MAX_WAIT ]; then
-    echo -e "${RED}❌ Actrix not listening on 8081/tcp and 3478/udp after ${MAX_WAIT} seconds${NC}"
+    echo -e "${RED}❌ Actrix not listening on 8081/tcp after ${MAX_WAIT} seconds${NC}"
     cat "$LOG_DIR/actrix.log"
     exit 1
+fi
+
+# Wait for ICE/TURN (soft check — give it up to 5 more seconds)
+ICE_COUNTER=0
+while [ $ICE_COUNTER -lt 5 ]; do
+    if actrix_ice_ready 2>/dev/null; then
+        echo -e "${GREEN}✅ Actrix ICE/TURN ready on 3478/udp${NC}"
+        break
+    fi
+    sleep 1 || true
+    ICE_COUNTER=$((ICE_COUNTER + 1))
+done
+if [ $ICE_COUNTER -eq 5 ]; then
+    echo -e "${YELLOW}⚠️  3478/udp not detected (may be using host ICE); continuing...${NC}" || true
 fi
 
 # ── Step 2.5: Setup realms ──────────────────────────────────────────────
@@ -449,94 +478,92 @@ done
 
 echo -e "${GREEN}✅ Realms setup completed (realm IDs: $SERVER_REALM, $CLIENT_REALM)${NC}"
 
-# ── Step 2.6: Seed MFR package metadata ─────────────────────────────────
+# ── Step 2.6: Register MFR manufacturer identity ────────────────────────
 
 echo ""
-echo "🏷️  Seeding MFR package metadata..."
+echo "🏷️  Registering MFR manufacturer 'actrium' with public key..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-python3 - <<'PY' "$ACTRIX_DB" "$ACTR_PACKAGE" "$PUBLIC_KEY_PATH"
-import base64
-import json
-import sqlite3
-import sys
-import time
-import tomllib
-import zipfile
+NOW=$(date +%s)
+EXPIRES_AT=$((NOW + 86400 * 365))
+MFR_PUBKEY=$(sed -n 's/^[[:space:]]*"public_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PUBLIC_KEY_PATH")
 
-db_path, package_path, public_key_path = sys.argv[1:]
-now = int(time.time())
-key_expires_at = now + 365 * 24 * 3600
+if [ -z "$MFR_PUBKEY" ]; then
+    echo -e "${RED}❌ Failed to extract public_key from $PUBLIC_KEY_PATH${NC}"
+    exit 1
+fi
 
-with open(public_key_path, "r", encoding="utf-8") as fh:
-    public_key = json.load(fh)["public_key"]
+MFR_KEY_ID=$(printf '%s' "$MFR_PUBKEY" | base64 -d | openssl dgst -sha256 -r | awk '{print "mfr-" substr($1, 1, 16)}')
 
-with zipfile.ZipFile(package_path, "r") as zf:
-    manifest = zf.read("actr.toml").decode("utf-8")
-    signature = base64.b64encode(zf.read("actr.sig")).decode("ascii")
+if [ -z "$MFR_KEY_ID" ]; then
+    echo -e "${RED}❌ Failed to compute key_id from $PUBLIC_KEY_PATH${NC}"
+    exit 1
+fi
 
-manifest_data = tomllib.loads(manifest)
-manufacturer = manifest_data["manufacturer"]
-name = manifest_data["name"]
-version = manifest_data["version"]
-target = manifest_data.get("binary", {}).get("target", "wasm32-unknown-unknown")
-type_str = f"{manufacturer}:{name}:{version}"
+sqlite3 "$ACTRIX_DB" << SQL
+INSERT OR IGNORE INTO mfr
+    (name, public_key, key_id, contact, status, created_at, updated_at, verified_at, key_expires_at)
+VALUES ('actrium', '$MFR_PUBKEY', '$MFR_KEY_ID', 'examples@actrium.local', 'active',
+        $NOW, $NOW, $NOW, $EXPIRES_AT);
+UPDATE mfr
+   SET public_key     = '$MFR_PUBKEY',
+       key_id         = '$MFR_KEY_ID',
+       status         = 'active',
+       updated_at     = $NOW,
+       verified_at    = $NOW,
+       key_expires_at = $EXPIRES_AT,
+       suspended_at   = NULL,
+       revoked_at     = NULL
+ WHERE name = 'actrium';
+SQL
 
-conn = sqlite3.connect(db_path)
-try:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT OR IGNORE INTO mfr
-            (name, public_key, contact, status, created_at, updated_at, verified_at, key_expires_at)
-        VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
-        """,
-        (manufacturer, public_key, "examples@actrium.local", now, now, now, key_expires_at),
-    )
-    cur.execute(
-        """
-        UPDATE mfr
-           SET public_key = ?,
-               status = 'active',
-               updated_at = ?,
-               verified_at = ?,
-               key_expires_at = ?,
-               suspended_at = NULL,
-               revoked_at = NULL
-         WHERE name = ?
-        """,
-        (public_key, now, now, key_expires_at, manufacturer),
-    )
-    cur.execute("SELECT id FROM mfr WHERE name = ?", (manufacturer,))
-    row = cur.fetchone()
-    if row is None:
-        raise RuntimeError(f"failed to seed manufacturer {manufacturer}")
-    mfr_id = row[0]
+echo -e "${GREEN}✅ MFR manufacturer 'actrium' registered (key_id: $MFR_KEY_ID, pubkey: ${MFR_PUBKEY:0:20}...)${NC}"
 
-    cur.execute(
-        """
-        INSERT INTO mfr_package
-            (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL)
-        ON CONFLICT(manufacturer, name, version, target) DO UPDATE SET
-            mfr_id = excluded.mfr_id,
-            type_str = excluded.type_str,
-            manifest = excluded.manifest,
-            signature = excluded.signature,
-            status = 'active',
-            published_at = excluded.published_at,
-            revoked_at = NULL
-        """,
-        (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, now),
-    )
-    conn.commit()
-finally:
-    conn.close()
+# ── Step 2.7: Publish package via actr pkg publish ───────────────────────
 
-print(f"Seeded MFR package metadata for {type_str}")
-PY
+echo ""
+echo "📡 Publishing package to MFR (challenge-response flow)..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-echo -e "${GREEN}✅ MFR package metadata seeded for local echo-actr package${NC}"
+cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg publish \
+    --package "$ACTR_PACKAGE" \
+    --keychain "$SIGNING_KEY" \
+    --endpoint "http://localhost:8081" \
+    --config "$BUILD_CONFIG"
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ actr pkg publish failed${NC}"
+    echo "Actrix logs (last 20 lines):"
+    tail -20 "$LOG_DIR/actrix.log"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Package published via challenge-response nonce flow${NC}"
+
+# ── Step 2.8: Seed client identity for AIS Path 1 lookup ─────────────────
+
+echo ""
+echo "🪪 Seeding client package identity for AIS lookup..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+CLIENT_MANUFACTURER="acme"
+CLIENT_NAME="package-echo-client-app"
+CLIENT_VERSION="0.1.0"
+CLIENT_TYPE_STR="$CLIENT_MANUFACTURER:$CLIENT_NAME:$CLIENT_VERSION"
+
+sqlite3 "$ACTRIX_DB" << SQL
+INSERT OR IGNORE INTO mfr
+    (name, public_key, key_id, contact, status, created_at, updated_at, verified_at)
+VALUES ('$CLIENT_MANUFACTURER', '', '', 'examples@actrium.local', 'active', $NOW, $NOW, $NOW);
+
+INSERT OR REPLACE INTO mfr_package
+    (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
+SELECT id, '$CLIENT_MANUFACTURER', '$CLIENT_NAME', '$CLIENT_VERSION', '$CLIENT_TYPE_STR', 'native', '', '', 'active', $NOW, NULL
+  FROM mfr
+ WHERE name = '$CLIENT_MANUFACTURER';
+SQL
+
+echo -e "${GREEN}✅ Client package identity seeded: $CLIENT_TYPE_STR${NC}"
 
 # ── Step 2.7: Seed client-guest MFR package metadata ────────────────────
 
@@ -648,7 +675,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 ECHO_ACTR_VERSION="$ECHO_ACTR_VERSION" \
 ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
-ACTR_PUBLIC_KEY_PATH="$PUBLIC_KEY_PATH" \
+TRUST_MODE="production" \
+AIS_ENDPOINT="http://localhost:8081/ais" \
 RUST_LOG="${RUST_LOG:-info}" \
 cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
 SERVER_PID=$!
@@ -734,11 +762,12 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   • Local echo-actr package built from /Users/kaito/Project/Actrium/echo-actr"
-    echo "   • Local package signature verified with public-key.json"
-    echo "   • Hyper loaded the locally built .actr package for $ECHO_ACTR_TARGET"
-    echo "   • ActrNode started with the package-selected workload"
-    echo "   • Real distributed Actor communication (client ↔ package-backed server)"
+    echo "   1. WASM compiled from $ECHO_ACTR_DIR"
+    echo "   2. actr pkg build → signed .actr (key: $SIGNING_KEY)"
+    echo "   3. actr pkg publish → registered via challenge-response nonce"
+    echo "   4. Hyper (TRUST_MODE=production) fetched pubkey from MFR, verified .actr"
+    echo "   5. AIS issued credential (Path 1: published package lookup)"
+    echo "   6. Client ↔ server echo confirmed via WebRTC"
     echo ""
     echo "Client output:"
     grep "Received reply" "$LOG_DIR/package-echo-client.log" || true
