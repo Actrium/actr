@@ -1,6 +1,6 @@
 //! Package Echo Client Guest — cdylib workload for the client host.
 //!
-//! Implements the local `ClientService.SendMessage` RPC:
+//! Implements the transparent proxy for `echo.EchoService.Echo`:
 //! 1. Discover `actrium:EchoService:<version>` (cached after first success)
 //! 2. Call `echo.EchoService.Echo` on the remote server
 //! 3. Return the reply to the host
@@ -10,17 +10,12 @@ pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));
 }
 
-pub mod client {
-    include!(concat!(env!("OUT_DIR"), "/client.rs"));
-}
-
 use actr_framework::{Context, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcEnvelope, RpcRequest};
 use async_trait::async_trait;
 use bytes::Bytes;
 use prost::Message as ProstMessage;
 
-use client::{SendMessageRequest, SendMessageResponse};
 use echo::{EchoRequest, EchoResponse};
 
 const ECHO_SERVICE_MANUFACTURER: &str = "actrium";
@@ -35,18 +30,6 @@ impl RpcRequest for EchoRequest {
 
     fn route_key() -> &'static str {
         "echo.EchoService.Echo"
-    }
-
-    fn payload_type() -> actr_protocol::PayloadType {
-        actr_protocol::PayloadType::RpcReliable
-    }
-}
-
-impl RpcRequest for SendMessageRequest {
-    type Response = SendMessageResponse;
-
-    fn route_key() -> &'static str {
-        "client.ClientService.SendMessage"
     }
 
     fn payload_type() -> actr_protocol::PayloadType {
@@ -83,15 +66,12 @@ impl MessageDispatcher for ClientGuestDispatcher {
         ctx: &C,
     ) -> ActorResult<Bytes> {
         match envelope.route_key.as_str() {
-            "client.ClientService.SendMessage" => {
+            "echo.EchoService.Echo" => {
                 let payload = envelope.payload.unwrap_or_default();
-                let req = SendMessageRequest::decode(payload.as_ref()).map_err(|e| {
-                    ActrError::DecodeFailure(format!("decode SendMessageRequest: {e}"))
-                })?;
+                let req = EchoRequest::decode(payload.as_ref())
+                    .map_err(|e| ActrError::DecodeFailure(format!("decode EchoRequest: {e}")))?;
 
-                let reply = send_message(workload, ctx, &req.message).await?;
-
-                let resp = SendMessageResponse { reply };
+                let resp = proxy_echo(workload, ctx, req).await?;
                 Ok(Bytes::from(resp.encode_to_vec()))
             }
             _ => Err(ActrError::UnknownRoute(envelope.route_key)),
@@ -99,22 +79,22 @@ impl MessageDispatcher for ClientGuestDispatcher {
     }
 }
 
-async fn send_message<C: Context>(
+async fn proxy_echo<C: Context>(
     workload: &ClientGuestWorkload,
     ctx: &C,
-    message: &str,
-) -> ActorResult<String> {
+    req: EchoRequest,
+) -> ActorResult<EchoResponse> {
     let server_id = resolve_server(workload, ctx).await?;
 
     let echo_req = EchoRequest {
-        message: message.to_string(),
+        message: req.message.clone(),
     };
 
     match ctx
         .call(&actr_framework::Dest::Actor(server_id.clone()), echo_req)
         .await
     {
-        Ok(resp) => Ok(resp.reply),
+        Ok(resp) => Ok(resp),
         Err(e) => {
             // Cache miss: clear cached id and retry once with fresh discovery
             workload.cached_server_id.set(None);
@@ -122,17 +102,15 @@ async fn send_message<C: Context>(
             workload.cached_server_id.set(Some(fresh_id.clone()));
 
             let echo_req2 = EchoRequest {
-                message: message.to_string(),
+                message: req.message.clone(),
             };
-            let resp = ctx
-                .call(&actr_framework::Dest::Actor(fresh_id), echo_req2)
+            ctx.call(&actr_framework::Dest::Actor(fresh_id), echo_req2)
                 .await
                 .map_err(|e2| {
                     ActrError::Internal(format!(
                         "retry after cache clear failed: {e2} (original: {e})"
                     ))
-                })?;
-            Ok(resp.reply)
+                })
         }
     }
 }

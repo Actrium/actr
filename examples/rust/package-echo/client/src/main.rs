@@ -7,9 +7,9 @@
 //! 4. Start ActrNode
 //! 5. Read stdin and dispatch each line to the local guest via actr_ref.call()
 
-/// Generated protobuf types from client.proto
-pub mod client {
-    include!(concat!(env!("OUT_DIR"), "/client.rs"));
+/// Generated protobuf types from echo.proto
+pub mod echo {
+    include!(concat!(env!("OUT_DIR"), "/echo.rs"));
 }
 
 use std::env;
@@ -23,13 +23,13 @@ use base64::Engine;
 use serde_json::Value;
 use tracing::{error, info};
 
-use crate::client::{SendMessageRequest, SendMessageResponse};
+use crate::echo::{EchoRequest, EchoResponse};
 
-impl RpcRequest for SendMessageRequest {
-    type Response = SendMessageResponse;
+impl RpcRequest for EchoRequest {
+    type Response = EchoResponse;
 
     fn route_key() -> &'static str {
-        "client.ClientService.SendMessage"
+        "echo.EchoService.Echo"
     }
 
     fn payload_type() -> actr_protocol::PayloadType {
@@ -50,7 +50,7 @@ fn public_key_path() -> PathBuf {
     env::var("CLIENT_GUEST_PUBLIC_KEY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../client-guest/public-key.json")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../client-guest/dist/public-key.json")
         })
 }
 
@@ -214,13 +214,14 @@ async fn main() -> Result<()> {
 
         info!("[App] Dispatching to local guest: {}", line);
 
-        let request = SendMessageRequest {
-            message: line.clone(),
-        };
-
-        match actr_ref.call(request).await {
+        match actr_ref
+            .call(EchoRequest {
+                message: line.clone(),
+            })
+            .await
+        {
             Ok(response) => {
-                let response: SendMessageResponse = response;
+                let response: EchoResponse = response;
                 println!("\n[Received reply] {}", response.reply);
             }
             Err(e) => {
