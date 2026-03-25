@@ -71,7 +71,7 @@ mod tests {
 /*
 📚 Usage Guide
 
-## 🚀 快速开始
+## 🚀 [...]
 
 1. **Implement business logic**:
    Implement all `FileHandler` trait methods in `MyFileService`.
@@ -87,11 +87,11 @@ mod tests {
    #[tokio::main]
    async fn main() -> ActorResult<()> {
        let service = MyFileService::new(/* dependencies */);
-       
-       ActorSystem::new()
-           .attach(service)
-           .start()
-           .await
+       let workload = LocalFileServiceWorkload::new(service);
+       let node = unimplemented!(
+           "source-defined workload examples were removed; migrate this example to a package-backed host"
+       );
+       node.start().await?;
    }
    ```
 

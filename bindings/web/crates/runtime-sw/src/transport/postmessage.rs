@@ -1,6 +1,6 @@
-//! PostMessage Lane - Service Worker 端（发送到 DOM）
+//! PostMessage lane for the Service Worker side.
 //!
-//! Service Worker 端的 PostMessage Lane，用于向 DOM 发送消息。
+//! Used by the Service Worker to send messages to the DOM side.
 
 use super::WirePool;
 use super::lane::{DataLane, LaneResult, PortFailureNotifier};
@@ -15,7 +15,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, MessagePort};
 
-/// PostMessage Lane 构建器（Service Worker 端）
+/// Builder for the Service Worker-side PostMessage lane.
 pub struct PostMessageLaneBuilder {
     port: MessagePort,
     payload_type: PayloadType,
@@ -25,75 +25,75 @@ pub struct PostMessageLaneBuilder {
 }
 
 impl PostMessageLaneBuilder {
-    /// 创建新的 PostMessage Lane 构建器
+    /// Create a new PostMessage lane builder.
     ///
-    /// # 参数
-    /// - `port`: MessagePort 对象（从 DOM 传递过来）
-    /// - `payload_type`: 该 Lane 传输的 PayloadType
+    /// # Parameters
+    /// - `port`: `MessagePort` passed from the DOM side
+    /// - `payload_type`: payload type carried by this lane
     pub fn new(port: MessagePort, payload_type: PayloadType) -> Self {
         Self {
             port,
             payload_type,
             buffer_size: 256,
             wire_pool: None,
-            conn_type: ConnType::WebRTC, // 默认为 WebRTC（PostMessage 主要用于 WebRTC）
+            conn_type: ConnType::WebRTC, // Defaults to WebRTC because PostMessage is mainly used for it.
         }
     }
 
-    /// 设置 WirePool 引用（用于失效通知）
+    /// Attach a WirePool reference for failure notification.
     pub fn with_wire_pool(mut self, wire_pool: Arc<WirePool>, conn_type: ConnType) -> Self {
         self.wire_pool = Some(wire_pool);
         self.conn_type = conn_type;
         self
     }
 
-    /// 设置接收缓冲区大小
+    /// Set the receive buffer size.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
 
-    /// 构建 PostMessage Lane
+    /// Build the PostMessage lane.
     pub fn build(self) -> LaneResult<DataLane> {
-        // 创建接收通道
+        // Create the receive channel.
         let (tx, rx) = mpsc::unbounded();
         let rx = Arc::new(Mutex::new(rx));
 
-        // 设置 onmessage 回调（零拷贝优化）
+        // Install the `onmessage` callback with zero-copy handling.
         let tx_clone = tx.clone();
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-            // 尝试获取 Uint8Array 数据
+            // Try to read the payload as a `Uint8Array`.
             if let Ok(uint8_array) = e.data().dyn_into::<js_sys::Uint8Array>() {
-                // ✅ 零拷贝接收：1 次拷贝（JS → WASM 线性内存）
+                // Zero-copy receive: one copy from JS into WASM linear memory.
                 let data = receive_zero_copy(&uint8_array);
 
-                // 解析消息头部
+                // Parse the message header.
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "PostMessage Lane (SW) 接收消息: payload_type={}, size={} bytes",
+                        "PostMessage lane (SW) received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload：转移 Vec 所有权到 Bytes
+                    // Extract the payload by transferring Vec ownership into Bytes.
                     let payload_data = extract_payload_zero_copy(data, 5);
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
             } else if let Ok(array_buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
-                // 兼容 ArrayBuffer 格式
+                // Compatibility path for `ArrayBuffer`.
                 let uint8_array = js_sys::Uint8Array::new(&array_buffer);
 
-                // ✅ 零拷贝接收
+                // Zero-copy receive.
                 let data = receive_zero_copy(&uint8_array);
 
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "PostMessage Lane (SW) 接收消息: payload_type={}, size={} bytes",
+                        "PostMessage lane (SW) received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload
+                    // Extract the payload without an extra copy.
                     let payload_data = extract_payload_zero_copy(data, 5);
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
@@ -104,15 +104,15 @@ impl PostMessageLaneBuilder {
             .set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
         onmessage_callback.forget();
 
-        // 启动 MessagePort
+        // Start the `MessagePort`.
         self.port.start();
 
         log::info!(
-            "PostMessage Lane (SW) 创建成功: payload_type={:?}",
+            "PostMessage lane (SW) created: payload_type={:?}",
             self.payload_type
         );
 
-        // 创建失效通知器（如果有 WirePool）
+        // Create a failure notifier if a WirePool is attached.
         let failure_notifier = self
             .wire_pool
             .map(|pool| PortFailureNotifier::new(pool, self.conn_type));
@@ -133,7 +133,7 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // ===== PostMessageLaneBuilder 基本测试 =====
+    // ===== Basic PostMessageLaneBuilder tests =====
 
     #[wasm_bindgen_test]
     fn test_postmessage_lane_builder_new() {
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(builder.conn_type, ConnType::WebRTC);
     }
 
-    // ===== PostMessageLaneBuilder build() 测试 =====
+    // ===== PostMessageLaneBuilder build() tests =====
 
     #[wasm_bindgen_test]
     async fn test_postmessage_lane_builder_build_basic() {
@@ -259,7 +259,7 @@ mod tests {
         }
     }
 
-    // ===== 不同 PayloadType 测试 =====
+    // ===== Different PayloadType tests =====
 
     #[wasm_bindgen_test]
     fn test_postmessage_builder_all_payload_types() {

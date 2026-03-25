@@ -165,8 +165,7 @@ impl ConfigCommand {
         // Package settings
         output.push_str(&format!("  {} Package:\n", "📦".blue()));
         output.push_str("    package.name\n");
-        output.push_str("    package.actr_type.manufacturer\n");
-        output.push_str("    package.actr_type.name\n");
+        output.push_str("    package.manufacturer\n");
         if raw_config.package.description.is_some() {
             output.push_str("    package.description\n");
         }
@@ -174,6 +173,7 @@ impl ConfigCommand {
         // System settings
         output.push_str(&format!("\n  {} System:\n", "⚙️".blue()));
         output.push_str("    signaling.url\n");
+        output.push_str("    ais_endpoint.url\n");
         output.push_str("    deployment.realm_id\n");
         output.push_str("    discovery.visible\n");
         output.push_str("    storage.mailbox_path\n");
@@ -319,6 +319,10 @@ impl ConfigCommand {
                 output.push_str(&format!("  Realm: {}\n", config.realm.realm_id));
                 output.push_str(&format!("  Signaling URL: {}\n", config.signaling_url));
                 output.push_str(&format!(
+                    "  AIS Endpoint: {}\n",
+                    config.ais_endpoint.as_deref().unwrap_or("(not set)")
+                ));
+                output.push_str(&format!(
                     "  Visible in discovery: {}\n",
                     config.visible_in_discovery
                 ));
@@ -367,14 +371,14 @@ impl ConfigCommand {
             // Package configuration
             ["package", "name"] => config.package.name = value.to_string(),
             ["package", "description"] => config.package.description = Some(value.to_string()),
-            ["package", "actr_type", "manufacturer"] => {
-                config.package.actr_type.manufacturer = value.to_string()
-            }
-            ["package", "actr_type", "name"] => config.package.actr_type.name = value.to_string(),
+            ["package", "manufacturer"] => config.package.manufacturer = value.to_string(),
 
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url = Some(value.to_string())
+            }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url = Some(value.to_string())
             }
 
             // Deployment configuration
@@ -459,14 +463,14 @@ impl ConfigCommand {
             // Package configuration
             ["package", "name"] => config.package.name.clone(),
             ["package", "description"] => config.package.description.clone().unwrap_or_default(),
-            ["package", "actr_type", "manufacturer"] => {
-                config.package.actr_type.manufacturer.clone()
-            }
-            ["package", "actr_type", "name"] => config.package.actr_type.name.clone(),
+            ["package", "manufacturer"] => config.package.manufacturer.clone(),
 
             // System signaling configuration
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url.clone().unwrap_or_default()
+            }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url.clone().unwrap_or_default()
             }
 
             // Deployment configuration
@@ -590,6 +594,9 @@ impl ConfigCommand {
             ["signaling", "url"] | ["system", "signaling", "url"] => {
                 config.system.signaling.url = None
             }
+            ["ais_endpoint", "url"] | ["system", "ais_endpoint", "url"] => {
+                config.system.ais_endpoint.url = None
+            }
 
             // Deployment configuration
             ["deployment", "realm_id"] | ["system", "deployment", "realm_id"] => {
@@ -645,9 +652,7 @@ impl ConfigCommand {
             }
 
             // Cannot unset required fields
-            ["package", "name"]
-            | ["package", "actr_type", "manufacturer"]
-            | ["package", "actr_type", "name"] => {
+            ["package", "name"] | ["package", "manufacturer"] => {
                 bail!("Cannot unset required configuration key: {}", key);
             }
 

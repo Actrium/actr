@@ -2,8 +2,8 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile, ServiceRef,
-    WebRtcAdvancedConfig, WebRtcConfig,
+    ActrMode, Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile,
+    ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::error::{ConfigError, Result};
@@ -15,7 +15,7 @@ use url::Url;
 
 const DEFAULT_TRACING_ENDPOINT: &str = "http://localhost:4317";
 
-/// Edition 1 格式的解析器
+/// Edition 1 format parser
 pub struct ParserV1 {
     base_dir: PathBuf,
 }
@@ -31,23 +31,23 @@ impl ParserV1 {
     }
 
     pub fn parse(&self, mut raw: RawConfig) -> Result<Config> {
-        // 1. 处理继承
+        // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
         } else {
             raw
         };
 
-        // 2. 验证必需字段
+        // 2. Validate required fields
         self.validate_required_fields(&raw)?;
 
-        // 3. 解析 package
+        // 3. Parse package
         let package = self.parse_package(&raw.package)?;
 
-        // 4. 解析 exports
+        // 4. Parse exports
         let exports = self.parse_exports(&raw.exports)?;
 
-        // 5. 获取 realm
+        // 5. Get realm
         let self_realm = Realm {
             realm_id: raw
                 .system
@@ -56,10 +56,13 @@ impl ParserV1 {
                 .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
         };
 
-        // 6. 解析 dependencies
+        // 5.1. Parse execution mode
+        let execution_mode = parse_actr_mode(raw.system.deployment.mode.as_deref())?;
+
+        // 6. Parse dependencies
         let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
 
-        // 7. 解析 signaling URL
+        // 7. Parse signaling URL
         let signaling_url_str = raw
             .system
             .signaling
@@ -68,32 +71,40 @@ impl ParserV1 {
             .ok_or(ConfigError::MissingField("system.signaling.url"))?;
 
         let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
+        let ais_endpoint = raw
+            .system
+            .ais_endpoint
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("system.ais_endpoint.url"))
+            .and_then(|url| Url::parse(url).map_err(ConfigError::InvalidUrl))?;
 
-        // 8. 解析 observability 配置
+        // 8. Parse observability config
         let observability = self.parse_observability(&raw.system, &package);
 
-        // 10. 解析 ACL (从顶级 acl 读取，放在最后以避免 partial move)
+        // 10. Parse ACL (read from top-level acl, placed last to avoid partial move)
         let acl = if let Some(acl_value) = raw.acl {
             Some(self.parse_acl(acl_value, self_realm.realm_id)?)
         } else {
             None
         };
 
-        // 11. 确定 config_dir
-        // 如果 raw.config_dir 存在，则相对于当前 base_dir 解析
+        // 11. Determine config_dir
+        // If raw.config_dir exists, resolve it relative to the current base_dir
         let config_dir = if let Some(dir) = raw.config_dir {
             self.base_dir.join(dir)
         } else {
             self.base_dir.clone()
         };
 
-        // 12. 构建最终配置
+        // 12. Build final config
         Ok(Config {
             package,
             exports,
             dependencies,
             signaling_url,
             realm: self_realm,
+            realm_secret: raw.system.deployment.realm_secret.clone(),
             visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
             acl,
             mailbox_path: raw.system.storage.mailbox_path,
@@ -104,28 +115,27 @@ impl ParserV1 {
             websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
             config_dir,
+            execution_mode,
+            ais_endpoint: Some(ais_endpoint.to_string()),
         })
     }
 
     fn parse_package(&self, raw: &RawPackageConfig) -> Result<PackageInfo> {
-        Name::new(raw.actr_type.manufacturer.clone()).map_err(|e| {
+        Name::new(raw.manufacturer.clone()).map_err(|e| {
             ConfigError::InvalidActrType(format!(
                 "Invalid manufacturer name '{}': {}",
-                raw.actr_type.manufacturer, e
+                raw.manufacturer, e
             ))
         })?;
 
-        Name::new(raw.actr_type.name.clone()).map_err(|e| {
-            ConfigError::InvalidActrType(format!(
-                "Invalid actor type name '{}': {}",
-                raw.actr_type.name, e
-            ))
+        Name::new(raw.name.clone()).map_err(|e| {
+            ConfigError::InvalidActrType(format!("Invalid actor type name '{}': {}", raw.name, e))
         })?;
 
         let actr_type = ActrType {
-            manufacturer: raw.actr_type.manufacturer.clone(),
-            name: raw.actr_type.name.clone(),
-            version: raw.actr_type.version.clone(),
+            manufacturer: raw.manufacturer.clone(),
+            name: raw.name.clone(),
+            version: raw.version.clone(),
         };
 
         Ok(PackageInfo {
@@ -205,12 +215,10 @@ impl ParserV1 {
 
     /// Parse an ActrType string: `"manufacturer:name:version"`.
     ///
-    /// The version segment is required. For backward compatibility with configs
-    /// that omit it, the empty string is accepted and stored as-is.
+    /// Note: `version` is required.
     fn parse_actr_type(&self, s: &str) -> Result<ActrType> {
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
-            [m, n] => (*m, *n, ""),
             [m, n, v] => (*m, *n, *v),
             _ => {
                 return Err(ConfigError::InvalidActrType(format!(
@@ -229,6 +237,12 @@ impl ParserV1 {
         Name::new(name.to_string()).map_err(|e| {
             ConfigError::InvalidActrType(format!("Invalid type name '{}' in '{}': {}", name, s, e))
         })?;
+        if version.is_empty() {
+            return Err(ConfigError::InvalidActrType(format!(
+                "Invalid actor type '{}': version must not be empty",
+                s
+            )));
+        }
 
         Ok(ActrType {
             manufacturer: manufacturer.to_string(),
@@ -317,7 +331,7 @@ impl ParserV1 {
     fn parse_webrtc(&self, raw: &crate::raw::RawWebRtcConfig) -> Result<WebRtcConfig> {
         let mut ice_servers = Vec::new();
 
-        // 解析 STUN URLs
+        // Parse STUN URLs
         if !raw.stun_urls.is_empty() {
             ice_servers.push(IceServer {
                 urls: raw.stun_urls.clone(),
@@ -326,7 +340,7 @@ impl ParserV1 {
             });
         }
 
-        // 解析 TURN URLs（凭证在运行时动态生成）
+        // Parse TURN URLs (credentials are dynamically generated at runtime)
         if !raw.turn_urls.is_empty() {
             ice_servers.push(IceServer {
                 urls: raw.turn_urls.clone(),
@@ -335,33 +349,33 @@ impl ParserV1 {
             });
         }
 
-        // 解析 ICE 传输策略
+        // Parse ICE transport policy
         let ice_transport_policy = if raw.force_relay {
             IceTransportPolicy::Relay
         } else {
             IceTransportPolicy::All
         };
 
-        // 解析端口配置
+        // Parse port configuration
         let (udp_ports, public_ips) =
             if let (Some(start), Some(end)) = (raw.port_range_start, raw.port_range_end) {
-                // 配置了端口范围，启用固定端口模式
+                // Port range configured, enable fixed port mode
                 if start >= end {
-                    // 端口范围无效，抛出错误
+                    // Invalid port range, return error
                     return Err(ConfigError::InvalidConfig(format!(
                         "Invalid port range: start ({}) must be less than end ({})",
                         start, end
                     )));
                 } else {
-                    // 端口范围模式
+                    // Port range mode
                     (Some((start, end)), raw.public_ips.clone())
                 }
             } else {
-                // 未配置端口范围，使用默认模式（随机端口）
+                // No port range configured, use default mode (random ports)
                 (None, Vec::new())
             };
 
-        // 解析 ICE 等待时间
+        // Parse ICE acceptance wait times
         let ice_host_acceptance_min_wait = raw.ice_host_acceptance_min_wait.unwrap_or(0);
         let ice_srflx_acceptance_min_wait = raw.ice_srflx_acceptance_min_wait.unwrap_or(20);
         let ice_prflx_acceptance_min_wait = raw.ice_prflx_acceptance_min_wait.unwrap_or(40);
@@ -412,7 +426,7 @@ impl ParserV1 {
         let parent_full_path = self.base_dir.join(&parent_path);
         let mut parent = RawConfig::from_file(&parent_full_path)?;
 
-        // 检查 edition 一致性
+        // Check edition consistency
         if parent.edition != child.edition {
             return Err(ConfigError::EditionMismatch {
                 parent: parent.edition,
@@ -420,19 +434,19 @@ impl ParserV1 {
             });
         }
 
-        // 递归处理父配置的继承
+        // Recursively process parent config inheritance
         let parent = if let Some(grandparent) = parent.inherit.take() {
             self.merge_inheritance(parent, grandparent)?
         } else {
             parent
         };
 
-        // 合并逻辑
+        // Merge logic
         Ok(RawConfig {
-            edition: child.edition, // 已验证一致
+            edition: child.edition, // Verified consistent
             inherit: None,
             config_dir: child.config_dir,
-            package: child.package, // package 不继承
+            package: child.package, // Package is not inherited
             exports: {
                 let mut p = parent.exports;
                 p.extend(child.exports);
@@ -462,8 +476,20 @@ impl ParserV1 {
             signaling: crate::raw::RawSignalingConfig {
                 url: child.signaling.url.or(parent.signaling.url),
             },
+            ais_endpoint: crate::raw::RawAisEndpointConfig {
+                url: child.ais_endpoint.url.or(parent.ais_endpoint.url),
+            },
             deployment: crate::raw::RawDeploymentConfig {
                 realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
+                realm_secret: child
+                    .deployment
+                    .realm_secret
+                    .or(parent.deployment.realm_secret),
+                mode: child.deployment.mode.or(parent.deployment.mode),
+                ais_endpoint: child
+                    .deployment
+                    .ais_endpoint
+                    .or(parent.deployment.ais_endpoint),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),
@@ -542,10 +568,27 @@ impl ParserV1 {
         if raw.system.signaling.url.is_none() {
             return Err(ConfigError::MissingField("system.signaling.url"));
         }
+        if raw.system.ais_endpoint.url.is_none() {
+            return Err(ConfigError::MissingField("system.ais_endpoint.url"));
+        }
         if raw.system.deployment.realm_id.is_none() {
             return Err(ConfigError::MissingField("system.deployment.realm"));
         }
         Ok(())
+    }
+}
+
+/// Convert mode string from TOML to `ActrMode` enum
+///
+/// Valid values: `"native"` (default), `"process"`, `"wasm"`.
+fn parse_actr_mode(s: Option<&str>) -> Result<ActrMode> {
+    match s.unwrap_or("native") {
+        "native" => Ok(ActrMode::Native),
+        "process" => Ok(ActrMode::Process),
+        "wasm" => Ok(ActrMode::Wasm),
+        other => Err(ConfigError::InvalidConfig(format!(
+            "system.deployment.mode value '{other}' is invalid, valid values are: native | process | wasm"
+        ))),
     }
 }
 
@@ -564,16 +607,16 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test-service"
 
 [dependencies]
 user-service = {}
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -585,15 +628,15 @@ run = "cargo run"
         let tmpdir = TempDir::new().unwrap();
         let config_path = tmpdir.path().join("actr.toml");
 
-        // 创建 proto 文件
+        // Create proto file
         let proto_dir = tmpdir.path().join("proto");
         fs::create_dir_all(&proto_dir).unwrap();
         fs::write(proto_dir.join("test.proto"), "syntax = \"proto3\";").unwrap();
 
-        // 写入配置
+        // Write config
         fs::write(&config_path, toml_content).unwrap();
 
-        // 解析
+        // Parse
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse(raw).unwrap();
@@ -602,6 +645,10 @@ run = "cargo run"
         assert_eq!(config.realm.realm_id, 1001);
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
+        assert_eq!(
+            config.ais_endpoint.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
     }
 
     #[test]
@@ -611,10 +658,7 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 version = "1.0.0"
 
 [dependencies]
@@ -622,6 +666,9 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -642,6 +689,73 @@ realm_id = 1001
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
         assert!(dep.is_cross_realm(&config.realm));
+        assert_eq!(
+            config.ais_endpoint.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
+    }
+
+    #[test]
+    fn test_parse_explicit_ais_endpoint() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "https://registry.example.com/custom-ais"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let config = parser.parse(raw).unwrap();
+
+        assert_eq!(
+            config.ais_endpoint.as_deref(),
+            Some("https://registry.example.com/custom-ais")
+        );
+    }
+
+    #[test]
+    fn test_missing_ais_endpoint_is_error() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("actr.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse(raw);
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::MissingField("system.ais_endpoint.url"))
+        ));
     }
 
     #[test]
@@ -652,13 +766,13 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "1acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -685,14 +799,14 @@ realm_id = 1001
 edition = 1
 
 [package]
-name = "test"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "test-"
+manufacturer = "acme"
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -720,13 +834,13 @@ edition = 1
 
 [package]
 name = "test"
-
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 
 [system.signaling]
 url = "ws://localhost:8081"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 1001
@@ -745,5 +859,53 @@ port_range_end = 50000
         let result = parser.parse(raw);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn test_parse_execution_mode() {
+        let base_toml = |mode_line: &str| {
+            format!(
+                r#"edition = 1
+[package]
+name = "test"
+manufacturer = "acme"
+[system.signaling]
+url = "ws://localhost:8081"
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+[system.deployment]
+realm_id = 1001
+{mode_line}"#
+            )
+        };
+
+        let tmpdir = TempDir::new().unwrap();
+
+        // Default (no mode field) -> Native
+        let path = tmpdir.path().join("actr.toml");
+        fs::write(&path, base_toml("")).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
+
+        // mode = "process"
+        fs::write(&path, base_toml("mode = \"process\"")).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
+
+        // mode = "wasm"
+        fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
+        let config = ParserV1::new(&path)
+            .parse(RawConfig::from_file(&path).unwrap())
+            .unwrap();
+        assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
+
+        // Invalid value -> error
+        fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
+        let result = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap());
+        assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 }

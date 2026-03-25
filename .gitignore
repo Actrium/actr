@@ -36,19 +36,15 @@ actrix-*.toml
 actrix-*.db*
 ACTRIX*.md
 
+# Auto-generated dependency lock files
+**/Actr.lock.toml
+
 # Demo logs
 .demo_logs/
 
-# Cloned source repos (used during migration, not part of monorepo)
-actr-kotlin/
-actr-python/
-actr-swift/
-actr-ts/
-libactr/
-framework-codegen-kotlin/
-framework-codegen-python/
-framework-codegen-swift/
-framework-codegen-typescript/
+# WASM guest built artifacts (compiled binaries, not source)
+examples/rust/wasm-echo/guest/built/
+examples/rust/dynclib-echo/guest/target/
 
 # Python ignore
 __pycache__/

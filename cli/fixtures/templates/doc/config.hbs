@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 {{> head page_title="Configuration"}}
+
 <body>
     <div class="content">
         {{> nav is_config=true}}
@@ -44,7 +45,7 @@ actr gen --output src/generated{{/if}}</code></pre>
         <div class="section">
             <h2>Configuration Reference</h2>
             <p>Layout of the <code>actr.toml</code> file:</p>
-            
+
             <table class="config-table">
                 <tr>
                     <th>Key</th>
@@ -68,12 +69,7 @@ actr gen --output src/generated{{/if}}</code></pre>
                 </tr>
                 <tr>
                     <td><code>[package]</code></td>
-                    <td>Package metadata (name, description, authors, license, tags)</td>
-                    <td>Required</td>
-                </tr>
-                <tr>
-                    <td><code>[package.actr_type]</code></td>
-                    <td>Actor type definition (manufacturer, name)</td>
+                    <td>Package metadata (name, manufacturer, version, description, authors, license, tags)</td>
                     <td>Required</td>
                 </tr>
                 <tr>
@@ -84,6 +80,11 @@ actr gen --output src/generated{{/if}}</code></pre>
                 <tr>
                     <td><code>[system.signaling]</code></td>
                     <td>Signaling server configuration</td>
+                    <td>Optional</td>
+                </tr>
+                <tr>
+                    <td><code>[system.ais_endpoint]</code></td>
+                    <td>AIS HTTP endpoint configuration</td>
                     <td>Optional</td>
                 </tr>
                 <tr>
@@ -127,17 +128,19 @@ actr gen --output src/generated{{/if}}</code></pre>
         <div class="section">
             <h2>Dependency Formats</h2>
             <p>Define <strong>remote</strong> dependencies in <code>[dependencies]</code>.</p>
-            <p><em>Note: Your own service definitions should be placed in <code>protos/local/</code>. They are automatically detected and do not need to be configured here.</em></p>
-            
+            <p><em>Note: Your own service definitions should be placed in <code>protos/local/</code>. They are
+                    automatically detected and do not need to be configured here.</em></p>
+
             <pre><code class="language-toml"># Actor registry (alias = { name, actr_type, ... })
 [dependencies.payment]
 name = "payment-service"
-actr_type = "payment"
+actr_type = "my-company:PaymentService:1.0.0"
 fingerprint = "sha256:a1b2c3d4..."
 
 # Simplified format (alias = { actr_type })
-my-service = { actr_type = "my-company:MyService" }</code></pre>
+my-service = { actr_type = "my-company:MyService:1.0.0" }</code></pre>
         </div>
     </div>
 </body>
+
 </html>

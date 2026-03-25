@@ -1,8 +1,8 @@
 //! Inbound message handling for Service Worker
 //!
-//! 消息接收和分发逻辑，对标 actr 的 inbound 模块
+//! Message receive and dispatch logic that mirrors actr's inbound module.
 //!
-//! # 架构
+//! # Architecture
 //!
 //! ```text
 //! InboundPacketDispatcher → Mailbox → MailboxProcessor → Scheduler → Actor

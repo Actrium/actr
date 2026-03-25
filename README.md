@@ -5,66 +5,66 @@
 ![WebRTC](https://img.shields.io/badge/webrtc-enabled-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-基于 WebRTC 和 Actor 模型的分布式实时通信框架演示程序。
+A distributed real-time communication framework demo built on WebRTC and the Actor model.
 
-## 📖 概述
+## 📖 Overview
 
-这个项目展示了一个创新的分布式系统架构，将经典的 Actor 模型与现代 WebRTC 技术相结合。通过"宏观 Actor"的设计理念，每个进程作为一个独立的 Actor，通过 WebRTC 进行点对点通信，同时内置了双路径处理模型来优化不同类型数据的传输。
+This project demonstrates a distributed system architecture that combines the classic Actor model with modern WebRTC transport. Each process is treated as a coarse-grained actor, communicates peer-to-peer over WebRTC, and uses a dual-path processing model to optimize different kinds of traffic.
 
-### 🎯 核心特性
+### 🎯 Key Features
 
-- **宏观 Actor 模型**: 进程级别的 Actor 抽象，简化分布式系统设计
-- **WebRTC 原生支持**: 内置 NAT 穿透和点对点直连能力
-- **双路径处理**: 
-  - **状态路径**: 可靠有序的控制消息处理
-  - **快车道**: 低延迟的流式数据处理
-- **类型安全**: 基于 Protobuf 的契约驱动开发
-- **ACL 感知**: 访问控制列表支持的安全发现机制
-
----
-
-## 📚 文档中心
-
-我们提供了一套完整的设计与开发文档，帮助您深入理解和使用本框架。推荐按以下顺序阅读：
-
-#### **第一部分：核心概念与架构 (Concepts & Architecture)**
-*这部分是所有开发者的必读内容，用于建立对框架的宏观理解。*
-
-1.  **[生态系统综述](./docs/0-Ecosystem-Overview.zh.md)** (建议首先阅读)
-2.  **[理念与架构](./docs/1-Concepts-and-Architecture.zh.md)**
-3.  **[ActorSystem 与 Actor](./docs/1.1-ActorSystem-and-Actor.zh.md)**
-4.  **[与外部世界交互](./docs/1.3-Interacting-with-the-Outside-World.zh.md)**
-5.  **[Actor 间通信模式](./docs/1.4-Inter-Actor-Communication-Patterns.zh.md)**
-6.  **[框架内部协议 (参考)](./docs/1.2-Framework-Internal-Protocols-zh.md)**
-
-#### **第二部分：开发者指南与实践 (Guides & Practices)**
-*这部分是动手实践的内容，指导开发者如何使用框架进行开发。*
-
-1.  **[开发者指南](./docs/2-Developer-Guide.zh.md)** (快速入门教程)
-2.  **[项目清单与命令行工具](./docs/2.4-Project-Manifest-and-CLI.zh.md)** (CLI 参考手册)
-3.  **[Actor 食谱](./docs/2.2-Actor-Cookbook.zh.md)** (进阶开发模式)
-4.  **[测试 Actor](./docs/2.3-Testing-Your-Actors.zh.md)**
-5.  **[媒体源与轨道](./docs/2.1-Media-Sources-and-Tracks.zh.md)** (特定应用场景)
-
-#### **第三部分：实现内幕 (How It Works)**
-*这部分是为希望深入理解框架、或为其贡献代码的开发者准备的。*
-
-1.  **[框架实现内幕](./docs/3-How-it-works.zh.md)** (内部机制概览)
-2.  **[所有专题解析](./docs/)** (包含 `3.1` 至 `3.13` 的所有深度解析文档)
-
-#### **附录**
-
-*   **[名词解释表](./docs/appendix-a-glossary.zh.md)**
+- **Coarse-grained Actor model**: Process-level actor abstraction for simpler distributed design
+- **Native WebRTC support**: Built-in NAT traversal and peer-to-peer connectivity
+- **Dual-path processing**:
+  - **State Path**: Reliable ordered control-message handling
+  - **Fast Path**: Low-latency streaming data handling
+- **Type safety**: Contract-driven development based on Protobuf
+- **ACL-aware discovery**: Secure discovery with access control list support
 
 ---
 
-## 🚀 快速开始
+## 📚 Documentation
 
-### 前置要求
+The repository includes a complete set of design and development documents. A practical reading order is:
 
-- **Rust**: 1.88+ ([安装指南](https://rustup.rs/))
-- **Node.js**: 16+ ([下载地址](https://nodejs.org/))
-- **protoc**: Protocol Buffer 编译器
+#### **Part 1: Concepts & Architecture**
+*Start here to build a shared mental model of the framework.*
+
+1.  **[Ecosystem Overview](./docs/0-Ecosystem-Overview.zh.md)** (recommended first)
+2.  **[Concepts and Architecture](./docs/1-Concepts-and-Architecture.zh.md)**
+3.  **[ActorSystem and Actor](./docs/1.1-ActorSystem-and-Actor.zh.md)**
+4.  **[Interacting with the Outside World](./docs/1.3-Interacting-with-the-Outside-World.zh.md)**
+5.  **[Inter-Actor Communication Patterns](./docs/1.4-Inter-Actor-Communication-Patterns.zh.md)**
+6.  **[Framework Internal Protocols](./docs/1.2-Framework-Internal-Protocols-zh.md)**
+
+#### **Part 2: Guides & Practices**
+*Hands-on material for building with the framework.*
+
+1.  **[Developer Guide](./docs/2-Developer-Guide.zh.md)** (quick start)
+2.  **[Project Manifest and CLI](./docs/2.4-Project-Manifest-and-CLI.zh.md)** (CLI reference)
+3.  **[Actor Cookbook](./docs/2.2-Actor-Cookbook.zh.md)** (advanced patterns)
+4.  **[Testing Your Actors](./docs/2.3-Testing-Your-Actors.zh.md)**
+5.  **[Media Sources and Tracks](./docs/2.1-Media-Sources-and-Tracks.zh.md)** (scenario-specific guidance)
+
+#### **Part 3: How It Works**
+*For contributors and readers who want implementation-level details.*
+
+1.  **[How It Works](./docs/3-How-it-works.zh.md)** (implementation overview)
+2.  **[Deep-dive Topics](./docs/)** (includes the detailed `3.1` to `3.13` documents)
+
+#### **Appendix**
+
+*   **[Glossary](./docs/appendix-a-glossary.zh.md)**
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Rust**: 1.88+ ([install guide](https://rustup.rs/))
+- **Node.js**: 16+ ([download](https://nodejs.org/))
+- **protoc**: Protocol Buffer compiler
   ```bash
   # Ubuntu/Debian
   sudo apt install protobuf-compiler
@@ -73,37 +73,37 @@
   brew install protobuf
   ```
 
-### 一键演示
+### One-Command Demo
 
 ```bash
-# 1. 设置项目（安装依赖、构建）
+# 1. Set up the project (install dependencies and build)
 ./run_demo.sh setup
 
-# 2. 运行完整演示
+# 2. Run the full demo
 ./run_demo.sh demo
 ```
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 actor-rtc/
-├── docs/                          # 框架设计文档
-├── proto/                         # Protobuf 协议定义
-├── actor-rtc-framework/          # 🔥 框架核心 crate
-├── signaling-server/             # Node.js 信令服务器
-├── examples/                     # 🎯 示例程序（使用框架）
-└── run_demo.sh                   # 自动化脚本
+├── docs/                          # framework design documents
+├── proto/                         # Protobuf definitions
+├── actor-rtc-framework/          # core framework crate
+├── signaling-server/             # Node.js signaling server
+├── examples/                     # example applications
+└── run_demo.sh                   # automation script
 ```
 
-## 🤝 贡献指南
+## 🤝 Contributing
 
-我们欢迎各种形式的贡献！
+Contributions of all kinds are welcome.
 
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push the branch (`git push origin feature/AmazingFeature`)
+5. Open a pull request
 
 ## Release Train (Maintainers)
 
@@ -125,6 +125,6 @@ TypeScript package releases use the separate manual workflow
 The package must be published manually once before enabling the trusted
 publisher for `.github/workflows/publish-typescript.yml`.
 
-## 📄 许可证
+## 📄 License
 
-本项目采用 MIT 许可证。
+This project is released under the MIT License.

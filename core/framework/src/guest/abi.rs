@@ -1,0 +1,333 @@
+//! Guest-host ABI data structures and error codes.
+//!
+//! Shared by both WASM and dynclib guest runtimes.
+
+use crate::Dest;
+use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActrError, ActrId, ActrType};
+
+/// ABI error codes.
+pub mod code {
+    /// Operation succeeded.
+    pub const SUCCESS: i32 = 0;
+    /// Generic unrecoverable error.
+    pub const GENERIC_ERROR: i32 = -1;
+    /// Initialization failed.
+    pub const INIT_FAILED: i32 = -2;
+    /// Message handling failed.
+    pub const HANDLE_FAILED: i32 = -3;
+    /// Memory allocation failed.
+    pub const ALLOC_FAILED: i32 = -4;
+    /// Protocol / codec error.
+    pub const PROTOCOL_ERROR: i32 = -5;
+    /// Guest-provided reply buffer is too small.
+    pub const BUFFER_TOO_SMALL: i32 = -6;
+    /// Unsupported runtime operation code.
+    pub const UNSUPPORTED_OP: i32 = -7;
+}
+
+/// Internal ABI version numbers.
+pub mod version {
+    /// ABI version 1.
+    pub const V1: u32 = 1;
+}
+
+/// Runtime operation codes carried inside [`AbiFrame`].
+pub mod op {
+    pub const HOST_CALL: u32 = 1;
+    pub const HOST_TELL: u32 = 2;
+    pub const HOST_CALL_RAW: u32 = 3;
+    pub const HOST_DISCOVER: u32 = 4;
+    pub const GUEST_HANDLE: u32 = 101;
+}
+
+/// Dedicated payload used by `actr_init`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct InitPayloadV1 {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(string, tag = "2")]
+    pub actr_type: String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub credential: Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub actor_id: Vec<u8>,
+    #[prost(uint32, tag = "5")]
+    pub realm_id: u32,
+}
+
+/// Runtime frame used by both host->guest and guest->host invocation.
+///
+/// TODO: This type is temporarily `pub` because `actr_hyper` still performs
+/// cross-crate host-side ABI encoding and decoding through
+/// `actr_framework::guest::abi`. Once the shared runtime ABI types are moved to
+/// a better ownership boundary, narrow this visibility to the intended
+/// internal-only surface.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct AbiFrame {
+    #[prost(uint32, tag = "1")]
+    pub abi_version: u32,
+    #[prost(uint32, tag = "2")]
+    pub op: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: Vec<u8>,
+}
+
+/// Runtime reply frame.
+///
+/// TODO: Keep visibility aligned with [`AbiFrame`]. This is public only as a
+/// temporary crate-topology workaround while host-side runtime code lives in
+/// `actr_hyper`.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct AbiReply {
+    #[prost(uint32, tag = "1")]
+    pub abi_version: u32,
+    #[prost(int32, tag = "2")]
+    pub status: i32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: Vec<u8>,
+}
+
+/// Invocation context injected by Hyper before entering guest handle logic.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct InvocationContextV1 {
+    #[prost(message, required, tag = "1")]
+    pub self_id: ActrId,
+    #[prost(message, optional, tag = "2")]
+    pub caller_id: Option<ActrId>,
+    #[prost(string, tag = "3")]
+    pub request_id: String,
+}
+
+/// Runtime host->guest handle payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GuestHandleV1 {
+    #[prost(message, required, tag = "1")]
+    pub ctx: InvocationContextV1,
+    #[prost(bytes = "vec", tag = "2")]
+    pub rpc_envelope: Vec<u8>,
+}
+
+/// ABI-level destination encoding (replaces hand-rolled 0x00/0x01/0x02 byte protocol).
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct DestV1 {
+    #[prost(oneof = "DestKind", tags = "1, 2, 3")]
+    pub kind: Option<DestKind>,
+}
+
+/// Destination variants carried inside [`DestV1`].
+#[derive(Clone, PartialEq, prost::Oneof)]
+pub enum DestKind {
+    #[prost(bool, tag = "1")]
+    Shell(bool),
+    #[prost(bool, tag = "2")]
+    Local(bool),
+    #[prost(message, tag = "3")]
+    Actor(ActrId),
+}
+
+impl DestV1 {
+    /// Construct a shell destination.
+    pub fn shell() -> Self {
+        Self {
+            kind: Some(DestKind::Shell(true)),
+        }
+    }
+
+    /// Construct a local destination.
+    pub fn local() -> Self {
+        Self {
+            kind: Some(DestKind::Local(true)),
+        }
+    }
+
+    /// Construct an actor destination.
+    pub fn actor(id: ActrId) -> Self {
+        Self {
+            kind: Some(DestKind::Actor(id)),
+        }
+    }
+
+    /// Convert the ABI destination into the framework destination.
+    pub fn try_into_dest(self) -> Result<Dest, ActrError> {
+        match self.kind {
+            Some(DestKind::Shell(_)) => Ok(Dest::Shell),
+            Some(DestKind::Local(_)) => Ok(Dest::Local),
+            Some(DestKind::Actor(id)) => Ok(Dest::Actor(id)),
+            None => Err(ActrError::DecodeFailure(
+                "destination kind is missing".into(),
+            )),
+        }
+    }
+}
+
+/// Runtime guest->host call payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostCallV1 {
+    #[prost(string, tag = "1")]
+    pub route_key: String,
+    #[prost(message, required, tag = "2")]
+    pub dest: DestV1,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: Vec<u8>,
+}
+
+/// Runtime guest->host tell payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostTellV1 {
+    #[prost(string, tag = "1")]
+    pub route_key: String,
+    #[prost(message, required, tag = "2")]
+    pub dest: DestV1,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: Vec<u8>,
+}
+
+/// Runtime guest->host raw call payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostCallRawV1 {
+    #[prost(string, tag = "1")]
+    pub route_key: String,
+    #[prost(message, required, tag = "2")]
+    pub target: ActrId,
+    #[prost(bytes = "vec", tag = "3")]
+    pub payload: Vec<u8>,
+}
+
+/// Runtime guest->host discovery payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostDiscoverV1 {
+    #[prost(message, required, tag = "1")]
+    pub target_type: ActrType,
+}
+
+/// Payloads that can automatically construct runtime frames.
+pub trait AbiPayload: ProstMessage + Default + Sized {
+    const ABI_VERSION: u32;
+    const OP: u32;
+
+    fn into_frame(&self) -> Result<AbiFrame, i32> {
+        let mut payload = Vec::new();
+        self.encode(&mut payload)
+            .map_err(|_| code::PROTOCOL_ERROR)?;
+
+        Ok(AbiFrame {
+            abi_version: Self::ABI_VERSION,
+            op: Self::OP,
+            payload,
+        })
+    }
+
+    fn decode_payload(bytes: &[u8]) -> Result<Self, i32> {
+        Self::decode(bytes).map_err(|_| code::PROTOCOL_ERROR)
+    }
+}
+
+impl AbiPayload for HostCallV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_CALL;
+}
+
+impl AbiPayload for HostTellV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_TELL;
+}
+
+impl AbiPayload for HostCallRawV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_CALL_RAW;
+}
+
+impl AbiPayload for HostDiscoverV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_DISCOVER;
+}
+
+impl AbiPayload for GuestHandleV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::GUEST_HANDLE;
+}
+
+/// Encode a protobuf message into bytes.
+pub fn encode_message<M: ProstMessage>(message: &M) -> Result<Vec<u8>, i32> {
+    let mut out = Vec::new();
+    message.encode(&mut out).map_err(|_| code::PROTOCOL_ERROR)?;
+    Ok(out)
+}
+
+/// Decode a protobuf message from bytes.
+pub fn decode_message<M: ProstMessage + Default>(bytes: &[u8]) -> Result<M, i32> {
+    M::decode(bytes).map_err(|_| code::PROTOCOL_ERROR)
+}
+
+/// Encode a successful runtime reply.
+pub fn success_reply(payload: Vec<u8>) -> Result<Vec<u8>, i32> {
+    encode_message(&AbiReply {
+        abi_version: version::V1,
+        status: code::SUCCESS,
+        payload,
+    })
+}
+
+/// Encode a failed runtime reply.
+pub fn error_reply(status: i32, message: impl Into<Vec<u8>>) -> Result<Vec<u8>, i32> {
+    encode_message(&AbiReply {
+        abi_version: version::V1,
+        status,
+        payload: message.into(),
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared guest-side helpers (used by both WASM and DynClib contexts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Convert a [`crate::Dest`] to the ABI-level [`DestV1`].
+pub fn dest_to_v1(dest: &crate::Dest) -> DestV1 {
+    match dest {
+        crate::Dest::Shell => DestV1::shell(),
+        crate::Dest::Local => DestV1::local(),
+        crate::Dest::Actor(id) => DestV1::actor(id.clone()),
+    }
+}
+
+/// Convert an ABI-level [`DestV1`] back to [`crate::Dest`].
+///
+/// Returns `None` if the `kind` field is absent.
+pub fn dest_v1_to_dest(v1: &DestV1) -> Option<crate::Dest> {
+    v1.clone().try_into_dest().ok()
+}
+
+/// Convert an ABI error code to an [`actr_protocol::ActrError`].
+pub fn abi_error_to_actr(code_val: i32) -> actr_protocol::ActrError {
+    use actr_protocol::ActrError;
+    match code_val {
+        code::GENERIC_ERROR => ActrError::Internal("host returned generic ABI error".into()),
+        code::INIT_FAILED => ActrError::Internal("host initialization failed".into()),
+        code::HANDLE_FAILED => ActrError::Internal("guest handle failed".into()),
+        code::ALLOC_FAILED => ActrError::Internal("memory allocation failed".into()),
+        code::PROTOCOL_ERROR => ActrError::DecodeFailure("ABI payload decode failed".into()),
+        code::BUFFER_TOO_SMALL => {
+            ActrError::Internal("reply buffer too small for host invoke".into())
+        }
+        code::UNSUPPORTED_OP => ActrError::NotImplemented("unsupported ABI operation".into()),
+        other => ActrError::Internal(format!("unexpected ABI status code {other}")),
+    }
+}
+
+/// Convert an [`AbiReply`] with a non-success status to an [`actr_protocol::ActrError`].
+pub fn reply_to_actr_error(reply: AbiReply) -> actr_protocol::ActrError {
+    use actr_protocol::ActrError;
+    if reply.payload.is_empty() {
+        return abi_error_to_actr(reply.status);
+    }
+
+    let message = String::from_utf8(reply.payload)
+        .unwrap_or_else(|_| format!("guest returned status {}", reply.status));
+
+    match reply.status {
+        code::PROTOCOL_ERROR => ActrError::DecodeFailure(message),
+        code::UNSUPPORTED_OP => ActrError::NotImplemented(message),
+        _ => ActrError::Internal(message),
+    }
+}

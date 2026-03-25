@@ -1,6 +1,6 @@
-//! Service Worker 生命周期管理
+//! Service Worker lifecycle management.
 //!
-//! 负责监听 DOM 进程的生命周期事件，并协调资源清理和恢复
+//! Listens for DOM lifecycle events and coordinates cleanup and recovery.
 
 use crate::error_handler::get_global_error_handler;
 use crate::{ConnType, WebError, WebResult, WirePool};
@@ -12,17 +12,17 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{ExtendableMessageEvent, ServiceWorkerGlobalScope};
 
-/// Service Worker 生命周期管理器
+/// Service Worker lifecycle manager.
 pub struct SwLifecycleManager {
-    /// 当前活跃的 DOM 会话集合
+    /// Set of currently active DOM sessions.
     active_sessions: Arc<Mutex<HashSet<String>>>,
 
-    /// WirePool 引用（用于清理失效连接）
+    /// Optional WirePool reference used to clean up stale connections.
     wire_pool: Option<Arc<WirePool>>,
 }
 
 impl SwLifecycleManager {
-    /// 创建新的生命周期管理器
+    /// Create a new lifecycle manager.
     pub fn new() -> Self {
         log::info!("[SwLifecycle] Creating lifecycle manager");
 
@@ -32,17 +32,17 @@ impl SwLifecycleManager {
         }
     }
 
-    /// 设置 WirePool 引用
+    /// Set the WirePool reference.
     ///
-    /// 用于在 DOM 重启时清理失效的 WebRTC 连接
+    /// Used to clean up stale WebRTC connections when the DOM restarts.
     pub fn set_wire_pool(&mut self, wire_pool: Arc<WirePool>) {
         log::info!("[SwLifecycle] WirePool registered");
         self.wire_pool = Some(wire_pool);
     }
 
-    /// 初始化生命周期管理
+    /// Initialize lifecycle management.
     ///
-    /// 设置全局消息监听器
+    /// Installs the global message listener.
     pub fn init(&self) -> WebResult<()> {
         log::info!("[SwLifecycle] Initializing lifecycle management");
 
@@ -52,57 +52,52 @@ impl SwLifecycleManager {
         Ok(())
     }
 
-    /// 设置 Service Worker 全局消息监听器
+    /// Set up the global Service Worker message listener.
     fn setup_message_listener(&self) -> WebResult<()> {
         let active_sessions = Arc::clone(&self.active_sessions);
         let wire_pool = self.wire_pool.clone();
 
-        // 获取 ServiceWorkerGlobalScope
+        // Get ServiceWorkerGlobalScope.
         let global = js_sys::global();
         let sw_global = global
             .dyn_into::<ServiceWorkerGlobalScope>()
             .map_err(|_| WebError::Internal("Not in Service Worker context".into()))?;
 
-        // 创建消息处理回调
+        // Create the message handler callback.
         let callback = Closure::wrap(Box::new(move |event: ExtendableMessageEvent| {
             let data = event.data();
 
-            // 尝试作为序列化的 ControlMessage 处理（来自 DOM error_reporter）
+            // First try to handle the payload as a serialized ControlMessage from the DOM error reporter.
             if data.dyn_ref::<js_sys::Object>().is_some() {
-                // 尝试反序列化为 Vec<u8>（serde_wasm_bindgen 格式）
+                // Try to deserialize it as `Vec<u8>` using serde_wasm_bindgen format.
                 if let Ok(bytes) = serde_wasm_bindgen::from_value::<Vec<u8>>(data.clone()) {
-                    if let Ok(control_msg) = ControlMessage::deserialize(&bytes) {
-                        match control_msg {
-                            ControlMessage::ErrorReport(error_report) => {
-                                log::debug!(
-                                    "[SwLifecycle] Received error report via SW controller: {:?}",
-                                    error_report.category
-                                );
+                    if let Ok(ControlMessage::ErrorReport(error_report)) =
+                        ControlMessage::deserialize(&bytes)
+                    {
+                        log::debug!(
+                            "[SwLifecycle] Received error report via SW controller: {:?}",
+                            error_report.category
+                        );
 
-                                // 转发给全局错误处理器
-                                if let Some(handler) = get_global_error_handler() {
-                                    handler.handle_error_report(error_report);
-                                } else {
-                                    log::warn!(
-                                        "[SwLifecycle] Error handler not initialized, cannot process error report"
-                                    );
-                                }
-                                return;
-                            }
-                            _ => {
-                                // 其他 ControlMessage 类型，继续处理
-                            }
+                        // Forward it to the global error handler.
+                        if let Some(handler) = get_global_error_handler() {
+                            handler.handle_error_report(error_report);
+                        } else {
+                            log::warn!(
+                                "[SwLifecycle] Error handler not initialized, cannot process error report"
+                            );
                         }
+                        return;
                     }
                 }
             }
 
-            // 尝试作为普通对象处理（生命周期消息）
+            // Otherwise try to process it as a plain lifecycle object.
             if let Ok(data_obj) = data.dyn_into::<js_sys::Object>() {
-                // 提取消息类型
+                // Extract the message type.
                 if let Ok(msg_type_js) = js_sys::Reflect::get(&data_obj, &"type".into()) {
                     if let Some(msg_type) = msg_type_js.as_string() {
-                        // 提取 session_id
+                        // Extract session_id.
                         let session_id = if let Ok(session_id_js) =
                             js_sys::Reflect::get(&data_obj, &"session_id".into())
                         {
@@ -111,7 +106,7 @@ impl SwLifecycleManager {
                             String::new()
                         };
 
-                        // 处理不同类型的生命周期消息
+                        // Handle each lifecycle message type.
                         match msg_type.as_str() {
                             "DOM_READY" => {
                                 Self::handle_dom_ready(&active_sessions, &wire_pool, &session_id);
@@ -123,7 +118,7 @@ impl SwLifecycleManager {
                                 Self::handle_dom_ping(&session_id);
                             }
                             _ => {
-                                // 忽略其他消息
+                                // Ignore other messages.
                             }
                         }
                     }
@@ -131,21 +126,21 @@ impl SwLifecycleManager {
             }
         }) as Box<dyn FnMut(ExtendableMessageEvent)>);
 
-        // 注册到 SW 的 message 事件
+        // Register the callback on the SW `message` event.
         sw_global
             .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
             .map_err(|e| WebError::Internal(format!("Failed to add message listener: {:?}", e)))?;
 
-        // 保持回调活跃
+        // Keep the callback alive.
         callback.forget();
 
         log::info!("[SwLifecycle] Message listener registered");
         Ok(())
     }
 
-    /// 处理 DOM_READY 消息
+    /// Handle the `DOM_READY` message.
     ///
-    /// DOM 进程重启后发送此消息
+    /// Sent after the DOM process restarts.
     fn handle_dom_ready(
         active_sessions: &Arc<Mutex<HashSet<String>>>,
         wire_pool: &Option<Arc<WirePool>>,
@@ -158,13 +153,13 @@ impl SwLifecycleManager {
 
         log::info!("[SwLifecycle] DOM_READY received: {}", session_id);
 
-        // 添加到活跃会话集合
+        // Add it to the active session set.
         {
             let mut sessions = active_sessions.lock();
             sessions.insert(session_id.to_string());
         }
 
-        // 清理失效的 WebRTC 连接
+        // Clean up stale WebRTC connections.
         if let Some(pool) = wire_pool {
             Self::cleanup_stale_webrtc_connections(pool, session_id);
         } else {
@@ -172,9 +167,9 @@ impl SwLifecycleManager {
         }
     }
 
-    /// 处理 DOM_UNLOADING 消息
+    /// Handle the `DOM_UNLOADING` message.
     ///
-    /// DOM 进程即将关闭时发送此消息
+    /// Sent when the DOM process is about to shut down.
     fn handle_dom_unloading(active_sessions: &Arc<Mutex<HashSet<String>>>, session_id: &str) {
         if session_id.is_empty() {
             log::warn!("[SwLifecycle] DOM_UNLOADING received without session_id");
@@ -183,7 +178,7 @@ impl SwLifecycleManager {
 
         log::info!("[SwLifecycle] DOM_UNLOADING received: {}", session_id);
 
-        // 从活跃会话集合移除
+        // Remove it from the active session set.
         {
             let mut sessions = active_sessions.lock();
             sessions.remove(session_id);
@@ -192,37 +187,36 @@ impl SwLifecycleManager {
         log::info!("[SwLifecycle] Session {} marked for cleanup", session_id);
     }
 
-    /// 处理 DOM_PING 消息
+    /// Handle the `DOM_PING` message.
     ///
-    /// DOM 检查 SW 是否活跃
+    /// Used by the DOM side to check whether the Service Worker is alive.
     fn handle_dom_ping(session_id: &str) {
         log::debug!("[SwLifecycle] DOM_PING received from {}", session_id);
 
-        // TODO: 发送 PONG 响应
-        // 需要有一个返回通道
+        // TODO: send a PONG response once there is a return channel.
     }
 
-    /// 清理失效的 WebRTC 连接
+    /// Clean up stale WebRTC connections.
     fn cleanup_stale_webrtc_connections(wire_pool: &Arc<WirePool>, session_id: &str) {
         log::info!(
             "[SwLifecycle] Cleaning up stale WebRTC connections for session: {}",
             session_id
         );
 
-        // 标记 WebRTC 连接为失效
-        // 注意：这里简单地移除所有 WebRTC 连接
-        // 实际上可能需要更精细的会话管理
+        // Mark WebRTC connections as failed.
+        // This currently removes all WebRTC connections, though finer-grained session
+        // management may be needed later.
         wire_pool.mark_connection_failed(ConnType::WebRTC);
 
         log::info!("[SwLifecycle] WebRTC connections marked as failed");
     }
 
-    /// 获取当前活跃会话数
+    /// Return the number of active sessions.
     pub fn active_session_count(&self) -> usize {
         self.active_sessions.lock().len()
     }
 
-    /// 检查会话是否活跃
+    /// Check whether a session is active.
     pub fn is_session_active(&self, session_id: &str) -> bool {
         self.active_sessions.lock().contains(session_id)
     }
@@ -253,7 +247,7 @@ mod tests {
     fn test_session_tracking() {
         let manager = SwLifecycleManager::new();
 
-        // 模拟添加会话
+        // Simulate adding sessions.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.insert("session-1".to_string());
@@ -265,7 +259,7 @@ mod tests {
         assert!(manager.is_session_active("session-2"));
         assert!(!manager.is_session_active("session-3"));
 
-        // 移除会话
+        // Remove a session.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.remove("session-1");
@@ -359,7 +353,7 @@ mod tests {
 
         SwLifecycleManager::handle_dom_ready(&active_sessions, &wire_pool_opt, "session-123");
 
-        // 验证会话被添加
+        // Verify that the session was added.
         let sessions = active_sessions.lock();
         assert!(sessions.contains("session-123"));
     }
@@ -371,7 +365,7 @@ mod tests {
 
         SwLifecycleManager::handle_dom_ready(&active_sessions, &wire_pool_opt, "session-456");
 
-        // 即使没有 wire_pool，会话仍应被添加
+        // The session should still be added even without a wire pool.
         let sessions = active_sessions.lock();
         assert!(sessions.contains("session-456"));
     }
@@ -384,7 +378,7 @@ mod tests {
 
         SwLifecycleManager::handle_dom_ready(&active_sessions, &wire_pool_opt, "");
 
-        // 空 session_id 不应被添加
+        // An empty `session_id` should not be added.
         let sessions = active_sessions.lock();
         assert!(!sessions.contains(""));
         assert_eq!(sessions.len(), 0);
@@ -394,16 +388,16 @@ mod tests {
     fn test_handle_dom_unloading() {
         let active_sessions = Arc::new(Mutex::new(HashSet::new()));
 
-        // 先添加会话
+        // Add a session first.
         {
             let mut sessions = active_sessions.lock();
             sessions.insert("session-abc".to_string());
         }
 
-        // 处理 DOM_UNLOADING
+        // Handle `DOM_UNLOADING`.
         SwLifecycleManager::handle_dom_unloading(&active_sessions, "session-abc");
 
-        // 验证会话被移除
+        // Verify that the session was removed.
         let sessions = active_sessions.lock();
         assert!(!sessions.contains("session-abc"));
     }
@@ -412,16 +406,16 @@ mod tests {
     fn test_handle_dom_unloading_empty_session_id() {
         let active_sessions = Arc::new(Mutex::new(HashSet::new()));
 
-        // 添加一个会话
+        // Add a session.
         {
             let mut sessions = active_sessions.lock();
             sessions.insert("session-xyz".to_string());
         }
 
-        // 处理空 session_id
+        // Handle an empty `session_id`.
         SwLifecycleManager::handle_dom_unloading(&active_sessions, "");
 
-        // 原有会话不应受影响
+        // Existing sessions should remain unaffected.
         let sessions = active_sessions.lock();
         assert!(sessions.contains("session-xyz"));
         assert_eq!(sessions.len(), 1);
@@ -431,16 +425,16 @@ mod tests {
     fn test_handle_dom_unloading_nonexistent_session() {
         let active_sessions = Arc::new(Mutex::new(HashSet::new()));
 
-        // 添加一个会话
+        // Add a session.
         {
             let mut sessions = active_sessions.lock();
             sessions.insert("session-1".to_string());
         }
 
-        // 尝试移除不存在的会话
+        // Try to remove a non-existent session.
         SwLifecycleManager::handle_dom_unloading(&active_sessions, "session-999");
 
-        // 原有会话不应受影响
+        // Existing sessions should remain unaffected.
         let sessions = active_sessions.lock();
         assert!(sessions.contains("session-1"));
         assert_eq!(sessions.len(), 1);
@@ -448,27 +442,27 @@ mod tests {
 
     #[test]
     fn test_handle_dom_ping() {
-        // DOM_PING 处理应该不会崩溃
+        // Handling `DOM_PING` should not crash.
         SwLifecycleManager::handle_dom_ping("ping-session");
 
-        // TODO: 当实现 PONG 响应后，添加更多断言
+        // TODO: Add stronger assertions once PONG responses are implemented.
     }
 
     #[test]
     fn test_cleanup_stale_webrtc_connections() {
         let wire_pool = create_test_wire_pool();
 
-        // 清理失效连接 (不会崩溃)
+        // Clean up stale connections; this should not crash.
         SwLifecycleManager::cleanup_stale_webrtc_connections(&wire_pool, "test-session");
 
-        // 测试通过即表示清理函数正常执行
+        // Passing the test means the cleanup function executed normally.
     }
 
     #[test]
     fn test_multiple_sessions_management() {
         let manager = SwLifecycleManager::new();
 
-        // 添加多个会话
+        // Add multiple sessions.
         {
             let mut sessions = manager.active_sessions.lock();
             for i in 0..10 {
@@ -478,12 +472,12 @@ mod tests {
 
         assert_eq!(manager.active_session_count(), 10);
 
-        // 验证所有会话都活跃
+        // Verify that all sessions are active.
         for i in 0..10 {
             assert!(manager.is_session_active(&format!("session-{}", i)));
         }
 
-        // 移除一半会话
+        // Remove half of the sessions.
         {
             let mut sessions = manager.active_sessions.lock();
             for i in 0..5 {
@@ -493,12 +487,12 @@ mod tests {
 
         assert_eq!(manager.active_session_count(), 5);
 
-        // 验证移除的会话不活跃
+        // Verify that removed sessions are inactive.
         for i in 0..5 {
             assert!(!manager.is_session_active(&format!("session-{}", i)));
         }
 
-        // 验证保留的会话仍活跃
+        // Verify that retained sessions are still active.
         for i in 5..10 {
             assert!(manager.is_session_active(&format!("session-{}", i)));
         }
@@ -508,7 +502,7 @@ mod tests {
     fn test_session_reactivation() {
         let manager = SwLifecycleManager::new();
 
-        // 添加会话
+        // Add the session.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.insert("reactivate-session".to_string());
@@ -516,7 +510,7 @@ mod tests {
 
         assert!(manager.is_session_active("reactivate-session"));
 
-        // 移除会话
+        // Remove the session.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.remove("reactivate-session");
@@ -524,7 +518,7 @@ mod tests {
 
         assert!(!manager.is_session_active("reactivate-session"));
 
-        // 重新添加相同会话
+        // Re-add the same session.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.insert("reactivate-session".to_string());
@@ -538,14 +532,14 @@ mod tests {
         let mut manager = SwLifecycleManager::new();
         let wire_pool = create_test_wire_pool();
 
-        // 初始没有 wire_pool
+        // Initially there is no wire pool.
         assert!(manager.wire_pool.is_none());
 
-        // 设置 wire_pool
+        // Set the wire pool.
         manager.set_wire_pool(wire_pool.clone());
         assert!(manager.wire_pool.is_some());
 
-        // 验证可以访问 wire_pool
+        // Verify that the wire pool is accessible.
         assert!(manager.wire_pool.is_some());
     }
 
@@ -553,7 +547,7 @@ mod tests {
     fn test_concurrent_session_operations() {
         let manager = SwLifecycleManager::new();
 
-        // 模拟并发添加会话
+        // Simulate concurrent session additions.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.insert("concurrent-1".to_string());
@@ -561,12 +555,12 @@ mod tests {
             sessions.insert("concurrent-3".to_string());
         }
 
-        // 模拟并发查询
+        // Simulate concurrent reads.
         assert!(manager.is_session_active("concurrent-1"));
         assert!(manager.is_session_active("concurrent-2"));
         assert!(manager.is_session_active("concurrent-3"));
 
-        // 模拟并发移除
+        // Simulate concurrent removals.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.remove("concurrent-2");
@@ -581,10 +575,10 @@ mod tests {
     fn test_empty_session_id_handling() {
         let manager = SwLifecycleManager::new();
 
-        // 尝试查询空 session_id
+        // Try querying an empty `session_id`.
         assert!(!manager.is_session_active(""));
 
-        // 尝试手动添加空 session_id（虽然 handle_dom_ready 会拒绝）
+        // Try manually inserting an empty `session_id`, even though `handle_dom_ready` rejects it.
         {
             let mut sessions = manager.active_sessions.lock();
             sessions.insert("".to_string());

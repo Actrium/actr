@@ -25,68 +25,56 @@
 #![warn(missing_docs)]
 
 // ============================================================================
-// Protocol - 核心协议类型
+// Protocol - Core protocol types
 // ============================================================================
 
-/// Protocol 模块 - 核心协议定义
+/// Protocol module - core protocol definitions
 pub use actr_protocol as protocol;
 
-// 重新导出常用的协议类型
+// Re-export commonly used protocol types
 pub use actr_protocol::{
     ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope, RpcRequest,
 };
 
 // ============================================================================
-// Framework - 框架核心抽象
+// Framework - Core framework abstractions
 // ============================================================================
 
-/// Framework 模块 - 框架核心抽象
+/// Framework module - core framework abstractions
 pub use actr_framework as framework;
 
-// 重新导出框架核心类型
+// Re-export core framework types
 pub use actr_framework::{Context, MessageDispatcher, Workload};
 
 // ============================================================================
-// Runtime - 运行时 (可选)
-// ============================================================================
-
-#[cfg(feature = "runtime")]
-/// Runtime 模块 - ActorSystem 运行时
-pub use actr_runtime as runtime;
-
-// ============================================================================
-// Config - 配置支持 (可选)
+// Config - Configuration support (optional)
 // ============================================================================
 
 #[cfg(feature = "config")]
-/// Config 模块 - 配置文件解析
+/// Config module - configuration file parsing
 pub use actr_config as config;
 
 // ============================================================================
-// Prelude - 常用导入
+// Prelude - Common imports
 // ============================================================================
 
-/// Prelude 模块 - 包含最常用的类型和 trait
+/// Prelude module - contains the most commonly used types and traits
 ///
-/// 推荐在应用代码中使用 `use actr::prelude::*;` 来导入所有必要的类型。
+/// Recommended usage: `use actr::prelude::*;` in application code to import all necessary types.
 pub mod prelude {
-    // 协议层 - 核心类型
+    // Protocol layer - core types
     pub use crate::protocol::{
         ActorResult, ActrError, ActrId, ActrType, PayloadType, RpcEnvelope, RpcRequest,
     };
 
-    // 框架层 - 核心 trait 和类型
+    // Framework layer - core traits and types
     pub use crate::framework::{Context, MessageDispatcher, Workload};
 
-    // 运行时
+    // Runtime infrastructure - ActrNode / ActrRef
     #[cfg(feature = "runtime")]
-    pub use crate::runtime;
+    pub use actr_hyper::{ActrNode, ActrRef, init_observability};
 
-    // 配置
-    #[cfg(feature = "config")]
-    pub use crate::config;
-
-    // 常用 trait 和类型
+    // Common traits and types
     pub use async_trait::async_trait;
     pub use std::sync::Arc;
 }

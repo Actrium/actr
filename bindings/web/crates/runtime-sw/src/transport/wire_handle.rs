@@ -1,6 +1,7 @@
-//! Wire Handle - 统一的 Wire 层组件句柄
+//! Unified handle for wire-layer components.
 //!
-//! 为 Wire 层组件（WebSocket/WebRTC）提供统一的访问接口
+//! Provides a single access interface for wire implementations such as
+//! WebSocket and WebRTC.
 
 use super::lane::DataLane;
 use super::websocket_connection::WebSocketConnection;
@@ -10,27 +11,28 @@ use futures::channel::mpsc;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// WebRTC 连接（通过 DOM 创建）
+/// WebRTC connection created by the DOM side.
 ///
-/// SW 端持有的是 MessagePort 引用，实际 PeerConnection 在 DOM
+/// The Service Worker stores a `MessagePort` reference while the actual
+/// `PeerConnection` lives in the DOM.
 #[derive(Clone)]
 pub struct WebRtcConnection {
-    /// 对等端 ID
+    /// Peer ID.
     peer_id: String,
 
-    /// DataChannel 的 MessagePort（从 DOM 转移过来）
-    /// 当 DOM 创建好 P2P 后，会通过 transferable 将 MessagePort 发送给 SW
+    /// `MessagePort` for the DataChannel, transferred from the DOM side.
+    /// Once the DOM establishes the P2P connection, it sends this port to the SW.
     datachannel_port: Option<Arc<web_sys::MessagePort>>,
 
-    /// 连接状态
+    /// Connection state.
     connected: Arc<parking_lot::Mutex<bool>>,
 
-    /// DataLane 缓存（按 PayloadType 缓存，避免重复创建）
+    /// DataLane cache keyed by `PayloadType` to avoid rebuilding lanes.
     lane_cache: Arc<DashMap<PayloadType, DataLane>>,
 }
 
 impl WebRtcConnection {
-    /// 创建新的 WebRTC 连接句柄（初始未连接）
+    /// Create a new WebRTC connection handle in the disconnected state.
     pub fn new(peer_id: String) -> Self {
         Self {
             peer_id,
@@ -40,7 +42,7 @@ impl WebRtcConnection {
         }
     }
 
-    /// 设置 DataChannel MessagePort（DOM 创建完成后调用）
+    /// Set the DataChannel `MessagePort` after DOM-side creation completes.
     pub fn set_datachannel_port(&mut self, port: web_sys::MessagePort) {
         self.datachannel_port = Some(Arc::new(port));
         *self.connected.lock() = true;
@@ -50,10 +52,10 @@ impl WebRtcConnection {
         );
     }
 
-    /// 建立连接（WebRTC 实际由 DOM 创建，这里只是等待）
+    /// Connect the handle.
     pub async fn connect(&self) -> WebResult<()> {
-        // WebRTC 连接由 DOM 创建，SW 这边不主动连接
-        // 如果已经有 port，说明已连接
+        // The DOM side creates the WebRTC connection. The SW only waits for it.
+        // If a port already exists, the connection is considered ready.
         if self.datachannel_port.is_some() {
             Ok(())
         } else {
@@ -63,19 +65,19 @@ impl WebRtcConnection {
         }
     }
 
-    /// 检查是否已连接
+    /// Check whether the connection is ready.
     pub fn is_connected(&self) -> bool {
         *self.connected.lock()
     }
 
-    /// 获取或创建 DataLane（带缓存）
+    /// Get or create a cached `DataLane`.
     ///
-    /// SW 端的 WebRTC 通过 MessagePort 桥接到 DOM：
-    ///   SW DataLane::PostMessage → MessagePort → DOM → RtcDataChannel
+    /// WebRTC on the SW side is bridged into the DOM through `MessagePort`:
+    ///   SW `DataLane::PostMessage` -> `MessagePort` -> DOM -> `RtcDataChannel`
     ///
-    /// 缓存策略与 WebSocketConnection::get_lane 一致。
+    /// The caching strategy matches `WebSocketConnection::get_lane`.
     pub async fn get_lane(&self, payload_type: PayloadType) -> WebResult<DataLane> {
-        // 1. 检查缓存
+        // 1. Check the cache.
         if let Some(lane) = self.lane_cache.get(&payload_type) {
             log::trace!(
                 "[WebRtcConnection] Reusing cached lane: peer={} type={:?}",
@@ -85,7 +87,7 @@ impl WebRtcConnection {
             return Ok(lane.clone());
         }
 
-        // 2. 需要 datachannel_port 才能创建 Lane
+        // 2. A datachannel port is required to create a lane.
         let port = self.datachannel_port.as_ref().ok_or_else(|| {
             WebError::Transport("WebRTC connection not ready (no MessagePort)".to_string())
         })?;
@@ -96,12 +98,12 @@ impl WebRtcConnection {
             payload_type
         );
 
-        // 3. 直接构造 DataLane::PostMessage
+        // 3. Build `DataLane::PostMessage` directly.
         //
-        // 发送方向：SW → datachannel_port.postMessage() → DOM bridge → RtcDataChannel.send()
-        // 接收方向：DOM bridge → SW handle_fast_path（不经过此 lane 的 rx）
+        // Send path: SW -> datachannel_port.postMessage() -> DOM bridge -> RtcDataChannel.send()
+        // Receive path: DOM bridge -> SW handle_fast_path (without this lane's rx)
         //
-        // rx 通道保留为空（接收走 handle_fast_path），仅用于发送。
+        // The rx channel stays empty because receiving is handled via `handle_fast_path`.
         let (_tx, rx) = mpsc::unbounded();
         let lane = DataLane::PostMessage {
             port: Arc::clone(port),
@@ -110,7 +112,7 @@ impl WebRtcConnection {
             failure_notifier: None,
         };
 
-        // 4. 缓存
+        // 4. Cache the lane.
         self.lane_cache.insert(payload_type, lane.clone());
 
         log::info!(
@@ -122,7 +124,7 @@ impl WebRtcConnection {
         Ok(lane)
     }
 
-    /// 关闭连接
+    /// Close the connection.
     pub async fn close(&self) -> WebResult<()> {
         *self.connected.lock() = false;
         self.lane_cache.clear();
@@ -130,7 +132,7 @@ impl WebRtcConnection {
         Ok(())
     }
 
-    /// 获取对等端 ID
+    /// Get the peer ID.
     pub fn peer_id(&self) -> &str {
         &self.peer_id
     }
@@ -145,23 +147,23 @@ impl std::fmt::Debug for WebRtcConnection {
     }
 }
 
-/// WireHandle - Wire 层组件的统一句柄
+/// Unified handle for wire-layer components.
 ///
-/// # 设计理念
-/// - 使用枚举 dispatch 而非 trait object，实现零虚拟调用开销
-/// - 提供统一接口访问不同的 Wire 层实现
-/// - 支持连接优先级比较（WebRTC > WebSocket）
+/// # Design
+/// - Uses enum dispatch instead of trait objects to avoid virtual dispatch cost
+/// - Provides a uniform interface over different wire implementations
+/// - Supports connection priority ordering (`WebRTC` > `WebSocket`)
 #[derive(Clone, Debug)]
 pub enum WireHandle {
-    /// WebSocket 连接句柄
+    /// WebSocket connection handle.
     WebSocket(WebSocketConnection),
 
-    /// WebRTC 连接句柄
+    /// WebRTC connection handle.
     WebRTC(WebRtcConnection),
 }
 
 impl WireHandle {
-    /// 获取连接类型
+    /// Get the connection type.
     #[inline]
     pub fn conn_type(&self) -> ConnType {
         match self {
@@ -170,7 +172,7 @@ impl WireHandle {
         }
     }
 
-    /// 获取连接类型名称
+    /// Get the connection type name.
     #[inline]
     pub fn connection_type(&self) -> &'static str {
         match self {
@@ -179,16 +181,16 @@ impl WireHandle {
         }
     }
 
-    /// 连接优先级（数值越高优先级越高）
+    /// Connection priority, where higher values mean higher priority.
     #[inline]
     pub fn priority(&self) -> u8 {
         match self {
             WireHandle::WebSocket(_) => 0,
-            WireHandle::WebRTC(_) => 1, // WebRTC 优先级更高
+            WireHandle::WebRTC(_) => 1, // WebRTC has higher priority.
         }
     }
 
-    /// 建立连接
+    /// Connect.
     #[inline]
     pub async fn connect(&self) -> WebResult<()> {
         match self {
@@ -197,7 +199,7 @@ impl WireHandle {
         }
     }
 
-    /// 检查是否已连接
+    /// Check whether the connection is ready.
     #[inline]
     pub fn is_connected(&self) -> bool {
         match self {
@@ -206,7 +208,7 @@ impl WireHandle {
         }
     }
 
-    /// 关闭连接
+    /// Close the connection.
     #[inline]
     pub async fn close(&self) -> WebResult<()> {
         match self {
@@ -215,7 +217,7 @@ impl WireHandle {
         }
     }
 
-    /// 获取或创建 DataLane（带缓存）
+    /// Get or create a cached `DataLane`.
     #[inline]
     pub async fn get_lane(&self, payload_type: PayloadType) -> WebResult<DataLane> {
         match self {
@@ -224,7 +226,7 @@ impl WireHandle {
         }
     }
 
-    /// 转换为 WebRTC 连接（如果是的话）
+    /// Cast to a WebRTC connection if possible.
     #[inline]
     pub fn as_webrtc(&self) -> Option<&WebRtcConnection> {
         match self {
@@ -233,7 +235,7 @@ impl WireHandle {
         }
     }
 
-    /// 转换为 WebRTC 连接（可变）
+    /// Cast to a mutable WebRTC connection if possible.
     #[inline]
     pub fn as_webrtc_mut(&mut self) -> Option<&mut WebRtcConnection> {
         match self {
@@ -242,7 +244,7 @@ impl WireHandle {
         }
     }
 
-    /// 转换为 WebSocket 连接（如果是的话）
+    /// Cast to a WebSocket connection if possible.
     #[inline]
     pub fn as_websocket(&self) -> Option<&WebSocketConnection> {
         match self {
@@ -252,16 +254,16 @@ impl WireHandle {
     }
 }
 
-/// Wire 连接状态
+/// Wire connection state.
 #[derive(Debug, Clone)]
 pub enum WireStatus {
-    /// 连接中
+    /// Connecting.
     Connecting,
 
-    /// 连接就绪
+    /// Ready.
     Ready(WireHandle),
 
-    /// 连接失败
+    /// Failed.
     Failed,
 }
 
@@ -272,7 +274,7 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // ===== WebRtcConnection 测试 =====
+    // ===== WebRtcConnection tests =====
 
     #[test]
     fn test_webrtc_connection_new() {
@@ -342,7 +344,7 @@ mod tests {
         assert!(debug_str.contains("connected"));
     }
 
-    // ===== WireHandle 测试 =====
+    // ===== WireHandle tests =====
 
     #[test]
     fn test_wire_handle_websocket_conn_type() {
@@ -370,7 +372,7 @@ mod tests {
         let rtc = WebRtcConnection::new("peer-test".to_string());
         let rtc_handle = WireHandle::WebRTC(rtc);
 
-        // WebRTC 优先级更高
+        // WebRTC has higher priority.
         assert_eq!(ws_handle.priority(), 0);
         assert_eq!(rtc_handle.priority(), 1);
         assert!(rtc_handle.priority() > ws_handle.priority());
@@ -385,7 +387,7 @@ mod tests {
         assert!(rtc_ref.is_some());
         assert_eq!(rtc_ref.unwrap().peer_id(), "peer-123");
 
-        // WebSocket 不应该转换成 WebRTC
+        // WebSocket should not cast to WebRTC.
         let ws = WebSocketConnection::new("ws://test.com");
         let ws_handle = WireHandle::WebSocket(ws);
         assert!(ws_handle.as_webrtc().is_none());
@@ -400,7 +402,7 @@ mod tests {
         assert!(ws_ref.is_some());
         assert_eq!(ws_ref.unwrap().url(), "ws://example.com");
 
-        // WebRTC 不应该转换成 WebSocket
+        // WebRTC should not cast to WebSocket.
         let rtc = WebRtcConnection::new("peer-456".to_string());
         let rtc_handle = WireHandle::WebRTC(rtc);
         assert!(rtc_handle.as_websocket().is_none());
@@ -457,7 +459,7 @@ mod tests {
         assert!(debug_str.contains("WebSocket"));
     }
 
-    // ===== WireStatus 测试 =====
+    // ===== WireStatus tests =====
 
     #[test]
     fn test_wire_status_connecting() {
@@ -507,24 +509,24 @@ mod tests {
         let _ready = WireStatus::Ready(handle);
         let _failed = WireStatus::Failed;
 
-        // 验证所有变体都能创建
+        // Verify that every variant can be constructed.
     }
 
-    // ===== 集成测试 =====
+    // ===== Integration tests =====
 
     #[wasm_bindgen_test]
     async fn test_wire_handle_lifecycle_websocket() {
         let ws = WebSocketConnection::new("ws://lifecycle.com");
         let handle = WireHandle::WebSocket(ws);
 
-        // 初始未连接
+        // Initially disconnected.
         assert!(!handle.is_connected());
 
-        // 连接
+        // Connect.
         handle.connect().await.unwrap();
         assert!(handle.is_connected());
 
-        // 关闭
+        // Close.
         handle.close().await.unwrap();
         assert!(!handle.is_connected());
     }
@@ -537,12 +539,12 @@ mod tests {
         let rtc = WebRtcConnection::new("peer-test".to_string());
         let rtc_handle = WireHandle::WebRTC(rtc);
 
-        // WebSocket 测试
+        // WebSocket test.
         assert!(ws_handle.as_websocket().is_some());
         assert!(ws_handle.as_webrtc().is_none());
         assert_eq!(ws_handle.connection_type(), "WebSocket");
 
-        // WebRTC 测试
+        // WebRTC test.
         assert!(rtc_handle.as_webrtc().is_some());
         assert!(rtc_handle.as_websocket().is_none());
         assert_eq!(rtc_handle.connection_type(), "WebRTC");

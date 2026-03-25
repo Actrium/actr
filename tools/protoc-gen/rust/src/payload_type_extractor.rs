@@ -182,7 +182,6 @@ mod tests {
             options: None,
             client_streaming: Some(false),
             server_streaming: Some(false),
-            ..Default::default()
         };
 
         assert_eq!(extract_payload_type(&method), None);
@@ -202,7 +201,6 @@ mod tests {
             options: None,
             client_streaming: Some(true),
             server_streaming: Some(false),
-            ..Default::default()
         };
 
         assert_eq!(
@@ -221,7 +219,6 @@ mod tests {
             options: None,
             client_streaming: Some(false),
             server_streaming: Some(true),
-            ..Default::default()
         };
 
         assert_eq!(
@@ -240,7 +237,6 @@ mod tests {
             options: None,
             client_streaming: Some(true),
             server_streaming: Some(true),
-            ..Default::default()
         };
 
         assert_eq!(

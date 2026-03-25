@@ -1,6 +1,7 @@
-//! DOM 生命周期管理
+//! DOM lifecycle management.
 //!
-//! 负责检测 DOM 进程的启动、关闭和状态变化，并通知 Service Worker
+//! Detects DOM-side startup, shutdown, and state changes, then notifies the
+//! Service Worker.
 
 use crate::{WebError, WebResult};
 use parking_lot::Mutex;
@@ -9,17 +10,17 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{Navigator, ServiceWorker, window};
 
-/// DOM 生命周期管理器
+/// DOM lifecycle manager.
 pub struct DomLifecycleManager {
-    /// 当前 DOM 会话 ID
+    /// Current DOM session ID.
     session_id: String,
 
-    /// 是否已初始化
+    /// Whether initialization has already happened.
     initialized: Arc<Mutex<bool>>,
 }
 
 impl DomLifecycleManager {
-    /// 创建新的生命周期管理器
+    /// Create a new lifecycle manager.
     pub fn new() -> Self {
         let session_id = generate_session_id();
         log::info!("[DomLifecycle] Created new session: {}", session_id);
@@ -30,14 +31,14 @@ impl DomLifecycleManager {
         }
     }
 
-    /// 获取会话 ID
+    /// Return the session ID.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
-    /// 初始化生命周期管理
+    /// Initialize lifecycle management.
     ///
-    /// 设置所有事件监听器并通知 SW 当前状态
+    /// Installs all event listeners and notifies the Service Worker of the current state.
     pub fn init(&self) -> WebResult<()> {
         let mut initialized = self.initialized.lock();
         if *initialized {
@@ -47,16 +48,16 @@ impl DomLifecycleManager {
 
         log::info!("[DomLifecycle] Initializing lifecycle management");
 
-        // 1. 监听页面加载完成
+        // 1. Listen for page load completion.
         self.setup_load_listener()?;
 
-        // 2. 监听页面即将卸载
+        // 2. Listen for the page about to unload.
         self.setup_beforeunload_listener()?;
 
-        // 3. 监听可见性变化
+        // 3. Listen for visibility changes.
         self.setup_visibility_listener()?;
 
-        // 4. 立即通知 SW "DOM_READY"（页面已加载）
+        // 4. Immediately notify the SW with "DOM_READY" once the page is loaded.
         self.notify_dom_ready()?;
 
         *initialized = true;
@@ -65,7 +66,7 @@ impl DomLifecycleManager {
         Ok(())
     }
 
-    /// 通知 SW：DOM 已就绪
+    /// Notify the SW that the DOM side is ready.
     fn notify_dom_ready(&self) -> WebResult<()> {
         log::info!("[DomLifecycle] Notifying SW: DOM_READY");
 
@@ -86,7 +87,7 @@ impl DomLifecycleManager {
         Ok(())
     }
 
-    /// 设置 load 事件监听器
+    /// Set up the load event listener.
     fn setup_load_listener(&self) -> WebResult<()> {
         let window = window().ok_or_else(|| WebError::Internal("No window".into()))?;
         let session_id = self.session_id.clone();
@@ -94,20 +95,20 @@ impl DomLifecycleManager {
         let callback = Closure::wrap(Box::new(move || {
             log::info!("[DomLifecycle] Page loaded, session_id={}", session_id);
 
-            // 页面加载时的通知已在 init() 中完成
-            // 这里主要用于调试和日志记录
+            // The load-time notification already happens in init().
+            // This listener is mainly for debugging and logging.
         }) as Box<dyn FnMut()>);
 
         window
             .add_event_listener_with_callback("load", callback.as_ref().unchecked_ref())
             .map_err(|e| WebError::Internal(format!("Failed to add load listener: {:?}", e)))?;
 
-        callback.forget(); // 保持监听器活跃
+        callback.forget(); // Keep the listener alive.
 
         Ok(())
     }
 
-    /// 设置 beforeunload 事件监听器
+    /// Set up the beforeunload event listener.
     fn setup_beforeunload_listener(&self) -> WebResult<()> {
         let win = window().ok_or_else(|| WebError::Internal("No window".into()))?;
         let session_id = self.session_id.clone();
@@ -115,20 +116,20 @@ impl DomLifecycleManager {
         let callback = Closure::wrap(Box::new(move |_event: web_sys::BeforeUnloadEvent| {
             log::info!("[DomLifecycle] Page unloading, session_id={}", session_id);
 
-            // 通知 SW："我要关闭了"
+            // Notify the SW that the page is shutting down.
             if let Some(window_obj) = window() {
                 let navigator = window_obj.navigator();
 
                 if let Some(controller) = get_sw_controller(&navigator) {
                     if let Ok(msg) = create_lifecycle_message("DOM_UNLOADING", &session_id) {
-                        // 尝试发送，但不保证成功（页面即将关闭）
+                        // Best-effort send only; the page is about to close.
                         let _ = controller.post_message(&msg);
 
                         log::info!("[DomLifecycle] DOM_UNLOADING sent");
                     }
                 }
 
-                // 也可以使用 sendBeacon（更可靠，但需要服务端支持）
+                // sendBeacon is another option and is more reliable, but needs server support.
                 // navigator.send_beacon_with_str(
                 //     &format!("/api/lifecycle/unload?session={}", session_id),
                 //     ""
@@ -146,7 +147,7 @@ impl DomLifecycleManager {
         Ok(())
     }
 
-    /// 设置 visibilitychange 事件监听器
+    /// Set up the visibilitychange event listener.
     fn setup_visibility_listener(&self) -> WebResult<()> {
         let win = window().ok_or_else(|| WebError::Internal("No window".into()))?;
         let document = win
@@ -162,7 +163,7 @@ impl DomLifecycleManager {
                     log::debug!("[DomLifecycle] Visibility changed: hidden={}", hidden);
 
                     if !hidden {
-                        // 标签页变为可见，检查 SW 是否还活着
+                        // When the tab becomes visible, check whether the SW is still alive.
                         log::debug!("[DomLifecycle] Tab became visible, checking SW health");
                         check_sw_alive(&session_id);
                     }
@@ -188,7 +189,7 @@ impl Default for DomLifecycleManager {
     }
 }
 
-/// 生成唯一的会话 ID
+/// Generate a unique session ID.
 fn generate_session_id() -> String {
     use js_sys::{Date, Math};
 
@@ -198,12 +199,12 @@ fn generate_session_id() -> String {
     format!("dom-{}-{}", timestamp, random)
 }
 
-/// 获取 Service Worker 控制器
+/// Get the Service Worker controller.
 fn get_sw_controller(navigator: &Navigator) -> Option<ServiceWorker> {
     navigator.service_worker().controller()
 }
 
-/// 创建生命周期消息
+/// Create a lifecycle message.
 fn create_lifecycle_message(msg_type: &str, session_id: &str) -> WebResult<JsValue> {
     let msg = js_sys::Object::new();
 
@@ -216,9 +217,9 @@ fn create_lifecycle_message(msg_type: &str, session_id: &str) -> WebResult<JsVal
     Ok(msg.into())
 }
 
-/// 检查 SW 是否活跃
+/// Check whether the SW is alive.
 ///
-/// 发送 ping 消息，期望收到 pong
+/// Sends a ping message and expects a pong.
 fn check_sw_alive(session_id: &str) {
     if let Some(window) = window() {
         let navigator = window.navigator();
@@ -234,13 +235,13 @@ fn check_sw_alive(session_id: &str) {
                             "[DomLifecycle] SW ping failed: {:?}, may need re-registration",
                             e
                         );
-                        // TODO: 触发 SW 重新注册流程
+                        // TODO: Trigger Service Worker re-registration.
                     }
                 }
             }
         } else {
             log::warn!("[DomLifecycle] No SW controller, may need re-registration");
-            // TODO: 触发 SW 重新注册流程
+            // TODO: Trigger Service Worker re-registration.
         }
     }
 }
@@ -257,10 +258,10 @@ mod tests {
         let id1 = generate_session_id();
         let id2 = generate_session_id();
 
-        // 确保生成不同的 ID
+        // Ensure different IDs are generated.
         assert_ne!(id1, id2);
 
-        // 确保格式正确
+        // Ensure the format is correct.
         assert!(id1.starts_with("dom-"));
         assert!(id2.starts_with("dom-"));
     }
@@ -269,7 +270,7 @@ mod tests {
     fn test_lifecycle_manager_creation() {
         let manager = DomLifecycleManager::new();
 
-        // 确保有 session_id
+        // Ensure a session_id exists.
         assert!(!manager.session_id().is_empty());
         assert!(manager.session_id().starts_with("dom-"));
     }

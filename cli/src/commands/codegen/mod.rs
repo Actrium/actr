@@ -40,6 +40,27 @@ impl GeneratorFactory {
     }
 }
 
+pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) -> Result<()> {
+    let generator = GeneratorFactory::get_generator(language);
+
+    let mut all_files = generator.generate_infrastructure(context).await?;
+    if !context.no_scaffold {
+        all_files.extend(generator.generate_scaffold(context).await?);
+    }
+    if !context.no_format {
+        generator.format_code(context, &all_files).await?;
+    }
+
+    generator.validate_code(context).await?;
+
+    info!("Code generation completed");
+
+    generator.finalize_generation(context).await?;
+
+    generator.print_next_steps(context);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,25 +78,4 @@ mod tests {
             let _ = GeneratorFactory::get_generator(language);
         }
     }
-}
-
-pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) -> Result<()> {
-    let generator = GeneratorFactory::get_generator(language);
-
-    let mut all_files = generator.generate_infrastructure(context).await?;
-    if !context.no_scaffold {
-        all_files.extend(generator.generate_scaffold(context).await?);
-    }
-    if !context.no_format {
-        generator.format_code(context, &all_files).await?;
-    }
-
-    generator.validate_code(context).await?;
-
-    info!("✅ 代码生成完成！");
-
-    generator.finalize_generation(context).await?;
-
-    generator.print_next_steps(context);
-    Ok(())
 }

@@ -1,19 +1,19 @@
 /**
- * Echo Server - Actor-RTC Web 浏览器端服务器示例
+ * Echo Server - Actor-RTC Web browser-hosted server sample
  *
- * 演示如何使用 @actr/web 统一 Actor API 创建浏览器端服务：
- * 1. 使用 createActor 创建 Actor（初始化 SW Bridge + WebRTC）
- * 2. WASM Service Worker 中的 EchoService Workload 处理实际 RPC
- * 3. SW 通过 console interception + clients.postMessage 将事件广播回主页面
+ * Demonstrates how to host a browser-side Echo service with the @actr/web API:
+ * 1. Use createActor to build the Actor (initializes the SW bridge + WebRTC)
+ * 2. The EchoService workload inside the WASM Service Worker handles the RPC surface
+ * 3. The SW broadcasts console events back to the page through clients.postMessage
  *
- * 指标数据来源（真实路径）：
- * ┌─────────────────────────────────────────────────────────────┐
- * │  1. WASM 中 echo_service.rs 使用 log::info! 打印日志         │
- * │  2. wasm_logger → console.info() (在 SW 上下文中)            │
- * │  3. actor.sw.js 拦截 console.info, 检测 📨/📤 标记          │
- * │  4. 通过 self.clients.postMessage 广播到主页面               │
- * │  5. 主页面 navigator.serviceWorker.onmessage 接收并更新 UI   │
- * └─────────────────────────────────────────────────────────────┘
+ * Metrics pipeline:
+ * ┌───────────────────────────────────────────────┐
+ * │  1. echo_service.rs in WASM logs via log::info! │
+ * │  2. wasm_logger forwards to console.info()     │
+ * │  3. actor.sw.js intercepts console.info and tags 📨/📤 │
+ * │  4. Broadcast via self.clients.postMessage to the main page │
+ * │  5. navigator.serviceWorker.onmessage updates the UI      │
+ * └───────────────────────────────────────────────┘
  */
 
 import { createActor, type Actor } from '@actr/web';
@@ -38,7 +38,7 @@ let successCount = 0;
 let errorCount = 0;
 
 /**
- * 记录日志到 UI
+ * Log to the UI
  */
 function log(level: 'info' | 'success' | 'warn' | 'error', message: string): void {
     const time = new Date().toLocaleTimeString('zh-CN', {
@@ -66,7 +66,7 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * 更新统计数字显示
+ * Update the stats display
  */
 function updateStatsUI(): void {
     requestCountEl.textContent = String(requestCount);
@@ -75,7 +75,7 @@ function updateStatsUI(): void {
 }
 
 /**
- * 更新服务器信息显示
+ * Update the server info display
  */
 function updateServerInfo(): void {
     serviceNameEl.textContent = `echo.${actorType.name}`;
@@ -85,10 +85,9 @@ function updateServerInfo(): void {
 }
 
 /**
- * 监听来自 Service Worker 的真实事件
+ * Listen for real events from the Service Worker
  *
- * actor.sw.js 中的 console interception 会通过
- * self.clients.postMessage 广播 echo_event 和 sw_log 消息
+ * actor.sw.js console interception broadcasts echo_event and sw_log messages via self.clients.postMessage
  */
 function setupSwEventListener(): void {
     navigator.serviceWorker.addEventListener('message', (event) => {
@@ -108,7 +107,7 @@ function setupSwEventListener(): void {
 }
 
 /**
- * 处理真实的 Echo RPC 事件（来自 WASM echo_service.rs 的 log::info!）
+ * Handle real Echo RPC events (via log::info! from WASM echo_service.rs)
  */
 function handleEchoEvent(data: {
     event: 'request' | 'response' | 'error';
@@ -118,22 +117,22 @@ function handleEchoEvent(data: {
     switch (data.event) {
         case 'request':
             requestCount++;
-            log('info', `📨 收到 Echo 请求: "${data.detail}"`);
+            log('info', `📨 Received Echo request: "${data.detail}"`);
             break;
         case 'response':
             successCount++;
-            log('success', `✅ 发送 Echo 响应: "${data.detail}"`);
+            log('success', `✅ Sent Echo response: "${data.detail}"`);
             break;
         case 'error':
             errorCount++;
-            log('error', `❌ 处理错误: ${data.detail}`);
+            log('error', `❌ Handling error: ${data.detail}`);
             break;
     }
     updateStatsUI();
 }
 
 /**
- * 处理 SW 运行时日志（来自 WASM runtime 的 log::info/warn/error）
+ * Process SW runtime logs (log::info/warn/error from the WASM runtime)
  */
 function handleSwLog(data: {
     level: 'info' | 'warn' | 'error';
@@ -157,46 +156,45 @@ function handleSwLog(data: {
 }
 
 /**
- * 初始化并启动服务器
+ * Initialize and start the server
  */
 async function startServer(): Promise<void> {
     try {
-        log('info', '🚀 正在启动 Echo Server...');
-        log('info', '📦 WASM 将由 Service Worker 加载 (actor.sw.js)');
+        log('info', '🚀 Starting Echo Server...');
+        log('info', '📦 WASM will be loaded by the Service Worker (actor.sw.js)');
 
-        // 更新 UI 显示服务器信息
+        // Update the UI with server information
         updateServerInfo();
 
-        // 设置 SW 事件监听（在 createActor 之前，
-        // 这样可以捕获初始化过程中的日志）
+        // Set up SW event listeners before createActor to capture initialization logs
         setupSwEventListener();
 
-        // 创建 Actor — 这会初始化 SW Bridge 和 WebRTC
-        // 实际 RPC 处理由 WASM Service Worker 中的 Rust EchoService Workload 完成
+        // Create the Actor — this initializes the SW bridge and WebRTC
+        // The Rust EchoService workload inside the WASM SW handles the RPC logic
         actor = await createActor({
             ...actrConfig,
             serviceWorkerPath: '/actor.sw.js',
         });
 
-        // 更新状态
-        statusEl.innerHTML = '<span>✅</span><span>服务器运行中</span>';
+        // Update the status display
+        statusEl.innerHTML = '<span>✅</span><span>Server is running</span>';
         statusEl.className = 'status ready';
 
-        log('success', '✅ Echo Server 启动成功!');
-        log('info', '📡 已注册服务: echo.EchoService');
-        log('info', '⏳ 等待客户端连接...');
+        log('success', '✅ Echo Server started successfully!');
+        log('info', '📡 Registered service: echo.EchoService');
+        log('info', '⏳ Waiting for clients to connect...');
 
         console.log('Echo Server started successfully');
     } catch (error) {
         console.error('Failed to start server:', error);
-        log('error', `❌ 启动失败: ${(error as Error).message}`);
+        log('error', `❌ Startup failed: ${(error as Error).message}`);
 
-        statusEl.innerHTML = `<span>❌</span><span>启动失败: ${(error as Error).message}</span>`;
+        statusEl.innerHTML = `<span>❌</span><span>Startup failed: ${(error as Error).message}</span>`;
         statusEl.className = 'status error';
     }
 }
 
-// 页面卸载时关闭 Actor
+// Close the Actor on page unload
 window.addEventListener('beforeunload', async () => {
     if (actor) {
         await actor.close();
@@ -213,7 +211,7 @@ function startKeepAlive(): void {
     }, 20_000); // every 20s
 }
 
-// 启动服务器
+// Start the server
 startServer().then(() => {
     startKeepAlive();
 });

@@ -132,14 +132,16 @@ fn write_actr_toml_local_only(root: &Path) {
         root.join("actr.toml"),
         r#"edition = 1
 [package]
-name = "local-only"
-[package.actr_type]
-manufacturer = "acme"
 name = "LocalService"
+manufacturer = "acme"
+version="0.0.1"
 [dependencies]
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1
@@ -153,15 +155,17 @@ fn write_actr_toml_with_remote(root: &Path) {
         root.join("actr.toml"),
         r#"edition = 1
 [package]
-name = "remote-only"
-[package.actr_type]
-manufacturer = "acme"
 name = "RemoteApp"
+manufacturer = "acme"
+version="0.0.1"
 [dependencies]
-echo-service = { actr_type = "acme:EchoService" }
+echo-service = { actr_type = "acme:EchoService:0.0.1" }
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1
@@ -175,15 +179,17 @@ fn write_actr_toml_both(root: &Path) {
         root.join("actr.toml"),
         r#"edition = 1
 [package]
-name = "both"
-[package.actr_type]
-manufacturer = "acme"
 name = "BothService"
+manufacturer = "acme"
+version = "0.0.1"
 [dependencies]
-echo-service = { actr_type = "acme:EchoService" }
+echo-service = { actr_type = "acme:EchoService:0.0.1" }
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1
@@ -197,16 +203,18 @@ fn write_actr_toml_both_with_two_remotes(root: &Path) {
         root.join("actr.toml"),
         r#"edition = 1
 [package]
-name = "both-two-remotes"
-[package.actr_type]
-manufacturer = "acme"
 name = "BothTwoRemotesService"
+manufacturer = "acme"
+version="0.0.1"
 [dependencies]
-echo-service = { actr_type = "acme:EchoService" }
-profile-service = { actr_type = "acme:ProfileService" }
+echo-service = { actr_type = "acme:EchoService:0.0.1" }
+profile-service = { actr_type = "acme:ProfileService:0.0.1" }
 
 [system.signaling]
 url = "wss://localhost:8080"
+
+[system.ais_endpoint]
+url = "https://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1
@@ -235,7 +243,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService:v1"
+actr_type = "acme:EchoService:1.0.0"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -255,7 +263,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 [[dependency]]
 name = "echo-service"
-actr_type = "acme:EchoService:v1"
+actr_type = "acme:EchoService:1.0.0"
 fingerprint = "service_semantic:123"
 cached_at = "2026-03-03T00:00:00Z"
 files = [
@@ -264,7 +272,7 @@ files = [
 
 [[dependency]]
 name = "profile-service"
-actr_type = "acme:ProfileService:v1"
+actr_type = "acme:ProfileService:1.0.0"
 fingerprint = "service_semantic:789"
 cached_at = "2026-03-03T00:00:00Z"
 files = [

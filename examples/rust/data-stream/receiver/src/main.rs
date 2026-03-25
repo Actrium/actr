@@ -8,9 +8,9 @@ mod file_transfer_service;
 mod generated;
 
 use file_transfer_service::FileTransferService;
-use generated::file_transfer_service_actor::FileTransferServiceWorkload;
+use generated::file_transfer_actor::FileTransferServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -21,28 +21,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 DataStream Receiver starting - 100% Real Implementation");
     info!("📋 Config: type={}", config.package.actr_type.name);
 
-    // Create ActrSystem
-    info!("🏗️  Creating ActrSystem...");
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
+    // Build ActrNode
+    info!("🏗️  Building ActrNode...");
+    let service = FileTransferService::new();
+    let workload = FileTransferServiceWorkload::new(service);
+    let node = match unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    ) {
+        Ok(node) => node,
         Err(e) => {
-            error!("❌ ActrSystem creation failed: {:?}", e);
+            error!("❌ ActrNode creation failed: {:?}", e);
             return Err(e.into());
         }
     };
-    info!("✅ ActrSystem created");
-
-    // Create service and wrap in Workload
-    let service = FileTransferService::new();
-    let workload = FileTransferServiceWorkload::new(service);
-
-    // Attach workload
-    let node = system.attach(workload);
+    info!("✅ ActrNode created");
 
     // Start node
     info!("🚀 Starting ActrNode...");

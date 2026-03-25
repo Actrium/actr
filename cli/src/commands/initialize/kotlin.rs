@@ -75,6 +75,10 @@ impl KotlinInitializer {
                 "{{SIGNALING_URL}}".to_string(),
                 context.signaling_url.clone(),
             ),
+            (
+                "{{AIS_ENDPOINT_URL}}".to_string(),
+                derive_ais_endpoint_url(&context.signaling_url),
+            ),
             ("{{SIGNALING_HOST}}".to_string(), signaling_host),
             ("{{MANUFACTURER}}".to_string(), context.manufacturer.clone()),
         ];
@@ -189,6 +193,10 @@ impl KotlinInitializer {
                 "{{SIGNALING_URL}}".to_string(),
                 context.signaling_url.clone(),
             ),
+            (
+                "{{AIS_ENDPOINT_URL}}".to_string(),
+                derive_ais_endpoint_url(&context.signaling_url),
+            ),
             ("{{SIGNALING_HOST}}".to_string(), signaling_host),
             ("{{MANUFACTURER}}".to_string(), context.manufacturer.clone()),
         ];
@@ -295,6 +303,31 @@ fn extract_signaling_host(signaling_url: &str) -> String {
         .next()
         .unwrap_or("10.0.2.2")
         .to_string()
+}
+
+fn derive_ais_endpoint_url(signaling_url: &str) -> String {
+    let trimmed = signaling_url.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let normalized = if let Some(rest) = trimmed.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+
+    if let Some(prefix) = normalized.strip_suffix("/signaling/ws") {
+        format!("{prefix}/ais")
+    } else if let Some(prefix) = normalized.strip_suffix("/signaling") {
+        format!("{prefix}/ais")
+    } else if let Some(prefix) = normalized.strip_suffix("/ws") {
+        format!("{prefix}/ais")
+    } else {
+        format!("{normalized}/ais")
+    }
 }
 
 fn write_file(path: &Path, content: &str) -> Result<()> {

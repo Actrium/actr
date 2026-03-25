@@ -7,7 +7,7 @@ const logEl = document.getElementById('log')!;
 let actor: Actor | null = null;
 
 function appendLog(message: string): void {
-    const ts = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
     logEl.textContent += `[${ts}] ${message}\n`;
     logEl.scrollTop = logEl.scrollHeight;
 }
@@ -27,16 +27,16 @@ function setupSwLogListener(): void {
 
 async function init(): Promise<void> {
     setupSwLogListener();
-    setStatus('连接中...', true);
+    setStatus('Connecting...', true);
     appendLog('initializing server actor...');
 
     try {
         actor = await createActor(actrConfig);
-        setStatus('✅ 服务器运行中', true);
+        setStatus('✅ Server running', true);
         appendLog('server actor initialized');
         actor.on('stateChange', (state) => appendLog(`stateChange: ${String(state)}`));
     } catch (error) {
-        setStatus(`❌ 启动失败: ${(error as Error).message}`, false);
+        setStatus(`❌ Startup failed: ${(error as Error).message}`, false);
         appendLog(`init failed: ${(error as Error).message}`);
     }
 }

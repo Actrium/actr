@@ -1,86 +1,84 @@
 //! Runtime wrappers for UniFFI export
 
 use crate::error::{ActrError, ActrResult};
-use crate::types::{ActrId, ActrType, NetworkEventResult};
-use crate::workload::{DynamicWorkload, WorkloadBridge};
-use actr_config::Config;
+use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
+use actr_framework::{Bytes, Dest};
+use actr_hyper::{
+    ActrNode, ActrRef, Hyper, HyperConfig, NetworkEventHandle, TrustMode, WorkloadPackage,
+};
 use actr_protocol::{ActrIdExt, ActrTypeExt};
-use actr_runtime::{ActrNode, ActrRef, ActrSystem, NetworkEventHandle};
-use bytes::Bytes;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
-/// Wrapper for ActrSystem - the entry point for creating actors
+/// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
 pub struct ActrSystemWrapper {
-    inner: Mutex<Option<ActrSystem>>,
-    config: Config,
+    inner: Mutex<Option<ActrNode>>,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
 }
 
 #[uniffi::export]
 impl ActrSystemWrapper {
-    /// Create a new ActrSystem from configuration file
+    /// Create a new runtime wrapper from config and a verified `.actr` package file.
     #[uniffi::constructor(async_runtime = "tokio")]
-    pub async fn new_from_file(config_path: String) -> ActrResult<Arc<Self>> {
-        // Parse configuration first to get observability settings
+    pub async fn new_from_package_file(
+        config_path: String,
+        package_path: String,
+    ) -> ActrResult<Arc<Self>> {
         let config = actr_config::ConfigParser::from_file(&config_path).map_err(|e| {
             ActrError::ConfigError {
                 msg: format!("Failed to parse config file at {}: {}", config_path, e),
             }
         })?;
 
-        // Initialize logger based on configuration
         crate::logger::init_observability(config.observability.clone());
 
         info!(
-            "Creating ActrSystem with signaling_url={}, realm_id={}",
-            config.signaling_url, config.realm.realm_id
+            signaling_url = %config.signaling_url,
+            realm_id = config.realm.realm_id,
+            package_path = %package_path,
+            "Creating package-backed runtime wrapper",
         );
 
-        info!("Connecting to signaling server...");
-        let system = ActrSystem::new(config.clone()).await.map_err(|e| {
-            error!("Failed to create ActrSystem: {}", e);
+        let hyper_data_dir = config.config_dir.join(".hyper");
+        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+            TrustMode::Development {
+                self_signed_pubkey: vec![0u8; 32],
+            },
+        ))
+        .await
+        .map_err(|e| {
+            error!("Failed to initialize Hyper shell: {}", e);
             ActrError::InternalError {
-                msg: format!("Failed to create ActrSystem: {e}"),
+                msg: format!("Failed to initialize Hyper shell: {e}"),
             }
         })?;
 
-        info!("ActrSystem created successfully");
+        let package_bytes = std::fs::read(&package_path).map_err(|e| {
+            error!("Failed to read package at {}: {}", package_path, e);
+            ActrError::InternalError {
+                msg: format!("Failed to read package at {}: {}", package_path, e),
+            }
+        })?;
+        let package = WorkloadPackage::new(package_bytes);
+
+        let node = hyper.attach_package(&package, config).await.map_err(|e| {
+            error!("Failed to attach package-backed node: {}", e);
+            ActrError::InternalError {
+                msg: format!("Failed to attach package-backed node: {e}"),
+            }
+        })?;
 
         Ok(Arc::new(Self {
-            inner: Mutex::new(Some(system)),
-            config,
-            network_event_handle: Mutex::new(None),
-        }))
-    }
-
-    /// Attach a workload and create an ActrNode
-    pub fn attach(
-        self: Arc<Self>,
-        callback: Box<dyn WorkloadBridge>,
-    ) -> ActrResult<Arc<ActrNodeWrapper>> {
-        let system = self
-            .inner
-            .lock()
-            .take()
-            .ok_or_else(|| ActrError::StateError {
-                msg: "ActrSystem already consumed".to_string(),
-            })?;
-
-        let workload = DynamicWorkload::new(Arc::from(callback));
-        let node = system.attach(workload);
-
-        Ok(Arc::new(ActrNodeWrapper {
             inner: Mutex::new(Some(node)),
-            config: self.config.clone(),
+            network_event_handle: Mutex::new(None),
         }))
     }
 
     /// Create a network event handle for platform callbacks.
     ///
-    /// This must be called before `attach()` or after a previous handle was created.
+    /// This must be called before `start()`.
     pub fn create_network_event_handle(&self) -> ActrResult<Arc<NetworkEventHandleWrapper>> {
         let mut handle_guard = self.network_event_handle.lock();
         if let Some(handle) = handle_guard.as_ref() {
@@ -89,20 +87,42 @@ impl ActrSystemWrapper {
             }));
         }
 
-        let system_guard = self.inner.lock();
-        let system = system_guard.as_ref().ok_or_else(|| ActrError::StateError {
-            msg: "ActrSystem already consumed".to_string(),
+        let mut node_guard = self.inner.lock();
+        let node = node_guard.as_mut().ok_or_else(|| ActrError::StateError {
+            msg: "runtime node is no longer available".to_string(),
         })?;
 
-        // Use default debounce behavior (0 = default).
-        let handle = system.create_network_event_handle(0);
+        let handle = node.create_network_event_handle(0);
         *handle_guard = Some(handle.clone());
 
         Ok(Arc::new(NetworkEventHandleWrapper { inner: handle }))
     }
 }
 
-/// Wrapper for NetworkEventHandle - network lifecycle callbacks
+#[uniffi::export(async_runtime = "tokio")]
+impl ActrSystemWrapper {
+    /// Start the package-backed node and return a running actor reference.
+    pub async fn start(self: Arc<Self>) -> ActrResult<Arc<ActrRefWrapper>> {
+        let node = self
+            .inner
+            .lock()
+            .take()
+            .ok_or_else(|| ActrError::StateError {
+                msg: "ActrSystem already started".to_string(),
+            })?;
+
+        let actr_ref = node.start().await.map_err(|e| {
+            error!("Failed to start package-backed actor: {}", e);
+            ActrError::ConnectionError {
+                msg: format!("Failed to start actor: {e}"),
+            }
+        })?;
+
+        Ok(Arc::new(ActrRefWrapper { inner: actr_ref }))
+    }
+}
+
+/// Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
 #[derive(uniffi::Object)]
 pub struct NetworkEventHandleWrapper {
     inner: NetworkEventHandle,
@@ -110,7 +130,7 @@ pub struct NetworkEventHandleWrapper {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl NetworkEventHandleWrapper {
-    /// Handle network available event
+    /// Handle network available event.
     pub async fn handle_network_available(&self) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
@@ -120,7 +140,7 @@ impl NetworkEventHandleWrapper {
         Ok(result.into())
     }
 
-    /// Handle network lost event
+    /// Handle network lost event.
     pub async fn handle_network_lost(&self) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
@@ -130,7 +150,7 @@ impl NetworkEventHandleWrapper {
         Ok(result.into())
     }
 
-    /// Handle network type changed event
+    /// Handle network type changed event.
     pub async fn handle_network_type_changed(
         &self,
         is_wifi: bool,
@@ -144,7 +164,7 @@ impl NetworkEventHandleWrapper {
         Ok(result.into())
     }
 
-    /// Cleanup all connections (does not depend on network events).
+    /// Cleanup all connections.
     pub async fn cleanup_connections(&self) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
@@ -155,48 +175,20 @@ impl NetworkEventHandleWrapper {
     }
 }
 
-/// Wrapper for ActrNode - a node ready to start
-#[derive(uniffi::Object)]
-pub struct ActrNodeWrapper {
-    inner: Mutex<Option<ActrNode<DynamicWorkload>>>,
-    #[allow(dead_code)]
-    config: Config,
-}
-
-#[uniffi::export(async_runtime = "tokio")]
-impl ActrNodeWrapper {
-    /// Start the actor node and return an ActrRef
-    pub async fn start(self: Arc<Self>) -> ActrResult<Arc<ActrRefWrapper>> {
-        let node = self
-            .inner
-            .lock()
-            .take()
-            .ok_or_else(|| ActrError::StateError {
-                msg: "ActrNode already started".to_string(),
-            })?;
-
-        let actr_ref = node.start().await.map_err(|e| ActrError::ConnectionError {
-            msg: format!("Failed to start actor: {e}"),
-        })?;
-
-        Ok(Arc::new(ActrRefWrapper { inner: actr_ref }))
-    }
-}
-
-/// Wrapper for ActrRef - a reference to a running actor
+/// Wrapper for a running actor reference.
 #[derive(uniffi::Object)]
 pub struct ActrRefWrapper {
-    inner: ActrRef<DynamicWorkload>,
+    inner: ActrRef,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
 impl ActrRefWrapper {
-    /// Get the actor's ID
+    /// Get the actor's ID.
     pub fn actor_id(&self) -> ActrId {
         self.inner.actor_id().clone().into()
     }
 
-    /// Discover actors of the specified type
+    /// Discover actors of the specified type.
     pub async fn discover(&self, target_type: ActrType, count: u32) -> ActrResult<Vec<ActrId>> {
         let proto_type: actr_protocol::ActrType = target_type.into();
         info!(
@@ -206,15 +198,15 @@ impl ActrRefWrapper {
 
         match self
             .inner
-            .discover_route_candidates(&proto_type, count)
+            .discover_route_candidates(&proto_type, count as usize)
             .await
         {
             Ok(ids) => {
                 info!("discover: found {} candidates", ids.len());
                 for id in &ids {
-                    debug!("  - candidate: {}", id.to_string_repr());
+                    debug!("candidate: {}", id.to_string_repr());
                 }
-                Ok(ids.into_iter().map(|id| id.into()).collect())
+                Ok(ids.into_iter().map(Into::into).collect())
             }
             Err(e) => {
                 error!("discover failed: {}", e);
@@ -225,77 +217,62 @@ impl ActrRefWrapper {
         }
     }
 
-    /// Trigger shutdown
+    /// Trigger shutdown.
     pub fn shutdown(&self) {
         self.inner.shutdown();
     }
 
-    /// Wait for shutdown to complete
+    /// Wait for shutdown to complete.
     pub async fn wait_for_shutdown(&self) {
         self.inner.wait_for_shutdown().await;
     }
 
-    /// Check if the actor is shutting down
+    /// Check if shutdown is already in progress.
     pub fn is_shutting_down(&self) -> bool {
         self.inner.is_shutting_down()
     }
 
-    /// Call a remote actor via RPC proxy
-    ///
-    /// This sends a request through the local workload's RPC proxy mechanism,
-    /// which forwards the call to the remote actor via WebRTC.
-    ///
-    /// # Arguments
-    /// - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-    /// - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-    /// - `request_payload`: Request payload bytes (protobuf encoded)
-    /// - `timeout_ms`: Timeout in milliseconds
-    ///
-    /// # Returns
-    /// Response payload bytes (protobuf encoded)
+    /// Call the local guest workload via RPC.
     pub async fn call(
         &self,
         route_key: String,
-        payload_type: crate::types::PayloadType,
+        payload_type: PayloadType,
         request_payload: Vec<u8>,
         timeout_ms: i64,
     ) -> ActrResult<Vec<u8>> {
         let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
-        info!("call_remote route: {route_key}");
+        let ctx = self.inner.app_context().await;
 
-        // Send request and wait for response
-        let response_bytes = self
-            .inner
+        let response_bytes = ctx
             .call_raw(
+                &Dest::Local,
                 route_key,
+                proto_payload_type,
                 Bytes::from(request_payload),
                 timeout_ms,
-                proto_payload_type,
             )
             .await?;
 
         Ok(response_bytes.to_vec())
     }
 
-    /// Send a one-way message to an actor (fire-and-forget)
-    ///
-    /// # Arguments
-    /// - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-    /// - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-    /// - `message_payload`: Message payload bytes (protobuf encoded)
+    /// Send a one-way message to the local guest workload.
     pub async fn tell(
         &self,
         route_key: String,
-        payload_type: crate::types::PayloadType,
+        payload_type: PayloadType,
         message_payload: Vec<u8>,
     ) -> ActrResult<()> {
         let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
-        info!("tell route: {route_key}");
+        let ctx = self.inner.app_context().await;
 
-        // Send message without waiting for response
-        self.inner
-            .tell_raw(route_key, Bytes::from(message_payload), proto_payload_type)
-            .await?;
+        ctx.tell_raw(
+            &Dest::Local,
+            route_key,
+            proto_payload_type,
+            Bytes::from(message_payload),
+        )
+        .await?;
 
         Ok(())
     }

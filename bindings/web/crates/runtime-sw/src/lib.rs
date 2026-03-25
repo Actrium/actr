@@ -1,10 +1,10 @@
 //! Actor-RTC Service Worker Runtime
 //!
-//! Service Worker 端的 Actor 运行时，负责：
-//! - State Path：Mailbox + Scheduler + Actor 执行
-//! - WebSocket Lane：与服务器的 WebSocket 连接
-//! - PostMessage Lane：与 DOM 的通信通道
-//! - 流控制：OpenStream/CloseStream 控制平面
+//! Actor runtime for the Service Worker side. It is responsible for:
+//! - The State Path: mailbox, scheduler, and actor execution
+//! - The WebSocket lane for server communication
+//! - The PostMessage lane for DOM communication
+//! - Stream control through the OpenStream/CloseStream control plane
 
 pub mod actr_ref;
 pub mod context;
@@ -16,9 +16,11 @@ pub mod runtime;
 pub mod system;
 pub mod trace;
 pub mod transport;
-pub mod web_context; // Web 专用 Context trait
+pub mod web_context; // Web-specific Context trait
 pub mod webrtc_recovery;
+pub mod workload;
 pub use actr_framework::Workload;
+pub use actr_platform_web::WebPlatformProvider;
 
 pub use actr_mailbox_web::{
     IndexedDbMailbox, Mailbox, MailboxStats, MessagePriority, MessageRecord,
@@ -34,39 +36,39 @@ pub use error_handler::{
 };
 pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcessor};
 pub use lifecycle::SwLifecycleManager;
-pub use outbound::{InprocOutGate, OutGate, OutprocOutGate};
+pub use outbound::{Gate, HostGate, PeerGate};
 pub use runtime::{
-    ServiceHandlerFn, handle_dom_control, handle_dom_fast_path, handle_dom_webrtc_event,
-    init_global, register_client, register_datachannel_port, register_service_handler,
-    unregister_client,
+    handle_dom_control, handle_dom_fast_path, handle_dom_webrtc_event, init_global,
+    register_client, register_datachannel_port, register_workload, unregister_client,
 };
 pub use system::System;
 pub use transport::{
-    DataLane, DestTransport, OutprocTransportManager, PostMessageLaneBuilder, SwTransport,
+    DataLane, DestTransport, PeerTransport, PostMessageLaneBuilder, SwTransport,
     WebSocketLaneBuilder, WebWireBuilder, WireBuilder, WireHandle, WirePool,
 };
-pub use web_context::RuntimeBridge; // 导出 RuntimeBridge trait
-pub use web_context::WebContext; // 导出 Web Context trait
+pub use web_context::RuntimeBridge; // Re-export RuntimeBridge trait
+pub use web_context::WebContext;
+pub use workload::{ServiceHandlerFn, WasmWorkload}; // Re-export WebContext trait
 
 // Re-export actr_protocol so downstream crates don't need a direct dependency
 pub use actr_protocol;
 pub use webrtc_recovery::{RecoveryStatus, WebRtcRecoveryManager};
 
-/// 初始化 Service Worker Runtime
+/// Initialize the Service Worker runtime.
 ///
-/// 应该在 Service Worker 激活时调用一次
+/// Should be called once when the Service Worker is activated.
 ///
-/// 注意：错误处理器需要 WirePool 实例，应该在创建 WirePool 后调用
-/// `init_global_error_handler(wire_pool)` 单独初始化
+/// Note: the error handler needs a WirePool instance and should be initialized
+/// separately by calling `init_global_error_handler(wire_pool)` after WirePool exists.
 // #[wasm_bindgen]
 // pub fn init_sw_runtime() {
-//     // 设置 panic hook
+//     // Install the panic hook.
 //     console_error_panic_hook::set_once();
 
-//     // 初始化日志
+//     // Initialize logging.
 //     wasm_logger::init(wasm_logger::Config::default());
 
-//     // 初始化生命周期管理
+//     // Initialize lifecycle management.
 //     let lifecycle = SwLifecycleManager::new();
 //     if let Err(e) = lifecycle.init() {
 //         log::error!("Failed to initialize lifecycle manager: {:?}", e);

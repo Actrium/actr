@@ -5,9 +5,9 @@
  *
  * Example usage:
  * ```kotlin
- * // Create and start an actor
- * val system = ActrSystem.fromFile("config.toml")
- * val ref = system.attach(myWorkload).start()
+ * // Create and start a package-backed actor
+ * val system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
+ * val ref = system.start()
  *
  * // Discover and call remote services
  * val echoService = ref.discover("acme:EchoService").firstOrNull()
@@ -32,7 +32,6 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrNodeWrapper
 import io.actor_rtc.actr.ActrRefWrapper
 import io.actor_rtc.actr.ActrSystemWrapper
 import io.actor_rtc.actr.ActrType
@@ -43,11 +42,8 @@ import io.actor_rtc.actr.WorkloadBridge
 // Type Aliases - Provide cleaner names without "Wrapper" suffix
 // ============================================================================
 
-/** Entry point for creating actors. Use [ActrSystem.fromFile] to create an instance. */
+/** Entry point for creating actors. Use [ActrSystem.fromPackageFile] to create an instance. */
 typealias ActrSystem = ActrSystemWrapper
-
-/** A prepared actor node ready to be started. Call [start] to get an [ActrRef]. */
-typealias ActrNode = ActrNodeWrapper
 
 /**
  * Reference to a running actor. Provides methods for:
@@ -73,35 +69,40 @@ typealias Workload = WorkloadBridge
 // ============================================================================
 
 /**
- * Create an ActrSystem from a configuration file.
+ * Create an ActrSystem from a config file and package file.
  *
  * Example:
  * ```kotlin
- * val system = ActrSystem.fromFile("config.toml")
+ * val system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
  * ```
  *
  * @param configPath Path to the TOML configuration file
+ * @param packagePath Path to the `.actr` package file
  * @return A new ActrSystem instance
  * @throws ActrException.ConfigException if the config file is invalid
  */
-suspend fun ActrSystemWrapper.Companion.fromFile(configPath: String): ActrSystem {
-    return ActrSystemWrapper.newFromFile(configPath)
+suspend fun ActrSystemWrapper.Companion.fromPackageFile(
+    configPath: String,
+    packagePath: String
+): ActrSystem {
+    return ActrSystemWrapper.newFromPackageFile(configPath, packagePath)
 }
 
 /**
- * Create an ActrSystem from a configuration file (top-level function).
+ * Create an ActrSystem from a config file and package file (top-level function).
  *
  * Example:
  * ```kotlin
- * val system = createActrSystem("config.toml")
+ * val system = createActrSystem("config.toml", "dist/app.actr")
  * ```
  *
  * @param configPath Path to the TOML configuration file
+ * @param packagePath Path to the `.actr` package file
  * @return A new ActrSystem instance
  * @throws ActrException.ConfigException if the config file is invalid
  */
-suspend fun createActrSystem(configPath: String): ActrSystem {
-    return ActrSystemWrapper.newFromFile(configPath)
+suspend fun createActrSystem(configPath: String, packagePath: String): ActrSystem {
+    return ActrSystemWrapper.newFromPackageFile(configPath, packagePath)
 }
 
 // ============================================================================
@@ -116,7 +117,7 @@ suspend fun createActrSystem(configPath: String): ActrSystem {
  *
  * Example:
  * ```kotlin
- * val system = createActrSystem("config.toml")
+ * val system = createActrSystem("config.toml", "dist/app.actr")
  * val networkHandle = system.createNetworkEventHandle()
  *
  * // Notify when network becomes available
@@ -137,7 +138,7 @@ suspend fun ActrSystem.createNetworkEventHandle(): NetworkEventHandle {
 /**
  * Discover actors of the specified type using a type string.
  *
- * @param typeString Actor type in "manufacturer:name" format (e.g., "acme:EchoService")
+ * @param typeString Actor type in "manufacturer:name:version" format (e.g., "acme:EchoService:1.0.0")
  * @param count Maximum number of candidates to return (default: 1)
  * @return List of discovered actor IDs
  */
@@ -148,7 +149,7 @@ suspend fun ActrRef.discover(typeString: String, count: UInt = 1u): List<ActrId>
 /**
  * Discover a single actor of the specified type.
  *
- * @param typeString Actor type in "manufacturer:name" format
+ * @param typeString Actor type in "manufacturer:name:version" format
  * @return The first discovered actor ID, or null if none found
  */
 suspend fun ActrRef.discoverOne(typeString: String): ActrId? {

@@ -6,13 +6,12 @@ mod errors;
 mod observability;
 mod runtime;
 mod types;
-mod workload;
 
 pub use errors::{
     ActrDecodeError, ActrGateNotInitialized, ActrRuntimeError, ActrTransportError, ActrUnknownRoute,
 };
 
-use runtime::{ActrNodePy, ActrRefPy, ActrSystemPy, ContextPy};
+use runtime::{ActrNodePy, ActrRefPy, ContextPy};
 pub use types::{ActrIdPy, ActrTypePy, DataStreamPy, DestPy, PayloadType};
 
 #[pymodule]
@@ -30,7 +29,6 @@ fn actr_raw(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ActrIdPy>()?;
     m.add_class::<ActrTypePy>()?;
     m.add_class::<DataStreamPy>()?;
-    m.add_class::<ActrSystemPy>()?;
     m.add_class::<ActrNodePy>()?;
     m.add_class::<ActrRefPy>()?;
     m.add_class::<ContextPy>()?;

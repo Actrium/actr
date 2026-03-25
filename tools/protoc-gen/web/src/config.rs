@@ -1,55 +1,55 @@
-//! 配置类型定义
+//! Configuration types.
 
 use std::path::PathBuf;
 
-/// Web 代码生成配置
+/// Configuration for web code generation.
 #[derive(Debug, Clone)]
 pub struct WebCodegenConfig {
-    /// Proto 文件路径列表
+    /// List of proto file paths.
     pub proto_files: Vec<PathBuf>,
 
-    /// Rust 输出目录（WASM 侧）
+    /// Rust output directory for the WASM side.
     pub rust_output_dir: PathBuf,
 
-    /// TypeScript 输出目录（Web SDK 侧）
+    /// TypeScript output directory for the web SDK side.
     pub ts_output_dir: PathBuf,
 
-    /// 是否生成 React Hooks
+    /// Whether to generate React Hooks.
     pub generate_react_hooks: bool,
 
-    /// Proto 包含路径（用于解析 import）
+    /// Proto include paths used to resolve imports.
     pub includes: Vec<PathBuf>,
 
-    /// 是否格式化生成的代码
+    /// Whether to format generated code.
     pub format_code: bool,
 
-    /// 自定义模板目录（可选）
+    /// Optional custom template directory.
     pub custom_templates_dir: Option<PathBuf>,
 }
 
 impl WebCodegenConfig {
-    /// 创建新的配置构建器
+    /// Create a new configuration builder.
     pub fn builder() -> WebCodegenConfigBuilder {
         WebCodegenConfigBuilder::default()
     }
 
-    /// 验证配置
+    /// Validate the configuration.
     pub fn validate(&self) -> crate::Result<()> {
         use crate::error::CodegenError;
 
-        // 验证至少有一个 proto 文件
+        // At least one proto file is required.
         if self.proto_files.is_empty() {
-            return Err(CodegenError::config("至少需要一个 proto 文件"));
+            return Err(CodegenError::config("at least one proto file is required"));
         }
 
-        // 验证 proto 文件存在
+        // Every proto file must exist.
         for proto in &self.proto_files {
             if !proto.exists() {
                 return Err(CodegenError::FileNotFound(proto.clone()));
             }
         }
 
-        // 验证 includes 目录存在
+        // Every include directory must exist.
         for include in &self.includes {
             if !include.exists() {
                 return Err(CodegenError::FileNotFound(include.clone()));
@@ -60,7 +60,7 @@ impl WebCodegenConfig {
     }
 }
 
-/// 配置构建器
+/// Configuration builder.
 #[derive(Default)]
 pub struct WebCodegenConfigBuilder {
     proto_files: Vec<PathBuf>,
@@ -73,13 +73,13 @@ pub struct WebCodegenConfigBuilder {
 }
 
 impl WebCodegenConfigBuilder {
-    /// 添加 proto 文件
+    /// Add one proto file.
     pub fn proto_file<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.proto_files.push(path.into());
         self
     }
 
-    /// 添加多个 proto 文件
+    /// Add multiple proto files.
     pub fn proto_files<I, P>(mut self, paths: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -89,31 +89,31 @@ impl WebCodegenConfigBuilder {
         self
     }
 
-    /// 设置 Rust 输出目录
+    /// Set the Rust output directory.
     pub fn rust_output<P: Into<PathBuf>>(mut self, dir: P) -> Self {
         self.rust_output_dir = Some(dir.into());
         self
     }
 
-    /// 设置 TypeScript 输出目录
+    /// Set the TypeScript output directory.
     pub fn ts_output<P: Into<PathBuf>>(mut self, dir: P) -> Self {
         self.ts_output_dir = Some(dir.into());
         self
     }
 
-    /// 启用 React Hooks 生成
+    /// Enable React Hooks generation.
     pub fn with_react_hooks(mut self, enabled: bool) -> Self {
         self.generate_react_hooks = enabled;
         self
     }
 
-    /// 添加 include 路径
+    /// Add one include path.
     pub fn include<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.includes.push(path.into());
         self
     }
 
-    /// 添加多个 include 路径
+    /// Add multiple include paths.
     pub fn includes<I, P>(mut self, paths: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -123,29 +123,29 @@ impl WebCodegenConfigBuilder {
         self
     }
 
-    /// 启用代码格式化
+    /// Enable code formatting.
     pub fn with_formatting(mut self, enabled: bool) -> Self {
         self.format_code = enabled;
         self
     }
 
-    /// 设置自定义模板目录
+    /// Set a custom template directory.
     pub fn custom_templates<P: Into<PathBuf>>(mut self, dir: P) -> Self {
         self.custom_templates_dir = Some(dir.into());
         self
     }
 
-    /// 构建配置
+    /// Build the configuration.
     pub fn build(self) -> crate::Result<WebCodegenConfig> {
         use crate::error::CodegenError;
 
         let rust_output_dir = self
             .rust_output_dir
-            .ok_or_else(|| CodegenError::config("缺少 rust_output_dir 配置"))?;
+            .ok_or_else(|| CodegenError::config("missing rust_output_dir configuration"))?;
 
         let ts_output_dir = self
             .ts_output_dir
-            .ok_or_else(|| CodegenError::config("缺少 ts_output_dir 配置"))?;
+            .ok_or_else(|| CodegenError::config("missing ts_output_dir configuration"))?;
 
         let config = WebCodegenConfig {
             proto_files: self.proto_files,
@@ -177,8 +177,8 @@ mod tests {
             .include("proto")
             .with_formatting(true);
 
-        // 注意：这里不能 build() 因为文件不存在
-        assert_eq!(config.generate_react_hooks, true);
-        assert_eq!(config.format_code, true);
+        // `build()` is not used here because the files do not exist in the test.
+        assert!(config.generate_react_hooks);
+        assert!(config.format_code);
     }
 }

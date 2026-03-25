@@ -1,6 +1,6 @@
-//! 依赖注入容器
+//! Dependency injection container
 //!
-//! 管理所有组件的生命周期和依赖关系
+//! Manages all component lifecycles and dependencies
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::components::*;
 use super::pipelines::*;
 
-/// 组件类型枚举
+/// Component type enumeration
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum ComponentType {
     ConfigManager,
@@ -22,7 +22,7 @@ pub enum ComponentType {
     UserInterface,
 }
 
-/// 服务容器
+/// Service container
 pub struct ServiceContainer {
     config_manager: Option<Arc<dyn ConfigManager>>,
     dependency_resolver: Option<Arc<dyn DependencyResolver>>,
@@ -33,14 +33,14 @@ pub struct ServiceContainer {
     cache_manager: Option<Arc<dyn CacheManager>>,
     user_interface: Option<Arc<dyn UserInterface>>,
 
-    // 缓存的管道实例
+    // Cached pipeline instances
     validation_pipeline: Option<Arc<ValidationPipeline>>,
     install_pipeline: Option<Arc<InstallPipeline>>,
     generation_pipeline: Option<Arc<GenerationPipeline>>,
 }
 
 impl ServiceContainer {
-    /// 创建新的服务容器
+    /// Create a new service container
     pub fn new() -> Self {
         Self {
             config_manager: None,
@@ -57,7 +57,7 @@ impl ServiceContainer {
         }
     }
 
-    /// 注册组件
+    /// Register components
     pub fn register_config_manager(mut self, component: Arc<dyn ConfigManager>) -> Self {
         self.config_manager = Some(component);
         self
@@ -101,7 +101,7 @@ impl ServiceContainer {
         self
     }
 
-    /// 获取组件
+    /// Get components
     pub fn get_config_manager(&self) -> Result<Arc<dyn ConfigManager>> {
         self.config_manager
             .clone()
@@ -150,7 +150,7 @@ impl ServiceContainer {
             .ok_or_else(|| anyhow::anyhow!("UserInterface not registered"))
     }
 
-    /// 获取验证管道 (延迟创建)
+    /// Get validation pipeline (lazily created)
     pub fn get_validation_pipeline(&mut self) -> Result<Arc<ValidationPipeline>> {
         if self.validation_pipeline.is_none() {
             let pipeline = ValidationPipeline::new(
@@ -166,7 +166,7 @@ impl ServiceContainer {
         Ok(self.validation_pipeline.clone().unwrap())
     }
 
-    /// 获取安装管道 (延迟创建)
+    /// Get install pipeline (lazily created)
     pub fn get_install_pipeline(&mut self) -> Result<Arc<InstallPipeline>> {
         if self.install_pipeline.is_none() {
             let validation_pipeline = (*self.get_validation_pipeline()?).clone();
@@ -182,7 +182,7 @@ impl ServiceContainer {
         Ok(self.install_pipeline.clone().unwrap())
     }
 
-    /// 获取生成管道 (延迟创建)
+    /// Get generation pipeline (lazily created)
     pub fn get_generation_pipeline(&mut self) -> Result<Arc<GenerationPipeline>> {
         if self.generation_pipeline.is_none() {
             let pipeline = GenerationPipeline::new(
@@ -196,7 +196,7 @@ impl ServiceContainer {
         Ok(self.generation_pipeline.clone().unwrap())
     }
 
-    /// 验证所有必需的组件是否已注册
+    /// Validate that all required components are registered
     pub fn validate(&self, required_components: &[ComponentType]) -> Result<()> {
         for component_type in required_components {
             match component_type {
@@ -268,14 +268,14 @@ impl Default for ServiceContainer {
     }
 }
 
-/// 容器构建器
+/// Container builder
 pub struct ContainerBuilder {
     container: ServiceContainer,
     config_path: Option<std::path::PathBuf>,
 }
 
 impl ContainerBuilder {
-    /// 创建新的构建器
+    /// Create a new builder
     pub fn new() -> Self {
         Self {
             container: ServiceContainer::new(),
@@ -283,16 +283,16 @@ impl ContainerBuilder {
         }
     }
 
-    /// 设置配置文件路径
+    /// Set the configuration file path
     pub fn config_path<P: Into<std::path::PathBuf>>(mut self, path: P) -> Self {
         self.config_path = Some(path.into());
         self
     }
 
-    /// 构建容器
+    /// Build the container
     pub fn build(self) -> Result<ServiceContainer> {
-        // TODO: 这里应该根据配置创建默认的组件实现
-        // 现在先返回空容器，实际实现时需要创建具体的组件实例
+        // TODO: Create default component implementations based on configuration.
+        // For now, return an empty container; concrete instances will be created later.
 
         Ok(self.container)
     }
@@ -304,14 +304,14 @@ impl Default for ContainerBuilder {
     }
 }
 
-/// 命令执行上下文
+/// Command execution context
 pub struct CommandContext {
     pub container: Arc<std::sync::Mutex<ServiceContainer>>,
     pub args: CommandArgs,
     pub working_dir: std::path::PathBuf,
 }
 
-/// 命令参数
+/// Command arguments
 #[derive(Debug, Clone)]
 pub struct CommandArgs {
     pub command: String,
@@ -320,7 +320,7 @@ pub struct CommandArgs {
     pub positional: Vec<String>,
 }
 
-/// 命令结果
+/// Command result
 #[derive(Debug, Clone)]
 pub enum CommandResult {
     Success(String),
@@ -330,18 +330,18 @@ pub enum CommandResult {
     Error(String),
 }
 
-/// 命令接口
+/// Command interface
 #[async_trait::async_trait]
 pub trait Command: Send + Sync {
-    /// 执行命令
+    /// Execute the command
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult>;
 
-    /// 获取所需的组件类型
+    /// Get required component types
     fn required_components(&self) -> Vec<ComponentType>;
 
-    /// 命令名称
+    /// Command name
     fn name(&self) -> &str;
 
-    /// 命令描述
+    /// Command description
     fn description(&self) -> &str;
 }

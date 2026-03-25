@@ -2,16 +2,13 @@ edition = 1
 exports = []
 
 [package]
-name = "com.example"
+name = "echo-client-app"
+manufacturer = "acme"
 version = "0.1.0"
 
-[package.actr_type]
-manufacturer = "acme"
-name = "echo-client-app"
-
 [dependencies]
-data-stream-peer-concurrent-server = { actr_type = "acme+DataStreamConcurrentServer" }
-echo-real-server = { actr_type = "acme+EchoService" }
+DataStreamConcurrentServer = { actr_type = "acme+DataStreamConcurrentServer" }
+EchoService = { actr_type = "acme+EchoService" }
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"

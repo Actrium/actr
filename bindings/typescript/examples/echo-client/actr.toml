@@ -2,16 +2,13 @@ edition = 1
 exports = []
 
 [package]
-name = "echo-client"
+name = "echo-client-app"
+manufacturer = "acme"
 description = "Echo Client Example"
 
-[package.actr_type]
-manufacturer = "acme"
-name = "echo-client-app"
-
 [dependencies]
-echo-echo-server = { actr_type = "acme+EchoService" }
-echo-twice-server = { actr_type = "acme+EchoTwiceService" }
+EchoService = { actr_type = "acme+EchoService" }
+EchoTwiceService = { actr_type = "acme+EchoTwiceService" }
 
 [system.signaling]
 url = "wss://actrix1.develenv.com/signaling/ws"

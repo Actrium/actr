@@ -1,8 +1,8 @@
 //! Inbound message handling for DOM
 //!
-//! DOM 侧消息接收处理：
-//! 1. 从 SW 转发来的 Fast Path 消息
-//! 2. WebRTC DataChannel 直接接收的消息
+//! DOM-side inbound message handling:
+//! 1. Fast Path messages forwarded from SW
+//! 2. Messages received directly via WebRTC DataChannel
 
 mod dispatcher;
 mod webrtc_receiver;

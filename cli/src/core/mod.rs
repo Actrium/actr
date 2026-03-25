@@ -1,7 +1,7 @@
-//! ACTR-CLI 核心复用组件模块
+//! ACTR-CLI core reuse component module
 //!
-//! 实现统一的CLI复用架构，通过8个核心组件和3个操作管道
-//! 提供一致的用户体验和高代码复用率。
+//! Implements a unified CLI reuse architecture with 8 core components
+//! and 3 operation pipelines, providing consistent UX and high code reuse.
 
 pub mod components;
 pub mod container;

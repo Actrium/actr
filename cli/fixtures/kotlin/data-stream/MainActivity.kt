@@ -94,16 +94,11 @@ class MainActivity : AppCompatActivity() {
                 val configPath = copyAssetToInternalStorage("actr.toml")
                 copyAssetToInternalStorage("Actr.lock.toml")
 
-                // Create ActrSystem with config
-                val system = createActrSystem(configPath)
+                val packagePath = copyFirstPackageAssetToInternalStorage()
 
-                // Create UnifiedWorkload with handler
-                val handler = MyUnifiedHandler()
-                val workload = UnifiedWorkload(handler)
-
-                // Attach workload and start
-                val node = system.attach(workload)
-                val ref = node.start()
+                // Create ActrSystem with config + package and start it
+                val system = createActrSystem(configPath, packagePath)
+                val ref = system.start()
                 clientRef = ref
 
                 Log.i(TAG, "Client started: ${ref.actorId().serialNumber}")
@@ -137,6 +132,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return outputFile.absolutePath
+    }
+
+    private fun copyFirstPackageAssetToInternalStorage(): String {
+        val packageName = assets.list("")!!.firstOrNull { it.endsWith(".actr") }
+            ?: error("No .actr package found in app assets")
+        return copyAssetToInternalStorage(packageName)
     }
 
     private fun disconnect() {

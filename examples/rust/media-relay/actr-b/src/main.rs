@@ -5,10 +5,10 @@
 mod generated;
 mod media_relay_service;
 
-use generated::relay_service_actor::RelayServiceWorkload;
+use generated::media_relay_actor::RelayServiceWorkload;
 use media_relay_service::RelayService;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::info;
 
@@ -19,41 +19,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
-    info!("🚀 Actr B (Receiver) 启动");
+    info!("🚀 Actr B (Receiver) start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 使用真实的 ActrSystem + WebRTC P2P");
-    info!("📡 需要 signaling-server 运行在 ws://localhost:8081");
+    info!("📝 using/usereal ActrNode + WebRTC P2P");
+    info!("📡 need/require signaling-server [...] ws://localhost:8081");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // 2. Create ActrSystem
-    info!("🏗️  创建 ActrSystem...");
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem 创建成功");
-
-    // 3. Create RelayService and attach Workload
-    info!("📦 创建 RelayService...");
+    // 2. Create RelayService and build node
+    info!("📦 create RelayService...");
 
     let relay_service = RelayService::new();
     let workload = RelayServiceWorkload::new(relay_service);
-    let node = system.attach(workload);
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
-    info!("✅ RelayService 已附加");
+    info!("✅ ActrNode createsuccess");
 
-    // 4. Start ActrNode (connect to signaling, register, start receiving)
-    info!("🚀 启动 ActrNode...");
+    // 3. Start ActrNode (connect to signaling, register, start receiving)
+    info!("🚀 start ActrNode...");
     let actr_ref = node.start().await?;
-    info!("✅ ActrNode 启动成功！");
+    info!("✅ ActrNode startsuccess！");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("🎉 Actr B 已完全启动并注册到 signaling server");
-    info!("📥 等待 Actr A 发送媒体帧...");
+    info!("🎉 Actr B alreadyfully/completelystart[...]register[...] signaling server");
+    info!("📥 waiting/wait for Actr A send[...]...");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // 5. Wait for Ctrl+C and shutdown
+    // 4. Wait for Ctrl+C and shutdown
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
-    info!("✅ Actr B 已关闭");
+    info!("✅ Actr B closed");
 
     Ok(())
 }

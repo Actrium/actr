@@ -1,78 +1,78 @@
-//! Outbound Layer - 出站消息发送
+//! Outbound layer for sending messages.
 //!
-//! 对标 actr 的 outbound 层，提供统一的发送接口
+//! Mirrors actr's outbound layer and provides a unified sending interface.
 //!
-//! # 出站路径
+//! # Outbound path
 //!
 //! ```text
 //! Actor ctx.call()/tell()
-//!   → OutGate::OutprocOut
-//!     → OutprocOutGate (ActrId→Dest 映射 + pending_requests)
-//!       → OutprocTransportManager (Dest→DestTransport 映射)
-//!         → DestTransport (事件驱动发送循环)
-//!           → WirePool (优先级选择: WebRTC > WebSocket)
-//!             → WireHandle::WebRTC.get_lane()
-//!               → DataLane::PostMessage { port: 专用 MessagePort }
-//!                 → port.postMessage(data)  [零拷贝, 无命令协议]
-//!                   → DOM bridge → RtcDataChannel.send() → Remote
+//!   -> Gate::Peer
+//!     -> PeerGate (ActrId->Dest mapping + pending_requests)
+//!       -> PeerTransport (Dest->DestTransport mapping)
+//!         -> DestTransport (event-driven send loop)
+//!           -> WirePool (priority selection: WebRTC > WebSocket)
+//!             -> WireHandle::WebRTC.get_lane()
+//!               -> DataLane::PostMessage { port: dedicated MessagePort }
+//!                 -> port.postMessage(data)  [zero-copy, no command protocol]
+//!                   -> DOM bridge -> RtcDataChannel.send() -> Remote
 //! ```
 
-mod inproc_out_gate;
-mod outproc_out_gate;
+mod host_gate;
+mod peer_gate;
 
-pub use inproc_out_gate::InprocOutGate;
-pub use outproc_out_gate::OutprocOutGate;
+pub use host_gate::HostGate;
+pub use peer_gate::PeerGate;
 
 use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use std::sync::Arc;
 
-/// OutGate - 出站消息门枚举
+/// Gate enum for outbound messaging.
 ///
-/// # 变体
+/// # Variants
 ///
-/// - **InprocOut**: SW 内部 Actor 之间的通信（零序列化）
-/// - **OutprocOut**: 跨节点传输（通过专用 MessagePort + 完整传输栈）
+/// - **Host**: communication between actors inside the SW with zero serialization
+/// - **Peer**: cross-node transport through a dedicated MessagePort and the full transport stack
 #[derive(Clone)]
-pub enum OutGate {
-    /// InprocOut - SW 内部通信（零序列化）
-    InprocOut(Arc<InprocOutGate>),
+pub enum Gate {
+    /// Host gate for in-SW communication with zero serialization.
+    Host(Arc<HostGate>),
 
-    /// OutprocOut - 跨节点传输
+    /// Peer gate for cross-node transport.
     ///
-    /// OutprocOutGate → OutprocTransportManager → DestTransport
-    ///   → WirePool → WireHandle → DataLane::PostMessage（专用 MessagePort 直接发送）
-    OutprocOut(Arc<OutprocOutGate>),
+    /// PeerGate -> PeerTransport -> DestTransport
+    ///   -> WirePool -> WireHandle -> DataLane::PostMessage (direct send through a dedicated MessagePort)
+    Peer(Arc<PeerGate>),
 }
 
-impl OutGate {
-    /// 创建 InprocOut gate
-    pub fn inproc(gate: Arc<InprocOutGate>) -> Self {
-        Self::InprocOut(gate)
+impl Gate {
+    /// Create a Host gate.
+    pub fn host(gate: Arc<HostGate>) -> Self {
+        Self::Host(gate)
     }
 
-    /// 创建 OutprocOut gate
-    pub fn outproc(gate: Arc<OutprocOutGate>) -> Self {
-        Self::OutprocOut(gate)
+    /// Create a Peer gate.
+    pub fn peer(gate: Arc<PeerGate>) -> Self {
+        Self::Peer(gate)
     }
 
-    /// 发送请求并等待响应
+    /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         match self {
-            OutGate::InprocOut(gate) => gate.send_request(target, envelope).await,
-            OutGate::OutprocOut(gate) => gate.send_request(target, envelope).await,
+            Gate::Host(gate) => gate.send_request(target, envelope).await,
+            Gate::Peer(gate) => gate.send_request(target, envelope).await,
         }
     }
 
-    /// 发送单向消息（不等待响应）
+    /// Send a one-way message without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
-            OutGate::InprocOut(gate) => gate.send_message(target, envelope).await,
-            OutGate::OutprocOut(gate) => gate.send_message(target, envelope).await,
+            Gate::Host(gate) => gate.send_message(target, envelope).await,
+            Gate::Peer(gate) => gate.send_message(target, envelope).await,
         }
     }
 
-    /// 发送 DataStream（Fast Path）
+    /// Send a DataStream through the Fast Path.
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -80,19 +80,19 @@ impl OutGate {
         data: Bytes,
     ) -> ActorResult<()> {
         match self {
-            OutGate::InprocOut(gate) => gate.send_data_stream(target, payload_type, data).await,
-            OutGate::OutprocOut(gate) => gate.send_data_stream(target, payload_type, data).await,
+            Gate::Host(gate) => gate.send_data_stream(target, payload_type, data).await,
+            Gate::Peer(gate) => gate.send_data_stream(target, payload_type, data).await,
         }
     }
 
-    /// 尝试处理远程响应
+    /// Try to handle a remote response.
     ///
-    /// 检查此 OutGate 是否有对应 request_id 的 pending request。
-    /// 如果有，resolve 并返回 true；否则返回 false。
+    /// Checks whether this gate has a pending request for `request_id`.
+    /// If so, resolves it and returns true; otherwise returns false.
     pub fn try_handle_response(&self, request_id: &str, response: Bytes) -> bool {
         match self {
-            OutGate::InprocOut(_) => false,
-            OutGate::OutprocOut(gate) => gate.handle_response(request_id.to_string(), response),
+            Gate::Host(_) => false,
+            Gate::Peer(gate) => gate.handle_response(request_id.to_string(), response),
         }
     }
 }

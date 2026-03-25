@@ -1,8 +1,11 @@
 import puppeteer from 'puppeteer';
 
-const CLIENT_URL = process.env.CLIENT_URL || 'http://127.0.0.1:4175';
+// Each client needs its OWN origin (port) so they get separate Service Workers.
+// Sharing the same origin causes signaling connection conflicts (the signaling
+// server closes the first WS when a second client connects with the same actor_id).
+const CLIENT_URLS = (process.env.CLIENT_URLS || 'http://127.0.0.1:4175,http://127.0.0.1:4177').split(',');
 const SERVER_URL = process.env.SERVER_URL || 'http://127.0.0.1:4176';
-const CLIENT_COUNT = Number(process.env.CLIENT_COUNT || 2);
+const CLIENT_COUNT = CLIENT_URLS.length;
 const MESSAGE_COUNT = Number(process.env.MESSAGE_COUNT || 3);
 const DEFAULT_MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
@@ -46,19 +49,20 @@ async function main() {
         pages.push(serverPage);
         serverPage.on('console', (msg) => console.log('[server]', msg.text()));
         await serverPage.goto(SERVER_URL, { waitUntil: 'networkidle2' });
-        await waitForText(serverPage, '#status', '运行中');
+        await waitForText(serverPage, '#status', 'Server running');
 
         for (let i = 1; i <= CLIENT_COUNT; i += 1) {
             const page = await browser.newPage();
             pages.push(page);
             clientPages.push(page);
             page.on('console', (msg) => console.log(`[client-${i}]`, msg.text()));
-            const url = `${CLIENT_URL}?autoStart=1&clientId=client-${i}&messageCount=${MESSAGE_COUNT}`;
+            const clientUrl = CLIENT_URLS[i - 1];
+            const url = `${clientUrl}?autoStart=1&clientId=client-${i}&messageCount=${MESSAGE_COUNT}`;
             await page.goto(url, { waitUntil: 'networkidle2' });
-            await waitForText(page, '#status', '已连接');
+            await waitForText(page, '#status', 'Connected');
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 12000));
+        await new Promise((resolve) => setTimeout(resolve, 25000));
 
         for (let i = 1; i <= CLIENT_COUNT; i += 1) {
             const page = clientPages[i - 1];

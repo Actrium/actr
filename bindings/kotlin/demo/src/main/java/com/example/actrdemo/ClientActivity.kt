@@ -8,8 +8,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.example.MyUnifiedHandler
-import com.example.UnifiedWorkload
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import echo.Echo.EchoRequest
@@ -55,7 +53,7 @@ class ClientActivity : AppCompatActivity() {
         setupClickListeners()
         initNetworkMonitoring()
 
-        log("Ready to connect (using UnifiedWorkload)")
+        log("Ready to connect (package-backed runtime)")
     }
 
     private fun initNetworkMonitoring() {
@@ -116,6 +114,15 @@ class ClientActivity : AppCompatActivity() {
         return outputFile.absolutePath
     }
 
+    private fun copyFirstPackageAssetToInternalStorage(): String {
+        val packageName =
+                assets
+                        .list("")!!
+                        .firstOrNull { it.endsWith(".actr") }
+                        ?: error("No .actr package found in app assets")
+        return copyAssetToInternalStorage(packageName)
+    }
+
     private fun connect() {
         updateStatus("Connecting...")
         connectButton.isEnabled = false
@@ -125,19 +132,16 @@ class ClientActivity : AppCompatActivity() {
                 // Copy config file from assets to internal storage
                 val configPath = copyAssetToInternalStorage("actr.toml")
                 copyAssetToInternalStorage("Actr.lock.toml")
+                val packagePath = copyFirstPackageAssetToInternalStorage()
                 Log.i(TAG, "Config path: $configPath")
 
                 // Create ActrSystem
-                val clientSystem = createActrSystem(configPath)
+                val clientSystem = createActrSystem(configPath, packagePath)
                 this@ClientActivity.clientSystem = clientSystem
                 Log.i(TAG, "✅ ActrSystem created - NetworkMonitor will auto-handle network events")
 
-                // Create and start UnifiedWorkload with handler
-                Log.i(TAG, "🚀 Starting UnifiedWorkload...")
-                val handler = MyUnifiedHandler()
-                val clientWorkload = UnifiedWorkload(handler)
-                val clientNode = clientSystem.attach(clientWorkload)
-                clientRef = clientNode.start()
+                Log.i(TAG, "🚀 Starting package-backed actor...")
+                clientRef = clientSystem.start()
                 Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
 
                 // Wait for client to discover remote services
@@ -149,7 +153,7 @@ class ClientActivity : AppCompatActivity() {
                     messageInput.isEnabled = true
                     sendButton.isEnabled = true
                     sendFileButton.isEnabled = true
-                    log("Connected (UnifiedWorkload mode)")
+                    log("Connected (package-backed mode)")
                     log("Client ID: ${clientRef?.actorId()?.serialNumber}")
                 }
             } catch (e: Exception) {

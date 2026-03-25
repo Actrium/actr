@@ -1,24 +1,24 @@
 //! Client Runtime for Service Worker
 //!
-//! 按照文档架构实现的 Service Worker 客户端运行时：
-//! - State Path：Mailbox + MailboxProcessor（可靠消息处理）
-//! - Fast Path：Stream/Media 直接回调（低延迟）
-//! - WebRTC signaling relay（通过 DOM coordinator）
+//! Service Worker client runtime implemented according to the documented architecture:
+//! - State path: `Mailbox` + `MailboxProcessor` for reliable message handling
+//! - Fast path: direct callbacks for stream/media traffic with low latency
+//! - WebRTC signaling relay coordinated through the DOM side
 //!
-//! # 消息流
+//! # Message Flow
 //!
-//! ## 发送请求（DOM → Remote）
+//! ## Sending Requests (DOM -> Remote)
 //! ```text
-//! DOM → handle_dom_control → SERVICE_HANDLER (UnifiedDispatcher)
-//!     → local route: handler(route_key, payload, ctx) → response
-//!     → remote route: ctx.call_raw() → OutGate → WebRTC DataChannel
+//! DOM → handle_dom_control → WORKLOAD (WasmWorkload dispatch)
+//!     → local route: workload.dispatch(route_key, payload, ctx) → response
+//!     → remote route: ctx.call_raw() → Gate → WebRTC DataChannel
 //! ```
 //!
-//! ## 接收响应/请求（Remote → SW）
+//! ## Receiving Responses/Requests (Remote -> SW)
 //! ```text
 //! WebRTC → handle_fast_path → InboundPacketDispatcher.dispatch()
-//!   → RPC 响应: 直接匹配 pending request → DOM
-//!   → RPC 请求: Mailbox → MailboxProcessor → Actor 处理
+//!   -> RPC response: match the pending request directly and return to the DOM
+//!   -> RPC request: `Mailbox` -> `MailboxProcessor` -> actor handling
 //! ```
 
 use std::cell::RefCell;
@@ -29,14 +29,13 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrIdExt, ActrToSignaling, ActrType, ActrTypeExt,
-    PeerToSignaling, Ping, RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
+    AIdCredential, Acl, AclRule, ActrId, ActrIdExt, ActrToSignaling, ActrType, ActrTypeExt, Ping,
+    RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
     ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
-    peer_to_signaling, route_candidates_request, session_description, signaling_envelope,
-    signaling_to_actr,
+    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
-use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType};
+use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
@@ -48,9 +47,12 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, MessagePort, WebSocket};
 
+use actr_platform_traits::PlatformProvider;
+use actr_platform_web::WebPlatformProvider;
+
 use crate::context::RuntimeContext;
 use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
-use crate::outbound::OutGate;
+use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
 type StreamHandler = Rc<RefCell<Box<dyn FnMut(Bytes)>>>;
@@ -76,18 +78,6 @@ struct WebRtcCommandPayload {
     peer_id: String,
     #[serde(with = "serde_wasm_bindgen::preserve")]
     payload: JsValue,
-}
-
-#[derive(Serialize)]
-struct SdpPayload {
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    sdp: JsValue,
-}
-
-#[derive(Serialize)]
-struct IcePayload {
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    candidate: JsValue,
 }
 
 #[derive(Serialize)]
@@ -384,6 +374,7 @@ impl Default for ReconnectConfig {
 
 #[derive(Deserialize)]
 struct SwConfig {
+    ais_endpoint: String,
     signaling_url: String,
     realm_id: u32,
     client_actr_type: String,
@@ -426,6 +417,7 @@ struct DomWebRtcEvent {
 
 #[derive(Deserialize)]
 struct LocalDescriptionEvent {
+    #[allow(dead_code)]
     #[serde(rename = "peerId")]
     peer_id: String,
     sdp: SdpInit,
@@ -440,6 +432,7 @@ struct SdpInit {
 
 #[derive(Deserialize)]
 struct IceCandidateEvent {
+    #[allow(dead_code)]
     #[serde(rename = "peerId")]
     peer_id: String,
     candidate: IceCandidateInit,
@@ -474,7 +467,7 @@ struct FastPathPayload {
 /// Distinguishes between DOM-originated and handler-internal pending RPCs.
 ///
 /// - `Dom`: response must be sent back to the DOM as a `control_response` message.
-/// - `Internal`: response is consumed by the InprocOutGate oneshot only (handler-initiated remote calls).
+/// - `Internal`: response is consumed by the HostGate oneshot only (handler-initiated remote calls).
 #[derive(Clone, Debug)]
 pub enum PendingRpcTarget {
     Dom,
@@ -498,7 +491,9 @@ const P2P_RETRY_MAX_DELAY_MS: u64 = 15000;
 struct SwRuntime {
     /// Unique client identifier (one per browser tab)
     client_id: String,
+    ais_endpoint: String,
     signaling_url: String,
+    reconnect_config: ReconnectConfig,
     realm_id: u32,
     client_actr_type: ActrType,
     target_actr_type: ActrType,
@@ -508,6 +503,10 @@ struct SwRuntime {
     signaling: SignalingClient,
     actor_id: Option<ActrId>,
     credential: Option<AIdCredential>,
+    /// TURN credential from AIS registration (time-limited HMAC)
+    turn_credential: Option<actr_protocol::TurnCredential>,
+    /// Platform provider for crypto and KV storage
+    platform: WebPlatformProvider,
     target_id: Option<ActrId>,
     dom_port: Option<MessagePort>,
     pending_rpcs: HashMap<String, PendingRpcTarget>,
@@ -526,10 +525,6 @@ struct SwRuntime {
 
 impl SwRuntime {
     async fn new(client_id: String, config: SwConfig) -> Result<Self, JsValue> {
-        let signaling =
-            SignalingClient::connect_with_retries(&config.signaling_url, &config.reconnect_config)
-                .await?;
-
         // Build ACL from config
         let acl = if config.acl_allow_types.is_empty() {
             None
@@ -551,20 +546,55 @@ impl SwRuntime {
             Some(Acl { rules })
         };
 
+        let client_actr_type = ActrType::from_string_repr(&config.client_actr_type)
+            .map_err(|e| JsValue::from_str(&format!("Invalid client actr_type: {e}")))?;
+        let platform = WebPlatformProvider::new();
+
+        // Step 1: Obtain credential via AIS HTTP registration
+        //   Try to restore persisted credentials first; if expired or missing,
+        //   perform a fresh AIS HTTP registration.
+        let cred_kv_ns = format!("actr_credentials_{}", client_actr_type.to_string_repr());
+        let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
+            &config.ais_endpoint,
+            &client_actr_type,
+            config.realm_id,
+            &acl,
+            &platform,
+            &cred_kv_ns,
+        )
+        .await?;
+
+        // Step 2: Build signaling URL with credential query params
+        let signaling_url_with_cred = Self::build_signaling_url_with_identity_static(
+            &config.signaling_url,
+            &actor_id,
+            &credential,
+        );
+
+        // Step 3: Connect signaling WebSocket with credential in URL
+        let signaling = SignalingClient::connect_with_retries(
+            &signaling_url_with_cred,
+            &config.reconnect_config,
+        )
+        .await?;
+
         Ok(Self {
             client_id,
+            ais_endpoint: config.ais_endpoint,
             signaling_url: config.signaling_url,
+            reconnect_config: config.reconnect_config,
             realm_id: config.realm_id,
-            client_actr_type: ActrType::from_string_repr(&config.client_actr_type)
-                .map_err(|e| JsValue::from_str(&format!("Invalid client actr_type: {e}")))?,
+            client_actr_type,
             target_actr_type: ActrType::from_string_repr(&config.target_actr_type)
                 .map_err(|e| JsValue::from_str(&format!("Invalid target actr_type: {e}")))?,
             service_fingerprint: config.service_fingerprint,
             acl,
             is_server: config.is_server,
             signaling,
-            actor_id: None,
-            credential: None,
+            actor_id: Some(actor_id),
+            credential: Some(credential),
+            turn_credential,
+            platform,
             target_id: None,
             dom_port: None,
             pending_rpcs: HashMap::new(),
@@ -579,74 +609,409 @@ impl SwRuntime {
         })
     }
 
-    async fn register(&mut self) -> Result<(), JsValue> {
-        log::info!(
-            "[SW] register: sending RegisterRequest (acl={:?})",
-            self.acl.is_some()
-        );
+    /// Register with AIS via HTTP and obtain credential.
+    ///
+    /// Checks IndexedDB for a valid PSK first (renewal path); falls back to
+    /// manifest-less initial registration if no PSK is available.
+    async fn register_via_ais(&mut self) -> Result<(), JsValue> {
+        let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
+            &self.ais_endpoint,
+            &self.client_actr_type,
+            self.realm_id,
+            &self.acl,
+            &self.platform,
+            &self.cred_kv_namespace(),
+        )
+        .await?;
+        self.actor_id = Some(actor_id);
+        self.credential = Some(credential);
+        self.turn_credential = turn_credential;
+        Ok(())
+    }
+
+    /// Obtain a credential from AIS via HTTP.
+    ///
+    /// 1. Try to load a valid PSK from IndexedDB for renewal
+    /// 2. If no PSK, perform initial registration (no manifest for web clients)
+    /// 3. Persist PSK and credential to IndexedDB
+    /// 4. Return (actor_id, credential, turn_credential)
+    async fn obtain_credential_from_ais(
+        ais_endpoint: &str,
+        client_actr_type: &ActrType,
+        realm_id: u32,
+        acl: &Option<Acl>,
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<(ActrId, AIdCredential, Option<actr_protocol::TurnCredential>), JsValue> {
+        // Try to restore persisted credential if still valid
+        if let Some((actor_id, credential)) =
+            Self::try_restore_credential_static(platform, cred_kv_ns).await?
+        {
+            log::info!(
+                "[SW] credentials restored from IndexedDB (actor_id={})",
+                actor_id.to_string_repr()
+            );
+            // Also try to restore persisted TurnCredential
+            let turn_credential =
+                Self::try_restore_turn_credential_static(platform, cred_kv_ns).await?;
+            return Ok((actor_id, credential, turn_credential));
+        }
+
+        let ais = WebAisClient::new(ais_endpoint);
+
+        // Try to load PSK for renewal
+        let psk_token = Self::load_valid_psk_static(platform, cred_kv_ns).await?;
+
         let request = RegisterRequest {
-            actr_type: self.client_actr_type.clone(),
-            realm: actr_protocol::Realm {
-                realm_id: self.realm_id,
-            },
+            actr_type: client_actr_type.clone(),
+            realm: actr_protocol::Realm { realm_id },
             service_spec: None,
-            acl: self.acl.clone(),
+            acl: acl.clone(),
             service: None,
             ws_address: None,
-        };
-        let envelope = SignalingEnvelope {
-            envelope_version: 1,
-            envelope_id: self.signaling.next_envelope_id(),
-            reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
-            traceparent: None,
-            tracestate: None,
-            flow: Some(signaling_envelope::Flow::PeerToServer(PeerToSignaling {
-                payload: Some(peer_to_signaling::Payload::RegisterRequest(request)),
-            })),
+            manifest_raw: None,
+            mfr_signature: None,
+            psk_token: psk_token.clone().map(|t| t.into()),
+            target: None,
         };
 
-        let response = self.signaling.send_request(envelope).await?;
-        log::info!("[SW] register: got response");
-        let register_response = match response.flow {
-            Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) => {
-                match server_to_actr.payload {
-                    Some(signaling_to_actr::Payload::RegisterResponse(resp)) => resp,
-                    _ => return Err(JsValue::from_str("Unexpected signaling response payload")),
-                }
-            }
-            _ => return Err(JsValue::from_str("Unexpected signaling response flow")),
-        };
+        log::info!(
+            "[SW] register via AIS HTTP: actr_type={}, psk={}",
+            client_actr_type.to_string_repr(),
+            psk_token.is_some()
+        );
 
-        match register_response.result {
+        let response = if psk_token.is_some() {
+            ais.register_with_psk(request).await
+        } else {
+            ais.register_with_manifest(request).await
+        }
+        .map_err(|e| JsValue::from_str(&format!("AIS registration failed: {e}")))?;
+
+        match response.result {
             Some(actr_protocol::register_response::Result::Success(ok)) => {
+                let actor_id = ok.actr_id.clone();
+                let credential = ok.credential.clone();
+                let turn_credential = Some(ok.turn_credential.clone());
+
                 log::info!(
-                    "[SW] register: success actr_id={}",
-                    ok.actr_id.to_string_repr()
+                    "[SW] AIS registration success: actr_id={}",
+                    actor_id.to_string_repr()
                 );
-                self.actor_id = Some(ok.actr_id);
-                self.credential = Some(ok.credential);
-                Ok(())
+
+                // Persist PSK if returned
+                if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
+                    Self::persist_psk_static(platform, cred_kv_ns, psk, psk_expires_at as u64)
+                        .await?;
+                }
+
+                // Persist credential and actor_id
+                Self::persist_credentials_static(platform, cred_kv_ns, &actor_id, &credential)
+                    .await?;
+
+                // Persist TurnCredential
+                if let Some(ref tc) = turn_credential {
+                    Self::persist_turn_credential_static(platform, cred_kv_ns, tc).await?;
+                }
+
+                Ok((actor_id, credential, turn_credential))
             }
             Some(actr_protocol::register_response::Result::Error(err)) => {
-                log::warn!("[SW] register: error {}", err.message);
+                log::warn!("[SW] AIS register error: {}", err.message);
                 Err(JsValue::from_str(&format!(
-                    "Register failed: {}",
+                    "AIS register failed: {}",
                     err.message
                 )))
             }
-            None => Err(JsValue::from_str("Register response missing result")),
+            None => Err(JsValue::from_str("AIS register response missing result")),
         }
     }
 
-    /// Reconnect the signaling WebSocket and re-register with the
-    /// signaling server.  Called when the heartbeat detects that the
-    /// existing WebSocket is dead (e.g. browser killed the SW, network
-    /// interruption, server restart).
+    /// Build signaling URL with credential query params for authenticated WS connection.
+    fn build_signaling_url_with_identity(&self) -> String {
+        let actor_id = self.actor_id.as_ref().expect("actor_id must be set");
+        let credential = self.credential.as_ref().expect("credential must be set");
+        Self::build_signaling_url_with_identity_static(&self.signaling_url, actor_id, credential)
+    }
+
+    /// Build signaling URL with identity params (static version, no &self needed).
+    fn build_signaling_url_with_identity_static(
+        base_url: &str,
+        actor_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> String {
+        let actor_str = actor_id.to_string_repr();
+        let claims_b64 = bytes_to_base64(&credential.claims);
+        let sig_b64 = bytes_to_base64(&credential.signature);
+
+        let separator = if base_url.contains('?') { "&" } else { "?" };
+        format!(
+            "{base_url}{separator}actor_id={}&key_id={}&claims={}&signature={}",
+            js_encode_uri_component(&actor_str),
+            credential.key_id,
+            js_encode_uri_component(&claims_b64),
+            js_encode_uri_component(&sig_b64),
+        )
+    }
+
+    /// Load a valid (non-expired) PSK from IndexedDB.
+    async fn load_valid_psk_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(token) = kv
+            .get("psk_token")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK token: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let Some(expires_bytes) = kv
+            .get("psk_expires_at")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK expires_at: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        if expires_bytes.len() != 8 {
+            log::warn!("[SW] PSK expires_at has unexpected format, ignoring");
+            return Ok(None);
+        }
+        let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+
+        if now_secs >= expires_at {
+            log::info!(
+                "[SW] PSK expired (expires_at={}, now={}), will do initial registration",
+                expires_at,
+                now_secs
+            );
+            let _ = kv.delete("psk_token").await;
+            let _ = kv.delete("psk_expires_at").await;
+            return Ok(None);
+        }
+
+        log::debug!(
+            "[SW] valid PSK found (expires_in={}s)",
+            expires_at.saturating_sub(now_secs)
+        );
+        Ok(Some(token))
+    }
+
+    /// Persist PSK token and expiry to IndexedDB.
+    async fn persist_psk_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        psk: &[u8],
+        psk_expires_at: u64,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        kv.set("psk_token", psk)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK token: {e}")))?;
+
+        let expires_bytes = psk_expires_at.to_le_bytes().to_vec();
+        kv.set("psk_expires_at", &expires_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK expires_at: {e}")))?;
+
+        log::info!("[SW] PSK persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Persist credential and actor_id to IndexedDB (static version).
+    async fn persist_credentials_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        actor_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let cred_bytes = credential.encode_to_vec();
+        kv.set("credential", &cred_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist credential: {e}")))?;
+
+        let id_str = actor_id.to_string_repr();
+        kv.set("actor_id", id_str.as_bytes())
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist actor_id: {e}")))?;
+
+        log::info!("[SW] credentials persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Persist TurnCredential to IndexedDB (static version).
+    async fn persist_turn_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        turn_credential: &actr_protocol::TurnCredential,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let tc_bytes = turn_credential.encode_to_vec();
+        kv.set("turn_credential", &tc_bytes)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist TurnCredential: {e}")))?;
+
+        log::info!("[SW] TurnCredential persisted to IndexedDB");
+        Ok(())
+    }
+
+    /// Try to restore a valid TurnCredential from IndexedDB (static version).
+    async fn try_restore_turn_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<actr_protocol::TurnCredential>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(tc_bytes) = kv
+            .get("turn_credential")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read TurnCredential: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let tc = actr_protocol::TurnCredential::decode(&*tc_bytes).map_err(|e| {
+            JsValue::from_str(&format!("Failed to decode persisted TurnCredential: {e}"))
+        })?;
+
+        // Check if TurnCredential is still valid
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        if tc.expires_at <= now_secs {
+            log::info!(
+                "[SW] persisted TurnCredential expired (expires_at={}, now={})",
+                tc.expires_at,
+                now_secs
+            );
+            let _ = kv.delete("turn_credential").await;
+            return Ok(None);
+        }
+
+        log::info!("[SW] TurnCredential restored from IndexedDB");
+        Ok(Some(tc))
+    }
+
+    /// Send TurnCredential to the DOM so the WebRTC coordinator can
+    /// include TURN credentials in ICE server configuration.
+    fn send_turn_credential_to_dom(
+        &self,
+        tc: &actr_protocol::TurnCredential,
+    ) -> Result<(), JsValue> {
+        #[derive(Serialize)]
+        struct TurnCredentialPayload {
+            username: String,
+            password: String,
+        }
+
+        let payload = TurnCredentialPayload {
+            username: tc.username.clone(),
+            password: tc.password.clone(),
+        };
+
+        let msg = SwMessage {
+            msg_type: "update_turn_credential",
+            payload,
+        };
+
+        let js_value = serde_wasm_bindgen::to_value(&msg).map_err(|e| {
+            JsValue::from_str(&format!(
+                "Failed to serialize TurnCredential message: {}",
+                e
+            ))
+        })?;
+
+        log::info!("[SW] Sending TurnCredential to DOM");
+        self.send_dom_message(&js_value)
+    }
+
+    /// Try to restore valid credentials from IndexedDB (static version).
+    async fn try_restore_credential_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<(ActrId, AIdCredential)>, JsValue> {
+        let kv = platform
+            .open_kv_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(cred_bytes) = kv
+            .get("credential")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read credential: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let Some(id_bytes) = kv
+            .get("actor_id")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read actor_id: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let credential = AIdCredential::decode(&*cred_bytes).map_err(|e| {
+            JsValue::from_str(&format!("Failed to decode persisted credential: {e}"))
+        })?;
+
+        let claims = actr_protocol::IdentityClaims::decode(&*credential.claims)
+            .map_err(|e| JsValue::from_str(&format!("Failed to decode identity claims: {e}")))?;
+
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        if claims.expires_at <= now_secs {
+            log::info!(
+                "[SW] persisted credential expired (expires_at={}, now={})",
+                claims.expires_at,
+                now_secs
+            );
+            let _ = kv.delete("credential").await;
+            let _ = kv.delete("actor_id").await;
+            return Ok(None);
+        }
+
+        let id_str = String::from_utf8(id_bytes)
+            .map_err(|e| JsValue::from_str(&format!("Invalid actor_id UTF-8: {e}")))?;
+        let actor_id = ActrId::from_string_repr(&id_str)
+            .map_err(|e| JsValue::from_str(&format!("Failed to parse actor_id: {e}")))?;
+
+        Ok(Some((actor_id, credential)))
+    }
+
+    /// KV namespace for persisting credentials across SW restarts.
+    fn cred_kv_namespace(&self) -> String {
+        format!(
+            "actr_credentials_{}",
+            self.client_actr_type.to_string_repr()
+        )
+    }
+
+    /// Reconnect the signaling WebSocket after detecting a dead connection.
     ///
-    /// After a successful reconnect the caller must spawn a new signaling
-    /// relay loop because the old one terminated when the old channel
-    /// was closed.
+    /// New flow: obtain credential via AIS HTTP first, then connect signaling
+    /// with credential in URL.
     async fn reconnect_signaling(&mut self) -> Result<(), JsValue> {
         log::info!(
             "[SW] [{}] Reconnecting signaling WebSocket...",
@@ -668,17 +1033,42 @@ impl SwRuntime {
         self.ice_restart_attempts.clear();
         self.peer_connection_states.clear();
 
-        // 3. Create a brand-new signaling client (new WebSocket).
-        let reconnect_config = ReconnectConfig::default();
-        self.signaling =
-            SignalingClient::connect_with_retries(&self.signaling_url, &reconnect_config).await?;
+        // 3. Obtain credential: try restore from IndexedDB, else re-register via AIS HTTP.
+        let cred_kv_ns = self.cred_kv_namespace();
+        match Self::try_restore_credential_static(&self.platform, &cred_kv_ns).await {
+            Ok(Some((actor_id, credential))) => {
+                log::info!("[SW] restored credentials from IndexedDB, skipping AIS re-register");
+                self.actor_id = Some(actor_id);
+                self.credential = Some(credential);
+                // Also try to restore TurnCredential
+                if let Ok(tc) =
+                    Self::try_restore_turn_credential_static(&self.platform, &cred_kv_ns).await
+                {
+                    self.turn_credential = tc;
+                }
+            }
+            _ => {
+                self.register_via_ais().await?;
+            }
+        }
 
-        // 4. Re-register with the signaling server to obtain a fresh
-        //    actr_id + credential and restore the service entry.
-        self.register().await?;
+        // Send updated TurnCredential to DOM for new peer connections
+        if let Some(ref tc) = self.turn_credential {
+            if let Err(e) = self.send_turn_credential_to_dom(tc) {
+                log::warn!(
+                    "[SW] Failed to send TurnCredential to DOM on reconnect: {:?}",
+                    e
+                );
+            }
+        }
+
+        // 4. Build signaling URL with credential and connect.
+        let url_with_cred = self.build_signaling_url_with_identity();
+        self.signaling =
+            SignalingClient::connect_with_retries(&url_with_cred, &self.reconnect_config).await?;
 
         log::info!(
-            "[SW] [{}] Signaling reconnected and re-registered",
+            "[SW] [{}] Signaling reconnected (AIS HTTP credential)",
             self.client_id
         );
         Ok(())
@@ -817,9 +1207,10 @@ impl SwRuntime {
         }
     }
 
-    /// 使用指定的 ActrType 发现目标 Actor
+    /// Discover a target actor using an explicit `ActrType`.
     ///
-    /// 与 `discover_target` 类似，但允许指定目标类型而非使用配置中的默认类型
+    /// Similar to `discover_target`, but allows the caller to provide the
+    /// target type instead of relying on the configured default.
     async fn discover_target_for_type(
         &mut self,
         target_type: &ActrType,
@@ -1092,15 +1483,15 @@ impl SwRuntime {
         self.pending_rpcs.insert(request_id, target);
     }
 
-    /// 处理来自远程的 RPC 响应
+    /// Handle an RPC response received from a remote peer.
     ///
-    /// 按照文档 6.1 消息流：
-    /// 远程响应 → handle_fast_path → handle_rpc_response → System.handle_remote_response
-    /// → InprocOutGate.handle_response → DOM 收到响应
+    /// Documented flow:
+    /// `remote response -> handle_fast_path -> handle_rpc_response`
+    /// `-> System.handle_remote_response -> HostGate.handle_response -> DOM response`
     fn handle_rpc_response(&mut self, envelope: RpcEnvelope) -> Result<(), JsValue> {
         let request_id = envelope.request_id.clone();
 
-        // 检查是否是我们发送的请求
+        // Check whether this response belongs to a request we sent.
         let Some(rpc_target) = self.pending_rpcs.remove(&request_id) else {
             log::warn!(
                 "[SW] Received response for unknown request_id: {}",
@@ -1115,15 +1506,15 @@ impl SwRuntime {
             rpc_target
         );
 
-        // 提取 payload 用于后续处理
+        // Extract the payload for downstream handling.
         let payload_bytes = envelope
             .payload
             .as_ref()
             .map(|p| p.to_vec())
             .unwrap_or_default();
 
-        // 通过 System 处理响应
-        // 这将触发 InprocOutGate.handle_response()
+        // Let `System` process the response.
+        // This triggers `HostGate.handle_response()`.
         CLIENTS.with(|cell| {
             if let Some(ctx) = cell.borrow().get(&self.client_id) {
                 ctx.system
@@ -1164,7 +1555,7 @@ impl SwRuntime {
                 self.send_dom_message(&msg_js_value)?;
             }
             PendingRpcTarget::Internal => {
-                // Internal (handler-initiated) RPCs: response handled via System/InprocOutGate only
+                // Internal (handler-initiated) RPCs: response handled via System/HostGate only
                 log::debug!(
                     "[SW] Internal RPC response handled: request_id={}",
                     request_id
@@ -1175,6 +1566,7 @@ impl SwRuntime {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn handle_inbound_signaling(&mut self) -> Result<(), JsValue> {
         while let Some(env) = self.signaling.recv_inbound().await {
             if let Some(signaling_envelope::Flow::ActrRelay(relay)) = env.flow {
@@ -1623,11 +2015,11 @@ impl SwRuntime {
         Ok(())
     }
 
-    /// 处理 Fast Path 数据
+    /// Handle fast-path data.
     ///
-    /// 按照文档架构：
-    /// - RPC 响应（有 pending request）→ 直接处理（Fast Path ~1-3ms）
-    /// - RPC 请求（入站请求）→ Mailbox → MailboxProcessor（State Path ~30-40ms）
+    /// Architectural split:
+    /// - RPC responses with a pending request -> handled directly (fast path, about 1-3 ms)
+    /// - Inbound RPC requests -> `Mailbox` -> `MailboxProcessor` (state path, about 30-40 ms)
     fn handle_fast_path(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
         let (_, channel_id) = parse_peer_and_channel(&payload.stream_id);
 
@@ -1638,26 +2030,27 @@ impl SwRuntime {
         let envelope = RpcEnvelope::decode(&payload.data[..])
             .map_err(|e| JsValue::from_str(&format!("Failed to decode RpcEnvelope: {e}")))?;
 
-        // 检查是否是我们发送的请求的响应
+        // Check whether this is a response to one of our outbound requests.
         let is_response = self.pending_rpcs.contains_key(&envelope.request_id);
 
         if is_response {
-            // Fast Path：直接处理响应
+            // Fast path: process the response directly.
             log::debug!(
                 "[SW] Fast Path: response for request_id={}",
                 envelope.request_id
             );
             self.handle_rpc_response(envelope)
         } else {
-            // State Path：通过 Dispatcher 进入 Mailbox → MailboxProcessor → ServiceHandler
-            // 按照文档架构，所有入站 RPC 请求必须经过 Mailbox 持久化和串行调度
+            // State path: route through `Dispatcher -> Mailbox -> MailboxProcessor -> ServiceHandler`.
+            // By design, all inbound RPC requests must be persisted in the mailbox
+            // and processed through serialized scheduling.
             log::info!(
                 "[SW] State Path: request route_key={} request_id={} → Mailbox",
                 envelope.route_key,
                 envelope.request_id
             );
 
-            // 将 stream_id 作为 from 传递给 Mailbox，以便 MailboxProcessor 知道响应目标
+            // Pass `stream_id` as `from` so `MailboxProcessor` knows the response target.
             let stream_id_bytes = payload.stream_id.as_bytes().to_vec();
             let message = MessageFormat::new(PayloadType::RpcReliable, Bytes::from(payload.data));
 
@@ -1711,6 +2104,7 @@ impl SwRuntime {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn is_channel_open(&self, peer_id: &str, channel_id: u32) -> bool {
         self.open_channels
             .get(peer_id)
@@ -1725,6 +2119,7 @@ impl SwRuntime {
             .insert(channel_id);
     }
 
+    #[allow(dead_code)]
     fn queue_channel_data(&mut self, peer_id: &str, data: Vec<u8>) {
         self.pending_channel_data
             .entry(peer_id.to_string())
@@ -1803,7 +2198,7 @@ impl SwRuntime {
                     let _ = self.send_dom_message(&msg_js_value);
                 }
                 PendingRpcTarget::Internal => {
-                    // Internal RPCs: resolved via System/InprocOutGate error handling
+                    // Internal RPCs: resolved via System/HostGate error handling
                     CLIENTS.with(|cell| {
                         if let Some(ctx) = cell.borrow().get(&self.client_id) {
                             ctx.system.handle_remote_response(request_id, Bytes::new());
@@ -1951,25 +2346,7 @@ impl SwRuntime {
     }
 }
 
-/// Type alias for a unified service handler function (UnifiedDispatcher).
-///
-/// Given (route_key, request_bytes, context), returns a future that resolves
-/// to the response bytes or an error string.
-///
-/// The handler dispatches based on route_key prefix to local or remote handlers.
-/// For remote calls, the handler uses `ctx.call_raw()` / `ctx.discover()`.
-///
-/// # Parameters
-/// - `route_key`: Full route key (e.g., `"echo.EchoService.Echo"`)
-/// - `request_bytes`: Serialized protobuf request payload
-/// - `ctx`: WebContext providing communication capabilities (call_raw, discover, etc.)
-pub type ServiceHandlerFn = Rc<
-    dyn Fn(
-        &str,
-        &[u8],
-        Rc<RuntimeContext>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>>>>,
->;
+use crate::workload::WasmWorkload;
 
 /// Per-client context stored in the SW.
 /// Each browser tab gets its own independent client context with
@@ -1978,29 +2355,30 @@ struct ClientContext {
     runtime: Rc<Mutex<SwRuntime>>,
     system: Rc<crate::System>,
     dispatcher: Rc<InboundPacketDispatcher>,
-    /// OutprocOutGate — 跨节点传输适配器
-    outproc_gate: Arc<crate::outbound::OutprocOutGate>,
-    /// OutprocTransportManager — 管理每个 Dest 的 DestTransport
-    transport_manager: Arc<crate::transport::OutprocTransportManager>,
-    /// DataStream 回调注册表（每个浏览器 tab 独立）
+    /// `PeerGate`, the cross-node transport adapter.
+    peer_gate: Arc<crate::outbound::PeerGate>,
+    /// `PeerTransport`, which manages one `DestTransport` per destination.
+    transport_manager: Arc<crate::transport::PeerTransport>,
+    /// `DataStream` callback registry, isolated per browser tab.
     stream_handlers: Rc<RefCell<HashMap<String, StreamHandler>>>,
 }
 
-/// SwRuntimeBridge - RuntimeBridge 的实现
+/// `SwRuntimeBridge`, the `RuntimeBridge` implementation.
 ///
-/// 连接 RuntimeContext 和 SwRuntime / System / OutprocOutGate，
-/// 为 handler 内的 `ctx.call_raw()` / `ctx.discover()` 提供底层能力。
+/// Connects `RuntimeContext` with `SwRuntime`, `System`, and `PeerGate`,
+/// providing the lower-level capabilities behind `ctx.call_raw()` and
+/// `ctx.discover()` inside handlers.
 struct SwRuntimeBridge {
     runtime: Rc<Mutex<SwRuntime>>,
-    outproc_gate: Arc<crate::outbound::OutprocOutGate>,
+    peer_gate: Arc<crate::outbound::PeerGate>,
     client_id: String,
 }
 
 #[async_trait::async_trait(?Send)]
 impl RuntimeBridge for SwRuntimeBridge {
     fn register_pending_rpc(&self, request_id: String) {
-        // 同步注册：使用 futures::lock::Mutex::try_lock
-        // 在 WASM 单线程环境中，如果锁不可用说明存在 bug
+        // Register synchronously via `futures::lock::Mutex::try_lock`.
+        // In single-threaded WASM, lock contention here indicates a bug.
         if let Some(mut rt) = self.runtime.try_lock() {
             rt.register_pending_rpc(request_id, PendingRpcTarget::Internal);
         } else {
@@ -2020,7 +2398,7 @@ impl RuntimeBridge for SwRuntimeBridge {
         let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
             actr_protocol::ActrError::Unavailable(format!("Failed to ensure peer: {:?}", e))
         })?;
-        self.outproc_gate
+        self.peer_gate
             .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));
         Ok(())
     }
@@ -2111,33 +2489,32 @@ thread_local! {
     /// Each browser tab registers with a unique client_id.
     static CLIENTS: RefCell<HashMap<String, Rc<ClientContext>>> = RefCell::new(HashMap::new());
     static GLOBAL_INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static SERVICE_HANDLER: RefCell<Option<ServiceHandlerFn>> = const { RefCell::new(None) };
+    static WORKLOAD: RefCell<Option<WasmWorkload>> = const { RefCell::new(None) };
 }
 
-/// Register a unified service handler (UnifiedDispatcher pattern).
+/// Register a WASM workload with the SW runtime.
 ///
-/// The handler receives (route_key, request_bytes, ctx) and dispatches to
-/// local or remote handlers based on route_key prefix.
+/// The workload dispatches RPC requests to business logic through its handler.
 ///
 /// # Example
 /// ```ignore
-/// register_service_handler(Rc::new(|route_key, bytes, ctx| {
+/// use actr_runtime_sw::{WasmWorkload, register_workload};
+///
+/// let workload = WasmWorkload::new(Rc::new(|route_key, bytes, ctx| {
 ///     Box::pin(async move {
-///         if route_key.starts_with("local.") {
-///             handle_local(route_key, bytes).await
-///         } else {
-///             // Forward to remote via ctx.call_raw()
-///             let target = ctx.discover(&target_type).await.map_err(|e| e.to_string())?;
-///             ctx.call_raw(&target, route_key, bytes, 30000).await.map_err(|e| e.to_string())
+///         match route_key {
+///             "echo.EchoService.Echo" => handle_echo(bytes, ctx).await,
+///             _ => Err(format!("Unknown route: {}", route_key)),
 ///         }
 ///     })
 /// }));
+/// register_workload(workload);
 /// ```
-pub fn register_service_handler(handler: ServiceHandlerFn) {
-    SERVICE_HANDLER.with(|cell| {
-        *cell.borrow_mut() = Some(handler);
+pub fn register_workload(workload: WasmWorkload) {
+    WORKLOAD.with(|cell| {
+        *cell.borrow_mut() = Some(workload);
     });
-    log::info!("[SW] Service handler registered");
+    log::info!("[SW] Workload registered");
 }
 
 #[wasm_bindgen]
@@ -2152,13 +2529,13 @@ pub fn init_global() -> Result<(), JsValue> {
     });
 
     if first_init {
-        // 设置 panic hook，确保 panic 信息输出到控制台
+        // Install the panic hook so panic details reach the console.
         console_error_panic_hook::set_once();
 
-        // 初始化日志
+        // Initialize logging.
         wasm_logger::init(wasm_logger::Config::default());
 
-        // 初始化生命周期管理
+        // Initialize lifecycle management.
         let lifecycle = crate::SwLifecycleManager::new();
         if let Err(e) = lifecycle.init() {
             log::error!("Failed to initialize lifecycle manager: {:?}", e);
@@ -2193,49 +2570,57 @@ pub async fn register_client(
         config.is_server
     );
     let mut runtime = SwRuntime::new(client_id.clone(), config).await?;
-    runtime.register().await?;
 
     // Set DOM port
     runtime.dom_port = Some(port);
 
-    // 获取 actor_id 用于 System
+    // Send TURN credential to DOM so the WebRTC coordinator can use it
+    // for ICE server authentication. This must happen before any create_peer
+    // commands.
+    if let Some(ref tc) = runtime.turn_credential {
+        if let Err(e) = runtime.send_turn_credential_to_dom(tc) {
+            log::warn!("[SW] Failed to send TurnCredential to DOM: {:?}", e);
+        }
+    }
+
+    // Fetch `actor_id` for the `System`.
     let actor_id = runtime.actor_id.clone();
 
     let runtime = Rc::new(Mutex::new(runtime));
 
-    // ==================== State Path 初始化 ====================
-    // 按照文档架构: InboundDispatcher → Mailbox → MailboxProcessor → Scheduler → Actor
+    // ==================== State Path Initialization ====================
+    // Documented architecture: `InboundDispatcher -> Mailbox -> MailboxProcessor -> Scheduler -> Actor`
     log::info!("[SW] [{}] Initializing State Path components...", client_id);
 
-    // 1. 创建 Mailbox（IndexedDB）
+    // 1. Create the mailbox (`IndexedDB`).
     let mailbox: Rc<dyn Mailbox> = Rc::new(
         IndexedDbMailbox::new()
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to create Mailbox: {}", e)))?,
     );
 
-    // 2. 创建 MailboxProcessor（同时获取事件驱动的 notifier）
+    // 2. Create the `MailboxProcessor` and its event-driven notifier.
     let (mut processor, notifier) = MailboxProcessor::new(mailbox.clone(), 10);
 
-    // 3. 创建 InboundPacketDispatcher（复用 IndexedDB 后端，附带 notifier）
+    // 3. Create the `InboundPacketDispatcher` with the shared IndexedDB backend and notifier.
     let mailbox_arc: Arc<dyn Mailbox> = Arc::from(IndexedDbMailbox::new().await.map_err(|e| {
         JsValue::from_str(&format!("Failed to create Mailbox for dispatcher: {}", e))
     })?);
     let dispatcher =
         Rc::new(InboundPacketDispatcher::new(mailbox_arc.clone()).with_notifier(notifier));
 
-    // 4. 创建 Scheduler（串行调度器，保证同一 Actor 消息顺序执行）
+    // 4. Create the `Scheduler`, which serializes execution per actor.
     let scheduler = Scheduler::new();
 
-    // 5. 设置 Scheduler 的 Actor 处理回调
-    //    按照文档：Scheduler → Actor 业务逻辑 → 响应返回
+    // 5. Install the scheduler's actor-processing callback.
+    //    Documented flow: `Scheduler -> actor business logic -> response`
     let runtime_for_scheduler = Rc::clone(&runtime);
     let client_id_for_scheduler = client_id.clone();
     scheduler.set_handler(Rc::new(move |record: MessageRecord| {
         let runtime = Rc::clone(&runtime_for_scheduler);
         let client_id = client_id_for_scheduler.clone();
         Box::pin(async move {
-            // 解析消息（所有进入 Mailbox 的消息都是入站 RPC 请求）
+            // Decode the message. Every mailbox entry here is an inbound RPC request.
             let envelope = RpcEnvelope::decode(&record.payload[..])
                 .map_err(|e| actr_web_common::WebError::Protocol(format!("Failed to decode RpcEnvelope: {}", e)))?;
 
@@ -2245,13 +2630,13 @@ pub async fn register_client(
                 envelope.route_key
             );
 
-            // 获取已注册的全局 service handler
-            let handler = SERVICE_HANDLER.with(|cell| cell.borrow().as_ref().map(Rc::clone));
+            // Fetch the registered workload.
+            let workload = WORKLOAD.with(|cell| cell.borrow().clone());
 
-            if let Some(handler) = handler {
+            if let Some(workload) = workload {
                 let route_key = envelope.route_key.clone();
                 let request_id = envelope.request_id.clone();
-                let is_tell = envelope.timeout_ms == 0; // tell() 设置 timeout_ms=0，表示单向消息
+                let is_tell = envelope.timeout_ms == 0; // `tell()` sets `timeout_ms=0`, meaning one-way messaging.
                 let request_bytes = envelope
                     .payload
                     .as_ref()
@@ -2272,34 +2657,36 @@ pub async fn register_client(
                     is_tell
                 );
 
-                // Build RuntimeContext for the handler (server-side: uses OutprocOut for outbound)
-                // Look up system/outproc_gate from CLIENTS (initialized after scheduler setup)
+                // Build RuntimeContext for the handler (server-side: uses Peer gate for outbound)
+                // Look up system/peer_gate from CLIENTS (initialized after scheduler setup)
                 let (outgate, bridge) = CLIENTS.with(|cell| {
                     let map = cell.borrow();
                     if let Some(ctx) = map.get(&client_id) {
                         if let Some(caller_id) = caller_id.clone() {
-                            ctx.outproc_gate.register_actor(
+                            ctx.peer_gate.register_actor(
                                 caller_id,
                                 actr_web_common::Dest::Peer(peer_id.clone()),
                             );
                         }
                         let outgate = ctx.system.outgate().unwrap_or_else(|| {
-                            OutGate::inproc(Arc::clone(ctx.system.inproc_gate()))
+                            Gate::host(Arc::clone(ctx.system.host_gate()))
                         });
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
-                            outproc_gate: Arc::clone(&ctx.outproc_gate),
+                            peer_gate: Arc::clone(&ctx.peer_gate),
                             client_id: client_id.clone(),
                         });
                         (outgate, bridge)
                     } else {
-                        // Fallback: InprocOut with no bridge
+                        // Fallback: Host gate with no bridge
                         log::error!("[Scheduler] Client context not found for {}", client_id);
-                        let gate = OutGate::inproc(Arc::new(crate::outbound::InprocOutGate::new()));
+                        #[allow(clippy::arc_with_non_send_sync)]
+                        let gate = Gate::host(Arc::new(crate::outbound::HostGate::new()));
+                        #[allow(clippy::arc_with_non_send_sync)]
                         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
                             runtime: Rc::clone(&runtime),
-                            outproc_gate: Arc::new(crate::outbound::OutprocOutGate::new(
-                                Arc::new(crate::transport::OutprocTransportManager::new(
+                            peer_gate: Arc::new(crate::outbound::PeerGate::new(
+                                Arc::new(crate::transport::PeerTransport::new(
                                     client_id.clone(),
                                     Arc::new(crate::transport::WebWireBuilder::new()),
                                 )),
@@ -2325,10 +2712,10 @@ pub async fn register_client(
                     .with_bridge(bridge),
                 );
 
-                // 调用 Actor 业务逻辑
-                let result = handler(&route_key, &request_bytes, handler_ctx).await;
+                // Execute the actor business logic via workload dispatch.
+                let result = workload.dispatch(&route_key, &request_bytes, handler_ctx).await;
 
-                // tell() 是单向消息（fire-and-forget），无需构建或发送响应
+                // `tell()` is fire-and-forget, so no response is built or sent.
                 if is_tell {
                     match result {
                         Ok(_) => log::debug!(
@@ -2342,7 +2729,7 @@ pub async fn register_client(
                         ),
                     }
                 } else {
-                    // call() 请求-响应模式：构建并发送响应
+                    // `call()` uses request-response semantics, so build and send a response.
                     let response_envelope = match result {
                         Ok(response_bytes) => {
                             log::info!(
@@ -2385,7 +2772,7 @@ pub async fn register_client(
 
                     let data = response_envelope.encode_to_vec();
 
-                    // 解析发送方的 peer_id 和 channel_id（从 stream_id 中提取）
+                    // Parse the sender's `peer_id` and `channel_id` from `stream_id`.
                     let (peer_id, channel_id) = if let Some(last_colon) = stream_id.rfind(':') {
                         let peer = &stream_id[..last_colon];
                         let ch = stream_id[last_colon + 1..].parse::<u32>().unwrap_or(0);
@@ -2402,7 +2789,7 @@ pub async fn register_client(
                         data.len()
                     );
 
-                    // 通过 SwRuntime 发送响应回远程 peer
+                    // Send the response back to the remote peer through `SwRuntime`.
                     let rt = runtime.lock().await;
                     if let Err(e) = rt.send_channel_data(&peer_id, channel_id, &data) {
                         log::error!(
@@ -2414,7 +2801,7 @@ pub async fn register_client(
                 }
             } else {
                 log::warn!(
-                    "[Scheduler] No service handler for incoming RPC request: route_key={}",
+                    "[Scheduler] No workload registered for incoming RPC request: route_key={}",
                     envelope.route_key
                 );
             }
@@ -2423,8 +2810,8 @@ pub async fn register_client(
         })
     }));
 
-    // 6. 设置 MailboxProcessor 的处理回调
-    //    按照文档：MailboxProcessor → Scheduler（路由到对应 Actor 的串行队列）
+    // 6. Install the `MailboxProcessor` callback.
+    //    Documented flow: `MailboxProcessor -> Scheduler` into the actor's serialized queue.
     let scheduler_for_processor = scheduler.clone();
     let local_actor_id_for_processor = actor_id.clone().unwrap_or_else(|| {
         log::warn!("[SW] actor_id not set after register, using default for Scheduler");
@@ -2439,27 +2826,30 @@ pub async fn register_client(
         })
     }));
 
-    // 7. 启动 Scheduler 和 MailboxProcessor
+    // 7. Start the scheduler and mailbox processor.
     scheduler.start();
     processor.start();
 
-    // ==================== System 初始化 ====================
+    // ==================== System Initialization ====================
 
     let system = Rc::new(crate::System::new());
     if let Some(actor_id) = actor_id {
         system.set_local_actor_id(actor_id);
     }
 
-    // 创建完整传输栈：OutprocOutGate → OutprocTransportManager → DestTransport → WirePool
+    // Build the full transport stack: `PeerGate -> PeerTransport -> DestTransport -> WirePool`.
+    #[allow(clippy::arc_with_non_send_sync)]
     let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-    let transport_manager = Arc::new(crate::transport::OutprocTransportManager::new(
+    #[allow(clippy::arc_with_non_send_sync)]
+    let transport_manager = Arc::new(crate::transport::PeerTransport::new(
         client_id.clone(),
         wire_builder,
     ));
-    let outproc_gate = Arc::new(crate::outbound::OutprocOutGate::new(Arc::clone(
+    #[allow(clippy::arc_with_non_send_sync)]
+    let peer_gate = Arc::new(crate::outbound::PeerGate::new(Arc::clone(
         &transport_manager,
     )));
-    system.set_outgate(crate::outbound::OutGate::outproc(Arc::clone(&outproc_gate)));
+    system.set_outgate(crate::outbound::Gate::peer(Arc::clone(&peer_gate)));
 
     system.init_message_handler();
 
@@ -2469,7 +2859,7 @@ pub async fn register_client(
         runtime: Rc::clone(&runtime),
         system: Rc::clone(&system),
         dispatcher: Rc::clone(&dispatcher),
-        outproc_gate: Arc::clone(&outproc_gate),
+        peer_gate: Arc::clone(&peer_gate),
         transport_manager: Arc::clone(&transport_manager),
         stream_handlers: Rc::new(RefCell::new(HashMap::new())),
     });
@@ -2601,13 +2991,13 @@ pub async fn unregister_client(client_id: String) {
     }
 }
 
-/// 处理来自 DOM 的 RPC 控制请求
+/// Handle an RPC control request originating from the DOM side.
 ///
-/// 消息流（Unified Dispatcher 模式）：
-/// - 有 SERVICE_HANDLER: DOM → handler(route_key, payload, ctx) → response
-///   - local route: handler 本地处理，可通过 ctx.call_raw() 调远程
-///   - remote route: handler 通过 ctx.call_raw() 转发到远程 Actor
-/// - 无 SERVICE_HANDLER: DOM → InprocOutGate → OutGate → WebRTC（旧路径，向后兼容）
+/// Message flow in unified-dispatcher mode:
+/// - With `WORKLOAD`: `DOM -> workload.dispatch(route_key, payload, ctx) -> response`
+///   - Local route: the workload processes locally and may call remote targets via `ctx.call_raw()`
+///   - Remote route: the workload forwards to a remote actor via `ctx.call_raw()`
+/// - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
 #[wasm_bindgen]
 pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(), JsValue> {
     let call: DomRpcCall = serde_wasm_bindgen::from_value(payload)?;
@@ -2616,7 +3006,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
         return Ok(());
     }
 
-    // 获取 ClientContext
+    // Fetch the client context.
     let ctx = CLIENTS.with(|cell| cell.borrow().get(&client_id).map(Rc::clone));
 
     let Some(ctx) = ctx else {
@@ -2635,11 +3025,11 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
     let request_id = call.request_id.clone();
     let timeout_ms = call.request.timeout.unwrap_or(30000);
 
-    // Check if a service handler (UnifiedDispatcher) is registered
-    let handler = SERVICE_HANDLER.with(|cell| cell.borrow().as_ref().map(Rc::clone));
+    // Check if a workload is registered
+    let workload = WORKLOAD.with(|cell| cell.borrow().clone());
 
-    if let Some(handler) = handler {
-        // ========== New path: UnifiedDispatcher (local + remote handler) ==========
+    if let Some(workload) = workload {
+        // ========== Workload dispatch path (local + remote handler) ==========
         log::info!(
             "[SW] handle_dom_control: client_id={} route_key={} request_id={} (via handler)",
             client_id,
@@ -2652,12 +3042,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             let rt = runtime.lock().await;
             rt.actor_id.clone().unwrap_or_default()
         };
-        // Use InprocOut OutGate so call_raw goes through:
-        // InprocOutGate → MessageHandler → OutGate::OutprocOut → WebRTC
-        let outgate = OutGate::inproc(Arc::clone(system.inproc_gate()));
+        // Use Host Gate so call_raw goes through:
+        // HostGate → MessageHandler → Gate::Peer → WebRTC
+        let outgate = Gate::host(Arc::clone(system.host_gate()));
         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
             runtime: Rc::clone(runtime),
-            outproc_gate: Arc::clone(&ctx.outproc_gate),
+            peer_gate: Arc::clone(&ctx.peer_gate),
             client_id: client_id.clone(),
         });
         let handler_ctx: Rc<RuntimeContext> = Rc::new(
@@ -2672,10 +3062,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             .with_bridge(bridge),
         );
 
-        // Spawn handler execution
+        // Spawn workload dispatch
         let runtime_for_response = Rc::clone(runtime);
         wasm_bindgen_futures::spawn_local(async move {
-            let result = handler(&route_key, &payload_bytes, handler_ctx).await;
+            let result = workload
+                .dispatch(&route_key, &payload_bytes, handler_ctx)
+                .await;
 
             // Send response back to DOM as control_response
             let rt = runtime_for_response.lock().await;
@@ -2738,13 +3130,13 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             request_id
         );
 
-        // 获取目标 ActrId（从 Runtime 的 target_id）
+        // Get the target `ActrId` from the runtime's `target_id`.
         let target_id = {
             let rt = runtime.lock().await;
             rt.target_id.clone()
         };
 
-        // 如果还没有 target_id，需要先发现目标
+        // If `target_id` is still missing, discover the target first.
         let target_id = match target_id {
             Some(id) => id,
             None => {
@@ -2756,34 +3148,34 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             }
         };
 
-        // 确保 P2P 连接已建立，并注册 ActrId → Dest 映射
+        // Ensure the P2P connection exists and register the `ActrId -> Dest` mapping.
         {
             let mut rt = runtime.lock().await;
             let peer_id = rt.ensure_peer_with_retry().await.map_err(|e| {
                 log::error!("[SW] Failed to ensure peer: {:?}", e);
                 e
             })?;
-            ctx.outproc_gate
+            ctx.peer_gate
                 .register_actor(target_id.clone(), actr_web_common::Dest::Peer(peer_id));
             rt.pending_rpcs
                 .insert(request_id.clone(), PendingRpcTarget::Dom);
         }
 
-        // 通过 InprocOutGate 发送请求
-        let inproc_gate = Arc::clone(system.inproc_gate());
+        // Send the request through `HostGate`.
+        let host_gate = Arc::clone(system.host_gate());
 
         wasm_bindgen_futures::spawn_local({
             let request_id = request_id.clone();
             async move {
-                match inproc_gate.send_request(&target_id, envelope).await {
+                match host_gate.send_request(&target_id, envelope).await {
                     Ok(_response) => {
                         log::info!(
-                            "[SW] InprocOutGate response received for request_id={}",
+                            "[SW] HostGate response received for request_id={}",
                             request_id
                         );
                     }
                     Err(e) => {
-                        log::error!("[SW] InprocOutGate send_request failed: {:?}", e);
+                        log::error!("[SW] HostGate send_request failed: {:?}", e);
                     }
                 }
             }
@@ -2815,15 +3207,15 @@ pub async fn handle_dom_webrtc_event(client_id: String, payload: JsValue) -> Res
     Ok(())
 }
 
-/// 注册来自 DOM 的专用 DataChannel MessagePort
+/// Register a dedicated DataChannel `MessagePort` received from the DOM side.
 ///
-/// DOM 在 DataChannel 建立后创建 MessageChannel 桥接：
-/// 1. DOM: `port1 ↔ DataChannel` (双向转发)
-/// 2. DOM: 将 `port2` 通过 Transferable 转移给 SW
-/// 3. SW: 此函数接收 `port2`，创建 `WebRtcConnection`，注入到 `WirePool`
+/// After the DOM creates the DataChannel bridge:
+/// 1. DOM: `port1 <-> DataChannel` for bidirectional forwarding
+/// 2. DOM: transfers `port2` to the SW via a transferable object
+/// 3. SW: this function receives `port2`, builds `WebRtcConnection`, and injects it into `WirePool`
 ///
-/// 注入后 DestTransport 的 send 循环通过 ReadyWatcher 被唤醒，
-/// 后续出站数据直接经 `DataLane::PostMessage(port)` 零拷贝发送。
+/// After injection, `DestTransport` is awakened through `ReadyWatcher`, and
+/// subsequent outbound traffic is sent zero-copy through `DataLane::PostMessage(port)`.
 #[wasm_bindgen]
 pub async fn register_datachannel_port(
     client_id: String,
@@ -2846,15 +3238,15 @@ pub async fn register_datachannel_port(
         return Err(JsValue::from_str("Client not registered"));
     };
 
-    // 创建 WebRtcConnection 并设置 MessagePort
+    // Create the `WebRtcConnection` and attach the `MessagePort`.
     let mut rtc_conn = crate::transport::WebRtcConnection::new(peer_id.clone());
     rtc_conn.set_datachannel_port(port);
 
     let wire_handle = crate::transport::WireHandle::WebRTC(rtc_conn);
     let dest = actr_web_common::Dest::Peer(peer_id.clone());
 
-    // 注入到 OutprocTransportManager 对应的 WirePool
-    // 如果 DestTransport 尚不存在，会自动创建一个空的
+    // Inject it into the corresponding `WirePool` owned by `PeerTransport`.
+    // If the `DestTransport` does not exist yet, an empty one is created automatically.
     ctx.transport_manager
         .inject_connection(&dest, wire_handle)
         .await
@@ -2892,4 +3284,34 @@ pub fn handle_dom_fast_path(client_id: String, payload: JsValue) -> Result<(), J
         );
     }
     Ok(())
+}
+
+/// Encode raw bytes to standard Base64 string.
+fn bytes_to_base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// URL-encode a string using JS `encodeURIComponent`.
+fn js_encode_uri_component(s: &str) -> String {
+    js_sys::encode_uri_component(s).into()
 }

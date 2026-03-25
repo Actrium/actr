@@ -1,13 +1,13 @@
 //! Transport Layer - Service Worker Environment
 //!
-//! Service Worker 端的传输层实现：
-//! - WebSocket Lane：与服务器的 WebSocket 连接
-//! - PostMessage Lane：与 DOM 的通信通道
-//! - RouteTable：路由表管理
+//! Transport implementations for the Service Worker side:
+//! - WebSocket lane for server communication
+//! - PostMessage lane for communication with the DOM
+//! - RouteTable for route management
 
 pub mod dest_transport;
 pub mod lane;
-pub mod outproc_transport_manager;
+pub mod peer_transport;
 pub mod postmessage;
 pub mod route_table;
 pub mod sw_transport;
@@ -19,7 +19,7 @@ pub mod wire_pool;
 
 pub use dest_transport::DestTransport;
 pub use lane::{DataLane, LaneResult, PortFailureNotifier};
-pub use outproc_transport_manager::OutprocTransportManager;
+pub use peer_transport::PeerTransport;
 pub use postmessage::PostMessageLaneBuilder;
 pub use route_table::{RouteEntry, RouteTable, RouteTableStats};
 pub use sw_transport::SwTransport;

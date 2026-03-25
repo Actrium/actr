@@ -153,7 +153,7 @@ mod tests {
 
         match web_error {
             WebError::Serialization(msg) => {
-                // 只验证错误消息不为空
+                // Only verify the error message is non-empty
                 assert!(!msg.is_empty());
             }
             _ => panic!("Expected Serialization error"),

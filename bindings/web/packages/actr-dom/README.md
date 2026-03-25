@@ -2,36 +2,36 @@
 
 **Actor-RTC DOM-side Fixed Forwarding Layer**
 
-这是 Actor-RTC 框架提供的固定 JavaScript 层（Hardware Abstraction Layer），负责 DOM 侧的 WebRTC 管理和数据转发。
+This package is the fixed JavaScript layer provided by the Actor-RTC framework. It acts as a hardware-abstraction-style bridge for DOM-side WebRTC management and data forwarding.
 
-## 设计理念
+## Design Philosophy
 
-> **DOM 侧 = "网卡驱动"，Service Worker 侧 = "应用代码"**
+> **DOM side = "network driver", Service Worker side = "application code"**
 
-用户的所有业务逻辑都在 Service Worker（WASM）中实现，DOM 侧只是框架提供的固定实现，用户无需修改。
+All user business logic lives in the Service Worker runtime, typically in WASM. The DOM side is a fixed framework-provided implementation that users are not expected to modify.
 
-## 核心职责
+## Core Responsibilities
 
-1. **WebRTC 连接管理** - 创建和管理 RTCPeerConnection（只有 DOM 上下文才能访问 WebRTC API）
-2. **Fast Path 数据转发** - 将 WebRTC DataChannel 接收的数据零拷贝转发到 Service Worker
-3. **PostMessage 通信桥梁** - 提供 DOM 与 Service Worker 的双向通信
+1. **WebRTC connection management**: create and manage `RTCPeerConnection` instances, which are only available in DOM contexts
+2. **Fast Path data forwarding**: forward data received from WebRTC DataChannels to the Service Worker with minimal copying
+3. **PostMessage bridge**: provide bidirectional communication between the DOM and the Service Worker
 
-## 安装
+## Installation
 
 ```bash
 npm install @actr/dom
 ```
 
-## 使用方法
+## Usage
 
-### 基础用法
+### Basic Usage
 
 ```typescript
 import { initActrDom } from '@actr/dom';
 
-// 初始化 DOM 运行时
+// Initialize the DOM runtime
 const runtime = await initActrDom({
-  serviceWorkerUrl: '/my-actor.sw.js',  // Service Worker 文件路径
+  serviceWorkerUrl: '/my-actor.sw.js',  // Service Worker script path
   webrtcConfig: {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   },
@@ -39,14 +39,14 @@ const runtime = await initActrDom({
 
 console.log('Actor-RTC DOM runtime initialized');
 
-// 运行时会自动处理：
-// 1. 注册 Service Worker
-// 2. 建立 PostMessage 通信
-// 3. 监听来自 SW 的 WebRTC 命令
-// 4. 转发 Fast Path 数据到 SW
+// The runtime automatically:
+// 1. Registers the Service Worker
+// 2. Establishes PostMessage communication
+// 3. Listens for WebRTC commands from the SW
+// 4. Forwards Fast Path data back to the SW
 ```
 
-### HTML 引入
+### HTML Usage
 
 ```html
 <!DOCTYPE html>
@@ -57,7 +57,7 @@ console.log('Actor-RTC DOM runtime initialized');
 <body>
   <div id="app"></div>
 
-  <!-- 引入 DOM 运行时 -->
+  <!-- Load the DOM runtime -->
   <script type="module">
     import { initActrDom } from 'https://cdn.example.com/@actr/dom/dist/index.js';
 
@@ -65,108 +65,108 @@ console.log('Actor-RTC DOM runtime initialized');
       serviceWorkerUrl: '/worker.js',
     });
 
-    // 您的 UI 代码...
+    // Your UI code...
   </script>
 </body>
 </html>
 ```
 
-## API 参考
+## API Reference
 
 ### `initActrDom(config)`
 
-初始化 Actor-RTC DOM 运行时。
+Initialize the Actor-RTC DOM runtime.
 
-**参数**：
-- `config.serviceWorkerUrl` (string) - Service Worker 文件路径
-- `config.webrtcConfig` (object, 可选) - WebRTC 配置
-  - `iceServers` (RTCIceServer[]) - ICE 服务器列表
-  - `iceTransportPolicy` (RTCIceTransportPolicy) - ICE 传输策略
+**Parameters**:
+- `config.serviceWorkerUrl` (string): Service Worker script path
+- `config.webrtcConfig` (object, optional): WebRTC configuration
+  - `iceServers` (RTCIceServer[]): ICE server list
+  - `iceTransportPolicy` (RTCIceTransportPolicy): ICE transport policy
 
-**返回**：`Promise<ActrDomRuntime>`
+**Returns**: `Promise<ActrDomRuntime>`
 
 ### `ActrDomRuntime`
 
-DOM 运行时实例。
+DOM runtime instance.
 
-**方法**：
-- `getSWBridge()` - 获取 Service Worker 桥接
-- `getForwarder()` - 获取 Fast Path 转发器
-- `getCoordinator()` - 获取 WebRTC 协调器
-- `dispose()` - 清理所有资源
+**Methods**:
+- `getSWBridge()`: return the Service Worker bridge
+- `getForwarder()`: return the Fast Path forwarder
+- `getCoordinator()`: return the WebRTC coordinator
+- `dispose()`: release all resources
 
-## 架构设计
+## Architecture
 
-详见：[WASM-DOM 集成架构](../../docs/architecture/wasm-dom-integration.md)
+See: [WASM-DOM Integration Architecture](../../docs/architecture/wasm-dom-integration.zh.md)
 
-### 数据流
+### Data Flow
 
 ```
-WebRTC 数据到达 DOM
+WebRTC data arrives in the DOM
   ↓
-WebRtcCoordinator 接收
+WebRtcCoordinator receives it
   ↓
-FastPathForwarder 零拷贝转发（Transferable ArrayBuffer）
+FastPathForwarder forwards it with minimal copying using Transferable ArrayBuffer
   ↓
 PostMessage → Service Worker WASM
   ↓
 Fast Path Registry.dispatch()
   ↓
-用户回调（Rust）
+User callback in Rust
 ```
 
-### 性能特性
+### Performance Characteristics
 
-- **零拷贝传输**：使用 Transferable ArrayBuffer
-- **批量转发**：可配置批量参数减少 PostMessage 次数
-- **目标延迟**：~6-13ms（vs State Path 30-40ms）
+- **Zero-copy style transfer**: uses Transferable ArrayBuffer
+- **Batch forwarding**: configurable batching reduces PostMessage overhead
+- **Target latency**: about `6-13ms` versus `30-40ms` for the State Path
 
-## 组件说明
+## Components
 
 ### ServiceWorkerBridge
 
-负责 DOM 与 Service Worker 的 PostMessage 通信。
+Handles PostMessage communication between the DOM and the Service Worker.
 
 ### FastPathForwarder
 
-负责将 WebRTC DataChannel 数据转发到 Service Worker。
+Forwards WebRTC DataChannel payloads to the Service Worker.
 
-支持两种模式：
-- `forward()` - 立即转发单条数据
-- `forwardBatch()` - 批量转发（高吞吐场景）
+Supports two modes:
+- `forward()`: immediately forward one payload
+- `forwardBatch()`: batch forwarding for high-throughput scenarios
 
 ### WebRtcCoordinator
 
-负责管理 WebRTC 连接和 DataChannels。
+Manages WebRTC connections and DataChannels.
 
-**核心功能**：
-- 创建 RTCPeerConnection
-- 创建 4 个 negotiated DataChannels（对应 4 种 PayloadType）
-- 处理 SDP Offer/Answer 交换
-- 处理 ICE Candidate
-- 自动转发接收的数据
+**Core functions**:
+- create `RTCPeerConnection`
+- create four negotiated DataChannels, one per payload type
+- handle SDP offer/answer exchange
+- handle ICE candidates
+- automatically forward received data
 
-## 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 npm install
 
-# 编译
+# Build
 npm run build
 
-# 监听模式
+# Watch mode
 npm run watch
 
-# 清理
+# Clean
 npm run clean
 ```
 
-## 相关文档
+## Related Documents
 
-- [架构总览](../../docs/architecture/overview.md)
-- [WASM-DOM 集成架构](../../docs/architecture/wasm-dom-integration.md)（核心）
-- [双层架构设计](../../docs/architecture/dual-layer.md)
+- [Architecture Overview](../../docs/architecture/overview.zh.md)
+- [WASM-DOM Integration Architecture](../../docs/architecture/wasm-dom-integration.zh.md) (core)
+- [Dual-Layer Architecture](../../docs/architecture/dual-layer.zh.md)
 
 ## License
 
@@ -174,6 +174,6 @@ Apache-2.0
 
 ---
 
-**维护者**: Actor-RTC Team
-**版本**: 0.1.0
-**最后更新**: 2025-11-11
+**Maintainer**: Actor-RTC Team
+**Version**: 0.1.0
+**Last updated**: 2025-11-11

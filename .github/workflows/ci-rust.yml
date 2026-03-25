@@ -63,3 +63,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace --verbose --all-features
+
+  dynclib-e2e:
+    name: Dynclib E2E
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run dynclib actor e2e tests in isolated processes
+        run: |
+          set -euo pipefail
+          cargo test -p actr-hyper --features dynclib-engine --test dynclib_actor_e2e dynclib_unknown_route_returns_error -- --ignored --exact --nocapture
+          cargo test -p actr-hyper --features dynclib-engine --test dynclib_actor_e2e dynclib_echo_returns_payload -- --ignored --exact --nocapture
+          cargo test -p actr-hyper --features dynclib-engine --test dynclib_actor_e2e dynclib_double_dispatch -- --ignored --exact --nocapture
+          cargo test -p actr-hyper --features dynclib-engine --test dynclib_actor_e2e dynclib_multiple_dispatches -- --ignored --exact --nocapture

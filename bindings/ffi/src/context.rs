@@ -1,6 +1,6 @@
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample as FrameworkMediaSample};
+use actr_hyper::context::RuntimeContext;
 use actr_protocol::{ActrId, PayloadType};
-use actr_runtime::context::RuntimeContext;
 use async_trait::async_trait;
 use std::any::TypeId;
 use std::sync::Arc;

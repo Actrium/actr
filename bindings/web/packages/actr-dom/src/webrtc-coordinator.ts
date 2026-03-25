@@ -1,7 +1,7 @@
 /**
- * WebRTC Coordinator - WebRTC 连接管理（DOM 侧）
+ * WebRTC Coordinator - WebRTC （DOM ）
  *
- * 负责创建和管理 RTCPeerConnection，接收 WebRTC 数据并转发
+ *  RTCPeerConnection， WebRTC 
  */
 
 import { ServiceWorkerBridge, WebRtcCommandPayload, WebRtcEventPayload } from './sw-bridge';
@@ -20,13 +20,15 @@ export interface PeerConnectionInfo {
 }
 
 /**
- * WebRTC 协调器（DOM 侧）
+ * WebRTC （DOM ）
  */
 export class WebRtcCoordinator {
   private swBridge: ServiceWorkerBridge;
   private forwarder: FastPathForwarder;
   private peers: Map<string, PeerConnectionInfo> = new Map();
   private config: WebRtcConfig;
+  /** Dynamic TURN credentials received from SW (AIS registration) */
+  private turnCredential: { username: string; credential: string } | null = null;
   private laneConfigs = [
     { id: 0, label: 'RPC_RELIABLE', ordered: true, maxRetransmits: undefined },
     { id: 1, label: 'RPC_SIGNAL', ordered: true, maxRetransmits: undefined },
@@ -52,16 +54,22 @@ export class WebRtcCoordinator {
       iceTransportPolicy: config.iceTransportPolicy,
     };
 
-    // 监听来自 SW 的 WebRTC 命令
+    //  SW  WebRTC 
     this.swBridge.onMessage((message) => {
       if (message.type === 'webrtc_command') {
         this.handleWebRtcCommand(message.payload);
+      } else if (message.type === 'update_turn_credential') {
+        this.turnCredential = {
+          username: message.payload.username,
+          credential: message.payload.password,
+        };
+        console.log('[WebRTC] TURN credential received from SW');
       }
     });
   }
 
   /**
-   * 创建 Peer Connection
+   *  Peer Connection
    */
   async createPeerConnection(peerId: string): Promise<void> {
     if (this.peers.has(peerId)) {
@@ -69,11 +77,34 @@ export class WebRtcCoordinator {
       return;
     }
 
-    // 创建 RTCPeerConnection
-    const connection = new RTCPeerConnection(this.config);
+    // Build ICE server list with TURN credentials injected
+    const iceServers = (this.config.iceServers || []).map((server) => {
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      const isTurn = urls.some(
+        (url) => url.startsWith('turn:') || url.startsWith('turns:')
+      );
+      if (isTurn && this.turnCredential) {
+        return {
+          urls: server.urls,
+          username: this.turnCredential.username,
+          credential: this.turnCredential.credential,
+        };
+      }
+      return server;
+    });
 
-    // TODO: 待商议：是否应该恢复预定义的 4 个 negotiated DataChannels 以优化连接速度？
-    // 详见 .cursor/plans/webrtc-datachannel-negotiation-strategy.md
+    const rtcConfig: RTCConfiguration = {
+      iceServers,
+      iceTransportPolicy: this.config.iceTransportPolicy,
+    };
+
+    console.log('[WebRTC] RTCConfiguration:', JSON.stringify(rtcConfig));
+
+    //  RTCPeerConnection
+    const connection = new RTCPeerConnection(rtcConfig);
+
+    // TODO: ： 4  negotiated DataChannels ？
+    //  .cursor/plans/webrtc-datachannel-negotiation-strategy.md
     // DataChannels will be created by offerer or received via ondatachannel.
     const dataChannels = new Map<number, RTCDataChannel>();
 
@@ -87,7 +118,7 @@ export class WebRtcCoordinator {
       this.attachDataChannel(peerId, laneId, channel);
     };
 
-    // 监听 ICE candidate
+    //  ICE candidate
     connection.onicecandidate = (event) => {
       if (event.candidate) {
         this.notifySW('ice_candidate', {
@@ -97,7 +128,7 @@ export class WebRtcCoordinator {
       }
     };
 
-    // 监听连接状态变化
+    // 
     connection.onconnectionstatechange = () => {
       console.log(`[WebRTC] Connection state changed: ${connection.connectionState}`);
       this.notifySW('connection_state_changed', {
@@ -111,12 +142,12 @@ export class WebRtcCoordinator {
       }
     };
 
-    // 监听 ICE 连接状态
+    //  ICE 
     connection.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE connection state: ${connection.iceConnectionState}`);
     };
 
-    // 存储 peer 信息
+    //  peer 
     this.peers.set(peerId, {
       peerId,
       connection,
@@ -128,21 +159,26 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 处理 DataChannel 消息
+   *  DataChannel 
+   *
+   * The first byte of the DataChannel payload is the PayloadType indicator
+   * (preserved from the transport header on the send side). We extract it
+   * and use it as the virtual channel_id so the SW can route:
+   *   channel 0/1 → RPC,  channel 2/3 → data_stream.
    */
   private handleDataChannelMessage(
     peerId: string,
     channelId: number,
     data: ArrayBuffer | Blob
   ): void {
-    // 如果是 Blob，转换为 ArrayBuffer
+    //  Blob， ArrayBuffer
     if (data instanceof Blob) {
       // [DEBUG] Keep for now
       console.log(
         `[WebRTC] DataChannel message received: peer=${peerId} channel=${channelId} bytes=${data.size}`
       );
       data.arrayBuffer().then((buffer) => {
-        this.forwardDataChannelMessage(peerId, channelId, buffer);
+        this.extractPayloadTypeAndForward(peerId, buffer);
       });
       return;
     }
@@ -152,7 +188,7 @@ export class WebRtcCoordinator {
       console.log(
         `[WebRTC] DataChannel message received: peer=${peerId} channel=${channelId} bytes=${data.byteLength}`
       );
-      this.forwardDataChannelMessage(peerId, channelId, data);
+      this.extractPayloadTypeAndForward(peerId, data);
       return;
     }
 
@@ -163,18 +199,33 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 转发 DataChannel 消息到 Service Worker
+   * Extract the PayloadType prefix byte and forward the actual data to the SW.
+   *
+   * Wire format: [PayloadType(1) | Data(N)]
+   * PayloadType values map to virtual channel IDs:
+   *   0 = RPC_RELIABLE, 1 = RPC_SIGNAL, 2 = STREAM_RELIABLE, 3 = STREAM_LATENCY_FIRST
+   */
+  private extractPayloadTypeAndForward(peerId: string, data: ArrayBuffer): void {
+    if (data.byteLength < 1) return;
+    const view = new Uint8Array(data);
+    const virtualChannelId = view[0]; // PayloadType byte = virtual channel_id
+    const actualData = data.slice(1); // Strip the PayloadType prefix
+    this.forwardDataChannelMessage(peerId, virtualChannelId, actualData);
+  }
+
+  /**
+   *  DataChannel  Service Worker
    */
   private forwardDataChannelMessage(peerId: string, channelId: number, data: ArrayBuffer): void {
-    // 构造 stream ID
+    //  stream ID
     const streamId = `${peerId}:${channelId}`;
 
-    // 通过 Fast Path Forwarder 转发
+    //  Fast Path Forwarder 
     this.forwarder.forward(streamId, data);
   }
 
   /**
-   * 处理来自 SW 的 WebRTC 命令
+   *  SW  WebRTC 
    */
   private async handleWebRtcCommand(command: WebRtcCommandPayload): Promise<void> {
     const { action, peerId } = command;
@@ -231,7 +282,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 设置 Remote Description
+   *  Remote Description
    */
   private async setRemoteDescription(
     peerId: string,
@@ -247,7 +298,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 设置 Local Description
+   *  Local Description
    */
   private async setLocalDescription(peerId: string, sdp: RTCSessionDescriptionInit): Promise<void> {
     const peer = this.peers.get(peerId);
@@ -316,7 +367,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 添加 ICE Candidate
+   *  ICE Candidate
    */
   private async addIceCandidate(peerId: string, candidate: RTCIceCandidateInit): Promise<void> {
     const peer = this.peers.get(peerId);
@@ -346,7 +397,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 发送数据通过 DataChannel
+   *  DataChannel
    */
   private sendData(peerId: string, channelId: number, data: Uint8Array): void {
     const peer = this.peers.get(peerId);
@@ -367,11 +418,18 @@ export class WebRtcCoordinator {
     }
 
     if (channel.readyState === 'open') {
+      // Prepend the channelId as a PayloadType byte so the receive path
+      // (extractPayloadTypeAndForward) can route it correctly.
+      // Both send paths (TransportLane and send_channel_data) must use
+      // the same [PayloadType(1)|Data(N)] wire format.
+      const out = new Uint8Array(1 + data.byteLength);
+      out[0] = channelId;
+      out.set(data, 1);
       // Use 'as any' because RTCDataChannel.send in TS definitions doesn't yet support
       // SharedArrayBuffer-backed buffers, even though modern browsers do.
       // This avoids unnecessary memory copying.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      channel.send(data as any);
+      channel.send(out as any);
     } else {
       console.warn(`[WebRTC] DataChannel ${channelId} not open (state: ${channel.readyState})`);
     }
@@ -392,26 +450,48 @@ export class WebRtcCoordinator {
         label: channel.label,
       });
 
-      // 创建专用 MessagePort 桥接：SW → port2 → port1 → DataChannel → Remote
-      // 出站数据通过专用 port 零拷贝发送，不经过共享控制通道
-      const mc = new MessageChannel();
-      // port1 留在 DOM 侧：接收来自 SW 的出站数据，转发到 DataChannel
-      // SW DataLane::PostMessage 会在 payload 前添加 5 字节传输头 [PayloadType(1)|Length(4)]，
-      // 该 header 仅用于 WebSocket 多路复用，DataChannel 不需要，发送前须剥离。
-      const TRANSPORT_HEADER_SIZE = 5;
-      mc.port1.onmessage = (e: MessageEvent) => {
-        if (channel.readyState === 'open') {
-          if (e.data instanceof ArrayBuffer) {
-            channel.send(e.data.slice(TRANSPORT_HEADER_SIZE));
-          } else {
-            // Uint8Array view – slice() copies into a plain ArrayBuffer-backed Uint8Array
-            const arr = e.data as Uint8Array;
-            channel.send(arr.slice(TRANSPORT_HEADER_SIZE));
+      //  MessagePort ：SW → port2 → port1 → DataChannel → Remote
+      //  port ，
+      //
+      // NOTE: Only register the RPC_RELIABLE (lane 0) port with the SW.
+      // The SW's WirePool has a single WebRTC slot, so each register_datachannel_port
+      // call replaces the previous connection. By only registering lane 0, we ensure
+      // all outgoing data is funnelled through a single DataChannel.
+      //
+      // To preserve PayloadType routing information (needed by handle_fast_path to
+      // distinguish RPC vs data_stream), we keep the 1-byte PayloadType prefix and
+      // strip only the 4-byte Length field from the 5-byte transport header
+      // [PayloadType(1)|Length(4)].
+      //
+      // On the receive side, handleDataChannelMessage extracts this PayloadType byte
+      // and uses it as the virtual channel_id for stream_id construction, so the SW
+      // can correctly route channel 0/1 → RPC and channel 2/3 → data_stream.
+      if (laneId === 0) {
+        const mc = new MessageChannel();
+        mc.port1.onmessage = (e: MessageEvent) => {
+          if (channel.readyState === 'open') {
+            // SW DataLane::PostMessage payload has a 5-byte header:
+            //   [PayloadType(1) | Length(4) | Data(N)]
+            // We strip the 4-byte Length field but KEEP the PayloadType byte so
+            // the receiver can route correctly.  Result: [PayloadType(1) | Data(N)]
+            if (e.data instanceof ArrayBuffer) {
+              const src = new Uint8Array(e.data);
+              const out = new Uint8Array(1 + (src.byteLength - 5));
+              out[0] = src[0]; // PayloadType byte
+              out.set(src.subarray(5), 1); // Data after header
+              channel.send(out);
+            } else {
+              const src = e.data as Uint8Array;
+              const out = new Uint8Array(1 + (src.length - 5));
+              out[0] = src[0]; // PayloadType byte
+              out.set(src.subarray(5), 1); // Data after header
+              channel.send(out);
+            }
           }
-        }
-      };
-      // port2 通过 Transferable 转移给 SW → 注入 WirePool → DataLane::PostMessage
-      this.swBridge.sendDataChannelPort(peerId, mc.port2);
+        };
+        // port2 as Transferable to SW → WirePool → DataLane::PostMessage
+        this.swBridge.sendDataChannelPort(peerId, mc.port2);
+      }
     };
 
     channel.onclose = () => {
@@ -453,7 +533,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 关闭 Peer Connection
+   *  Peer Connection
    */
   private closePeerConnection(peerId: string): void {
     const peer = this.peers.get(peerId);
@@ -461,12 +541,12 @@ export class WebRtcCoordinator {
       return;
     }
 
-    // 关闭所有 DataChannels
+    //  DataChannels
     for (const channel of peer.dataChannels.values()) {
       channel.close();
     }
 
-    // 关闭 PeerConnection
+    //  PeerConnection
     peer.connection.close();
 
     this.peers.delete(peerId);
@@ -474,7 +554,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 通知 Service Worker
+   *  Service Worker
    */
   private notifySW<T extends WebRtcEventPayload['eventType']>(
     eventType: T,
@@ -490,21 +570,21 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 获取 Peer 信息
+   *  Peer 
    */
   getPeerInfo(peerId: string): PeerConnectionInfo | undefined {
     return this.peers.get(peerId);
   }
 
   /**
-   * 获取所有 Peer
+   *  Peer
    */
   getAllPeers(): PeerConnectionInfo[] {
     return Array.from(this.peers.values());
   }
 
   /**
-   * 清理所有资源
+   * 
    */
   dispose(): void {
     for (const peerId of this.peers.keys()) {

@@ -15,7 +15,7 @@ class RemoteServiceInfo:
     """Information about a remote service for proxying."""
     service_name: str
     route_keys: List[str]
-    actr_type: str  # e.g., "acme:DataStreamConcurrentServer[:version]"
+    actr_type: str  # e.g., "acme:DataStreamConcurrentServer:1.0.0"
 
 
 # ============================================================================
@@ -30,7 +30,7 @@ def generate_empty_local_workload(
     """Generate a workload for an empty local proto that proxies remote services."""
     pkg_name = "".join(word.capitalize() for word in package_name.replace(".", "_").split("_")) if package_name else "Client"
     workload_name = f"{pkg_name}Workload"
-    dispatcher_name = f"{pkg_name}Dispatcher"  # 动态 Dispatcher 名称
+    dispatcher_name = f"{pkg_name}Dispatcher"  # Dynamic Dispatcher name
     file_name = f"{to_snake_case(pkg_name)}_workload.py"
     
     # Don't import pb2 module for empty local proto (it won't be generated)
@@ -40,7 +40,7 @@ def generate_empty_local_workload(
         "from __future__ import annotations",
         "import abc",
         "from typing import Any",
-        "from actr import WorkloadBase, Context, ActrType, Dest",
+        "from actr import Context, ActrType, Dest",
     ])
     
     sections: List[str] = [
@@ -89,7 +89,7 @@ def generate_remote_extensions_only(
 
 def proto_module_name(proto_name: str) -> str:
     """Convert proto file name to module name (e.g., 'local/foo.proto' -> 'foo_pb2')."""
-    # 只取文件名部分，去掉路径
+    # Extract just the filename part, remove the path
     filename = proto_name.split("/")[-1]
     base = filename.replace(".proto", "")
     return f"{base}_pb2"
@@ -130,8 +130,8 @@ def generate_local_actor_code(
 
 def generate_preamble(proto_module: str, use_relative_import: bool = False, subdir: str = "") -> str:
     """Generate preamble with imports."""
-    # proto_module 已经包含了文件名（如 "echo_pb2"）
-    # subdir 是子目录（如 "local"）
+    # proto_module already contains the filename (e.g. "echo_pb2")
+    # subdir is the subdirectory (e.g. "local")
     if use_relative_import and subdir:
         import_line = f"from .{subdir} import {proto_module} as pb2"
     elif use_relative_import:
@@ -145,7 +145,7 @@ def generate_preamble(proto_module: str, use_relative_import: bool = False, subd
         "from __future__ import annotations",
         "import abc",
         "from typing import Any",
-        "from actr import WorkloadBase, Context, ActrType, Dest",
+        "from actr import Context, ActrType, Dest",
         import_line,
     ])
 
@@ -256,46 +256,47 @@ def generate_rpc_request_extensions(
 def generate_workload(service_name: str) -> str:
     """Generate workload class."""
     return "\n".join([
-        f"class {service_name}Workload(WorkloadBase):",
+        f"class {service_name}Workload:",
         f"    def __init__(self, handler: {service_name}Handler):",
-        "        self.handler = handler",
-        f"        super().__init__({service_name}Dispatcher())",
+        "        raise RuntimeError(",
+        '            "Source-defined Python workloads were removed; build a verified .actr package and host it with Rust Hyper.attach(...)."',
+        "        )",
     ])
 
 
 def generate_empty_workload_with_proxy(
     workload_name: str,
-    dispatcher_name: str,  # 新增参数
+    dispatcher_name: str,  # New parameter
     remote_services: List[RemoteServiceInfo],
 ) -> str:
     """Generate a workload for empty local proto that only proxies remote services."""
     lines: List[str] = [
         f"# {workload_name} - automatically generated for empty local proto",
-        f"class {dispatcher_name}:",  # 使用动态名称
+        f"class {dispatcher_name}:",  # Using dynamic name
         "    async def dispatch(self, workload, route_key: str, payload: bytes, ctx: Any) -> bytes:",
         "        if not isinstance(ctx, Context):",
         "            ctx = Context(ctx)",
         "",
     ]
-    
+
     if remote_services:
         lines.append("        # Remote methods (proxying)")
         for remote in remote_services:
             route_keys_str = ", ".join(f'"{rk}"' for rk in remote.route_keys)
             lines.append(f"        if route_key in [{route_keys_str}]:")
-            
+
             remote_manufacturer, remote_name, remote_version = parse_actr_type(remote.actr_type)
-            
+
             lines.append(f"            target_type = ActrType(manufacturer=\"{remote_manufacturer}\", name=\"{remote_name}\", version=\"{remote_version}\")")
             lines.append("            target_id = await ctx.discover(target_type)")
             lines.append("            return await ctx._rust.call_raw(Dest.actor(target_id), route_key, payload)")
             lines.append("")
-    
+
     lines.append("        raise RuntimeError(f\"Unknown route_key: {route_key}\")")
     lines.append("")
-    lines.append(f"class {workload_name}(WorkloadBase):")
+    lines.append(f"class {workload_name}:")
     lines.append("    def __init__(self):")
-    lines.append(f"        super().__init__({dispatcher_name}())")  # 使用动态名称
+    lines.append('        raise RuntimeError("Source-defined Python workloads were removed; build a verified .actr package and host it with Rust Hyper.attach(...).")')
     
     return "\n".join(lines)
 
@@ -324,7 +325,7 @@ def generate_client_preamble() -> str:
         "# Generated by protoc-gen-actrframework-python",
         "from __future__ import annotations",
         "from typing import Any",
-        "from actr import WorkloadBase, Context, ActrType, Dest",
+        "from actr import Context, ActrType, Dest",
     ])
 
 
@@ -361,9 +362,9 @@ def generate_client_dispatcher(
 def generate_client_workload_class() -> str:
     """Generate workload class for client."""
     return "\n".join([
-        "class DefaultWorkload(WorkloadBase):",
+        "class DefaultWorkload:",
         "    def __init__(self):",
-        "        super().__init__(DefaultDispatcher())",
+        '        raise RuntimeError("Source-defined Python workloads were removed; build a verified .actr package and host it with Rust Hyper.attach(...).")',
     ])
 
 
@@ -379,13 +380,12 @@ def extract_message_type(full_type: str) -> str:
 def parse_actr_type(actr_type: str) -> tuple[str, str, str]:
     """Parse canonical actr_type and return (manufacturer, name, version)."""
     parts = actr_type.split(":")
-    if len(parts) < 2 or len(parts) > 3 or not parts[0] or not parts[1]:
+    if len(parts) != 3 or not parts[0] or not parts[1] or not parts[2]:
         raise ValueError(
             f"Invalid actr_type format: '{actr_type}'. "
-            "Expected format: 'manufacturer:name[:version]' (e.g., 'acme:ServiceName')."
+            "Expected format: 'manufacturer:name:version' (e.g., 'acme:ServiceName:1.0.0')."
         )
-    version = parts[2] if len(parts) > 2 else ""
-    return parts[0], parts[1], version
+    return parts[0], parts[1], parts[2]
 
 
 def to_snake_case(name: str) -> str:

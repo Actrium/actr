@@ -12,35 +12,35 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * NetworkMonitor - 独立的网络状态监控器
+ * NetworkMonitor - Independent network state monitor
  *
- * 功能特性：
- * - 监控WiFi、移动网络、以太网和VPN连接状态变化
- * - 详细记录所有网络事件到日志，包括网络可用/丢失和类型变化
- * - 支持网络类型变化回调通知（WiFi/Cellular/VPN切换）
- * - 支持网络连接状态变化回调（可用/不可用）
- * - 自动检测初始网络状态
- * - 支持手动触发网络状态检查
+ * Features:
+ * - Monitor WiFi, mobile network, Ethernet, and VPN connection state changes
+ * - Detailed logging of all network events including availability/loss and type changes
+ * - Support network type change callbacks (WiFi/Cellular/VPN switching)
+ * - Support network connection state change callbacks (available/unavailable)
+ * - Auto-detect initial network state
+ * - Support manual network state checks
  *
- * 回调说明：
- * - onNetworkTypeChanged: 网络类型变化时调用（WiFi/移动网络/VPN切换）
- * - onNetworkAvailable: 网络从不可用变为可用时调用
- * - onNetworkLost: 网络从可用变为不可用时调用
+ * Callback descriptions:
+ * - onNetworkTypeChanged: Called when network type changes (WiFi/mobile/VPN switching)
+ * - onNetworkAvailable: Called when network becomes available
+ * - onNetworkLost: Called when network becomes unavailable
  *
- * 日志输出示例：
- * - 网络可用/丢失事件（真正的连接状态变化）
- * - 网络能力变化（WiFi/移动网络/VPN状态）
- * - 网络类型切换事件
- * - 当前网络状态摘要
+ * Logging output examples:
+ * - Network available/lost events (actual connection state changes)
+ * - Network capability changes (WiFi/mobile/VPN status)
+ * - Network type switching events
+ * - Current network status summary
  *
- * 使用方法：
- * 1. 创建实例：NetworkMonitor(context, scope, onNetworkTypeChanged, onNetworkAvailable, onNetworkLost)
- * 2. 启动监控：startMonitoring()
- * 3. 停止监控：stopMonitoring() （通常在Activity.onDestroy中调用）
- * 4. 手动检查：triggerNetworkCheck()
- * 5. 获取状态：getCurrentNetworkStatus()
+ * Usage:
+ * 1. Create instance: NetworkMonitor(context, scope, onNetworkTypeChanged, onNetworkAvailable, onNetworkLost)
+ * 2. Start monitoring: startMonitoring()
+ * 3. Stop monitoring: stopMonitoring() (usually called in Activity.onDestroy)
+ * 4. Manual check: triggerNetworkCheck()
+ * 5. Get status: getCurrentNetworkStatus()
  *
- * 与 ActrSystem 集成：
+ * Integration with ActrSystem:
  * ```kotlin
  * val networkMonitor = NetworkMonitor.create(context, lifecycleScope) { system }
  * networkMonitor.startMonitoring()
@@ -61,15 +61,16 @@ class NetworkMonitor(
         private const val TAG = "NetworkMonitor"
 
         /**
-         * 创建一个与 ActrSystem 集成的 NetworkMonitor
+         * Create a NetworkMonitor integrated with ActrSystem
          *
-         * 此工厂方法自动将网络事件转发给 ActrSystem 的 NetworkEventHandle， 使用户无需手动处理网络事件。
+         * This factory method automatically forwards network events to ActrSystem's NetworkEventHandle,
+         * so users don't need to handle network events manually.
          *
          * @param context Android Context
-         * @param scope CoroutineScope，通常使用 lifecycleScope
-         * @param getSystem 获取 ActrSystem 实例的函数（可能返回 null，例如系统尚未初始化时）
-         * @param onNetworkStatusLog 可选的日志回调，用于显示网络状态变化
-         * @return NetworkMonitor 实例
+         * @param scope CoroutineScope, typically use lifecycleScope
+         * @param getSystem Function to get ActrSystem instance (may return null, e.g. before initialization)
+         * @param onNetworkStatusLog Optional log callback to display network status changes
+         * @return NetworkMonitor instance
          *
          * Example:
          * ```kotlin
@@ -79,8 +80,8 @@ class NetworkMonitor(
          * }
          * monitor.startMonitoring()
          *
-         * // 稍后初始化 system
-         * system = ActrSystem.fromFile("config.toml")
+         * // Initialize system later
+         * system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
          * ```
          */
         fun create(
@@ -109,15 +110,15 @@ class NetworkMonitor(
         }
 
         /**
-         * 创建一个与 NetworkEventHandle 集成的 NetworkMonitor
+         * Create a NetworkMonitor integrated with NetworkEventHandle
          *
-         * 此工厂方法自动将网络事件转发给指定的 NetworkEventHandle。
+         * This factory method automatically forwards network events to the specified NetworkEventHandle.
          *
          * @param context Android Context
-         * @param scope CoroutineScope，通常使用 lifecycleScope
-         * @param getHandle 获取 NetworkEventHandle 实例的函数（可能返回 null）
-         * @param onNetworkStatusLog 可选的日志回调，用于显示网络状态变化
-         * @return NetworkMonitor 实例
+         * @param scope CoroutineScope, typically use lifecycleScope
+         * @param getHandle Function to get NetworkEventHandle instance (may return null)
+         * @param onNetworkStatusLog Optional log callback to display network status changes
+         * @return NetworkMonitor instance
          */
         fun createWithHandle(
                 context: Context,
@@ -328,16 +329,16 @@ class NetworkMonitor(
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var isMonitoring = false
 
-    // 当前网络状态
+    // Current network state
     private var isNetworkAvailable = false
     private var isWifiConnected = false
     private var isCellularConnected = false
     private var isVpnConnected = false
 
-    /** 开始网络监控 */
+    /** Start network monitoring */
     fun startMonitoring() {
         if (isMonitoring) {
-            Log.d(TAG, "网络监控已在运行中")
+            Log.d(TAG, "Network monitoring already running")
             return
         }
 
@@ -348,16 +349,16 @@ class NetworkMonitor(
             setupNetworkCallback()
 
             isMonitoring = true
-            Log.i(TAG, "开始网络状态监控...")
+            Log.i(TAG, "Starting network state monitoring...")
 
-            // 记录初始网络状态
-            logCurrentNetworkState("初始状态")
+            // Log initial network state
+            logCurrentNetworkState("initial state")
         } catch (e: Exception) {
-            Log.e(TAG, "启动网络监控失败: ${e.message}", e)
+            Log.e(TAG, "Failed to start network monitoring: ${e.message}", e)
         }
     }
 
-    /** 停止网络监控 */
+    /** Stop network monitoring */
     fun stopMonitoring() {
         if (!isMonitoring) {
             return
@@ -371,18 +372,18 @@ class NetworkMonitor(
             }
 
             isMonitoring = false
-            Log.i(TAG, "停止网络监控")
+            Log.i(TAG, "Stopped network monitoring")
         } catch (e: Exception) {
-            Log.e(TAG, "停止网络监控失败: ${e.message}", e)
+            Log.e(TAG, "Failed to stop network monitoring: ${e.message}", e)
         }
     }
 
-    /** 设置网络回调 */
+    /** Setup network callback */
     private fun setupNetworkCallback() {
         val networkRequest =
                 NetworkRequest.Builder()
                         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        // 移除阻止VPN回调的能力
+                        // Remove capability that blocks VPN callbacks
                         .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                         .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                         .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
@@ -394,9 +395,9 @@ class NetworkMonitor(
                 object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         super.onAvailable(network)
-                        Log.i(TAG, "网络可用: $network")
+                        Log.i(TAG, "Network available: $network")
 
-                        // 保存之前的网络类型状态
+                        // Save previous network type state
                         val wasNetworkAvailable = isNetworkAvailable
                         val wasWifiConnected = isWifiConnected
                         val wasCellularConnected = isCellularConnected
@@ -404,7 +405,7 @@ class NetworkMonitor(
 
                         updateNetworkState()
 
-                        // 检查网络类型是否发生变化（在网络可用事件中也需要检测）
+                        // Check if network type changed (also check in network available event)
                         if (wasWifiConnected != isWifiConnected ||
                                         wasCellularConnected != isCellularConnected ||
                                         wasVpnConnected != isVpnConnected
@@ -413,17 +414,17 @@ class NetworkMonitor(
                                     when {
                                         isVpnConnected -> "VPN"
                                         isWifiConnected -> "WiFi"
-                                        isCellularConnected -> "移动网络"
-                                        else -> "未知"
+                                        isCellularConnected -> "Cellular"
+                                        else -> "Unknown"
                                     }
 
                             Log.i(
                                     TAG,
-                                    "网络类型变化 (onAvailable): $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)"
+                                    "Network type changed (onAvailable): $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)"
                             )
 
-                            // 通知监听器 - 使用 Dispatchers.IO 避免阻塞主线程
-                            // 因为网络事件处理可能需要等待 WebSocket 重连等耗时操作
+                            // Notify listener - use Dispatchers.IO to avoid blocking main thread
+                            // Network event handling may require waiting for WebSocket reconnect
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     onNetworkTypeChanged(
@@ -432,31 +433,31 @@ class NetworkMonitor(
                                             isVpnConnected
                                     )
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "网络类型变化处理失败: ${e.message}", e)
+                                    Log.e(TAG, "Failed to handle network type change: ${e.message}", e)
                                 }
                             }
                         }
 
-                        // 只有在网络从不可用变为可用时才触发网络可用事件
+                        // Only trigger network available event when transitioning from unavailable to available
                         if (!wasNetworkAvailable && isNetworkAvailable) {
-                            Log.i(TAG, "网络连接状态变化: 不可用 -> 可用")
-                            // 使用 Dispatchers.IO 避免阻塞主线程
+                            Log.i(TAG, "Network connection state changed: unavailable -> available")
+                            // Use Dispatchers.IO to avoid blocking main thread
                             scope.launch(Dispatchers.IO) { onNetworkAvailable?.invoke() }
                         }
                     }
 
                     override fun onLost(network: Network) {
                         super.onLost(network)
-                        Log.w(TAG, "网络丢失: $network")
+                        Log.w(TAG, "Network lost: $network")
 
-                        // 检查是否是真正的网络连接状态变化
+                        // Check if it's a real network connection state change
                         val wasNetworkAvailable = isNetworkAvailable
                         updateNetworkState()
 
-                        // 只有在网络从可用变为不可用时才触发网络丢失事件
+                        // Only trigger network lost event when transitioning from available to unavailable
                         if (wasNetworkAvailable && !isNetworkAvailable) {
-                            Log.w(TAG, "网络连接状态变化: 可用 -> 不可用")
-                            // 使用 Dispatchers.IO 避免阻塞主线程
+                            Log.w(TAG, "Network connection state changed: available -> unavailable")
+                            // Use Dispatchers.IO to avoid blocking main thread
                             scope.launch(Dispatchers.IO) { onNetworkLost?.invoke() }
                         }
                     }
@@ -482,11 +483,11 @@ class NetworkMonitor(
 
                         Log.d(
                                 TAG,
-                                "网络能力变化 - WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected"
+                                "Network capability changed - WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected"
                         )
-                        Log.d(TAG, "网络能力详情: $networkCapabilities")
+                        Log.d(TAG, "Network capability details: $networkCapabilities")
 
-                        // 检查网络类型是否发生变化
+                        // Check if network type changed
                         if (wasWifiConnected != isWifiConnected ||
                                         wasCellularConnected != isCellularConnected ||
                                         wasVpnConnected != isVpnConnected
@@ -495,17 +496,17 @@ class NetworkMonitor(
                                     when {
                                         isVpnConnected -> "VPN"
                                         isWifiConnected -> "WiFi"
-                                        isCellularConnected -> "移动网络"
-                                        else -> "未知"
+                                        isCellularConnected -> "Cellular"
+                                        else -> "Unknown"
                                     }
 
                             Log.i(
                                     TAG,
-                                    "网络类型变化: $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)"
+                                    "Network type changed: $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)"
                             )
 
-                            // 通知监听器 - 使用 Dispatchers.IO 避免阻塞主线程
-                            // 因为网络事件处理可能需要等待 WebSocket 重连等耗时操作
+                            // Notify listener - use Dispatchers.IO to avoid blocking main thread
+                            // Network event handling may require waiting for WebSocket reconnect
                             scope.launch(Dispatchers.IO) {
                                 try {
                                     onNetworkTypeChanged(
@@ -514,7 +515,7 @@ class NetworkMonitor(
                                             isVpnConnected
                                     )
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "网络类型变化处理失败: ${e.message}", e)
+                                    Log.e(TAG, "Failed to handle network type change: ${e.message}", e)
                                 }
                             }
                         }
@@ -525,14 +526,14 @@ class NetworkMonitor(
                             linkProperties: android.net.LinkProperties
                     ) {
                         super.onLinkPropertiesChanged(network, linkProperties)
-                        Log.d(TAG, "网络链接属性变化: $network")
+                        Log.d(TAG, "Network link properties changed: $network")
                     }
                 }
 
         connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
     }
 
-    /** 更新网络状态 */
+    /** Update network state */
     private fun updateNetworkState() {
         val activeNetwork = connectivityManager?.activeNetwork
         val capabilities = activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) }
@@ -552,16 +553,16 @@ class NetworkMonitor(
 
         val availabilityChange =
                 if (wasNetworkAvailable != isNetworkAvailable) {
-                    if (isNetworkAvailable) "变为可用" else "变为不可用"
+                    if (isNetworkAvailable) "became available" else "became unavailable"
                 } else ""
 
         Log.d(
                 TAG,
-                "网络状态更新 - 可用: $isNetworkAvailable $availabilityChange, WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected"
+                "Network state updated - Available: $isNetworkAvailable $availabilityChange, WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected"
         )
     }
 
-    /** 记录当前网络状态 */
+    /** Log current network state */
     private fun logCurrentNetworkState(context: String = "") {
         val activeNetwork = connectivityManager?.activeNetwork
         val capabilities = activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) }
@@ -578,16 +579,16 @@ class NetworkMonitor(
                     if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN))
                             transports.add("VPN")
 
-                    if (transports.isNotEmpty()) transports.joinToString(", ") else "无传输类型"
+                    if (transports.isNotEmpty()) transports.joinToString(", ") else "no transport types"
                 } else {
-                    "无网络能力"
+                    "no network capabilities"
                 }
 
         val contextStr = if (context.isNotEmpty()) " ($context)" else ""
-        Log.i(TAG, "当前网络状态$contextStr: $networkInfo")
+        Log.i(TAG, "Current network state$contextStr: $networkInfo")
     }
 
-    /** 获取当前网络状态摘要 */
+    /** Get current network status summary */
     fun getCurrentNetworkStatus(): String {
         return try {
             val activeNetwork = connectivityManager?.activeNetwork
@@ -597,33 +598,33 @@ class NetworkMonitor(
             when {
                 capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true -> "VPN"
                 capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WiFi"
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "移动网络"
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "以太网"
-                activeNetwork != null -> "网络连接 (未知类型)"
-                else -> "无网络连接"
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular"
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
+                activeNetwork != null -> "Network (unknown type)"
+                else -> "No network connection"
             }
         } catch (e: Exception) {
-            Log.e(TAG, "获取网络状态失败: ${e.message}", e)
-            "获取状态失败"
+            Log.e(TAG, "Failed to get network status: ${e.message}", e)
+            "Failed to get status"
         }
     }
 
-    /** 手动触发网络状态检查 */
+    /** Manually trigger network state check */
     fun triggerNetworkCheck() {
-        Log.i(TAG, "手动触发网络状态检查")
+        Log.i(TAG, "Manually triggering network state check")
         updateNetworkState()
-        logCurrentNetworkState("手动检查")
+        logCurrentNetworkState("manual check")
     }
 
-    /** 当前是否有网络连接 */
+    /** Check if currently have network connection */
     fun isConnected(): Boolean = isNetworkAvailable
 
-    /** 当前是否通过 WiFi 连接 */
+    /** Check if currently connected via WiFi */
     fun isWifi(): Boolean = isWifiConnected
 
-    /** 当前是否通过移动网络连接 */
+    /** Check if currently connected via mobile network */
     fun isCellular(): Boolean = isCellularConnected
 
-    /** 当前是否通过 VPN 连接 */
+    /** Check if currently connected via VPN */
     fun isVpn(): Boolean = isVpnConnected
 }

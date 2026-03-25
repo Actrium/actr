@@ -67,7 +67,7 @@
   <text x="630" y="270" text-anchor="middle" class="title-text">📤 OUTBOUND 出口</text>
 
   <rect x="550" y="285" width="160" height="30" rx="3" fill="#e8f5e9" stroke="#4caf50"/>
-  <text x="630" y="305" text-anchor="middle" class="label-text">OutGate</text>
+  <text x="630" y="305" text-anchor="middle" class="label-text">Gate</text>
 
   <rect x="550" y="325" width="160" height="30" rx="3" fill="#fff9c4" stroke="#fbc02d"/>
   <text x="630" y="345" text-anchor="middle" class="label-text">TransportManager</text>

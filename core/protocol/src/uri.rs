@@ -1,16 +1,16 @@
-//! # Actor-RTC URI 解析库
+//! # Actor-RTC URI parsing library
 //!
-//! 提供 actr:// 协议的标准 URI 解析功能，不包含业务逻辑。
+//! Provides standard URI parsing for the actr:// protocol, without business logic.
 //!
-//! URI 格式: actr://<realm>:<manufacturer>+<name>@<version>
-//! 例如: actr://101:acme+echo-service@v1
+//! URI format: actr://<realm>:<manufacturer>+<name>@<version>
+//! Example: actr://101:acme+echo-service@1.0.0
 
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Actor-RTC URI 解析错误
+/// Actor-RTC URI parse error
 #[derive(Error, Debug)]
 pub enum ActrUriError {
     #[error("Invalid URI scheme, expected 'actr' but got '{0}'")]
@@ -22,7 +22,7 @@ pub enum ActrUriError {
     #[error("Invalid actor authority format, expected: <realm>:<manufacturer>+<name>@<version>")]
     InvalidAuthorityFormat(String),
 
-    #[error("Missing version suffix '@v1' in URI")]
+    #[error("Missing version suffix '@<version>' in URI")]
     MissingVersion,
 
     #[error("Invalid realm ID: {0}")]
@@ -32,8 +32,8 @@ pub enum ActrUriError {
     ParseError(String),
 }
 
-/// Actor-RTC URI 结构
-/// 格式: actr://<realm>:<manufacturer>+<name>@<version>
+/// Actor-RTC URI structure
+/// Format: actr://<realm>:<manufacturer>+<name>@<version>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActrUri {
     /// Realm ID (u32)
@@ -42,12 +42,12 @@ pub struct ActrUri {
     pub manufacturer: String,
     /// Actor type name
     pub name: String,
-    /// Version (e.g., "v1")
+    /// Version (e.g., "1.0.0")
     pub version: String,
 }
 
 impl ActrUri {
-    /// 创建新的 Actor-RTC URI
+    /// Create a new Actor-RTC URI
     pub fn new(realm: u32, manufacturer: String, name: String, version: String) -> Self {
         Self {
             realm,
@@ -57,12 +57,12 @@ impl ActrUri {
         }
     }
 
-    /// 获取 scheme 信息
+    /// Get scheme info
     pub fn scheme(&self) -> &'static str {
         "actr"
     }
 
-    /// 获取 actor type 字符串表示 (manufacturer+name)
+    /// Get actor type string representation (manufacturer+name)
     pub fn actor_type(&self) -> String {
         format!("{}+{}", self.manufacturer, self.name)
     }
@@ -124,46 +124,51 @@ impl FromStr for ActrUri {
     }
 }
 
-/// Actor-RTC URI 构建器
-#[derive(Debug, Default)]
+/// Actor-RTC URI builder
+#[derive(Debug)]
 pub struct ActrUriBuilder {
     realm: Option<u32>,
     manufacturer: Option<String>,
     name: Option<String>,
-    version: Option<String>,
+    version: String,
 }
 
 impl ActrUriBuilder {
-    /// 创建新的构建器
+    /// Create a new builder
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            realm: None,
+            manufacturer: None,
+            name: None,
+            version: String::new(),
+        }
     }
 
-    /// 设置 Realm ID
+    /// Set Realm ID
     pub fn realm(mut self, realm: u32) -> Self {
         self.realm = Some(realm);
         self
     }
 
-    /// 设置 Manufacturer
+    /// Set Manufacturer
     pub fn manufacturer<S: Into<String>>(mut self, manufacturer: S) -> Self {
         self.manufacturer = Some(manufacturer.into());
         self
     }
 
-    /// 设置 Actor 类型名称
+    /// Set Actor type name
     pub fn name<S: Into<String>>(mut self, name: S) -> Self {
         self.name = Some(name.into());
         self
     }
 
-    /// 设置版本
+    /// Set version
     pub fn version<S: Into<String>>(mut self, version: S) -> Self {
-        self.version = Some(version.into());
+        self.version = version.into();
         self
     }
 
-    /// 构建 URI
+    /// Build the URI
     pub fn build(self) -> Result<ActrUri, ActrUriError> {
         let realm = self.realm.ok_or(ActrUriError::MissingAuthority)?;
         let manufacturer = self
@@ -174,13 +179,17 @@ impl ActrUriBuilder {
         let name = self.name.ok_or(ActrUriError::InvalidAuthorityFormat(
             "missing name".to_string(),
         ))?;
-        let version = self.version.unwrap_or_else(|| "v1".to_string());
+        if self.version.is_empty() {
+            return Err(ActrUriError::InvalidAuthorityFormat(
+                "missing version".to_string(),
+            ));
+        }
 
         Ok(ActrUri {
             realm,
             manufacturer,
             name,
-            version,
+            version: self.version,
         })
     }
 }
@@ -191,13 +200,13 @@ mod tests {
 
     #[test]
     fn test_basic_uri_parsing() {
-        let uri = "actr://101:acme+echo-service@v1"
+        let uri = "actr://101:acme+echo-service@1.0.0"
             .parse::<ActrUri>()
             .unwrap();
         assert_eq!(uri.realm, 101);
         assert_eq!(uri.manufacturer, "acme");
         assert_eq!(uri.name, "echo-service");
-        assert_eq!(uri.version, "v1");
+        assert_eq!(uri.version, "1.0.0");
     }
 
     #[test]
@@ -206,14 +215,28 @@ mod tests {
             .realm(101)
             .manufacturer("acme")
             .name("order-service")
-            .version("v1")
+            .version("1.0.0")
             .build()
             .unwrap();
 
         assert_eq!(uri.realm, 101);
         assert_eq!(uri.manufacturer, "acme");
         assert_eq!(uri.name, "order-service");
-        assert_eq!(uri.version, "v1");
+        assert_eq!(uri.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_uri_builder_requires_version() {
+        let result = ActrUriBuilder::new()
+            .realm(101)
+            .manufacturer("acme")
+            .name("order-service")
+            .build();
+
+        assert!(matches!(
+            result,
+            Err(ActrUriError::InvalidAuthorityFormat(msg)) if msg == "missing version"
+        ));
     }
 
     #[test]
@@ -222,15 +245,15 @@ mod tests {
             101,
             "acme".to_string(),
             "user-service".to_string(),
-            "v1".to_string(),
+            "1.0.0".to_string(),
         );
         let uri_string = uri.to_string();
-        assert_eq!(uri_string, "actr://101:acme+user-service@v1");
+        assert_eq!(uri_string, "actr://101:acme+user-service@1.0.0");
     }
 
     #[test]
     fn test_invalid_scheme() {
-        let result = "http://101:acme+service@v1".parse::<ActrUri>();
+        let result = "http://101:acme+service@1.0.0".parse::<ActrUri>();
         assert!(matches!(result, Err(ActrUriError::InvalidScheme(_))));
     }
 
@@ -248,13 +271,13 @@ mod tests {
 
     #[test]
     fn test_invalid_realm_id() {
-        let result = "actr://abc:acme+service@v1".parse::<ActrUri>();
+        let result = "actr://abc:acme+service@1.0.0".parse::<ActrUri>();
         assert!(matches!(result, Err(ActrUriError::InvalidRealmId(_))));
     }
 
     #[test]
     fn test_invalid_authority_format() {
-        let result = "actr://101:acme:service@v1".parse::<ActrUri>();
+        let result = "actr://101:acme:service@1.0.0".parse::<ActrUri>();
         assert!(matches!(
             result,
             Err(ActrUriError::InvalidAuthorityFormat(_))
@@ -263,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_actor_type_method() {
-        let uri = "actr://101:acme+user-service@v1"
+        let uri = "actr://101:acme+user-service@1.0.0"
             .parse::<ActrUri>()
             .unwrap();
         assert_eq!(uri.actor_type(), "acme+user-service");
@@ -275,6 +298,7 @@ mod tests {
             .realm(9999)
             .manufacturer("test")
             .name("service")
+            .version("1.0.0")
             .build()
             .unwrap();
 

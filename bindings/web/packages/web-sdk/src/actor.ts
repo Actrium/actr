@@ -1,12 +1,12 @@
 /**
  * Unified Actor API
  *
- * P2P 架构下，不区分 client/server。每个 Actor 同时具备：
- * - 注册到 Signaling、建立 WebRTC 连接
- * - 通过 WASM handler（UnifiedDispatcher）处理本地和远程请求
- * - 通过 callRaw/call 调用远端 Actor
+ * P2P ， client/server。 Actor ：
+ * -  Signaling、 WebRTC 
+ * -  WASM handler（UnifiedDispatcher）
+ * -  callRaw/call  Actor
  *
- * 对应 Kotlin 的 UnifiedHandler + ContextBridge 模式。
+ *  Kotlin  UnifiedHandler + ContextBridge 。
  */
 
 import { initActrDom, type ActrDomRuntime } from '@actr/dom';
@@ -22,23 +22,23 @@ import type {
 } from './types';
 
 /**
- * Actor 配置
+ * Actor 
  */
 export interface ActorConfig extends ActorClientConfig {
     /**
-     * WASM 模块路径（可选）
+     * WASM （）
      *
-     * 如果提供，会在 Service Worker 中加载该 WASM 并注册其 handler。
-     * WASM 模块中的 handler 通过 register_service_handler() 注册，
-     * 可以处理本地请求和转发远程请求（通过 ctx.call_raw()）。
+     * ， Service Worker  WASM  handler。
+     * WASM  handler  register_workload() ，
+     * （ ctx.call_raw()）。
      */
     wasmUrl?: string;
 }
 
 /**
- * Actor 实例
+ * Actor 
  *
- * 统一的 P2P Actor，同时具备客户端和服务端能力。
+ *  P2P Actor，。
  */
 export class Actor {
     private config: Required<ActorConfig>;
@@ -54,7 +54,7 @@ export class Actor {
     }
 
     /**
-     * 创建 Actor 实例
+     *  Actor 
      */
     static async create(config: ActorConfig): Promise<Actor> {
         const fullConfig = {
@@ -79,7 +79,7 @@ export class Actor {
     }
 
     /**
-     * 初始化
+     * 
      */
     private async initialize(): Promise<void> {
         try {
@@ -90,6 +90,7 @@ export class Actor {
                 serviceWorkerUrl: this.config.serviceWorkerPath || '/actor.sw.js',
                 webrtcConfig: {
                     iceServers: this.config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }],
+                    iceTransportPolicy: this.config.iceTransportPolicy,
                 },
                 runtimeConfig: this.config.runtimeConfig as unknown as Record<string, unknown> | undefined,
             });
@@ -115,7 +116,7 @@ export class Actor {
     }
 
     /**
-     * 获取底层 ActorRef
+     *  ActorRef
      */
     getActorRef(): ActorRef {
         if (!this.actorRef) {
@@ -125,7 +126,7 @@ export class Actor {
     }
 
     /**
-     * 调用原始 RPC（已编码 payload）
+     *  RPC（ payload）
      */
     async callRaw(routeKey: string, payload: Uint8Array, timeout?: number): Promise<Uint8Array> {
         if (!this.actorRef) {
@@ -144,7 +145,7 @@ export class Actor {
     }
 
     /**
-     * 类型安全的 RPC 调用
+     *  RPC 
      */
     async call<TRequest, TResponse>(
         service: string,
@@ -175,7 +176,7 @@ export class Actor {
     }
 
     /**
-     * 订阅数据流
+     * 
      */
     async subscribe<T>(topic: string, callback: SubscriptionCallback<T>): Promise<UnsubscribeFn> {
         if (!this.actorRef) {
@@ -231,7 +232,7 @@ export class Actor {
 }
 
 /**
- * 创建 Actor 实例（统一 API）
+ *  Actor （ API）
  *
  * @example
  * ```typescript
@@ -243,7 +244,7 @@ export class Actor {
  *   serviceWorkerPath: '/actor.sw.js',
  * });
  *
- * // 调用远端 Actor
+ * //  Actor
  * const response = await actor.callRaw('echo.EchoService.Echo', encoded);
  * ```
  */

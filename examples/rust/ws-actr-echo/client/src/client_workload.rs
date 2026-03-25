@@ -42,13 +42,13 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
         ctx: &C,
     ) -> actr_protocol::ActorResult<Bytes> {
         info!(
-            "[ClientWorkload] 收到 App 请求，route_key={}",
+            "[ClientWorkload] [...] App request，route_key={}",
             envelope.route_key
         );
 
         let payload = envelope.payload.as_ref().ok_or_else(|| {
             actr_protocol::ActrError::DecodeFailure(
-                "RpcEnvelope 中缺少 payload".to_string(),
+                "RpcEnvelope [...] payload".to_string(),
             )
         })?;
         let request: EchoRequest = actr_protocol::prost::Message::decode(&**payload)
@@ -60,20 +60,20 @@ impl actr_framework::MessageDispatcher for ClientDispatcher {
         let server_id = match server_id {
             Some(id) => id,
             None => {
-                error!("[ClientWorkload] Server ID 未设置");
+                error!("[ClientWorkload] Server ID [...]");
                 return Err(actr_protocol::ActrError::Unavailable(
-                    "Server ID 未配置".to_string(),
+                    "Server ID [...]config".to_string(),
                 ));
             }
         };
 
-        info!("[ClientWorkload] 通过 WebSocket 转发请求到远端服务器...");
+        info!("[ClientWorkload] via/through WebSocket [...]request[...]service[...]...");
 
-        // 通过 Dest::Actor 调用远端服务器（将使用 WebSocket 通道）
+        // via/through Dest::Actor [...]service[...]（willusing/use WebSocket channel）
         let response: EchoResponse = ctx.call(&Dest::Actor(server_id), request).await?;
 
         info!(
-            "[ClientWorkload] 收到服务器响应: {}",
+            "[ClientWorkload] [...]service[...]response: {}",
             response.reply
         );
 

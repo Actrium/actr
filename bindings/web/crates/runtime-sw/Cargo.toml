@@ -11,24 +11,26 @@ description = "Actor-RTC Service Worker Runtime (WASM)"
 workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"] # 生成 WASM + Rust 库
+crate-type = ["cdylib", "rlib"] # Build both WASM and Rust library outputs
 
 [dependencies]
-# 共享代码
+# Shared code
 actr-web-common = { path = "../common" }
 actr-protocol.workspace = true
 actr-framework.workspace = true
+actr-platform-traits.workspace = true
+actr-platform-web = { path = "../platform-web" }
 
 # Mailbox
 actr-mailbox-web = { path = "../mailbox-web" }
 
-# WASM 绑定
+# WASM bindings
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
 serde-wasm-bindgen.workspace = true
 
-# Web APIs (Service Worker 环境)
+# Web APIs (Service Worker environment)
 web-sys = { workspace = true, features = [
     "console",
     "MessageEvent",
@@ -43,26 +45,26 @@ web-sys = { workspace = true, features = [
     "ServiceWorkerGlobalScope",
 ] }
 
-# IndexedDB (Mailbox 持久化)
+# IndexedDB (Mailbox persistence)
 rexie.workspace = true
 gloo-timers.workspace = true
 
-# 异步运行时
+# Async runtime
 futures.workspace = true
 async-trait.workspace = true
 
-# 序列化
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 
-# 工具
+# Utilities
 log.workspace = true
 wasm-logger.workspace = true
 console_error_panic_hook.workspace = true
 thiserror.workspace = true
 getrandom.workspace = true
 
-# 数据结构
+# Data structures
 bytes = "1.5"
 parking_lot.workspace = true
 dashmap.workspace = true

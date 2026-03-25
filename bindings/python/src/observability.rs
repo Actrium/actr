@@ -1,10 +1,10 @@
 use std::sync::OnceLock;
 
 use actr_config::ObservabilityConfig;
-use actr_runtime::init_observability;
+use actr_hyper::init_observability;
 
 // Global guard to keep observability initialized
-pub static OBSERVABILITY_GUARD: OnceLock<actr_runtime::ObservabilityGuard> = OnceLock::new();
+pub static OBSERVABILITY_GUARD: OnceLock<actr_hyper::ObservabilityGuard> = OnceLock::new();
 
 pub fn ensure_observability_initialized(config: Option<ObservabilityConfig>) {
     OBSERVABILITY_GUARD.get_or_init(|| {
@@ -20,7 +20,7 @@ pub fn ensure_observability_initialized(config: Option<ObservabilityConfig>) {
 
         init_observability(&config).unwrap_or_else(|e| {
             eprintln!("[warn] Failed to initialize observability: {}", e);
-            actr_runtime::ObservabilityGuard::default()
+            actr_hyper::ObservabilityGuard::default()
         })
     });
 }

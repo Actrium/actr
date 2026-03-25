@@ -1,7 +1,7 @@
 /**
- * Service Worker Bridge - PostMessage 通信层
+ * Service Worker Bridge - PostMessage 
  *
- * 负责 DOM 侧和 Service Worker 侧的双向通信
+ *  DOM  Service Worker 
  */
 
 export type MessageToSW =
@@ -92,12 +92,13 @@ export type MessageFromSW =
   | { type: 'webrtc_command'; payload: WebRtcCommandPayload }
   | { type: 'control_response'; payload: RpcResponsePayload }
   | { type: 'subscription_data'; payload: SubscriptionDataPayload }
-  | { type: 'webrtc_event'; payload: WebRtcEventPayload };
+  | { type: 'webrtc_event'; payload: WebRtcEventPayload }
+  | { type: 'update_turn_credential'; payload: { username: string; password: string } };
 
 export type MessageHandler = (message: MessageFromSW) => void;
 
 /**
- * Service Worker 通信桥接
+ * Service Worker 
  */
 export class ServiceWorkerBridge {
   private swPort: MessagePort | null = null;
@@ -115,17 +116,17 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 初始化与 Service Worker 的通信
+   *  Service Worker 
    */
   async initialize(serviceWorkerUrl: string, runtimeConfig?: Record<string, unknown>): Promise<void> {
-    // 注册 Service Worker
+    //  Service Worker
     if ('serviceWorker' in navigator) {
       const registration = await navigator.serviceWorker.register(serviceWorkerUrl, {
         updateViaCache: 'none',
       });
       await registration.update();
 
-      // 等待 Service Worker 激活
+      //  Service Worker 
       await navigator.serviceWorker.ready;
 
       // Wait for the controller to be set (may not be immediate after fresh registration).
@@ -151,16 +152,16 @@ export class ServiceWorkerBridge {
         console.log('[SW Bridge] <- SW (client)', event.data); // [DEBUG] Keep for now
       });
 
-      // 建立 MessageChannel
+      //  MessageChannel
       const channel = new MessageChannel();
       this.swPort = channel.port1;
 
-      // 监听来自 SW 的消息
+      //  SW 
       this.swPort.onmessage = (event) => {
         this.handleMessageFromSW(event.data);
       };
 
-      // 发送端口给 Service Worker
+      //  Service Worker
       target.postMessage(
         {
           type: 'DOM_PORT_INIT',
@@ -180,14 +181,14 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 等待桥接就绪
+   * 
    */
   async waitReady(): Promise<void> {
     return this.readyPromise;
   }
 
   /**
-   * 发送消息到 Service Worker
+   *  Service Worker
    */
   sendToSW(message: MessageToSW, transferables?: Transferable[]): void {
     if (!this.swPort) {
@@ -197,7 +198,7 @@ export class ServiceWorkerBridge {
 
     console.log('[SW Bridge] -> SW', message); // [DEBUG] Keep for now
     if (transferables && transferables.length > 0) {
-      // 使用 Transferable 零拷贝传输
+      //  Transferable 
       this.swPort.postMessage(message, transferables);
     } else {
       this.swPort.postMessage(message);
@@ -205,15 +206,15 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 发送专用 DataChannel MessagePort 到 Service Worker
+   *  DataChannel MessagePort  Service Worker
    *
-   * DOM 在 DataChannel 建立后调用此方法：
-   * 1. 创建 MessageChannel 桥接 DataChannel ↔ SW
-   * 2. port1 留在 DOM 侧（桥接 DataChannel 出站数据）
-   * 3. port2 通过 Transferable 转移给 SW
+   * DOM  DataChannel ：
+   * 1.  MessageChannel  DataChannel ↔ SW
+   * 2. port1  DOM （ DataChannel ）
+   * 3. port2  Transferable  SW
    *
-   * SW 收到后注入 WirePool，后续出站数据
-   * 通过 DataLane::PostMessage(port2) 零拷贝发送。
+   * SW  WirePool，
+   *  DataLane::PostMessage(port2) 。
    */
   sendDataChannelPort(peerId: string, port: MessagePort): void {
     this.sendToSW(
@@ -223,19 +224,19 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 注册消息处理器
+   * 
    */
   onMessage(handler: MessageHandler): () => void {
     this.messageHandlers.add(handler);
 
-    // 返回取消注册函数
+    // 
     return () => {
       this.messageHandlers.delete(handler);
     };
   }
 
   /**
-   * 处理来自 SW 的消息
+   *  SW 
    */
   private handleMessageFromSW(message: MessageFromSW): void {
     console.log('[SW Bridge] <- SW', message); // [DEBUG] Keep for now
@@ -249,14 +250,14 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 获取此客户端的唯一标识符
+   * 
    */
   getClientId(): string {
     return this.clientId;
   }
 
   /**
-   * 关闭桥接
+   * 
    */
   close(): void {
     if (this.swPort) {

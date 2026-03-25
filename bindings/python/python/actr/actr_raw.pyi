@@ -47,7 +47,7 @@ class ActrId:
 # ActrType binding
 class ActrType:
     """Actor type binding."""
-    def __init__(self, manufacturer: str, name: str, version: Optional[str] = ...) -> None: ...
+    def __init__(self, manufacturer: str, name: str, version: str) -> None: ...
     def to_bytes(self) -> bytes: ...
     @staticmethod
     def from_bytes(bytes: bytes) -> "ActrType": ...
@@ -145,38 +145,22 @@ class DataStream:
         """Get the optional timestamp in milliseconds."""
         ...
 
-# ActrSystem class
-class ActrSystem:
-    """Main entry point for creating an Actr system."""
-    
+# ActrNode class
+class ActrNode:
+    """Represents a client-only actor node before it is started."""
+
     @staticmethod
-    async def from_toml(path: str) -> "ActrSystem":
+    async def from_toml(path: str) -> "ActrNode":
         """
-        Create an ActrSystem from a TOML configuration file.
-        
+        Create an ActrNode from a TOML configuration file.
+
         Args:
             path: Path to the TOML configuration file
-        
-        Returns:
-            ActrSystem instance
-        """
-        ...
-    
-    def attach(self, workload: Any) -> "ActrNode":
-        """
-        Attach a workload to the system.
-        
-        Args:
-            workload: A workload instance with on_start, dispatch, on_stop methods
-        
+
         Returns:
             ActrNode instance
         """
         ...
-
-# ActrNode class
-class ActrNode:
-    """Represents an attached but not yet started actor node."""
     
     async def start(self) -> "ActrRef":
         """
@@ -203,6 +187,10 @@ class ActrRef:
     def actor_id(self) -> Any:
         """Get the actor's ID."""
         ...
+
+    async def discover(self, actr_type: ActrType, count: int = 1) -> list[ActrId]:
+        """Discover actors by type."""
+        ...
     
     def shutdown(self) -> None:
         """Trigger actor shutdown."""
@@ -218,6 +206,7 @@ class ActrRef:
     
     async def call(
         self,
+        target: Dest,
         route_key: str,
         request: bytes,
         timeout_ms: int = 30000,
@@ -239,6 +228,7 @@ class ActrRef:
     
     async def tell(
         self,
+        target: Dest,
         route_key: str,
         message: bytes,
         payload_type: PayloadType = PayloadType.RpcReliable,
@@ -357,7 +347,6 @@ class Context:
 
 # Re-export all types
 __all__ = [
-    "ActrSystem",
     "ActrNode",
     "ActrRef",
     "Context",

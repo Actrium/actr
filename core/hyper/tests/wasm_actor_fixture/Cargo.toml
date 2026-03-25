@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "wasm-actor-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+actr-framework = { path = "../../../../core/framework" }
+actr-protocol = { path = "../../../../core/protocol" }
+async-trait = "0.1"
+bytes = "1.10"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
+
+[profile.release]
+opt-level = "s"

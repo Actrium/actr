@@ -1,0 +1,610 @@
+//! Runtime Context Implementation
+//!
+//! Implements the Context trait defined in actr-framework.
+
+use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::outbound::Gate;
+use crate::wire::webrtc::SignalingClient;
+#[cfg(feature = "opentelemetry")]
+use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+use actr_config::lock::LockFile;
+use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
+use actr_protocol::{
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ActrTypeExt, PayloadType,
+    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
+};
+use async_trait::async_trait;
+use futures_util::future::BoxFuture;
+use std::sync::Arc;
+
+/// RuntimeContext - Runtime's implementation of Context trait
+///
+/// # Design Features
+///
+/// - **Zero vtable**: internally uses Gate enum dispatch (not dyn)
+/// - **Smart routing**: automatically selects Host or Peer based on Dest
+/// - **Full implementation**: contains complete call/tell logic (encode, send, decode)
+/// - **Type safety**: generic methods provide compile-time type checking
+///
+/// # Performance
+///
+/// - Gate is an enum, uses static dispatch
+/// - Compiler can fully inline the entire call chain
+/// - Zero virtual function call overhead
+#[derive(Clone)]
+pub struct RuntimeContext {
+    self_id: ActrId,
+    caller_id: Option<ActrId>,
+    request_id: String,
+    inproc_gate: Gate,          // Shell/Local calls - immediately available
+    outproc_gate: Option<Gate>, // Remote Actor calls - lazily initialized
+    data_stream_registry: Arc<DataStreamRegistry>, // DataStream callback registry
+    media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
+    signaling_client: Arc<dyn SignalingClient>,
+    credential: AIdCredential,
+    actr_lock: Option<LockFile>, // Actr.lock.toml for fingerprint lookups
+}
+
+impl RuntimeContext {
+    /// Create a new `RuntimeContext`.
+    ///
+    /// # Parameters
+    ///
+    /// - `self_id`: ID of the current actor
+    /// - `caller_id`: optional caller actor ID
+    /// - `request_id`: unique ID for the current request
+    /// - `inproc_gate`: in-process gate, immediately available
+    /// - `outproc_gate`: cross-process gate, possibly `None` until WebRTC initialization completes
+    /// - `data_stream_registry`: callback registry for `DataStream`
+    /// - `media_frame_registry`: callback registry for `MediaTrack`
+    /// - `signaling_client`: signaling client used for route discovery
+    /// - `credential`: credentials used when calling signaling interfaces
+    /// - `actr_lock`: dependency config from `Actr.lock.toml` used for fingerprint lookup
+    #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
+    pub fn new(
+        self_id: ActrId,
+        caller_id: Option<ActrId>,
+        request_id: String,
+        inproc_gate: Gate,
+        outproc_gate: Option<Gate>,
+        data_stream_registry: Arc<DataStreamRegistry>,
+        media_frame_registry: Arc<MediaFrameRegistry>,
+        signaling_client: Arc<dyn SignalingClient>,
+        credential: AIdCredential,
+        actr_lock: Option<LockFile>,
+    ) -> Self {
+        Self {
+            self_id,
+            caller_id,
+            request_id,
+            inproc_gate,
+            outproc_gate,
+            data_stream_registry,
+            media_frame_registry,
+            signaling_client,
+            credential,
+            actr_lock,
+        }
+    }
+
+    /// Select the appropriate gate based on `Dest`.
+    ///
+    /// - `Dest::Shell` -> `inproc_gate`
+    /// - `Dest::Local` -> `inproc_gate`
+    /// - `Dest::Actor(_)` -> `outproc_gate`, which must already be initialized
+    #[inline]
+    fn select_gate(&self, dest: &Dest) -> ActorResult<&Gate> {
+        match dest {
+            Dest::Shell | Dest::Local => Ok(&self.inproc_gate),
+            Dest::Actor(_) => self.outproc_gate.as_ref().ok_or_else(|| {
+                ActrError::Internal(
+                    "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
+                )
+            }),
+        }
+    }
+
+    /// Extract the target `ActrId` from `Dest`.
+    ///
+    /// - `Dest::Shell` -> `self_id` for reverse Workload-to-App calls
+    /// - `Dest::Local` -> `self_id` for local workload calls
+    /// - `Dest::Actor(id)` -> remote actor ID
+    #[inline]
+    fn extract_target_id<'a>(&'a self, dest: &'a Dest) -> &'a ActrId {
+        match dest {
+            Dest::Shell | Dest::Local => &self.self_id,
+            Dest::Actor(id) => id,
+        }
+    }
+
+    /// Execute a non-generic RPC request call (useful for language bindings).
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+    )]
+    pub async fn call_raw(
+        &self,
+        target: &Dest,
+        route_key: String,
+        payload_type: PayloadType,
+        payload: Bytes,
+        timeout_ms: i64,
+    ) -> ActorResult<Bytes> {
+        #[cfg(feature = "opentelemetry")]
+        use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms,
+        };
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.send_request_with_type(target_id, payload_type, envelope)
+            .await
+    }
+
+    /// Execute a non-generic RPC message call (fire-and-forget, useful for language bindings).
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.tell_raw")
+    )]
+    pub async fn tell_raw(
+        &self,
+        target: &Dest,
+        route_key: String,
+        payload_type: PayloadType,
+        payload: Bytes,
+    ) -> ActorResult<()> {
+        #[cfg(feature = "opentelemetry")]
+        use crate::wire::webrtc::trace::inject_span_context_to_rpc;
+
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 0,
+        };
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.send_message_with_type(target_id, payload_type, envelope)
+            .await
+    }
+
+    /// Send DataStream with an explicit payload type (lane selection).
+    ///
+    /// Convenience wrapper for language bindings that prefer positional `payload_type`
+    /// before `chunk`. Equivalent to calling `Context::send_data_stream` directly.
+    pub async fn send_data_stream_with_type(
+        &self,
+        target: &Dest,
+        payload_type: actr_protocol::PayloadType,
+        chunk: DataStream,
+    ) -> ActorResult<()> {
+        use actr_protocol::prost::Message as ProstMessage;
+
+        let payload = chunk.encode_to_vec();
+
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+
+        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
+            .await
+    }
+
+    /// Get dependency fingerprint from Actr.lock.toml
+    fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
+        let actr_lock = self.actr_lock.as_ref()?;
+
+        let key = target_type.to_string_repr();
+
+        // Try by full key
+        if let Some(dep) = actr_lock.get_dependency(&key) {
+            return Some(dep.fingerprint.clone());
+        }
+
+        // Fallback to scanning dependencies when the exact key is not present.
+        for dep in &actr_lock.dependencies {
+            if Self::matches_dependency_actr_type(&dep.actr_type, target_type) {
+                return Some(dep.fingerprint.clone());
+            }
+        }
+
+        None
+    }
+
+    fn matches_dependency_actr_type(raw: &str, target_type: &ActrType) -> bool {
+        let Ok(dep_type) = ActrType::from_string_repr(raw) else {
+            return false;
+        };
+
+        dep_type == *target_type
+    }
+
+    /// Internal: Send discovery request to signaling server
+    async fn send_discovery_request(
+        &self,
+        target_type: &ActrType,
+        candidate_count: u32,
+        client_fingerprint: String,
+    ) -> ActorResult<InternalDiscoveryResult> {
+        let criteria = route_candidates_request::NodeSelectionCriteria {
+            candidate_count,
+            ranking_factors: Vec::new(),
+            minimal_dependency_requirement: None,
+            minimal_health_requirement: None,
+        };
+
+        let request = RouteCandidatesRequest {
+            target_type: target_type.clone(),
+            criteria: Some(criteria),
+            client_location: None,
+            client_fingerprint,
+        };
+
+        let response = self
+            .signaling_client
+            .send_route_candidates_request(self.self_id.clone(), self.credential.clone(), request)
+            .await
+            .map_err(|e| ActrError::Unavailable(format!("Route candidates request failed: {e}")))?;
+
+        match response.result {
+            Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
+                Ok(InternalDiscoveryResult {
+                    candidates: success.candidates,
+                })
+            }
+            Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
+                Err(ActrError::Unavailable(format!(
+                    "Route candidates error {}: {}",
+                    err.code, err.message
+                )))
+            }
+            None => Err(ActrError::Unavailable(
+                "Invalid route candidates response: missing result".to_string(),
+            )),
+        }
+    }
+}
+
+/// Internal discovery result structure
+struct InternalDiscoveryResult {
+    candidates: Vec<ActrId>,
+}
+
+#[async_trait]
+impl Context for RuntimeContext {
+    // ========== Data Access Methods ==========
+
+    fn self_id(&self) -> &ActrId {
+        &self.self_id
+    }
+
+    fn caller_id(&self) -> Option<&ActrId> {
+        self.caller_id.as_ref()
+    }
+
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    // ========== Communication Methods ==========
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call")
+    )]
+    async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
+        use actr_protocol::prost::Message as ProstMessage;
+
+        // 1. Encode the request as protobuf bytes.
+        let payload: Bytes = request.encode_to_vec().into();
+
+        // 2. Get the compile-time route key from the RpcRequest trait.
+        let route_key = R::route_key().to_string();
+
+        // 3. Build the RpcEnvelope with W3C tracing fields.
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(), // Generate a new request_id.
+            metadata: vec![],
+            timeout_ms: 30000, // Default to a 30-second timeout.
+        };
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        // 4. Select a gate from Dest and extract the target ActrId.
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+
+        // 5. Send via Gate enum dispatch without virtual calls.
+        // Respect request's declared payload type (lane selection)
+        let response_bytes = gate
+            .send_request_with_type(target_id, R::payload_type(), envelope)
+            .await?;
+
+        // 6. Decode the typed response.
+        R::Response::decode(&*response_bytes).map_err(|e| {
+            ActrError::DecodeFailure(format!(
+                "Failed to decode {}: {}",
+                std::any::type_name::<R::Response>(),
+                e
+            ))
+        })
+    }
+
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.tell")
+    )]
+    async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
+        // 1. Encode the message.
+        let payload: Bytes = message.encode_to_vec().into();
+
+        // 2. Get the route key.
+        let route_key = R::route_key().to_string();
+
+        // 3. Build the RpcEnvelope for fire-and-forget delivery.
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key,
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 0, // Zero means no response is expected.
+        };
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        // 4. Select a gate from Dest and extract the target ActrId.
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+
+        // 5. Dispatch through the Gate enum while preserving payload type.
+        gate.send_message_with_type(target_id, R::payload_type(), envelope)
+            .await
+    }
+
+    // ========== Fast Path: DataStream Methods ==========
+
+    async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
+    where
+        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+    {
+        tracing::debug!(
+            "📊 Registering DataStream callback for stream_id: {}",
+            stream_id
+        );
+        self.data_stream_registry
+            .register(stream_id, Arc::new(callback));
+        Ok(())
+    }
+
+    async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
+        tracing::debug!(
+            "🚫 Unregistering DataStream callback for stream_id: {}",
+            stream_id
+        );
+        self.data_stream_registry.unregister(stream_id);
+        Ok(())
+    }
+
+    async fn send_data_stream(
+        &self,
+        target: &Dest,
+        chunk: DataStream,
+        payload_type: actr_protocol::PayloadType,
+    ) -> ActorResult<()> {
+        use actr_protocol::prost::Message as ProstMessage;
+
+        // 1. Serialize DataStream to bytes
+        let payload = chunk.encode_to_vec();
+
+        tracing::debug!(
+            "📤 Sending DataStream: stream_id={}, sequence={}, size={} bytes",
+            chunk.stream_id,
+            chunk.sequence,
+            payload.len()
+        );
+
+        // 2. Select gate based on Dest
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+
+        // 3. Send via Gate with the caller-specified PayloadType
+        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
+            .await
+    }
+
+    async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
+        if !self.signaling_client.is_connected() {
+            return Err(ActrError::Unavailable(
+                "Signaling client is not connected.".to_string(),
+            ));
+        }
+
+        let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // Step 1: Get fingerprint from Actr.lock.toml (when available)
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        let client_fingerprint = match self.get_dependency_fingerprint(target_type) {
+            Some(fingerprint) => fingerprint,
+            None => {
+                if self.actr_lock.is_none() {
+                    tracing::debug!(
+                        "Actr.lock.toml not loaded; sending discovery without fingerprint for '{}'",
+                        service_name
+                    );
+                    String::new()
+                } else {
+                    tracing::error!(
+                        severity = 10,
+                        error_category = "dependency_missing",
+                        "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in Actr.lock.toml.\n\
+                         Please run 'actr install' to generate the lock file with all dependencies.",
+                        service_name
+                    );
+                    return Err(ActrError::DependencyNotFound {
+                        service_name: service_name.clone(),
+                        message: format!(
+                            "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
+                            service_name
+                        ),
+                    });
+                }
+            }
+        };
+
+        if !client_fingerprint.is_empty() {
+            tracing::debug!(
+                "📋 Found dependency fingerprint for '{}': {}",
+                service_name,
+                &client_fingerprint[..20.min(client_fingerprint.len())]
+            );
+        }
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // Step 2: Send discovery request to signaling server
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        let result = self
+            .send_discovery_request(target_type, 1, client_fingerprint)
+            .await?;
+
+        tracing::info!(
+            "Discovery result [{}]: {} candidates",
+            service_name,
+            result.candidates.len(),
+        );
+
+        result.candidates.into_iter().next().ok_or_else(|| {
+            ActrError::NotFound(format!(
+                "No route candidates for type {}/{}",
+                target_type.manufacturer, target_type.name
+            ))
+        })
+    }
+
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+    )]
+    async fn call_raw(
+        &self,
+        target: &ActrId,
+        route_key: &str,
+        payload: Bytes,
+    ) -> ActorResult<Bytes> {
+        // 1. Construct RpcEnvelope with raw payload
+        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+        let mut envelope = RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload),
+            error: None,
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: vec![],
+            timeout_ms: 30000, // Default 30 second timeout
+        };
+
+        // Inject tracing context from current span
+        #[cfg(feature = "opentelemetry")]
+        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
+
+        // 2. Select outproc gate (raw calls are always remote)
+        let gate = self.outproc_gate.as_ref().ok_or_else(|| {
+            ActrError::Internal(
+                "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
+            )
+        })?;
+
+        // 3. Send request and return raw response bytes
+        gate.send_request(target, envelope).await
+    }
+
+    // ========== Fast Path: MediaTrack Methods ==========
+
+    async fn register_media_track<F>(&self, track_id: String, callback: F) -> ActorResult<()>
+    where
+        F: Fn(MediaSample, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+    {
+        tracing::debug!(
+            "📹 Registering MediaTrack callback for track_id: {}",
+            track_id
+        );
+        self.media_frame_registry
+            .register(track_id, Arc::new(callback));
+        Ok(())
+    }
+
+    async fn unregister_media_track(&self, track_id: &str) -> ActorResult<()> {
+        tracing::debug!(
+            "📹 Unregistering MediaTrack callback for track_id: {}",
+            track_id
+        );
+        self.media_frame_registry.unregister(track_id);
+        Ok(())
+    }
+
+    async fn send_media_sample(
+        &self,
+        target: &Dest,
+        track_id: &str,
+        sample: MediaSample,
+    ) -> ActorResult<()> {
+        // 1. Select appropriate gate based on Dest
+        let gate = self.select_gate(target)?;
+
+        // 2. Extract target ActrId
+        let target_id = self.extract_target_id(target);
+
+        // 3. Send via Gate (delegates to WebRTC Track)
+        gate.send_media_sample(target_id, track_id, sample).await
+    }
+
+    async fn add_media_track(
+        &self,
+        target: &Dest,
+        track_id: &str,
+        codec: &str,
+        media_type: &str,
+    ) -> ActorResult<()> {
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.add_media_track(target_id, track_id, codec, media_type)
+            .await
+    }
+
+    async fn remove_media_track(&self, target: &Dest, track_id: &str) -> ActorResult<()> {
+        let gate = self.select_gate(target)?;
+        let target_id = self.extract_target_id(target);
+        gate.remove_media_track(target_id, track_id).await
+    }
+}

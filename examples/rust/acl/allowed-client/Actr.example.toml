@@ -1,0 +1,42 @@
+edition = 1
+exports = []
+
+[package]
+name = "allowed-greeter-client"
+manufacturer = "acme"
+version = "1.0.0"
+description = "Allowed Greeter Client (should pass ACL)"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+
+[dependencies]
+greeter.GreeterService = { actr_type = "acme:greeter.GreeterService:1.0.0" }
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[system.deployment]
+realm_id = 33554434
+realm_secret = "rs_AclExampleSecret123456"
+
+[system.discovery]
+visible = true
+
+[system.webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+# ACL configuration - allow greeter server
+[acl]
+[[acl.rules]]
+permission = "allow"
+type = "acme:greeter.GreeterService:1.0.0"
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

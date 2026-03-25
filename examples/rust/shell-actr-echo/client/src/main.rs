@@ -7,7 +7,7 @@ mod client_workload;
 mod generated;
 
 use actr_protocol::ActrType;
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use app_side::AppSide;
 use client_workload::ClientWorkload;
 
@@ -18,13 +18,10 @@ async fn main() -> Result<()> {
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
     // Initialize observability (logging/tracing) using config
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
     info!("🚀 Echo Client App - Actor-RTC Standard Pattern");
-    info!("   支持运行时兼容性协商 (Runtime Compatibility Negotiation)");
-
-    let system = ActrSystem::new(config).await?;
-    info!("✅ ActrSystem created");
+    info!("   [...] (Runtime Compatibility Negotiation)");
 
     // prepare workload and configure server target
     let workload = ClientWorkload::new();
@@ -33,10 +30,13 @@ async fn main() -> Result<()> {
     let target_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "EchoService".to_string(),
-        version: "v1".to_string(),
+        version: "1.0.0".to_string(),
     };
 
-    let node = system.attach(workload.clone());
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
+    info!("✅ ActrNode created");
 
     info!("🚀 Starting ActrNode...");
     let actr_ref = node.start().await?;

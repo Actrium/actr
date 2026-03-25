@@ -20,17 +20,17 @@ fn write_minimal_actr_files(root: &Path) {
 exports = []
 
 [package]
-name = "demo-project"
-description = "Test project"
-
-[package.actr_type]
-manufacturer = "acme"
 name = "demo-service"
+manufacturer = "acme"
+description = "Test project"
 
 [dependencies]
 
 [system.signaling]
 url = "ws://localhost:8080"
+
+[system.ais_endpoint]
+url = "http://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1001

@@ -88,7 +88,7 @@ open class RustBuffer : Structure() {
 
     @Suppress("TooGenericExceptionThrown")
     fun asByteBuffer() =
-        this.data?.getByteBuffer(0, this.len)?.also {
+        this.data?.getByteBuffer(0, this.len.toLong())?.also {
             it.order(ByteOrder.BIG_ENDIAN)
         }
 }
@@ -289,9 +289,8 @@ internal inline fun<T> uniffiTraitInterfaceCall(
     try {
         writeReturn(makeCall())
     } catch(e: kotlin.Exception) {
-        val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-        callStatus.error_buf = FfiConverterString.lower(err)
+        callStatus.error_buf = FfiConverterString.lower(e.toString())
     }
 }
 
@@ -308,9 +307,8 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
         } else {
-            val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
             callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-            callStatus.error_buf = FfiConverterString.lower(err)
+            callStatus.error_buf = FfiConverterString.lower(e.toString())
         }
     }
 }
@@ -623,6 +621,9 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfaceDataStreamCallbackMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`chunk`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
+internal interface UniffiCallbackInterfaceMediaTrackCallbackMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`sample`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
+}
 internal interface UniffiCallbackInterfaceWorkloadBridgeMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
@@ -648,6 +649,25 @@ internal open class UniffiVTableCallbackInterfaceDataStreamCallback(
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `onStream` = other.`onStream`
+    }
+
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "onSample")
+internal open class UniffiVTableCallbackInterfaceMediaTrackCallback(
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+    @JvmField internal var `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
+) : Structure() {
+    class UniffiByValue(
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
+        `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceMediaTrackCallback(`uniffiFree`,`uniffiClone`,`onSample`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceMediaTrackCallback) {
+        `uniffiFree` = other.`uniffiFree`
+        `uniffiClone` = other.`uniffiClone`
+        `onSample` = other.`onSample`
     }
 
 }
@@ -699,8 +719,6 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
-    external fun uniffi_actr_checksum_method_actrnodewrapper_start(
-    ): Short
     external fun uniffi_actr_checksum_method_actrrefwrapper_actor_id(
     ): Short
     external fun uniffi_actr_checksum_method_actrrefwrapper_call(
@@ -715,21 +733,33 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown(
     ): Short
-    external fun uniffi_actr_checksum_method_actrsystemwrapper_attach(
-    ): Short
     external fun uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle(
+    ): Short
+    external fun uniffi_actr_checksum_method_actrsystemwrapper_start(
+    ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_add_media_track(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_call_raw(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_discover(
     ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_register_media_track(
+    ): Short
     external fun uniffi_actr_checksum_method_contextbridge_register_stream(
+    ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_remove_media_track(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_send_data_stream(
     ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_send_media_sample(
+    ): Short
     external fun uniffi_actr_checksum_method_contextbridge_tell_raw(
     ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_unregister_media_track(
+    ): Short
     external fun uniffi_actr_checksum_method_contextbridge_unregister_stream(
+    ): Short
+    external fun uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections(
     ): Short
     external fun uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available(
     ): Short
@@ -737,9 +767,17 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed(
     ): Short
-    external fun uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_file(
+    external fun uniffi_actr_checksum_method_opusencoder_encode(
+    ): Short
+    external fun uniffi_actr_checksum_method_opusencoder_frame_size(
+    ): Short
+    external fun uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_package_file(
+    ): Short
+    external fun uniffi_actr_checksum_constructor_opusencoder_new(
     ): Short
     external fun uniffi_actr_checksum_method_datastreamcallback_on_stream(
+    ): Short
+    external fun uniffi_actr_checksum_method_mediatrackcallback_on_sample(
     ): Short
     external fun uniffi_actr_checksum_method_workloadbridge_on_start(
     ): Short
@@ -749,7 +787,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun ffi_actr_uniffi_contract_version(
     ): Int
-
+    
         
 }
 
@@ -764,183 +802,202 @@ internal object UniffiLib {
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "actr"))
         uniffiCallbackInterfaceDataStreamCallback.register(this)
+        uniffiCallbackInterfaceMediaTrackCallback.register(this)
         uniffiCallbackInterfaceWorkloadBridge.register(this)
         
     }
-    external fun uniffi_actr_fn_clone_actrnodewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_actrnodewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_method_actrnodewrapper_start(`ptr`: Long,
-    ): Long
     external fun uniffi_actr_fn_clone_actrrefwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_actrrefwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_method_actrrefwrapper_actor_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_actr_fn_method_actrrefwrapper_call(`ptr`: Long,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`requestPayload`: RustBuffer.ByValue,`timeoutMs`: Long,
-    ): Long
-    external fun uniffi_actr_fn_method_actrrefwrapper_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,`count`: Int,
-    ): Long
-    external fun uniffi_actr_fn_method_actrrefwrapper_is_shutting_down(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Byte
-    external fun uniffi_actr_fn_method_actrrefwrapper_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_method_actrrefwrapper_tell(`ptr`: Long,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`messagePayload`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_method_actrrefwrapper_wait_for_shutdown(`ptr`: Long,
-    ): Long
-    external fun uniffi_actr_fn_clone_actrsystemwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_actrsystemwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_constructor_actrsystemwrapper_new_from_file(`configPath`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_method_actrsystemwrapper_attach(`ptr`: Long,`callback`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_method_actrsystemwrapper_create_network_event_handle(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_clone_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_method_contextbridge_call_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`timeoutMs`: Long,
-    ): Long
-    external fun uniffi_actr_fn_method_contextbridge_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,`callback`: Long,
-    ): Long
-    external fun uniffi_actr_fn_method_contextbridge_send_data_stream(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_method_contextbridge_tell_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_method_contextbridge_unregister_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,
-    ): Long
-    external fun uniffi_actr_fn_clone_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_clone_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_actr_fn_free_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_available(`ptr`: Long,
-    ): Long
-    external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_lost(`ptr`: Long,
-    ): Long
-    external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_type_changed(`ptr`: Long,`isWifi`: Byte,`isCellular`: Byte,
-    ): Long
-    external fun uniffi_actr_fn_init_callback_vtable_datastreamcallback(`vtable`: UniffiVTableCallbackInterfaceDataStreamCallback,
-    ): Unit
-    external fun uniffi_actr_fn_init_callback_vtable_workloadbridge(`vtable`: UniffiVTableCallbackInterfaceWorkloadBridge,
-    ): Unit
-    external fun ffi_actr_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun ffi_actr_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun ffi_actr_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun ffi_actr_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun ffi_actr_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_u8(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_u8(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Byte
-    external fun ffi_actr_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_i8(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_i8(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Byte
-    external fun ffi_actr_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_u16(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_u16(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Short
-    external fun ffi_actr_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_i16(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_i16(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Short
-    external fun ffi_actr_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_u32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_u32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Int
-    external fun ffi_actr_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_i32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_i32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Int
-    external fun ffi_actr_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_u64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_u64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun ffi_actr_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_i64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_i64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun ffi_actr_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_f32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_f32(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Float
-    external fun ffi_actr_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_f64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_f64(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Double
-    external fun ffi_actr_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_rust_buffer(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_rust_buffer(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun ffi_actr_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_cancel_void(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_free_void(`handle`: Long,
-    ): Unit
-    external fun ffi_actr_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
+): Long
+external fun uniffi_actr_fn_free_actrrefwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_method_actrrefwrapper_actor_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_method_actrrefwrapper_call(`ptr`: Long,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`requestPayload`: RustBuffer.ByValue,`timeoutMs`: Long,
+): Long
+external fun uniffi_actr_fn_method_actrrefwrapper_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,`count`: Int,
+): Long
+external fun uniffi_actr_fn_method_actrrefwrapper_is_shutting_down(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_actr_fn_method_actrrefwrapper_shutdown(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_method_actrrefwrapper_tell(`ptr`: Long,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`messagePayload`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_actrrefwrapper_wait_for_shutdown(`ptr`: Long,
+): Long
+external fun uniffi_actr_fn_clone_actrsystemwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_actrsystemwrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_constructor_actrsystemwrapper_new_from_package_file(`configPath`: RustBuffer.ByValue,`packagePath`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_actrsystemwrapper_create_network_event_handle(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_method_actrsystemwrapper_start(`ptr`: Long,
+): Long
+external fun uniffi_actr_fn_clone_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_contextbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_method_contextbridge_add_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`codec`: RustBuffer.ByValue,`mediaType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_call_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`timeoutMs`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_register_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,`callback`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,`callback`: Long,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_remove_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_send_data_stream(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_send_media_sample(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`sample`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_tell_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_unregister_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_method_contextbridge_unregister_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_clone_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_dynamicworkload(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_clone_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_networkeventhandlewrapper(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_method_networkeventhandlewrapper_cleanup_connections(`ptr`: Long,
+): Long
+external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_available(`ptr`: Long,
+): Long
+external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_lost(`ptr`: Long,
+): Long
+external fun uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_type_changed(`ptr`: Long,`isWifi`: Byte,`isCellular`: Byte,
+): Long
+external fun uniffi_actr_fn_clone_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_free_opusencoder(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_actr_fn_constructor_opusencoder_new(`sampleRate`: Int,`channels`: Byte,`frameSize`: Short,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun uniffi_actr_fn_method_opusencoder_encode(`ptr`: Long,`pcm`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_method_opusencoder_frame_size(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Short
+external fun uniffi_actr_fn_init_callback_vtable_datastreamcallback(`vtable`: UniffiVTableCallbackInterfaceDataStreamCallback,
+): Unit
+external fun uniffi_actr_fn_init_callback_vtable_mediatrackcallback(`vtable`: UniffiVTableCallbackInterfaceMediaTrackCallback,
+): Unit
+external fun uniffi_actr_fn_init_callback_vtable_workloadbridge(`vtable`: UniffiVTableCallbackInterfaceWorkloadBridge,
+): Unit
+external fun ffi_actr_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun ffi_actr_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun ffi_actr_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun ffi_actr_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun ffi_actr_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_u8(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_u8(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun ffi_actr_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_i8(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_i8(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun ffi_actr_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_u16(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_u16(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Short
+external fun ffi_actr_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_i16(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_i16(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Short
+external fun ffi_actr_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_u32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_u32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Int
+external fun ffi_actr_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_i32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_i32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Int
+external fun ffi_actr_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_u64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_u64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun ffi_actr_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_i64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_i64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Long
+external fun ffi_actr_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_f32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_f32(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Float
+external fun ffi_actr_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_f64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_f64(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Double
+external fun ffi_actr_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_rust_buffer(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_rust_buffer(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun ffi_actr_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
+): Unit
+external fun ffi_actr_rust_future_cancel_void(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_free_void(`handle`: Long,
+): Unit
+external fun ffi_actr_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 
-        
+    
 }
 
 private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
@@ -954,34 +1011,34 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_actr_checksum_method_actrnodewrapper_start() != 60143.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 17890.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 11168.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_call() != 32518.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_call() != 33532.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_discover() != 47615.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_discover() != 12987.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 13002.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 38716.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 48752.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 4843.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_tell() != 54497.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_tell() != 45287.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 46357.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 6547.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 55879.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrsystemwrapper_attach() != 26495.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrsystemwrapper_start() != 10490.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 49856.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_call_raw() != 32688.toShort()) {
@@ -990,31 +1047,58 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_contextbridge_discover() != 16612.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_actr_checksum_method_contextbridge_register_media_track() != 44495.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_actr_checksum_method_contextbridge_register_stream() != 17477.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_stream() != 62584.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_remove_media_track() != 23065.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_stream() != 17067.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_contextbridge_send_media_sample() != 49083.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_tell_raw() != 35223.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 6533.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available() != 24290.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 59476.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_lost() != 47956.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available() != 47199.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 45770.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_lost() != 64926.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_file() != 63620.toShort()) {
+    if (lib.uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 30538.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_opusencoder_encode() != 30032.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 61591.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_package_file() != 20734.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_constructor_opusencoder_new() != 55174.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_datastreamcallback_on_stream() != 55109.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 21659.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_workloadbridge_on_start() != 1270.toShort()) {
@@ -1091,17 +1175,9 @@ internal inline fun<T> uniffiTraitInterfaceCallAsync(
     // Uniffi does its best to support structured concurrency across the FFI.
     // If the Rust future is dropped, `uniffiForeignFutureDroppedCallbackImpl` is called, which will cancel the Kotlin coroutine if it's still running.
     @OptIn(DelicateCoroutinesApi::class)
-    val job = GlobalScope.launch coroutineBlock@ {
-        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
-        // call consumes an Arc reference, which means there should be no possibility of a double
-        // call.  The following code is structured so that will will never call both `handleSuccess`
-        // and `handleError`, even in the face of weird exceptions.
-        //
-        // In extreme circumstances we may not call either, for example if we fail to make the JNA
-        // call to `handleSuccess`.  This means we will leak the Arc reference, which is better than
-        // double-freeing it.
-        val callResult = try {
-            makeCall()
+    val job = GlobalScope.launch {
+        try {
+            handleSuccess(makeCall())
         } catch(e: kotlin.Exception) {
             handleError(
                 UniffiRustCallStatus.create(
@@ -1109,9 +1185,7 @@ internal inline fun<T> uniffiTraitInterfaceCallAsync(
                     FfiConverterString.lower(e.toString()),
                 )
             )
-            return@coroutineBlock
         }
-        handleSuccess(callResult)
     }
     val handle = uniffiForeignFutureHandleMap.insert(job)
     uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
@@ -1126,11 +1200,9 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallAsyncWithEr
 ) {
     // See uniffiTraitInterfaceCallAsync for details on `DelicateCoroutinesApi`
     @OptIn(DelicateCoroutinesApi::class)
-    val job = GlobalScope.launch coroutineBlock@ {
-        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
-        // `handleError`.
-        val callResult = try {
-            makeCall()
+    val job = GlobalScope.launch {
+        try {
+            handleSuccess(makeCall())
         } catch(e: kotlin.Exception) {
             if (e is E) {
                 handleError(
@@ -1147,9 +1219,7 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallAsyncWithEr
                     )
                 )
             }
-            return@coroutineBlock
         }
-        handleSuccess(callResult)
     }
     val handle = uniffiForeignFutureHandleMap.insert(job)
     uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
@@ -1346,6 +1416,52 @@ private class JavaLangRefCleanable(
 /**
  * @suppress
  */
+public object FfiConverterUByte: FfiConverter<UByte, Byte> {
+    override fun lift(value: Byte): UByte {
+        return value.toUByte()
+    }
+
+    override fun read(buf: ByteBuffer): UByte {
+        return lift(buf.get())
+    }
+
+    override fun lower(value: UByte): Byte {
+        return value.toByte()
+    }
+
+    override fun allocationSize(value: UByte) = 1UL
+
+    override fun write(value: UByte, buf: ByteBuffer) {
+        buf.put(value.toByte())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterUShort: FfiConverter<UShort, Short> {
+    override fun lift(value: Short): UShort {
+        return value.toUShort()
+    }
+
+    override fun read(buf: ByteBuffer): UShort {
+        return lift(buf.getShort())
+    }
+
+    override fun lower(value: UShort): Short {
+        return value.toShort()
+    }
+
+    override fun allocationSize(value: UShort) = 2UL
+
+    override fun write(value: UShort, buf: ByteBuffer) {
+        buf.putShort(value.toShort())
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterUInt: FfiConverter<UInt, Int> {
     override fun lift(value: Int): UInt {
         return value.toUInt()
@@ -1409,6 +1525,29 @@ public object FfiConverterLong: FfiConverter<Long, Long> {
 
     override fun write(value: Long, buf: ByteBuffer) {
         buf.putLong(value)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterFloat: FfiConverter<Float, Float> {
+    override fun lift(value: Float): Float {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Float {
+        return buf.getFloat()
+    }
+
+    override fun lower(value: Float): Float {
+        return value
+    }
+
+    override fun allocationSize(value: Float) = 4UL
+
+    override fun write(value: Float, buf: ByteBuffer) {
+        buf.putFloat(value)
     }
 }
 
@@ -1607,330 +1746,44 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //
 
 
+//
 /**
- * Wrapper for ActrNode - a node ready to start
- */
-public interface ActrNodeWrapperInterface {
-    
-    /**
-     * Start the actor node and return an ActrRef
-     */
-    suspend fun `start`(): ActrRefWrapper
-    
-    companion object
-}
-
-/**
- * Wrapper for ActrNode - a node ready to start
- */
-open class ActrNodeWrapper: Disposable, AutoCloseable, ActrNodeWrapperInterface
-{
-
-    @Suppress("UNUSED_PARAMETER")
-    /**
-     * @suppress
-     */
-    constructor(withHandle: UniffiWithHandle, handle: Long) {
-        this.handle = handle
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
-    }
-
-    /**
-     * @suppress
-     *
-     * This constructor can be used to instantiate a fake object. Only used for tests. Any
-     * attempt to actually use an object constructed this way will fail as there is no
-     * connected Rust object.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    constructor(noHandle: NoHandle) {
-        this.handle = 0
-        this.cleanable = null
-    }
-
-    protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
-
-    private val wasDestroyed = AtomicBoolean(false)
-    private val callCounter = AtomicLong(1)
-
-    override fun destroy() {
-        // Only allow a single call to this method.
-        // TODO: maybe we should log a warning if called more than once?
-        if (this.wasDestroyed.compareAndSet(false, true)) {
-            // This decrement always matches the initial count of 1 given at creation time.
-            if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
-            }
-        }
-    }
-
-    @Synchronized
-    override fun close() {
-        this.destroy()
-    }
-
-    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
-        // Check and increment the call counter, to keep the object alive.
-        // This needs a compare-and-set retry loop in case of concurrent updates.
-        do {
-            val c = this.callCounter.get()
-            if (c == 0L) {
-                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
-            }
-            if (c == Long.MAX_VALUE) {
-                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
-            }
-        } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the handle being freed concurrently.
-        try {
-            return block(this.uniffiCloneHandle())
-        } finally {
-            // This decrement always matches the increment we performed above.
-            if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
-            }
-        }
-    }
-
-    // Use a static inner class instead of a closure so as not to accidentally
-    // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val handle: Long) : Runnable {
-        override fun run() {
-            if (handle == 0.toLong()) {
-                // Fake object created with `NoHandle`, don't try to free.
-                return;
-            }
-            uniffiRustCall { status ->
-                UniffiLib.uniffi_actr_fn_free_actrnodewrapper(handle, status)
-            }
-        }
-    }
-
-    /**
-     * @suppress
-     */
-    fun uniffiCloneHandle(): Long {
-        if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object");
-        }
-        return uniffiRustCall() { status ->
-            UniffiLib.uniffi_actr_fn_clone_actrnodewrapper(handle, status)
-        }
-    }
-
-    
-    /**
-     * Start the actor node and return an ActrRef
-     */
-    @Throws(ActrException::class)
-    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `start`() : ActrRefWrapper {
-        return uniffiRustCallAsync(
-        callWithHandle { uniffiHandle ->
-            UniffiLib.uniffi_actr_fn_method_actrnodewrapper_start(
-                uniffiHandle,
-                
-            )
-        },
-        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
-        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
-        { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
-        // lift function
-        { FfiConverterTypeActrRefWrapper.lift(it) },
-        // Error FFI converter
-        ActrException.ErrorHandler,
-    )
-    }
-
-    
-
-    
-
-
-    
-    
-    /**
-     * @suppress
-     */
-    companion object
-    
-}
-
-
-/**
- * @suppress
- */
-public object FfiConverterTypeActrNodeWrapper: FfiConverter<ActrNodeWrapper, Long> {
-    override fun lower(value: ActrNodeWrapper): Long {
-        return value.uniffiCloneHandle()
-    }
-
-    override fun lift(value: Long): ActrNodeWrapper {
-        return ActrNodeWrapper(UniffiWithHandle, value)
-    }
-
-    override fun read(buf: ByteBuffer): ActrNodeWrapper {
-        return lift(buf.getLong())
-    }
-
-    override fun allocationSize(value: ActrNodeWrapper) = 8UL
-
-    override fun write(value: ActrNodeWrapper, buf: ByteBuffer) {
-        buf.putLong(lower(value))
-    }
-}
-
-
-// This template implements a class for working with a Rust struct via a handle
-// to the live Rust struct on the other side of the FFI.
-//
-// There's some subtlety here, because we have to be careful not to operate on a Rust
-// struct after it has been dropped, and because we must expose a public API for freeing
-// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
-//
-//   * Each instance holds an opaque handle to the underlying Rust struct.
-//     Method calls need to read this handle from the object's state and pass it in to
-//     the Rust FFI.
-//
-//   * When an instance is no longer needed, its handle should be passed to a
-//     special destructor function provided by the Rust FFI, which will drop the
-//     underlying Rust struct.
-//
-//   * Given an instance, calling code is expected to call the special
-//     `destroy` method in order to free it after use, either by calling it explicitly
-//     or by using a higher-level helper like the `use` method. Failing to do so risks
-//     leaking the underlying Rust struct.
-//
-//   * We can't assume that calling code will do the right thing, and must be prepared
-//     to handle Kotlin method calls executing concurrently with or even after a call to
-//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
-//
-//   * We must never allow Rust code to operate on the underlying Rust struct after
-//     the destructor has been called, and must never call the destructor more than once.
-//     Doing so may trigger memory unsafety.
-//
-//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
-//     is implemented to call the destructor when the Kotlin object becomes unreachable.
-//     This is done in a background thread. This is not a panacea, and client code should be aware that
-//      1. the thread may starve if some there are objects that have poorly performing
-//     `drop` methods or do significant work in their `drop` methods.
-//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
-//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
-//
-// If we try to implement this with mutual exclusion on access to the handle, there is the
-// possibility of a race between a method call and a concurrent call to `destroy`:
-//
-//    * Thread A starts a method call, reads the value of the handle, but is interrupted
-//      before it can pass the handle over the FFI to Rust.
-//    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read handle value to Rust and triggering
-//      a use-after-free.
-//
-// One possible solution would be to use a `ReadWriteLock`, with each method call taking
-// a read lock (and thus allowed to run concurrently) and the special `destroy` method
-// taking a write lock (and thus blocking on live method calls). However, we aim not to
-// generate methods with any hidden blocking semantics, and a `destroy` method that might
-// block if called incorrectly seems to meet that bar.
-//
-// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
-// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
-// has been called. These are updated according to the following rules:
-//
-//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
-//      The initial value for the flag is false.
-//
-//    * At the start of each method call, we atomically check the counter.
-//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
-//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
-//
-//    * At the end of each method call, we atomically decrement and check the counter.
-//      If it has reached zero then we destroy the underlying Rust struct.
-//
-//    * When `destroy` is called, we atomically flip the flag from false to true.
-//      If the flag was already true we silently fail.
-//      Otherwise we atomically decrement and check the counter.
-//      If it has reached zero then we destroy the underlying Rust struct.
-//
-// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
-// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
-//
-// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
-// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
-// of the underlying Rust code.
-//
-// This makes a cleaner a better alternative to _not_ calling `destroy()` as
-// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
-// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
-// thread may be starved, and the app will leak memory.
-//
-// In this case, `destroy`ing manually may be a better solution.
-//
-// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
-// with Rust peers are reclaimed:
-//
-// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
-// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
-// 3. The memory is reclaimed when the process terminates.
-//
-// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
-//
-
-
-/**
- * Wrapper for ActrRef - a reference to a running actor
+ * Wrapper for a running actor reference.
  */
 public interface ActrRefWrapperInterface {
     
     /**
-     * Get the actor's ID
+     * Get the actor's ID.
      */
     fun `actorId`(): ActrId
     
     /**
-     * Call a remote actor via RPC proxy
-     *
-     * This sends a request through the local workload's RPC proxy mechanism,
-     * which forwards the call to the remote actor via WebRTC.
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `request_payload`: Request payload bytes (protobuf encoded)
-     * - `timeout_ms`: Timeout in milliseconds
-     *
-     * # Returns
-     * Response payload bytes (protobuf encoded)
+     * Call the local guest workload via RPC.
      */
     suspend fun `call`(`routeKey`: kotlin.String, `payloadType`: PayloadType, `requestPayload`: kotlin.ByteArray, `timeoutMs`: kotlin.Long): kotlin.ByteArray
     
     /**
-     * Discover actors of the specified type
+     * Discover actors of the specified type.
      */
     suspend fun `discover`(`targetType`: ActrType, `count`: kotlin.UInt): List<ActrId>
     
     /**
-     * Check if the actor is shutting down
+     * Check if shutdown is already in progress.
      */
     fun `isShuttingDown`(): kotlin.Boolean
     
     /**
-     * Trigger shutdown
+     * Trigger shutdown.
      */
     fun `shutdown`()
     
     /**
-     * Send a one-way message to an actor (fire-and-forget)
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `message_payload`: Message payload bytes (protobuf encoded)
+     * Send a one-way message to the local guest workload.
      */
     suspend fun `tell`(`routeKey`: kotlin.String, `payloadType`: PayloadType, `messagePayload`: kotlin.ByteArray)
     
     /**
-     * Wait for shutdown to complete
+     * Wait for shutdown to complete.
      */
     suspend fun `waitForShutdown`()
     
@@ -1938,7 +1791,7 @@ public interface ActrRefWrapperInterface {
 }
 
 /**
- * Wrapper for ActrRef - a reference to a running actor
+ * Wrapper for a running actor reference.
  */
 open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 {
@@ -1962,11 +1815,11 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
+    protected val cleanable: UniffiCleaner.Cleanable
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -1977,7 +1830,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2005,7 +1858,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2038,7 +1891,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Get the actor's ID
+     * Get the actor's ID.
      */override fun `actorId`(): ActrId {
             return FfiConverterTypeActrId.lift(
     callWithHandle {
@@ -2054,19 +1907,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Call a remote actor via RPC proxy
-     *
-     * This sends a request through the local workload's RPC proxy mechanism,
-     * which forwards the call to the remote actor via WebRTC.
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `request_payload`: Request payload bytes (protobuf encoded)
-     * - `timeout_ms`: Timeout in milliseconds
-     *
-     * # Returns
-     * Response payload bytes (protobuf encoded)
+     * Call the local guest workload via RPC.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2090,7 +1931,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Discover actors of the specified type
+     * Discover actors of the specified type.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2114,7 +1955,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Check if the actor is shutting down
+     * Check if shutdown is already in progress.
      */override fun `isShuttingDown`(): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     callWithHandle {
@@ -2130,7 +1971,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Trigger shutdown
+     * Trigger shutdown.
      */override fun `shutdown`()
         = 
     callWithHandle {
@@ -2145,12 +1986,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Send a one-way message to an actor (fire-and-forget)
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `message_payload`: Message payload bytes (protobuf encoded)
+     * Send a one-way message to the local guest workload.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2175,7 +2011,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
 
     
     /**
-     * Wait for shutdown to complete
+     * Wait for shutdown to complete.
      */
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
     override suspend fun `waitForShutdown`() {
@@ -2331,28 +2167,29 @@ public object FfiConverterTypeActrRefWrapper: FfiConverter<ActrRefWrapper, Long>
 //
 
 
+//
 /**
- * Wrapper for ActrSystem - the entry point for creating actors
+ * Wrapper for a package-backed runtime before startup.
  */
 public interface ActrSystemWrapperInterface {
     
     /**
-     * Attach a workload and create an ActrNode
-     */
-    fun `attach`(`callback`: WorkloadBridge): ActrNodeWrapper
-    
-    /**
      * Create a network event handle for platform callbacks.
      *
-     * This must be called before `attach()` or after a previous handle was created.
+     * This must be called before `start()`.
      */
     fun `createNetworkEventHandle`(): NetworkEventHandleWrapper
+    
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+    suspend fun `start`(): ActrRefWrapper
     
     companion object
 }
 
 /**
- * Wrapper for ActrSystem - the entry point for creating actors
+ * Wrapper for a package-backed runtime before startup.
  */
 open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterface
 {
@@ -2376,11 +2213,11 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
+    protected val cleanable: UniffiCleaner.Cleanable
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -2391,7 +2228,7 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2419,7 +2256,7 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2452,26 +2289,9 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
 
     
     /**
-     * Attach a workload and create an ActrNode
-     */
-    @Throws(ActrException::class)override fun `attach`(`callback`: WorkloadBridge): ActrNodeWrapper {
-            return FfiConverterTypeActrNodeWrapper.lift(
-    callWithHandle {
-    uniffiRustCallWithError(ActrException) { _status ->
-    UniffiLib.uniffi_actr_fn_method_actrsystemwrapper_attach(
-        it,
-        FfiConverterTypeWorkloadBridge.lower(`callback`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
      * Create a network event handle for platform callbacks.
      *
-     * This must be called before `attach()` or after a previous handle was created.
+     * This must be called before `start()`.
      */
     @Throws(ActrException::class)override fun `createNetworkEventHandle`(): NetworkEventHandleWrapper {
             return FfiConverterTypeNetworkEventHandleWrapper.lift(
@@ -2487,6 +2307,30 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
     
 
     
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `start`() : ActrRefWrapper {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_actrsystemwrapper_start(
+                uniffiHandle,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
+        // lift function
+        { FfiConverterTypeActrRefWrapper.lift(it) },
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
 
     
 
@@ -2495,13 +2339,13 @@ open class ActrSystemWrapper: Disposable, AutoCloseable, ActrSystemWrapperInterf
     companion object {
         
     /**
-     * Create a new ActrSystem from configuration file
+     * Create a new runtime wrapper from config and a verified `.actr` package file.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-     suspend fun `newFromFile`(`configPath`: kotlin.String) : ActrSystemWrapper {
+     suspend fun `newFromPackageFile`(`configPath`: kotlin.String, `packagePath`: kotlin.String) : ActrSystemWrapper {
         return uniffiRustCallAsync(
-        UniffiLib.uniffi_actr_fn_constructor_actrsystemwrapper_new_from_file(FfiConverterString.lower(`configPath`),),
+        UniffiLib.uniffi_actr_fn_constructor_actrsystemwrapper_new_from_package_file(FfiConverterString.lower(`configPath`),FfiConverterString.lower(`packagePath`),),
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
         { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
         { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
@@ -2637,10 +2481,16 @@ public object FfiConverterTypeActrSystemWrapper: FfiConverter<ActrSystemWrapper,
 //
 
 
+//
 /**
  * Context provided to the workload
  */
 public interface ContextBridgeInterface {
+    
+    /**
+     * Add a media track to the WebRTC connection with the target
+     */
+    suspend fun `addMediaTrack`(`target`: ActrId, `trackId`: kotlin.String, `codec`: kotlin.String, `mediaType`: kotlin.String)
     
     /**
      * Call a remote actor via RPC (simplified for FFI)
@@ -2669,9 +2519,19 @@ public interface ContextBridgeInterface {
     suspend fun `discover`(`targetType`: ActrType): ActrId
     
     /**
+     * Register a callback for incoming media track samples
+     */
+    suspend fun `registerMediaTrack`(`trackId`: kotlin.String, `callback`: MediaTrackCallback)
+    
+    /**
      * Register a DataStream callback for a stream ID.
      */
     suspend fun `registerStream`(`streamId`: kotlin.String, `callback`: DataStreamCallback)
+    
+    /**
+     * Remove a media track from the WebRTC connection with the target.
+     */
+    suspend fun `removeMediaTrack`(`target`: ActrId, `trackId`: kotlin.String)
     
     /**
      * Send a DataStream to a remote actor (Fast Path)
@@ -2679,8 +2539,14 @@ public interface ContextBridgeInterface {
      * # Arguments
      * - `target`: Target actor ID
      * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-    suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream)
+    suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream, `payloadType`: PayloadType)
+    
+    /**
+     * Send a media sample via WebRTC native RTP track
+     */
+    suspend fun `sendMediaSample`(`target`: ActrId, `trackId`: kotlin.String, `sample`: MediaSample)
     
     /**
      * Send a one-way message to an actor (fire-and-forget)
@@ -2692,6 +2558,11 @@ public interface ContextBridgeInterface {
      * - `payload`: Message payload bytes (protobuf encoded)
      */
     suspend fun `tellRaw`(`target`: ActrId, `routeKey`: kotlin.String, `payloadType`: PayloadType, `payload`: kotlin.ByteArray)
+    
+    /**
+     * Unregister a media track callback
+     */
+    suspend fun `unregisterMediaTrack`(`trackId`: kotlin.String)
     
     /**
      * Unregister a DataStream callback for a stream ID.
@@ -2726,11 +2597,11 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
+    protected val cleanable: UniffiCleaner.Cleanable
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -2741,7 +2612,7 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2769,7 +2640,7 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -2798,6 +2669,31 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
         return uniffiRustCall() { status ->
             UniffiLib.uniffi_actr_fn_clone_contextbridge(handle, status)
         }
+    }
+
+    
+    /**
+     * Add a media track to the WebRTC connection with the target
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `addMediaTrack`(`target`: ActrId, `trackId`: kotlin.String, `codec`: kotlin.String, `mediaType`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_contextbridge_add_media_track(
+                uniffiHandle,
+                FfiConverterTypeActrId.lower(`target`),FfiConverterString.lower(`trackId`),FfiConverterString.lower(`codec`),FfiConverterString.lower(`mediaType`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
     }
 
     
@@ -2866,6 +2762,31 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
+     * Register a callback for incoming media track samples
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `registerMediaTrack`(`trackId`: kotlin.String, `callback`: MediaTrackCallback) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_contextbridge_register_media_track(
+                uniffiHandle,
+                FfiConverterString.lower(`trackId`),FfiConverterTypeMediaTrackCallback.lower(`callback`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Register a DataStream callback for a stream ID.
      */
     @Throws(ActrException::class)
@@ -2891,20 +2812,71 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
+     * Remove a media track from the WebRTC connection with the target.
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `removeMediaTrack`(`target`: ActrId, `trackId`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_contextbridge_remove_media_track(
+                uniffiHandle,
+                FfiConverterTypeActrId.lower(`target`),FfiConverterString.lower(`trackId`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
+    /**
      * Send a DataStream to a remote actor (Fast Path)
      *
      * # Arguments
      * - `target`: Target actor ID
      * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `payload_type`: Stream lane selection for delivery guarantees.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream) {
+    override suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream, `payloadType`: PayloadType) {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_actr_fn_method_contextbridge_send_data_stream(
                 uniffiHandle,
-                FfiConverterTypeActrId.lower(`target`),FfiConverterTypeDataStream.lower(`chunk`),
+                FfiConverterTypeActrId.lower(`target`),FfiConverterTypeDataStream.lower(`chunk`),FfiConverterTypePayloadType.lower(`payloadType`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Send a media sample via WebRTC native RTP track
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `sendMediaSample`(`target`: ActrId, `trackId`: kotlin.String, `sample`: MediaSample) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_contextbridge_send_media_sample(
+                uniffiHandle,
+                FfiConverterTypeActrId.lower(`target`),FfiConverterString.lower(`trackId`),FfiConverterTypeMediaSample.lower(`sample`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
@@ -2936,6 +2908,31 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
             UniffiLib.uniffi_actr_fn_method_contextbridge_tell_raw(
                 uniffiHandle,
                 FfiConverterTypeActrId.lower(`target`),FfiConverterString.lower(`routeKey`),FfiConverterTypePayloadType.lower(`payloadType`),FfiConverterByteArray.lower(`payload`),
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Unregister a media track callback
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `unregisterMediaTrack`(`trackId`: kotlin.String) {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_contextbridge_unregister_media_track(
+                uniffiHandle,
+                FfiConverterString.lower(`trackId`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
@@ -3108,6 +3105,7 @@ public object FfiConverterTypeContextBridge: FfiConverter<ContextBridge, Long> {
 //
 
 
+//
 /**
  * Dynamic workload that wraps a callback interface
  */
@@ -3141,11 +3139,11 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
+    protected val cleanable: UniffiCleaner.Cleanable
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -3156,7 +3154,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -3184,7 +3182,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -3349,23 +3347,29 @@ public object FfiConverterTypeDynamicWorkload: FfiConverter<DynamicWorkload, Lon
 //
 
 
+//
 /**
- * Wrapper for NetworkEventHandle - network lifecycle callbacks
+ * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
 public interface NetworkEventHandleWrapperInterface {
     
     /**
-     * Handle network available event
+     * Cleanup all connections.
+     */
+    suspend fun `cleanupConnections`(): NetworkEventResult
+    
+    /**
+     * Handle network available event.
      */
     suspend fun `handleNetworkAvailable`(): NetworkEventResult
     
     /**
-     * Handle network lost event
+     * Handle network lost event.
      */
     suspend fun `handleNetworkLost`(): NetworkEventResult
     
     /**
-     * Handle network type changed event
+     * Handle network type changed event.
      */
     suspend fun `handleNetworkTypeChanged`(`isWifi`: kotlin.Boolean, `isCellular`: kotlin.Boolean): NetworkEventResult
     
@@ -3373,7 +3377,7 @@ public interface NetworkEventHandleWrapperInterface {
 }
 
 /**
- * Wrapper for NetworkEventHandle - network lifecycle callbacks
+ * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
 open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHandleWrapperInterface
 {
@@ -3397,11 +3401,11 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
+    protected val cleanable: UniffiCleaner.Cleanable
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -3412,7 +3416,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -3440,7 +3444,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
+                cleanable.clean()
             }
         }
     }
@@ -3473,7 +3477,31 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
 
     
     /**
-     * Handle network available event
+     * Cleanup all connections.
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+    override suspend fun `cleanupConnections`() : NetworkEventResult {
+        return uniffiRustCallAsync(
+        callWithHandle { uniffiHandle ->
+            UniffiLib.uniffi_actr_fn_method_networkeventhandlewrapper_cleanup_connections(
+                uniffiHandle,
+                
+            )
+        },
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_rust_buffer(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_rust_buffer(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_rust_buffer(future) },
+        // lift function
+        { FfiConverterTypeNetworkEventResult.lift(it) },
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+    
+    /**
+     * Handle network available event.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3497,7 +3525,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
 
     
     /**
-     * Handle network lost event
+     * Handle network lost event.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3521,7 +3549,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
 
     
     /**
-     * Handle network type changed event
+     * Handle network type changed event.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -3582,6 +3610,296 @@ public object FfiConverterTypeNetworkEventHandleWrapper: FfiConverter<NetworkEve
 }
 
 
+// This template implements a class for working with a Rust struct via a handle
+// to the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque handle to the underlying Rust struct.
+//     Method calls need to read this handle from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its handle should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the handle, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the handle, but is interrupted
+//      before it can pass the handle over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read handle value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+//
+/**
+ * Reusable Opus encoder for Swift audio capture.
+ */
+public interface OpusEncoderInterface {
+    
+    /**
+     * Encode one PCM float frame into one Opus packet.
+     */
+    fun `encode`(`pcm`: List<kotlin.Float>): kotlin.ByteArray
+    
+    fun `frameSize`(): kotlin.UShort
+    
+    companion object
+}
+
+/**
+ * Reusable Opus encoder for Swift audio capture.
+ */
+open class OpusEncoder: Disposable, AutoCloseable, OpusEncoderInterface
+{
+
+    @Suppress("UNUSED_PARAMETER")
+    /**
+     * @suppress
+     */
+    constructor(withHandle: UniffiWithHandle, handle: Long) {
+        this.handle = handle
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+
+    /**
+     * @suppress
+     *
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noHandle: NoHandle) {
+        this.handle = 0
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+    }
+    /**
+     * Create an Opus encoder for fixed-size PCM float frames.
+     */
+    constructor(`sampleRate`: kotlin.UInt, `channels`: kotlin.UByte, `frameSize`: kotlin.UShort) :
+        this(UniffiWithHandle, 
+    uniffiRustCallWithError(ActrException) { _status ->
+    UniffiLib.uniffi_actr_fn_constructor_opusencoder_new(
+    
+        FfiConverterUInt.lower(`sampleRate`),FfiConverterUByte.lower(`channels`),FfiConverterUShort.lower(`frameSize`),_status)
+}
+    )
+
+    protected val handle: Long
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the handle being freed concurrently.
+        try {
+            return block(this.uniffiCloneHandle())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val handle: Long) : Runnable {
+        override fun run() {
+            if (handle == 0.toLong()) {
+                // Fake object created with `NoHandle`, don't try to free.
+                return;
+            }
+            uniffiRustCall { status ->
+                UniffiLib.uniffi_actr_fn_free_opusencoder(handle, status)
+            }
+        }
+    }
+
+    /**
+     * @suppress
+     */
+    fun uniffiCloneHandle(): Long {
+        if (handle == 0.toLong()) {
+            throw InternalException("uniffiCloneHandle() called on NoHandle object");
+        }
+        return uniffiRustCall() { status ->
+            UniffiLib.uniffi_actr_fn_clone_opusencoder(handle, status)
+        }
+    }
+
+    
+    /**
+     * Encode one PCM float frame into one Opus packet.
+     */
+    @Throws(ActrException::class)override fun `encode`(`pcm`: List<kotlin.Float>): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(ActrException) { _status ->
+    UniffiLib.uniffi_actr_fn_method_opusencoder_encode(
+        it,
+        FfiConverterSequenceFloat.lower(`pcm`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `frameSize`(): kotlin.UShort {
+            return FfiConverterUShort.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_method_opusencoder_frame_size(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+
+    
+
+
+    
+    
+    /**
+     * @suppress
+     */
+    companion object
+    
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOpusEncoder: FfiConverter<OpusEncoder, Long> {
+    override fun lower(value: OpusEncoder): Long {
+        return value.uniffiCloneHandle()
+    }
+
+    override fun lift(value: Long): OpusEncoder {
+        return OpusEncoder(UniffiWithHandle, value)
+    }
+
+    override fun read(buf: ByteBuffer): OpusEncoder {
+        return lift(buf.getLong())
+    }
+
+    override fun allocationSize(value: OpusEncoder) = 8UL
+
+    override fun write(value: OpusEncoder, buf: ByteBuffer) {
+        buf.putLong(lower(value))
+    }
+}
+
+
 
 /**
  * Actor identifier (realm + serial_number + type)
@@ -3594,8 +3912,6 @@ data class ActrId (
     var `type`: ActrType
     
 ){
-    
-
     
 
     
@@ -3630,16 +3946,16 @@ public object FfiConverterTypeActrId: FfiConverterRustBuffer<ActrId> {
 
 
 /**
- * Actor type (manufacturer + name)
+ * Actor type (manufacturer + name + version)
  */
 data class ActrType (
     var `manufacturer`: kotlin.String
     , 
     var `name`: kotlin.String
+    , 
+    var `version`: kotlin.String
     
 ){
-    
-
     
 
     
@@ -3654,17 +3970,20 @@ public object FfiConverterTypeActrType: FfiConverterRustBuffer<ActrType> {
         return ActrType(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
     override fun allocationSize(value: ActrType) = (
             FfiConverterString.allocationSize(value.`manufacturer`) +
-            FfiConverterString.allocationSize(value.`name`)
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`version`)
     )
 
     override fun write(value: ActrType, buf: ByteBuffer) {
             FfiConverterString.write(value.`manufacturer`, buf)
             FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`version`, buf)
     }
 }
 
@@ -3708,8 +4027,6 @@ data class DataStream (
     
 
     
-
-    
     companion object
 }
 
@@ -3747,6 +4064,55 @@ public object FfiConverterTypeDataStream: FfiConverterRustBuffer<DataStream> {
 
 
 /**
+ * Media sample for WebRTC native track
+ */
+data class MediaSample (
+    var `data`: kotlin.ByteArray
+    , 
+    var `timestamp`: kotlin.UInt
+    , 
+    var `codec`: kotlin.String
+    , 
+    var `mediaType`: MediaType
+    
+){
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMediaSample: FfiConverterRustBuffer<MediaSample> {
+    override fun read(buf: ByteBuffer): MediaSample {
+        return MediaSample(
+            FfiConverterByteArray.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeMediaType.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MediaSample) = (
+            FfiConverterByteArray.allocationSize(value.`data`) +
+            FfiConverterUInt.allocationSize(value.`timestamp`) +
+            FfiConverterString.allocationSize(value.`codec`) +
+            FfiConverterTypeMediaType.allocationSize(value.`mediaType`)
+    )
+
+    override fun write(value: MediaSample, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`data`, buf)
+            FfiConverterUInt.write(value.`timestamp`, buf)
+            FfiConverterString.write(value.`codec`, buf)
+            FfiConverterTypeMediaType.write(value.`mediaType`, buf)
+    }
+}
+
+
+
+/**
  * Metadata entry for DataStream
  */
 data class MetadataEntry (
@@ -3755,8 +4121,6 @@ data class MetadataEntry (
     var `value`: kotlin.String
     
 ){
-    
-
     
 
     
@@ -3803,8 +4167,6 @@ data class NetworkEventResult (
     
 
     
-
-    
     companion object
 }
 
@@ -3845,8 +4207,6 @@ data class Realm (
     var `realmId`: kotlin.UInt
     
 ){
-    
-
     
 
     
@@ -3896,8 +4256,6 @@ data class RpcEnvelopeBridge (
     var `requestId`: kotlin.String
     
 ){
-    
-
     
 
     
@@ -3994,9 +4352,6 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-
-    
-
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ActrException> {
         override fun lift(error_buf: RustBuffer.ByValue): ActrException = FfiConverterTypeActrError.lift(error_buf)
@@ -4123,6 +4478,39 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
 
 
 /**
+ * Media type for MediaTrack
+ */
+
+enum class MediaType {
+    
+    AUDIO,
+    VIDEO;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMediaType: FfiConverterRustBuffer<MediaType> {
+    override fun read(buf: ByteBuffer) = try {
+        MediaType.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: MediaType) = 4UL
+
+    override fun write(value: MediaType, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Network event types for runtime lifecycle callbacks
  */
 sealed class NetworkEvent {
@@ -4143,13 +4531,11 @@ sealed class NetworkEvent {
         companion object
     }
     
-
-    
-
+    object CleanupConnections : NetworkEvent()
     
     
 
-
+    
     companion object
 }
 
@@ -4165,6 +4551,7 @@ public object FfiConverterTypeNetworkEvent : FfiConverterRustBuffer<NetworkEvent
                 FfiConverterBoolean.read(buf),
                 FfiConverterBoolean.read(buf),
                 )
+            4 -> NetworkEvent.CleanupConnections
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
@@ -4190,6 +4577,12 @@ public object FfiConverterTypeNetworkEvent : FfiConverterRustBuffer<NetworkEvent
                 + FfiConverterBoolean.allocationSize(value.`isCellular`)
             )
         }
+        is NetworkEvent.CleanupConnections -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
     }
 
     override fun write(value: NetworkEvent, buf: ByteBuffer) {
@@ -4206,6 +4599,10 @@ public object FfiConverterTypeNetworkEvent : FfiConverterRustBuffer<NetworkEvent
                 buf.putInt(3)
                 FfiConverterBoolean.write(value.`isWifi`, buf)
                 FfiConverterBoolean.write(value.`isCellular`, buf)
+                Unit
+            }
+            is NetworkEvent.CleanupConnections -> {
+                buf.putInt(4)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
@@ -4234,10 +4631,6 @@ enum class PayloadType {
     STREAM_RELIABLE,
     STREAM_LATENCY_FIRST,
     MEDIA_RTP;
-
-    
-
-
     companion object
 }
 
@@ -4347,6 +4740,93 @@ internal object uniffiCallbackInterfaceDataStreamCallback {
  * @suppress
  */
 public object FfiConverterTypeDataStreamCallback: FfiConverterCallbackInterface<DataStreamCallback>()
+
+
+
+
+
+/**
+ * Callback interface for MediaTrack events.
+ */
+public interface MediaTrackCallback {
+    
+    /**
+     * Handle an incoming media sample from a WebRTC native track.
+     */
+    suspend fun `onSample`(`sample`: MediaSample, `sender`: ActrId)
+    
+    companion object
+}
+
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceMediaTrackCallback {
+    internal object `onSample`: UniffiCallbackInterfaceMediaTrackCallbackMethod0 {
+        override fun callback(`uniffiHandle`: Long,`sample`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,) {
+            val uniffiObj = FfiConverterTypeMediaTrackCallback.handleMap.get(uniffiHandle)
+            val makeCall = suspend { ->
+                uniffiObj.`onSample`(
+                    FfiConverterTypeMediaSample.lift(`sample`),
+                    FfiConverterTypeActrId.lift(`sender`),
+                )
+            }
+            val uniffiHandleSuccess = { _: Unit ->
+                val uniffiResult = UniffiForeignFutureResultVoid.UniffiByValue(
+                    UniffiRustCallStatus.ByValue()
+                )
+                uniffiResult.write()
+                uniffiFutureCallback.callback(uniffiCallbackData, uniffiResult)
+            }
+            val uniffiHandleError = { callStatus: UniffiRustCallStatus.ByValue ->
+                uniffiFutureCallback.callback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid.UniffiByValue(
+                        callStatus,
+                    ),
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall,
+                uniffiHandleSuccess,
+                uniffiHandleError,
+                { e: ActrException -> FfiConverterTypeActrError.lower(e) },
+                uniffiOutDroppedCallback
+            )
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeMediaTrackCallback.handleMap.remove(handle)
+        }
+    }
+
+    internal object uniffiClone: UniffiCallbackInterfaceClone {
+        override fun callback(handle: Long): Long {
+            return FfiConverterTypeMediaTrackCallback.handleMap.clone(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceMediaTrackCallback.UniffiByValue(
+        uniffiFree,
+        uniffiClone,
+        `onSample`,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_actr_fn_init_callback_vtable_mediatrackcallback(vtable)
+    }
+}
+
+/**
+ * The ffiConverter which transforms the Callbacks in to handles to pass to Rust.
+ *
+ * @suppress
+ */
+public object FfiConverterTypeMediaTrackCallback: FfiConverterCallbackInterface<MediaTrackCallback>()
 
 
 
@@ -4586,6 +5066,34 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
         } else {
             buf.put(1)
             FfiConverterString.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Float>> {
+    override fun read(buf: ByteBuffer): List<kotlin.Float> {
+        val len = buf.getInt()
+        return List<kotlin.Float>(len) {
+            FfiConverterFloat.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.Float>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterFloat.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.Float>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterFloat.write(it, buf)
         }
     }
 }

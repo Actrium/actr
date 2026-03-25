@@ -12,7 +12,7 @@ use crate::core::{
     NetworkValidator, ResolvedDependency, ServiceDetails, ServiceDiscovery, ServiceInfo,
 };
 
-/// Discovery 命令
+/// Discovery command
 #[derive(Args, Debug)]
 #[command(
     about = "Discover network services",
@@ -374,7 +374,7 @@ impl DiscoveryCommand {
         if name_w + tags_w + desc_w + BORDER_OVERHEAD > TOTAL_MAX_WIDTH {
             let available = TOTAL_MAX_WIDTH - BORDER_OVERHEAD;
             let used = name_w + tags_w;
-            desc_w = available.saturating_sub(used).max(10); // Description 至少 10 字符
+            desc_w = available.saturating_sub(used).max(10); // Description min 10 chars
         }
 
         // Generate table header

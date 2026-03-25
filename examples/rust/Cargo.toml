@@ -5,18 +5,18 @@ members = [
     "media-relay/common",
     "media-relay/actr-a",
     "media-relay/actr-b",
-    "shell-actr-echo/server",
-    "shell-actr-echo/client",
+    # "shell-actr-echo/server",
+    # "shell-actr-echo/client",
     "ws-actr-echo/server",
     "ws-actr-echo/client",
-    # "mutil-actr/server",
-    # "mutil-actr/client",
-    # "acl/allowed-client",
-    # "acl/blocked-client",
-    # "acl/server",
-    "realm-setup",
-    # "data-stream-peer-concurrent/server",
-    # "data-stream-peer-concurrent/client",
+    "mutil-actr/server",
+    "mutil-actr/client",
+    "acl/allowed-client",
+    "acl/blocked-client",
+    "acl/server",
+    "package-echo/server",
+    "package-echo/client",
+    "package-echo/client-guest",
 ]
 resolver = "2"
 
@@ -27,10 +27,14 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Actr Framework Dependencies (used by all members)
+actr = { version = "0.2.0" }
 actr-framework = { version = "0.2.0" }
 actr-protocol = { version = "0.2.0" }
 actr-runtime = { version = "0.2.0" }
+actr-hyper = { version = "0.1.0" }
 actr-config = { version = "0.2.0" }
+actr-platform-native = { version = "0.2.0" }
+actr-pack = { version = "0.2.0" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -54,7 +58,11 @@ async-trait = "0.1"
 url = "2.0"
 
 [patch.crates-io]
+actr = { path = "../.." }
 actr-framework = { path = "../../core/framework" }
 actr-protocol = { path = "../../core/protocol" }
 actr-runtime = { path = "../../core/runtime" }
+actr-hyper = { path = "../../core/hyper" }
 actr-config = { path = "../../core/config" }
+actr-platform-native = { path = "../../core/platform-native" }
+actr-pack = { path = "../../core/pack" }

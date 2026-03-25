@@ -553,8 +553,12 @@ object RemoteServiceRegistry {
             // Extract service base name without "Service" suffix for route key
             let service_base = service.service_name.replace("Service", "");
             code.push_str(&format!(
-                "        \"{}.{}\" to ActrType(manufacturer = \"{}\", name = \"{}\"),\n",
-                service.proto_package, service_base, actor_type.manufacturer, actor_type.name
+                "        \"{}.{}\" to ActrType(manufacturer = \"{}\", name = \"{}\", version = \"{}\"),\n",
+                service.proto_package,
+                service_base,
+                actor_type.manufacturer,
+                actor_type.name,
+                actor_type.version
             ));
         }
 
@@ -983,9 +987,8 @@ import io.actor_rtc.actr.WorkloadBridge
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val system = createActrSystem(configPath)
- * val node = system.attach(workload)
- * val actrRef = node.start()
+ * val system = createActrSystem(configPath, packagePath)
+ * val actrRef = system.start()
  *
  * // Wait for remote service discovery
  * delay(2000)
@@ -1006,7 +1009,7 @@ class UnifiedWorkload(
     private val selfId = ActrId(
         realm = Realm(realmId = realmId),
         serialNumber = System.currentTimeMillis().toULong(),
-        type = ActrType(manufacturer = "acme", name = "UnifiedActor")
+        type = ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
     )
 
     override suspend fun onStart(ctx: ContextBridge) {{

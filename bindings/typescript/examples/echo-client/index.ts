@@ -1,4 +1,4 @@
-import { ActrSystem, Context, RpcEnvelope } from '../../dist/index.js';
+import { ActrNode, ActrType } from '../../dist/index.js';
 import type { PayloadType } from '../../dist/index.js';
 import {
   decodeEchoResponse,
@@ -10,35 +10,31 @@ import {
   encodeEchoTwiceRequest,
   ECHOTWICE_ROUTE_KEY,
 } from './generated/echo_twice.client';
-import { dispatchLocalActor } from './generated/local.actor';
 
 const RPC_TIMEOUT_MS = 15000;
 const RPC_PAYLOAD_TYPE: PayloadType = 0;
 
-class EchoClientWorkload {
-  async onStart(_ctx: Context): Promise<void> {
-    console.log('Echo client started');
-  }
-
-  async onStop(_ctx: Context): Promise<void> {
-    console.log('Echo client stopped');
-  }
-
-  async dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {
-    console.log(`Received RPC: ${envelope.routeKey}`);
-    return await dispatchLocalActor(ctx, envelope);
-  }
-}
-
 async function main() {
-  const system = await ActrSystem.fromConfig('./actr.toml');
-  const node = system.attach(new EchoClientWorkload());
+  const node = await ActrNode.fromConfig('./actr.toml');
   const actorRef = await node.start();
 
   console.log('Actor ID:', actorRef.actorId());
   try {
+    const [serverId] = await actorRef.discover(
+      {
+        manufacturer: 'actrium',
+        name: 'EchoService',
+        version: process.env.ECHO_ACTR_VERSION ?? '0.2.1-beta',
+      } satisfies ActrType,
+      1,
+    );
+    if (!serverId) {
+      throw new Error('No EchoService target discovered');
+    }
+
     const echoRequest = encodeEchoRequest('hello');
     const echoResponseBytes = await actorRef.call(
+      serverId,
       ECHO_ROUTE_KEY,
       RPC_PAYLOAD_TYPE,
       echoRequest,
@@ -49,6 +45,7 @@ async function main() {
 
     const echoTwiceRequest = encodeEchoTwiceRequest('world');
     const echoTwiceResponseBytes = await actorRef.call(
+      serverId,
       ECHOTWICE_ROUTE_KEY,
       RPC_PAYLOAD_TYPE,
       echoTwiceRequest,

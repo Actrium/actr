@@ -216,10 +216,10 @@ impl ServiceCompatibility {
         }
     }
 
-    /// 检查是否存在破坏性变更（用于 CI/CD 快速判断）
+    /// Check whether breaking changes exist (for quick CI/CD decisions)
     ///
-    /// 注意：此方法内部会执行完整的兼容性分析。如果需要详细信息，
-    /// 建议直接调用 `analyze_compatibility` 并检查 `result.level`。
+    /// Note: This method performs a full compatibility analysis internally. If you need
+    /// detailed information, call `analyze_compatibility` directly and inspect `result.level`.
     pub fn is_breaking(
         base_service: &ServiceSpec,
         candidate_service: &ServiceSpec,
@@ -228,10 +228,10 @@ impl ServiceCompatibility {
         Ok(matches!(result.level, CompatibilityLevel::BreakingChanges))
     }
 
-    /// 获取破坏性变更列表（用于生成升级指南、错误报告等）
+    /// Get the list of breaking changes (for generating upgrade guides, error reports, etc.)
     ///
-    /// 注意：此方法内部会执行完整的兼容性分析。如果需要其他信息，
-    /// 建议直接调用 `analyze_compatibility` 并使用 `result.breaking_changes`。
+    /// Note: This method performs a full compatibility analysis internally. If you need
+    /// other information, call `analyze_compatibility` directly and use `result.breaking_changes`.
     pub fn breaking_changes(
         base_service: &ServiceSpec,
         candidate_service: &ServiceSpec,

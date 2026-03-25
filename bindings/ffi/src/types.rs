@@ -4,7 +4,7 @@
 //! They provide automatic conversion to/from the original types.
 //! Additional types cover runtime lifecycle bindings.
 
-use actr_runtime::lifecycle as runtime_lifecycle;
+use actr_hyper::lifecycle as runtime_lifecycle;
 
 /// Security realm identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
@@ -28,12 +28,12 @@ impl From<Realm> for actr_protocol::Realm {
     }
 }
 
-/// Actor type (manufacturer + name + optional version)
+/// Actor type (manufacturer + name + version)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct ActrType {
     pub manufacturer: String,
     pub name: String,
-    pub version: Option<String>,
+    pub version: String,
 }
 
 impl From<actr_protocol::ActrType> for ActrType {
@@ -41,11 +41,7 @@ impl From<actr_protocol::ActrType> for ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
-            version: if t.version.is_empty() {
-                None
-            } else {
-                Some(t.version)
-            },
+            version: t.version,
         }
     }
 }
@@ -55,7 +51,7 @@ impl From<ActrType> for actr_protocol::ActrType {
         Self {
             manufacturer: t.manufacturer,
             name: t.name,
-            version: t.version.unwrap_or_default(),
+            version: t.version,
         }
     }
 }

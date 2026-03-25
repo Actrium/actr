@@ -1,30 +1,30 @@
-//! ActrRef - Lightweight reference to a running Actor (Web 版本)
+//! ActrRef - lightweight reference to a running actor (Web version)
 //!
 //! # Design Philosophy
 //!
-//! `ActrRef` 是对运行中 Actor 的轻量级引用，提供：
+//! `ActrRef` is a lightweight reference to a running actor and provides:
 //!
-//! - **RPC calls**: 调用 Actor 方法（从 DOM 侧 → SW 侧）
-//! - **Lifecycle control**: 关闭和等待完成
+//! - **RPC calls**: invoke actor methods from the DOM side to the SW side
+//! - **Lifecycle control**: trigger shutdown and wait for completion
 //!
 //! # Key Characteristics
 //!
-//! - **Cloneable**: 可在多个任务间共享
-//! - **Lightweight**: 只包含一个 Arc 到共享状态
-//! - **Code-gen friendly**: RPC 方法将被代码生成并绑定到此类型
+//! - **Cloneable**: can be shared across tasks
+//! - **Lightweight**: only contains one Arc to shared state
+//! - **Code-gen friendly**: generated RPC methods bind naturally to this type
 //!
 //! # Usage
 //!
 //! ```rust,ignore
 //! let actr = node.start().await?;
 //!
-//! // 克隆并在不同任务中使用
+//! // Clone and use it across tasks
 //! let actr1 = actr.clone();
 //! wasm_bindgen_futures::spawn_local(async move {
 //!     actr1.call(SomeRequest { ... }).await?;
 //! });
 //!
-//! // 关闭
+//! // Shut down
 //! actr.shutdown();
 //! actr.wait_for_shutdown().await;
 //! ```
@@ -36,17 +36,17 @@ use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, RpcEnvelope};
 use bytes::Bytes;
 
-use crate::outbound::InprocOutGate;
+use crate::outbound::HostGate;
 use crate::trace::inject_span_context_to_rpc;
 use actr_framework::Workload;
 
-/// ActrRef - Lightweight reference to a running Actor (Web 版本)
+/// ActrRef - lightweight reference to a running actor (Web version)
 ///
-/// 这是 `ActrNode::start()` 返回的主要句柄
+/// This is the primary handle returned by `ActrNode::start()`.
 ///
 /// # Code Generation Pattern
 ///
-/// `actr-cli` 代码生成器将为 `ActrRef` 生成类型安全的 RPC 方法
+/// The `actr-cli` code generator emits type-safe RPC methods on `ActrRef`.
 ///
 /// ## Proto Definition
 ///
@@ -81,15 +81,15 @@ impl<W: Workload> Clone for ActrRef<W> {
 
 /// Shared state between all ActrRef clones
 ///
-/// 这是内部实现细节。当最后一个 `ActrRef` 被 drop 时，
-/// 此结构的 `Drop` impl 将触发关闭并清理所有资源。
+/// This is an internal implementation detail. When the final `ActrRef` is dropped,
+/// the `Drop` implementation on this structure triggers shutdown and cleanup.
 pub(crate) struct ActrRefShared {
     /// Actor ID
     pub(crate) actor_id: ActrId,
 
-    /// Inproc gate for DOM → SW RPC
-    /// (注意：与 actr 不同，Web 版本只需要 InprocOut)
-    pub(crate) inproc_gate: Arc<InprocOutGate>,
+    /// Host gate for DOM → SW RPC
+    /// Unlike core actr, the Web version only needs a Host gate here.
+    pub(crate) host_gate: Arc<HostGate>,
 
     /// Shutdown flag
     pub(crate) shutdown: Arc<parking_lot::Mutex<bool>>,
@@ -98,7 +98,8 @@ pub(crate) struct ActrRefShared {
 impl<W: Workload> ActrRef<W> {
     /// Create new ActrRef from shared state
     ///
-    /// 这是内部 API，由 `ActrNode::start()` 使用
+    /// Internal API used by `ActrNode::start()`.
+    #[allow(dead_code)]
     pub(crate) fn new(shared: Arc<ActrRefShared>) -> Self {
         Self {
             shared,
@@ -113,18 +114,18 @@ impl<W: Workload> ActrRef<W> {
 
     /// Call Actor method (DOM → SW RPC)
     ///
-    /// 这是一个通用方法，由代码生成的 RPC 方法使用。
-    /// 大多数用户应该使用生成的方法。
+    /// This is a generic method used by generated RPC methods.
+    /// Most users should call the generated methods instead.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // 通用调用
+    /// // Generic call
     /// let response: EchoResponse = actr.call(EchoRequest {
     ///     message: "Hello".to_string(),
     /// }).await?;
     ///
-    /// // 生成的方法（推荐）
+    /// // Generated method (recommended)
     /// let response = actr.echo(EchoRequest {
     ///     message: "Hello".to_string(),
     /// }).await?;
@@ -133,10 +134,10 @@ impl<W: Workload> ActrRef<W> {
     where
         R: actr_protocol::RpcRequest + ProstMessage,
     {
-        // 编码请求
+        // Encode the request.
         let payload: Bytes = request.encode_to_vec().into();
 
-        // 创建 envelope
+        // Create the envelope.
         let mut envelope = RpcEnvelope {
             route_key: R::route_key().to_string(),
             payload: Some(payload),
@@ -151,27 +152,27 @@ impl<W: Workload> ActrRef<W> {
         // Inject trace context to RPC envelope
         inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
-        // 发送请求并等待响应
+        // Send the request and wait for the response.
         let response_bytes = self
             .shared
-            .inproc_gate
+            .host_gate
             .send_request(&self.shared.actor_id, envelope)
             .await?;
 
-        // 解码响应
+        // Decode the response.
         R::Response::decode(&*response_bytes)
             .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode response: {e}")))
     }
 
     /// Send one-way message to Actor (DOM → SW, fire-and-forget)
     ///
-    /// 与 `call()` 不同，此方法不等待响应。
-    /// 用于不需要确认的通知或命令。
+    /// Unlike `call()`, this method does not wait for a response.
+    /// Use it for notifications or commands that need no acknowledgement.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// // 发送通知而不等待响应
+    /// // Send a notification without waiting for a response
     /// actr.tell(LogEvent {
     ///     level: "INFO".to_string(),
     ///     message: "User logged in".to_string(),
@@ -181,7 +182,7 @@ impl<W: Workload> ActrRef<W> {
     where
         R: actr_protocol::RpcRequest + ProstMessage,
     {
-        // 编码消息
+        // Encode the message.
         let payload: Bytes = message.encode_to_vec().into();
 
         // Create envelope with initial traceparent and tracestate set to None
@@ -193,23 +194,23 @@ impl<W: Workload> ActrRef<W> {
             tracestate: None,
             request_id: format!("req-{}", js_sys::Math::random()),
             metadata: vec![],
-            timeout_ms: 0, // 单向消息无超时
+            timeout_ms: 0, // One-way messages have no timeout.
         };
 
         // Inject trace context to RPC envelope
         inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
 
-        // 发送消息不等待响应
+        // Send the message without waiting for a response.
         self.shared
-            .inproc_gate
+            .host_gate
             .send_message(&self.shared.actor_id, envelope)
             .await
     }
 
     /// Trigger Actor shutdown
     ///
-    /// 这会通知 Actor 停止，但不等待完成。
-    /// 使用 `wait_for_shutdown()` 等待清理完成。
+    /// This signals the actor to stop without waiting for completion.
+    /// Use `wait_for_shutdown()` to wait for cleanup.
     pub fn shutdown(&self) {
         log::info!("🛑 Shutdown requested for Actor {:?}", self.shared.actor_id);
         let mut shutdown = self.shared.shutdown.lock();
@@ -218,8 +219,8 @@ impl<W: Workload> ActrRef<W> {
 
     /// Wait for Actor to fully shutdown
     ///
-    /// 这会等待 shutdown 信号被触发。
-    /// Web 版本使用轮询实现（因为没有 tokio）。
+    /// Wait until the shutdown flag is set.
+    /// The Web version uses polling because tokio is not available.
     pub async fn wait_for_shutdown(&self) {
         loop {
             let is_shutdown = *self.shared.shutdown.lock();
@@ -227,7 +228,7 @@ impl<W: Workload> ActrRef<W> {
                 break;
             }
 
-            // 等待一小段时间（使用 gloo_timers，兼容 Service Worker 环境）
+            // Wait briefly with gloo_timers, which works in the Service Worker environment.
             gloo_timers::future::TimeoutFuture::new(100).await;
         }
     }
@@ -245,7 +246,7 @@ impl Drop for ActrRefShared {
             self.actor_id
         );
 
-        // 设置 shutdown flag
+        // Set the shutdown flag.
         *self.shutdown.lock() = true;
 
         log::debug!("✅ Actor {:?} marked for shutdown", self.actor_id);

@@ -17,15 +17,16 @@ exports = []
 
 [package]
 name = "test-service"
-description = "A test service"
-[package.actr_type]
 manufacturer = "test-company"
-name = "test-service"
+description = "A test service"
 
 [dependencies]
 
 [system.signaling]
 url = "ws://localhost:8080/"
+
+[system.ais_endpoint]
+url = "http://localhost:8080/ais"
 
 [system.deployment]
 realm_id = 1001

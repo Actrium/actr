@@ -20,7 +20,7 @@ impl EchoService {
 impl EchoServiceHandler for EchoService {
     async fn echo<C: Context>(&self, req: EchoRequest, ctx: &C) -> ActorResult<EchoResponse> {
         info!(
-            "📨 [WS] 收到 Echo 请求: message='{}', request_id={}",
+            "📨 [WS] [...] Echo request: message='{}', request_id={}",
             req.message,
             ctx.request_id()
         );
@@ -31,7 +31,7 @@ impl EchoServiceHandler for EchoService {
             .unwrap()
             .as_secs();
 
-        info!("📤 [WS] 发送 Echo 响应: reply='{}'", reply);
+        info!("📤 [WS] send Echo response: reply='{}'", reply);
 
         Ok(EchoResponse { reply, timestamp })
     }

@@ -24,9 +24,8 @@ import io.actor_rtc.actr.WorkloadBridge
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val system = createActrSystem(configPath)
- * val node = system.attach(workload)
- * val actrRef = node.start()
+ * val system = createActrSystem(configPath, packagePath)
+ * val actrRef = system.start()
  *
  * // Wait for remote service discovery
  * delay(2000)
@@ -47,7 +46,7 @@ class UnifiedWorkload(
     private val selfId = ActrId(
         realm = Realm(realmId = realmId),
         serialNumber = System.currentTimeMillis().toULong(),
-        type = ActrType(manufacturer = "acme", name = "UnifiedActor")
+        type = ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
     )
 
     override suspend fun onStart(ctx: ContextBridge) {

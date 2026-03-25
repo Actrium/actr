@@ -428,7 +428,7 @@ impl RustGenerator {
 //! Please implement your specific business logic here.
 
 use crate::generated::{{{service_name_pascal}Handler, {service_name_pascal}Actor}};
-// 只导入必要的类型，避免拉入不需要的依赖如 sqlite
+// Only import necessary types; avoid pulling in unneeded dependencies like sqlite
 // use actr_framework::prelude::*;
 use std::sync::Arc;
 
@@ -512,12 +512,12 @@ mod tests {{
    ```rust
    #[tokio::main]
    async fn main() -> ActorResult<()> {{
-       let service = My{service_name_pascal}Service::new(/* dependencies */);
-
-       ActorSystem::new()
-           .attach(service)
-           .start()
-           .await
+       let config = actr::config::ConfigParser::from_file("actr.toml")?;
+       let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
+       let package = WorkloadPackage::new(std::fs::read("dist/service.actr")?);
+       let (node, _manifest) = hyper.attach(&package, config).await?;
+       node.start().await?;
+       Ok(())
    }}
    ```
 
@@ -557,7 +557,7 @@ mod tests {{
     }
 
     fn ensure_protoc_plugin(&self, config_path: &Path) -> Result<PathBuf> {
-        const EXPECTED_VERSION: &str = "0.1.10";
+        const EXPECTED_VERSION: &str = "0.2.0";
         const PLUGIN_NAME: &str = "protoc-gen-actrframework";
 
         if let Some(plugin_path) = self.try_use_local_workspace_plugin()? {
@@ -1050,18 +1050,18 @@ mod tests {
 exports = []
 
 [package]
-name = "demo"
+name = "Demo"
+manufacturer = "acme"
 version = "0.1.0"
 
-[package.actr_type]
-manufacturer = "acme"
-name = "Demo"
-
 [dependencies]
-echo = { actr_type = "remote:EchoService" }
+echo = { actr_type = "remote:EchoService:0.1.0" }
 
 [system.signaling]
 url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
 
 [system.deployment]
 realm_id = 1001

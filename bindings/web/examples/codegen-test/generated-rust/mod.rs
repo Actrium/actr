@@ -1,6 +1,6 @@
-//! 自动生成的模块
+//! Auto-generated module
 //!
-//! ⚠️  请勿手动编辑此文件
+//! ⚠️  Do not edit manually
 
 pub mod user_service;
 

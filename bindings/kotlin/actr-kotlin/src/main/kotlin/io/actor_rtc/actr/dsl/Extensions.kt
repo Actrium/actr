@@ -245,20 +245,19 @@ suspend fun <T> withRetry(
 // ============================================================================
 
 /**
- * Execute a block with an ActrRef, ensuring proper cleanup.
+ * Execute a block with a started package-backed actor, ensuring proper cleanup.
  *
  * Example:
  * ```kotlin
- * system.withActor(workload) { ref ->
+ * system.withStartedActor { ref ->
  *     val target = ref.discoverOne("acme:EchoService")
- *     ref.call(target, "echo.EchoService.Echo", payload)
+ *     ref.call("echo.EchoService.Echo", payload)
  * }
  * // Actor is automatically shut down after the block
  * ```
  */
-suspend fun <T> ActrSystem.withActor(workload: Workload, block: suspend (ActrRef) -> T): T {
-    val node = attach(workload)
-    val ref = node.start()
+suspend fun <T> ActrSystem.withStartedActor(block: suspend (ActrRef) -> T): T {
+    val ref = start()
     return try {
         block(ref)
     } finally {

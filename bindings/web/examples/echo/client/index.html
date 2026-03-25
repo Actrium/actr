@@ -120,7 +120,7 @@
       cursor: not-allowed;
     }
 
-    /* ── Echo 结果区 ── */
+    /* ── Echo results area ── */
     #result {
       margin-top: 1rem;
       padding: 15px;
@@ -155,7 +155,7 @@
       color: #58a6ff;
     }
 
-    /* ── SW Runtime 日志面板 ── */
+    /* ── SW runtime log panel ── */
     .log-container {
       margin-top: 20px;
     }
@@ -209,21 +209,21 @@
 <body>
   <div class="container">
     <h1>📡 Echo Client</h1>
-    <p class="subtitle">Actor-RTC Web — 调用远程 Echo 服务的浏览器客户端示例</p>
+    <p class="subtitle">Actor-RTC Web — Browser client sample invoking the remote Echo service</p>
 
     <div id="app">
-      <div id="status" class="status connecting">连接中...</div>
+      <div id="status" class="status connecting">Connecting...</div>
 
       <div class="controls">
-        <input id="msgInput" type="text" placeholder="输入消息…" value="Hello from Echo Client!" />
-        <button id="sendBtn" disabled>发送 Echo</button>
+        <input id="msgInput" type="text" placeholder="Type a message…" value="Hello from Echo Client!" />
+        <button id="sendBtn" disabled>Send Echo</button>
       </div>
 
       <div id="result"></div>
     </div>
 
     <div class="log-container">
-      <h3>📋 运行时日志</h3>
+      <h3>📋 Runtime logs</h3>
       <div class="log" id="swLog"></div>
     </div>
   </div>

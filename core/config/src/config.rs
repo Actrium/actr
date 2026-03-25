@@ -5,56 +5,101 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
 
-/// 最终配置（已处理继承、默认值、验证、类型转换）
-/// 注意：没有 edition 字段，edition 只作用于解析阶段
+/// Actor execution mode
+///
+/// Determines how the actor runtime obtains credentials and cooperates with the Hyper host layer.
+/// Specified via the `mode` field in `[system.deployment]` section of `actr.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ActrMode {
+    /// Native process mode (default)
+    ///
+    /// The actor runtime runs in a standalone process, registers with the signaling server
+    /// and obtains credentials on its own.
+    /// Suitable for development/debugging or deployments not managed by Hyper.
+    #[default]
+    Native,
+
+    /// Subprocess mode
+    ///
+    /// The actor runtime is launched as a subprocess by the Hyper layer.
+    /// Credentials are injected by Hyper via `inject_credential()` or
+    /// `ACTR_REGISTER_OK` environment variable; skips signaling registration
+    /// at startup and directly uses the issued credentials.
+    Process,
+
+    /// WASM module mode
+    ///
+    /// The actor runtime runs as a WASM module inside the Hyper host.
+    /// Credentials are injected via host functions or `inject_credential()` (TBD).
+    Wasm,
+}
+
+impl std::fmt::Display for ActrMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActrMode::Native => write!(f, "native"),
+            ActrMode::Process => write!(f, "process"),
+            ActrMode::Wasm => write!(f, "wasm"),
+        }
+    }
+}
+
+/// Final config (inheritance, defaults, validation, and type conversion applied)
+/// Note: no edition field -- edition only affects the parsing phase
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// 包信息
+    /// Package info
     pub package: PackageInfo,
 
-    /// 导出的 proto 文件（已读取内容）
+    /// Exported proto files (contents loaded)
     pub exports: Vec<ProtoFile>,
 
-    /// 服务依赖（已展开）
+    /// Service dependencies (expanded)
     pub dependencies: Vec<Dependency>,
 
-    /// 信令服务器 URL（已验证）
+    /// Signaling server URL (validated)
     pub signaling_url: Url,
 
-    /// 所属 Realm (Security Realm)
+    /// Owning Realm (Security Realm)
     pub realm: Realm,
 
-    /// 是否在服务发现中可见
+    /// Realm secret for AIS registration authentication (optional)
+    ///
+    /// Required when the realm has secret-based access control enabled.
+    pub realm_secret: Option<String>,
+
+    /// Whether visible in service discovery
     pub visible_in_discovery: bool,
 
-    /// 访问控制列表
+    /// Access control list
     pub acl: Option<Acl>,
 
-    /// Mailbox 数据库路径
+    /// Mailbox database path
     ///
-    /// - `Some(path)`: 使用持久化 SQLite 数据库
-    /// - `None`: 使用内存模式 (`:memory:`)
+    /// - `Some(path)`: use persistent SQLite database
+    /// - `None`: use in-memory mode (`:memory:`)
     pub mailbox_path: Option<PathBuf>,
 
     /// Service tags (e.g., "latest", "stable", "v1.0")
     pub tags: Vec<String>,
 
-    /// 脚本命令
+    /// Script commands
     pub scripts: HashMap<String, String>,
 
-    /// WebRTC 配置
+    /// WebRTC configuration
     pub webrtc: WebRtcConfig,
 
-    /// 本节点监听入站 WebSocket 连接的端口（直连模式，可选）
+    /// Port for listening to inbound WebSocket connections (direct mode, optional)
     ///
-    /// 配置后节点启动时会在此端口开启 WebSocket 服务端。
-    /// 对等节点可直接连接 `ws://<本机IP>:<port>/` 而无需中继。
+    /// When configured, the node starts a WebSocket server on this port at startup.
+    /// Peer nodes can connect directly via `ws://<host-IP>:<port>/` without relaying.
     pub websocket_listen_port: Option<u16>,
 
-    /// 向信令服务器广播的 WebSocket 主机名或 IP（直连模式，可选）
+    /// WebSocket hostname or IP advertised to the signaling server (direct mode, optional)
     ///
-    /// 与 `websocket_listen_port` 配合使用。注册时上报到信令服务器，
-    /// 使对等节点知道如何直连本节点。默认为 `"127.0.0.1"`（仅适用于本地测试）。
+    /// Used together with `websocket_listen_port`. Reported to the signaling server
+    /// during registration so that peer nodes know how to connect directly.
+    /// Defaults to `"127.0.0.1"` (suitable for local testing only).
     pub websocket_advertised_host: Option<String>,
 
     /// Observability configuration (logging + tracing)
@@ -63,47 +108,58 @@ pub struct Config {
     /// Directory containing the configuration file (actr.toml)
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
+
+    /// Actor execution mode (affects credential acquisition and Hyper cooperation strategy)
+    ///
+    /// Corresponds to `[system.deployment] mode = "native" | "process" | "wasm"`, defaults to `Native`.
+    pub execution_mode: ActrMode,
+
+    /// AIS (Actor Identity Service) HTTP endpoint for credential registration.
+    ///
+    /// Required in native mode. In process/wasm mode, Hyper handles registration.
+    /// Corresponds to `[system.deployment] ais_endpoint = "..."` in actr.toml.
+    pub ais_endpoint: Option<String>,
 }
 
-/// 包信息
+/// Package info
 #[derive(Debug, Clone)]
 pub struct PackageInfo {
-    /// 包名
+    /// Package name
     pub name: String,
 
-    /// Actor 类型
+    /// Actor type
     pub actr_type: ActrType,
 
-    /// 描述
+    /// Description
     pub description: Option<String>,
 
-    /// 作者列表
+    /// Author list
     pub authors: Vec<String>,
 
-    /// 许可证
+    /// License
     pub license: Option<String>,
 }
 
-/// 已解析的 proto 文件（文件级别）
+/// Parsed proto file (file level)
 #[derive(Debug, Clone)]
 pub struct ProtoFile {
-    /// 文件路径（绝对路径）
+    /// File path (absolute)
     pub path: PathBuf,
 
-    /// 文件内容
+    /// File content
     pub content: String,
 }
 
-/// 已展开的依赖
+/// Expanded dependency
 #[derive(Debug, Clone)]
 pub struct Dependency {
-    /// 依赖别名（dependencies 中的 key）
+    /// Dependency alias (key in dependencies)
     pub alias: String,
 
-    /// 所属 Realm
+    /// Owning Realm
     pub realm: Realm,
 
-    /// Actor 类型（manufacturer:name:version）
+    /// Actor type (manufacturer:name:version)
     pub actr_type: Option<ActrType>,
 
     /// Strict service reference for exact fingerprint matching.
@@ -123,51 +179,51 @@ pub struct ServiceRef {
     pub fingerprint: String,
 }
 
-/// ICE 传输策略
+/// ICE transport policy
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum IceTransportPolicy {
-    /// 使用所有可用候选（默认）
+    /// Use all available candidates (default)
     #[default]
     All,
-    /// 仅使用 TURN 中继候选
+    /// Use only TURN relay candidates
     Relay,
 }
 
-/// ICE 服务器配置
+/// ICE server configuration
 #[derive(Clone, Debug, Default)]
 pub struct IceServer {
-    /// 服务器 URL 列表
+    /// Server URL list
     pub urls: Vec<String>,
-    /// 用户名（TURN 服务器需要）
+    /// Username (required for TURN servers)
     pub username: Option<String>,
-    /// 凭证（TURN 服务器需要）
+    /// Credential (required for TURN servers)
     pub credential: Option<String>,
 }
 
-/// UDP 端口配置
+/// UDP port configuration
 type UdpPorts = Option<(u16, u16)>;
 
-/// WebRTC 高级参数配置
+/// WebRTC advanced parameter configuration
 #[derive(Clone, Debug)]
 pub struct WebRtcAdvancedConfig {
-    /// UDP 端口策略
+    /// UDP port policy
     pub udp_ports: UdpPorts,
-    /// NAT 1:1 公网 IP 映射
+    /// NAT 1:1 public IP mapping
     pub public_ips: Vec<String>,
-    /// ICE host 候选等待时间（毫秒）
+    /// ICE host candidate acceptance min wait (ms)
     pub ice_host_acceptance_min_wait: u64,
-    /// ICE srflx 候选等待时间（毫秒）
+    /// ICE srflx candidate acceptance min wait (ms)
     pub ice_srflx_acceptance_min_wait: u64,
-    /// ICE prflx 候选等待时间（毫秒）
+    /// ICE prflx candidate acceptance min wait (ms)
     pub ice_prflx_acceptance_min_wait: u64,
-    /// ICE relay 候选等待时间（毫秒）
+    /// ICE relay candidate acceptance min wait (ms)
     pub ice_relay_acceptance_min_wait: u64,
 }
 
 impl WebRtcAdvancedConfig {
-    /// 检查是否配置了高级参数且优先成为 Answerer
+    /// Check whether advanced parameters are configured and prefer being Answerer
     pub fn prefer_answerer(&self) -> bool {
-        // 如果配置了端口范围或 public_ips，则优先成为 Answerer
+        // If port range or public_ips are configured, prefer being Answerer
         self.udp_ports.is_some() || !self.public_ips.is_empty()
     }
 }
@@ -185,14 +241,14 @@ impl Default for WebRtcAdvancedConfig {
     }
 }
 
-/// WebRTC 配置
+/// WebRTC configuration
 #[derive(Clone, Debug, Default)]
 pub struct WebRtcConfig {
-    /// ICE 服务器列表
+    /// ICE server list
     pub ice_servers: Vec<IceServer>,
-    /// ICE 传输策略（All 或 Relay）
+    /// ICE transport policy (All or Relay)
     pub ice_transport_policy: IceTransportPolicy,
-    /// 高级参数配置
+    /// Advanced parameter configuration
     pub advanced: WebRtcAdvancedConfig,
 }
 /// Observability configuration (logging + tracing) resolved from raw config
@@ -213,31 +269,31 @@ pub struct ObservabilityConfig {
 }
 
 // ============================================================================
-// Config 辅助方法
+// Config helper methods
 // ============================================================================
 
 impl Config {
-    /// 获取包的 ActrType（用于注册）
+    /// Get the package's ActrType (for registration)
     pub fn actr_type(&self) -> &ActrType {
         &self.package.actr_type
     }
 
-    /// 获取所有 proto 文件路径
+    /// Get all proto file paths
     pub fn proto_paths(&self) -> Vec<&PathBuf> {
         self.exports.iter().map(|p| &p.path).collect()
     }
 
-    /// 获取所有 proto 内容（用于计算服务指纹）
+    /// Get all proto contents (for computing service fingerprint)
     pub fn proto_contents(&self) -> Vec<&str> {
         self.exports.iter().map(|p| p.content.as_str()).collect()
     }
 
-    /// 根据别名查找依赖
+    /// Find a dependency by alias
     pub fn get_dependency(&self, alias: &str) -> Option<&Dependency> {
         self.dependencies.iter().find(|d| d.alias == alias)
     }
 
-    /// 获取所有跨 Realm 的依赖
+    /// Get all cross-Realm dependencies
     pub fn cross_realm_dependencies(&self) -> Vec<&Dependency> {
         self.dependencies
             .iter()
@@ -245,12 +301,12 @@ impl Config {
             .collect()
     }
 
-    /// 获取脚本命令
+    /// Get a script command
     pub fn get_script(&self, name: &str) -> Option<&str> {
         self.scripts.get(name).map(|s| s.as_str())
     }
 
-    /// 列出所有脚本名称
+    /// List all script names
     pub fn list_scripts(&self) -> Vec<&str> {
         self.scripts.keys().map(|s| s.as_str()).collect()
     }
@@ -328,40 +384,40 @@ impl Config {
 }
 
 // ============================================================================
-// PackageInfo 辅助方法
+// PackageInfo helper methods
 // ============================================================================
 
 impl PackageInfo {
-    /// 获取 manufacturer（ActrType.manufacturer）
+    /// Get manufacturer (ActrType.manufacturer)
     pub fn manufacturer(&self) -> &str {
         &self.actr_type.manufacturer
     }
 
-    /// 获取 type name（ActrType.name）
+    /// Get type name (ActrType.name)
     pub fn type_name(&self) -> &str {
         &self.actr_type.name
     }
 }
 
 // ============================================================================
-// Dependency 辅助方法
+// Dependency helper methods
 // ============================================================================
 
 impl Dependency {
-    /// 是否跨 Realm 依赖
+    /// Whether this is a cross-Realm dependency
     pub fn is_cross_realm(&self, self_realm: &Realm) -> bool {
         self.realm.realm_id != self_realm.realm_id
     }
 
-    /// 检查是否要求严格指纹匹配（即 `service` 字段存在）
+    /// Check whether exact fingerprint matching is required (i.e., `service` field exists)
     pub fn requires_exact_fingerprint(&self) -> bool {
         self.service.is_some()
     }
 
-    /// 检查指纹是否匹配
+    /// Check whether the fingerprint matches
     ///
-    /// - 无 `service` 字段：总是匹配（松散依赖）
-    /// - 有 `service` 字段：必须精确匹配
+    /// - No `service` field: always matches (loose dependency)
+    /// - Has `service` field: must match exactly
     pub fn matches_fingerprint(&self, fingerprint: &str) -> bool {
         self.service
             .as_ref()
@@ -371,16 +427,16 @@ impl Dependency {
 }
 
 // ============================================================================
-// ProtoFile 辅助方法
+// ProtoFile helper methods
 // ============================================================================
 
 impl ProtoFile {
-    /// 获取文件名
+    /// Get file name
     pub fn file_name(&self) -> Option<&str> {
         self.path.file_name()?.to_str()
     }
 
-    /// 获取文件扩展名
+    /// Get file extension
     pub fn extension(&self) -> Option<&str> {
         self.path.extension()?.to_str()
     }
@@ -425,13 +481,14 @@ mod tests {
                     actr_type: Some(ActrType {
                         manufacturer: "common".to_string(),
                         name: "logging-service".to_string(),
-                        version: "v1".to_string(),
+                        version: "1.0.0".to_string(),
                     }),
                     service: None,
                 },
             ],
             signaling_url: Url::parse("ws://localhost:8081").unwrap(),
             realm: Realm { realm_id: 1001 },
+            realm_secret: None,
             visible_in_discovery: true,
             acl: None,
             mailbox_path: None,
@@ -447,23 +504,25 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
+            execution_mode: ActrMode::Native,
+            ais_endpoint: None,
         };
 
-        // 测试依赖查找
+        // Test dependency lookup
         assert!(config.get_dependency("user-service").is_some());
         assert!(config.get_dependency("not-exists").is_none());
 
-        // 测试跨 Realm 依赖
+        // Test cross-Realm dependency
         let cross_realm = config.cross_realm_dependencies();
         assert_eq!(cross_realm.len(), 1);
         assert_eq!(cross_realm[0].alias, "shared-logger");
 
-        // 测试指纹匹配（有 service 字段 = 严格匹配）
+        // Test fingerprint matching (with service field = strict matching)
         let user_dep = config.get_dependency("user-service").unwrap();
         assert!(user_dep.matches_fingerprint("abc123"));
         assert!(!user_dep.matches_fingerprint("different"));
 
-        // 无 service 字段 = 松散依赖，任何指纹都匹配
+        // No service field = loose dependency, any fingerprint matches
         let logger_dep = config.get_dependency("shared-logger").unwrap();
         assert!(logger_dep.matches_fingerprint("any-fingerprint"));
         assert!(!logger_dep.requires_exact_fingerprint());

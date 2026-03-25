@@ -27,7 +27,7 @@ pub struct InstallCommand {
     #[arg(value_name = "PACKAGE")]
     pub packages: Vec<String>,
 
-    /// Actor type for the dependency (format: manufacturer:name[:version], e.g., acme:EchoService).
+    /// Actor type for the dependency (format: manufacturer:name:version, e.g., acme:EchoService:1.0.0).
     /// When specified, the PACKAGE argument is treated as an alias.
     #[arg(long, value_name = "TYPE")]
     pub actr_type: Option<String>,
@@ -102,7 +102,7 @@ impl Command for InstallCommand {
             let actr_type = ActrType::from_string_repr(actr_type_str).map_err(|_| {
                 ActrCliError::InvalidArgument {
                     message: format!(
-                        "Invalid actr_type format '{}'. Expected format: manufacturer:name[:version] (e.g., acme:EchoService)",
+                        "Invalid actr_type format '{}'. Expected format: manufacturer:name:version (e.g., acme:EchoService:1.0.0)",
                         actr_type_str
                     ),
                 }

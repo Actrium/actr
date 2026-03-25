@@ -1,14 +1,14 @@
-//! # File 用户业务逻辑实现
+//! # File [...]
 //!
-//! 这个文件是由 `actr gen` 命令自动生成的用户代码框架。
-//! 请在这里实现您的具体业务逻辑。
+//! [...] `actr gen` [...]。
+//! [...]。
 
 use crate::generated::{
-    file_transfer::*, local_file::*, local_file_service_actor::LocalFileServiceHandler,
+    file_transfer::*, local_file::*, file_actor::LocalFileServiceHandler,
 };
 use actr_framework::Context;
-use actr_protocol::{ActrIdExt, ActrTypeExt, DataStream};
-use actr_runtime::prelude::*;
+use actr_protocol::{ActrIdExt, ActrType, ActrTypeExt, DataStream};
+use actr_hyper::prelude::*;
 use bytes::Bytes;
 
 pub struct MyFileService {
@@ -32,7 +32,7 @@ impl MyFileService {
         let target_type = ActrType {
             manufacturer: "acme".to_string(),
             name: "FileTransferService".to_string(),
-            version: "v1".to_string(),
+            version: "1.0.0".to_string(),
         };
         info!(
             "🌐 Discovering receiver via signaling for type: {}",

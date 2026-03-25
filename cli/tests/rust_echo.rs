@@ -122,14 +122,10 @@ fn rust_echo_app_scaffold() {
     let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
     assert!(cargo.contains(r#"name = "my-echo-app""#), "package name");
     assert!(cargo.contains(r#"edition = "2024""#), "edition");
-    for dep in [
-        "actr-framework",
-        "actr-protocol",
-        "actr-runtime",
-        "actr-config",
-    ] {
-        assert!(cargo.contains(dep), "missing dependency {dep}");
-    }
+    assert!(
+        cargo.contains("actr = "),
+        "missing dependency actr in Cargo.toml"
+    );
 
     // -- actr.toml --
     let actr = std::fs::read_to_string(dir.join("actr.toml")).unwrap();
@@ -156,16 +152,16 @@ fn rust_echo_app_scaffold() {
         "main.rs should not declare mod echo_app"
     );
     assert!(
-        main.contains("MyEchoAppClientAppHandler"),
-        "main.rs should use the generated handler trait"
+        main.contains("attach_package"),
+        "main.rs should reference attach_package for package-backed node"
     );
     assert!(
-        main.contains("MyEchoAppClientAppWorkload"),
-        "main.rs should use the generated workload type"
+        !main.contains("MyEchoAppClientAppHandler"),
+        "main.rs should not depend on generated handler traits"
     );
     assert!(
-        main.contains("impl MyEchoAppClientAppHandler for ClientApp {}"),
-        "main.rs should define the bridge handler"
+        !main.contains("MyEchoAppClientAppWorkload"),
+        "main.rs should not depend on generated workload types"
     );
 }
 
@@ -211,12 +207,12 @@ fn rust_echo_service_scaffold() {
         "service should not discover"
     );
     assert!(
-        main.contains("EchoServiceWorkload"),
-        "should register EchoServiceWorkload"
+        main.contains("package-backed Actor-RTC EchoService host"),
+        "service main should describe the package-backed host flow"
     );
     assert!(
-        main.contains("echo_actor::EchoServiceWorkload"),
-        "import from echo_actor"
+        main.contains("Source-defined Rust service workloads were removed"),
+        "service main should explain that source-defined workloads were removed"
     );
 
     // -- echo_service.rs --
@@ -250,7 +246,7 @@ fn rust_echo_both_app_uses_local_service_dependency() {
 
     let app_actr = std::fs::read_to_string(dir.join("echo-app/actr.toml")).unwrap();
     assert!(
-        app_actr.contains("echo-service = {}"),
+        app_actr.contains("EchoService = {}"),
         "role=both app should depend on local echo-service, got:\n{app_actr}"
     );
     assert!(

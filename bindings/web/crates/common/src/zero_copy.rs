@@ -1,22 +1,22 @@
-//! 零拷贝工具模块
+//! Zero-copy utility module.
 //!
-//! 提供 WASM ↔ JavaScript 数据传输的零拷贝（或最小拷贝）实现。
+//! Provides zero-copy, or near-zero-copy, helpers for WASM <-> JavaScript data transfer.
 //!
-//! ## 设计原则
+//! ## Design principles
 //!
-//! 1. **接收路径优化**：
-//!    - 避免 `to_vec()` 和 `copy_from_slice()` 的双重拷贝
-//!    - 使用 `Bytes::from()` 转移 Vec 所有权（零拷贝）
+//! 1. **Receive path optimization**
+//!    - Avoid the double copy caused by `to_vec()` and `copy_from_slice()`
+//!    - Transfer `Vec` ownership into `Bytes::from()` to avoid another copy
 //!
-//! 2. **发送路径优化**：
-//!    - 使用 `Uint8Array::view()` 创建 WASM 内存视图（零拷贝）
-//!    - 确保数据生命周期正确
+//! 2. **Send path optimization**
+//!    - Use `Uint8Array::view()` to create a WASM memory view without copying
+//!    - Keep data lifetimes correct
 //!
-//! 3. **内存安全**：
-//!    - 使用 Rust 生命周期系统保证安全
-//!    - 谨慎使用 `unsafe`，确保边界检查
+//! 3. **Memory safety**
+//!    - Rely on Rust lifetimes where possible
+//!    - Use `unsafe` carefully and keep bounds well-defined
 //!
-//! ## 使用示例
+//! ## Example
 //!
 //! ```rust,no_run
 //! use actr_web_common::zero_copy::{receive_zero_copy, send_zero_copy, extract_payload_zero_copy};
@@ -24,80 +24,80 @@
 //! use wasm_bindgen::prelude::*;
 //! use wasm_bindgen::JsCast;
 //!
-//! // 模拟 port 对象
+//! // Mock port object
 //! struct MockPort;
 //! impl MockPort {
 //!     fn post_message(&self, _msg: &JsValue) -> Result<(), JsValue> { Ok(()) }
 //! }
 //! let port = MockPort;
 //!
-//! // 接收路径（JS → Rust）
-//! // 假设从 MessageEvent 获取到了 Uint8Array
+//! // Receive path (JS -> Rust)
+//! // Assume a Uint8Array was obtained from MessageEvent
 //! let js_array = js_sys::Uint8Array::new_with_length(10);
 //!
-//! // 零拷贝接收（1 次拷贝：JS → WASM 线性内存）
+//! // Receive with one unavoidable copy from JS into WASM linear memory
 //! let data = receive_zero_copy(&js_array);
 //!
-//! // 零拷贝提取 payload（Vec → Bytes 转移所有权）
+//! // Extract payload without another copy by transferring Vec ownership into Bytes
 //! if data.len() >= 5 {
 //!     let payload = extract_payload_zero_copy(data, 5);
-//!     // ... 使用 payload
+//!     // ... use payload
 //! }
 //!
-//! // 发送路径（Rust → JS）
+//! // Send path (Rust -> JS)
 //! let data = Bytes::from(vec![1, 2, 3, 4, 5]);
-//! // 零拷贝发送（创建 WASM 内存视图）
+//! // Zero-copy send by creating a WASM memory view
 //! let js_view = send_zero_copy(&data);
 //! port.post_message(&js_view.into()).unwrap();
 //! ```
 
 use bytes::Bytes;
 
-/// 零拷贝接收：从 JS Uint8Array 接收数据到 Rust Vec
+/// Receive bytes from a JS Uint8Array into a Rust Vec.
 ///
-/// **性能优化**：
-/// - 旧实现：`uint8_array.to_vec()` 会复制整个数组
-/// - 新实现：使用 `copy_to()` 直接写入预分配的 Vec，利用浏览器优化的 memcpy
+/// **Performance notes**
+/// - Old implementation: `uint8_array.to_vec()` copied the entire array
+/// - New implementation: `copy_to()` writes directly into a preallocated Vec
 ///
-/// **拷贝次数**：1 次（JS 内存 → WASM 线性内存，不可避免）
+/// **Copy count**: 1 copy from JS memory into WASM linear memory, which is unavoidable.
 ///
-/// # 参数
-/// - `uint8_array`: JavaScript 的 Uint8Array 对象
+/// # Parameters
+/// - `uint8_array`: JavaScript Uint8Array object
 ///
-/// # 返回
-/// - `Vec<u8>`: Rust 端的字节向量（位于 WASM 线性内存）
+/// # Returns
+/// - `Vec<u8>` allocated in WASM linear memory
 ///
-/// # 注意
-/// - 这个拷贝是必须的，因为 JS 和 WASM 内存空间是分离的
-/// - 但相比 `to_vec()` + `copy_from_slice()`，减少了 1 次拷贝
+/// # Notes
+/// - This copy is required because JS and WASM use separate memory spaces
+/// - It still avoids an extra copy compared to `to_vec()` plus `copy_from_slice()`
 #[inline]
 pub fn receive_zero_copy(uint8_array: &js_sys::Uint8Array) -> Vec<u8> {
     let len = uint8_array.length() as usize;
-    // 初始化 buffer（内存安全）
+    // Initialize the buffer in a memory-safe way.
     let mut buffer = vec![0u8; len];
 
-    // 使用浏览器优化的 memcpy，直接写入 WASM 线性内存
+    // Use the browser-optimized memcpy path to write directly into WASM memory.
     uint8_array.copy_to(&mut buffer);
 
     buffer
 }
 
-/// 零拷贝提取 payload：从 Vec 中提取 payload 部分，转移所有权到 Bytes
+/// Extract the payload from a Vec and transfer ownership into Bytes.
 ///
-/// **性能优化**：
-/// - 旧实现：`Bytes::copy_from_slice(&vec[offset..])` 会再次拷贝数据
-/// - 新实现：使用 `Vec::split_off()` 和 `Bytes::from()` 转移所有权（零拷贝）
+/// **Performance notes**
+/// - Old implementation: `Bytes::copy_from_slice(&vec[offset..])` copied the payload again
+/// - New implementation: `Vec::split_off()` plus `Bytes::from()` transfers ownership
 ///
-/// **拷贝次数**：0 次（转移所有权）
+/// **Copy count**: 0 additional copies because ownership is transferred.
 ///
-/// # 参数
-/// - `mut data`: 包含完整消息的 Vec（会被消费）
-/// - `header_size`: 头部大小（要跳过的字节数）
+/// # Parameters
+/// - `mut data`: Vec containing the full message, consumed by this function
+/// - `header_size`: Header length to skip
 ///
-/// # 返回
-/// - `Bytes`: payload 部分（零拷贝）
+/// # Returns
+/// - `Bytes` containing the payload
 ///
-/// # 示例
+/// # Example
 /// ```rust
 /// use actr_web_common::zero_copy::extract_payload_zero_copy;
 /// use bytes::Bytes;
@@ -108,42 +108,41 @@ pub fn receive_zero_copy(uint8_array: &js_sys::Uint8Array) -> Vec<u8> {
 /// ```
 #[inline]
 pub fn extract_payload_zero_copy(mut data: Vec<u8>, header_size: usize) -> Bytes {
-    // split_off 会切分 Vec，返回后半部分（payload），前半部分（header）被丢弃
+    // split_off returns the back half (payload) and drops the front half (header).
     let payload_vec = data.split_off(header_size);
 
-    // Bytes::from(Vec) 会转移 Vec 的所有权，零拷贝
-    // Bytes 内部使用 Arc，后续 clone 也是零拷贝的
+    // Bytes::from(Vec) transfers ownership with no extra copy.
+    // Bytes uses Arc internally, so later clones also stay zero-copy.
     Bytes::from(payload_vec)
 }
 
-/// 零拷贝发送：创建 Bytes 数据的 JS Uint8Array 视图
+/// Create a JS Uint8Array view over Bytes without copying.
 ///
-/// **性能优化**：
-/// - 旧实现：`Uint8Array::from(&bytes[..])` 会复制整个数组
-/// - 新实现：使用 `Uint8Array::view()` 创建 WASM 内存视图（零拷贝）
+/// **Performance notes**
+/// - Old implementation: `Uint8Array::from(&bytes[..])` copied the entire array
+/// - New implementation: `Uint8Array::view()` creates a WASM memory view
 ///
-/// **拷贝次数**：0 次（创建视图，不拷贝数据）
+/// **Copy count**: 0, because this only creates a view.
 ///
-/// # 参数
-/// - `data`: 要发送的数据（Bytes）
+/// # Parameters
+/// - `data`: Data to send
 ///
-/// # 返回
-/// - `js_sys::Uint8Array`: JavaScript 侧的视图
+/// # Returns
+/// - `js_sys::Uint8Array` view visible to JavaScript
 ///
-/// # 安全性
-/// - ⚠️ 视图的生命周期必须短于数据的生命周期
-/// - ⚠️ 视图是只读的，JS 端不应修改
-/// - ⚠️ 如果 Rust 端修改数据，JS 端看到的内容会变化
+/// # Safety
+/// - The view must not outlive the backing data
+/// - The view should be treated as read-only from JavaScript
+/// - If Rust mutates the data, JavaScript will observe those changes
 ///
-/// # 注意
-/// - 必须确保在 JS 使用视图期间，Rust 端的 `data` 没有被释放
-/// - 对于 PostMessage，浏览器会在 `post_message` 时复制数据，所以视图可以立即释放
-/// - 对于 WebSocket/DataChannel 的 `send_with_u8_array`，也是同步复制，所以安全
+/// # Notes
+/// - The backing `data` must remain alive while JS uses the view
+/// - For PostMessage, browsers copy during `post_message`, so the view can be dropped immediately
+/// - For WebSocket/DataChannel `send_with_u8_array`, copying is also synchronous
 #[inline]
 pub fn send_zero_copy(data: &Bytes) -> js_sys::Uint8Array {
-    // 安全：Uint8Array::view() 创建一个临时视图
-    // 浏览器的 postMessage/send API 会在调用时立即复制数据
-    // 所以即使视图生命周期很短，也不会有问题
+    // Safe in practice because Uint8Array::view() creates a short-lived view and
+    // browser messaging APIs copy the data immediately during the call.
     unsafe {
         let ptr = data.as_ptr();
         let len = data.len();
@@ -151,21 +150,21 @@ pub fn send_zero_copy(data: &Bytes) -> js_sys::Uint8Array {
     }
 }
 
-/// 零拷贝构造消息：组装 header + payload
+/// Build a message from header and payload with minimal copying.
 ///
-/// **设计思路**：
-/// - 预先分配 `header_size + payload_size` 的 Vec
-/// - 写入 header 和 payload
-/// - 转换为 Bytes（零拷贝）
+/// **Approach**
+/// - Preallocate a Vec with `header_size + payload_size`
+/// - Write the header and payload into it
+/// - Convert into Bytes
 ///
-/// **拷贝次数**：1 次（payload 复制到 Vec，但这是最优方案）
+/// **Copy count**: 1 copy for the payload into the Vec, which is the practical minimum here.
 ///
-/// # 参数
-/// - `header`: 消息头部字节
-/// - `payload`: 消息负载
+/// # Parameters
+/// - `header`: Header bytes
+/// - `payload`: Payload bytes
 ///
-/// # 返回
-/// - `Bytes`: 完整消息（header + payload）
+/// # Returns
+/// - `Bytes` containing the full message
 #[inline]
 pub fn construct_message_zero_copy(header: &[u8], payload: &Bytes) -> Bytes {
     let total_size = header.len() + payload.len();
@@ -177,43 +176,43 @@ pub fn construct_message_zero_copy(header: &[u8], payload: &Bytes) -> Bytes {
     Bytes::from(msg)
 }
 
-/// 零拷贝构造消息（带 payload 所有权转移）
+/// Build a message while transferring ownership of the payload Vec.
 ///
-/// **优化点**：
-/// - 如果 payload 是 Vec，可以直接追加到 header 后面
-/// - 避免 `extend_from_slice` 的拷贝
+/// **Optimization**
+/// - If the payload is already a Vec, append it after the header directly
+/// - Avoid the extra copy from `extend_from_slice`
 ///
-/// **拷贝次数**：0 次（追加操作，不拷贝）
+/// **Copy count**: 0 extra copies during the append step.
 ///
-/// # 参数
-/// - `header`: 消息头部字节
-/// - `payload`: 消息负载（Vec，会被消费）
+/// # Parameters
+/// - `header`: Header bytes
+/// - `payload`: Payload Vec, consumed by this function
 ///
-/// # 返回
-/// - `Bytes`: 完整消息
+/// # Returns
+/// - `Bytes` containing the full message
 ///
-/// # 注意
-/// - 这个函数会消费 `payload`，适用于不需要保留原始 payload 的场景
+/// # Note
+/// - This consumes `payload`, so use it only when the original payload does not need to be preserved
 #[inline]
 pub fn construct_message_from_vec(header: &[u8], mut payload: Vec<u8>) -> Bytes {
-    // 在 payload 前面插入 header
+    // Insert the header before the payload.
     let mut msg = Vec::with_capacity(header.len() + payload.len());
     msg.extend_from_slice(header);
-    msg.append(&mut payload); // append 转移所有权，零拷贝
+    msg.append(&mut payload); // append transfers ownership without another copy
 
     Bytes::from(msg)
 }
 
-/// 解析消息格式：[PayloadType(1) | Length(4) | Data(N)]
+/// Parse a message with format `[PayloadType(1) | Length(4) | Data(N)]`.
 ///
-/// **返回**：(payload_type, length, data_start_offset)
+/// Returns `(payload_type, length, data_start_offset)`.
 ///
-/// # 参数
-/// - `buffer`: 完整消息缓冲区
+/// # Parameters
+/// - `buffer`: Complete message buffer
 ///
-/// # 返回
-/// - `Some((payload_type, length, 5))`: 成功解析
-/// - `None`: 消息格式错误或长度不足
+/// # Returns
+/// - `Some((payload_type, length, 5))` on success
+/// - `None` if the message format is invalid or too short
 #[inline]
 pub fn parse_message_header(buffer: &[u8]) -> Option<(u8, usize, usize)> {
     if buffer.len() < 5 {
@@ -223,10 +222,10 @@ pub fn parse_message_header(buffer: &[u8]) -> Option<(u8, usize, usize)> {
     let payload_type = buffer[0];
     let length = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]) as usize;
 
-    // 验证消息长度
+    // Validate the message length.
     if buffer.len() < 5 + length {
         log::warn!(
-            "消息长度不匹配: 期望 {} bytes (header 5 + payload {}), 实际 {} bytes",
+            "Message length mismatch: expected {} bytes (header 5 + payload {}), got {} bytes",
             5 + length,
             length,
             buffer.len()
@@ -237,14 +236,14 @@ pub fn parse_message_header(buffer: &[u8]) -> Option<(u8, usize, usize)> {
     Some((payload_type, length, 5))
 }
 
-/// 构造消息 header：[PayloadType(1) | Length(4)]
+/// Build a message header in the format `[PayloadType(1) | Length(4)]`.
 ///
-/// # 参数
-/// - `payload_type`: PayloadType 枚举值
-/// - `payload_len`: payload 长度
+/// # Parameters
+/// - `payload_type`: Numeric PayloadType value
+/// - `payload_len`: Payload length
 ///
-/// # 返回
-/// - `[u8; 5]`: 5 字节的 header
+/// # Returns
+/// - `[u8; 5]` header bytes
 #[inline]
 pub fn construct_message_header(payload_type: u8, payload_len: usize) -> [u8; 5] {
     let mut header = [0u8; 5];
@@ -253,92 +252,92 @@ pub fn construct_message_header(payload_type: u8, payload_len: usize) -> [u8; 5]
     header
 }
 
-/// 使用 Transferable Objects 发送数据（PostMessage 专用）
+/// Create Transferable Object payloads for PostMessage.
 ///
-/// **Transferable Objects 原理**：
-/// - `postMessage(message, [transferList])` 转移 ArrayBuffer 所有权而非拷贝
-/// - 转移后原 buffer 变为 detached，不可再访问
-/// - 接收端获得独占所有权
-/// - 适用于大数据传输（>10KB）
+/// **How Transferable Objects work**
+/// - `postMessage(message, [transferList])` transfers ArrayBuffer ownership instead of copying
+/// - The original buffer becomes detached after transfer
+/// - The receiver gains exclusive ownership
+/// - This is well-suited for large payloads (>10 KB)
 ///
-/// **性能优势**：
-/// - 消除 postMessage 的结构化克隆开销
-/// - 对于大数据（>10KB），性能提升显著
-/// - 对于小数据（<10KB），转移开销可能大于拷贝
+/// **Performance benefits**
+/// - Avoid the structured-clone overhead of plain postMessage
+/// - Large payloads benefit significantly
+/// - For small payloads, transfer overhead may outweigh copying
 ///
-/// # 参数
-/// - `data`: 要发送的数据（Bytes）
+/// # Parameters
+/// - `data`: Data to send
 ///
-/// # 返回
-/// - `(js_sys::Uint8Array, js_sys::Array)`: (数据视图, transferList)
+/// # Returns
+/// - `(js_sys::Uint8Array, js_sys::Array)`: `(data_view, transfer_list)`
 ///
-/// # 使用示例
+/// # Example
 /// ```rust,no_run
 /// use actr_web_common::zero_copy::send_with_transfer;
 /// use bytes::Bytes;
 /// use wasm_bindgen::JsValue;
 ///
-/// // 模拟 port 对象
+/// // Mock port object
 /// struct MockPort;
 /// impl MockPort {
 ///     fn post_message_with_transfer(&self, _msg: &JsValue, _transfer: &js_sys::Array) -> Result<(), JsValue> { Ok(()) }
 /// }
 /// let port = MockPort;
 ///
-/// let data = Bytes::from(vec![0u8; 100_000]); // 100KB 数据
+/// let data = Bytes::from(vec![0u8; 100_000]); // 100 KB payload
 /// let (js_view, transfer_list) = send_with_transfer(&data);
 /// port.post_message_with_transfer(&js_view.into(), &transfer_list).unwrap();
 /// ```
 ///
-/// # 注意
-/// - 只适用于 PostMessage（WebSocket/DataChannel 不支持）
-/// - 转移后原 ArrayBuffer 变为 detached
-/// - 适合一次性发送的大数据
+/// # Notes
+/// - Only applicable to PostMessage, not WebSocket or DataChannel
+/// - The original ArrayBuffer becomes detached after transfer
+/// - Best for one-shot large payloads
 #[inline]
 pub fn send_with_transfer(data: &Bytes) -> (js_sys::Uint8Array, js_sys::Array) {
-    // 创建 WASM 内存视图
+    // Create a WASM memory view.
     let js_view = unsafe {
         let ptr = data.as_ptr();
         let len = data.len();
         js_sys::Uint8Array::view(std::slice::from_raw_parts(ptr, len))
     };
 
-    // 创建 transferable 数组
+    // Create the transfer list.
     let transfer_list = js_sys::Array::new();
     transfer_list.push(&js_view.buffer());
 
     (js_view, transfer_list)
 }
 
-/// 判断是否应该使用 Transferable Objects
+/// Decide whether Transferable Objects should be used.
 ///
-/// **决策逻辑**：
-/// - 数据大小 < 10KB：不推荐（转移开销 > 拷贝开销）
-/// - 数据大小 >= 10KB：推荐（转移开销 < 拷贝开销）
-/// - 数据大小 >= 100KB：强烈推荐
+/// **Decision logic**
+/// - Data size < 10 KB: not recommended
+/// - Data size >= 10 KB: recommended
+/// - Data size >= 100 KB: strongly recommended
 ///
-/// # 参数
-/// - `data_size`: 数据大小（字节）
+/// # Parameters
+/// - `data_size`: Data size in bytes
 ///
-/// # 返回
-/// - `true`: 推荐使用 Transferable Objects
-/// - `false`: 不推荐，使用普通 send 即可
+/// # Returns
+/// - `true` when Transferable Objects are recommended
+/// - `false` when regular send is fine
 ///
-/// # 使用示例
+/// # Example
 /// ```rust
 /// use actr_web_common::zero_copy::should_use_transfer;
 /// use bytes::Bytes;
 ///
 /// let data = Bytes::from(vec![0u8; 50_000]);
 /// if should_use_transfer(data.len()) {
-///     // 使用 send_with_transfer()
+///     // Use send_with_transfer()
 /// } else {
-///     // 使用普通 send()
+///     // Use regular send()
 /// }
 /// ```
 #[inline]
 pub fn should_use_transfer(data_size: usize) -> bool {
-    data_size >= 10 * 1024 // 10KB 阈值
+    data_size >= 10 * 1024 // 10 KB threshold
 }
 
 #[cfg(test)]
@@ -348,7 +347,7 @@ mod tests {
 
     wasm_bindgen_test_configure!(run_in_browser);
 
-    // ===== receive_zero_copy 测试 =====
+    // ===== receive_zero_copy tests =====
 
     #[wasm_bindgen_test]
     fn test_receive_zero_copy_basic() {
@@ -377,7 +376,7 @@ mod tests {
         assert_eq!(data[1024 * 1024 - 1], 42);
     }
 
-    // ===== extract_payload_zero_copy 测试 =====
+    // ===== extract_payload_zero_copy tests =====
 
     #[wasm_bindgen_test]
     fn test_extract_payload_zero_copy() {
@@ -404,7 +403,7 @@ mod tests {
         assert_eq!(payload.as_ref(), &[1, 2, 3, 4, 5]);
     }
 
-    // ===== send_zero_copy 测试 =====
+    // ===== send_zero_copy tests =====
 
     #[wasm_bindgen_test]
     fn test_send_zero_copy_basic() {
@@ -434,7 +433,7 @@ mod tests {
         assert_eq!(js_view.get_index(1024 * 1024 - 1), 42);
     }
 
-    // ===== construct_message_zero_copy 测试 =====
+    // ===== construct_message_zero_copy tests =====
 
     #[wasm_bindgen_test]
     fn test_construct_message_zero_copy() {
@@ -448,7 +447,7 @@ mod tests {
         assert_eq!(&msg[5..10], &[10, 20, 30, 40, 50]);
     }
 
-    // ===== construct_message_from_vec 测试 =====
+    // ===== construct_message_from_vec tests =====
 
     #[wasm_bindgen_test]
     fn test_construct_message_from_vec() {
@@ -462,7 +461,7 @@ mod tests {
         assert_eq!(&msg[5..10], &[10, 20, 30, 40, 50]);
     }
 
-    // ===== parse_message_header 测试 =====
+    // ===== parse_message_header tests =====
 
     #[wasm_bindgen_test]
     fn test_parse_message_header_valid() {
@@ -479,7 +478,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_parse_message_header_too_short() {
-        let buffer = [1, 0, 0, 0]; // 只有 4 字节
+        let buffer = [1, 0, 0, 0]; // Only 4 bytes.
 
         let result = parse_message_header(&buffer);
 
@@ -488,14 +487,14 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_parse_message_header_length_mismatch() {
-        let buffer = [1, 0, 0, 0, 10, 1, 2, 3]; // 声称 10 字节，实际只有 3 字节
+        let buffer = [1, 0, 0, 0, 10, 1, 2, 3]; // Claims 10 bytes, actually only 3.
 
         let result = parse_message_header(&buffer);
 
         assert!(result.is_none());
     }
 
-    // ===== construct_message_header 测试 =====
+    // ===== construct_message_header tests =====
 
     #[wasm_bindgen_test]
     fn test_construct_message_header() {
@@ -513,46 +512,46 @@ mod tests {
         assert_eq!(length, 1024 * 1024);
     }
 
-    // ===== 集成测试：完整流程 =====
+    // ===== integration tests: full workflow =====
 
     #[wasm_bindgen_test]
     fn test_zero_copy_full_workflow_receive() {
-        // 模拟接收流程：JS → Rust
+        // Simulate the receive flow: JS -> Rust.
         let message = [1, 0, 0, 0, 5, 10, 20, 30, 40, 50]; // [header(5) | payload(5)]
         let js_array = js_sys::Uint8Array::from(&message[..]);
 
-        // 1. 零拷贝接收
+        // 1. Receive with minimal copying.
         let data = receive_zero_copy(&js_array);
 
-        // 2. 解析 header
+        // 2. Parse the header.
         let (payload_type, length, offset) = parse_message_header(&data).unwrap();
         assert_eq!(payload_type, 1);
         assert_eq!(length, 5);
         assert_eq!(offset, 5);
 
-        // 3. 零拷贝提取 payload
+        // 3. Extract the payload without another copy.
         let payload = extract_payload_zero_copy(data, offset);
         assert_eq!(payload.as_ref(), &[10, 20, 30, 40, 50]);
     }
 
     #[wasm_bindgen_test]
     fn test_zero_copy_full_workflow_send() {
-        // 模拟发送流程：Rust → JS
+        // Simulate the send flow: Rust -> JS.
         let payload = Bytes::from_static(&[10, 20, 30, 40, 50]);
         let header = construct_message_header(1, payload.len());
 
-        // 1. 构造消息
+        // 1. Build the message.
         let msg = construct_message_zero_copy(&header, &payload);
         assert_eq!(msg.len(), 10);
 
-        // 2. 零拷贝发送
+        // 2. Send without another copy.
         let js_view = send_zero_copy(&msg);
         assert_eq!(js_view.length(), 10);
         assert_eq!(js_view.get_index(0), 1); // PayloadType
-        assert_eq!(js_view.get_index(5), 10); // Payload 第一个字节
+        assert_eq!(js_view.get_index(5), 10); // First payload byte.
     }
 
-    // ===== Transferable Objects 测试 =====
+    // ===== Transferable Objects tests =====
 
     #[wasm_bindgen_test]
     fn test_send_with_transfer_basic() {
@@ -563,7 +562,7 @@ mod tests {
         assert_eq!(js_view.get_index(0), 1);
         assert_eq!(js_view.get_index(4), 5);
 
-        // 验证 transferList 包含 buffer
+        // Verify the transferList contains the buffer.
         assert_eq!(transfer_list.length(), 1);
         assert!(transfer_list.get(0).is_truthy());
     }
@@ -593,7 +592,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_should_use_transfer_small_data() {
-        // 小数据不推荐使用 transfer
+        // Small payloads should not use transfer.
         assert!(!should_use_transfer(1024)); // 1KB
         assert!(!should_use_transfer(5 * 1024)); // 5KB
         assert!(!should_use_transfer(9 * 1024)); // 9KB
@@ -601,7 +600,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_should_use_transfer_large_data() {
-        // 大数据推荐使用 transfer
+        // Large payloads should use transfer.
         assert!(should_use_transfer(10 * 1024)); // 10KB
         assert!(should_use_transfer(50 * 1024)); // 50KB
         assert!(should_use_transfer(1024 * 1024)); // 1MB
@@ -609,7 +608,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_should_use_transfer_edge_case() {
-        // 边界测试
+        // Boundary test.
         assert!(!should_use_transfer(10 * 1024 - 1)); // 10KB - 1
         assert!(should_use_transfer(10 * 1024)); // 10KB
         assert!(should_use_transfer(10 * 1024 + 1)); // 10KB + 1

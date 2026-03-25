@@ -10,10 +10,10 @@ pub struct AppSide {
 
 impl AppSide {
     pub async fn run(self) {
-        info!("[App] 已启动");
+        info!("[App] started");
         println!("===== WS Echo Client App =====");
-        println!("消息将通过 WebSocket 直连通道发送到服务端");
-        println!("输入消息发送（输入 'quit' 退出）：");
+        println!("messagewillvia/through WebSocket direct connectionchannelsend[...]server");
+        println!("[...]messagesend（[...] 'quit' [...]）：");
 
         use tokio::io::{AsyncBufReadExt, BufReader, stdin};
         let stdin = stdin();
@@ -27,7 +27,7 @@ impl AppSide {
             let line = line.trim();
 
             if line == "quit" || line == "exit" {
-                info!("[App] 用户请求退出");
+                info!("[App] [...]request[...]");
                 break;
             }
 
@@ -41,15 +41,15 @@ impl AppSide {
                 message: line.to_string(),
             };
 
-            info!("[App] 发送消息: {}", line);
+            info!("[App] sendmessage: {}", line);
             let span = tracing::info_span!("app_side_call", line = line);
             match self.actr_ref.call(request).instrument(span).await {
                 Ok(response) => {
-                    println!("\n[收到回复] {}", response.reply);
+                    println!("\n[[...]] {}", response.reply);
                 }
                 Err(e) => {
-                    error!("[App] 调用失败: {:?}", e);
-                    println!("\n[错误] {}", e);
+                    error!("[App] [...]failed: {:?}", e);
+                    println!("\n[error] {}", e);
                 }
             }
 
@@ -57,6 +57,6 @@ impl AppSide {
             std::io::stdout().flush().unwrap();
         }
 
-        info!("[App] 正在关闭");
+        info!("[App] [...]close/shutdown");
     }
 }

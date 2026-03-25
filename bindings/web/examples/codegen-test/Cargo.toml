@@ -3,7 +3,7 @@ name = "codegen-test"
 version = "0.2.0"
 edition = "2024"
 
-# 明确表示这不是工作区成员
+# Explicitly mark that this crate is not a workspace member
 [workspace]
 
 [dependencies]

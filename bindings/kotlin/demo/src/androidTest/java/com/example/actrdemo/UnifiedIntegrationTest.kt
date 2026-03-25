@@ -1,14 +1,14 @@
 /**
- * 统一集成测试
+ * Unified Integration Test
  *
- * 此测试使用 UnifiedWorkload 模式，合并了以下两个测试用例：
- * 1. RPC 调用 EchoServer
- * 2. DataStream 传输（通过 StreamClient.StartStream）
+ * This test uses UnifiedWorkload pattern, combining the following two test cases:
+ * 1. RPC call to EchoServer
+ * 2. DataStream transfer (via StreamClient.StartStream)
  *
- * UnifiedWorkload 的优势：
- * - 本地服务请求：通过 UnifiedDispatcher 路由到 StreamClientHandler 实现
- * - 远程服务请求：通过 UnifiedDispatcher 自动转发到已发现的远程 Actor
- * - 统一的 onStart 中自动发现所有远程服务
+ * Advantages of UnifiedWorkload:
+ * - Local service requests: routed through UnifiedDispatcher to StreamClientHandler implementation
+ * - Remote service requests: automatically forwarded through UnifiedDispatcher to discovered remote Actors
+ * - Unified onStart automatically discovers all remote services
  */
 package com.example.actrdemo
 
@@ -16,8 +16,6 @@ import android.content.Context
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.example.MyUnifiedHandler
-import com.example.UnifiedWorkload
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import io.actor_rtc.actr.PayloadType
@@ -57,6 +55,17 @@ class UnifiedIntegrationTest {
         return outputFile.absolutePath
     }
 
+    private fun copyFirstPackageAssetToInternalStorage(): String {
+        val sourceContext = InstrumentationRegistry.getInstrumentation().context
+        val packageName =
+                sourceContext
+                        .assets
+                        .list("")!!
+                        .firstOrNull { it.endsWith(".actr") }
+                        ?: error("No .actr package found in androidTest assets")
+        return copyAssetToInternalStorage(packageName)
+    }
+
     // ==================== Protobuf Encoding/Decoding Helpers ====================
 
     private fun encodeEchoRequest(message: String): ByteArray {
@@ -89,18 +98,18 @@ class UnifiedIntegrationTest {
     // ==================== Unified Integration Test ====================
 
     /**
-     * 统一集成测试
+     * Unified Integration Test
      *
-     * 此测试使用 UnifiedWorkload 同时验证：
-     * 1. 远程 RPC 调用 (EchoService)
-     * 2. DataStream 传输 (StreamClient.StartStream -> DataStreamConcurrentServer)
+     * This test uses UnifiedWorkload to verify:
+     * 1. Remote RPC call (EchoService)
+     * 2. DataStream transfer (StreamClient.StartStream -> DataStreamConcurrentServer)
      *
-     * 架构：
+     * Architecture:
      * ```
      * UnifiedWorkload
      *   ├── UnifiedHandler (implements StreamClientHandler)
-     *   │     ├── start_stream() - 本地触发流传输
-     *   │     └── prepare_client_stream() - 服务器回调注册数据流接收器
+     *   │     ├── start_stream() - locally trigger stream transfer
+     *   │     └── prepare_client_stream() - server callback registers data stream receiver
      *   └── UnifiedDispatcher
      *         ├── local routes -> StreamClientDispatcher -> handler methods
      *         └── remote routes -> ctx.callRaw() -> remote actors
@@ -113,20 +122,15 @@ class UnifiedIntegrationTest {
         val clientConfigPath = copyAssetToInternalStorage("actr.toml")
         // Actr.lock.toml is required by the runtime now
         copyAssetToInternalStorage("Actr.lock.toml")
+        val packagePath = copyFirstPackageAssetToInternalStorage()
         var clientRef: ActrRef? = null
 
         try {
-            val clientSystem = createActrSystem(clientConfigPath)
-
-            // 创建 UnifiedWorkload
-            val handler = MyUnifiedHandler()
-            val clientWorkload = UnifiedWorkload(handler)
-
-            val clientNode = clientSystem.attach(clientWorkload)
-            clientRef = clientNode.start()
+            val clientSystem = createActrSystem(clientConfigPath, packagePath)
+            clientRef = clientSystem.start()
             Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
 
-            // 等待 onStart 完成（自动发现所有远程服务）
+            // Wait for onStart to complete (auto-discover all remote services)
             delay(2000)
 
             // ==================== Part 1: Test Echo RPC ====================

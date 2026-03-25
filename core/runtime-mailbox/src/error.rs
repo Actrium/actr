@@ -1,61 +1,62 @@
-//! 存储层错误定义
+//! Storage layer error definitions
 
 use thiserror::Error;
 
-/// 存储层错误类型
+/// Storage layer error type
 #[derive(Error, Debug)]
 pub enum StorageError {
-    /// 数据库连接错误
+    /// Database connection error
     #[error("Database connection error: {0}")]
     ConnectionError(String),
 
-    /// 查询执行错误
+    /// Query execution error
     #[error("Query execution error: {0}")]
     QueryError(String),
 
-    /// 序列化错误
+    /// Serialization error
     #[error("Serialization error: {0}")]
     SerializationError(String),
 
-    /// 反序列化错误
+    /// Deserialization error
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
 
-    /// 数据完整性错误
+    /// Data integrity error
     #[error("Data integrity error: {0}")]
     IntegrityError(String),
 
-    /// 并发冲突错误
+    /// Concurrency conflict error
     #[error("Concurrency conflict: {0}")]
     ConcurrencyError(String),
 
-    /// 资源不存在错误
+    /// Resource not found error
     #[error("Resource not found: {0}")]
     NotFoundError(String),
 
-    /// 配置错误
+    /// Configuration error
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
-    /// IO 错误
+    /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    /// 其他错误
+    /// Other error
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
-/// 存储层结果类型
+/// Storage layer result type
 pub type StorageResult<T> = Result<T, StorageError>;
 
-/// 从 actor 错误转换为存储错误
+/// Convert actor error to storage error
 impl From<actr_protocol::ActrError> for StorageError {
     fn from(err: actr_protocol::ActrError) -> Self {
         StorageError::Other(anyhow::anyhow!("Actor error: {err}"))
     }
 }
 
+#[cfg(feature = "sqlite")]
 impl From<rusqlite::Error> for StorageError {
     fn from(err: rusqlite::Error) -> Self {
         match err {

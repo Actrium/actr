@@ -2,18 +2,18 @@ syntax = "proto3";
 
 package echo;
 
-// Echo 请求
+// Echo request
 message EchoRequest {
   string message = 1;
 }
 
-// Echo 响应
+// Echo response
 message EchoResponse {
   string reply = 1;
   uint64 timestamp = 2;
 }
 
-// Echo 服务
+// Echo service
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
 }

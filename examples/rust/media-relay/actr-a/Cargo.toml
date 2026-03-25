@@ -6,9 +6,11 @@ license = "Apache-2.0"
 
 [dependencies]
 media-relay-common = { path = "../common" }
+actr = { workspace = true }
 actr-framework = { workspace = true }
 actr-protocol = { workspace = true }
 actr-runtime = { workspace = true }
+actr-hyper = { workspace = true }
 actr-config = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 anyhow = { workspace = true }

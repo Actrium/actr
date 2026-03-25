@@ -1,20 +1,20 @@
 edition = 1
 
 [package]
-name = "audio-capture-receiver"
+name = "AudioRecorder"
+manufacturer = "acme"
 description = "Audio capture receiver - saves incoming MediaTrack audio to WAV"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example", "media"]
 
-[package.actr_type]
-manufacturer = "acme"
-name = "AudioRecorder"
-
 [dependencies]
 
 [system.signaling]
 url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
 
 [system.deployment]
 realm_id = 0

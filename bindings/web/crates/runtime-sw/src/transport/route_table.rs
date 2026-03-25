@@ -1,35 +1,35 @@
-//! RouteTable - 路由表
+//! RouteTable - route registry.
 //!
-//! 管理 ActrId → Dest 的路由映射
+//! Manages routing mappings from `ActrId` and `ActrType` to `Dest`.
 //!
-//! # 功能
-//! - 目的地注册和查询
-//! - 多路由支持（负载均衡）
-//! - 路由优先级
+//! # Features
+//! - Destination registration and lookup
+//! - Multi-route support for load balancing
+//! - Route priorities
 
 use actr_protocol::{ActrId, ActrType};
 use actr_web_common::Dest;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
-/// 路由条目
+/// Route entry.
 #[derive(Debug, Clone)]
 pub struct RouteEntry {
-    /// 目标节点
+    /// Destination node.
     pub dest: Dest,
 
-    /// 优先级（越小越优先）
+    /// Priority, where smaller values are preferred.
     pub priority: u32,
 
-    /// 权重（用于负载均衡）
+    /// Weight used for load balancing.
     pub weight: u32,
 
-    /// 是否可用
+    /// Whether the route is currently available.
     pub available: bool,
 }
 
 impl RouteEntry {
-    /// 创建新的路由条目
+    /// Create a new route entry.
     pub fn new(dest: Dest) -> Self {
         Self {
             dest,
@@ -39,32 +39,32 @@ impl RouteEntry {
         }
     }
 
-    /// 设置优先级
+    /// Set the priority.
     pub fn with_priority(mut self, priority: u32) -> Self {
         self.priority = priority;
         self
     }
 
-    /// 设置权重
+    /// Set the weight.
     pub fn with_weight(mut self, weight: u32) -> Self {
         self.weight = weight;
         self
     }
 }
 
-/// 路由表
+/// Route table.
 ///
-/// 管理 ActrId 和 ActrType 到 Dest 的映射
+/// Manages mappings from `ActrId` and `ActrType` to `Dest`.
 pub struct RouteTable {
-    /// ActrId → 路由条目列表
+    /// `ActrId -> route entries`.
     id_routes: RwLock<HashMap<ActrId, Vec<RouteEntry>>>,
 
-    /// ActrType → 路由条目列表（用于服务发现）
+    /// `ActrType -> route entries`, used for service discovery.
     type_routes: RwLock<HashMap<ActrType, Vec<RouteEntry>>>,
 }
 
 impl RouteTable {
-    /// 创建新的路由表
+    /// Create a new route table.
     pub fn new() -> Self {
         Self {
             id_routes: RwLock::new(HashMap::new()),
@@ -72,14 +72,14 @@ impl RouteTable {
         }
     }
 
-    // ========== ActrId 路由 ==========
+    // ========== ActrId Routes ==========
 
-    /// 注册 ActrId 路由
+    /// Register a route for an ActrId.
     pub fn register_id(&self, actor_id: ActrId, entry: RouteEntry) {
         let mut routes = self.id_routes.write();
         routes.entry(actor_id.clone()).or_default().push(entry);
 
-        // 按优先级排序
+        // Sort by priority.
         if let Some(entries) = routes.get_mut(&actor_id) {
             entries.sort_by_key(|e| e.priority);
         }
@@ -87,7 +87,7 @@ impl RouteTable {
         log::debug!("[RouteTable] Registered route for ActrId: {:?}", actor_id);
     }
 
-    /// 注销 ActrId 的所有路由
+    /// Unregister all routes for an ActrId.
     pub fn unregister_id(&self, actor_id: &ActrId) {
         let mut routes = self.id_routes.write();
         routes.remove(actor_id);
@@ -97,20 +97,16 @@ impl RouteTable {
         );
     }
 
-    /// 查询 ActrId 的最优路由
+    /// Look up the best route for an ActrId.
     pub fn lookup_id(&self, actor_id: &ActrId) -> Option<Dest> {
         let routes = self.id_routes.read();
         routes.get(actor_id).and_then(|entries| {
-            // 返回第一个可用的路由
-            entries
-                .iter()
-                .filter(|e| e.available)
-                .next()
-                .map(|e| e.dest.clone())
+            // Return the first available route.
+            entries.iter().find(|e| e.available).map(|e| e.dest.clone())
         })
     }
 
-    /// 查询 ActrId 的所有可用路由
+    /// Look up all available routes for an ActrId.
     pub fn lookup_id_all(&self, actor_id: &ActrId) -> Vec<Dest> {
         let routes = self.id_routes.read();
         routes
@@ -125,14 +121,14 @@ impl RouteTable {
             .unwrap_or_default()
     }
 
-    // ========== ActrType 路由 ==========
+    // ========== ActrType Routes ==========
 
-    /// 注册 ActrType 路由（服务发现）
+    /// Register a route for an ActrType, typically for service discovery.
     pub fn register_type(&self, actr_type: ActrType, entry: RouteEntry) {
         let mut routes = self.type_routes.write();
         routes.entry(actr_type.clone()).or_default().push(entry);
 
-        // 按优先级排序
+        // Sort by priority.
         if let Some(entries) = routes.get_mut(&actr_type) {
             entries.sort_by_key(|e| e.priority);
         }
@@ -143,19 +139,15 @@ impl RouteTable {
         );
     }
 
-    /// 查询 ActrType 的最优路由
+    /// Look up the best route for an ActrType.
     pub fn lookup_type(&self, actr_type: &ActrType) -> Option<Dest> {
         let routes = self.type_routes.read();
-        routes.get(actr_type).and_then(|entries| {
-            entries
-                .iter()
-                .filter(|e| e.available)
-                .next()
-                .map(|e| e.dest.clone())
-        })
+        routes
+            .get(actr_type)
+            .and_then(|entries| entries.iter().find(|e| e.available).map(|e| e.dest.clone()))
     }
 
-    /// 查询 ActrType 的所有可用路由（用于负载均衡）
+    /// Look up all available routes for an ActrType for load balancing.
     pub fn lookup_type_all(&self, actr_type: &ActrType) -> Vec<Dest> {
         let routes = self.type_routes.read();
         routes
@@ -170,11 +162,11 @@ impl RouteTable {
             .unwrap_or_default()
     }
 
-    // ========== 路由状态管理 ==========
+    // ========== Route State Management ==========
 
-    /// 标记路由为不可用
+    /// Mark a route as unavailable.
     pub fn mark_unavailable(&self, dest: &Dest) {
-        // 更新 id_routes
+        // Update id_routes.
         {
             let mut routes = self.id_routes.write();
             for entries in routes.values_mut() {
@@ -186,7 +178,7 @@ impl RouteTable {
             }
         }
 
-        // 更新 type_routes
+        // Update type_routes.
         {
             let mut routes = self.type_routes.write();
             for entries in routes.values_mut() {
@@ -201,9 +193,9 @@ impl RouteTable {
         log::info!("[RouteTable] Marked dest as unavailable: {:?}", dest);
     }
 
-    /// 标记路由为可用
+    /// Mark a route as available.
     pub fn mark_available(&self, dest: &Dest) {
-        // 更新 id_routes
+        // Update id_routes.
         {
             let mut routes = self.id_routes.write();
             for entries in routes.values_mut() {
@@ -215,7 +207,7 @@ impl RouteTable {
             }
         }
 
-        // 更新 type_routes
+        // Update type_routes.
         {
             let mut routes = self.type_routes.write();
             for entries in routes.values_mut() {
@@ -230,7 +222,7 @@ impl RouteTable {
         log::info!("[RouteTable] Marked dest as available: {:?}", dest);
     }
 
-    /// 获取统计信息
+    /// Return routing statistics.
     pub fn stats(&self) -> RouteTableStats {
         let id_routes = self.id_routes.read();
         let type_routes = self.type_routes.read();
@@ -250,16 +242,16 @@ impl Default for RouteTable {
     }
 }
 
-/// 路由表统计信息
+/// Route-table statistics.
 #[derive(Debug, Clone)]
 pub struct RouteTableStats {
-    /// ActrId 路由数
+    /// Number of `ActrId` routes.
     pub id_route_count: usize,
 
-    /// ActrType 路由数
+    /// Number of `ActrType` routes.
     pub type_route_count: usize,
 
-    /// 总条目数
+    /// Total number of entries.
     pub total_entries: usize,
 }
 
@@ -285,7 +277,7 @@ mod tests {
             r#type: actr_protocol::ActrType {
                 manufacturer: "test".to_string(),
                 name: "node".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
         };
 

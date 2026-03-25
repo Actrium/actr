@@ -13,17 +13,17 @@ use std::io::{self, Read, Write};
 use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
 use actr_protocol::{ActrType, ActrTypeExt, PackageName, ServiceName};
 
-/// Proto 源类型枚举 - 简化设计，支持编译时路由
+/// Proto source type enum — simplified design for compile-time routing
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProtoSource {
-    /// 本地服务（来自 proto/ 目录）
+    /// Local service (from proto/ directory)
     Local,
-    /// 远程服务（来自 actr.toml [dependencies]）
+    /// Remote service (from actr.toml [dependencies])
     Remote,
 }
 
 impl ProtoSource {
-    /// 从 proto 文件推断源类型
+    /// Infer source type from proto file
     ///
     /// The proper way is to use the `LocalFiles` and `RemoteFiles` parameters passed
     /// by the CLI. If not present or ambiguous, fallback to checking whether it has services.
@@ -110,7 +110,7 @@ struct MethodMetadata {
 }
 
 fn main() -> Result<()> {
-    // 支持 --version 和 --help 参数
+    // Support --version and --help arguments
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         match args[1].as_str() {
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // 从标准输入读取 CodeGeneratorRequest
+    // Read CodeGeneratorRequest from stdin
     let mut stdin = io::stdin();
     let mut buf = Vec::new();
     stdin
@@ -149,10 +149,10 @@ fn main() -> Result<()> {
     let request = CodeGeneratorRequest::decode(Bytes::from(buf))
         .context("Failed to decode CodeGeneratorRequest")?;
 
-    // 生成代码
+    // Generate code
     let response = generate_code(request)?;
 
-    // 将 CodeGeneratorResponse 写入标准输出
+    // Write CodeGeneratorResponse to stdout
     let mut out_buf = Vec::new();
     response
         .encode(&mut out_buf)
@@ -198,7 +198,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
         }
     }
 
-    // 构建类型映射用于解析
+    // Build type map for resolution
     let mut message_types = HashMap::new();
     for file in &request.proto_file {
         collect_message_types(file, &mut message_types, file.package());
@@ -228,7 +228,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                     ActrType {
                         manufacturer: manufacturer.to_string(),
                         name: service_name.clone(),
-                        version: "v1".to_string(),
+                        version: "1.0.0".to_string(),
                     }
                     .to_string_repr()
                 });
@@ -256,7 +256,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
         }
     }
 
-    // 为每个要生成的文件处理 services
+    // Process services for each file to generate
     for file_name in &request.file_to_generate {
         if let Some(file) = request.proto_file.iter().find(|f| f.name() == file_name) {
             if file.service.len() > 1 {
@@ -302,7 +302,7 @@ fn collect_message_types(
         };
         types.insert(full_name.clone(), message.clone());
 
-        // 递归处理嵌套消息
+        // Recursively process nested messages
         for nested in &message.nested_type {
             let nested_name = format!("{}.{}", full_name, nested.name());
             types.insert(nested_name, nested.clone());
@@ -337,7 +337,7 @@ fn generate_service_code(
         .unwrap_or(service_name)
         .to_snake_case();
 
-    // 🚀 使用现代化代码生成器
+    // Use the modern code generator
     let role = match proto_source {
         ProtoSource::Local => GeneratorRole::ServerSide,
         ProtoSource::Remote => GeneratorRole::ClientSide,
@@ -352,7 +352,7 @@ fn generate_service_code(
         generator.generate(&service.method)?
     };
 
-    // 根据角色生成不同的文件后缀
+    // Generate different file suffixes based on role
     let file_suffix = match role {
         GeneratorRole::ServerSide => "_actor",
         GeneratorRole::ClientSide => "_client",
@@ -443,7 +443,7 @@ mod tests {
         let request = CodeGeneratorRequest {
             file_to_generate: vec!["local.proto".to_string(), "remote/echo.proto".to_string()],
             parameter: Some(
-                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias:v1"
+                "manufacturer=acme,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileActrTypes=remote/echo.proto=custom:EchoAlias:1.0.0"
                     .to_string(),
             ),
             proto_file: vec![

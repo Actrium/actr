@@ -3,12 +3,10 @@
 //! These tests run against a local Actrix instance and local Swift projects only.
 //! Run with: `cargo test --test e2e_swift_echo -- --ignored --test-threads=1`
 
-mod e2e_support;
-
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use e2e_support::{
+use actr_cli::test_support::{
     LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
     ensure_local_swift_xcframework, pin_echo_service_dependency_version, run_actr,
 };
@@ -72,11 +70,17 @@ struct EchoServiceCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
+        let distPath = (cwd as NSString).appendingPathComponent("dist")
+        let packageName = try FileManager.default
+            .contentsOfDirectory(atPath: distPath)
+            .first(where: { $0.hasSuffix(".actr") })
+        guard let packageName else {
+            throw ActrError.StateError(msg: "No .actr package found in dist/")
+        }
+        let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(tomlConfig: configPath)
-        let workload = EchoServiceWorkload(handler: EchoServiceHandlerImpl())
-        let node = try system.spawn(workload: workload)
-        let _ = try await node.start()
+        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let _ = try await system.start()
         print("EchoService registered")
 
         while true {
@@ -111,11 +115,17 @@ struct EchoAppCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
+        let distPath = (cwd as NSString).appendingPathComponent("dist")
+        let packageName = try FileManager.default
+            .contentsOfDirectory(atPath: distPath)
+            .first(where: { $0.hasSuffix(".actr") })
+        guard let packageName else {
+            throw ActrError.StateError(msg: "No .actr package found in dist/")
+        }
+        let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(tomlConfig: configPath)
-        let workload = EchoAppWorkload()
-        let node = try system.spawn(workload: workload)
-        let actr = try await node.start()
+        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let actr = try await system.start()
 
         var request = Echo_EchoRequest()
         request.message = "hello"

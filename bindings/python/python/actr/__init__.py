@@ -6,21 +6,12 @@ This module provides Python bindings for actr-runtime, including:
 - Rust Binding: Direct Rust bindings (in .actr_raw submodule, imports from actr_raw)
 
 Recommended usage:
-    from actr import ActrSystem, WorkloadBase
-    from generated import my_service_pb2, my_service_actor
+    from actr import ActrNode, ActrType, Dest
 
-    class MyHandler(my_service_actor.MyServiceHandler):
-        async def echo(self, req: my_service_pb2.EchoRequest, ctx):
-            return my_service_pb2.EchoResponse(message=req.message)
-
-    class MyWorkload(WorkloadBase):
-        def __init__(self, handler: MyHandler):
-            self.handler = handler
-            super().__init__(my_service_actor.MyServiceDispatcher())
-
-    system = await ActrSystem.from_toml("actr.toml")
-    node = system.attach(MyWorkload(MyHandler()))
+    node = await ActrNode.from_toml("actr.toml")
     ref = await node.start()
+    targets = await ref.discover(ActrType("actrium", "EchoService", "0.2.1-beta"))
+    response = await ref.call(Dest.actor(targets[0]), "echo.EchoService.Echo", request)
 """
 
 from importlib import metadata as _metadata
@@ -31,7 +22,6 @@ try:
 except _metadata.PackageNotFoundError:
     __version__ = "0.0.0"
 from .actr_raw import (
-    ActrSystem as RustActrSystem,
     ActrNode as RustActrNode,
     ActrRef as RustActrRef,
     ActrId as RustActrId,
@@ -45,53 +35,7 @@ from .actr_raw import (
     ActrUnknownRoute,
     ActrGateNotInitialized,
 )
-from .workload import WorkloadBase  
 
-
-
-class ActrSystem:
-    """
-    High-level ActrSystem wrapper
-    
-    Provides a Pythonic interface for creating and managing Actor systems.
-    """
-    
-    def __init__(self, rust_system):
-        """Initialize with Rust ActrSystem"""
-        self._rust = rust_system
-    
-    @staticmethod
-    async def from_toml(path: str):
-        """
-        Create ActrSystem from TOML configuration file
-        
-        Args:
-            path: Path to TOML configuration file
-        
-        Returns:
-            ActrSystem instance
-        
-        Raises:
-            RuntimeError: If Rust extension is not available
-            ActrRuntimeError: If system creation fails
-        """
-        if RustActrSystem is None:
-            raise RuntimeError("Rust ActrSystem not available. Make sure Rust extension is built.")
-        rust_system = await RustActrSystem.from_toml(path)
-        return ActrSystem(rust_system)
-    
-    def attach(self, workload):
-        """
-        Attach workload to system
-        
-        Args:
-            workload: Workload instance
-        
-        Returns:
-            ActrNode instance
-        """
-        rust_node = self._rust.attach(workload)
-        return ActrNode(rust_node)
 
 
 class ActrNode:
@@ -104,6 +48,20 @@ class ActrNode:
     def __init__(self, rust_node):
         """Initialize with Rust ActrNode"""
         self._rust = rust_node
+
+    @staticmethod
+    async def from_toml(path: str):
+        """
+        Create a client-only ActrNode from a TOML configuration file.
+
+        Args:
+            path: Path to TOML configuration file
+
+        Returns:
+            ActrNode instance
+        """
+        rust_node = await RustActrNode.from_toml(path)
+        return ActrNode(rust_node)
     
     async def start(self):
         """
@@ -146,9 +104,14 @@ class ActrRef:
     def actor_id(self) -> "ActrId":
         """Get Actor ID"""
         return self._rust.actor_id()
+
+    async def discover(self, actr_type: "ActrType", count: int = 1):
+        """Discover remote actors by type."""
+        return await self._rust.discover(actr_type, count)
     
     async def call(
         self,
+        target: "Dest",
         route_key: str,
         request,
         timeout_ms: int = 30000,
@@ -180,6 +143,7 @@ class ActrRef:
         
         # Call Rust method (now raises exception directly on error)
         return await self._rust.call(
+            target,
             route_key,
             request_bytes,
             timeout_ms,
@@ -188,6 +152,7 @@ class ActrRef:
     
     async def tell(
         self,
+        target: "Dest",
         route_key: str,
         message,
         payload_type: "PayloadType" = None
@@ -214,6 +179,7 @@ class ActrRef:
         
         # Call Rust method (now raises exception directly on error)
         await self._rust.tell(
+            target,
             route_key,
             message_bytes,
             payload_type
@@ -398,20 +364,13 @@ DataStream = RustDataStream
 ActrId = RustActrId
 ActrType = RustActrType
 
-# Import decorators
-from .decorators import service, rpc, ActrDecorators
-
-# Create decorator namespace
-actr_decorator = ActrDecorators()
-
 # Re-export Rust binding module for advanced users who need direct access
-# Usage: from actr.actr_raw import ActrSystem, ActrRef, etc.
+# Usage: from actr.actr_raw import ActrNode, ActrRef, etc.
 from . import actr_raw
 
 __all__ = [
     "__version__",
     # High-level Pythonic API (recommended, root package)
-    "ActrSystem",
     "ActrNode",
     "ActrRef",
     "Context",
@@ -420,10 +379,6 @@ __all__ = [
     "Dest",
     "PayloadType",
     "DataStream",
-    # Decorators (recommended)
-    "actr_decorator",
-    "service",
-    "rpc",
     # Exceptions
     "ActrRuntimeError",
     "ActrTransportError",
@@ -432,5 +387,4 @@ __all__ = [
     "ActrGateNotInitialized",
     # Submodules (for direct access)
     "actr_raw",
-    "decorators",
 ]

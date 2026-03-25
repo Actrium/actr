@@ -5,11 +5,11 @@ pub struct EchoServiceImpl;
 
 #[async_trait::async_trait]
 impl EchoServiceHandler for EchoServiceImpl {
-    async fn echo<C: actr_framework::Context>(
+    async fn echo<C: actr::framework::Context>(
         &self,
         req: EchoRequest,
         _ctx: &C,
-    ) -> actr_protocol::ActorResult<EchoResponse> {
+    ) -> actr::protocol::ActorResult<EchoResponse> {
         println!("Received echo request: {}", req.message);
         Ok(EchoResponse {
             reply: req.message,

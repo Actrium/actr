@@ -1,6 +1,7 @@
-//! Context - Actor 内部执行上下文
+//! Context for actor-internal execution.
 //!
-//! 对标 actr 的 Context trait，提供 Actor 内部的通信能力
+//! Mirrors the `actr` `Context` trait and provides communication primitives
+//! used inside actors.
 
 use std::rc::Rc;
 
@@ -11,42 +12,43 @@ use actr_protocol::{
 use bytes::Bytes;
 
 use crate::WebContext;
-use crate::outbound::OutGate;
+use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
-/// RuntimeContext - Actor 运行时上下文（Web 实现）
+/// Runtime context for actors in the Web runtime.
 ///
-/// 对标 actr 的 RuntimeContext
+/// Mirrors `actr`'s `RuntimeContext`.
 pub struct RuntimeContext {
-    /// 当前 Actor ID
+    /// Current actor ID.
     self_id: ActrId,
 
-    /// 调用方 Actor ID
+    /// Caller actor ID.
     caller_id: Option<ActrId>,
 
-    /// 追踪 ID
+    /// Trace identifiers.
     traceparent: String,
     tracestate: String,
 
-    /// 请求 ID
+    /// Request ID.
     request_id: String,
 
-    /// 出站 gate
-    outproc_gate: OutGate,
+    /// Outbound gate.
+    gate: Gate,
 
-    /// 运行时桥接（用于 call_raw、discover 等需要底层 runtime 支持的操作）
+    /// Runtime bridge for operations that require lower-level runtime support,
+    /// such as `call_raw` and `discover`.
     bridge: Option<Rc<dyn RuntimeBridge>>,
 }
 
 impl RuntimeContext {
-    /// 创建新的 Context
+    /// Create a new context.
     pub fn new(
         self_id: ActrId,
         caller_id: Option<ActrId>,
         traceparent: String,
         tracestate: String,
         request_id: String,
-        outproc_gate: OutGate,
+        gate: Gate,
     ) -> Self {
         Self {
             self_id,
@@ -54,12 +56,12 @@ impl RuntimeContext {
             traceparent,
             tracestate,
             request_id,
-            outproc_gate,
+            gate,
             bridge: None,
         }
     }
 
-    /// 创建带有 RuntimeBridge 的 Context（用于 handler 上下文）
+    /// Attach a `RuntimeBridge` for handler execution.
     pub fn with_bridge(mut self, bridge: Rc<dyn RuntimeBridge>) -> Self {
         self.bridge = Some(bridge);
         self
@@ -68,7 +70,7 @@ impl RuntimeContext {
 
 #[async_trait::async_trait(?Send)]
 impl WebContext for RuntimeContext {
-    // ========== 基础信息 ==========
+    // ========== Basic Info ==========
 
     fn self_id(&self) -> &ActrId {
         &self.self_id
@@ -86,7 +88,7 @@ impl WebContext for RuntimeContext {
         &self.request_id
     }
 
-    // ========== RPC 通信 ==========
+    // ========== RPC Communication ==========
 
     async fn call_raw(
         &self,
@@ -97,10 +99,11 @@ impl WebContext for RuntimeContext {
     ) -> ActorResult<Vec<u8>> {
         let request_id = js_sys::Math::random().to_string();
 
-        // 通过 bridge 注册 pending RPC（使 handle_fast_path 能识别为响应而非入站请求）
+        // Register the pending RPC through the bridge so `handle_fast_path`
+        // can treat it as a response instead of an inbound request.
         if let Some(bridge) = &self.bridge {
             bridge.register_pending_rpc(request_id.clone());
-            // 确保与目标的 WebRTC 连接已就绪
+            // Ensure the WebRTC connection to the target is ready.
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
                     "[Context] ensure_connection skipped for {}: {}",
@@ -124,7 +127,7 @@ impl WebContext for RuntimeContext {
             timeout_ms,
         };
 
-        let response_bytes = self.outproc_gate.send_request(target, envelope).await?;
+        let response_bytes = self.gate.send_request(target, envelope).await?;
         Ok(response_bytes.to_vec())
     }
 
@@ -137,7 +140,7 @@ impl WebContext for RuntimeContext {
         }
     }
 
-    // ========== 类型安全通信方法 ==========
+    // ========== Type-Safe Messaging ==========
 
     async fn call<R: RpcRequest>(&self, target: &ActrId, request: R) -> ActorResult<R::Response> {
         let request_id = js_sys::Math::random().to_string();
@@ -153,13 +156,13 @@ impl WebContext for RuntimeContext {
             }
         }
 
-        // 1. 编码请求为 protobuf bytes
+        // 1. Encode the request into protobuf bytes.
         let payload: Bytes = request.encode_to_vec().into();
 
-        // 2. 从 RpcRequest trait 获取 route_key
+        // 2. Read the route key from the `RpcRequest` trait.
         let route_key = R::route_key().to_string();
 
-        // 3. 构造 RpcEnvelope（继承当前 Context 的追踪信息）
+        // 3. Build an `RpcEnvelope` carrying the current trace context.
         let envelope = RpcEnvelope {
             route_key,
             payload: Some(payload),
@@ -174,10 +177,10 @@ impl WebContext for RuntimeContext {
             timeout_ms: 30000,
         };
 
-        // 4. 通过 OutGate 发送
-        let response_bytes = self.outproc_gate.send_request(target, envelope).await?;
+        // 4. Send through the gate.
+        let response_bytes = self.gate.send_request(target, envelope).await?;
 
-        // 5. 解码响应
+        // 5. Decode the response.
         R::Response::decode(&*response_bytes).map_err(|e| {
             actr_protocol::ActrError::DecodeFailure(format!(
                 "Failed to decode {}: {}",
@@ -198,35 +201,35 @@ impl WebContext for RuntimeContext {
             }
         }
 
-        // 1. 编码消息
+        // 1. Encode the message.
         let payload: Bytes = message.encode_to_vec().into();
 
-        // 2. 获取 route_key
+        // 2. Fetch the route key.
         let route_key = R::route_key().to_string();
 
-        // 3. 构造 RpcEnvelope（fire-and-forget 语义）
+        // 3. Build an `RpcEnvelope` with fire-and-forget semantics.
         let envelope = RpcEnvelope {
             route_key,
             payload: Some(payload),
             error: None,
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
-            request_id: js_sys::Math::random().to_string(), // 简化 ID 生成
+            request_id: js_sys::Math::random().to_string(), // Simplified ID generation.
             metadata: vec![MetadataEntry {
                 key: "sender_actr_id".to_string(),
                 value: self.self_id.to_string_repr(),
             }],
-            timeout_ms: 0, // 0 表示不等待响应
+            timeout_ms: 0, // `0` means do not wait for a response.
         };
 
-        // 4. 通过 OutGate 发送
-        self.outproc_gate.send_message(target, envelope).await
+        // 4. Send through the gate.
+        self.gate.send_message(target, envelope).await
     }
 
-    // ========== Stream 注册方法 ==========
+    // ========== Stream Registration ==========
     //
-    // 注意：Stream 注册在 SW 端主要用于向 DOM 转发注册请求
-    // 实际的回调执行在 DOM 端的 Fast Path
+    // Stream registration on the SW side mainly forwards registration requests
+    // to the DOM side. The actual callback runs on the DOM fast path.
 
     async fn register_stream(
         &self,
@@ -259,8 +262,8 @@ impl WebContext for RuntimeContext {
         track_id: String,
         _callback: Box<dyn FnMut(Bytes) + 'static>,
     ) -> ActorResult<()> {
-        // TODO: 通过 PostMessage 将注册请求发送到 DOM 端
-        // DOM 端的 MediaFrameHandlerRegistry 会管理实际的回调
+        // TODO: Send the registration request to the DOM side via PostMessage.
+        // The DOM-side MediaFrameHandlerRegistry owns the actual callback.
         log::info!(
             "[Context] register_media_track: {} (forwarding to DOM)",
             track_id
@@ -269,7 +272,7 @@ impl WebContext for RuntimeContext {
     }
 
     async fn unregister_media_track(&self, track_id: &str) -> ActorResult<()> {
-        // TODO: 通过 PostMessage 将注销请求发送到 DOM 端
+        // TODO: Send the unregister request to the DOM side via PostMessage.
         log::info!(
             "[Context] unregister_media_track: {} (forwarding to DOM)",
             track_id
@@ -277,7 +280,7 @@ impl WebContext for RuntimeContext {
         Ok(())
     }
 
-    // ========== Stream 发送方法 ==========
+    // ========== Stream Sending ==========
 
     async fn send_media_sample(
         &self,
@@ -292,16 +295,16 @@ impl WebContext for RuntimeContext {
             data.len()
         );
 
-        // 构造带 track_id 前缀的数据
-        // 格式: [track_id_len(4) | track_id(N) | data(M)]
+        // Prefix the payload with `track_id`.
+        // Format: [track_id_len(4) | track_id(N) | data(M)]
         let track_id_bytes = track_id.as_bytes();
         let mut payload = Vec::with_capacity(4 + track_id_bytes.len() + data.len());
         payload.extend_from_slice(&(track_id_bytes.len() as u32).to_be_bytes());
         payload.extend_from_slice(track_id_bytes);
         payload.extend_from_slice(&data);
 
-        // 通过 OutGate 发送 Fast Path 数据
-        self.outproc_gate
+        // Send fast-path data through the gate.
+        self.gate
             .send_data_stream(
                 target,
                 actr_protocol::PayloadType::MediaRtp,
@@ -323,16 +326,16 @@ impl WebContext for RuntimeContext {
             data.len()
         );
 
-        // 构造带 stream_id 前缀的数据
-        // 格式: [stream_id_len(4) | stream_id(N) | data(M)]
+        // Prefix the payload with `stream_id`.
+        // Format: [stream_id_len(4) | stream_id(N) | data(M)]
         let stream_id_bytes = stream_id.as_bytes();
         let mut payload = Vec::with_capacity(4 + stream_id_bytes.len() + data.len());
         payload.extend_from_slice(&(stream_id_bytes.len() as u32).to_be_bytes());
         payload.extend_from_slice(stream_id_bytes);
         payload.extend_from_slice(&data);
 
-        // 通过 OutGate 发送 Fast Path 数据（默认使用 STREAM_RELIABLE）
-        self.outproc_gate
+        // Send fast-path data through the gate (defaulting to STREAM_RELIABLE).
+        self.gate
             .send_data_stream(
                 target,
                 actr_protocol::PayloadType::StreamReliable,

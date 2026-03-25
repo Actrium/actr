@@ -13,3 +13,7 @@ pub fn protocol_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
 pub fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
     napi::Error::from_reason(format!("Config error: {}", e))
 }
+
+pub fn hyper_error_to_napi(e: actr_hyper::HyperError) -> napi::Error {
+    napi::Error::from_reason(format!("Hyper error: {}", e))
+}

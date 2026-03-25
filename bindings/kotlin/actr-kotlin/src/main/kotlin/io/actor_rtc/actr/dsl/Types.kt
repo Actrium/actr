@@ -12,16 +12,19 @@ import io.actor_rtc.actr.Realm
 // ============================================================================
 
 /**
- * Create an ActrType from a string in "manufacturer:name" format.
+ * Create an ActrType from a string in "manufacturer:name:version" format.
  *
- * @param typeString Type string like "acme:EchoService"
- * @return ActrType with parsed manufacturer and name
+ * @param typeString Type string like "acme:EchoService:1.0.0"
+ * @return ActrType with parsed manufacturer, name, and version
  * @throws IllegalArgumentException if format is invalid
  */
 fun String.toActrType(): ActrType {
-    val parts = this.split(":", limit = 2)
-    require(parts.size == 2) { "ActrType string must be in 'manufacturer:name' format, got: $this" }
-    return ActrType(manufacturer = parts[0], name = parts[1])
+    val parts = this.split(":", limit = 3)
+    require(parts.size == 3) {
+        "ActrType string must be in 'manufacturer:name:version' format, got: $this"
+    }
+    require(parts[2].isNotBlank()) { "ActrType version must not be blank" }
+    return ActrType(manufacturer = parts[0], name = parts[1], version = parts[2])
 }
 
 /**
@@ -32,6 +35,7 @@ fun String.toActrType(): ActrType {
  * val type = actrType {
  *     manufacturer = "acme"
  *     name = "EchoService"
+ *     version = "1.0.0"
  * }
  * ```
  */
@@ -40,26 +44,28 @@ inline fun actrType(builder: ActrTypeBuilder.() -> Unit): ActrType {
 }
 
 /**
- * Create an ActrType from manufacturer and name.
+ * Create an ActrType from manufacturer, name, and version.
  *
  * Example:
  * ```kotlin
- * val type = actrType("acme", "EchoService")
+ * val type = actrType("acme", "EchoService", "1.0.0")
  * ```
  */
-fun actrType(manufacturer: String, name: String): ActrType {
-    return ActrType(manufacturer = manufacturer, name = name)
+fun actrType(manufacturer: String, name: String, version: String): ActrType {
+    return ActrType(manufacturer = manufacturer, name = name, version = version)
 }
 
 /** Builder for ActrType. */
 class ActrTypeBuilder {
     var manufacturer: String = ""
     var name: String = ""
+    var version: String = ""
 
     fun build(): ActrType {
         require(manufacturer.isNotBlank()) { "manufacturer must not be blank" }
         require(name.isNotBlank()) { "name must not be blank" }
-        return ActrType(manufacturer = manufacturer, name = name)
+        require(version.isNotBlank()) { "version must not be blank" }
+        return ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 }
 
@@ -68,7 +74,7 @@ class ActrTypeBuilder {
 // ============================================================================
 
 /** Convert ActrType to string representation. */
-fun ActrType.toTypeString(): String = "$manufacturer:$name"
+fun ActrType.toTypeString(): String = "$manufacturer:$name:$version"
 
 /** Check if this type matches a type string. */
 fun ActrType.matches(typeString: String): Boolean {
@@ -88,7 +94,7 @@ fun ActrType.matches(typeString: String): Boolean {
  * val id = actrId {
  *     realm = 2281844430u
  *     serialNumber = 12345uL
- *     type = "acme:EchoService"
+ *     type = "acme:EchoService:1.0.0"
  * }
  * ```
  */
@@ -114,9 +120,9 @@ class ActrIdBuilder {
         _type = actrType
     }
 
-    /** Set the actor type with manufacturer and name. */
-    fun type(manufacturer: String, name: String) {
-        _type = ActrType(manufacturer = manufacturer, name = name)
+    /** Set the actor type with manufacturer, name, and version. */
+    fun type(manufacturer: String, name: String, version: String) {
+        _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
     fun build(): ActrId {

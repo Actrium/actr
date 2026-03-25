@@ -101,7 +101,7 @@ message ActrRelay {
     // Decide offerer vs answerer before SDP exchange
     actr.RoleNegotiation role_negotiation = 12;
     actr.RoleAssignment role_assignment = 13;
-    // Answerer notifies Offerer to immediately retry ICE restart (方案 A)
+    // Answerer notifies Offerer to immediately retry ICE restart (Option A)
     actr.IceRestartRequest ice_restart_request = 14;
   }
 }

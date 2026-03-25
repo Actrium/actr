@@ -1,79 +1,72 @@
-//! Echo Real Server - 真实的 Actor 服务端
+//! Echo Real Server - real Actor server
 //!
-//! 使用 ActorSystem 启动，通过 signaling server 注册
+//! using/use ActrNode start，via/through signaling server register
 
 mod echo_service;
 mod generated;
 
 use echo_service::EchoService;
-use generated::echo_service_actor::EchoServiceWorkload;
+use generated::echo_actor::EchoServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. 加载配置
+    // 1. loadconfig
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
 
-    // 初始化可观测性（日志/链路追踪）
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    // initialize[...]（log/[...]）
+    let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
-    info!("🚀 Echo Real Server 启动");
+    info!("🚀 Echo Real Server start");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 使用真实的 protobuf 注册流程");
-    info!("📡 需要 signaling-server 运行在 ws://localhost:8081");
+    info!("📝 using/usereal protobuf register[...]");
+    info!("📡 need/require signaling-server [...] ws://localhost:8081");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. 创建 ActorSystem
+    // 2. create workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  创建 ActorSystem...");
+    info!("📦 create EchoService...");
 
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
+    let echo_service = EchoService::new();
+    let workload = EchoServiceWorkload::new(echo_service);
+    let node = match unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    ) {
+        Ok(node) => node,
         Err(e) => {
-            error!("❌ ActrSystem 创建失败: {:?}", e);
+            error!("❌ ActrNode createfailed: {:?}", e);
             return Err(e.into());
         }
     };
 
-    info!("✅ ActrSystem 创建成功");
+    info!("✅ ActrNode createsuccess");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. 创建 EchoService 并附加 Workload
+    // 3. start ActrNode (connection signaling server, register, startreceive)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("📦 创建 EchoService...");
-
-    let echo_service = EchoService::new();
-    let workload = EchoServiceWorkload::new(echo_service);
-    let node = system.attach(workload);
-
-    info!("✅ EchoService 已附加");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. 启动 ActrNode (连接 signaling server, 注册, 启动接收)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🚀 启动 ActrNode...");
+    info!("🚀 start ActrNode...");
 
     let actr_ref = match node.start().await {
         Ok(actr) => actr,
         Err(e) => {
-            error!("❌ ActrNode 启动失败: {:?}", e);
-            error!("💡 提示：请确保 signaling-server 已运行: cd signaling-server && cargo run");
+            error!("❌ ActrNode startfailed: {:?}", e);
+            error!("💡 tip/hint：please ensure signaling-server already[...]: cd signaling-server && cargo run");
             return Err(e.into());
         }
     };
 
-    info!("✅ ActrNode 启动成功！");
+    info!("✅ ActrNode startsuccess！");
     info!("🆔 Server ID: {:?}", actr_ref.actor_id());
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("🎉 Echo Server 已完全启动并注册");
-    info!("📡 等待客户端连接...");
+    info!("🎉 Echo Server alreadyfully/completelystart[...]register");
+    info!("📡 waiting/wait forclientconnection...");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -81,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
-    info!("✅ Echo Server 已关闭");
+    info!("✅ Echo Server closed");
 
     Ok(())
 }

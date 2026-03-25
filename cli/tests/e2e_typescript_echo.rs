@@ -3,15 +3,14 @@
 //! These tests run against local Actrix and local echo services only.
 //! Run with: `cargo test --test e2e_typescript_echo -- --ignored --test-threads=1`
 
-mod e2e_support;
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use e2e_support::{
+use actr_cli::test_support as e2e_support;
+use actr_cli::test_support::{
     LocalActrix, LoggedProcess, align_project_with_local_actrix, assert_success,
     pin_echo_service_dependency_version, random_manufacturer,
 };

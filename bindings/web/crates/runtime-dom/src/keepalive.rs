@@ -1,15 +1,16 @@
-//! Service Worker Keepalive 机制
+//! Service Worker keepalive mechanism.
 //!
-//! 用于定期向 Service Worker 发送保活消息，防止浏览器回收 Service Worker。
+//! Periodically sends keepalive messages to the Service Worker so the browser
+//! does not reclaim it.
 
 use crate::transport::DataLane;
 use bytes::Bytes;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// Service Worker Keepalive 机制
+/// Service Worker keepalive mechanism.
 ///
-/// 只要 DOM 还有活动，就应该保持 Service Worker 活跃。
+/// As long as the DOM side is active, the Service Worker should remain active.
 pub struct ServiceWorkerKeepalive {
     lane: Arc<DataLane>,
     interval_secs: u64,
@@ -17,11 +18,11 @@ pub struct ServiceWorkerKeepalive {
 }
 
 impl ServiceWorkerKeepalive {
-    /// 创建新的 Keepalive 实例
+    /// Create a new keepalive instance.
     ///
-    /// # 参数
-    /// - `lane`: PostMessage Lane（指向 Service Worker）
-    /// - `interval_secs`: 保活消息发送间隔（秒），默认 20 秒
+    /// # Parameters
+    /// - `lane`: PostMessage lane targeting the Service Worker
+    /// - `interval_secs`: Keepalive interval in seconds, defaults to 20
     pub fn new(lane: Arc<DataLane>, interval_secs: Option<u64>) -> Self {
         Self {
             lane,
@@ -30,13 +31,13 @@ impl ServiceWorkerKeepalive {
         }
     }
 
-    /// 启动保活机制
+    /// Start the keepalive loop.
     ///
-    /// 每隔 `interval_secs` 秒发送一次保活消息到 Service Worker。
+    /// Sends one keepalive message to the Service Worker every `interval_secs` seconds.
     pub fn start(&self) {
         let mut running = self.running.lock();
         if *running {
-            log::warn!("ServiceWorkerKeepalive 已经在运行");
+            log::warn!("ServiceWorkerKeepalive is already running");
             return;
         }
         *running = true;
@@ -48,18 +49,18 @@ impl ServiceWorkerKeepalive {
 
         wasm_bindgen_futures::spawn_local(async move {
             log::info!(
-                "ServiceWorkerKeepalive 已启动: 间隔 {} 秒",
+                "ServiceWorkerKeepalive started with {} second interval",
                 interval_ms / 1000
             );
 
             loop {
-                // 检查是否应该停止
+                // Check whether the loop should stop.
                 if !*running.lock() {
-                    log::info!("ServiceWorkerKeepalive 已停止");
+                    log::info!("ServiceWorkerKeepalive stopped");
                     break;
                 }
 
-                // 等待指定间隔
+                // Wait for the configured interval.
                 wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(&mut |resolve, _| {
                     let window = web_sys::window().unwrap();
                     window
@@ -72,28 +73,31 @@ impl ServiceWorkerKeepalive {
                 .await
                 .unwrap();
 
-                // 发送保活消息
+                // Send a keepalive message.
                 let keepalive_msg = Bytes::from_static(b"KEEPALIVE");
                 match lane.send(keepalive_msg).await {
                     Ok(_) => {
-                        log::trace!("ServiceWorkerKeepalive: 发送保活消息");
+                        log::trace!("ServiceWorkerKeepalive: sent keepalive message");
                     }
                     Err(e) => {
-                        log::error!("ServiceWorkerKeepalive: 发送保活消息失败: {:?}", e);
+                        log::error!(
+                            "ServiceWorkerKeepalive: failed to send keepalive message: {:?}",
+                            e
+                        );
                     }
                 }
             }
         });
     }
 
-    /// 停止保活机制
+    /// Stop the keepalive loop.
     pub fn stop(&self) {
         let mut running = self.running.lock();
         *running = false;
-        log::info!("ServiceWorkerKeepalive: 请求停止");
+        log::info!("ServiceWorkerKeepalive: stop requested");
     }
 
-    /// 检查保活机制是否正在运行
+    /// Check whether the keepalive loop is running.
     pub fn is_running(&self) -> bool {
         *self.running.lock()
     }

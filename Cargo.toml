@@ -14,53 +14,58 @@ categories = ["network-programming", "asynchronous", "web-programming"]
 workspace = true
 
 [dependencies]
-# 核心依赖 - 全部重新导出
+# Core dependencies - all re-exported
 actr-protocol.workspace = true
 actr-framework.workspace = true
 actr-runtime = { workspace = true, optional = true }
+actr-hyper = { workspace = true, optional = true }
 actr-config = { workspace = true, optional = true }
 
-# 常用依赖
+# Common dependencies
 async-trait.workspace = true
 
 [features]
 default = ["runtime", "config"]
 
-# Runtime 支持 - 包含完整的 ActorSystem 运行时
-# Note: actr-runtime has a non-optional dependency on actr-config,
-# so runtime feature must include config as a transitive requirement
-runtime = ["dep:actr-runtime", "config"]
+# Runtime support - includes the full ActrNode/ActrRef runtime
+runtime = ["dep:actr-runtime", "dep:actr-hyper", "config"]
 
-# Config 支持 - 包含配置文件解析
+# Config support - includes configuration file parsing
 config = ["dep:actr-config"]
 
-# 完整功能
+# Full feature set
 full = ["runtime", "config", "opentelemetry"]
 
-# OpenTelemetry 可观测性
+# OpenTelemetry observability
 opentelemetry = [
     "runtime",
-    "actr-runtime/opentelemetry",
+    "actr-hyper/opentelemetry",
     "actr-config/opentelemetry",
 ]
 
 [workspace]
 resolver = "2"
 members = [
-    # === Core Crates (核心 crate) ===
+    # === Core Crates ===
     "core/protocol",
     "core/service-compat",
     "core/config",
     "core/framework",
+    "core/hyper",
     "core/runtime",
     "core/runtime-mailbox",
-    # === Developer Tools (开发者工具) ===
+    "core/platform-traits",
+    "core/platform-native",
+    "core/pack",
+    # === Developer Tools ===
     "tools/protoc-gen/rust",
     "tools/protoc-gen/web",
     # === CLI ===
     "cli",
     # === Language Bindings (Rust FFI) ===
     "bindings/ffi",
+    # === Testing Utilities ===
+    "testing/mock-signaling",
 ]
 
 # === Excluded from Cargo workspace ===
@@ -94,7 +99,7 @@ collapsible_if = "allow"
 collapsible_else_if = "allow"
 
 [workspace.dependencies]
-# === Internal Dependencies (内部依赖) ===
+# === Internal Dependencies ===
 actr-protocol = { path = "core/protocol", version = "0.2.0" }
 proto-fingerprint = "0.1.0"
 actr-service-compat = { path = "core/service-compat", version = "0.2.0" }
@@ -103,13 +108,18 @@ actr-framework = { path = "core/framework", version = "0.2.0" }
 actr-framework-protoc-codegen = { path = "tools/protoc-gen/rust", version = "0.2.0" }
 actr-runtime = { path = "core/runtime", version = "0.2.0" }
 actr-runtime-mailbox = { path = "core/runtime-mailbox", version = "0.2.0" }
+actr-hyper = { path = "core/hyper", version = "0.1.0" }
+actr-platform-traits = { path = "core/platform-traits", version = "0.2.0" }
+actr-platform-native = { path = "core/platform-native", version = "0.2.0" }
+actr-pack = { path = "core/pack", version = "0.2.0" }
+actr-mock-signaling = { path = "testing/mock-signaling", version = "0.2.0" }
 
-# === Async Runtime (异步运行时) ===
+# === Async Runtime ===
 tokio = { version = "1.48", features = ["full"] }
 async-trait = "0.1"
 futures-util = "0.3"
 
-# === Serialization (序列化) ===
+# === Serialization ===
 prost = "0.14"
 prost-types = "0.14"
 prost-build = "0.14"
@@ -117,9 +127,9 @@ bytes = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
-toml = "0.8"
+toml = "1.0.6"
 
-# === Utilities (工具库) ===
+# === Utilities ===
 uuid = { version = "1.18", features = ["v4", "serde"] }
 thiserror = "2.0"
 anyhow = "1.0"
@@ -127,11 +137,11 @@ chrono = { version = "0.4", features = ["serde"] }
 url = "2.5"
 pwrzv = "0.6.2"
 
-# === Logging (日志) ===
+# === Logging ===
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# === Observability (可观测性) ===
+# === Observability ===
 opentelemetry = { version = "0.30.0", features = ["trace"] }
 opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.30.0", features = ["grpc-tonic"] }
@@ -140,21 +150,29 @@ tracing-opentelemetry = "0.31"
 # === WebRTC (WebRTC) ===
 webrtc = "0.14"
 
-# === Storage (存储) ===
+# === Cryptography ===
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+
+# === Storage ===
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 
-# === Networking (网络) ===
+# === WASM Runtime ===
+wasmtime = { version = "29", default-features = false, features = ["runtime", "cranelift", "component-model"] }
+
+# === Networking ===
 tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
 tokio-test = "0.4"
 dashmap = "5.5"
 crossbeam = "0.8"
 
-# === Code Generation (代码生成) ===
+# === Code Generation ===
 quote = "1.0"
 proc-macro2 = "1.0"
 heck = "0.5"
 
-# === CLI Tools (CLI 工具) ===
+# === CLI Tools ===
 clap = { version = "4.5", features = ["derive", "cargo"] }
 fs_extra = "1.3"
 tempfile = "3.23"

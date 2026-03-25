@@ -1,7 +1,4 @@
-//! ACTR-CLI - Actor-RTC 命令行工具
-//!
-//! 基于复用架构实现的统一CLI工具，通过8个核心组件和3个操作管道
-//! 提供一致的用户体验和高代码复用率。
+//! ACTR-CLI - Actor-RTC Command Line Tool
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -10,7 +7,6 @@ use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-// 导入核心复用组件
 use actr_cli::core::{
     ActrCliError, Command, CommandContext, ConfigManager, ConsoleUI, ContainerBuilder,
     DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
@@ -18,12 +14,12 @@ use actr_cli::core::{
     ServiceContainer, TomlConfigManager,
 };
 
-// 导入命令实现
-use actr_cli::commands::dlq as dlq_cmd;
+use actr_cli::commands::deps as deps_cmd;
+use actr_cli::commands::ops as ops_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
-    CheckCommand, Command as LegacyCommand, ConfigCommand, DiscoveryCommand, DocCommand,
-    FingerprintCommand, GenCommand, InitCommand, InstallCommand, RunCommand,
+    CheckCommand, Command as LegacyCommand, ConfigCommand, DocCommand, GenCommand, InitCommand,
+    RunCommand,
 };
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
@@ -48,12 +44,6 @@ enum Commands {
     /// Initialize a new Actor project
     Init(InitCommand),
 
-    /// Install service dependencies
-    Install(InstallCommand),
-
-    /// Discover network services
-    Discovery(DiscoveryCommand),
-
     /// Generate project documentation
     Doc(DocCommand),
 
@@ -63,53 +53,25 @@ enum Commands {
     /// Validate project dependencies
     Check(CheckCommand),
 
-    /// Compute semantic fingerprints
-    Fingerprint(FingerprintCommand),
-
     /// Manage project configuration
     Config(ConfigCommand),
 
     /// Run project scripts
     Run(RunCommand),
 
-    /// Dead Letter Queue inspection
-    Dlq(DlqArgs),
-
-    /// Manage actor packages (signing, publishing)
+    /// Package management (build, sign, verify, keygen)
     Pkg(pkg_cmd::PkgArgs),
-}
 
-/// Arguments for `actr dlq`
-#[derive(clap::Args, Debug)]
-pub struct DlqArgs {
-    /// Subcommand: list | show | stats | delete  [default: list]
-    #[arg(value_name = "SUBCOMMAND")]
-    pub subcommand: Option<String>,
+    /// Dependency management (install, discover, fingerprint)
+    Deps(deps_cmd::DepsArgs),
 
-    /// Record ID (required for show/delete)
-    #[arg(value_name = "ID")]
-    pub id: Option<String>,
-
-    /// Path to DLQ SQLite file
-    #[arg(long, default_value = "actr-data/dlq.db")]
-    pub db: std::path::PathBuf,
-
-    /// Max records to return for 'list'
-    #[arg(long, default_value_t = 20)]
-    pub limit: u32,
-
-    /// Filter by error_category
-    #[arg(long)]
-    pub category: Option<String>,
-
-    /// Filter records created after timestamp (RFC 3339)
-    #[arg(long)]
-    pub after: Option<String>,
+    /// Operations (dlq)
+    Ops(ops_cmd::OpsArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日志
+    // Initialize logging
     let layer = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_level(true)
@@ -122,7 +84,6 @@ async fn main() -> Result<()> {
         .with(layer)
         .try_init();
 
-    // 使用 clap 解析命令行参数
     let cli = Cli::parse();
 
     // Handle -vv for version and commit info
@@ -136,30 +97,23 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // dlq 命令不需要 ServiceContainer，提前处理
-    if let Some(Commands::Dlq(args)) = &cli.command {
-        let inner_args = dlq_cmd::DlqArgs {
-            subcommand: args.subcommand.as_deref().unwrap_or("list").to_string(),
-            id: args.id.clone(),
-            db: args.db.clone(),
-            limit: args.limit,
-            category: args.category.clone(),
-            after: args.after.clone(),
-        };
-        return dlq_cmd::execute(inner_args).await;
-    }
-
-    // pkg 命令不需要 ServiceContainer，提前处理
+    // pkg command does not need ServiceContainer; handle early
     if matches!(&cli.command, Some(Commands::Pkg(_))) {
         if let Some(Commands::Pkg(args)) = cli.command {
             return pkg_cmd::execute(args).await;
         }
     }
 
-    // 构建服务容器并注册组件
+    // ops command does not need ServiceContainer; handle early
+    if matches!(&cli.command, Some(Commands::Ops(_))) {
+        if let Some(Commands::Ops(args)) = cli.command {
+            return ops_cmd::execute(args).await;
+        }
+    }
+
+    // Build service container for remaining commands
     let container = build_container().await?;
 
-    // 创建命令执行上下文
     let context = CommandContext {
         container: Arc::new(std::sync::Mutex::new(container)),
         args: actr_cli::core::CommandArgs {
@@ -171,7 +125,6 @@ async fn main() -> Result<()> {
         working_dir: std::env::current_dir()?,
     };
 
-    // 根据命令分发执行
     if let Some(cmd) = &cli.command {
         match execute_command(cmd, &context).await {
             Ok(result) => match result {
@@ -191,12 +144,11 @@ async fn main() -> Result<()> {
                     println!("Generated {} files", gen_result.generated_files.len());
                 }
                 actr_cli::core::CommandResult::Error(error) => {
-                    eprintln!("{} {error}", "❌".red());
+                    eprintln!("{} {error}", "Error:".red());
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                // 统一的错误处理
                 if let Some(cli_error) = e.downcast_ref::<ActrCliError>() {
                     if matches!(cli_error, ActrCliError::OperationCancelled) {
                         std::process::exit(0);
@@ -216,7 +168,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// 构建服务容器
 async fn build_container() -> Result<ServiceContainer> {
     let config_path = std::path::Path::new("actr.toml");
     let mut builder = ContainerBuilder::new();
@@ -253,7 +204,6 @@ async fn build_container() -> Result<ServiceContainer> {
     Ok(container)
 }
 
-/// 执行命令
 async fn execute_command(
     command: &Commands,
     context: &CommandContext,
@@ -265,28 +215,6 @@ async fn execute_command(
             )),
             Err(e) => Err(e.into()),
         },
-        Commands::Install(cmd) => {
-            let command = InstallCommand::from_args(cmd);
-            context
-                .container
-                .lock()
-                .unwrap()
-                .validate(&command.required_components())?;
-            command.execute(context).await
-        }
-        Commands::Discovery(cmd) => {
-            let command = DiscoveryCommand::from_args(cmd);
-            if !std::path::Path::new("actr.toml").exists() {
-                return Err(anyhow::anyhow!(
-                    "No actr.toml found in current directory.\n💡 Hint: Run 'actr init' to initialize a new project first."
-                ));
-            }
-            {
-                let container = context.container.lock().unwrap();
-                container.validate(&command.required_components())?;
-            }
-            command.execute(context).await
-        }
         Commands::Doc(cmd) => match cmd.execute().await {
             Ok(_) => Ok(actr_cli::core::CommandResult::Success(
                 "Documentation generated".to_string(),
@@ -300,7 +228,6 @@ async fn execute_command(
             }
             cmd.execute(context).await
         }
-        Commands::Fingerprint(cmd) => cmd.execute(context).await,
         Commands::Gen(cmd) => match cmd.execute().await {
             Ok(_) => Ok(actr_cli::core::CommandResult::Success(
                 "Generation completed".to_string(),
@@ -317,8 +244,9 @@ async fn execute_command(
             )),
             Err(e) => Err(e.into()),
         },
-        Commands::Dlq(_) => unreachable!("dlq is handled before build_container"),
+        Commands::Deps(args) => deps_cmd::execute_with_context(args, context).await,
         Commands::Pkg(_) => unreachable!("pkg is handled before build_container"),
+        Commands::Ops(_) => unreachable!("ops is handled before build_container"),
     }
 }
 

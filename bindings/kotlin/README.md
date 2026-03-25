@@ -140,36 +140,26 @@ val localActorId = client.connect()
 // ... (see examples below)
 ```
 
-### File Transfer Example
+### Package-backed Runtime Example
 
 ```kotlin
-import com.example.LocalFileServiceWorkload
-import com.example.MyLocalFileService
+import io.actor_rtc.actr.dsl.createActrSystem
 import local_file.File.*
 
-// Create file service handler
-val fileHandler = MyLocalFileService()
-val workload = LocalFileServiceWorkload(fileHandler)
+val system = createActrSystem("actr.toml", "dist/app.actr")
+val actorRef = system.start()
 
-// Attach workload to client
-val node = client.attach(workload)
-val actorRef = node.start()
-
-// Send file
 val request = SendFileRequest.newBuilder()
     .setFilename("example.txt")
     .build()
 
 val response = actorRef.call(
-    targetId = actorRef.actorId(),
-    method = "local_file.LocalFileService.SendFile",
-    payloadType = PayloadType.RPC_RELIABLE,
-    payload = request.toByteArray(),
+    "local_file.LocalFileService.SendFile",
+    request.toByteArray(),
     timeoutMs = 60000L
 )
 
 val sendResponse = SendFileResponse.parseFrom(response)
-// Handle response...
 ```
 
 ### Service Discovery
@@ -265,7 +255,6 @@ Main entry point for ACTR communication.
 class ActrClient(config: ActrConfig) {
     fun connect(): ActrId
     fun disconnect()
-    fun attach(workload: Workload): ActrNode
     fun discoverRouteCandidates(type: ActrType, count: Int): Result<List<ActrId>>
 }
 ```
@@ -289,9 +278,10 @@ Actor type classification.
 ```kotlin
 data class ActrType(
     val manufacturer: String,
-    val name: String
+    val name: String,
+    val version: String
 ) {
-    fun toString(): String // Returns "manufacturer:name"
+    fun toString(): String // Returns "manufacturer:name:version"
 }
 ```
 

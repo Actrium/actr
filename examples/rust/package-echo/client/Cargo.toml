@@ -1,0 +1,23 @@
+[package]
+name = "package-echo-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+actr-hyper = { workspace = true, features = ["dynclib-engine"] }
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+actr-config = { workspace = true }
+actr-platform-native = { workspace = true }
+actr-pack = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+prost = { workspace = true }
+bytes = { workspace = true }
+base64 = "0.22"
+serde_json = "1.0"
+
+[build-dependencies]
+prost-build = "0.14"

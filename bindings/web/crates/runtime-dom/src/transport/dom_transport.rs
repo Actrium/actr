@@ -1,12 +1,12 @@
-//! DOM Transport 实现
+//! DOM transport implementation.
 //!
-//! 统一的传输层封装，负责：
-//! - 管理 WebRTC P2P 连接池（DataChannel + MediaTrack）
-//! - 管理与 SW 的 PostMessage 通道
-//! - 并发尝试连接策略（P2P + WebSocket fallback）
-//! - 就绪速度优先（哪个先连上用哪个）
-//! - 自动路由和转发
-//! - Fast Path 集成
+//! Unified transport wrapper responsible for:
+//! - Managing the WebRTC P2P connection pool (DataChannel + MediaTrack)
+//! - Managing the PostMessage channel to the Service Worker
+//! - Applying concurrent connection attempts (P2P + WebSocket fallback)
+//! - Preferring the connection that becomes ready first
+//! - Automatic routing and forwarding
+//! - Fast Path integration
 
 use super::lane::DataLane;
 use crate::fastpath::{MediaFrameHandlerRegistry, StreamHandlerRegistry};
@@ -22,39 +22,41 @@ use futures::channel::mpsc;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// 连接类型
+/// Connection type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionType {
     /// P2P (WebRTC)
     P2P,
-    /// WebSocket (通过 SW)
+    /// WebSocket via the Service Worker.
     WebSocket,
 }
 
-/// Dest 连接信息
+/// Connection information for a destination.
+#[allow(dead_code)]
 struct DestConnection {
-    /// 主连接（DataChannel 或 通过 SW 的 WebSocket）
+    /// Primary connection, either DataChannel or a WebSocket routed through the SW.
     primary: Option<DataLane>,
 
-    /// 连接类型
+    /// Connection type.
     conn_type: ConnectionType,
 
-    /// 连接状态
+    /// Connection state.
     state: ConnectionState,
 
-    /// MediaTrack Lanes（如果是 P2P）
+    /// MediaTrack lanes when the connection is P2P.
     media_tracks: Vec<DataLane>,
 }
 
-/// DOM 端的 Transport 实现
+/// Transport implementation for the DOM side.
+#[allow(dead_code)]
 pub struct DomTransport {
-    /// 本地 ID
+    /// Local ID.
     local_id: String,
 
-    /// 连接池：Dest → DestConnection
+    /// Connection pool keyed by destination.
     connections: Arc<DashMap<Dest, DestConnection>>,
 
-    /// SW 通道（PostMessage）
+    /// Service Worker PostMessage channel.
     sw_channel: Arc<Mutex<Option<DataLane>>>,
 
     /// Fast Path Registries
@@ -64,19 +66,19 @@ pub struct DomTransport {
     /// Keepalive
     keepalive: Arc<Mutex<Option<ServiceWorkerKeepalive>>>,
 
-    /// 连接策略
+    /// Connection strategy.
     strategy: ConnectionStrategy,
 
-    /// 统计信息
+    /// Transport statistics.
     stats: Arc<Mutex<TransportStats>>,
 
-    /// 接收通道
+    /// Receive channel.
     rx: Arc<Mutex<mpsc::UnboundedReceiver<(Dest, PayloadType, Bytes)>>>,
     tx: mpsc::UnboundedSender<(Dest, PayloadType, Bytes)>,
 }
 
 impl DomTransport {
-    /// 创建新的 DomTransport
+    /// Create a new DomTransport.
     pub fn new(local_id: String, strategy: Option<ConnectionStrategy>) -> Self {
         let (tx, rx) = mpsc::unbounded();
 
@@ -94,9 +96,9 @@ impl DomTransport {
         }
     }
 
-    /// 设置 SW 通道并启动 Keepalive
+    /// Set the Service Worker channel and start keepalive.
     pub fn set_sw_channel(&self, lane: DataLane) -> WebResult<()> {
-        // 创建 Keepalive
+        // Create the keepalive helper.
         let keepalive = ServiceWorkerKeepalive::new(Arc::new(lane.clone()), None);
         keepalive.start();
 
@@ -112,13 +114,13 @@ impl DomTransport {
 
         log::info!("[DomTransport] SW channel established with keepalive");
 
-        // 启动 SW 消息接收循环
+        // Start the Service Worker receive loop.
         self.start_sw_receiver();
 
         Ok(())
     }
 
-    /// 发送消息
+    /// Send a message.
     pub async fn send(&self, dest: &Dest, payload_type: PayloadType, data: Bytes) -> WebResult<()> {
         log::trace!(
             "[DomTransport] send: dest={:?}, payload_type={:?}, size={} bytes",
@@ -128,32 +130,32 @@ impl DomTransport {
         );
 
         match payload_type {
-            // RPC 转发到 SW（走 State Path）
+            // RPC is forwarded to the Service Worker through the State Path.
             PayloadType::RpcReliable | PayloadType::RpcSignal => {
                 self.forward_to_sw(dest, payload_type, data).await?;
             }
 
-            // STREAM 和 MEDIA 在 DOM 处理
+            // STREAM payloads are handled on the DOM side.
             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
                 let data_len = data.len();
 
-                // 尝试使用 P2P 连接
+                // Try to use the P2P connection.
                 if let Some(lane) = self.get_connection(dest).await {
                     lane.send(data).await?;
                 } else {
-                    // Fallback 到 SW（通过 WebSocket）
+                    // Fall back to the Service Worker over WebSocket.
                     log::warn!("[DomTransport] P2P not available, fallback to SW for STREAM");
                     self.forward_to_sw(dest, payload_type, data).await?;
                 }
 
-                // 更新统计
+                // Update statistics.
                 let mut stats = self.stats.lock();
                 stats.bytes_sent += data_len as u64;
                 stats.messages_sent += 1;
             }
 
             PayloadType::MediaRtp => {
-                // 必须走 MediaTrack（P2P）
+                // MEDIA_RTP must use MediaTrack over P2P.
                 if let Some(lane) = self.get_connection(dest).await {
                     let data_len = data.len();
                     lane.send(data).await?;
@@ -172,7 +174,8 @@ impl DomTransport {
         Ok(())
     }
 
-    /// 接收消息
+    /// Receive a message.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
     pub async fn recv(&self) -> Option<(Dest, PayloadType, Bytes)> {
         let mut rx = self.rx.lock();
         let msg = rx.next().await;
@@ -186,14 +189,14 @@ impl DomTransport {
         msg
     }
 
-    /// 连接到目标（并发尝试策略）
+    /// Connect to a destination using the configured strategy.
     ///
-    /// **核心策略**：
-    /// 1. 并发尝试 P2P 和 WebSocket（通过 SW）
-    /// 2. 就绪速度优先：哪个先成功用哪个
-    /// 3. P2P 优先级更高，如果都成功优先使用 P2P
+    /// **Core strategy**:
+    /// 1. Try P2P and WebSocket concurrently through the Service Worker
+    /// 2. Prefer the connection that becomes ready first
+    /// 3. If both succeed, prefer P2P when it has higher priority
     pub async fn connect(&self, dest: &Dest) -> WebResult<()> {
-        // 检查是否已连接
+        // Check whether we are already connected.
         if let Some(entry) = self.connections.get(dest) {
             if entry.state == ConnectionState::Connected {
                 log::debug!("[DomTransport] Already connected to {:?}", dest);
@@ -201,7 +204,7 @@ impl DomTransport {
             }
         }
 
-        // 标记为连接中
+        // Mark the destination as connecting.
         self.connections.insert(
             dest.clone(),
             DestConnection {
@@ -212,7 +215,7 @@ impl DomTransport {
             },
         );
 
-        // 并发尝试连接
+        // Attempt the connection.
         let result = if self.strategy.concurrent_attempts {
             self.concurrent_connect(dest).await
         } else {
@@ -221,7 +224,7 @@ impl DomTransport {
 
         match result {
             Ok(conn) => {
-                // 更新为已连接状态
+                // Update the state to connected.
                 self.connections.insert(dest.clone(), conn);
 
                 log::info!("[DomTransport] Connected to {:?}", dest);
@@ -229,7 +232,7 @@ impl DomTransport {
                 Ok(())
             }
             Err(e) => {
-                // 标记为失败
+                // Mark the attempt as failed.
                 self.connections.remove(dest);
 
                 Err(e)
@@ -237,30 +240,30 @@ impl DomTransport {
         }
     }
 
-    /// 并发连接策略（就绪速度优先）
+    /// Concurrent connection strategy that prefers whichever becomes ready first.
     ///
-    /// 同时尝试：
+    /// Attempts both:
     /// 1. P2P (WebRTC DataChannel)
-    /// 2. WebSocket (通过 SW)
+    /// 2. WebSocket (through the Service Worker)
     ///
-    /// **就绪速度优先**：哪个先连上用哪个
-    /// **优先级调整**：如果都成功，优先使用 P2P
+    /// **Ready-first preference**: use whichever connects first.
+    /// **Priority override**: if both succeed, prefer P2P.
     async fn concurrent_connect(&self, dest: &Dest) -> WebResult<DestConnection> {
         use futures::future::FutureExt;
 
         log::debug!("[DomTransport] Concurrent connect to {:?}", dest);
 
-        // 创建两个连接任务
+        // Create both connection tasks.
         let p2p_future = self.create_p2p_connection(dest).fuse();
         let websocket_future = self.create_websocket_fallback(dest).fuse();
 
         futures::pin_mut!(p2p_future, websocket_future);
 
-        // 使用 select! 并发尝试
+        // Use `select!` to race both attempts.
         let mut p2p_result = None;
         let mut ws_result = None;
 
-        // 第一轮：等待第一个成功
+        // First round: wait for the first completion.
         futures::select! {
             result = p2p_future => {
                 p2p_result = Some(result);
@@ -270,17 +273,17 @@ impl DomTransport {
             }
         }
 
-        // 如果第一个成功是 P2P，直接使用
+        // If P2P succeeds first, use it immediately.
         if let Some(Ok(conn)) = p2p_result {
             log::info!("[DomTransport] P2P connected first (concurrent mode)");
             return Ok(conn);
         }
 
-        // 如果第一个成功是 WebSocket，检查 P2P 是否也成功了
+        // If WebSocket succeeds first, check whether P2P also succeeds shortly after.
         if let Some(Ok(ws_conn)) = ws_result {
-            // 继续等待 P2P（短暂等待，如果P2P优先级更高）
+            // Keep waiting briefly for P2P if it has higher priority.
             if self.strategy.p2p_priority > self.strategy.websocket_priority {
-                // 等待最多100ms，看P2P能否成功
+                // Wait up to 100 ms to see whether P2P succeeds.
                 let timeout = async {
                     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::new(
                         &mut |resolve, _| {
@@ -313,18 +316,18 @@ impl DomTransport {
             return Ok(ws_conn);
         }
 
-        // 都失败了
+        // Both attempts failed.
         Err(WebError::Transport(format!(
             "Failed to connect to {:?}: both P2P and WebSocket failed",
             dest
         )))
     }
 
-    /// 顺序连接策略（P2P 优先，失败则 WebSocket）
+    /// Sequential connection strategy: try P2P first, then WebSocket.
     async fn sequential_connect(&self, dest: &Dest) -> WebResult<DestConnection> {
         log::debug!("[DomTransport] Sequential connect to {:?}", dest);
 
-        // 先尝试 P2P
+        // Try P2P first.
         match self.create_p2p_connection(dest).await {
             Ok(conn) => {
                 log::info!("[DomTransport] P2P connected (sequential mode)");
@@ -333,44 +336,43 @@ impl DomTransport {
             Err(e) => {
                 log::warn!("[DomTransport] P2P failed: {:?}, trying WebSocket", e);
 
-                // Fallback 到 WebSocket
+                // Fall back to WebSocket.
                 self.create_websocket_fallback(dest).await
             }
         }
     }
 
-    /// 创建 P2P 连接（WebRTC DataChannel + MediaTrack）
+    /// Create a P2P connection using WebRTC DataChannel and MediaTrack.
     async fn create_p2p_connection(&self, _dest: &Dest) -> WebResult<DestConnection> {
-        // TODO: 实现 WebRTC 信令和 PeerConnection 创建
-        // 这里需要：
-        // 1. 信令交换（SDP offer/answer）
-        // 2. ICE candidate 交换
-        // 3. 创建 DataChannel
-        // 4. 创建 MediaTrack（如果需要）
+        // TODO: implement WebRTC signaling and PeerConnection creation.
+        // This requires:
+        // 1. SDP offer/answer exchange
+        // 2. ICE candidate exchange
+        // 3. DataChannel creation
+        // 4. MediaTrack creation when needed
 
-        // 暂时返回错误（Phase 4 实现）
+        // Not implemented yet. Planned for Phase 4.
         Err(WebError::Transport(
             "P2P connection not implemented yet (Phase 4)".to_string(),
         ))
     }
 
-    /// 创建 WebSocket Fallback（通过 SW）
+    /// Create the WebSocket fallback through the Service Worker.
     async fn create_websocket_fallback(&self, dest: &Dest) -> WebResult<DestConnection> {
         log::debug!("[DomTransport] Creating WebSocket fallback for {:?}", dest);
 
-        // 通过 SW 建立 WebSocket 连接
-        // 这里不需要实际的 Lane，因为消息都会通过 SW 转发
-        // 只需要标记连接类型为 WebSocket
+        // The WebSocket is established by the Service Worker.
+        // No local lane is required because all messages are forwarded through the SW.
 
         Ok(DestConnection {
-            primary: None, // 通过 SW 转发，不需要本地 Lane
+            primary: None, // Forwarded through the SW, so no local lane is needed.
             conn_type: ConnectionType::WebSocket,
             state: ConnectionState::Connected,
             media_tracks: Vec::new(),
         })
     }
 
-    /// 获取连接
+    /// Get the active connection.
     async fn get_connection(&self, dest: &Dest) -> Option<DataLane> {
         if let Some(entry) = self.connections.get(dest) {
             if entry.state == ConnectionState::Connected {
@@ -381,7 +383,8 @@ impl DomTransport {
         None
     }
 
-    /// 转发到 SW
+    /// Forward a message to the Service Worker.
+    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
     async fn forward_to_sw(
         &self,
         dest: &Dest,
@@ -408,7 +411,7 @@ impl DomTransport {
         }
     }
 
-    /// 启动 SW 消息接收循环
+    /// Start the Service Worker receive loop.
     fn start_sw_receiver(&self) {
         let sw_channel = self.sw_channel.clone();
         let tx = self.tx.clone();
@@ -460,14 +463,14 @@ impl DomTransport {
         });
     }
 
-    /// 断开连接
+    /// Disconnect a destination.
     pub async fn disconnect(&self, dest: &Dest) -> WebResult<()> {
         self.connections.remove(dest);
         log::info!("[DomTransport] Disconnected: {:?}", dest);
         Ok(())
     }
 
-    /// 获取连接状态
+    /// Get the connection state for a destination.
     pub fn connection_state(&self, dest: &Dest) -> ConnectionState {
         self.connections
             .get(dest)
@@ -475,17 +478,17 @@ impl DomTransport {
             .unwrap_or(ConnectionState::Disconnected)
     }
 
-    /// 获取统计信息
+    /// Return transport statistics.
     pub fn stats(&self) -> TransportStats {
         self.stats.lock().clone()
     }
 
-    /// 获取 Stream Registry
+    /// Get the stream registry.
     pub fn stream_registry(&self) -> &Arc<StreamHandlerRegistry> {
         &self.stream_registry
     }
 
-    /// 获取 Media Registry
+    /// Get the media registry.
     pub fn media_registry(&self) -> &Arc<MediaFrameHandlerRegistry> {
         &self.media_registry
     }

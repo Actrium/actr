@@ -20,10 +20,10 @@ Sender (datastream.Sender)
       └─ ctx.send_data_stream(&dest, chunk)
            │
            ├─ RuntimeContext::send_data_stream()
-           ├─ OutGate::send_data_stream()
-           └─ OutprocOutGate::send_data_stream()
+           ├─ Gate::send_data_stream()
+           └─ PeerGate::send_data_stream()
                 │
-                └─ OutprocTransportManager::send()
+                └─ PeerTransport::send()
                      └─ WebRTC DataChannel / WebSocket
 
 Receiver (datastream.Receiver)
@@ -39,12 +39,12 @@ Receiver (datastream.Receiver)
 ## Components
 
 ### Sender
-- **sender/src/main.rs**: Entry point, creates ActrSystem and starts node
+- **sender/src/main.rs**: Entry point, builds `ActrNode` and starts it
 - **sender/src/sender_workload.rs**: Workload that sends 10 data chunks
 - **sender/src/generated/**: Auto-generated code from proto files (via `actr gen`)
 
 ### Receiver
-- **receiver/src/main.rs**: Entry point, creates ActrSystem and starts node
+- **receiver/src/main.rs**: Entry point, builds `ActrNode` and starts it
 - **receiver/src/receiver_workload.rs**: Workload that registers callback to receive chunks
 - **receiver/src/generated/**: Auto-generated code from proto files (via `actr gen`)
 
@@ -106,7 +106,7 @@ cargo run -p data-stream-sender
 ### Receiver Output:
 ```
 🚀 DataStream Receiver starting
-✅ ActrSystem created
+✅ ActrNode created
 ✅ ActrNode started!
 🎉 Receiver ready to receive data streams
 📦 Received chunk #1: stream_id=file-transfer, sequence=0, size=67 bytes
@@ -121,7 +121,7 @@ cargo run -p data-stream-sender
 ### Sender Output:
 ```
 🚀 DataStream Sender starting
-✅ ActrSystem created
+✅ ActrNode created
 ✅ ActrNode started!
 📤 SenderWorkload will start sending after 3 seconds...
 📤 Sending chunk #0 (sequence=0, size=67 bytes)

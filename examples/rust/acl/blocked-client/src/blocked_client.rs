@@ -1,6 +1,6 @@
 use actr_framework::{Context, Dest, Workload};
 use actr_protocol::{ActrType, RpcEnvelope};
-use actr_runtime::prelude::*;
+use actr_hyper::prelude::*;
 use bytes::Bytes;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,17 +43,17 @@ impl actr_framework::MessageDispatcher for BlockedClientDispatcher {
         ctx: &C,
     ) -> actr_protocol::ActorResult<Bytes> {
         let payload = envelope.payload.as_ref().ok_or_else(|| {
-            actr_protocol::ProtocolError::DecodeError("Missing payload".to_string())
+            actr_protocol::ActrError::DecodeFailure("Missing payload".to_string())
         })?;
         let request: GreetRequest = actr_protocol::prost::Message::decode(&**payload)
-            .map_err(|e| actr_protocol::ProtocolError::SerializationError(e.to_string()))?;
+            .map_err(|e| actr_protocol::ActrError::DecodeFailure(e.to_string()))?;
 
         let server_id = workload.server_id.lock().await.clone();
         let server_id = match server_id {
             Some(id) => id,
             None => {
                 error!("[BlockedClient] Server ID not set");
-                return Err(actr_protocol::ProtocolError::TransportError(
+                return Err(actr_protocol::ActrError::Unavailable(
                     "Server ID not configured".to_string(),
                 ));
             }
@@ -82,13 +82,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("🚀 Blocked Client starting...");
 
-    let config_path = PathBuf::from("actr.toml");
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
     let config = actr_config::ConfigParser::from_file(&config_path)?;
-    let system = ActrSystem::new(config).await?;
-    
     let workload = BlockedClientWorkload::new();
-    
-    let node = system.attach(workload.clone());
+
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
     let actr_ref = node.start().await?;
     
     info!("✅ Blocked client registered");
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_type = ActrType {
         manufacturer: "acme".to_string(),
         name: "greeter.GreeterService".to_string(),
-        version: "v1".to_string(),
+        version: "1.0.0".to_string(),
     };
     
     info!("🔍 Discovering greeter.GreeterService...");

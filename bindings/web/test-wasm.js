@@ -49,7 +49,7 @@ async function asyncTest(name, fn) {
 
 // Test 1: Check WASM file exists
 console.log('\n📦 File System Tests:');
-const wasmPath = path.join(__dirname, 'packages/web-runtime/src/actr_runtime_web_bg.wasm');
+const wasmPath = path.join(__dirname, 'packages/web-runtime/src/actr_platform_web_bg.wasm');
 test('WASM file exists', () => {
     const exists = fs.existsSync(wasmPath);
     if (!exists) throw new Error('WASM file not found');
@@ -65,7 +65,7 @@ test('WASM file size', () => {
 });
 
 // Test 3: Check JavaScript bindings
-const jsPath = path.join(__dirname, 'packages/web-runtime/src/actr_runtime_web.js');
+const jsPath = path.join(__dirname, 'packages/web-runtime/src/actr_platform_web.js');
 test('JavaScript bindings exist', () => {
     const exists = fs.existsSync(jsPath);
     if (!exists) throw new Error('JS bindings not found');
@@ -74,7 +74,7 @@ test('JavaScript bindings exist', () => {
 });
 
 // Test 4: Check TypeScript definitions
-const dtsPath = path.join(__dirname, 'packages/web-runtime/src/actr_runtime_web.d.ts');
+const dtsPath = path.join(__dirname, 'packages/web-runtime/src/actr_platform_web.d.ts');
 test('TypeScript definitions exist', () => {
     const exists = fs.existsSync(dtsPath);
     if (!exists) throw new Error('TS definitions not found');

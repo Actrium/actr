@@ -17,6 +17,8 @@ cp data-stream/sender/Actr.example.toml data-stream/sender/actr.toml
 cp data-stream/receiver/Actr.example.toml data-stream/receiver/actr.toml
 cp shell-actr-echo/server/Actr.example.toml shell-actr-echo/server/actr.toml
 cp shell-actr-echo/client/Actr.example.toml shell-actr-echo/client/actr.toml
+cp package-echo/server/Actr.example.toml package-echo/server/actr.toml
+cp package-echo/client/Actr.example.toml package-echo/client/actr.toml
 cp media-relay/actr-a/Actr.example.toml media-relay/actr-a/actr.toml
 cp media-relay/actr-b/Actr.example.toml media-relay/actr-b/actr.toml
 ```
@@ -43,6 +45,7 @@ Run workspace commands from the repository root. Examples:
 
 - `bash data-stream/start.sh` – spin up actrix (root config), receiver, and sender.
 - `bash shell-actr-echo/start.sh` – run the echo server/client against the root actrix config.
+- `bash package-echo/start.sh` – run the signed package echo host/client demo against the root actrix config.
 - `bash media-relay/start.sh` – launch the relay demo; actrix starts from the workspace root config.
 - `../audio-capture/README.md` – run the Swift sender plus Rust receiver audio capture demo.
 
@@ -82,3 +85,6 @@ Both `--bin` and `-p` work identically in a workspace context.
 - **Media Relay** – media frames relayed from `actr-a` to `actr-b`.
   - Start: `bash media-relay/start.sh`
   - Behavior: boots actrix (root config) → `actr-b` example → `actr-a` example; checks frame reception; exits automatically on success.
+- **Package Echo** – echo RPC against a host that loads a signed `.actr` package from release assets.
+  - Start: `bash package-echo/start.sh`
+  - Behavior: boots actrix (root config) → downloads and verifies the `echo-actr` release package → package host example → client example; asserts echo reply contains the packaged service response.

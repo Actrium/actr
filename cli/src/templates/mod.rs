@@ -81,6 +81,8 @@ pub struct TemplateContext {
     pub project_name_pascal: String,
     #[serde(rename = "SIGNALING_URL")]
     pub signaling_url: String,
+    #[serde(rename = "AIS_ENDPOINT_URL")]
+    pub ais_endpoint_url: String,
     #[serde(rename = "MANUFACTURER")]
     pub manufacturer: String,
     #[serde(rename = "SERVICE_NAME")]
@@ -122,6 +124,7 @@ impl TemplateContext {
             project_name_snake: to_snake_case(project_name),
             project_name_pascal: project_name_pascal.clone(),
             signaling_url: signaling_url.to_string(),
+            ais_endpoint_url: derive_ais_endpoint_url(signaling_url),
             manufacturer: manufacturer.to_string(),
             service_name: service_name.to_string(),
             workload_name: format!("{}Workload", project_name_pascal),
@@ -168,6 +171,31 @@ impl TemplateContext {
         ctx.actr_protocols_version = protocols_v;
 
         ctx
+    }
+}
+
+fn derive_ais_endpoint_url(signaling_url: &str) -> String {
+    let trimmed = signaling_url.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let scheme_normalized = if let Some(rest) = trimmed.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = trimmed.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+
+    if let Some(prefix) = scheme_normalized.strip_suffix("/signaling/ws") {
+        format!("{prefix}/ais")
+    } else if let Some(prefix) = scheme_normalized.strip_suffix("/signaling") {
+        format!("{prefix}/ais")
+    } else if let Some(prefix) = scheme_normalized.strip_suffix("/ws") {
+        format!("{prefix}/ais")
+    } else {
+        format!("{scheme_normalized}/ais")
     }
 }
 
@@ -313,6 +341,7 @@ mod tests {
         assert_eq!(ctx.project_name_pascal, "MyChatService");
         assert_eq!(ctx.workload_name, "MyChatServiceWorkload");
         assert_eq!(ctx.signaling_url, "ws://localhost:8080");
+        assert_eq!(ctx.ais_endpoint_url, "http://localhost:8080/ais");
         assert_eq!(ctx.actr_swift_version, DEFAULT_ACTR_SWIFT_VERSION);
         assert_eq!(ctx.actr_protocols_version, DEFAULT_ACTR_PROTOCOLS_VERSION);
     }

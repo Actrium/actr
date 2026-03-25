@@ -11,20 +11,20 @@ description = "Actor-RTC DOM Runtime (WASM)"
 workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"] # 生成 WASM + Rust 库
+crate-type = ["cdylib", "rlib"] # Build both WASM and Rust library outputs
 
 [dependencies]
-# 共享代码
+# Shared code
 actr-web-common = { path = "../common" }
 actr-protocol.workspace = true
 
-# WASM 绑定
+# WASM bindings
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
 serde-wasm-bindgen.workspace = true
 
-# Web APIs (DOM 环境)
+# Web APIs (DOM environment)
 web-sys = { workspace = true, features = [
     "console",
     "Window",
@@ -55,27 +55,27 @@ web-sys = { workspace = true, features = [
     # Media APIs
     "MediaStream",
     "MediaStreamTrack",
-    # 其他
+    # Other
     "BinaryType",
     "Blob",
     "ErrorEvent",
 ] }
 
-# 异步运行时
+# Async runtime
 futures.workspace = true
 async-trait.workspace = true
 
-# 序列化
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 
-# 工具
+# Utilities
 log.workspace = true
 wasm-logger.workspace = true
 console_error_panic_hook.workspace = true
 thiserror.workspace = true
 
-# 数据结构
+# Data structures
 bytes = "1.5"
 parking_lot.workspace = true
 dashmap.workspace = true

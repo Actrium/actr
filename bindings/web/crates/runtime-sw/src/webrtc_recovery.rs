@@ -1,23 +1,23 @@
-//! WebRTC 连接恢复管理
+//! WebRTC connection recovery management.
 //!
-//! 负责在 DOM 重启后重建 WebRTC 连接
+//! Rebuilds WebRTC connectivity after the DOM side restarts.
 
-use crate::{OutprocTransportManager, WebResult, WirePool};
+use crate::{PeerTransport, WebResult, WirePool};
 use actr_web_common::ConnType;
 use std::sync::Arc;
 use web_sys::MessagePort;
 
-/// WebRTC 恢复管理器
+/// WebRTC recovery manager.
 pub struct WebRtcRecoveryManager {
-    /// WirePool 引用
+    /// WirePool reference.
     wire_pool: Arc<WirePool>,
 
-    /// Transport Manager 引用（可选）
-    transport_manager: Option<Arc<OutprocTransportManager>>,
+    /// Optional transport manager reference.
+    transport_manager: Option<Arc<PeerTransport>>,
 }
 
 impl WebRtcRecoveryManager {
-    /// 创建新的恢复管理器
+    /// Create a new recovery manager.
     pub fn new(wire_pool: Arc<WirePool>) -> Self {
         log::info!("[WebRtcRecovery] Creating recovery manager");
 
@@ -27,58 +27,58 @@ impl WebRtcRecoveryManager {
         }
     }
 
-    /// 设置 Transport Manager 引用
-    pub fn with_transport_manager(mut self, manager: Arc<OutprocTransportManager>) -> Self {
+    /// Attach a transport manager.
+    pub fn with_transport_manager(mut self, manager: Arc<PeerTransport>) -> Self {
         self.transport_manager = Some(manager);
         self
     }
 
-    /// 处理 DOM 重启事件
+    /// Handle a DOM restart event.
     ///
-    /// 当 DOM 发送 "DOM_READY" 消息时调用
+    /// Called when the DOM side sends a `"DOM_READY"` message.
     pub async fn handle_dom_restart(&self, session_id: String) -> WebResult<()> {
         log::info!(
             "[WebRtcRecovery] Handling DOM restart: session_id={}",
             session_id
         );
 
-        // 1. 清理所有 WebRTC 连接
+        // 1. Clear all WebRTC connections.
         self.cleanup_stale_connections();
 
-        // 2. 请求 DOM 重新建立 WebRTC
-        // 注意：实际的重建请求需要通过控制通道发送到 DOM
-        // 这里仅记录日志，实际实现需要与 DOM 通信机制配合
+        // 2. Ask the DOM side to re-establish WebRTC.
+        // The real rebuild request must go through a control channel.
+        // This currently only logs and depends on the DOM communication layer.
         log::info!("[WebRtcRecovery] WebRTC connections cleaned, waiting for DOM to rebuild");
 
         Ok(())
     }
 
-    /// 清理失效的连接
+    /// Remove stale connections.
     fn cleanup_stale_connections(&self) {
         log::info!("[WebRtcRecovery] Cleaning up stale WebRTC connections");
 
-        // 移除 WebRTC 连接
+        // Remove WebRTC connections.
         self.wire_pool.remove_connection(ConnType::WebRTC);
 
         log::info!("[WebRtcRecovery] Stale connections removed");
     }
 
-    /// 接收新的 MessagePort
+    /// Register a new `MessagePort`.
     ///
-    /// DOM 重建 WebRTC 后，会发送新的 MessagePort 到 SW
+    /// After the DOM rebuilds WebRTC, it sends a fresh `MessagePort` to the SW.
     pub fn register_new_port(&self, peer_id: String, port: MessagePort) -> WebResult<()> {
         log::info!(
             "[WebRtcRecovery] Registering new MessagePort for peer: {}",
             peer_id
         );
 
-        // 创建新的 WebRTC 连接
+        // Build a new WebRTC connection.
         use crate::transport::WebRtcConnection;
 
         let mut rtc_conn = WebRtcConnection::new(peer_id.clone());
         rtc_conn.set_datachannel_port(port);
 
-        // 重新添加到 WirePool
+        // Add it back to the WirePool.
         use crate::transport::WireHandle;
         self.wire_pool.reconnect(WireHandle::WebRTC(rtc_conn));
 
@@ -90,25 +90,26 @@ impl WebRtcRecoveryManager {
         Ok(())
     }
 
-    /// 请求 DOM 重建 WebRTC
+    /// Request that the DOM rebuild WebRTC.
     ///
-    /// 向 DOM 发送重建请求消息
+    /// Sends a rebuild request message to the DOM side.
+    #[allow(dead_code)]
     async fn request_webrtc_rebuild(&self) -> WebResult<()> {
         log::info!("[WebRtcRecovery] Requesting WebRTC rebuild from DOM");
 
-        // TODO: 实现控制消息发送
-        // 需要一个专门的控制通道（不同于 DataLane）
-        // 可以通过以下方式：
-        // 1. 使用独立的 MessagePort（控制端口）
-        // 2. 使用 ServiceWorker.postMessage 广播
-        // 3. 通过现有的 DOM lane 发送特殊控制消息
+        // TODO: Implement control-message delivery.
+        // This needs a dedicated control channel separate from `DataLane`.
+        // Possible options:
+        // 1. A dedicated `MessagePort` used as a control port
+        // 2. Broadcast via `ServiceWorker.postMessage`
+        // 3. Send a special control message through the existing DOM lane
 
         log::warn!("[WebRtcRecovery] Control channel not implemented yet");
 
         Ok(())
     }
 
-    /// 检查恢复状态
+    /// Check recovery status.
     pub async fn check_recovery_status(&self) -> RecoveryStatus {
         let health = self.wire_pool.health_check().await;
 
@@ -122,32 +123,32 @@ impl WebRtcRecoveryManager {
         }
     }
 
-    /// 获取 WirePool 引用
+    /// Get the WirePool reference.
     pub fn wire_pool(&self) -> &Arc<WirePool> {
         &self.wire_pool
     }
 }
 
-/// 恢复状态
+/// Recovery status.
 #[derive(Debug, Clone)]
 pub struct RecoveryStatus {
-    /// WebRTC 是否已连接
+    /// Whether WebRTC is connected.
     pub webrtc_connected: bool,
 
-    /// WebSocket 是否已连接
+    /// Whether WebSocket is connected.
     pub websocket_connected: bool,
 
-    /// 是否需要恢复
+    /// Whether recovery is needed.
     pub needs_recovery: bool,
 }
 
 impl RecoveryStatus {
-    /// 是否健康
+    /// Whether the transport is healthy.
     pub fn is_healthy(&self) -> bool {
         self.webrtc_connected || self.websocket_connected
     }
 
-    /// 是否完全恢复
+    /// Whether recovery is complete.
     pub fn is_fully_recovered(&self) -> bool {
         self.webrtc_connected && self.websocket_connected
     }
@@ -195,22 +196,19 @@ mod tests {
     fn test_recovery_manager_creation() {
         let wire_pool = create_test_wire_pool();
         let _manager = WebRtcRecoveryManager::new(wire_pool);
-        // 创建成功即可
+        // Creation alone is sufficient for this test.
     }
 
     #[test]
     fn test_recovery_manager_with_transport_manager() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(OutprocTransportManager::new(
-            "test-sw".to_string(),
-            wire_builder,
-        ));
+        let transport_manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
 
         let manager =
             WebRtcRecoveryManager::new(wire_pool).with_transport_manager(transport_manager);
 
-        // 验证可以正确设置 transport manager
+        // Verify the transport manager is attached correctly.
         assert!(manager.transport_manager.is_some());
     }
 
@@ -240,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_recovery_status_needs_recovery() {
-        // 需要恢复：WebRTC 断开
+        // Recovery is needed when WebRTC is disconnected.
         let status = RecoveryStatus {
             webrtc_connected: false,
             websocket_connected: true,
@@ -249,7 +247,7 @@ mod tests {
 
         assert_eq!(status.needs_recovery, true);
 
-        // 不需要恢复：两者都连接
+        // No recovery is needed when both are connected.
         let status2 = RecoveryStatus {
             webrtc_connected: true,
             websocket_connected: true,
@@ -292,7 +290,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let manager = WebRtcRecoveryManager::new(wire_pool.clone());
 
-        // 验证可以获取 WirePool 引用
+        // Verify that the WirePool reference can be retrieved.
         let pool_ref = manager.wire_pool();
         assert!(Arc::ptr_eq(pool_ref, &wire_pool));
     }
@@ -313,12 +311,12 @@ mod tests {
 
     #[test]
     fn test_recovery_status_all_combinations() {
-        // 测试所有关键组合
+        // Test all key combinations.
         let combinations = vec![
-            (false, false, true), // 全部断开
-            (false, true, true),  // 仅 WebSocket
-            (true, false, false), // 仅 WebRTC
-            (true, true, false),  // 全部连接
+            (false, false, true), // Both disconnected
+            (false, true, true),  // WebSocket only
+            (true, false, false), // WebRTC only
+            (true, true, false),  // Both connected
         ];
 
         for (webrtc, websocket, recovery) in combinations {
@@ -328,7 +326,7 @@ mod tests {
                 needs_recovery: recovery,
             };
 
-            // 验证逻辑一致性
+            // Verify logical consistency.
             if webrtc || websocket {
                 assert!(status.is_healthy());
             } else {
@@ -348,7 +346,7 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let manager = WebRtcRecoveryManager::new(wire_pool);
 
-        // 验证初始状态
+        // Verify the initial state.
         assert!(manager.transport_manager.is_none());
     }
 
@@ -356,25 +354,22 @@ mod tests {
     fn test_with_transport_manager_builder_pattern() {
         let wire_pool = create_test_wire_pool();
         let wire_builder = Arc::new(crate::transport::WebWireBuilder::new());
-        let transport_manager = Arc::new(OutprocTransportManager::new(
-            "test-sw".to_string(),
-            wire_builder,
-        ));
+        let transport_manager = Arc::new(PeerTransport::new("test-sw".to_string(), wire_builder));
 
-        // 使用 builder 模式
+        // Use the builder pattern.
         let manager =
             WebRtcRecoveryManager::new(wire_pool.clone()).with_transport_manager(transport_manager);
 
         assert!(manager.transport_manager.is_some());
 
-        // 验证可以获取 wire_pool
+        // Verify that `wire_pool` can be retrieved.
         let pool_ref = manager.wire_pool();
         assert!(Arc::ptr_eq(pool_ref, &wire_pool));
     }
 
     #[test]
     fn test_recovery_status_needs_recovery_logic() {
-        // WebRTC 断开时需要恢复
+        // Recovery is needed when WebRTC is disconnected.
         let status1 = RecoveryStatus {
             webrtc_connected: false,
             websocket_connected: true,
@@ -382,7 +377,7 @@ mod tests {
         };
         assert!(status1.needs_recovery);
 
-        // 全部连接时不需要恢复
+        // No recovery is needed when both are connected.
         let status2 = RecoveryStatus {
             webrtc_connected: true,
             websocket_connected: true,
@@ -401,7 +396,7 @@ mod tests {
 
         let status2 = status1.clone();
 
-        // 验证 clone 后的相等性
+        // Verify equality after cloning.
         assert_eq!(status1.webrtc_connected, status2.webrtc_connected);
         assert_eq!(status1.websocket_connected, status2.websocket_connected);
         assert_eq!(status1.needs_recovery, status2.needs_recovery);
@@ -412,8 +407,8 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let manager = WebRtcRecoveryManager::new(wire_pool.clone());
 
-        // 调用 cleanup_stale_connections（通过内部方法）
-        // 这个测试验证方法不会 panic
+        // Call `cleanup_stale_connections` through the internal method.
+        // This test only verifies that the method does not panic.
         manager.cleanup_stale_connections();
     }
 
@@ -425,27 +420,27 @@ mod tests {
         let manager1 = WebRtcRecoveryManager::new(wire_pool1.clone());
         let manager2 = WebRtcRecoveryManager::new(wire_pool2.clone());
 
-        // 验证每个 manager 有独立的 wire_pool
+        // Verify that each manager owns an independent WirePool.
         assert!(!Arc::ptr_eq(manager1.wire_pool(), manager2.wire_pool()));
     }
 
     #[test]
     fn test_recovery_status_partial_recovery_scenarios() {
-        // 场景 1：WebRTC 恢复中，WebSocket 已连接
+        // Scenario 1: WebRTC is recovering while WebSocket is connected.
         let status = RecoveryStatus {
             webrtc_connected: false,
             websocket_connected: true,
             needs_recovery: true,
         };
-        assert!(status.is_healthy()); // 有一个连接就是健康的
-        assert!(!status.is_fully_recovered()); // 但未完全恢复
+        assert!(status.is_healthy()); // Any live connection counts as healthy.
+        assert!(!status.is_fully_recovered()); // But recovery is not complete.
         assert!(status.needs_recovery);
 
-        // 场景 2：WebSocket 恢复中，WebRTC 已连接
+        // Scenario 2: WebSocket is recovering while WebRTC is connected.
         let status2 = RecoveryStatus {
             webrtc_connected: true,
             websocket_connected: false,
-            needs_recovery: false, // 可能不需要恢复，因为 WebRTC 是主要连接
+            needs_recovery: false, // Recovery may not be needed because WebRTC is primary.
         };
         assert!(status2.is_healthy());
         assert!(!status2.is_fully_recovered());
@@ -456,11 +451,11 @@ mod tests {
         let wire_pool = create_test_wire_pool();
         let manager = WebRtcRecoveryManager::new(wire_pool.clone());
 
-        // 验证可以访问 wire_pool
+        // Verify that `wire_pool` is accessible.
         let pool_ref = manager.wire_pool();
         assert!(Arc::ptr_eq(pool_ref, &wire_pool));
 
-        // 多次访问应该返回相同引用
+        // Repeated access should return the same reference.
         let pool_ref2 = manager.wire_pool();
         assert!(Arc::ptr_eq(pool_ref, pool_ref2));
     }

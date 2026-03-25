@@ -1,13 +1,13 @@
-//! WebRTC MediaTrack Lane - DOM 端的 WebRTC MediaStreamTrack 传输通道
+//! WebRTC MediaTrack lane for DOM-side MediaStreamTrack transport.
 //!
-//! WebRTC MediaTrack Lane 用于 DOM 端通过 WebRTC MediaStreamTrack 传输媒体数据。
-//! 仅支持 PayloadType：MEDIA_RTP
+//! Used by the DOM side to transport media data over WebRTC MediaStreamTrack.
+//! Supports only `MEDIA_RTP`.
 //!
-//! ## 注意事项
-//! - MediaTrack 只能在 DOM 环境中使用（Service Worker 不支持 WebRTC）
-//! - MediaTrack 使用 Fast Path，直接回调处理，不经过 Mailbox
-//! - 支持音频和视频两种类型的 Track
-//! - 需要使用 MediaStreamTrackProcessor API 或 WebRTC Stats API 来提取 RTP 数据
+//! ## Notes
+//! - MediaTrack can only be used in the DOM environment because Service Workers do not support WebRTC
+//! - MediaTrack uses the Fast Path and bypasses the mailbox
+//! - Supports both audio and video tracks
+//! - RTP extraction requires MediaStreamTrackProcessor, WebRTC Stats, or similar APIs
 
 use super::lane::{DataLane, LaneResult};
 use actr_web_common::WebError;
@@ -16,18 +16,18 @@ use futures::channel::mpsc;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// MediaTrack 类型
+/// MediaTrack type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaTrackType {
-    /// 音频轨道
+    /// Audio track.
     Audio,
-    /// 视频轨道
+    /// Video track.
     Video,
 }
 
-/// WebRTC MediaTrack Lane 构建器
+/// WebRTC MediaTrack lane builder.
 ///
-/// 用于创建和配置 WebRTC MediaTrack Lane
+/// Creates and configures a WebRTC MediaTrack lane.
 pub struct WebRtcMediaTrackLaneBuilder {
     track_id: String,
     track_type: MediaTrackType,
@@ -35,47 +35,47 @@ pub struct WebRtcMediaTrackLaneBuilder {
 }
 
 impl WebRtcMediaTrackLaneBuilder {
-    /// 创建新的 WebRTC MediaTrack Lane 构建器
+    /// Create a new WebRTC MediaTrack lane builder.
     ///
-    /// # 参数
-    /// - `track_id`: MediaStreamTrack 的唯一标识符
-    /// - `track_type`: Track 类型（Audio 或 Video）
+    /// # Parameters
+    /// - `track_id`: Unique MediaStreamTrack identifier
+    /// - `track_type`: Track type (`Audio` or `Video`)
     pub fn new(track_id: impl Into<String>, track_type: MediaTrackType) -> Self {
         Self {
             track_id: track_id.into(),
             track_type,
-            buffer_size: 512, // 媒体帧缓冲区默认更大
+            buffer_size: 512, // Media frame buffers are larger by default.
         }
     }
 
-    /// 设置接收缓冲区大小
+    /// Set the receive buffer size.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
 
-    /// 构建 WebRTC MediaTrack Lane
+    /// Build the WebRTC MediaTrack lane.
     ///
-    /// # 注意
-    /// MediaTrack Lane 只支持 MEDIA_RTP PayloadType。
-    /// 实际的媒体数据提取需要通过 MediaStreamTrackProcessor 或其他 API 完成。
+    /// # Note
+    /// MediaTrack lanes support only `MEDIA_RTP`.
+    /// Actual media extraction must be implemented with MediaStreamTrackProcessor or similar APIs.
     pub fn build(self) -> LaneResult<DataLane> {
-        // 创建接收通道
+        // Create the receive channel.
         let (_tx, rx) = mpsc::unbounded();
         let rx = Arc::new(Mutex::new(rx));
 
         log::info!(
-            "WebRTC MediaTrack Lane 创建成功: track_id={}, track_type={:?}",
+            "WebRTC MediaTrack Lane created successfully: track_id={}, track_type={:?}",
             self.track_id,
             self.track_type
         );
 
-        // 注意：MediaTrack Lane 的实际数据接收需要通过：
+        // Note: actual MediaTrack reception requires one of the following:
         // 1. MediaStreamTrackProcessor API (Insertable Streams)
         // 2. WebRTC Stats API
-        // 3. 或者通过 WebRTC Transform API
+        // 3. WebRTC Transform API
         //
-        // 这里只创建了 Lane 结构，实际的数据流需要在上层集成时配置
+        // This builder only creates the lane structure. Actual data flow must be wired at a higher layer.
 
         Ok(DataLane::WebRtcMediaTrack {
             track_id: self.track_id,
@@ -84,15 +84,15 @@ impl WebRtcMediaTrackLaneBuilder {
     }
 }
 
-/// MediaTrack 处理器
+/// MediaTrack processor.
 ///
-/// 用于从 MediaStreamTrack 提取媒体帧数据并发送到 Lane
+/// Extracts media frame data from MediaStreamTrack and forwards it into the lane.
 ///
-/// ## 实现方式
+/// ## Implementation options
 ///
-/// Web 环境下提取 RTP 数据有几种方式：
+/// There are several ways to extract RTP or media data in the browser:
 ///
-/// 1. **Insertable Streams (推荐)**：
+/// 1. **Insertable Streams (recommended)**:
 ///    ```javascript
 ///    const receiver = peerConnection.getReceivers()[0];
 ///    const readableStream = receiver.readable;
@@ -101,11 +101,11 @@ impl WebRtcMediaTrackLaneBuilder {
 ///    while (true) {
 ///      const {value: encodedFrame, done} = await reader.read();
 ///      if (done) break;
-///      // 将 encodedFrame 发送到 Rust 端
+///      // Forward encodedFrame into Rust
 ///    }
 ///    ```
 ///
-/// 2. **WebCodecs API**：
+/// 2. **WebCodecs API**:
 ///    ```javascript
 ///    const processor = new MediaStreamTrackProcessor({track: videoTrack});
 ///    const reader = processor.readable.getReader();
@@ -113,11 +113,11 @@ impl WebRtcMediaTrackLaneBuilder {
 ///    while (true) {
 ///      const {value: videoFrame, done} = await reader.read();
 ///      if (done) break;
-///      // 处理 VideoFrame
+///      // Process VideoFrame
 ///    }
 ///    ```
 ///
-/// 3. **Canvas + ImageData (视频)**：
+/// 3. **Canvas + ImageData (video)**:
 ///    ```javascript
 ///    const video = document.createElement('video');
 ///    video.srcObject = new MediaStream([track]);
@@ -127,7 +127,7 @@ impl WebRtcMediaTrackLaneBuilder {
 ///    setInterval(() => {
 ///      ctx.drawImage(video, 0, 0);
 ///      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-///      // 发送 imageData
+///      // Send imageData
 ///    }, 1000/30); // 30fps
 ///    ```
 pub struct MediaTrackProcessor {
@@ -137,12 +137,12 @@ pub struct MediaTrackProcessor {
 }
 
 impl MediaTrackProcessor {
-    /// 创建新的 MediaTrack 处理器
+    /// Create a new MediaTrack processor.
     ///
-    /// # 参数
+    /// # Parameters
     /// - `track_id`: MediaStreamTrack ID
-    /// - `track_type`: Track 类型
-    /// - `tx`: 发送通道（连接到 Lane 的接收端）
+    /// - `track_type`: Track type
+    /// - `tx`: Send channel connected to the lane receiver
     pub fn new(
         track_id: String,
         track_type: MediaTrackType,
@@ -155,26 +155,26 @@ impl MediaTrackProcessor {
         }
     }
 
-    /// 处理媒体帧数据
+    /// Process one media frame.
     ///
-    /// 将媒体帧数据发送到 Lane 的接收端
+    /// Sends the media frame to the receiving side of the lane.
     ///
-    /// # 参数
-    /// - `frame_data`: 媒体帧数据（RTP packet 或 编码后的帧）
+    /// # Parameters
+    /// - `frame_data`: Media frame data, such as an RTP packet or encoded frame
     ///
-    /// # 返回
-    /// - `Ok(())`: 发送成功
-    /// - `Err`: 发送失败（通道已关闭）
+    /// # Returns
+    /// - `Ok(())`: Send succeeded
+    /// - `Err`: Send failed because the channel is closed
     pub fn process_frame(&self, frame_data: Bytes) -> LaneResult<()> {
         self.tx.unbounded_send(frame_data.clone()).map_err(|_| {
             WebError::Transport(format!(
-                "MediaTrack Lane 接收端已关闭: track_id={}",
+                "MediaTrack Lane receiver is closed: track_id={}",
                 self.track_id
             ))
         })?;
 
         log::trace!(
-            "MediaTrack 处理媒体帧: track_id={}, track_type={:?}, size={} bytes",
+            "MediaTrack processed frame: track_id={}, track_type={:?}, size={} bytes",
             self.track_id,
             self.track_type,
             frame_data.len()
@@ -183,7 +183,7 @@ impl MediaTrackProcessor {
         Ok(())
     }
 
-    /// 批量处理媒体帧
+    /// Process a batch of media frames.
     pub fn process_frames(&self, frames: Vec<Bytes>) -> LaneResult<()> {
         for frame in frames {
             self.process_frame(frame)?;
@@ -191,23 +191,24 @@ impl MediaTrackProcessor {
         Ok(())
     }
 
-    /// 获取 Track ID
+    /// Return the track ID.
     pub fn track_id(&self) -> &str {
         &self.track_id
     }
 
-    /// 获取 Track 类型
+    /// Return the track type.
     pub fn track_type(&self) -> MediaTrackType {
         self.track_type
     }
 }
 
-/// MediaTrack Lane 辅助函数
+/// Helper for creating a MediaTrack lane and processor.
 ///
-/// 用于从 web_sys::MediaStreamTrack 创建 Lane 和 Processor
+/// Creates the lane and processor structures associated with a `MediaStreamTrack`.
 ///
-/// # 注意
-/// 这个函数只创建基础结构，实际的媒体帧提取需要在 JavaScript 层完成
+/// # Note
+/// This function only creates the base structures. Actual media extraction must
+/// still be implemented on the JavaScript side.
 pub fn create_mediatrack_lane_with_processor(
     track_id: impl Into<String>,
     track_type: MediaTrackType,
@@ -224,7 +225,7 @@ pub fn create_mediatrack_lane_with_processor(
     };
 
     log::info!(
-        "创建 MediaTrack Lane 和 Processor: track_id={}, track_type={:?}",
+        "Created MediaTrack Lane and processor: track_id={}, track_type={:?}",
         track_id,
         track_type
     );
@@ -278,7 +279,7 @@ mod tests {
         let frame_data = Bytes::from_static(b"test frame data");
         processor.process_frame(frame_data.clone()).unwrap();
 
-        // 验证数据已发送到通道
+        // Verify the data was sent to the channel.
         use futures::stream::StreamExt;
         let received = rx.try_next().unwrap();
         assert_eq!(received, Some(frame_data));

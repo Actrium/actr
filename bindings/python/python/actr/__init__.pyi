@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Coroutine, Optional, Type, TypeVar
+from typing import Any, Callable, Coroutine, Optional
 
 from .actr_raw import (
-    ActrSystem as RustActrSystem,
     ActrNode as RustActrNode,
     ActrRef as RustActrRef,
     ActrId as RustActrId,
@@ -24,15 +23,10 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
-class ActrSystem:
-    def __init__(self, rust_system: RustActrSystem) -> None: ...
-    @staticmethod
-    async def from_toml(path: str) -> ActrSystem: ...
-    def attach(self, workload: Any) -> ActrNode: ...
-
-
 class ActrNode:
     def __init__(self, rust_node: RustActrNode) -> None: ...
+    @staticmethod
+    async def from_toml(path: str) -> ActrNode: ...
     async def start(self) -> ActrRef: ...
     async def try_start(self) -> ActrRef: ...
 
@@ -40,8 +34,10 @@ class ActrNode:
 class ActrRef:
     def __init__(self, rust_ref: RustActrRef) -> None: ...
     def actor_id(self) -> RustActrId: ...
+    async def discover(self, actr_type: RustActrType, count: int = 1) -> list[RustActrId]: ...
     async def call(
         self,
+        target: RustDest,
         route_key: str,
         request: Any,
         timeout_ms: int = 30000,
@@ -49,6 +45,7 @@ class ActrRef:
     ) -> bytes: ...
     async def tell(
         self,
+        target: RustDest,
         route_key: str,
         message: Any,
         payload_type: Optional[RustPayloadType] = ...,
@@ -92,18 +89,6 @@ class Context:
         payload_type: Optional[RustPayloadType] = ...,
     ) -> None: ...
 
-
-def service(service_name: str) -> Callable[[Type[T]], Type[T]]: ...
-
-def rpc(route_key: Optional[str] = ...) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
-
-
-class ActrDecorators:
-    @staticmethod
-    def service(service_name: str) -> Callable[[Type[T]], Type[T]]: ...
-    @staticmethod
-    def rpc(route_key: Optional[str] = ...) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
-
 Dest = RustDest
 PayloadType = RustPayloadType
 DataStream = RustDataStream
@@ -111,13 +96,8 @@ ActrId = RustActrId
 ActrType = RustActrType
 
 from . import actr_raw
-from .workload import WorkloadBase
-from .decorators import service, rpc, ActrDecorators
-
-actr_decorator: ActrDecorators
 
 __all__ = [
-    "ActrSystem",
     "ActrNode",
     "ActrRef",
     "Context",
@@ -131,10 +111,5 @@ __all__ = [
     "ActrDecodeError",
     "ActrUnknownRoute",
     "ActrGateNotInitialized",
-    "service",
-    "rpc",
-    "ActrDecorators",
-    "actr_decorator",
     "actr_raw",
-    "WorkloadBase",
 ]

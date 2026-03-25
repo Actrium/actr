@@ -1,4 +1,4 @@
-//! SQLite 存储后端实现
+//! SQLite storage backend implementation
 
 use crate::{
     error::StorageResult,
@@ -14,12 +14,12 @@ use std::{
 };
 use uuid::Uuid;
 
-/// SQLite 配置
+/// SQLite configuration
 #[derive(Debug, Clone)]
 pub struct SqliteConfig {
-    /// 数据库文件路径
+    /// Database file path
     pub database_path: PathBuf,
-    /// 是否启用 WAL 模式
+    /// Whether to enable WAL mode
     pub enable_wal: bool,
 }
 
@@ -32,7 +32,7 @@ impl Default for SqliteConfig {
     }
 }
 
-/// SQLite 连接包装器
+/// SQLite connection wrapper
 struct SqliteConnection {
     conn: Mutex<Connection>,
 }
@@ -54,7 +54,7 @@ impl SqliteConnection {
             r#"
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
-                from_actr_id BLOB NOT NULL,  -- ActrId Protobuf bytes (所有消息必有 sender)
+                from_actr_id BLOB NOT NULL,  -- ActrId Protobuf bytes (all messages must have a sender)
                 payload BLOB NOT NULL,
                 priority INTEGER NOT NULL,
                 status INTEGER NOT NULL DEFAULT 0, -- 0: Queued, 1: Inflight
@@ -67,7 +67,7 @@ impl SqliteConnection {
     }
 }
 
-/// SQLite 邮箱实现
+/// SQLite mailbox implementation
 pub struct SqliteMailbox {
     connection: Arc<SqliteConnection>,
 }
@@ -99,7 +99,7 @@ impl Mailbox for SqliteMailbox {
     ) -> StorageResult<Uuid> {
         let id = Uuid::new_v4();
 
-        // from 已经是 Protobuf bytes，直接存储
+        // `from` is already Protobuf bytes, store directly
         let conn = self.connection.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO messages (id, from_actr_id, payload, priority, status, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
@@ -132,7 +132,7 @@ impl Mailbox for SqliteMailbox {
 
         let mut messages = stmt
             .query_map(params![DEFAULT_BATCH_SIZE], |row| {
-                // from_actr_id 直接返回 bytes，不反序列化
+                // Return from_actr_id as raw bytes without deserializing
                 let from: Vec<u8> = row.get(1)?;
 
                 let priority_val: i64 = row.get(3)?;
@@ -238,7 +238,7 @@ mod tests {
             r#type: ActrType {
                 manufacturer: "test".to_string(),
                 name: "TestActor".to_string(),
-                version: "v1".to_string(),
+                version: "1.0.0".to_string(),
             },
         };
         let mut buf = Vec::new();

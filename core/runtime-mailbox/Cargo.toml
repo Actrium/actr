@@ -9,6 +9,10 @@ repository = "https://github.com/actor-rtc/actr"
 keywords = ["actor", "mailbox", "storage", "persistence", "sqlite"]
 categories = ["database", "data-structures", "asynchronous"]
 
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
+
 [lints]
 workspace = true
 
@@ -17,14 +21,14 @@ workspace = true
 actr-protocol.workspace = true
 
 # Database Support
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, optional = true }
 
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
 
 # Async Support
-tokio.workspace = true
+tokio = { version = "1", default-features = false, features = ["sync"] }
 async-trait.workspace = true
 
 # Utilities

@@ -1,37 +1,37 @@
 //! Fast Path Registry
 //!
-//! DOM 端的 Fast Path 注册表，用于管理流数据和媒体帧的快速处理回调。
+//! DOM-side Fast Path registry for managing fast-dispatch callbacks for stream data and media frames.
 //!
-//! Fast Path 机制：
-//! - Stream 数据（STREAM_*）和媒体帧（MEDIA_RTP）绕过 Mailbox
-//! - 直接派发给预先注册的回调函数
-//! - 在 I/O 线程并发执行，无需等待 Scheduler 调度
-//! - 延迟 ~100µs（相比 State Path 的 ~10-20ms）
+//! Fast Path mechanism:
+//! - Stream data (STREAM_*) and media frames (MEDIA_RTP) bypass the Mailbox
+//! - Dispatched directly to pre-registered callback functions
+//! - Executed concurrently on I/O threads, no need to wait for Scheduler scheduling
+//! - Latency ~100µs (compared to ~10-20ms for the State Path)
 
-// TODO: Phase 2 实现
+// TODO: Phase 2 implementation
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::sync::Arc;
 
-/// 流处理回调类型
+/// Stream handler callback type.
 pub type StreamCallback = Arc<dyn Fn(Bytes) + Send + Sync>;
 
-/// 媒体帧处理回调类型
+/// Media frame handler callback type.
 pub type MediaFrameCallback = Arc<dyn Fn(Bytes) + Send + Sync>;
 
-/// 流处理器注册表
+/// Stream handler registry.
 ///
-/// 管理 STREAM_* 类型的快速处理回调
+/// Manages fast-dispatch callbacks for `STREAM_*` payloads.
 pub struct StreamHandlerRegistry {
     handlers: DashMap<String, StreamCallback>,
 
-    /// 清空回调（DOM 重启时调用）
+    /// Clear callback used when the DOM runtime restarts.
     on_cleared: parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl StreamHandlerRegistry {
-    /// 创建新的注册表
+    /// Create a new registry.
     pub fn new() -> Self {
         Self {
             handlers: DashMap::new(),
@@ -39,23 +39,23 @@ impl StreamHandlerRegistry {
         }
     }
 
-    /// 注册流处理回调
+    /// Register a stream handler callback.
     ///
-    /// # 参数
-    /// - `stream_id`: 流 ID
-    /// - `callback`: 处理回调函数
+    /// # Parameters
+    /// - `stream_id`: Stream ID
+    /// - `callback`: Handler callback
     pub fn register(&self, stream_id: String, callback: StreamCallback) {
         self.handlers.insert(stream_id.clone(), callback);
         log::debug!("Stream handler registered: stream_id={}", stream_id);
     }
 
-    /// 注销流处理回调
+    /// Unregister a stream handler callback.
     pub fn unregister(&self, stream_id: &str) {
         self.handlers.remove(stream_id);
         log::debug!("Stream handler unregistered: stream_id={}", stream_id);
     }
 
-    /// 派发流数据到回调
+    /// Dispatch stream data to the callback.
     pub fn dispatch(&self, stream_id: &str, data: Bytes) {
         if let Some(handler) = self.handlers.get(stream_id) {
             (handler.value())(data);
@@ -64,9 +64,9 @@ impl StreamHandlerRegistry {
         }
     }
 
-    /// 设置清空回调
+    /// Set the clear callback.
     ///
-    /// 当 Registry 被清空时（DOM 重启），会调用此回调通知用户
+    /// Called when the registry is cleared, for example after a DOM restart.
     pub fn on_cleared<F>(&self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -76,24 +76,24 @@ impl StreamHandlerRegistry {
         log::debug!("Stream registry on_cleared callback registered");
     }
 
-    /// 清空所有处理器
+    /// Clear all handlers.
     ///
-    /// 在 DOM 重启时调用，清空所有注册的回调
+    /// Used during DOM restart to drop all registered callbacks.
     pub fn clear_all(&self) {
         let count = self.handlers.len();
         self.handlers.clear();
 
         log::warn!("[StreamRegistry] All handlers cleared (count={})", count);
 
-        // 通知用户
+        // Notify the user.
         if let Some(callback) = self.on_cleared.lock().as_ref() {
             callback();
         }
     }
 
-    /// 导出当前注册状态
+    /// Export the current registration state.
     ///
-    /// 返回所有已注册的 stream_id
+    /// Returns all registered stream IDs.
     pub fn export_state(&self) -> Vec<String> {
         self.handlers
             .iter()
@@ -101,7 +101,7 @@ impl StreamHandlerRegistry {
             .collect()
     }
 
-    /// 获取注册数量
+    /// Return the number of registered handlers.
     pub fn count(&self) -> usize {
         self.handlers.len()
     }
@@ -113,18 +113,18 @@ impl Default for StreamHandlerRegistry {
     }
 }
 
-/// 媒体帧处理器注册表
+/// Media frame handler registry.
 ///
-/// 管理 MEDIA_RTP 类型的快速处理回调
+/// Manages fast-dispatch callbacks for `MEDIA_RTP` payloads.
 pub struct MediaFrameHandlerRegistry {
     handlers: DashMap<String, MediaFrameCallback>,
 
-    /// 清空回调（DOM 重启时调用）
+    /// Clear callback used when the DOM runtime restarts.
     on_cleared: parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl MediaFrameHandlerRegistry {
-    /// 创建新的注册表
+    /// Create a new registry.
     pub fn new() -> Self {
         Self {
             handlers: DashMap::new(),
@@ -132,23 +132,23 @@ impl MediaFrameHandlerRegistry {
         }
     }
 
-    /// 注册媒体帧处理回调
+    /// Register a media frame handler callback.
     ///
-    /// # 参数
+    /// # Parameters
     /// - `track_id`: Track ID
-    /// - `callback`: 处理回调函数
+    /// - `callback`: Handler callback
     pub fn register(&self, track_id: String, callback: MediaFrameCallback) {
         self.handlers.insert(track_id.clone(), callback);
         log::debug!("Media frame handler registered: track_id={}", track_id);
     }
 
-    /// 注销媒体帧处理回调
+    /// Unregister a media frame handler callback.
     pub fn unregister(&self, track_id: &str) {
         self.handlers.remove(track_id);
         log::debug!("Media frame handler unregistered: track_id={}", track_id);
     }
 
-    /// 派发媒体帧到回调
+    /// Dispatch a media frame to the callback.
     pub fn dispatch(&self, track_id: &str, frame: Bytes) {
         if let Some(handler) = self.handlers.get(track_id) {
             (handler.value())(frame);
@@ -157,9 +157,9 @@ impl MediaFrameHandlerRegistry {
         }
     }
 
-    /// 设置清空回调
+    /// Set the clear callback.
     ///
-    /// 当 Registry 被清空时（DOM 重启），会调用此回调通知用户
+    /// Called when the registry is cleared, for example after a DOM restart.
     pub fn on_cleared<F>(&self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -169,24 +169,24 @@ impl MediaFrameHandlerRegistry {
         log::debug!("Media registry on_cleared callback registered");
     }
 
-    /// 清空所有处理器
+    /// Clear all handlers.
     ///
-    /// 在 DOM 重启时调用，清空所有注册的回调
+    /// Used during DOM restart to drop all registered callbacks.
     pub fn clear_all(&self) {
         let count = self.handlers.len();
         self.handlers.clear();
 
         log::warn!("[MediaRegistry] All handlers cleared (count={})", count);
 
-        // 通知用户
+        // Notify the user.
         if let Some(callback) = self.on_cleared.lock().as_ref() {
             callback();
         }
     }
 
-    /// 导出当前注册状态
+    /// Export the current registration state.
     ///
-    /// 返回所有已注册的 track_id
+    /// Returns all registered track IDs.
     pub fn export_state(&self) -> Vec<String> {
         self.handlers
             .iter()
@@ -194,7 +194,7 @@ impl MediaFrameHandlerRegistry {
             .collect()
     }
 
-    /// 获取注册数量
+    /// Return the number of registered handlers.
     pub fn count(&self) -> usize {
         self.handlers.len()
     }

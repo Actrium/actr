@@ -6,21 +6,21 @@ use std::path::Path;
 
 mod v1;
 
-/// 配置解析器工厂
+/// Configuration parser factory
 pub struct ConfigParser;
 
 impl ConfigParser {
-    /// 根据 edition 选择合适的解析器并解析配置
+    /// Select the appropriate parser based on edition and parse the config
     pub fn parse(raw: RawConfig, config_path: impl AsRef<Path>) -> Result<Config> {
         match raw.edition {
             1 => v1::ParserV1::new(config_path).parse(raw),
-            // 未来可以添加更多版本
+            // Future editions can be added here
             // 2 => v2::ParserV2::new(config_path).parse(raw),
             edition => Err(ConfigError::UnsupportedEdition(edition)),
         }
     }
 
-    /// 从文件加载并解析配置（便捷方法）
+    /// Load and parse config from file (convenience method)
     pub fn from_file(path: impl AsRef<Path>) -> Result<Config> {
         let raw = RawConfig::from_file(path.as_ref())?;
         Self::parse(raw, path)

@@ -47,7 +47,7 @@ To build fresh bindings/binaries without dirtying the git worktree, point output
 ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework ./build-xcframework.sh
 ```
 
-然后以同样的环境变量消费：
+Then consume the package with the same environment variables:
 
 ```bash
 ACTR_BINDINGS_PATH=dist/ActrBindings ACTR_BINARY_PATH=dist/ActrFFI.xcframework swift build

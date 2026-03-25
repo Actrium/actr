@@ -608,197 +608,48 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
- * Wrapper for ActrNode - a node ready to start
- */
-public protocol ActrNodeWrapperProtocol: AnyObject, Sendable {
-    
-    /**
-     * Start the actor node and return an ActrRef
-     */
-    func start() async throws  -> ActrRefWrapper
-    
-}
-/**
- * Wrapper for ActrNode - a node ready to start
- */
-open class ActrNodeWrapper: ActrNodeWrapperProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_actr_fn_clone_actrnodewrapper(self.handle, $0) }
-    }
-    // No primary constructor declared for this class.
-
-    deinit {
-        try! rustCall { uniffi_actr_fn_free_actrnodewrapper(handle, $0) }
-    }
-
-    
-
-    
-    /**
-     * Start the actor node and return an ActrRef
-     */
-open func start()async throws  -> ActrRefWrapper  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_actrnodewrapper_start(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_u64,
-            completeFunc: ffi_actr_rust_future_complete_u64,
-            freeFunc: ffi_actr_rust_future_free_u64,
-            liftFunc: FfiConverterTypeActrRefWrapper_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeActrNodeWrapper: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = ActrNodeWrapper
-
-    public static func lift(_ handle: UInt64) throws -> ActrNodeWrapper {
-        return ActrNodeWrapper(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: ActrNodeWrapper) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActrNodeWrapper {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: ActrNodeWrapper, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeActrNodeWrapper_lift(_ handle: UInt64) throws -> ActrNodeWrapper {
-    return try FfiConverterTypeActrNodeWrapper.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeActrNodeWrapper_lower(_ value: ActrNodeWrapper) -> UInt64 {
-    return FfiConverterTypeActrNodeWrapper.lower(value)
-}
-
-
-
-
-
-
-/**
- * Wrapper for ActrRef - a reference to a running actor
+ * Wrapper for a running actor reference.
  */
 public protocol ActrRefWrapperProtocol: AnyObject, Sendable {
     
     /**
-     * Get the actor's ID
+     * Get the actor's ID.
      */
     func actorId()  -> ActrId
     
     /**
-     * Call a remote actor via RPC proxy
-     *
-     * This sends a request through the local workload's RPC proxy mechanism,
-     * which forwards the call to the remote actor via WebRTC.
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `request_payload`: Request payload bytes (protobuf encoded)
-     * - `timeout_ms`: Timeout in milliseconds
-     *
-     * # Returns
-     * Response payload bytes (protobuf encoded)
+     * Call the local guest workload via RPC.
      */
     func call(routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64) async throws  -> Data
     
     /**
-     * Discover actors of the specified type
+     * Discover actors of the specified type.
      */
     func discover(targetType: ActrType, count: UInt32) async throws  -> [ActrId]
     
     /**
-     * Check if the actor is shutting down
+     * Check if shutdown is already in progress.
      */
     func isShuttingDown()  -> Bool
     
     /**
-     * Trigger shutdown
+     * Trigger shutdown.
      */
     func shutdown() 
     
     /**
-     * Send a one-way message to an actor (fire-and-forget)
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `message_payload`: Message payload bytes (protobuf encoded)
+     * Send a one-way message to the local guest workload.
      */
     func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data) async throws 
     
     /**
-     * Wait for shutdown to complete
+     * Wait for shutdown to complete.
      */
     func waitForShutdown() async 
     
 }
 /**
- * Wrapper for ActrRef - a reference to a running actor
+ * Wrapper for a running actor reference.
  */
 open class ActrRefWrapper: ActrRefWrapperProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -849,7 +700,7 @@ open class ActrRefWrapper: ActrRefWrapperProtocol, @unchecked Sendable {
 
     
     /**
-     * Get the actor's ID
+     * Get the actor's ID.
      */
 open func actorId() -> ActrId  {
     return try!  FfiConverterTypeActrId_lift(try! rustCall() {
@@ -860,19 +711,7 @@ open func actorId() -> ActrId  {
 }
     
     /**
-     * Call a remote actor via RPC proxy
-     *
-     * This sends a request through the local workload's RPC proxy mechanism,
-     * which forwards the call to the remote actor via WebRTC.
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `request_payload`: Request payload bytes (protobuf encoded)
-     * - `timeout_ms`: Timeout in milliseconds
-     *
-     * # Returns
-     * Response payload bytes (protobuf encoded)
+     * Call the local guest workload via RPC.
      */
 open func call(routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64)async throws  -> Data  {
     return
@@ -892,7 +731,7 @@ open func call(routeKey: String, payloadType: PayloadType, requestPayload: Data,
 }
     
     /**
-     * Discover actors of the specified type
+     * Discover actors of the specified type.
      */
 open func discover(targetType: ActrType, count: UInt32)async throws  -> [ActrId]  {
     return
@@ -912,7 +751,7 @@ open func discover(targetType: ActrType, count: UInt32)async throws  -> [ActrId]
 }
     
     /**
-     * Check if the actor is shutting down
+     * Check if shutdown is already in progress.
      */
 open func isShuttingDown() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -923,7 +762,7 @@ open func isShuttingDown() -> Bool  {
 }
     
     /**
-     * Trigger shutdown
+     * Trigger shutdown.
      */
 open func shutdown()  {try! rustCall() {
     uniffi_actr_fn_method_actrrefwrapper_shutdown(
@@ -933,12 +772,7 @@ open func shutdown()  {try! rustCall() {
 }
     
     /**
-     * Send a one-way message to an actor (fire-and-forget)
-     *
-     * # Arguments
-     * - `route_key`: RPC route key (e.g., "echo.EchoService/Echo")
-     * - `payload_type`: Payload transmission type (RpcReliable, RpcSignal, etc.)
-     * - `message_payload`: Message payload bytes (protobuf encoded)
+     * Send a one-way message to the local guest workload.
      */
 open func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data)async throws   {
     return
@@ -958,7 +792,7 @@ open func tell(routeKey: String, payloadType: PayloadType, messagePayload: Data)
 }
     
     /**
-     * Wait for shutdown to complete
+     * Wait for shutdown to complete.
      */
 open func waitForShutdown()async   {
     return
@@ -1029,25 +863,25 @@ public func FfiConverterTypeActrRefWrapper_lower(_ value: ActrRefWrapper) -> UIn
 
 
 /**
- * Wrapper for ActrSystem - the entry point for creating actors
+ * Wrapper for a package-backed runtime before startup.
  */
 public protocol ActrSystemWrapperProtocol: AnyObject, Sendable {
     
     /**
-     * Attach a workload and create an ActrNode
-     */
-    func attach(callback: WorkloadBridge) throws  -> ActrNodeWrapper
-    
-    /**
      * Create a network event handle for platform callbacks.
      *
-     * This must be called before `attach()` or after a previous handle was created.
+     * This must be called before `start()`.
      */
     func createNetworkEventHandle() throws  -> NetworkEventHandleWrapper
     
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+    func start() async throws  -> ActrRefWrapper
+    
 }
 /**
- * Wrapper for ActrSystem - the entry point for creating actors
+ * Wrapper for a package-backed runtime before startup.
  */
 open class ActrSystemWrapper: ActrSystemWrapperProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1096,13 +930,13 @@ open class ActrSystemWrapper: ActrSystemWrapperProtocol, @unchecked Sendable {
 
     
     /**
-     * Create a new ActrSystem from configuration file
+     * Create a new runtime wrapper from config and a verified `.actr` package file.
      */
-public static func newFromFile(configPath: String)async throws  -> ActrSystemWrapper  {
+public static func newFromPackageFile(configPath: String, packagePath: String)async throws  -> ActrSystemWrapper  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_actr_fn_constructor_actrsystemwrapper_new_from_file(FfiConverterString.lower(configPath)
+                uniffi_actr_fn_constructor_actrsystemwrapper_new_from_package_file(FfiConverterString.lower(configPath),FfiConverterString.lower(packagePath)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_u64,
@@ -1116,21 +950,9 @@ public static func newFromFile(configPath: String)async throws  -> ActrSystemWra
 
     
     /**
-     * Attach a workload and create an ActrNode
-     */
-open func attach(callback: WorkloadBridge)throws  -> ActrNodeWrapper  {
-    return try  FfiConverterTypeActrNodeWrapper_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
-    uniffi_actr_fn_method_actrsystemwrapper_attach(
-            self.uniffiCloneHandle(),
-        FfiConverterCallbackInterfaceWorkloadBridge_lower(callback),$0
-    )
-})
-}
-    
-    /**
      * Create a network event handle for platform callbacks.
      *
-     * This must be called before `attach()` or after a previous handle was created.
+     * This must be called before `start()`.
      */
 open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
     return try  FfiConverterTypeNetworkEventHandleWrapper_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
@@ -1138,6 +960,26 @@ open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+open func start()async throws  -> ActrRefWrapper  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_actrsystemwrapper_start(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_u64,
+            completeFunc: ffi_actr_rust_future_complete_u64,
+            freeFunc: ffi_actr_rust_future_free_u64,
+            liftFunc: FfiConverterTypeActrRefWrapper_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
 }
     
 
@@ -1734,33 +1576,33 @@ public func FfiConverterTypeDynamicWorkload_lower(_ value: DynamicWorkload) -> U
 
 
 /**
- * Wrapper for NetworkEventHandle - network lifecycle callbacks
+ * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
 public protocol NetworkEventHandleWrapperProtocol: AnyObject, Sendable {
     
     /**
-     * Cleanup all connections (does not depend on network events).
+     * Cleanup all connections.
      */
     func cleanupConnections() async throws  -> NetworkEventResult
     
     /**
-     * Handle network available event
+     * Handle network available event.
      */
     func handleNetworkAvailable() async throws  -> NetworkEventResult
     
     /**
-     * Handle network lost event
+     * Handle network lost event.
      */
     func handleNetworkLost() async throws  -> NetworkEventResult
     
     /**
-     * Handle network type changed event
+     * Handle network type changed event.
      */
     func handleNetworkTypeChanged(isWifi: Bool, isCellular: Bool) async throws  -> NetworkEventResult
     
 }
 /**
- * Wrapper for NetworkEventHandle - network lifecycle callbacks
+ * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
 open class NetworkEventHandleWrapper: NetworkEventHandleWrapperProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1811,7 +1653,7 @@ open class NetworkEventHandleWrapper: NetworkEventHandleWrapperProtocol, @unchec
 
     
     /**
-     * Cleanup all connections (does not depend on network events).
+     * Cleanup all connections.
      */
 open func cleanupConnections()async throws  -> NetworkEventResult  {
     return
@@ -1831,7 +1673,7 @@ open func cleanupConnections()async throws  -> NetworkEventResult  {
 }
     
     /**
-     * Handle network available event
+     * Handle network available event.
      */
 open func handleNetworkAvailable()async throws  -> NetworkEventResult  {
     return
@@ -1851,7 +1693,7 @@ open func handleNetworkAvailable()async throws  -> NetworkEventResult  {
 }
     
     /**
-     * Handle network lost event
+     * Handle network lost event.
      */
 open func handleNetworkLost()async throws  -> NetworkEventResult  {
     return
@@ -1871,7 +1713,7 @@ open func handleNetworkLost()async throws  -> NetworkEventResult  {
 }
     
     /**
-     * Handle network type changed event
+     * Handle network type changed event.
      */
 open func handleNetworkTypeChanged(isWifi: Bool, isCellular: Bool)async throws  -> NetworkEventResult  {
     return
@@ -2145,16 +1987,16 @@ public func FfiConverterTypeActrId_lower(_ value: ActrId) -> RustBuffer {
 
 
 /**
- * Actor type (manufacturer + name + optional version)
+ * Actor type (manufacturer + name + version)
  */
 public struct ActrType: Equatable, Hashable {
     public var manufacturer: String
     public var name: String
-    public var version: String?
+    public var version: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(manufacturer: String, name: String, version: String?) {
+    public init(manufacturer: String, name: String, version: String) {
         self.manufacturer = manufacturer
         self.name = name
         self.version = version
@@ -2176,14 +2018,14 @@ public struct FfiConverterTypeActrType: FfiConverterRustBuffer {
             try ActrType(
                 manufacturer: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
-                version: FfiConverterOptionString.read(from: &buf)
+                version: FfiConverterString.read(from: &buf)
         )
     }
 
     public static func write(_ value: ActrType, into buf: inout [UInt8]) {
         FfiConverterString.write(value.manufacturer, into: &buf)
         FfiConverterString.write(value.name, into: &buf)
-        FfiConverterOptionString.write(value.version, into: &buf)
+        FfiConverterString.write(value.version, into: &buf)
     }
 }
 
@@ -3836,34 +3678,31 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_actr_checksum_method_actrnodewrapper_start() != 60143) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 17890) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 11168) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_call() != 32518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_call() != 33532) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_discover() != 47615) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_discover() != 12987) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 13002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 38716) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 48752) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 4843) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_tell() != 54497) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_tell() != 45287) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 46357) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 6547) {
+    if (uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 55879) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrsystemwrapper_attach() != 26495) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 49856) {
+    if (uniffi_actr_checksum_method_actrsystemwrapper_start() != 10490) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
@@ -3899,16 +3738,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 30216) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 59476) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available() != 24290) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available() != 47199) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_lost() != 47956) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_lost() != 64926) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 45770) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 30538) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_opusencoder_encode() != 30032) {
@@ -3917,7 +3756,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_opusencoder_frame_size() != 61591) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_file() != 63620) {
+    if (uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_package_file() != 20734) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_constructor_opusencoder_new() != 55174) {

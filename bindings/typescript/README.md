@@ -2,20 +2,23 @@
 
 [中文](./README.zh-CN.md) | English
 
-TypeScript/Node.js bindings for the ACTR (Actor-RTC) framework using napi-rs.
+TypeScript/Node.js bindings for ACTR. The binding is now `package-first`:
+local source-defined workloads were removed. `actr-ts` currently supports
+client-only nodes created from `actr.toml`, then uses discovery plus explicit
+remote calls.
 
 ## Overview
 
-actr-ts provides native Node.js bindings for the ACTR framework, enabling TypeScript/JavaScript developers to build actor-based distributed systems with WebRTC capabilities.
+actr-ts provides native Node.js bindings for the ACTR framework through
+napi-rs, with a TypeScript API centered on `ActrNode` and `ActrRef`.
 
 ## Features
 
-- 🚀 Native performance through Rust and napi-rs
-- 📦 Type-safe TypeScript API
-- 🔄 Actor-based concurrency model
-- 🌐 Built-in service discovery
-- 📡 RPC and streaming support
-- 🔍 OpenTelemetry observability
+- Native performance through Rust and napi-rs
+- Type-safe TypeScript API
+- Built-in service discovery
+- Remote RPC and one-way messaging
+- Package-first runtime model
 
 ## Installation
 
@@ -25,73 +28,50 @@ npm install @actrium/actr
 
 ## Quick Start
 
-### EchoTwice Server
-
 ```typescript
-import { ActrSystem, Workload, Context, RpcEnvelope } from '@actrium/actr';
-
-class EchoTwiceServerWorkload implements Workload {
-  async onStart(ctx: Context): Promise<void> {
-    console.log('EchoTwice server started');
-  }
-
-  async onStop(ctx: Context): Promise<void> {
-    console.log('EchoTwice server stopped');
-  }
-
-  async dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {
-    if (envelope.routeKey === 'echo_twice.EchoTwiceService.EchoTwice') {
-      return envelope.payload; // EchoTwice response is omitted for brevity
-    }
-    throw new Error(`Unknown route: ${envelope.routeKey}`);
-  }
-}
+import { ActrNode, PayloadType } from '@actrium/actr';
 
 async function main() {
-  const system = await ActrSystem.fromConfig('./actr.toml');
-  const node = system.attach(new EchoTwiceServerWorkload());
+  const node = await ActrNode.fromConfig('./actr.toml');
   const actorRef = await node.start();
 
-  console.log('Server started:', actorRef.actorId());
-  await actorRef.waitForShutdown();
-}
-
-main().catch(console.error);
-```
-
-### Echo Client
-
-```typescript
-import { ActrSystem, Workload, PayloadType } from '@actrium/actr';
-
-// ... implement EchoClientWorkload ...
-
-async function main() {
-  const system = await ActrSystem.fromConfig('./actr.toml');
-  const node = system.attach(new EchoClientWorkload());
-  const actorRef = await node.start();
-
-  // Discover server
-  const servers = await actorRef.discover(
-    { manufacturer: 'acme', name: 'EchoTwiceService' },
+  const [serverId] = await actorRef.discover(
+    { manufacturer: 'actrium', name: 'EchoService', version: '0.2.1-beta' },
     1,
   );
 
-  // Call RPC
-  const request = Buffer.from('Hello, ACTR!');
+  if (!serverId) {
+    throw new Error('No EchoService target discovered');
+  }
+
   const response = await actorRef.call(
-    'echo_twice.EchoTwiceService.EchoTwice',
+    serverId,
+    'echo.EchoService.Echo',
     PayloadType.RpcReliable,
-    request,
+    Buffer.from('hello'),
     5000,
   );
 
-  console.log('Response:', response.toString());
+  console.log(response.toString());
   await actorRef.stop();
 }
 
 main().catch(console.error);
 ```
+
+## API
+
+- `ActrNode.fromConfig(configPath)` creates a client-only node.
+- `ActrRef.discover(targetType, count)` resolves remote actors.
+- `ActrRef.call(target, routeKey, payloadType, payload, timeoutMs)` sends a remote RPC.
+- `ActrRef.tell(target, routeKey, payloadType, payload)` sends a one-way remote message.
+- `ActrRef.stop()` shuts down the actor and waits for completion.
+
+## Current Scope
+
+- Supported: client-only nodes, discovery, remote RPC, shutdown.
+- Removed: source-defined local workloads, `ActrSystem`, `system.attach(...)`, `Workload`.
+- For service hosting, build a verified `.actr` package and run it with Rust `Hyper.attach_package(...)`.
 
 ## Configuration
 
@@ -123,12 +103,13 @@ tracing_enabled = false
 
 ## Generated Code (Examples)
 
-The example clients use generated files under `examples/**/generated`, which are **git-ignored**.  
-After cloning the repository, you **must run the codegen script** before running the examples.
+The example clients use generated files under `examples/**/generated`, which
+are git-ignored. After cloning the repository, run the codegen script before
+running the examples.
 
 Prerequisites:
 
-- `npm install` (installs `protobufjs` and `@iarna/toml` from devDependencies)
+- `npm install`
 
 Generate for echo-client:
 
@@ -138,81 +119,17 @@ npm run codegen -- --config examples/echo-client/actr.toml
 
 Notes:
 
-- The generator reads `Actr.lock.toml` first; ensure it includes all dependencies you want emitted.
+- The generator reads `Actr.lock.toml` first; ensure it includes the
+  dependencies you want emitted.
 - Proto sources default to `examples/echo-client/protos/remote`.
-  Outputs include:
-- `<package>.pb.ts` protobuf codecs
-- `<package>.client.ts` route helpers
-- `local.actor.ts` local forwarding glue
+- Outputs include protobuf codecs, route helpers, and `local.actor.ts`.
 
-## API Documentation
-
-### ActrSystem
-
-Entry point for creating an ACTR system.
-
-- `ActrSystem.fromConfig(configPath: string): Promise<ActrSystem>` - Create system from config file
-- `system.attach(workload: Workload): ActrNode` - Attach a workload
-
-### ActrNode
-
-Represents an actor node before it's started.
-
-- `node.start(): Promise<ActrRef>` - Start the node and get an actor reference
-
-### ActrRef
-
-Reference to a running actor.
-
-- `actorRef.actorId(): ActrId` - Get the actor's ID
-- `actorRef.discover(targetType: ActrType, count: number): Promise<ActrId[]>` - Discover actors
-- `actorRef.call(routeKey, payloadType, payload, timeoutMs): Promise<Buffer>` - RPC call
-- `actorRef.tell(routeKey, payloadType, payload): Promise<void>` - Fire-and-forget message
-- `actorRef.shutdown(): void` - Trigger shutdown
-- `actorRef.waitForShutdown(): Promise<void>` - Wait for shutdown
-- `actorRef.stop(): Promise<void>` - Shutdown and wait
-
-### Workload Interface
-
-Implement this interface to define actor behavior:
-
-```typescript
-interface Workload {
-  onStart(ctx: Context): Promise<void>;
-  onStop(ctx: Context): Promise<void>;
-  dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer>;
-}
-```
-
-## Building from Source
-
-### Prerequisites
-
-- Node.js >= 16
-- Rust >= 1.88
-- Cargo
-
-### Build Steps
+## Build
 
 ```bash
-# Install dependencies
 npm install
-
-# Build native module (debug)
-npm run build:debug
-
-# Build native + TypeScript layer (release); use this before running examples
 npm run build
-
-# Compile TypeScript only (if native already built)
 npm run compile:ts
-
-# Run tests
-npm test
-
-# Run examples (from repo root; run `npm run build` first)
-node --import tsx examples/echo-twice-server/index.ts
-node --import tsx examples/echo-client/index.ts
 ```
 
 ## Publishing (Maintainers)
@@ -226,41 +143,3 @@ GitHub Actions workflow `Publish TypeScript Package`.
 - Required workflow permission: `id-token: write`
 - Initial release requirement: publish `@actrium/actr` once manually before
   adding the npm trusted publisher for this workflow
-
-## Examples
-
-See the [examples](./examples) directory for complete examples:
-
-- [echo-twice-server](./examples/echo-twice-server) - EchoTwice server
-- [echo-client](./examples/echo-client) - Echo client with discovery
-
-## Reference implementations
-
-This codebase follows the same architecture and API patterns as:
-
-- **[libactr](../libactr)** – Rust FFI layer (UniFFI) that wraps the ACTR runtime. The actr-ts Rust side mirrors its module layout: `types`, `runtime`, `workload`, `context`, `error`, `logger`.
-- **[actr-swift](../actr-swift)** – Swift SDK that consumes libactr bindings. The TypeScript layer (e.g. `ActrSystem`, `ActrNode`, `ActrRef`, `fromConfig`, `callTyped`, `stop()`) is aligned with actr-swift's high-level API in `Sources/Actr/`.
-
-When changing core behavior or adding APIs, consider keeping parity with libactr and actr-swift where applicable.
-
-## Development
-
-This project uses:
-
-- [napi-rs](https://napi.rs/) for Rust-Node.js bindings
-- [ACTR framework](https://github.com/actor-rtc/actr) for actor runtime
-- TypeScript for high-level API
-
-## License
-
-Apache-2.0
-
-## Contributing
-
-Contributions are welcome! Please open an issue or pull request on the [GitHub repository](https://github.com/Actrium/actr).
-
-## Links
-
-- [ACTR Framework](https://github.com/actor-rtc/actr)
-- [Documentation](https://docs.actor-rtc.org)
-- [Examples](https://github.com/actor-rtc/actr-examples)

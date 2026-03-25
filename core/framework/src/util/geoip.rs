@@ -1,31 +1,31 @@
-//! GeoIP 地理位置查询工具
+//! GeoIP geolocation lookup utility
 //!
-//! 基于 MaxMind GeoLite2 数据库提供 IP 地址到地理坐标的转换
+//! Provides IP-to-geographic-coordinate conversion based on MaxMind GeoLite2 database
 //!
-//! # 使用示例
+//! # Usage Example
 //!
 //! ```rust,ignore
 //! use actr_framework::util::geoip::GeoIpService;
 //! use std::net::IpAddr;
 //!
-//! // 初始化 GeoIP 服务
+//! // Initialize GeoIP service
 //! let geoip = GeoIpService::new("data/geoip/GeoLite2-City.mmdb")?;
 //!
-//! // 查询 IP 地址的坐标
+//! // Query coordinates for an IP address
 //! let ip: IpAddr = "8.8.8.8".parse()?;
 //! if let Some((lat, lon)) = geoip.lookup(ip) {
-//!     println!("IP {} 位于坐标: ({}, {})", ip, lat, lon);
+//!     println!("IP {} is at coordinates: ({}, {})", ip, lat, lon);
 //! }
 //! ```
 //!
-//! # 获取 GeoLite2 数据库
+//! # Obtaining the GeoLite2 Database
 //!
-//! **自动下载（推荐）：**
-//! 1. 访问 https://www.maxmind.com/en/geolite2/signup 获取 License Key
-//! 2. 设置环境变量：`export MAXMIND_LICENSE_KEY="your-key-here"`
-//! 3. 首次调用 `GeoIpService::new()` 时自动下载
+//! **Auto-download (recommended):**
+//! 1. Visit https://www.maxmind.com/en/geolite2/signup to get a License Key
+//! 2. Set environment variable: `export MAXMIND_LICENSE_KEY="your-key-here"`
+//! 3. Auto-downloaded on first call to `GeoIpService::new()`
 //!
-//! **手动下载（生产环境）：**
+//! **Manual download (production):**
 //! ```bash
 //! curl -o GeoLite2-City.tar.gz \
 //!   "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=YOUR_KEY&suffix=tar.gz"
@@ -43,9 +43,9 @@ use std::path::Path;
 #[cfg(feature = "geoip")]
 use tracing::{debug, info, warn};
 
-/// GeoIP 查询服务
+/// GeoIP lookup service
 ///
-/// 提供 IP 地址到地理坐标的转换功能
+/// Provides IP-to-geographic-coordinate conversion
 #[cfg(feature = "geoip")]
 #[derive(Debug)]
 pub struct GeoIpService {
@@ -54,21 +54,21 @@ pub struct GeoIpService {
 
 #[cfg(feature = "geoip")]
 impl GeoIpService {
-    /// 初始化 GeoIP 服务（支持自动下载）
+    /// Initialize GeoIP service (supports auto-download)
     ///
     /// # Arguments
-    /// * `db_path` - GeoLite2-City.mmdb 数据库文件路径
+    /// * `db_path` - Path to GeoLite2-City.mmdb database file
     ///
     /// # Errors
-    /// 如果数据库文件不存在或格式错误，返回错误
+    /// Returns error if database file does not exist or has invalid format
     ///
-    /// # 自动下载
-    /// 如果数据库文件不存在，且设置了 `MAXMIND_LICENSE_KEY` 环境变量，
-    /// 将自动从 MaxMind 下载 GeoLite2-City 数据库。
+    /// # Auto-download
+    /// If the database file does not exist and `MAXMIND_LICENSE_KEY` env var is set,
+    /// GeoLite2-City database will be automatically downloaded from MaxMind.
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self> {
         let path = db_path.as_ref();
 
-        // 如果数据库不存在，尝试自动下载
+        // If database does not exist, attempt auto-download
         if !path.exists() {
             info!("GeoIP database not found at {:?}", path);
 
@@ -99,27 +99,27 @@ impl GeoIpService {
             .context(format!("Failed to open GeoIP database at {path:?}"))?;
 
         info!(
-            "✅ GeoIP service initialized (build epoch: {})",
+            "GeoIP service initialized (build epoch: {})",
             reader.metadata.build_epoch
         );
         Ok(Self { reader })
     }
 
-    /// 自动下载 GeoLite2-City 数据库
+    /// Auto-download GeoLite2-City database
     fn download_database(db_path: &Path, license_key: &str) -> Result<()> {
         use reqwest::blocking::Client;
 
-        info!("📥 Downloading GeoLite2-City database (~70MB)...");
+        info!("Downloading GeoLite2-City database (~70MB)...");
 
-        // 构建下载 URL
+        // Build download URL
         let url = format!(
             "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={}&suffix=tar.gz",
             license_key
         );
 
-        // 下载
+        // Download
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(300)) // 5 分钟超时
+            .timeout(std::time::Duration::from_secs(300)) // 5 minute timeout
             .build()?;
 
         let response = client
@@ -134,14 +134,14 @@ impl GeoIpService {
             );
         }
 
-        info!("📦 Download complete, extracting...");
+        info!("Download complete, extracting...");
 
-        // 解压 tar.gz
+        // Decompress tar.gz
         let tar_gz_data = response.bytes()?;
         let tar_decoder = flate2::read::GzDecoder::new(&tar_gz_data[..]);
         let mut archive = tar::Archive::new(tar_decoder);
 
-        // 查找并提取 .mmdb 文件
+        // Find and extract the .mmdb file
         for entry in archive.entries()? {
             let mut entry = entry?;
             let path_in_archive = entry.path()?;
@@ -149,18 +149,18 @@ impl GeoIpService {
             if path_in_archive.extension() == Some(std::ffi::OsStr::new("mmdb"))
                 && path_in_archive.to_string_lossy().contains("GeoLite2-City")
             {
-                // 创建父目录
+                // Create parent directory
                 if let Some(parent) = db_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
 
-                // 解压到目标位置
+                // Extract to target location
                 let mut output = std::fs::File::create(db_path)?;
                 std::io::copy(&mut entry, &mut output)?;
 
                 let size = std::fs::metadata(db_path)?.len();
                 info!(
-                    "✅ GeoIP database downloaded to {:?} ({:.1} MB)",
+                    "GeoIP database downloaded to {:?} ({:.1} MB)",
                     db_path,
                     size as f64 / 1_048_576.0
                 );
@@ -171,14 +171,14 @@ impl GeoIpService {
         anyhow::bail!("GeoLite2-City.mmdb not found in downloaded archive");
     }
 
-    /// 查询 IP 地址的地理坐标
+    /// Look up geographic coordinates for an IP address
     ///
     /// # Arguments
-    /// * `ip` - 要查询的 IP 地址
+    /// * `ip` - The IP address to look up
     ///
     /// # Returns
-    /// * `Some((latitude, longitude))` - 成功找到坐标
-    /// * `None` - IP 地址不在数据库中或无坐标信息
+    /// * `Some((latitude, longitude))` - Coordinates found
+    /// * `None` - IP not in database or no coordinate info
     pub fn lookup(&self, ip: IpAddr) -> Option<(f64, f64)> {
         match self.reader.lookup::<City>(ip) {
             Ok(city) => {
@@ -202,25 +202,25 @@ impl GeoIpService {
         }
     }
 
-    /// 获取数据库元信息
+    /// Get database metadata
     pub fn metadata(&self) -> &maxminddb::Metadata {
         &self.reader.metadata
     }
 }
 
-/// 无 GeoIP 功能时的降级实现
+/// Fallback implementation when GeoIP feature is disabled
 #[cfg(not(feature = "geoip"))]
 #[derive(Debug)]
 pub struct GeoIpService;
 
 #[cfg(not(feature = "geoip"))]
 impl GeoIpService {
-    /// 初始化失败（需要启用 geoip feature）
+    /// Initialization fails (requires geoip feature)
     pub fn new<P>(_db_path: P) -> anyhow::Result<Self> {
         anyhow::bail!("GeoIP feature is not enabled. Rebuild with --features geoip")
     }
 
-    /// 总是返回 None（需要启用 geoip feature）
+    /// Always returns None (requires geoip feature)
     pub fn lookup(&self, _ip: std::net::IpAddr) -> Option<(f64, f64)> {
         None
     }
@@ -232,14 +232,13 @@ mod tests {
 
     #[test]
     fn test_geoip_module_compiles() {
-        // 确保模块编译通过
-        assert!(true);
+        let _ = std::mem::size_of::<GeoIpService>();
     }
 
     #[cfg(feature = "geoip")]
     #[test]
     fn test_geoip_lookup_requires_database() {
-        // 测试需要真实的数据库文件，这里只验证 API 可用性
+        // Test requires a real database file; here we only verify API availability
         let result = GeoIpService::new("/nonexistent/path.mmdb");
         assert!(result.is_err());
     }

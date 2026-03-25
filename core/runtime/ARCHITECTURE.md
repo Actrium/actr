@@ -1,331 +1,561 @@
-# actr-runtime 内部架构
+# actr-runtime Internal Architecture
 
-**文档目的**：为贡献者和高级用户提供 runtime crate 的内部架构视图
+**Document Purpose**: Provide an internal architectural view of runtime-related crates for contributors and advanced users.
 
-**最后更新**：2025-11-07
-**对应版本**：actr v0.9.x
+**Last Updated**: 2026-03-11
+**Corresponding Version**: actr v0.9.x
 
 ---
 
-## 1. 模块概览
+## 1. Module Overview
 
-`actr-runtime` crate 实现了 Actor 运行时的核心功能，包括生命周期管理、消息路由、传输层抽象、持久化等。
+The Actor-RTC runtime consists of two crates working together:
+
+- **actr-runtime**: Pure business dispatch layer (ACL + dispatch + lifecycle hooks), no IO dependencies, compilable on native and `wasm32-unknown-unknown` targets.
+- **actr-hyper**: Infrastructure layer + platform layer, carrying transport, Wire, signaling, WASM/Dynclib engines, and Actor sandbox management.
+
+```
+actr-hyper   ← Infrastructure Layer (transport, wire, signaling, WASM engine, dynclib engine …)
+actr-runtime ← Business Dispatch Layer (ACL + dispatch + lifecycle hooks)
+actr-framework ← SDK Interface Layer (trait definitions: Workload, Context, MessageDispatcher)
+actr-protocol  ← Data Definition Layer (protobuf types)
+```
+
+### actr-runtime Directory Structure
 
 ```
 actr-runtime/
-├── lifecycle/          # Actor 生命周期管理
-│   ├── actr_system.rs  # ActrSystem（基础设施）
-│   └── actr_node.rs    # ActrNode（完整节点）
-├── inbound/            # 入站消息处理
-│   ├── data_stream_registry.rs     # DataStream 快车道注册表
-│   ├── media_frame_registry.rs     # MediaFrame 快车道注册表
-│   └── inbound_packet_dispatcher.rs # 入站消息分发器
-├── outbound/           # 出站消息处理
-│   ├── inproc_out_gate.rs   # 进程内出站门
-│   └── outproc_out_gate.rs  # 跨进程出站门
-├── transport/          # 传输层抽象
-│   ├── lane.rs              # DataLane 统一抽象
-│   ├── route_table.rs       # PayloadType 路由表
+├── acl.rs              # ACL permission checks (pure functions, no IO)
+├── dispatch.rs         # ActrDispatch: ACL → routing → handler execution
+└── lib.rs              # Re-exports Workload, Context, MessageDispatcher
+```
+
+### actr-hyper Directory Structure (Runtime Infrastructure)
+
+```
+actr-hyper/
+├── lifecycle/          # Actor Lifecycle Management
+│   ├── actr_node.rs    # ActrNode runtime infrastructure
+│   └── actr_node.rs    # ActrNode<W> (complete node)
+├── inbound/            # Inbound Message Processing
+│   ├── data_stream_registry.rs     # DataStream fast path registry
+│   └── media_frame_registry.rs     # MediaFrame fast path registry
+├── outbound/           # Outbound Message Processing
+│   ├── host_gate.rs    # In-process outbound gate (Shell ↔ Workload)
+│   └── peer_gate.rs    # Cross-process outbound gate (Actor ↔ Actor)
+├── transport/          # Transport Layer Abstraction
+│   ├── lane.rs              # DataLane unified abstraction
+│   ├── route_table.rs       # PayloadType routing table
 │   ├── manager.rs           # TransportManager trait
-│   ├── inproc_manager.rs    # 进程内传输管理
-│   ├── dest_transport.rs    # 目标传输抽象
-│   ├── wire_pool.rs         # Wire 连接池
-│   └── wire_handle.rs       # Wire 句柄
-├── wire/               # 底层传输协议
-│   ├── webrtc/              # WebRTC 实现
-│   │   ├── coordinator.rs   # WebRTC 协调器
-│   │   ├── gate.rs          # WebRTC 门（入站）
-│   │   ├── connection.rs    # WebRTC 连接
-│   │   ├── negotiator.rs    # SDP 协商器
-│   │   └── signaling.rs     # 信令客户端
-│   ├── websocket/           # WebSocket 实现
-│   │   └── connection.rs    # WebSocket 连接
-│   └── mpsc.rs              # 进程内 mpsc 实现
-├── context.rs          # Context 实现
-├── context_factory.rs  # Context 工厂
-├── actr_ref.rs         # ActrRef（Actor 引用）
-└── error.rs            # 错误类型定义
+│   ├── inproc_manager.rs    # HostTransport in-process transport management
+│   ├── dest_transport.rs    # Destination transport abstraction
+│   ├── wire_pool.rs         # Wire connection pool
+│   └── wire_handle.rs       # Wire handle
+├── wire/               # Underlying Transport Protocols
+│   ├── webrtc/              # WebRTC implementation
+│   │   ├── coordinator.rs   # WebRTC coordinator
+│   │   ├── gate.rs          # WebRTC gate (inbound)
+│   │   ├── connection.rs    # WebRTC connection
+│   │   ├── negotiator.rs    # SDP negotiator
+│   │   └── signaling.rs     # Signaling client
+│   └── websocket/           # WebSocket implementation
+│       ├── connection.rs    # WebSocket connection
+│       ├── gate.rs          # WebSocket inbound gate
+│       └── server.rs        # WebSocket server
+├── workload.rs         # Workload runtime abstraction (WASM/Dynclib unified dispatch interface)
+├── wasm/               # WASM engine (feature: wasm-engine)
+├── dynclib/            # Dynclib engine (feature: dynclib-engine)
+├── context.rs          # Context implementation
+├── context_factory.rs  # Context factory
+├── actr_ref.rs         # ActrRef (Actor reference)
+└── runtime_error.rs    # Error type definitions
 ```
 
 ---
 
-## 2. 分层架构
+## 2. Runtime Workload Backends
 
-runtime 采用 4 层架构设计：
+Hyper currently supports two runtime workload backends.
+
+### 2.1 WASM Integration
+
+.wasm modules are loaded by WasmHost, implementing asynchronous I/O via asyncify suspend/resume.
+
+- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `WasmWorkload` (wasmtime)
+- **Scheduling**: Dynamic dispatch via `Workload` enum
+- **Feature Gate**: `wasm-engine`
+- **I/O Model**: Guest calls `actr_host_invoke` host import → asyncify suspend → Host completes I/O → Resume execution
+- **Use Case**: Third-party Actor sandbox isolation, cross-platform distribution
+
+### 2.2 Dynclib Integration
+
+.so / .dylib / .dll native shared libraries loaded by DynclibHost, invoked via C ABI + VTable.
+
+- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `DynClibWorkload` (dlopen)
+- **Scheduling**: Dynamic dispatch via `Workload` enum
+- **Feature Gate**: `dynclib-engine`
+- **Performance**: Close to Source mode (native code), but with FFI boundary overhead
+- **Use Case**: Actors requiring native performance while maintaining independent deployment
+
+### Dispatch Path Summary
 
 ```
-┌─────────────────────────────────────────┐
-│  Layer 3: Application (Workload)        │  用户业务逻辑
-├─────────────────────────────────────────┤
-│  Layer 2: Outbound/Inbound              │  出入站门抽象
-│    - OutGate (InprocOut/OutprocOut)     │
-│    - WebRtcGate / Inproc 接收循环        │
-├─────────────────────────────────────────┤
-│  Layer 1: Transport (DataLane)          │  传输通道抽象
-│    - DataLane (Mpsc/WebRtcDataChannel)  │
-│    - TransportManager                   │
-│    - WirePool                           │
-├─────────────────────────────────────────┤
-│  Layer 0: Wire (Protocol)               │  物理传输协议
-│    - WebRTC (DataChannel + RTP)         │
-│    - WebSocket                          │
-│    - tokio::sync::mpsc                  │
-└─────────────────────────────────────────┘
+handle_incoming(envelope)
+    │
+    ├── self.workload == Some(workload)
+    │   └── workload.handle(bytes, ctx, host_abi)           // WASM / Dynclib
+    │
+    └── self.workload == None
+        └── shell-only node (no guest inbound dispatch)
 ```
-
-### 关键设计原则
-
-1. **层次分离**：每层只依赖下一层，不跨层调用
-2. **统一抽象**：通过 DataLane 统一 Inproc 和 Outproc 路径
-3. **PayloadType 路由**：编译时确定消息路由策略
-4. **零成本抽象**：Inproc 路径零序列化，Outproc 路径零拷贝
 
 ---
 
-## 3. 核心组件职责
+## 3. Two Transport Strategies
 
-### 3.1 生命周期管理（lifecycle/）
+Transport strategies are orthogonal to integration modes — any integration mode can use either transport strategy.
 
-**ActrSystem**：
-- 职责：提供无泛型的基础设施（Mailbox、SignalingClient、ContextFactory）
-- 生命周期：从创建到 attach(workload) 转换为 ActrNode
-- 关键方法：`new()`, `attach<W>()`
+### 3.1 HostGate + HostTransport (Shell ↔ Workload)
 
-**ActrNode<W>**：
-- 职责：泛型化的完整节点，持有 Workload 和运行时组件
-- 生命周期：从 attach 到 startup() 启动
-- 关键方法：`startup()`, `handle_incoming()`, `shutdown()`
+- **Responsibility**: Bidirectional communication between Shell and Workload within the same process
+- **Implementation**: `tokio::sync::mpsc` channel, zero serialization
+- **Latency**: ~10μs
+- **Bidirectional Design**: Two independent HostTransport instances
+  - Shell → Workload (REQUEST)
+  - Workload → Shell (RESPONSE)
 
-### 3.2 入站处理（inbound/）
+### 3.2 PeerGate + PeerTransport (Actor ↔ Actor)
+
+- **Responsibility**: Cross-process / Cross-network inter-Actor communication
+- **Implementation**: WebRTC DataChannel / WebSocket
+- **Serialization**: Protobuf
+- **Latency**: 1-50ms (network dependent)
+- **pending_requests**: Manages RPC request-response matching
+
+---
+
+## 4. Workload runtime abstraction
+
+`Workload` is the unified runtime entry for WASM and Dynclib.
+
+```rust
+pub enum Workload {
+    Wasm(WasmWorkload),
+    DynClib(DynClibWorkload),
+}
+
+impl Workload {
+    fn handle<'a>(
+        &'a mut self,
+        request_bytes: &[u8],
+        ctx: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, ...>> + Send + 'a>>;
+}
+```
+
+### Shared Types
+
+- **InvocationContext**: Context for each request (self_id, caller_id, request_id)
+- **HostOperation**: Outbound call enumeration initiated by Guest (Call / Tell / Discover / CallRaw)
+- **HostOperationResult**: Outbound I/O operation result (Bytes / Done / Error)
+- **HostAbiFn**: Closure for executing outbound calls on the host side
+
+---
+
+## 5. Layered Architecture
+
+The runtime adopts a 4-layer architecture design:
+
+```
+┌─────────────────────────────────────────────┐
+│  Layer 3: Application (Workload)            │  User business logic
+│    Inbound: DataStreamRegistry              │  Fast path callbacks
+│             MediaFrameRegistry              │
+├─────────────────────────────────────────────┤
+│  Layer 2: Outbound Gate                     │  Outbound gate abstraction
+│    Gate::Host(Arc<HostGate>)                │  Shell ↔ Workload
+│    Gate::Peer(Arc<PeerGate>)                │  Actor ↔ Actor
+├─────────────────────────────────────────────┤
+│  Layer 1: Transport (DataLane)              │  Transport channel abstraction
+│    HostTransport                            │  In-process mpsc
+│    PeerTransport                            │  WebRTC/WebSocket
+│    WirePool / WireHandle                    │
+├─────────────────────────────────────────────┤
+│  Layer 0: Wire (Protocol)                   │  Physical transport protocol
+│    WebRTC (DataChannel + RTP)               │
+│    WebSocket                                │
+│    tokio::sync::mpsc                        │
+└─────────────────────────────────────────────┘
+```
+
+### Gate enum
+
+```rust
+pub enum Gate {
+    Host(Arc<HostGate>),   // In-process transport (zero serialization)
+    Peer(Arc<PeerGate>),   // Cross-process transport (Protobuf serialization)
+}
+```
+
+Design Advantage: enum dispatch provides static dispatch with zero virtual function call overhead, CPU branch prediction hit rate >95%.
+
+### Key Design Principles
+
+1. **Layer Separation**: Each layer depends only on the layer below it, no cross-layer calls.
+2. **Unified Abstraction**: Unified Host and Peer paths via DataLane.
+3. **Separation of Semantics and Capability**: PayloadType determines top-level semantics; specific execution strategy is decided by resolver based on semantics and backend capabilities.
+4. **Zero-Cost Abstraction**: Zero serialization for Host path, zero copy (`Bytes` shallow copy) for Peer path.
+
+---
+
+## 6. Core Component Responsibilities
+
+### 6.1 Business Dispatch Layer (actr-runtime)
+
+**ActrDispatch<W>**：
+- Responsibility: Pure business dispatcher — ACL check → routing → handler execution → panic capture
+- No IO dependency, compilable on native and wasm32 targets
+- Key methods: `dispatch()`, `on_start()`, `on_stop()`
+
+**check_acl_permission**：
+- Responsibility: Pure function ACL permission judgment
+- Evaluation Rules: Local call allowed → No ACL allowed → Empty rule rejected → Deny-first → Allow hit allowed → Default denied
+
+### 6.2 Lifecycle Management (actr-hyper/lifecycle/)
+
+**ActrNode**：
+- Responsibility: Provides runtime infrastructure (Mailbox, SignalingClient, ContextFactory)
+- Lifecycle: Built directly from config, then started into a running actor reference
+- Key methods: `new()`, `new_client()`, `start()`
+
+**ActrNode**：
+- Responsibility: Runtime node, optionally holding one guest workload plus runtime components
+- Dispatch Path: Uses `Workload::handle(...)` when a workload is attached
+- Key methods: `start()`, `handle_incoming()`, `shutdown()`
+- Key fields: `workload: Option<Mutex<Workload>>`
+
+### 6.3 Inbound Processing (actr-hyper/inbound/)
 
 **WebRtcGate**：
-- 职责：消费 `WebRtcCoordinator` 聚合的入站数据，直接根据 PayloadType 分发
-- 路由规则：
-  - RpcReliable/RpcSignal → Mailbox（按优先级入队，同时处理 pending_requests）
-  - StreamReliable/StreamLatencyFirst → DataStreamRegistry（快车道回调）
-  - MediaRtp → 直接丢弃并提示应走 WebRTC Track（MediaFrameRegistry 由 PeerConnection 注册）
+- Responsibility: Consumes inbound data aggregated by `WebRtcCoordinator`, dispatching directly based on PayloadType
+- Routing Rules:
+  - RpcReliable/RpcSignal → Check pending_requests first; if hit, treat as Response and wake continuation, otherwise enter Mailbox by priority
+  - StreamReliable/StreamLatencyFirst → DataStreamRegistry (fast path callback)
+  - MediaRtp → Drop directly and hint to use WebRTC Track (MediaFrameRegistry registered by PeerConnection)
 
-**Inproc 接收循环**：
-- 职责：`ActrNode` 内的两个 tokio 循环（Shell→Workload、Workload→Shell）直接从 `InprocTransportManager` 的 `DataLane::Mpsc` 收包
-- Shell→Workload：解出 `RpcEnvelope` 后调用 `handle_incoming()`
-- Workload→Shell：根据 `request_id` 调用 `complete_response()` 唤醒请求方
+**Inproc Receive Loop**：
+- Responsibility: Two tokio loops inside `ActrNode` (Shell→Workload, Workload→Shell) receive directly from `HostTransport`'s `DataLane::Mpsc`
+- Shell→Workload: Extract `RpcEnvelope` then call `handle_incoming()`
+- Workload→Shell: Call `complete_response()` based on `request_id` to wake requester
 
 **DataStreamRegistry**：
-- 职责：管理 DataStream 回调注册表（stream_id → callback）
-- 并发安全：使用 DashMap 支持多线程并发访问
-- 回调签名：`FnMut(DataStream, ActrId) -> BoxFuture<ActorResult<()>>`
+- Responsibility: Manage DataStream callback registry (stream_id → callback)
+- Concurrency Safety: Use DashMap to support multi-threaded concurrent access
+- Callback Signature: `FnMut(DataStream, ActrId) -> BoxFuture<ActorResult<()>>`
 
 **MediaFrameRegistry**：
-- 职责：管理 MediaTrack 回调注册表（track_id → callback）
-- 并发安全：使用 DashMap
-- 回调签名：`FnMut(MediaSample, ActrId) -> BoxFuture<ActorResult<()>>`
+- Responsibility: Manage MediaTrack callback registry (track_id → callback)
+- Concurrency Safety: Use DashMap
+- Callback Signature: `FnMut(MediaSample, ActrId) -> BoxFuture<ActorResult<()>>`
 
-### 3.3 出站处理（outbound/）
+#### Semantic Decision Model (Current Constraints & Evolution Direction)
 
-**OutGate** enum：
-- `InprocOut(Arc<InprocOutGate>)`：进程内出站
-- `OutprocOut(Arc<OutprocOutGate>)`：跨进程出站
-- 设计优势：静态分发，零虚拟调用开销
+> Note: This section describes the recommended unified decision model inside runtime, explaining current implementation and guiding future `wasm` / `StateSync` extensions; where `StateSync` and some backend-specific policies are still design directions, not yet fully implemented.
 
-**InprocOutGate**：
-- 职责：通过 InprocTransportManager 发送进程内消息
-- 特点：零序列化，直接传递 RpcEnvelope 对象
-- 延迟：~10μs
+- `PayloadType` expresses top-level data semantics, not solely determining local execution mode:
+  - `RpcReliable`
+  - `RpcSignal`
+  - `StreamReliable`
+  - `StreamLatencyFirst`
+  - `MediaRtp`
+  - `StateSync` (planned)
+- `MessageRole` expresses interaction role:
+  - `Request`
+  - `Response`
+  - `Notify`
+  - `Data`
+  - `Snapshot`
+  - `Delta`
+- Backend capabilities split into two orthogonal dimensions, rather than mixed into a single `BackendProfile`:
+  - `RuntimeKind`: `native` | `wasm`
+  - `TransportKind`: `inproc` | `webrtc` | `websocket`
+- `ExecutionPolicy` is the output of the resolver, not an input dimension:
+  - `Mailbox`
+  - `PendingContinuation`
+  - `OrderedStreamQueue`
+  - `CoalescingQueue`
+  - `MediaPipeline`
+  - `LatestValueStore`
 
-**OutprocOutGate**：
-- 职责：通过 OutprocTransportManager 发送跨进程消息
-- 特点：Protobuf 序列化，通过 WebRTC/WebSocket 传输
-- 延迟：1-50ms（取决于网络）
-- pending_requests：管理 RPC 请求-响应匹配
+Recommended Solution Form:
 
-### 3.4 传输层（transport/）
+```rust
+ExecutionPlan = resolve(payload_type, message_role, runtime_kind, transport_kind, hints)
+```
 
-**DataLane** enum：
-- `Mpsc { payload_type, tx, rx }`：进程内 tokio mpsc 通道
-- `WebRtcDataChannel { data_channel, rx }`：WebRTC DataChannel
-- `WebSocket { sink, payload_type, rx }`：WebSocket 连接
+- `hints` used only for tuning parameters, not overriding core semantics. Typical fields:
+  - `priority`
+  - `queue_depth`
+  - `batch_size`
+  - `ttl/deadline`
+  - `drop_policy`
+  - `persistence`
+- Resolver needs to check combination validity first; not all combinations are valid, e.g.:
+  - `MediaRtp + Response`: Usually invalid
+  - `RpcReliable + Data`: Usually invalid
+  - `StateSync + Request`: Usually shouldn't be default combination
 
-**PayloadTypeExt** trait：
-- 核心方法：`data_lane_types() -> &'static [DataLaneType]`
-- 作用：提供 PayloadType 到 DataLaneType 的静态路由表
-- 优势：编译时确定，零运行时开销
+Recommended Default Mapping:
 
-**TransportManager** trait：
-- 职责：管理传输通道的生命周期（创建、缓存、复用）
-- 实现：
-  - `InprocTransportManager`：管理进程内 mpsc 通道
-  - `OutprocTransportManager`：管理 WebRTC/WebSocket 连接
+| Semantic Combination | Default ExecutionPolicy | Remarks |
+| --- | --- | --- |
+| `RpcReliable + Request/Notify` | `Mailbox` | Normal priority, enters actor state path |
+| `RpcSignal + Request/Notify` | `Mailbox` | High priority control message |
+| `RpcReliable/RpcSignal + Response` | `PendingContinuation` | Defaults to serving `call().await`; if "handle later as actor event" needed, model as explicit split-phase API, not rewriting normal response semantics |
+| `StreamReliable + Data` | `OrderedStreamQueue` | Current implementation approximates `DataStreamRegistry` fast path, can add bounded queue / batching later |
+| `StreamLatencyFirst + Data` | `CoalescingQueue` | Current implementation shares registry with `StreamReliable`, target semantics should be latest-first / coalescing |
+| `MediaRtp + Data` | `MediaPipeline` | Should follow WebRTC Track fast path; `websocket` usually not a valid carrier path |
+| `StateSync + Snapshot/Delta` | `LatestValueStore` | planned; Old values can be overwritten by new ones, shouldn't force reuse of RPC/mailbox semantics |
 
-### 3.5 Wire 层（wire/）
+Design Constraints:
 
-**WebRtcCoordinator**：
-- 职责：管理所有 WebRTC peer connections 的生命周期
-- 关键功能：
-  - 启动多 PayloadType 接收循环（RpcReliable, RpcSignal, StreamReliable, StreamLatencyFirst）
-  - 聚合所有 peer 的消息到统一的 message_rx
-  - 提供 `send_message()` 和 `receive_message()` 接口
+- `Response -> PendingContinuation` is default semantics for normal `call().await`, not absolutely prohibiting split-phase.
+- If business needs "process response later / queue / persist", use explicit split-phase API (e.g., response to self-notify / workflow event), instead of changing all normal RPC responses to Mailbox events.
+- `wasm` vs `native` differences should reflect in resolver-produced `ExecutionPlan`, not in developer API or `PayloadType` bifurcation. Especially `wasm` backend should prioritize reducing host/guest crossing, favoring batch / coalescing, rather than replicating native fine-grained scheduling.
 
-**WebRtcGate**：
-- 职责：WebRTC 入站消息路由（Coordinator → Mailbox/Registry）
-- 路由逻辑：
-  - 根据 PayloadType 分发消息
-  - RPC 消息检查 pending_requests（响应匹配）
-  - DataStream 消息直接派发到 DataStreamRegistry
+### 6.4 Outbound Processing (actr-hyper/outbound/)
 
-**WebRtcConnection**：
-- 职责：封装单个 RTCPeerConnection，管理 DataChannel 和 MediaTrack
-- 关键方法：`create_data_channel()`, `get_lane()`, `add_track()`
+**Gate** enum:
+- `Host(Arc<HostGate>)`: In-process outbound
+- `Peer(Arc<PeerGate>)`: Cross-process outbound
+- Design Advantage: Static dispatch, zero virtual call overhead
+
+**HostGate**:
+- Responsibility: Send in-process messages via HostTransport
+- Features: Zero serialization, directly passes RpcEnvelope object
+- Latency: ~10μs
+
+**PeerGate**:
+- Responsibility: Send cross-process messages via PeerTransport
+- Features: Protobuf serialization, transmission via WebRTC/WebSocket
+- Latency: 1-50ms (network dependent)
+- pending_requests: Manages RPC request-response matching
+
+### 6.5 Transport Layer (actr-hyper/transport/)
+
+**DataLane** enum:
+- `Mpsc { payload_type, tx, rx }`: In-process tokio mpsc channel
+- `WebRtcDataChannel { data_channel, rx }`: WebRTC DataChannel
+- `WebSocket { sink, payload_type, rx }`: WebSocket connection
+
+**PayloadTypeExt** trait:
+- Core Method: `data_lane_types() -> &'static [DataLaneType]`
+- Function: Provides static routing table from PayloadType to DataLaneType
+- Advantage: Determined at compile time, zero runtime overhead
+- Note: `PayloadTypeExt` only solves "which lane to take", not independently deciding local `Mailbox / PendingContinuation / Registry / MediaPipeline` execution strategy; the latter is decided by semantic resolver above
+
+**TransportManager** trait:
+- Responsibility: Manage transport channel lifecycle (creation, caching, reuse)
+- Implementation:
+  - `HostTransport`: Manage in-process mpsc channel
+  - `PeerTransport`: Manage WebRTC/WebSocket connections
+
+### 6.6 Wire Layer (actr-hyper/wire/)
+
+**WebRtcCoordinator**:
+- Responsibility: Manage lifecycle of all WebRTC peer connections
+- Key Functions:
+  - Start multi-PayloadType receive loops (RpcReliable, RpcSignal, StreamReliable, StreamLatencyFirst)
+  - Aggregate messages from all peers to unified message_rx
+  - Provide `send_message()` and `receive_message()` interfaces
+
+**WebRtcGate**:
+- Responsibility: WebRTC inbound message routing (Coordinator → Mailbox/Registry)
+- Routing Logic:
+  - Dispatch messages based on PayloadType
+  - RPC messages check pending_requests first: if hit complete continuation, otherwise enqueue(Mailbox) by priority
+  - DataStream messages dispatched directly to DataStreamRegistry
+
+**WebRtcConnection**:
+- Responsibility: Encapsulate single RTCPeerConnection, manage DataChannel and MediaTrack
+- Key Methods: `create_data_channel()`, `get_lane()`, `add_track()`
 
 ---
 
-## 4. 关键数据流
+## 7. Key Data Flows
 
-### 4.1 RPC 请求-响应流程
+### 7.1 RPC Request-Response Flow
 
-**发送端（OutprocOutGate）**：
+**Sender (PeerGate)**:
 ```rust
 1. send_request(target, envelope)
-2. 生成 request_id，注册 oneshot::Sender 到 pending_requests
-3. 序列化 RpcEnvelope → Bytes
+2. Generate request_id, register oneshot::Sender to pending_requests
+3. Serialize RpcEnvelope → Bytes
 4. TransportManager → DataLane → WebRTC
 ```
 
-**接收端（WebRtcGate）**：
+**Receiver (WebRtcGate)**:
 ```rust
 1. Coordinator.receive_message() → (from, data, RpcReliable)
-2. 反序列化 Bytes → RpcEnvelope
-3. 检查 request_id 是否在 pending_requests 中
-4. 如果是响应：唤醒 oneshot::Sender
-5. 如果是请求：enqueue(Mailbox)
+2. Deserialize Bytes → RpcEnvelope
+3. Check if request_id is in pending_requests
+4. If Response: Wake oneshot::Sender
+5. If Request: enqueue(Mailbox)
 ```
 
-### 4.2 DataStream 快车道流程
+### 7.2 DataStream Fast Path Flow
 
-**发送端**：
+**Sender**:
 ```rust
 1. ctx.send_data_stream(target, stream_id, chunk)
-2. OutGate::send_stream_data(target, StreamReliable, data)
+2. Gate::send_data_stream(target, StreamReliable, data)
 3. TransportManager → DataLane(StreamReliable) → WebRTC
 ```
 
-**接收端**：
+**Receiver**:
 ```rust
 1. Coordinator.receive_message() → (from, data, StreamReliable)
-2. WebRtcGate 识别 PayloadType::StreamReliable
-3. 反序列化 Bytes → DataStream
+2. WebRtcGate identifies PayloadType::StreamReliable
+3. Deserialize Bytes → DataStream
 4. DataStreamRegistry.dispatch(chunk, sender_id)
-5. 调用注册的回调函数
+5. Invoke registered callback function
+```
+
+### 7.3 WASM Actor Dispatch Flow
+
+```rust
+1. handle_incoming(envelope)
+2. Detect self.workload == Some(workload)
+3. Serialize envelope → bytes
+4. workload.handle(bytes, InvocationContext, host_abi)
+5. WASM guest execution → encounter actr_host_invoke → asyncify suspend
+6. host_abi(HostOperation::Call { ... }) → HostOperationResult::Bytes(response)
+7. asyncify resume → guest continues execution → return result bytes
 ```
 
 ---
 
-## 5. 性能优化设计
+## 8. Performance Optimization Design
 
-### 5.1 零拷贝设计
+### 8.1 Zero Copy Design
 
-- **Inproc 路径**：直接传递 `RpcEnvelope` 对象，无序列化
-- **Outproc 路径**：使用 `Bytes` 类型（Arc<Vec<u8>>），浅拷贝
-- **MediaTrack**：WebRTC 原生 RTP 通道，绕过 Protobuf 序列化
+- **Host Path**: Pass `RpcEnvelope` object directly, no serialization
+- **Peer Path**: Use `Bytes` type (Arc<Vec<u8>>), shallow copy
+- **MediaTrack**: WebRTC native RTP channel, bypassing Protobuf serialization
 
-### 5.2 编译时路由
+### 8.2 Compile-Time Routing
 
-- **PayloadTypeExt**：路由表在编译时确定，无运行时查表
-- **MessageDispatcher**：静态分发，零 dyn trait object 开销
-- **OutGate enum**：静态分发，优于 trait object
+- **PayloadTypeExt**: Routing table determined at compile time, no runtime lookup
+- **Source Mode**: `ActrDispatch<W>` monomorphized via generics, fully inlined
+- **Gate enum**: Static dispatch, superior to trait object
 
-### 5.3 细粒度并发
+### 8.3 Fine-Grained Concurrency
 
-- **DashMap**：用于 Registry，支持高并发读写
-- **独立接收循环**：每个 PayloadType 独立 tokio 任务
-- **无锁设计**：尽可能使用 mpsc/oneshot 避免锁竞争
+- **DashMap**: Used for Registry, supporting high concurrency read/write
+- **Independent Receive Loops**: Independent tokio task for each PayloadType
+- **Lock-Free Design**: Use mpsc/oneshot where possible to avoid lock contention
 
 ---
 
-## 6. 错误处理策略
+## 9. Error Handling Strategy
 
-### 6.1 错误类型层次
+### 9.1 Error Type Hierarchy
 
 ```rust
 RuntimeError
-├── TransportError      # 传输层错误（连接断开、超时）
-├── ProtocolError       # 协议错误（反序列化失败）
-└── Other(anyhow::Error)  # 其他错误
+├── TransportError      # Transport layer error (disconnect, timeout)
+├── ProtocolError       # Protocol error (deserialization failure)
+└── Other(anyhow::Error)  # Other errors
 ```
 
-### 6.2 错误传播
+### 9.2 Error Propagation
 
-- **传输层错误**：自动重试（带 exponential backoff）
-- **协议错误**：记录日志，丢弃消息
-- **应用层错误**：通过 RpcEnvelope.error 返回给调用方
+- **Transport Error**: Automatic retry (with exponential backoff)
+- **Protocol Error**: Log and drop message
+- **Application Error**: Return to caller via RpcEnvelope.error
 
 ---
 
-## 7. 测试策略
+## 10. Testing Strategy
 
-### 7.1 单元测试
+### 10.1 Unit Testing
 
-- `transport/lane.rs`：DataLane 创建和收发测试
-- `inbound/data_stream_registry.rs`：回调注册和触发测试
-- `outbound/inproc_out_gate.rs`：进程内消息发送测试
+- `actr-runtime/acl.rs`: ACL permission check tests
+- `actr-runtime/dispatch.rs`: Dispatcher panic capture tests
+- `transport/lane.rs`: DataLane creation and send/receive tests
+- `inbound/data_stream_registry.rs`: Callback registration and trigger tests
+- `outbound/host_gate.rs`: In-process message sending tests
 
-### 7.2 集成测试
+### 10.2 Integration Testing
 
-- `tests/local_echo_integration_test.rs`：Inproc RPC 完整流程
-- `examples/data-stream/`：Outproc DataStream 端到端测试
-- `examples/media-relay/`：MediaTrack 端到端测试
+- `actr-hyper/tests/wasm_actor_e2e.rs`: WASM actor end-to-end tests
+- `actr-hyper/tests/asyncify_poc.rs`: asyncify suspend/resume verification
+- `actr-hyper/tests/wasm_host.rs`: WasmHost/WasmWorkload tests
 
 ---
 
-## 8. 依赖图
+## 11. Dependency Graph
 
 ```
+actr-hyper
+├── actr-runtime       (Business Dispatch Layer)
+├── actr-framework     (Trait Definitions)
+├── actr-protocol      (Protocol Definitions)
+├── actr-runtime-mailbox (Persistent Mailbox)
+├── actr-config        (Config Parsing)
+├── tokio              (Async Runtime)
+├── webrtc             (WebRTC Implementation)
+├── tokio-tungstenite  (WebSocket Implementation)
+├── wasmtime           (WASM Engine, optional feature: wasm-engine)
+├── dashmap            (Concurrent HashMap)
+└── anyhow             (Error Handling)
+
 actr-runtime
-├── actr-framework     (trait 定义)
-├── actr-protocol      (协议定义)
-├── actr-mailbox       (持久化 Mailbox)
-├── tokio              (异步运行时)
-├── webrtc             (WebRTC 实现)
-├── tokio-tungstenite  (WebSocket 实现)
-├── dashmap            (并发哈希表)
-└── anyhow             (错误处理)
+├── actr-framework     (Trait Definitions)
+├── actr-protocol      (Protocol Definitions)
+├── bytes              (Zero-copy buffer)
+├── futures-util       (catch_unwind)
+└── tracing            (Logging)
 ```
 
 ---
 
-## 9. 贡献指南
+## 12. Contribution Guidelines
 
-### 9.1 代码组织原则
+### 12.1 Code Organization Principles
 
-1. **单一职责**：每个模块只负责一个清晰的功能
-2. **依赖倒置**：高层模块依赖抽象（trait），不依赖具体实现
-3. **开闭原则**：通过 enum 和 trait 扩展功能，而非修改现有代码
+1. **Single Responsibility**: Each module responsible for one clear function
+2. **Dependency Inversion**: High-level modules depend on abstractions (traits), not concrete implementations
+3. **Open/Closed Principle**: Extend functionality via enum and trait, rather than modifying existing code
 
-### 9.2 命名约定
+### 12.2 Naming Conventions
 
-- **Manager**：管理生命周期的组件（如 TransportManager）
-- **Registry**：管理回调注册的组件（如 DataStreamRegistry）
-- **Gate**：消息出入口抽象（如 WebRtcGate, OutGate）
-- **Coordinator**：协调多个相关组件的组件（如 WebRtcCoordinator）
+- **Manager**: Lifecycle management component (e.g., TransportManager)
+- **Registry**: Callback registration management component (e.g., DataStreamRegistry)
+- **Gate**: Message entry/exit abstraction (e.g., WebRtcGate, Gate)
+- **Coordinator**: Component coordinating multiple related components (e.g., WebRtcCoordinator)
+- **Bridge**: ABI bridge or transport bridge component
 
-### 9.3 提交 PR 前检查清单
+### 12.3 Pre-PR Checklist
 
-- [ ] 单元测试通过
-- [ ] 集成测试通过
-- [ ] 更新相关文档（README, ARCHITECTURE.md）
-- [ ] 代码符合 rustfmt 和 clippy 规范
-- [ ] 性能敏感路径无明显回归
+- [ ] Unit tests passed
+- [ ] Integration tests passed
+- [ ] Updated relevant docs (README, ARCHITECTURE.md)
+- [ ] Code complies with rustfmt and clippy standards
+- [ ] No significant regression in performance-sensitive paths
 
 ---
 
-## 10. 参考资料
+## 13. References
 
-- [用户文档：Runtime 设计](../../actor-rtc.github.io/zh-hans/appendix-runtime-design.zh.md)
-- [用户文档：术语表](../../actor-rtc.github.io/zh-hans/appendix-glossary.zh.md)
-- [用户文档：Lane 选择策略](../../actor-rtc.github.io/zh-hans/appendix-lane-selection-strategy.zh.md)
+- [User Docs: Runtime Design](../../actor-rtc.github.io/zh-hans/appendix-runtime-design.zh.md)
+- [User Docs: Glossary](../../actor-rtc.github.io/zh-hans/appendix-glossary.zh.md)
+- [User Docs: Lane Selection Strategy](../../actor-rtc.github.io/zh-hans/appendix-lane-selection-strategy.zh.md)
 - [actr-protocol README](../protocol/README.md)
 - [actr-framework README](../framework/README.md)
 
 ---
 
-**维护者**：actr 核心团队
-**问题反馈**：https://github.com/actor-rtc/actr/issues
+**Maintainers**: actr Core Team
+**Issues**: https://github.com/actor-rtc/actr/issues

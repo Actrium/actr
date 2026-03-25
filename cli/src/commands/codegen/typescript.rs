@@ -667,7 +667,7 @@ impl TypeScriptGenerator {
         output.push('\n');
         output.push_str(SCAFFOLD_HINT);
         output.push_str(
-            "\n\nimport {\n  ActrSystem,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actrium/actr';\n",
+            "\n\nimport {\n  ActrNode,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actrium/actr';\n",
         );
 
         if has_dispatcher {
@@ -755,7 +755,7 @@ impl TypeScriptGenerator {
         output.push_str("  }\n}\n");
 
         output.push_str(
-            "\nasync function main(): Promise<void> {\n  const system = await ActrSystem.fromConfig('./actr.toml');\n  const node = system.attach(new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
+            "\nasync function main(): Promise<void> {\n  const node = await ActrNode.fromConfig('./actr.toml', new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
         );
         output.push_str(&local_methods.len().to_string());
         output.push_str(");\n  console.log('Remote RPC methods:', ");
@@ -891,25 +891,25 @@ impl TypeScriptGenerator {
         let min_version = resolve_plugin_min_version(&context.config_path, PLUGIN_NAME)?
             .unwrap_or_else(|| EXPECTED_PLUGIN_VERSION.to_string());
 
-        // 检查系统安装 (Homebrew)
+        // Check system installation (Homebrew)
         if let Some(version) = self.check_installed_plugin_version()? {
             if version_is_at_least(&version, &min_version) {
                 info!("✅ Using installed {PLUGIN_NAME} v{version}");
                 return self.locate_installed_plugin();
             }
 
-            // 版本过低，直接报错
+            // Version too low, report error
             return Err(ActrCliError::command_error(format!(
                 "Installed {PLUGIN_NAME} v{version} is lower than required v{min_version}\n\
                  Please upgrade: brew upgrade {PLUGIN_NAME}"
             )));
         }
 
-        // 从 GitHub Release 下载
+        // Download from GitHub Release
         info!("📦 {PLUGIN_NAME} not found in PATH, downloading from GitHub Release...");
         let plugin_path = self.download_plugin_from_release(&min_version)?;
 
-        // 验证版本
+        // Verify version
         self.ensure_required_plugin_version(&plugin_path, &min_version)?;
 
         Ok(plugin_path)
@@ -1089,13 +1089,13 @@ impl TypeScriptGenerator {
         let plugin_path = cache_dir.join("scripts").join(PLUGIN_NAME);
         let bundle_path = cache_dir.join("dist").join("bundle.js");
 
-        // 检查缓存
+        // Check cache
         if plugin_path.exists() && bundle_path.exists() {
             info!("✅ Using cached TypeScript plugin (v{})", version);
             return Ok(plugin_path);
         }
 
-        // 清理不完整的缓存
+        // Clean incomplete cache
         if cache_dir.exists() {
             std::fs::remove_dir_all(&cache_dir).map_err(|e| {
                 ActrCliError::command_error(format!(
@@ -1113,24 +1113,24 @@ impl TypeScriptGenerator {
             ))
         })?;
 
-        // 构建下载 URL
+        // Build download URL
         let release_url = GITHUB_RELEASE_URL_TEMPLATE.replace("{}", version);
 
         info!("📦 Downloading from: {}", release_url);
 
-        // 检查 curl 是否可用
+        // Check if curl is available
         if !command_exists("curl") {
             return Err(ActrCliError::command_error(
                 "curl not found. Please install curl to download the plugin.".to_string(),
             ));
         }
 
-        // 下载
+        // Download
         let tar_path = cache_dir.join("plugin.tar.gz");
 
         let output = StdCommand::new("curl")
-            .arg("-L") // 跟随重定向
-            .arg("-f") // 失败时返回错误码
+            .arg("-L") // Follow redirects
+            .arg("-f") // Return error code on failure
             .arg("--progress-bar")
             .arg("-o")
             .arg(&tar_path)
@@ -1148,7 +1148,7 @@ impl TypeScriptGenerator {
             )));
         }
 
-        // 解压
+        // Extract
         info!("📦 Extracting plugin...");
 
         let extract_dir = cache_dir.join("extracted");
@@ -1172,13 +1172,13 @@ impl TypeScriptGenerator {
             )));
         }
 
-        // 调整目录结构
-        // Release 包结构:
+        // Adjust directory structure
+        // Release package structure:
         //   extracted/
         //   ├── bundle.js
         //   └── protoc-gen-actrframework-typescript
         //
-        // 需要的结构 (插件脚本期望 PROJECT_DIR/../dist/bundle.js):
+        // Required structure (plugin script expects PROJECT_DIR/../dist/bundle.js):
         //   cache_dir/
         //   ├── dist/
         //   │   └── bundle.js
@@ -1195,7 +1195,7 @@ impl TypeScriptGenerator {
             ActrCliError::command_error(format!("Failed to create scripts directory: {}", e))
         })?;
 
-        // 移动 bundle.js
+        // Move bundle.js
         let src_bundle = extract_dir.join("bundle.js");
         if !src_bundle.exists() {
             return Err(ActrCliError::command_error(
@@ -1205,7 +1205,7 @@ impl TypeScriptGenerator {
         std::fs::rename(&src_bundle, &bundle_path)
             .map_err(|e| ActrCliError::command_error(format!("Failed to move bundle.js: {}", e)))?;
 
-        // 移动可执行脚本到 scripts/ 目录
+        // Move executable script to scripts/ directory
         let src_plugin = extract_dir.join(PLUGIN_NAME);
         if !src_plugin.exists() {
             return Err(ActrCliError::command_error(format!(
@@ -1217,11 +1217,11 @@ impl TypeScriptGenerator {
             ActrCliError::command_error(format!("Failed to move plugin script: {}", e))
         })?;
 
-        // 清理临时文件
+        // Clean up temporary files
         std::fs::remove_file(&tar_path).ok();
         std::fs::remove_dir_all(&extract_dir).ok();
 
-        // 设置可执行权限 (Unix)
+        // Set executable permissions (Unix)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1236,7 +1236,7 @@ impl TypeScriptGenerator {
             })?;
         }
 
-        // 最终验证
+        // Final verification
         if !plugin_path.exists() || !bundle_path.exists() {
             return Err(ActrCliError::command_error(
                 "Plugin installation incomplete: required files not found".to_string(),

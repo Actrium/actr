@@ -1,7 +1,7 @@
 /**
- * Fast Path Forwarder - 快车道数据转发
+ * Fast Path Forwarder - 
  *
- * 负责将 WebRTC DataChannel 接收的数据零拷贝转发到 Service Worker WASM
+ *  WebRTC DataChannel  Service Worker WASM
  */
 
 import { ServiceWorkerBridge } from './sw-bridge';
@@ -13,23 +13,23 @@ export interface FastPathData {
 }
 
 /**
- * Fast Path 数据转发器
+ * Fast Path 
  */
 export class FastPathForwarder {
   private swBridge: ServiceWorkerBridge;
   private batchQueue: FastPathData[] = [];
   private batchTimer: number | null = null;
-  private batchSize = 10; // 批量转发阈值
-  private batchTimeoutMs = 5; // 批量超时（毫秒）
+  private batchSize = 10; // 
+  private batchTimeoutMs = 5; // （）
 
   constructor(swBridge: ServiceWorkerBridge) {
     this.swBridge = swBridge;
   }
 
   /**
-   * 转发 Fast Path 数据到 Service Worker
+   *  Fast Path  Service Worker
    *
-   * 使用 Transferable ArrayBuffer 实现零拷贝
+   *  Transferable ArrayBuffer 
    */
   forward(streamId: string, data: ArrayBuffer): void {
     const fastPathData: FastPathData = {
@@ -38,14 +38,14 @@ export class FastPathForwarder {
       timestamp: Date.now(),
     };
 
-    // 立即转发（单条数据）
+    // （）
     this.forwardImmediate(fastPathData);
   }
 
   /**
-   * 批量转发 Fast Path 数据
+   *  Fast Path 
    *
-   * 用于高吞吐场景，减少 PostMessage 次数
+   * ， PostMessage 
    */
   forwardBatch(streamId: string, data: ArrayBuffer): void {
     this.batchQueue.push({
@@ -54,11 +54,11 @@ export class FastPathForwarder {
       timestamp: Date.now(),
     });
 
-    // 如果达到批量阈值，立即发送
+    // ，
     if (this.batchQueue.length >= this.batchSize) {
       this.flushBatch();
     } else if (this.batchTimer === null) {
-      // 设置超时定时器
+      // 
       this.batchTimer = window.setTimeout(() => {
         this.flushBatch();
       }, this.batchTimeoutMs);
@@ -66,7 +66,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 立即转发单条数据
+   * 
    */
   private forwardImmediate(fastPathData: FastPathData): void {
     const view = new Uint8Array(fastPathData.data);
@@ -79,25 +79,25 @@ export class FastPathForwarder {
           timestamp: fastPathData.timestamp,
         },
       },
-      [view.buffer as ArrayBuffer] // Transferable - 零拷贝
+      [view.buffer as ArrayBuffer] // Transferable - 
     );
   }
 
   /**
-   * 刷新批量队列
+   * 
    */
   private flushBatch(): void {
     if (this.batchQueue.length === 0) {
       return;
     }
 
-    // 清除定时器
+    // 
     if (this.batchTimer !== null) {
       window.clearTimeout(this.batchTimer);
       this.batchTimer = null;
     }
 
-    // 准备 transferables
+    //  transferables
     const batchPayload = this.batchQueue.map((item) => ({
       streamId: item.streamId,
       data: new Uint8Array(item.data),
@@ -107,7 +107,7 @@ export class FastPathForwarder {
       (item) => item.data.buffer as ArrayBuffer
     );
 
-    // 发送批量数据
+    // 
     this.swBridge.sendToSW(
       {
         type: 'fast_path_data',
@@ -118,12 +118,12 @@ export class FastPathForwarder {
       transferables
     );
 
-    // 清空队列
+    // 
     this.batchQueue = [];
   }
 
   /**
-   * 设置批量参数
+   * 
    */
   setBatchParams(size: number, timeoutMs: number): void {
     this.batchSize = size;
@@ -131,7 +131,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 获取性能指标
+   * 
    */
   getMetrics(): {
     queueLength: number;
@@ -144,7 +144,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 清理资源
+   * 
    */
   dispose(): void {
     if (this.batchTimer !== null) {

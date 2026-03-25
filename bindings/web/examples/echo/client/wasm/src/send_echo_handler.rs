@@ -1,8 +1,9 @@
-//! SendEcho 本地服务实现
+//! Local `SendEcho` service implementation for Web.
 //!
-//! 处理 SendEcho RPC 请求：发现远程 EchoService 并转发请求。
+//! Handles `SendEcho` RPC requests by discovering the remote `EchoService`
+//! and forwarding the request.
 //!
-//! 对应 proto 定义：
+//! Corresponding proto definition:
 //! ```proto
 //! service SendEcho {
 //!   rpc SendEcho(EchoRequest) returns (EchoResponse);
@@ -15,21 +16,22 @@ use std::sync::OnceLock;
 use actr_runtime_sw::RuntimeContext;
 use actr_runtime_sw::WebContext;
 
-/// 远程 Echo Server 的 ActrType
+/// `ActrType` for the remote Echo server.
 static ECHO_SERVER_TYPE: OnceLock<actr_runtime_sw::actr_protocol::ActrType> = OnceLock::new();
 
 fn echo_server_type() -> &'static actr_runtime_sw::actr_protocol::ActrType {
     ECHO_SERVER_TYPE.get_or_init(|| actr_runtime_sw::actr_protocol::ActrType {
         manufacturer: "acme".to_string(),
         name: "EchoService".to_string(),
-        version: "v1".to_string(),
+        version: "0.1.0".to_string(),
     })
 }
 
-/// 处理 SendEcho 服务的 RPC 请求
+/// Handle RPC requests for the `SendEcho` service.
 ///
-/// 由 register_echo_client_handler 注册的 handler 调用。
-/// 当前仅支持 `SendEcho` 方法：发现远程 EchoService 并转发请求。
+/// Called by the handler registered through `register_echo_client_handler`.
+/// Currently only supports the `SendEcho` method: discover the remote
+/// `EchoService` and forward the request.
 pub async fn handle_request(
     method: &str,
     request_bytes: &[u8],
@@ -39,7 +41,7 @@ pub async fn handle_request(
         "SendEcho" => {
             log::info!("[SendEcho] Received request, discovering remote EchoService...");
 
-            // 1. 发现远程 Echo Server
+            // 1. Discover the remote Echo server.
             let target = ctx
                 .discover(echo_server_type())
                 .await
@@ -47,7 +49,7 @@ pub async fn handle_request(
 
             log::info!("[SendEcho] Discovered echo server: {:?}", target);
 
-            // 2. 通过 ctx.call_raw() 转发请求到远程 echo.EchoService.Echo
+            // 2. Forward the request to remote `echo.EchoService.Echo` via `ctx.call_raw()`.
             let response = ctx
                 .call_raw(&target, "echo.EchoService.Echo", request_bytes, 30000)
                 .await

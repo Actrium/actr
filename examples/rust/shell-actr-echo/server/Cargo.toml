@@ -1,22 +1,18 @@
+
 [package]
 name = "echo-real-server"
 version = "0.2.0"
-edition.workspace = true
-rust-version.workspace = true
-
+edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
-actr-framework = { workspace = true }
-actr-protocol = { workspace = true }
-actr-runtime = { workspace = true, features = ["opentelemetry"] }
-actr-config = { workspace = true }
-tokio = { workspace = true }
-anyhow = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-prost = { workspace = true }
-bytes = { workspace = true }
-async-trait = { workspace = true }
+actr = { path = "../../../..", features = ["opentelemetry"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"
+prost = "0.14"
+bytes = "1"
+async-trait = "0.1"
 
-[build-dependencies]
-prost-build = "0.14"
+[dev-dependencies]
+actr-framework = { path = "../../../../core/framework", features = ["test-utils"] }

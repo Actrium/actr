@@ -3,17 +3,17 @@ set -e
 
 echo "Building DOM Runtime..."
 
-# 清理旧的构建
+# Clean old builds
 rm -rf ../../dist/dom
 
-# 构建 WASM（target: web，适合 DOM）
+# Build WASM (target: web, suitable for DOM)
 wasm-pack build \
   --target web \
   --out-dir ../../dist/dom \
   --out-name actr_runtime_dom \
   --release
 
-# 生成 npm 包信息
+# Generate npm package metadata
 cat > ../../dist/dom/package.json << EOF
 {
   "name": "@actor-rtc/runtime-dom",

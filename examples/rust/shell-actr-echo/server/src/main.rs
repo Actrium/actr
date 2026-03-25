@@ -1,87 +1,48 @@
-//! Echo Real Server - 真实的 Actor 服务端
+//! Echo Server — minimal echo service example
 //!
-//! 使用 ActorSystem 启动，通过 signaling server 注册
+//! Demonstrates the standard Actor startup flow:
+//! config → package-backed `Hyper.attach_package(...)` → node.start() → serve
 
 mod echo_service;
 mod generated;
 
 use echo_service::EchoService;
-use generated::echo_service_actor::EchoServiceWorkload;
+use generated::echo_actor::EchoServiceWorkload;
 
-use actr_runtime::prelude::*;
+use actr::prelude::*;
 use std::path::PathBuf;
 use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. 加载配置
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 1. Load config
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_file(&config_path)?;
+    let config = actr::config::ConfigParser::from_file(&config_path)?;
 
-    // 初始化可观测性（日志/链路追踪）
-    let _obs_guard = actr_runtime::init_observability(&config.observability)?;
+    let _obs_guard = init_observability(&config.observability)?;
 
-    info!("🚀 Echo Real Server 启动");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("📝 使用真实的 protobuf 注册流程");
-    info!("📡 需要 signaling-server 运行在 ws://localhost:8081");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("Echo Server starting");
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. 创建 ActorSystem
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🏗️  创建 ActorSystem...");
+    // 2. Build ActrNode with EchoService workload
+    let workload = EchoServiceWorkload::new(EchoService);
+    let node = unimplemented!(
+        "source-defined workload examples were removed; migrate this example to a package-backed host"
+    );
 
-    let system = match ActrSystem::new(config).await {
-        Ok(sys) => sys,
-        Err(e) => {
-            error!("❌ ActrSystem 创建失败: {:?}", e);
-            return Err(e.into());
-        }
-    };
-
-    info!("✅ ActrSystem 创建成功");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 3. 创建 EchoService 并附加 Workload
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("📦 创建 EchoService...");
-
-    let echo_service = EchoService::new();
-    let workload = EchoServiceWorkload::new(echo_service);
-    let node = system.attach(workload);
-
-    info!("✅ EchoService 已附加");
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 4. 启动 ActrNode (连接 signaling server, 注册, 启动接收)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    info!("🚀 启动 ActrNode...");
-
+    // 3. Start ActrNode (connect signaling, register, begin serving)
     let actr_ref = match node.start().await {
-        Ok(actr) => actr,
+        Ok(r) => r,
         Err(e) => {
-            error!("❌ ActrNode 启动失败: {:?}", e);
-            error!("💡 提示：请确保 signaling-server 已运行: cd signaling-server && cargo run");
+            error!("ActrNode start failed: {:?}", e);
             return Err(e.into());
         }
     };
 
-    info!("✅ ActrNode 启动成功！");
-    info!("🆔 Server ID: {:?}", actr_ref.actor_id());
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("🎉 Echo Server 已完全启动并注册");
-    info!("📡 等待客户端连接...");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!(id = ?actr_ref.actor_id(), "Echo Server ready, waiting for requests...");
 
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 5. Wait for Ctrl+C and shutdown
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 4. Wait for Ctrl+C
     actr_ref.wait_for_ctrl_c_and_shutdown().await?;
 
-    info!("✅ Echo Server 已关闭");
-
+    info!("Echo Server stopped");
     Ok(())
 }

@@ -1,6 +1,6 @@
-//! PostMessage Lane - DOM 端（接收来自 Service Worker的消息）
+//! PostMessage lane for the DOM side (receives messages from the Service Worker).
 //!
-//! DOM 端的 PostMessage Lane，用于从 Service Worker 接收消息。
+//! DOM-side PostMessage lane used to receive messages from the Service Worker.
 
 use super::lane::{DataLane, LaneResult};
 use actr_web_common::PayloadType;
@@ -14,7 +14,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, MessagePort};
 
-/// PostMessage Lane 构建器（DOM 端）
+/// PostMessage lane builder for the DOM side.
 pub struct PostMessageLaneBuilder {
     port: MessagePort,
     payload_type: PayloadType,
@@ -22,11 +22,11 @@ pub struct PostMessageLaneBuilder {
 }
 
 impl PostMessageLaneBuilder {
-    /// 创建新的 PostMessage Lane 构建器
+    /// Create a new PostMessage lane builder.
     ///
-    /// # 参数
-    /// - `port`: MessagePort 对象（MessageChannel 的一端）
-    /// - `payload_type`: 该 Lane 传输的 PayloadType
+    /// # Parameters
+    /// - `port`: A MessagePort, typically one end of a MessageChannel
+    /// - `payload_type`: PayloadType carried by this lane
     pub fn new(port: MessagePort, payload_type: PayloadType) -> Self {
         Self {
             port,
@@ -35,53 +35,53 @@ impl PostMessageLaneBuilder {
         }
     }
 
-    /// 设置接收缓冲区大小
+    /// Set the receive buffer size.
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.buffer_size = size;
         self
     }
 
-    /// 构建 PostMessage Lane
+    /// Build the PostMessage lane.
     pub fn build(self) -> LaneResult<DataLane> {
-        // 创建接收通道
+        // Create the receive channel.
         let (tx, rx) = mpsc::unbounded();
         let rx = Arc::new(Mutex::new(rx));
 
-        // 设置 onmessage 回调（零拷贝优化）
+        // Install the onmessage callback with zero-copy helpers.
         let tx_clone = tx.clone();
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-            // 尝试获取 Uint8Array 数据
+            // Try to read Uint8Array data first.
             if let Ok(uint8_array) = e.data().dyn_into::<js_sys::Uint8Array>() {
-                // ✅ 零拷贝接收：1 次拷贝（JS → WASM 线性内存）
+                // Zero-copy receive with one unavoidable copy from JS memory into WASM memory.
                 let data = receive_zero_copy(&uint8_array);
 
-                // 解析消息头部
+                // Parse the message header.
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "PostMessage Lane (DOM) 接收消息: payload_type={}, size={} bytes",
+                        "PostMessage Lane (DOM) received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload：转移 Vec 所有权到 Bytes
+                    // Extract the payload by transferring Vec ownership into Bytes.
                     let payload_data = extract_payload_zero_copy(data, 5);
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
             } else if let Ok(array_buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
-                // 兼容 ArrayBuffer 格式
+                // Also support ArrayBuffer payloads.
                 let uint8_array = js_sys::Uint8Array::new(&array_buffer);
 
-                // ✅ 零拷贝接收
+                // Zero-copy receive.
                 let data = receive_zero_copy(&uint8_array);
 
                 if let Some((payload_type_byte, length, _offset)) = parse_message_header(&data) {
                     log::trace!(
-                        "PostMessage Lane (DOM) 接收消息: payload_type={}, size={} bytes",
+                        "PostMessage Lane (DOM) received message: payload_type={}, size={} bytes",
                         payload_type_byte,
                         length
                     );
 
-                    // ✅ 零拷贝提取 payload
+                    // Extract the payload without another copy.
                     let payload_data = extract_payload_zero_copy(data, 5);
                     let _ = tx_clone.unbounded_send(payload_data);
                 }
@@ -92,11 +92,11 @@ impl PostMessageLaneBuilder {
             .set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
         onmessage_callback.forget();
 
-        // 启动 MessagePort
+        // Start the MessagePort.
         self.port.start();
 
         log::info!(
-            "PostMessage Lane (DOM) 创建成功: payload_type={:?}",
+            "PostMessage Lane (DOM) created successfully: payload_type={:?}",
             self.payload_type
         );
 

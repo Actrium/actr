@@ -6,49 +6,56 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// actr.toml 的直接映射（无任何处理）
+/// Direct mapping of actr.toml (no processing applied)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawConfig {
-    /// 配置文件格式版本（决定使用哪个 Parser）
+    /// Config file format version (determines which Parser to use)
     #[serde(default = "default_edition")]
     pub edition: u32,
 
-    /// 继承的父配置文件路径
+    /// Inherited parent config file path
     #[serde(default)]
     pub inherit: Option<PathBuf>,
 
-    /// Lock file 文件所在的目录
+    /// Directory containing the lock file
     #[serde(default)]
     pub config_dir: Option<PathBuf>,
 
-    /// 包信息
+    /// Package info
     pub package: RawPackageConfig,
 
-    /// 导出的 proto 文件列表
+    /// Exported proto file list
     #[serde(default)]
     pub exports: Vec<PathBuf>,
 
-    /// 服务依赖
+    /// Service dependencies
     #[serde(default)]
     pub dependencies: HashMap<String, RawDependency>,
 
-    /// 系统配置
+    /// System configuration
     #[serde(default)]
     pub system: RawSystemConfig,
 
-    /// 访问控制列表（原始 TOML 值，稍后解析）
+    /// Access control list (raw TOML value, parsed later)
     #[serde(default)]
     pub acl: Option<toml::Value>,
 
-    /// 脚本命令
+    /// Script commands
     #[serde(default)]
     pub scripts: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
+    /// Package name (also used as the actor type name)
     pub name: String,
-    pub actr_type: RawActrType,
+
+    /// Manufacturer identifier (e.g., "acme")
+    pub manufacturer: String,
+
+    /// Semantic version (e.g., "1.0.0"). Defaults to empty string if not specified.
+    #[serde(default)]
+    pub version: String,
 
     #[serde(default)]
     pub description: Option<String>,
@@ -64,20 +71,10 @@ pub struct RawPackageConfig {
     pub tags: Vec<String>,
 }
 
-/// Actor type configuration under [package.actr_type]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawActrType {
-    pub manufacturer: String,
-    pub name: String,
-    /// Semantic version (e.g., "1.0.0"). Defaults to empty string if not specified.
-    #[serde(default)]
-    pub version: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RawDependency {
-    /// 已指定 ActrType 的依赖（必须先匹配，因为它有 required 的 `actr_type` 字段）
+    /// Dependency with specified ActrType (matched first since it has the required `actr_type` field)
     ///
     /// Example:
     /// ```toml
@@ -99,7 +96,7 @@ pub enum RawDependency {
         realm: Option<u32>,
     },
 
-    /// 空依赖声明：{}（由 actr install 填充）
+    /// Empty dependency declaration: {} (populated by actr install)
     Empty {},
 }
 
@@ -107,6 +104,9 @@ pub enum RawDependency {
 pub struct RawSystemConfig {
     #[serde(default)]
     pub signaling: RawSignalingConfig,
+
+    #[serde(default)]
+    pub ais_endpoint: RawAisEndpointConfig,
 
     #[serde(default)]
     pub deployment: RawDeploymentConfig,
@@ -125,9 +125,9 @@ pub struct RawSystemConfig {
     pub observability: RawObservabilityConfig,
 }
 
-/// WebSocket 数据传输配置
+/// WebSocket data transport configuration
 ///
-/// 配置示例（actr.toml）：
+/// Configuration example (actr.toml):
 /// ```toml
 /// [system.websocket]
 /// listen_port = 9001
@@ -135,18 +135,20 @@ pub struct RawSystemConfig {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawWebSocketConfig {
-    /// 本节点监听入站 WebSocket 连接的端口（用于直连模式）
+    /// Port for listening to inbound WebSocket connections (for direct mode)
     ///
-    /// 配置后本节点会在此端口启动 WebSocket 服务端，接受对等节点的直接连接。
-    /// 不配置时本节点不监听任何端口（仅支持中继模式）。
+    /// When configured, the node starts a WebSocket server on this port,
+    /// accepting direct connections from peer nodes.
+    /// When not configured, the node does not listen on any port (relay mode only).
     #[serde(default)]
     pub listen_port: Option<u16>,
 
-    /// 对外广播的 WebSocket 主机名或 IP（用于信令注册）
+    /// Externally advertised WebSocket hostname or IP (for signaling registration)
     ///
-    /// 当节点配置了 `listen_port` 时，信令服务器需要一个可被对等节点访问的地址。
-    /// 此字段指定注册到信令服务器的主机名或 IP，例如 `"192.168.1.10"` 或
-    /// `"mynode.example.com"`。若不配置，默认使用 `"127.0.0.1"`（仅适用于本地测试）。
+    /// When a node has `listen_port` configured, the signaling server needs an address
+    /// reachable by peer nodes. This field specifies the hostname or IP registered with
+    /// the signaling server, e.g., `"192.168.1.10"` or `"mynode.example.com"`.
+    /// Defaults to `"127.0.0.1"` if not configured (suitable for local testing only).
     #[serde(default)]
     pub advertised_host: Option<String>,
 }
@@ -158,9 +160,30 @@ pub struct RawSignalingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawAisEndpointConfig {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawDeploymentConfig {
     #[serde(default)]
     pub realm_id: Option<u32>,
+
+    /// Realm secret for AIS registration authentication
+    #[serde(default)]
+    pub realm_secret: Option<String>,
+
+    /// Execution mode: `"native"` (default) | `"process"` | `"wasm"`
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// AIS (Actor Identity Service) HTTP endpoint, e.g. `"http://ais.example.com:8080"`.
+    ///
+    /// Used for credential registration via HTTP. Required in native mode;
+    /// in process/wasm mode, Hyper handles registration and injects credentials.
+    #[serde(default)]
+    pub ais_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -175,49 +198,49 @@ pub struct RawStorageConfig {
     pub mailbox_path: Option<PathBuf>,
 }
 
-/// WebRTC 配置
+/// WebRTC configuration
 ///
-/// 不配置端口范围时使用默认模式（随机端口）
-/// 配置 port_range_start/end 时启用固定端口模式
+/// Without port range configured, uses default mode (random ports).
+/// With port_range_start/end configured, enables fixed port mode.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawWebRtcConfig {
-    /// STUN 服务器 URL 列表 (例如 ["stun:localhost:3478"])
+    /// STUN server URL list (e.g., ["stun:localhost:3478"])
     #[serde(default)]
     pub stun_urls: Vec<String>,
 
-    /// TURN 服务器 URL 列表 (例如 ["turn:localhost:3478"])
+    /// TURN server URL list (e.g., ["turn:localhost:3478"])
     #[serde(default)]
     pub turn_urls: Vec<String>,
 
-    /// 是否强制使用 TURN 中继 (默认 false)
+    /// Whether to force TURN relay (default false)
     #[serde(default)]
     pub force_relay: bool,
 
-    /// ICE host 候选等待时间（毫秒）
+    /// ICE host candidate acceptance min wait (ms)
     #[serde(default)]
     pub ice_host_acceptance_min_wait: Option<u64>,
 
-    /// ICE srflx 候选等待时间（毫秒）
+    /// ICE srflx candidate acceptance min wait (ms)
     #[serde(default)]
     pub ice_srflx_acceptance_min_wait: Option<u64>,
 
-    /// ICE prflx 候选等待时间（毫秒）
+    /// ICE prflx candidate acceptance min wait (ms)
     #[serde(default)]
     pub ice_prflx_acceptance_min_wait: Option<u64>,
 
-    /// ICE relay 候选等待时间（毫秒）
+    /// ICE relay candidate acceptance min wait (ms)
     #[serde(default)]
     pub ice_relay_acceptance_min_wait: Option<u64>,
 
-    /// UDP 端口范围起始值（可选，配置后启用固定端口模式）
+    /// UDP port range start (optional, enables fixed port mode when configured)
     #[serde(default)]
     pub port_range_start: Option<u16>,
 
-    /// UDP 端口范围结束值（可选，配置后启用固定端口模式）
+    /// UDP port range end (optional, enables fixed port mode when configured)
     #[serde(default)]
     pub port_range_end: Option<u16>,
 
-    /// NAT 1:1 公网 IP 映射（可选）
+    /// NAT 1:1 public IP mapping (optional)
     #[serde(default)]
     pub public_ips: Vec<String>,
 }
@@ -246,13 +269,13 @@ fn default_edition() -> u32 {
 }
 
 impl RawConfig {
-    /// 从文件加载原始配置
+    /// Load raw configuration from file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         content.parse()
     }
 
-    /// 保存到文件
+    /// Save to file
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let content = toml::to_string_pretty(self)?;
         std::fs::write(path, content)?;
@@ -278,9 +301,7 @@ mod tests {
 edition = 1
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [system.webrtc]
 port_range_start = 50000
 port_range_end = 50100
@@ -302,9 +323,7 @@ exports = ["proto/test.proto"]
 
 [package]
 name = "test-service"
-[package.actr_type]
 manufacturer = "acme"
-name = "test-service"
 
 [dependencies]
 user-service = {}
@@ -327,13 +346,37 @@ run = "cargo run"
     }
 
     #[test]
+    fn test_parse_explicit_ais_endpoint() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+
+[system.signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[system.ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[system.deployment]
+realm_id = 1001
+"#;
+
+        let config = RawConfig::from_str(toml_content).unwrap();
+        assert_eq!(
+            config.system.ais_endpoint.url.as_deref(),
+            Some("http://localhost:8081/ais")
+        );
+    }
+
+    #[test]
     fn test_parse_dependency_with_empty_attributes() {
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 user-service = {}
 "#;
@@ -347,9 +390,7 @@ user-service = {}
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
@@ -374,9 +415,7 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
         let toml_content = r#"
 [package]
 name = "test"
-[package.actr_type]
 manufacturer = "acme"
-name = "test"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;

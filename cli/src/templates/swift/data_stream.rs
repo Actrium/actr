@@ -34,6 +34,11 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         ".gitignore",
     )?;
     ProjectTemplate::load_file(
+        &fixtures_root.join("swift/dist.keep.hbs"),
+        files,
+        "dist/.keep",
+    )?;
+    ProjectTemplate::load_file(
         &fixtures_root.join("swift/Info.plist.hbs"),
         files,
         "{{PROJECT_NAME_PASCAL}}/Info.plist",

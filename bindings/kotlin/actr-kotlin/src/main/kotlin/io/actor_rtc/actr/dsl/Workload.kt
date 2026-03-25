@@ -24,8 +24,8 @@ import kotlinx.coroutines.launch
  *     realm = 2281844430u,
  *     type = "acme:my-client"
  * )
- * val node = system.attach(workload)
- * val actrRef = node.start()
+ * val system = createActrSystem("actr.toml", "dist/app.actr")
+ * val actrRef = system.start()
  *
  * // Discover and set target server before calling
  * val serverId = actrRef.discoverOne("acme:EchoService")
@@ -58,7 +58,7 @@ open class SimpleWorkload(
      * Create a SimpleWorkload from a type string.
      *
      * @param realmId The realm ID
-     * @param typeString Actor type in "manufacturer:name" format
+     * @param typeString Actor type in "manufacturer:name:version" format
      */
     constructor(
             realmId: UInt,
@@ -72,11 +72,12 @@ open class SimpleWorkload(
             realm: UInt,
             manufacturer: String,
             name: String,
+            version: String,
             onStartHandler: suspend (ContextBridge) -> Unit = {},
             onStopHandler: suspend (ContextBridge) -> Unit = {}
     ) : this(
             realm,
-            ActrType(manufacturer = manufacturer, name = name),
+            ActrType(manufacturer = manufacturer, name = name, version = version),
             onStartHandler,
             onStopHandler
     )
@@ -191,9 +192,9 @@ class WorkloadBuilder {
         _type = actrType
     }
 
-    /** Set the actor type with manufacturer and name. */
-    fun type(manufacturer: String, name: String) {
-        _type = ActrType(manufacturer = manufacturer, name = name)
+    /** Set the actor type with manufacturer, name, and version. */
+    fun type(manufacturer: String, name: String, version: String) {
+        _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
     /**
