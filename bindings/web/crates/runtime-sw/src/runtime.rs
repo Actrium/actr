@@ -9,8 +9,8 @@
 //!
 //! ## Sending Requests (DOM -> Remote)
 //! ```text
-//! DOM → handle_dom_control → SERVICE_HANDLER (UnifiedDispatcher)
-//!     → local route: handler(route_key, payload, ctx) → response
+//! DOM → handle_dom_control → WORKLOAD (WasmWorkload dispatch)
+//!     → local route: workload.dispatch(route_key, payload, ctx) → response
 //!     → remote route: ctx.call_raw() → Gate → WebRTC DataChannel
 //! ```
 //!
@@ -2346,25 +2346,7 @@ impl SwRuntime {
     }
 }
 
-/// Type alias for a unified service handler function (UnifiedDispatcher).
-///
-/// Given (route_key, request_bytes, context), returns a future that resolves
-/// to the response bytes or an error string.
-///
-/// The handler dispatches based on route_key prefix to local or remote handlers.
-/// For remote calls, the handler uses `ctx.call_raw()` / `ctx.discover()`.
-///
-/// # Parameters
-/// - `route_key`: Full route key (e.g., `"echo.EchoService.Echo"`)
-/// - `request_bytes`: Serialized protobuf request payload
-/// - `ctx`: WebContext providing communication capabilities (call_raw, discover, etc.)
-pub type ServiceHandlerFn = Rc<
-    dyn Fn(
-        &str,
-        &[u8],
-        Rc<RuntimeContext>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>>>>,
->;
+use crate::workload::WasmWorkload;
 
 /// Per-client context stored in the SW.
 /// Each browser tab gets its own independent client context with
@@ -2507,33 +2489,32 @@ thread_local! {
     /// Each browser tab registers with a unique client_id.
     static CLIENTS: RefCell<HashMap<String, Rc<ClientContext>>> = RefCell::new(HashMap::new());
     static GLOBAL_INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static SERVICE_HANDLER: RefCell<Option<ServiceHandlerFn>> = const { RefCell::new(None) };
+    static WORKLOAD: RefCell<Option<WasmWorkload>> = const { RefCell::new(None) };
 }
 
-/// Register a unified service handler (UnifiedDispatcher pattern).
+/// Register a WASM workload with the SW runtime.
 ///
-/// The handler receives (route_key, request_bytes, ctx) and dispatches to
-/// local or remote handlers based on route_key prefix.
+/// The workload dispatches RPC requests to business logic through its handler.
 ///
 /// # Example
 /// ```ignore
-/// register_service_handler(Rc::new(|route_key, bytes, ctx| {
+/// use actr_runtime_sw::{WasmWorkload, register_workload};
+///
+/// let workload = WasmWorkload::new(Rc::new(|route_key, bytes, ctx| {
 ///     Box::pin(async move {
-///         if route_key.starts_with("local.") {
-///             handle_local(route_key, bytes).await
-///         } else {
-///             // Forward to remote via ctx.call_raw()
-///             let target = ctx.discover(&target_type).await.map_err(|e| e.to_string())?;
-///             ctx.call_raw(&target, route_key, bytes, 30000).await.map_err(|e| e.to_string())
+///         match route_key {
+///             "echo.EchoService.Echo" => handle_echo(bytes, ctx).await,
+///             _ => Err(format!("Unknown route: {}", route_key)),
 ///         }
 ///     })
 /// }));
+/// register_workload(workload);
 /// ```
-pub fn register_service_handler(handler: ServiceHandlerFn) {
-    SERVICE_HANDLER.with(|cell| {
-        *cell.borrow_mut() = Some(handler);
+pub fn register_workload(workload: WasmWorkload) {
+    WORKLOAD.with(|cell| {
+        *cell.borrow_mut() = Some(workload);
     });
-    log::info!("[SW] Service handler registered");
+    log::info!("[SW] Workload registered");
 }
 
 #[wasm_bindgen]
@@ -2649,10 +2630,10 @@ pub async fn register_client(
                 envelope.route_key
             );
 
-            // Fetch the registered global service handler.
-            let handler = SERVICE_HANDLER.with(|cell| cell.borrow().as_ref().map(Rc::clone));
+            // Fetch the registered workload.
+            let workload = WORKLOAD.with(|cell| cell.borrow().clone());
 
-            if let Some(handler) = handler {
+            if let Some(workload) = workload {
                 let route_key = envelope.route_key.clone();
                 let request_id = envelope.request_id.clone();
                 let is_tell = envelope.timeout_ms == 0; // `tell()` sets `timeout_ms=0`, meaning one-way messaging.
@@ -2731,8 +2712,8 @@ pub async fn register_client(
                     .with_bridge(bridge),
                 );
 
-                // Execute the actor business logic.
-                let result = handler(&route_key, &request_bytes, handler_ctx).await;
+                // Execute the actor business logic via workload dispatch.
+                let result = workload.dispatch(&route_key, &request_bytes, handler_ctx).await;
 
                 // `tell()` is fire-and-forget, so no response is built or sent.
                 if is_tell {
@@ -2820,7 +2801,7 @@ pub async fn register_client(
                 }
             } else {
                 log::warn!(
-                    "[Scheduler] No service handler for incoming RPC request: route_key={}",
+                    "[Scheduler] No workload registered for incoming RPC request: route_key={}",
                     envelope.route_key
                 );
             }
@@ -3013,10 +2994,10 @@ pub async fn unregister_client(client_id: String) {
 /// Handle an RPC control request originating from the DOM side.
 ///
 /// Message flow in unified-dispatcher mode:
-/// - With `SERVICE_HANDLER`: `DOM -> handler(route_key, payload, ctx) -> response`
-///   - Local route: the handler processes locally and may call remote targets via `ctx.call_raw()`
-///   - Remote route: the handler forwards to a remote actor via `ctx.call_raw()`
-/// - Without `SERVICE_HANDLER`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
+/// - With `WORKLOAD`: `DOM -> workload.dispatch(route_key, payload, ctx) -> response`
+///   - Local route: the workload processes locally and may call remote targets via `ctx.call_raw()`
+///   - Remote route: the workload forwards to a remote actor via `ctx.call_raw()`
+/// - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
 #[wasm_bindgen]
 pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(), JsValue> {
     let call: DomRpcCall = serde_wasm_bindgen::from_value(payload)?;
@@ -3044,11 +3025,11 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
     let request_id = call.request_id.clone();
     let timeout_ms = call.request.timeout.unwrap_or(30000);
 
-    // Check if a service handler (UnifiedDispatcher) is registered
-    let handler = SERVICE_HANDLER.with(|cell| cell.borrow().as_ref().map(Rc::clone));
+    // Check if a workload is registered
+    let workload = WORKLOAD.with(|cell| cell.borrow().clone());
 
-    if let Some(handler) = handler {
-        // ========== New path: UnifiedDispatcher (local + remote handler) ==========
+    if let Some(workload) = workload {
+        // ========== Workload dispatch path (local + remote handler) ==========
         log::info!(
             "[SW] handle_dom_control: client_id={} route_key={} request_id={} (via handler)",
             client_id,
@@ -3081,10 +3062,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             .with_bridge(bridge),
         );
 
-        // Spawn handler execution
+        // Spawn workload dispatch
         let runtime_for_response = Rc::clone(runtime);
         wasm_bindgen_futures::spawn_local(async move {
-            let result = handler(&route_key, &payload_bytes, handler_ctx).await;
+            let result = workload
+                .dispatch(&route_key, &payload_bytes, handler_ctx)
+                .await;
 
             // Send response back to DOM as control_response
             let rt = runtime_for_response.lock().await;

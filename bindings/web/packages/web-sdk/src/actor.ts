@@ -29,7 +29,7 @@ export interface ActorConfig extends ActorClientConfig {
      * WASM （）
      *
      * ， Service Worker  WASM  handler。
-     * WASM  handler  register_service_handler() ，
+     * WASM  handler  register_workload() ，
      * （ ctx.call_raw()）。
      */
     wasmUrl?: string;

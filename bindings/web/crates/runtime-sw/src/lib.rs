@@ -18,6 +18,7 @@ pub mod trace;
 pub mod transport;
 pub mod web_context; // Web-specific Context trait
 pub mod webrtc_recovery;
+pub mod workload;
 pub use actr_framework::Workload;
 pub use actr_platform_web::WebPlatformProvider;
 
@@ -37,9 +38,8 @@ pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcess
 pub use lifecycle::SwLifecycleManager;
 pub use outbound::{Gate, HostGate, PeerGate};
 pub use runtime::{
-    ServiceHandlerFn, handle_dom_control, handle_dom_fast_path, handle_dom_webrtc_event,
-    init_global, register_client, register_datachannel_port, register_service_handler,
-    unregister_client,
+    handle_dom_control, handle_dom_fast_path, handle_dom_webrtc_event, init_global,
+    register_client, register_datachannel_port, register_workload, unregister_client,
 };
 pub use system::System;
 pub use transport::{
@@ -47,7 +47,8 @@ pub use transport::{
     WebSocketLaneBuilder, WebWireBuilder, WireBuilder, WireHandle, WirePool,
 };
 pub use web_context::RuntimeBridge; // Re-export RuntimeBridge trait
-pub use web_context::WebContext; // Re-export WebContext trait
+pub use web_context::WebContext;
+pub use workload::{ServiceHandlerFn, WasmWorkload}; // Re-export WebContext trait
 
 // Re-export actr_protocol so downstream crates don't need a direct dependency
 pub use actr_protocol;

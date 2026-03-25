@@ -9,7 +9,7 @@
 //! WebRTC DataChannel
 //!   │  RpcEnvelope (binary)
 //!   ▼
-//! SW Runtime → Mailbox → Scheduler → SERVICE_HANDLER (dispatcher)
+//! SW Runtime → Mailbox → Scheduler → WORKLOAD (WasmWorkload dispatch)
 //!   │  handler(route_key, payload, ctx)
 //!   │    └─ EchoService.echo(request, ctx) → response
 //!   ▼
@@ -52,30 +52,32 @@ pub fn init() {
     log::info!("  - User Workload: EchoService");
 }
 
-/// Register the `EchoService` handler.
+/// Register the `EchoService` workload.
 ///
-/// The handler dispatches RPC requests to the concrete `EchoService` methods
+/// The workload dispatches RPC requests to the concrete `EchoService` methods
 /// and forwards `RuntimeContext` into each method.
 #[wasm_bindgen]
 pub fn register_echo_service() {
     log::info!("Registering EchoService workload...");
 
-    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {
-        let route_key = route_key.to_string();
-        let bytes = bytes.to_vec();
-        Box::pin(async move {
-            // Parse route_key: "echo.EchoService.Echo" → service="echo.EchoService", method="Echo"
-            let (service, method) = if let Some(last_dot) = route_key.rfind('.') {
-                (&route_key[..last_dot], &route_key[last_dot + 1..])
-            } else {
-                (route_key.as_str(), "")
-            };
-            match service {
-                "echo.EchoService" => echo_service::handle_request(method, &bytes, ctx).await,
-                _ => Err(format!("Unknown service: {}", service)),
-            }
-        })
-    }));
+    actr_runtime_sw::register_workload(actr_runtime_sw::WasmWorkload::new(Rc::new(
+        |route_key, bytes, ctx| {
+            let route_key = route_key.to_string();
+            let bytes = bytes.to_vec();
+            Box::pin(async move {
+                // Parse route_key: "echo.EchoService.Echo" → service="echo.EchoService", method="Echo"
+                let (service, method) = if let Some(last_dot) = route_key.rfind('.') {
+                    (&route_key[..last_dot], &route_key[last_dot + 1..])
+                } else {
+                    (route_key.as_str(), "")
+                };
+                match service {
+                    "echo.EchoService" => echo_service::handle_request(method, &bytes, ctx).await,
+                    _ => Err(format!("Unknown service: {}", service)),
+                }
+            })
+        },
+    )));
 
-    log::info!("EchoService registered successfully (handler bound to runtime)");
+    log::info!("EchoService registered successfully (workload bound to runtime)");
 }
