@@ -22,7 +22,7 @@ const ECHO_SERVICE_MANUFACTURER: &str = "actrium";
 const ECHO_SERVICE_NAME: &str = "EchoService";
 
 fn echo_actr_version() -> String {
-    std::env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| "0.2.1-beta".to_string())
+    std::env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| "0.2.1".to_string())
 }
 
 impl RpcRequest for EchoRequest {

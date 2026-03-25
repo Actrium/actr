@@ -110,10 +110,10 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Build local echo-actr package ────────────────────────────────
+# ── Step 0: Prepare echo-actr package ────────────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Building local echo-actr package...${NC}"
+echo -e "${BLUE}📦 Preparing echo-actr package...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo_actr_version() {
@@ -146,10 +146,12 @@ case "$ECHO_ACTR_BACKEND" in
 esac
 
 ACTR_PACKAGE_NAME="actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
-ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
-PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
+DEFAULT_ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/$ACTR_PACKAGE_NAME"
+DEFAULT_PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
+ACTR_PACKAGE="${ACTR_PACKAGE_PATH:-$DEFAULT_ACTR_PACKAGE}"
+PUBLIC_KEY_PATH="${ACTR_PUBLIC_KEY_PATH:-$DEFAULT_PUBLIC_KEY_PATH}"
 
-if [ ! -d "$ECHO_ACTR_DIR" ]; then
+if [ ! -d "$ECHO_ACTR_DIR" ] && [ -z "${ACTR_PACKAGE_PATH:-}" ]; then
     echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
     exit 1
 fi
@@ -162,16 +164,21 @@ echo "Target:        $ECHO_ACTR_TARGET"
 perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
     "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 
-"$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
-
-if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
-    WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
+if [ -n "${ACTR_PACKAGE_PATH:-}" ]; then
+    echo "Using prebuilt release package: $ACTR_PACKAGE"
+    echo "Using public key:             $PUBLIC_KEY_PATH"
 else
-    "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
+    "$ECHO_ACTR_DIR/packaging/scripts/check-public-key.sh" >/dev/null
+
+    if [ "$ECHO_ACTR_BACKEND" = "wasm" ]; then
+        WASM_OPT="${WASM_OPT:-wasm-opt}" "$ECHO_ACTR_DIR/packaging/scripts/build-wasm.sh"
+    else
+        "$ECHO_ACTR_DIR/packaging/scripts/build-native.sh" "$ECHO_ACTR_TARGET"
+    fi
 fi
 
 if [ ! -f "$ACTR_PACKAGE" ]; then
-    echo -e "${RED}❌ Local package build failed: $ACTR_PACKAGE not found${NC}"
+    echo -e "${RED}❌ echo-actr package not found: $ACTR_PACKAGE${NC}"
     exit 1
 fi
 
@@ -180,8 +187,8 @@ if [ ! -f "$PUBLIC_KEY_PATH" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✅ Local package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
-echo -e "${GREEN}✅ Local public key ready${NC}"
+echo -e "${GREEN}✅ echo-actr package ready: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ echo-actr public key ready${NC}"
 
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
     --pubkey "$PUBLIC_KEY_PATH" \

@@ -16,7 +16,7 @@ use base64::Engine;
 use serde_json::Value;
 use tracing::{error, info};
 
-const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1-beta";
+const DEFAULT_ECHO_ACTR_VERSION: &str = "0.2.1";
 
 fn echo_actr_version() -> String {
     env::var("ECHO_ACTR_VERSION").unwrap_or_else(|_| DEFAULT_ECHO_ACTR_VERSION.to_string())
