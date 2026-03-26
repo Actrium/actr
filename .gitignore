@@ -45,6 +45,7 @@ ACTRIX*.md
 # WASM guest built artifacts (compiled binaries, not source)
 examples/rust/wasm-echo/guest/built/
 examples/rust/dynclib-echo/guest/target/
+core/hyper/tests/wasm_actor_fixture/built/
 
 # Python ignore
 __pycache__/

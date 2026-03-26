@@ -14,7 +14,9 @@
 #![cfg(feature = "wasm-engine")]
 
 use actr_framework::guest::abi::{InitPayloadV1, version};
-include!("wasm_actor_fixture.rs");
+
+mod wasm_fixture;
+use wasm_fixture::fixture_bytes;
 
 use actr_hyper::wasm::{WasmError, WasmHost};
 use actr_hyper::workload::{HostOperation, HostOperationResult, InvocationContext};
@@ -55,7 +57,7 @@ fn test_config() -> InitPayloadV1 {
 
 #[tokio::test]
 async fn wasm_actor_unknown_route_returns_error() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
     instance.init(&test_config()).expect("init failed");
@@ -78,7 +80,7 @@ async fn wasm_actor_unknown_route_returns_error() {
 
 #[test]
 fn wasm_actor_repeated_init_returns_error() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
     let config = test_config();
@@ -104,7 +106,7 @@ fn wasm_actor_repeated_init_returns_error() {
 
 #[tokio::test]
 async fn wasm_actor_call_raw_triggers_asyncify() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
     instance.init(&test_config()).expect("init failed");
@@ -157,7 +159,7 @@ async fn wasm_actor_call_raw_triggers_asyncify() {
 
 #[tokio::test]
 async fn wasm_actor_multiple_dispatches() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile failed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile failed");
     let mut instance = host.instantiate().expect("instantiate failed");
 
     instance.init(&test_config()).expect("init failed");

@@ -7,7 +7,8 @@ use actr_hyper::wasm::WasmHost;
 use actr_hyper::workload::{HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
-include!("wasm_actor_fixture.rs");
+mod wasm_fixture;
+use wasm_fixture::fixture_bytes;
 
 fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
     let envelope = RpcEnvelope {
@@ -43,7 +44,7 @@ fn noop_ctx() -> InvocationContext {
 /// Scenario 1: normal flow -- compile, instantiate, init, dispatch (echo)
 #[tokio::test]
 async fn wasm_host_compile_and_echo() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).expect("compile should succeed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile should succeed");
     let mut instance = host.instantiate().expect("instantiate should succeed");
 
     instance.init(&test_config()).expect("init should succeed");
@@ -66,7 +67,7 @@ async fn wasm_host_compile_and_echo() {
 /// Scenario 2: multiple dispatches (verify bump allocator does not overflow)
 #[tokio::test]
 async fn wasm_host_multiple_dispatches() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
@@ -126,7 +127,7 @@ fn wasm_host_missing_exports() {
 /// Scenario 5: empty request (0 bytes) -> dispatch should return empty response
 #[tokio::test]
 async fn wasm_host_empty_dispatch() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
@@ -146,7 +147,7 @@ async fn wasm_host_empty_dispatch() {
 /// Scenario 6: large request (16KB) -> verify memory operations correctness
 #[tokio::test]
 async fn wasm_host_large_dispatch() {
-    let host = WasmHost::compile(WASM_ACTOR_FIXTURE).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
