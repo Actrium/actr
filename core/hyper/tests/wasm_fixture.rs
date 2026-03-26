@@ -12,8 +12,7 @@ pub fn fixture_bytes() -> &'static [u8] {
     FIXTURE_BYTES.get_or_init(|| {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let script = manifest_dir.join("tests/wasm_actor_fixture/build.sh");
-        let wasm_path = manifest_dir
-            .join("tests/wasm_actor_fixture/built/wasm_actor_fixture.wasm");
+        let wasm_path = manifest_dir.join("tests/wasm_actor_fixture/built/wasm_actor_fixture.wasm");
 
         let status = std::process::Command::new("bash")
             .arg(&script)
