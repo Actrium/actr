@@ -418,8 +418,8 @@ function HowItWorks() {
           </div>
 
           {/* Row 2: Phase 2 — Build + Sign */}
-          <div>
-            <div className="text-xs font-medium text-gray-500 mb-2">Phase 2: actr pkg build — SHA-256 + Ed25519 Sign</div>
+          <div className="mt-8 relative pt-4 before:absolute before:inset-x-8 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-gray-200 before:to-transparent">
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 2: actr pkg build — SHA-256 + Ed25519 Sign (Requires MFR Keychain)</div>
             <svg viewBox="0 0 760 210" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
               <defs>
                 <marker id="ar2a" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
@@ -522,8 +522,8 @@ function HowItWorks() {
           </div>
 
           {/* Row 3: Phase 3 — Publish with Nonce Challenge-Response */}
-          <div>
-            <div className="text-xs font-medium text-gray-500 mb-2">Phase 3: actr pkg publish — Nonce Challenge-Response + Dual Verify</div>
+          <div className="mt-8 relative pt-4 before:absolute before:inset-x-8 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-gray-200 before:to-transparent">
+            <div className="text-xs font-medium text-gray-500 mb-2">Phase 3: actr pkg publish — Nonce Challenge-Response (Requires MFR Keychain)</div>
             <svg viewBox="0 0 760 270" className="w-full" xmlns="http://www.w3.org/2000/svg" fontFamily="system-ui, sans-serif">
               <defs>
                 <marker id="ar2b" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="7" markerHeight="5" orient="auto">
