@@ -14,11 +14,17 @@ pub fn fixture_bytes() -> &'static [u8] {
         let script = manifest_dir.join("tests/wasm_actor_fixture/build.sh");
         let wasm_path = manifest_dir.join("tests/wasm_actor_fixture/built/wasm_actor_fixture.wasm");
 
-        let status = std::process::Command::new("bash")
+        let output = std::process::Command::new("bash")
             .arg(&script)
-            .status()
+            .output()
             .expect("failed to run wasm_actor_fixture/build.sh");
-        assert!(status.success(), "wasm_actor_fixture/build.sh failed");
+        if !output.status.success() {
+            panic!(
+                "wasm_actor_fixture/build.sh failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
 
         std::fs::read(&wasm_path).expect("wasm_actor_fixture.wasm not found after build")
     })
