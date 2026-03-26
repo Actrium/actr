@@ -68,6 +68,12 @@ export interface Realm {
   realmId: number
 }
 
+export interface RpcEnvelopeBridge {
+  routeKey: string
+  payload: Buffer
+  requestId: string
+}
+
 export interface StreamSignal {
   chunk: DataStream
   sender: ActrId

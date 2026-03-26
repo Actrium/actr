@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_hyper::{Hyper, HyperConfig, PackageExecutionBackend, TrustMode, WorkloadPackage};
+use actr_hyper::{
+    Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode, WorkloadPackage,
+};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
@@ -66,6 +68,7 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
             size: None,
         },
         signature_algorithm: "ed25519".to_string(),
+        signing_key_id: None,
         resources: vec![],
         proto_files: vec![],
         metadata: actr_pack::ManifestMetadata::default(),
@@ -94,7 +97,7 @@ fn cache_path(data_dir: &Path, binary_hash: &[u8; 32]) -> PathBuf {
 }
 
 #[tokio::test]
-async fn dynclib_cache_hit_reuses_existing_stable_file() {
+async fn dynclib_cache_is_created_on_first_load() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     let dylib_bytes = fs::read(fixture_so_path()).unwrap();
@@ -108,19 +111,29 @@ async fn dynclib_cache_hit_reuses_existing_stable_file() {
     let first = hyper.load_workload_package(&package).await.unwrap();
     assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
     let cache_file = cache_path(dir.path(), &first.manifest.binary_hash);
-    let cache_dir = cache_file.parent().unwrap().to_path_buf();
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
+}
 
-    let mut perms = fs::metadata(&cache_dir).unwrap().permissions();
-    perms.set_readonly(true);
-    fs::set_permissions(&cache_dir, perms).unwrap();
+#[tokio::test]
+async fn dynclib_second_load_is_rejected_for_same_hyper() {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let dylib_bytes = fs::read(fixture_so_path()).unwrap();
+    let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
-    let second = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(second.backend, PackageExecutionBackend::Cdylib);
+    let dir = TempDir::new().unwrap();
+    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+        .await
+        .unwrap();
 
-    let mut restore = fs::metadata(&cache_dir).unwrap().permissions();
-    restore.set_readonly(false);
-    fs::set_permissions(&cache_dir, restore).unwrap();
+    let first = hyper.load_workload_package(&package).await.unwrap();
+    assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
+
+    let second = hyper.load_workload_package(&package).await;
+    assert!(
+        matches!(second, Err(HyperError::Runtime(ref msg)) if msg.contains("already loaded a workload")),
+        "second load should be rejected by Hyper one-shot workload contract"
+    );
 }
 
 #[tokio::test]

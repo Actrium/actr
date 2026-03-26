@@ -76,10 +76,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+          targets: wasm32-unknown-unknown
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y binaryen
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --all -- --check

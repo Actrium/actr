@@ -1,102 +1,36 @@
 //! Integration tests: WasmHost + WasmWorkload ABI verification
-//!
-//! Uses inline WAT (WebAssembly Text Format) to construct a minimal guest module:
-//! - bump allocator (satisfies actr_alloc / actr_free interface)
-//! - actr_init: returns SUCCESS directly
-//! - actr_handle: echoes request back as-is (verifies memory read/write correctness)
 
 #![cfg(feature = "wasm-engine")]
 
 use actr_framework::guest::abi::{InitPayloadV1, version};
 use actr_hyper::wasm::WasmHost;
 use actr_hyper::workload::{HostOperationResult, InvocationContext};
-use actr_protocol::ActrId;
+use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
-// ─── Minimal guest WAT module ──────────────────────────────────────────────────
+mod wasm_fixture;
+use wasm_fixture::fixture_bytes;
 
-/// Returns the minimal WASM binary implementing the full actr ABI (echo guest)
-///
-/// Guest behavior:
-/// - `actr_alloc`: bump allocator (starting from offset 4096)
-/// - `actr_free`: no-op
-/// - `actr_init`: does nothing, returns 0 (SUCCESS)
-/// - `actr_handle`: echoes request data to a newly allocated response buffer
-fn echo_guest_wasm() -> Vec<u8> {
-    wat::parse_str(
-        r#"
-(module
-  ;; 2 pages of memory (128 KB), exported
-  (memory (export "memory") 2)
-
-  ;; heap start position (first 4096 bytes reserved for output buffer)
-  (global $heap (mut i32) (i32.const 4096))
-
-  ;; internal bump allocator
-  (func $bump (param $n i32) (result i32)
-    (local $p i32)
-    (local.set $p (global.get $heap))
-    (global.set $heap (i32.add (global.get $heap) (local.get $n)))
-    (local.get $p))
-
-  ;; actr_alloc(size) -> ptr
-  (func (export "actr_alloc") (param $n i32) (result i32)
-    (call $bump (local.get $n)))
-
-  ;; actr_free(ptr, size) -- no-op (bump allocator does not reclaim)
-  (func (export "actr_free") (param $p i32) (param $n i32))
-
-  ;; asyncify stub functions (echo guest does not trigger asyncify, but instantiate() requires exports)
-  (func (export "asyncify_start_unwind") (param i32))
-  (func (export "asyncify_stop_unwind"))
-  (func (export "asyncify_start_rewind") (param i32))
-  (func (export "asyncify_stop_rewind"))
-
-  ;; actr_init(init_ptr, init_len) -> i32
-  ;; This guest ignores the init payload and returns 0 (SUCCESS) directly
-  (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
-    (i32.const 0))
-
-  ;; actr_handle(req_ptr, req_len, resp_ptr_out, resp_len_out) -> i32
-  ;; Allocates response buffer equal to request length, copies request content (echo), writes output pointers
-  (func (export "actr_handle")
-    (param $req_ptr i32) (param $req_len i32)
-    (param $resp_ptr_out i32) (param $resp_len_out i32)
-    (result i32)
-    (local $resp_ptr i32)
-
-    ;; allocate response memory
-    (local.set $resp_ptr (call $bump (local.get $req_len)))
-
-    ;; copy request to response (echo)
-    (memory.copy
-      (local.get $resp_ptr)
-      (local.get $req_ptr)
-      (local.get $req_len))
-
-    ;; write output area: resp_ptr_out and resp_len_out (little-endian i32)
-    (i32.store (local.get $resp_ptr_out) (local.get $resp_ptr))
-    (i32.store (local.get $resp_len_out) (local.get $req_len))
-
-    ;; return SUCCESS
-    (i32.const 0))
-)
-"#,
-    )
-    .expect("WAT parse failed")
+fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
+    let envelope = RpcEnvelope {
+        route_key: route_key.to_string(),
+        payload: Some(payload.into()),
+        ..Default::default()
+    };
+    envelope.encode_to_vec()
 }
 
 /// Minimal valid init payload
 fn test_config() -> InitPayloadV1 {
     InitPayloadV1 {
         version: version::V1,
-        actr_type: "test-mfr:echo-actor:0.1.0".to_string(),
-        credential: b"test".to_vec(),
-        actor_id: b"id".to_vec(),
+        actr_type: "test:fixture:0.1.0".to_string(),
+        credential: Vec::new(),
+        actor_id: Vec::new(),
         realm_id: 1,
     }
 }
 
-/// Echo guest does not call host imports; host ABI will not be triggered.
+/// Echo dispatch does not call host imports; host ABI will not be triggered.
 fn noop_ctx() -> InvocationContext {
     InvocationContext {
         self_id: ActrId::default(),
@@ -110,16 +44,15 @@ fn noop_ctx() -> InvocationContext {
 /// Scenario 1: normal flow -- compile, instantiate, init, dispatch (echo)
 #[tokio::test]
 async fn wasm_host_compile_and_echo() {
-    let wasm_bytes = echo_guest_wasm();
-
-    let host = WasmHost::compile(&wasm_bytes).expect("compile should succeed");
+    let host = WasmHost::compile(fixture_bytes()).expect("compile should succeed");
     let mut instance = host.instantiate().expect("instantiate should succeed");
 
     instance.init(&test_config()).expect("init should succeed");
 
     let request = b"hello, wasm!".to_vec();
+    let req_bytes = make_envelope("test/echo", request.clone());
     let response = instance
-        .handle(&request, noop_ctx(), |_| async {
+        .handle(&req_bytes, noop_ctx(), |_| async {
             HostOperationResult::Done
         })
         .await
@@ -134,15 +67,17 @@ async fn wasm_host_compile_and_echo() {
 /// Scenario 2: multiple dispatches (verify bump allocator does not overflow)
 #[tokio::test]
 async fn wasm_host_multiple_dispatches() {
-    let wasm_bytes = echo_guest_wasm();
-    let host = WasmHost::compile(&wasm_bytes).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
     for i in 0u8..10 {
         let req = vec![i; 64];
+        let req_bytes = make_envelope("test/echo", req.clone());
         let resp = instance
-            .handle(&req, noop_ctx(), |_| async { HostOperationResult::Done })
+            .handle(&req_bytes, noop_ctx(), |_| async {
+                HostOperationResult::Done
+            })
             .await
             .expect("each dispatch should succeed");
         assert_eq!(resp, req, "dispatch #{i} should echo correctly");
@@ -192,13 +127,15 @@ fn wasm_host_missing_exports() {
 /// Scenario 5: empty request (0 bytes) -> dispatch should return empty response
 #[tokio::test]
 async fn wasm_host_empty_dispatch() {
-    let wasm_bytes = echo_guest_wasm();
-    let host = WasmHost::compile(&wasm_bytes).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
+    let req_bytes = make_envelope("test/echo", Vec::new());
     let response = instance
-        .handle(&[], noop_ctx(), |_| async { HostOperationResult::Done })
+        .handle(&req_bytes, noop_ctx(), |_| async {
+            HostOperationResult::Done
+        })
         .await
         .expect("empty request dispatch should succeed");
     assert!(
@@ -210,14 +147,14 @@ async fn wasm_host_empty_dispatch() {
 /// Scenario 6: large request (16KB) -> verify memory operations correctness
 #[tokio::test]
 async fn wasm_host_large_dispatch() {
-    let wasm_bytes = echo_guest_wasm();
-    let host = WasmHost::compile(&wasm_bytes).unwrap();
+    let host = WasmHost::compile(fixture_bytes()).unwrap();
     let mut instance = host.instantiate().unwrap();
     instance.init(&test_config()).unwrap();
 
     let large_req: Vec<u8> = (0..16384u16).map(|i| (i % 251) as u8).collect();
+    let req_bytes = make_envelope("test/echo", large_req.clone());
     let resp = instance
-        .handle(&large_req, noop_ctx(), |_| async {
+        .handle(&req_bytes, noop_ctx(), |_| async {
             HostOperationResult::Done
         })
         .await

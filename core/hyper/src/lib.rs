@@ -337,7 +337,7 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -358,8 +358,8 @@ use actr_protocol::{Realm, RegisterRequest, register_response};
 #[cfg(not(target_arch = "wasm32"))]
 /// Hyper runtime instance
 ///
-/// Process-level singleton, initialized via `Hyper::init()`.
-/// Holds resolved configuration, instance_id, namespace resolver, and other process-level state.
+/// Process-level runtime container, initialized via `Hyper::init()`.
+/// Holds resolved configuration, instance_id, namespace resolver, and exactly one workload slot.
 #[derive(Clone)]
 pub struct Hyper {
     inner: Arc<HyperInner>,
@@ -374,6 +374,16 @@ struct HyperInner {
     verifier: verify::PackageVerifier,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
+    /// Hyper is a single-workload container. Loading is a one-shot operation.
+    workload_state: Mutex<WorkloadLoadState>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkloadLoadState {
+    Unloaded,
+    Loading,
+    Loaded,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -520,6 +530,7 @@ impl Hyper {
                 instance_id,
                 verifier,
                 platform,
+                workload_state: Mutex::new(WorkloadLoadState::Unloaded),
             }),
         })
     }
@@ -552,7 +563,10 @@ impl Hyper {
     }
 
     /// Verify a package, select the execution backend from `binary.target`,
-    /// and prepare a runtime workload ready for node attachment.
+    /// and prepare the single runtime workload owned by this Hyper instance.
+    ///
+    /// Hyper is a one-shot workload container. After the first successful load,
+    /// subsequent calls return an error instead of creating another workload.
     ///
     /// For WASM packages, Hyper initialises the guest with an empty credential payload so
     /// the caller can bootstrap AIS credentials afterwards and inject them before start.
@@ -561,25 +575,35 @@ impl Hyper {
         &self,
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {
-        let bytes = package.bytes();
-        let manifest = self.verify_package(package).await?;
-        let backend = select_package_execution_backend(&manifest)?;
-        let workload = match backend {
-            PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
-            PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
-        }?;
+        self.begin_workload_load()?;
 
-        Ok(LoadedWorkload {
-            manifest,
-            backend,
-            workload,
-        })
+        let bytes = package.bytes();
+        let result = async {
+            let manifest = self.verify_package(package).await?;
+            let backend = select_package_execution_backend(&manifest)?;
+            let workload = match backend {
+                PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
+                PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
+            }?;
+
+            Ok(LoadedWorkload {
+                manifest,
+                backend,
+                workload,
+            })
+        }
+        .await;
+
+        self.finish_workload_load(result.is_ok());
+        result
     }
 
-    /// Verify and load a [`WorkloadPackage`], then build a fully initialized [`ActrNode`].
+    /// Verify and load the single [`WorkloadPackage`] owned by this Hyper instance,
+    /// then build a fully initialized [`ActrNode`].
     ///
-    /// This is the primary entry point for package-driven actors. It replaces the manual
-    /// sequence of package loading followed by node construction.
+    /// This is the primary entry point for package-driven actors.
+    /// Like [`Hyper::load_workload_package`], this is a one-shot operation per Hyper.
+    /// Reuse the resulting node or create a new Hyper instance for another package.
     pub async fn attach_package(
         &self,
         package: &WorkloadPackage,
@@ -591,6 +615,37 @@ impl Hyper {
                 .await
                 .map_err(|e| HyperError::Runtime(e.to_string()))?;
         Ok(node)
+    }
+
+    fn begin_workload_load(&self) -> HyperResult<()> {
+        let mut state =
+            self.inner.workload_state.lock().map_err(|_| {
+                HyperError::Runtime("failed to lock Hyper workload state".to_string())
+            })?;
+
+        match *state {
+            WorkloadLoadState::Unloaded => {
+                *state = WorkloadLoadState::Loading;
+                Ok(())
+            }
+            WorkloadLoadState::Loading => Err(HyperError::Runtime(
+                "Hyper is already loading its workload".to_string(),
+            )),
+            WorkloadLoadState::Loaded => Err(HyperError::Runtime(
+                "Hyper already loaded a workload; create a new Hyper instance for another package"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn finish_workload_load(&self, success: bool) {
+        if let Ok(mut state) = self.inner.workload_state.lock() {
+            *state = if success {
+                WorkloadLoadState::Loaded
+            } else {
+                WorkloadLoadState::Unloaded
+            };
+        }
     }
 
     /// Bootstrap credential registration with AIS using the package manifest stored in `node`.
@@ -1576,6 +1631,39 @@ mod tests {
     }
 
     #[cfg(feature = "dynclib-engine")]
+    fn fake_dynclib_package_bytes(
+        binary_bytes: &[u8],
+        binary_hash: [u8; 32],
+    ) -> (Vec<u8>, PackageManifest) {
+        let manifest = fake_dynclib_manifest(binary_hash);
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let package_bytes = actr_pack::pack(&actr_pack::PackOptions {
+            manifest: actr_pack::PackageManifest {
+                manufacturer: manifest.manufacturer.clone(),
+                name: manifest.actr_name.clone(),
+                version: manifest.version.clone(),
+                binary: actr_pack::BinaryEntry {
+                    path: manifest.binary_path.clone(),
+                    target: manifest.binary_target.clone(),
+                    hash: String::new(),
+                    size: None,
+                },
+                signature_algorithm: "ed25519".to_string(),
+                signing_key_id: None,
+                resources: vec![],
+                proto_files: vec![],
+                metadata: actr_pack::ManifestMetadata::default(),
+            },
+            binary_bytes: binary_bytes.to_vec(),
+            resources: vec![],
+            proto_files: vec![],
+            signing_key,
+        })
+        .unwrap();
+        (package_bytes, manifest)
+    }
+
+    #[cfg(feature = "dynclib-engine")]
     #[test]
     fn dynclib_cache_path_uses_hash_and_platform_suffix() {
         let dir = TempDir::new().unwrap();
@@ -1592,24 +1680,29 @@ mod tests {
     #[test]
     fn ensure_dynclib_cache_path_preserves_existing_file() {
         let dir = TempDir::new().unwrap();
-        let manifest = fake_dynclib_manifest([0x11; 32]);
-        let initial_bytes = b"initial dylib bytes";
-        let cache_path = ensure_dynclib_cache_path(dir.path(), initial_bytes, &manifest).unwrap();
+        let initial_binary_bytes = b"initial dylib bytes";
+        let (initial_package_bytes, manifest) =
+            fake_dynclib_package_bytes(initial_binary_bytes, [0x11; 32]);
+        let cache_path =
+            ensure_dynclib_cache_path(dir.path(), &initial_package_bytes, &manifest).unwrap();
 
-        let replacement_bytes = b"replacement dylib bytes";
+        let (replacement_package_bytes, _) =
+            fake_dynclib_package_bytes(b"replacement dylib bytes", [0x11; 32]);
         let second_path =
-            ensure_dynclib_cache_path(dir.path(), replacement_bytes, &manifest).unwrap();
+            ensure_dynclib_cache_path(dir.path(), &replacement_package_bytes, &manifest).unwrap();
 
         assert_eq!(cache_path, second_path);
-        assert_eq!(std::fs::read(&cache_path).unwrap(), initial_bytes);
+        assert_eq!(std::fs::read(&cache_path).unwrap(), initial_binary_bytes);
     }
 
     #[cfg(feature = "dynclib-engine")]
     #[test]
     fn ensure_dynclib_cache_path_handles_concurrent_creation() {
         let dir = TempDir::new().unwrap();
-        let manifest = fake_dynclib_manifest([0x22; 32]);
-        let bytes = Arc::new(b"shared dylib bytes".to_vec());
+        let binary_bytes = b"shared dylib bytes".to_vec();
+        let (package_bytes, manifest) = fake_dynclib_package_bytes(&binary_bytes, [0x22; 32]);
+        let package_bytes = Arc::new(package_bytes);
+        let binary_bytes = Arc::new(binary_bytes);
         let data_dir = Arc::new(dir.path().to_path_buf());
         let barrier = Arc::new(Barrier::new(3));
 
@@ -1618,10 +1711,10 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 let data_dir = Arc::clone(&data_dir);
                 let manifest = manifest.clone();
-                let bytes = Arc::clone(&bytes);
+                let package_bytes = Arc::clone(&package_bytes);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    ensure_dynclib_cache_path(&data_dir, &bytes, &manifest)
+                    ensure_dynclib_cache_path(&data_dir, &package_bytes, &manifest)
                 })
             })
             .collect();
@@ -1636,7 +1729,7 @@ mod tests {
         assert_eq!(results[0], results[1]);
         assert_eq!(
             std::fs::read(&results[0]).unwrap(),
-            bytes.as_ref().as_slice()
+            binary_bytes.as_ref().as_slice()
         );
     }
 

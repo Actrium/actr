@@ -207,6 +207,38 @@ async fn load_workload_package_selects_wasm_backend() {
     assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
 }
 
+#[cfg(feature = "wasm-engine")]
+#[tokio::test]
+async fn load_workload_package_rejects_second_load_for_same_hyper() {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    let package = build_actr_package(
+        &echo_guest_wasm(),
+        "test-mfr",
+        "Echo",
+        "1.0.0",
+        &signing_key,
+    );
+
+    let dir = TempDir::new().unwrap();
+    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+        .await
+        .unwrap();
+
+    hyper
+        .load_workload_package(&WorkloadPackage::new(package.clone()))
+        .await
+        .unwrap();
+
+    let result = hyper
+        .load_workload_package(&WorkloadPackage::new(package))
+        .await;
+    assert!(
+        matches!(result, Err(HyperError::Runtime(ref msg)) if msg.contains("already loaded a workload")),
+        "second load should be rejected by Hyper one-shot workload contract"
+    );
+}
+
 #[tokio::test]
 async fn load_workload_package_rejects_invalid_target() {
     let signing_key = SigningKey::generate(&mut OsRng);
