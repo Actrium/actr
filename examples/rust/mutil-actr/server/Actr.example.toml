@@ -1,6 +1,3 @@
-edition = 1
-exports = ["../proto/echo.proto"]
-
 [package]
 name = "EchoService"
 manufacturer = "acme"
@@ -9,35 +6,6 @@ description = "Echo Real Server"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
+exports = ["../proto/echo.proto"]
 
 [dependencies]
-
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 33554432
-realm_secret = "rs_AeEwCl5kEEd4foT3KSH-ZSgIFfrBzvnO"
-
-[system.discovery]
-visible = true
-
-[system.tracing]
-enabled = true
-endpoint = "http://localhost:4317"
-service_name = "echo-real-server"
-
-# ACL configuration - allow echo client
-[acl]
-
-[[acl.rules]]
-permission = "allow"
-# Allow clients with actr_type = "acme:echo-client-app:1.0.0"
-type = "acme:echo-client-app:1.0.0"
-
-[scripts]
-dev = "cargo run"
-test = "cargo test"

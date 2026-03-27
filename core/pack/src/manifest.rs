@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Package manifest, parsed from actr.toml inside .actr package.
+/// Package manifest, parsed from manifest.toml inside .actr package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub manufacturer: String,

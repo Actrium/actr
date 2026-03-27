@@ -251,15 +251,15 @@ pub fn copy_file_with_dirs(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check if the current directory contains an actr.toml file
+/// Check if the current directory contains an actr.toml or manifest.toml file
 pub fn is_actr_project() -> bool {
-    Path::new("actr.toml").exists()
+    Path::new("actr.toml").exists() || Path::new("manifest.toml").exists()
 }
 
 /// Warn if not in an actr project directory
 pub fn warn_if_not_actr_project() {
     if !is_actr_project() {
-        warn!("Not in an Actor-RTC project directory (no actr.toml found)");
+        warn!("Not in an Actor-RTC project directory (no actr.toml or manifest.toml found)");
     }
 }
 

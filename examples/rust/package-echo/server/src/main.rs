@@ -69,8 +69,12 @@ async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 1. Load configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("manifest.toml");
+    let manifest_raw = actr_config::RawConfig::from_file(&manifest_path)?;
+    let package_info = manifest_raw.package.into_package_info()?;
+    
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_file(&config_path)?;
+    let config = actr_config::ConfigParser::from_actr_file(&config_path, package_info, vec![])?;
 
     let _obs_guard = init_observability(&config.observability)?;
 

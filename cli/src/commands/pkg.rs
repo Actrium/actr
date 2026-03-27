@@ -45,8 +45,8 @@ pub struct PkgBuildArgs {
     #[arg(long, short = 'b', value_name = "FILE")]
     pub binary: PathBuf,
 
-    /// actr.toml config path
-    #[arg(long, short = 'c', default_value = "actr.toml", value_name = "FILE")]
+    /// manifest.toml config path
+    #[arg(long, short = 'c', default_value = "manifest.toml", value_name = "FILE")]
     pub config: PathBuf,
 
     /// Signing key file (default: ~/.actr/dev-key.json)
@@ -69,8 +69,8 @@ pub struct PkgBuildArgs {
 
 #[derive(Args, Debug)]
 pub struct PkgSignArgs {
-    /// Path to actr.toml config file
-    #[arg(long, short = 'c', default_value = "actr.toml", value_name = "FILE")]
+    /// Path to manifest.toml config file
+    #[arg(long, short = 'c', default_value = "manifest.toml", value_name = "FILE")]
     pub config: PathBuf,
 
     /// Path to MFR signing key file (default: ~/.actr/dev-key.json)
@@ -85,7 +85,7 @@ pub struct PkgSignArgs {
     #[arg(long, short = 't', default_value = "wasm32-wasip1")]
     pub target: String,
 
-    /// Output signature file (default: <config>.sig)
+    /// Output signature file (default: manifest.sig)
     #[arg(long, short = 'o', value_name = "FILE")]
     pub output: Option<PathBuf>,
 }
@@ -121,15 +121,9 @@ pub struct PkgPublishArgs {
     #[arg(long, short = 'k', value_name = "FILE")]
     pub keychain: PathBuf,
 
-    /// Actrix MFR endpoint URL (e.g., http://localhost:8081).
-    /// If omitted, reads from [system.ais_endpoint].url in actr.toml.
+    /// Actrix MFR endpoint URL (e.g., http://localhost:8081)
     #[arg(long, short = 'e', value_name = "URL")]
-    pub endpoint: Option<String>,
-
-    /// Path to actr.toml (used to resolve default endpoint).
-    /// Defaults to ./actr.toml in the current directory.
-    #[arg(long, short = 'c', value_name = "FILE", default_value = "actr.toml")]
-    pub config: PathBuf,
+    pub endpoint: String,
 }
 
 #[derive(Serialize)]
@@ -307,15 +301,18 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         },
     };
 
-    // 5. Read proto files from top-level `exports` array
-    //    Format: exports = ["proto/echo.proto", "proto/common.proto"]
-    //    Consistent with actr-config RawConfig.exports: Vec<PathBuf>
+    // 5. Read proto files from `exports` array
+    //    Prefer [package].exports, fallback to top-level exports (backward compat)
     let config_dir = args
         .config
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut proto_files: Vec<(String, Vec<u8>)> = Vec::new();
-    if let Some(exports) = config_value.get("exports").and_then(|e| e.as_array()) {
+    let exports = pkg
+        .get("exports")
+        .and_then(|e| e.as_array())
+        .or_else(|| config_value.get("exports").and_then(|e| e.as_array()));
+    if let Some(exports) = exports {
         for export_entry in exports {
             if let Some(proto_path_str) = export_entry.as_str() {
                 let proto_path = config_dir.join(proto_path_str);
@@ -349,13 +346,27 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         })
         .collect::<Result<_, anyhow::Error>>()?;
 
-    // 6. Pack
+    // 6. Load Actr.lock.toml if it exists (packed into the .actr for dependency auditing)
+    let lock_file = {
+        let lock_path = config_dir.join("Actr.lock.toml");
+        if lock_path.exists() {
+            let bytes = std::fs::read(&lock_path)
+                .with_context(|| format!("Failed to read {}", lock_path.display()))?;
+            println!("  lock:        Actr.lock.toml ({} bytes)", bytes.len());
+            Some(bytes)
+        } else {
+            None
+        }
+    };
+
+    // 7. Pack
     let opts = actr_pack::PackOptions {
         manifest,
         binary_bytes: binary_bytes.clone(),
         resources,
         proto_files,
         signing_key: signing_key.clone(),
+        lock_file,
     };
     let package_bytes = actr_pack::pack(&opts)?;
 
@@ -453,12 +464,17 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
     };
 
     // 4. Read proto files from `exports` array (same as build)
+    //    Prefer [package].exports, fallback to top-level exports (backward compat)
     let config_dir = args
         .config
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut proto_entries = vec![];
-    if let Some(exports) = config_value.get("exports").and_then(|e| e.as_array()) {
+    let exports = pkg
+        .get("exports")
+        .and_then(|e| e.as_array())
+        .or_else(|| config_value.get("exports").and_then(|e| e.as_array()));
+    if let Some(exports) = exports {
         for export_entry in exports {
             if let Some(proto_path_str) = export_entry.as_str() {
                 let proto_path = config_dir.join(proto_path_str);
@@ -525,16 +541,16 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
     // 8. Write manifest TOML (the exact bytes that were signed)
     let manifest_path = {
         let mut p = args.config.clone();
-        p.set_file_name("actr.manifest.toml");
+        p.set_file_name("manifest.toml");
         p
     };
     std::fs::write(&manifest_path, manifest_bytes)
         .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
 
-    // 9. Write .sig file (64 bytes raw Ed25519 signature)
+    // 9. Write manifest.sig (64 bytes raw Ed25519 signature)
     let sig_path = args.output.unwrap_or_else(|| {
         let mut p = args.config.clone();
-        p.set_file_name("actr.toml.sig");
+        p.set_file_name("manifest.sig");
         p
     });
     {
@@ -713,30 +729,8 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
         None
     };
 
-    // 4. Resolve endpoint: --endpoint flag > actr.toml [system.ais_endpoint].url
-    let endpoint = if let Some(ep) = args.endpoint {
-        ep
-    } else {
-        let config_content = std::fs::read_to_string(&args.config)
-            .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
-        let config_value: toml::Value =
-            toml::from_str(&config_content).with_context(|| "Invalid actr.toml")?;
-        config_value
-            .get("system")
-            .and_then(|s| s.get("ais_endpoint"))
-            .and_then(|a| a.get("url"))
-            .and_then(|u| u.as_str())
-            .map(|u| {
-                // ais_endpoint url may include /ais path, strip it for base endpoint
-                u.trim_end_matches("/ais").to_string()
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No --endpoint provided and [system.ais_endpoint].url not found in {}",
-                    args.config.display()
-                )
-            })?
-    };
+    // 4. Resolve endpoint (strip trailing /ais if present)
+    let endpoint = args.endpoint.trim_end_matches("/ais").trim_end_matches('/').to_string();
 
     // 5. Request Challenge-Response nonce from MFR server
     let base_url = endpoint.trim_end_matches('/');

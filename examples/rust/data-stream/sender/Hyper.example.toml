@@ -1,0 +1,32 @@
+edition = 1
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[deployment]
+realm_id = 33554432
+realm_secret = "rs_AeEwCl5kEEd4foT3KSH-ZSgIFfrBzvnO"
+
+[discovery]
+visible = true
+
+[webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+# ACL configuration - allow file transfer receiver
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+# Allow server with actr_type = "acme:FileTransferService:1.0.0"
+type = "acme:FileTransferService:1.0.0"
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

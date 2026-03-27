@@ -28,6 +28,7 @@
 // Core modules
 pub mod config;
 pub mod error;
+pub mod actr_raw;
 pub mod lock;
 pub mod parser;
 pub mod raw;
@@ -35,6 +36,7 @@ pub mod raw;
 // Re-exports for convenience
 pub use config::*;
 pub use error::*;
+pub use actr_raw::*;
 pub use lock::*;
 pub use parser::*;
 pub use raw::*;

@@ -7,6 +7,7 @@ use crate::config::{
 };
 
 use crate::error::{ConfigError, Result};
+use crate::actr_raw::ActrRawConfig;
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
@@ -44,8 +45,13 @@ impl ParserV1 {
         // 3. Parse package
         let package = self.parse_package(&raw.package)?;
 
-        // 4. Parse exports
-        let exports = self.parse_exports(&raw.exports)?;
+        // 4. Parse exports (prefer [package].exports, fallback to top-level exports)
+        let export_paths = if !raw.package.exports.is_empty() {
+            &raw.package.exports
+        } else {
+            &raw.exports
+        };
+        let exports = self.parse_exports(export_paths)?;
 
         // 5. Get realm
         let self_realm = Realm {
@@ -115,6 +121,81 @@ impl ParserV1 {
             websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
             config_dir,
+            execution_mode,
+            ais_endpoint: Some(ais_endpoint.to_string()),
+        })
+    }
+
+    /// Parse a `ActrRawConfig` (from actr.toml) into a `Config`.
+    ///
+    /// Since the runtime configuration has no `[package]` section, the caller must provide
+    /// package info separately (typically read from actr.toml or .actr package).
+    pub fn parse_actr(&self, raw: ActrRawConfig, package: PackageInfo, tags: Vec<String>) -> Result<Config> {
+        // Validate required runtime fields
+        let signaling_url_str = raw
+            .signaling
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("signaling.url"))?;
+        let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
+
+        let ais_endpoint = raw
+            .ais_endpoint
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("ais_endpoint.url"))
+            .and_then(|url| Url::parse(url).map_err(ConfigError::InvalidUrl))?;
+
+        let self_realm = Realm {
+            realm_id: raw
+                .deployment
+                .realm_id
+                .ok_or(ConfigError::MissingField("deployment.realm_id"))?,
+        };
+
+        let execution_mode = parse_actr_mode(raw.deployment.mode.as_deref())?;
+
+        // Build observability from flat config
+        let observability = ObservabilityConfig {
+            filter_level: raw
+                .observability
+                .filter_level
+                .unwrap_or_else(|| "info".to_string()),
+            tracing_enabled: raw.observability.tracing_enabled.unwrap_or(false),
+            tracing_endpoint: raw
+                .observability
+                .tracing_endpoint
+                .unwrap_or_else(|| DEFAULT_TRACING_ENDPOINT.to_string()),
+            tracing_service_name: raw
+                .observability
+                .tracing_service_name
+                .unwrap_or_else(|| package.name.clone()),
+        };
+
+        // Parse ACL
+        let acl = if let Some(acl_value) = raw.acl {
+            Some(self.parse_acl(acl_value, self_realm.realm_id)?)
+        } else {
+            None
+        };
+
+        Ok(Config {
+            package,
+            exports: vec![],       // runtime config has no exports
+            dependencies: vec![],  // dependencies come from actr.toml
+            signaling_url,
+            realm: self_realm,
+            realm_secret: raw.deployment.realm_secret,
+            visible_in_discovery: raw.discovery.visible.unwrap_or(true),
+            acl,
+            mailbox_path: None,
+            tags,
+            scripts: raw.scripts,
+            webrtc: self.parse_webrtc(&raw.webrtc)?,
+            websocket_listen_port: raw.websocket.listen_port,
+            websocket_advertised_host: raw.websocket.advertised_host,
+            observability,
+            config_dir: self.base_dir.clone(),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })

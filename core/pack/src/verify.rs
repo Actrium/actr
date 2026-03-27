@@ -14,9 +14,9 @@ use crate::manifest::PackageManifest;
 pub struct VerifiedPackage {
     /// Parsed package manifest.
     pub manifest: PackageManifest,
-    /// Raw `actr.toml` bytes as stored in the ZIP (the signed payload).
+    /// Raw `manifest.toml` bytes as stored in the ZIP (the signed payload).
     pub manifest_raw: Vec<u8>,
-    /// Raw `actr.sig` bytes (64-byte Ed25519 signature).
+    /// Raw `manifest.sig` bytes (64-byte Ed25519 signature).
     pub sig_raw: Vec<u8>,
 }
 
@@ -35,23 +35,23 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
-    // 1. Read actr.sig
+    // 1. Read manifest.sig
     let sig_raw =
-        read_zip_entry(&mut archive, "actr.sig").map_err(|_| PackError::SignatureNotFound)?;
+        read_zip_entry(&mut archive, "manifest.sig").map_err(|_| PackError::SignatureNotFound)?;
     if sig_raw.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
-            "actr.sig must be exactly 64 bytes, got {}",
+            "manifest.sig must be exactly 64 bytes, got {}",
             sig_raw.len()
         )));
     }
     let sig_arr: [u8; 64] = sig_raw.clone().try_into().unwrap();
     let signature = Signature::from_bytes(&sig_arr);
 
-    // 2. Read actr.toml
+    // 2. Read manifest.toml
     let manifest_bytes =
-        read_zip_entry(&mut archive, "actr.toml").map_err(|_| PackError::ManifestNotFound)?;
+        read_zip_entry(&mut archive, "manifest.toml").map_err(|_| PackError::ManifestNotFound)?;
 
-    // 3. Verify signature over actr.toml
+    // 3. Verify signature over manifest.toml
     pubkey
         .verify_strict(&manifest_bytes, &signature)
         .map_err(|e| {
@@ -191,6 +191,7 @@ mod tests {
             resources,
             proto_files: vec![],
             signing_key: signing_key.clone(),
+            lock_file: None,
         };
         pack(&opts).unwrap()
     }
@@ -244,7 +245,7 @@ mod tests {
         let mut zip = zip::ZipWriter::new(cursor);
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        zip.start_file("actr.toml", opts).unwrap();
+        zip.start_file("manifest.toml", opts).unwrap();
         zip.write_all(b"[fake]").unwrap();
         let data = zip.finish().unwrap().into_inner();
 
@@ -310,6 +311,7 @@ mod tests {
             resources: vec![],
             proto_files: protos,
             signing_key: signing_key.clone(),
+            lock_file: None,
         };
         pack(&opts).unwrap()
     }

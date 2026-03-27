@@ -76,11 +76,12 @@ impl Command for DocCommand {
     async fn execute(&self) -> Result<()> {
         let output_dir = self.output_dir.as_deref().unwrap_or("docs");
 
-        if !Path::new("actr.toml").exists()
+        if !Path::new("manifest.toml").exists()
+            && !Path::new("actr.toml").exists()
             && let Some(root) = Self::find_project_root()
         {
             return Err(ActrCliError::InvalidProject(format!(
-                "actr.toml found at '{}'. Please run 'actr doc' from the project root.",
+                "Config found at '{}'. Please run 'actr doc' from the project root.",
                 root.display()
             )));
         }
@@ -90,9 +91,11 @@ impl Command for DocCommand {
         // Create output directory
         std::fs::create_dir_all(output_dir)?;
 
-        // Load project configuration
+        // Load project configuration (prefer actr.toml, fallback to manifest.toml)
         let config = if Path::new("actr.toml").exists() {
             Some(ConfigParser::from_file("actr.toml")?)
+        } else if Path::new("manifest.toml").exists() {
+            Some(ConfigParser::from_file("manifest.toml")?)
         } else {
             None
         };
@@ -516,7 +519,7 @@ test = "cargo test""#
     fn find_project_root() -> Option<PathBuf> {
         let cwd = std::env::current_dir().ok()?;
         for ancestor in cwd.ancestors() {
-            if ancestor.join("actr.toml").exists() {
+            if ancestor.join("manifest.toml").exists() || ancestor.join("actr.toml").exists() {
                 return Some(ancestor.to_path_buf());
             }
         }

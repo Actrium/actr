@@ -71,9 +71,15 @@ pub enum OutputFormat {
 }
 
 impl ConfigCommand {
-    /// Get the configuration file path
+    /// Get the configuration file path (prefers actr.toml, fallback to manifest.toml)
     fn config_path(&self) -> &str {
-        self.config_file.as_deref().unwrap_or("actr.toml")
+        self.config_file.as_deref().unwrap_or_else(|| {
+            if std::path::Path::new("actr.toml").exists() {
+                "actr.toml"
+            } else {
+                "manifest.toml"
+            }
+        })
     }
 }
 

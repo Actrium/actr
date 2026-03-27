@@ -18,7 +18,7 @@ pub fn read_manifest_raw(actr_bytes: &[u8]) -> Result<String, PackError> {
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     let manifest_bytes =
-        read_zip_entry(&mut archive, "actr.toml").map_err(|_| PackError::ManifestNotFound)?;
+        read_zip_entry(&mut archive, "manifest.toml").map_err(|_| PackError::ManifestNotFound)?;
 
     String::from_utf8(manifest_bytes)
         .map_err(|e| PackError::ManifestParseError(format!("manifest is not valid UTF-8: {e}")))
@@ -33,7 +33,7 @@ pub fn load_binary(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
 
     // Read manifest to get binary path
     let manifest_bytes =
-        read_zip_entry(&mut archive, "actr.toml").map_err(|_| PackError::ManifestNotFound)?;
+        read_zip_entry(&mut archive, "manifest.toml").map_err(|_| PackError::ManifestNotFound)?;
     let manifest_str = std::str::from_utf8(&manifest_bytes)
         .map_err(|e| PackError::ManifestParseError(format!("manifest is not valid UTF-8: {e}")))?;
     let manifest = PackageManifest::from_toml(manifest_str)?;
@@ -56,14 +56,26 @@ fn read_zip_entry<R: Read + std::io::Seek>(
 pub fn read_signature(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
-    let sig = read_zip_entry(&mut archive, "actr.sig").map_err(|_| PackError::SignatureNotFound)?;
+    let sig = read_zip_entry(&mut archive, "manifest.sig").map_err(|_| PackError::SignatureNotFound)?;
     if sig.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
-            "actr.sig must be exactly 64 bytes, got {}",
+            "manifest.sig must be exactly 64 bytes, got {}",
             sig.len()
         )));
     }
     Ok(sig)
+}
+
+/// Read Actr.lock.toml from an .actr package (if present).
+///
+/// Returns None if the package does not contain a lock file.
+pub fn read_lock_file(actr_bytes: &[u8]) -> Result<Option<Vec<u8>>, PackError> {
+    let cursor = Cursor::new(actr_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)?;
+    match read_zip_entry(&mut archive, "Actr.lock.toml") {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Read all proto files from the `proto/` directory in an .actr package.

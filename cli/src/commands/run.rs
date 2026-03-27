@@ -2,7 +2,7 @@
 
 use crate::commands::Command;
 use crate::error::{ActrCliError, Result};
-use crate::utils::{execute_command_streaming, is_actr_project, warn_if_not_actr_project};
+use crate::utils::{execute_command_streaming, warn_if_not_actr_project};
 use actr_config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
@@ -24,9 +24,11 @@ impl Command for RunCommand {
 
         let _project_root = std::env::current_dir()?;
 
-        // Load configuration if available
-        let config = if is_actr_project() {
+        // Load configuration if available (prefer actr.toml, fallback to manifest.toml)
+        let config = if std::path::Path::new("actr.toml").exists() {
             Some(ConfigParser::from_file("actr.toml")?)
+        } else if std::path::Path::new("manifest.toml").exists() {
+            Some(ConfigParser::from_file("manifest.toml")?)
         } else {
             None
         };
@@ -36,7 +38,8 @@ impl Command for RunCommand {
 
         let Some(ref config) = config else {
             return Err(ActrCliError::command_error(
-                "No actr.toml found. Run 'actr init' to create a project.".to_string(),
+                "No actr.toml or manifest.toml found. Run 'actr init' to create a project."
+                    .to_string(),
             ));
         };
 

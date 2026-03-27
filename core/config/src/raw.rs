@@ -69,6 +69,30 @@ pub struct RawPackageConfig {
     /// Service tags (e.g., ["latest", "stable", "v1.0"])
     #[serde(default)]
     pub tags: Vec<String>,
+
+    /// Signature algorithm (default: "ed25519")
+    #[serde(default)]
+    pub signature_algorithm: Option<String>,
+
+    /// Exported proto file paths (new location, preferred over top-level `exports`)
+    #[serde(default)]
+    pub exports: Vec<PathBuf>,
+}
+
+impl RawPackageConfig {
+    pub fn into_package_info(self) -> Result<crate::config::PackageInfo> {
+        Ok(crate::config::PackageInfo {
+            name: self.name.clone(),
+            actr_type: actr_protocol::ActrType {
+                manufacturer: self.manufacturer.clone(),
+                name: self.name,
+                version: self.version,
+            },
+            description: self.description,
+            authors: self.authors.unwrap_or_default(),
+            license: self.license,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
