@@ -58,6 +58,15 @@ export interface SwRuntimeConfig {
    *  Used when package_url is not set. */
   package_wasm?: string;
 
+  // ── Guest Bridge: split runtime + guest loading ──
+
+  /** URL of the runtime WASM + JS glue (e.g. "/packages/echo_server_bg.wasm").
+   *  When set together with package_url, the guest bridge mode is activated:
+   *  - Runtime WASM is loaded from this URL (+ derived JS glue URL)
+   *  - The .actr package contains only the standard guest WASM (entry! FFI)
+   *  - This enables sharing guest WASMs between web and native platforms. */
+  runtime_wasm_url?: string;
+
   // ── Package verification (Web verify_package) ──
 
   /** Base64-encoded Ed25519 MFR public key for package signature verification.

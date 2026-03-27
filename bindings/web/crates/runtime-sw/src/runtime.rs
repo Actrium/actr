@@ -539,7 +539,10 @@ impl SwRuntime {
                     Ok(AclRule {
                         permission: acl_rule::Permission::Allow as i32,
                         from_type: actr_type,
-                        source_realm: Some(acl_rule::SourceRealm::AnyRealm(true)),
+                        // Actrix's DB-backed ACL lookup currently matches on an explicit
+                        // `source_realm_id` equality. Using `any_realm` would not match and
+                        // would default-deny discovery.
+                        source_realm: Some(acl_rule::SourceRealm::RealmId(config.realm_id)),
                     })
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;

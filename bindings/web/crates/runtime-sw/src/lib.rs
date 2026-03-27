@@ -9,6 +9,7 @@
 pub mod actr_ref;
 pub mod context;
 pub mod error_handler;
+pub mod guest_bridge;
 pub mod inbound;
 pub mod lifecycle;
 pub mod outbound;
@@ -34,6 +35,7 @@ pub use context::RuntimeContext;
 pub use error_handler::{
     ErrorCallback, ErrorStats, SwErrorHandler, get_global_error_handler, init_global_error_handler,
 };
+pub use guest_bridge::{encode_guest_init_payload, register_guest_workload};
 pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcessor};
 pub use lifecycle::SwLifecycleManager;
 pub use outbound::{Gate, HostGate, PeerGate};
