@@ -95,9 +95,11 @@ export const runtimeConfig: SwRuntimeConfig = {
     service_fingerprint: '',
     acl_allow_types: ['acme:echo-client-app:0.1.0'],
     is_server: true,
-    // Web load_package_executor — .actr package built by start.sh
+    // Guest .actr package (standard guest WASM built from echo-actr)
     package_url: '/packages/echo-server.actr',
-    register_fn: 'register_echo_service',
+    register_fn: '',
+    // Runtime WASM loaded separately (compiled from server/wasm as pure runtime host)
+    runtime_wasm_url: '/packages/echo_server_bg.wasm',
     // MFR public key for package verification (injected by start.sh)
     mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',
 };

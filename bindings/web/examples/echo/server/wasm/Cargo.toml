@@ -3,7 +3,7 @@ name = "echo-server-web"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Echo Server WASM for Web - user workload + SW runtime packaged into a single WASM"
+description = "Echo Server WASM for Web - Runtime Host (guest loaded separately)"
 
 # Standalone project, not part of the parent workspace
 [workspace]
@@ -29,18 +29,7 @@ web-sys = { version = "0.3", features = ["console"] }
 futures = "0.3"
 async-trait = "0.1"
 
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# Protobuf
-prost = "0.14"
-bytes = "1.0"
-
 # Logging
 log = "0.4"
 wasm-logger = "0.2"
 console_error_panic_hook = "0.1"
-
-[build-dependencies]
-prost-build = "0.14"
