@@ -1,0 +1,21 @@
+# Actr Lock File (Empty Template)
+#
+# This empty lock file is generated during `actr init` to satisfy xcodegen's
+# requirement that all files referenced in project.yml must exist.
+#
+# Technical Background:
+# - project.yml references this file as a resource (see project.yml.hbs:30-32)
+# - xcodegen validates file existence before generating the Xcode project
+# - Without this file, `actr init` would fail with a validation error
+#
+# This file will be populated with actual dependency information when you run:
+#   actr install
+#
+# The lock file is bundled into the iOS app and used at runtime for:
+# - Service discovery and type matching (actr_type metadata)
+# - Dependency version tracking and fingerprinting
+# - Code generation (mapping proto files to actr_types)
+
+[metadata]
+version = 1
+generated_at = "1970-01-01T00:00:00+00:00"

@@ -3,7 +3,7 @@
 //! ## Subcommands
 //!
 //! ```text
-//! actr pkg build    --binary FILE [--config actr.toml] [--key FILE] [--output FILE]
+//! actr pkg build    --binary FILE [--config manifest.toml] [--key FILE] [--output FILE]
 //! actr pkg sign     --keychain FILE [--package FILE]
 //! actr pkg verify   --package FILE [--pubkey FILE]
 //! actr pkg keygen   [--output FILE] [--force]
@@ -29,7 +29,7 @@ pub struct PkgArgs {
 pub enum PkgCommand {
     /// Build an .actr package from binary and config
     Build(PkgBuildArgs),
-    /// Sign an actr.toml manifest with MFR private key (offline signing)
+    /// Sign a manifest.toml package manifest with MFR private key (offline signing)
     Sign(PkgSignArgs),
     /// Verify an .actr package
     Verify(PkgVerifyArgs),
@@ -46,7 +46,12 @@ pub struct PkgBuildArgs {
     pub binary: PathBuf,
 
     /// manifest.toml config path
-    #[arg(long, short = 'c', default_value = "manifest.toml", value_name = "FILE")]
+    #[arg(
+        long,
+        short = 'c',
+        default_value = "manifest.toml",
+        value_name = "FILE"
+    )]
     pub config: PathBuf,
 
     /// Signing key file (default: ~/.actr/dev-key.json)
@@ -70,7 +75,12 @@ pub struct PkgBuildArgs {
 #[derive(Args, Debug)]
 pub struct PkgSignArgs {
     /// Path to manifest.toml config file
-    #[arg(long, short = 'c', default_value = "manifest.toml", value_name = "FILE")]
+    #[arg(
+        long,
+        short = 'c',
+        default_value = "manifest.toml",
+        value_name = "FILE"
+    )]
     pub config: PathBuf,
 
     /// Path to MFR signing key file (default: ~/.actr/dev-key.json)
@@ -237,22 +247,21 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     let verifying_key = signing_key.verifying_key();
     tracing::debug!(key_path = %key_path.display(), "signing key loaded");
 
-    // 2. Read actr.toml for metadata
+    // 2. Read manifest.toml for package metadata
     let config_bytes = std::fs::read(&args.config)
         .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
     let config_value: toml::Value =
-        toml::from_slice(&config_bytes).with_context(|| "Invalid actr.toml")?;
+        toml::from_slice(&config_bytes).with_context(|| "Invalid manifest.toml")?;
     let pkg = config_value
         .get("package")
-        .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
+        .ok_or_else(|| anyhow::anyhow!("manifest.toml missing [package] section"))?;
 
-    // Support both [package.actr_type].{manufacturer,name,version} (standard actr.toml)
-    // and flat [package].{manufacturer,name,version} (legacy format)
+    // Support flat [package].{manufacturer,name,version}.
     let get_str = |key: &str| -> Result<String> {
         pkg.get(key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("actr.toml [package].{key} missing"))
+            .ok_or_else(|| anyhow::anyhow!("manifest.toml [package].{key} missing"))
     };
 
     let manufacturer = get_str("manufacturer")?;
@@ -289,6 +298,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         signing_key_id: Some(actr_pack::compute_key_id(&verifying_key.to_bytes())),
         resources: vec![],
         proto_files: vec![], // will be populated below from exports
+        lock_file: None,
         metadata: actr_pack::ManifestMetadata {
             description: pkg
                 .get("description")
@@ -346,13 +356,13 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         })
         .collect::<Result<_, anyhow::Error>>()?;
 
-    // 6. Load Actr.lock.toml if it exists (packed into the .actr for dependency auditing)
+    // 6. Load manifest.lock.toml if it exists (packed into the .actr for dependency auditing)
     let lock_file = {
-        let lock_path = config_dir.join("Actr.lock.toml");
+        let lock_path = config_dir.join("manifest.lock.toml");
         if lock_path.exists() {
             let bytes = std::fs::read(&lock_path)
                 .with_context(|| format!("Failed to read {}", lock_path.display()))?;
-            println!("  lock:        Actr.lock.toml ({} bytes)", bytes.len());
+            println!("  lock:        manifest.lock.toml ({} bytes)", bytes.len());
             Some(bytes)
         } else {
             None
@@ -401,13 +411,13 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     Ok(())
 }
 
-// --- sign (offline signing of actr.toml config → manifest + .sig) ---
+// --- sign (offline signing of manifest.toml → manifest.toml + manifest.sig) ---
 //
-// Parses actr.toml (same config format as `build`), reads binary + proto files,
+// Parses manifest.toml (same config format as `build`), reads binary + proto files,
 // builds a PackageManifest, serializes via to_toml(), and signs.
 // Output:
-//   1. Manifest TOML file (actr.manifest.toml) — the exact bytes that were signed
-//   2. A .sig file — 64 bytes raw Ed25519 signature
+//   1. Manifest TOML file (manifest.toml) — the exact bytes that were signed
+//   2. A .sig file (manifest.sig) — 64 bytes raw Ed25519 signature
 //
 // The signed content is byte-level identical to what `actr pkg build` produces.
 
@@ -422,7 +432,7 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
     let verifying_key = signing_key.verifying_key();
     let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
 
-    // 2. Read actr.toml as config (same parsing as build)
+    // 2. Read manifest.toml as config (same parsing as build)
     let config_path = &args.config;
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
@@ -432,16 +442,16 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
     }
     let config_bytes = std::fs::read(config_path)?;
     let config_value: toml::Value =
-        toml::from_slice(&config_bytes).with_context(|| "Invalid actr.toml")?;
+        toml::from_slice(&config_bytes).with_context(|| "Invalid manifest.toml")?;
     let pkg = config_value
         .get("package")
-        .ok_or_else(|| anyhow::anyhow!("actr.toml missing [package] section"))?;
+        .ok_or_else(|| anyhow::anyhow!("manifest.toml missing [package] section"))?;
 
     let get_str = |key: &str| -> Result<String> {
         pkg.get(key)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("actr.toml [package].{key} missing"))
+            .ok_or_else(|| anyhow::anyhow!("manifest.toml [package].{key} missing"))
     };
 
     let manufacturer = get_str("manufacturer")?;
@@ -516,6 +526,7 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
         signing_key_id: Some(key_id.clone()),
         resources: vec![],
         proto_files: proto_entries,
+        lock_file: None,
         metadata: actr_pack::ManifestMetadata {
             description: pkg
                 .get("description")
@@ -629,7 +640,7 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
 
 // --- publish (register package to MFR registry) ---
 //
-// Extracts the manifest (actr.toml) and signature (actr.sig) that were
+// Extracts the manifest (manifest.toml) and signature (manifest.sig) that were
 // already created during `actr pkg build`, then forwards them to the
 // MFR registry as-is.  No re-signing is performed.
 //
@@ -648,7 +659,7 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     let manifest = actr_pack::PackageManifest::from_toml(&manifest_str)
         .with_context(|| "Failed to parse manifest TOML")?;
     let sig_raw = actr_pack::read_signature(&package_bytes)
-        .with_context(|| "Failed to read actr.sig from .actr package")?;
+        .with_context(|| "Failed to read manifest.sig from .actr package")?;
 
     // 3. Identity verification: keychain private key proves publisher is MFR owner.
     //    We only check that the package's signing_key_id matches the keychain,
@@ -730,7 +741,11 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     };
 
     // 4. Resolve endpoint (strip trailing /ais if present)
-    let endpoint = args.endpoint.trim_end_matches("/ais").trim_end_matches('/').to_string();
+    let endpoint = args
+        .endpoint
+        .trim_end_matches("/ais")
+        .trim_end_matches('/')
+        .to_string();
 
     // 5. Request Challenge-Response nonce from MFR server
     let base_url = endpoint.trim_end_matches('/');

@@ -1,6 +1,6 @@
 //! Build command implementation
 //!
-//! Computes service fingerprint from exported proto files and writes Actr.lock.
+//! Computes service fingerprint from exported proto files and writes manifest.lock.toml.
 //! This is a prerequisite for consumers to reference services by exact fingerprint.
 
 use crate::error::Result;
@@ -21,14 +21,14 @@ pub struct BuildArgs {
 impl Default for BuildArgs {
     fn default() -> Self {
         Self {
-            config: "actr.toml".to_string(),
+            config: "manifest.toml".to_string(),
         }
     }
 }
 
-/// Lock file structure (Actr.lock)
+/// Lock file structure (manifest.lock.toml)
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ActrLockFile {
+pub struct ManifestLockFile {
     /// Lock file format version
     pub version: u32,
 
@@ -68,10 +68,10 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
     let config_path = Path::new(&args.config);
     info!("🔨 Building project from {}", args.config);
 
-    let config = ConfigParser::from_file(config_path)
-        .with_context(|| format!("Failed to load config from {}", args.config))?;
+    let config = ConfigParser::from_manifest_file(config_path)
+        .with_context(|| format!("Failed to load manifest from {}", args.config))?;
 
-    let lock_path = config.config_dir.join("Actr.lock");
+    let lock_path = config.config_dir.join("manifest.lock.toml");
 
     let service_lock = if config.exports.is_empty() {
         info!("ℹ️  No proto exports — skipping fingerprint computation");
@@ -111,29 +111,29 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
         })
     };
 
-    let lock_file = ActrLockFile {
+    let lock_file = ManifestLockFile {
         version: 1,
         updated_at: Utc::now().to_rfc3339(),
         service: service_lock,
     };
 
     write_lock_file(&lock_path, &lock_file)?;
-    info!("✅ Actr.lock written to {}", lock_path.display());
+    info!("✅ manifest.lock.toml written to {}", lock_path.display());
 
     Ok(())
 }
 
-fn write_lock_file(path: &PathBuf, lock: &ActrLockFile) -> Result<()> {
-    let content = toml::to_string_pretty(lock).context("Failed to serialize Actr.lock")?;
+fn write_lock_file(path: &PathBuf, lock: &ManifestLockFile) -> Result<()> {
+    let content = toml::to_string_pretty(lock).context("Failed to serialize manifest.lock.toml")?;
     std::fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
 /// Read an existing lock file (returns None if not found)
-pub fn read_lock_file(config_dir: &Path) -> Option<ActrLockFile> {
-    let path = config_dir.join("Actr.lock");
+pub fn read_lock_file(config_dir: &Path) -> Option<ManifestLockFile> {
+    let path = config_dir.join("manifest.lock.toml");
     if !path.exists() {
-        warn!("Actr.lock not found at {}", path.display());
+        warn!("manifest.lock.toml not found at {}", path.display());
         return None;
     }
     let content = std::fs::read_to_string(&path).ok()?;

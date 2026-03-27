@@ -120,8 +120,8 @@ class UnifiedIntegrationTest {
         Log.i(TAG, "=== Starting Unified Integration Test ===")
         Log.i(TAG, "This test combines Echo RPC and DataStream transfer")
         val clientConfigPath = copyAssetToInternalStorage("actr.toml")
-        // Actr.lock.toml is required by the runtime now
-        copyAssetToInternalStorage("Actr.lock.toml")
+        // manifest.lock.toml is required by the runtime now
+        copyAssetToInternalStorage("manifest.lock.toml")
         val packagePath = copyFirstPackageAssetToInternalStorage()
         var clientRef: ActrRef? = null
 

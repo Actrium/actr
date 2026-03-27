@@ -21,7 +21,7 @@ pub struct PackOptions {
     pub proto_files: Vec<(String, Vec<u8>)>,
     /// Ed25519 signing key
     pub signing_key: SigningKey,
-    /// Optional Actr.lock.toml content — packed as `Actr.lock.toml` in the ZIP
+    /// Optional manifest.lock.toml content — packed as `manifest.lock.toml` in the ZIP
     pub lock_file: Option<Vec<u8>>,
 }
 
@@ -64,6 +64,14 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
         })
         .collect();
 
+    manifest.lock_file = opts
+        .lock_file
+        .as_ref()
+        .map(|bytes| crate::manifest::LockFileEntry {
+            path: "manifest.lock.toml".to_string(),
+            hash: sha256_hex(bytes),
+        });
+
     // 3. Serialize manifest to TOML
     let manifest_toml = manifest.to_toml()?;
     let manifest_bytes = manifest_toml.as_bytes();
@@ -93,9 +101,9 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
     zip.start_file("manifest.sig", store_opts)?;
     zip.write_all(&sig_bytes)?;
 
-    // Actr.lock.toml (dependency lock, optional)
+    // manifest.lock.toml (dependency lock, optional)
     if let Some(lock_bytes) = &opts.lock_file {
-        zip.start_file("Actr.lock.toml", store_opts)?;
+        zip.start_file("manifest.lock.toml", store_opts)?;
         zip.write_all(lock_bytes)?;
     }
 
@@ -148,6 +156,7 @@ mod tests {
             signing_key_id: None,
             resources: vec![],
             proto_files: vec![],
+            lock_file: None,
             metadata: ManifestMetadata::default(),
         }
     }

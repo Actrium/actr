@@ -20,7 +20,7 @@ use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
 /// Simulate the `actr pkg sign` workflow:
-/// Given actr.toml config fields + binary + protos + signing key,
+/// Given manifest.toml fields + binary + protos + signing key,
 /// build a PackageManifest, serialize via to_toml(), sign the manifest bytes.
 /// Returns (manifest_toml_string, 64-byte raw signature, manifest struct).
 fn simulate_sign(
@@ -63,6 +63,7 @@ fn simulate_sign(
         signing_key_id: Some(key_id),
         resources: vec![],
         proto_files: proto_entries,
+        lock_file: None,
         metadata: ManifestMetadata::default(),
     };
 
@@ -104,6 +105,7 @@ fn simulate_build(
         signing_key_id: Some(key_id),
         resources: vec![],
         proto_files: vec![], // pack() computes this from proto_files input
+        lock_file: None,
         metadata: ManifestMetadata::default(),
     };
 
@@ -113,6 +115,7 @@ fn simulate_build(
         resources: vec![],
         proto_files,
         signing_key: signing_key.clone(),
+        lock_file: None,
     };
 
     pack(&opts).unwrap()
@@ -130,12 +133,12 @@ fn assemble_actr_from_sign_output(
     let mut zip = zip::ZipWriter::new(buf);
     let store_opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
-    // actr.toml
-    zip.start_file("actr.toml", store_opts).unwrap();
+    // manifest.toml
+    zip.start_file("manifest.toml", store_opts).unwrap();
     zip.write_all(manifest_toml.as_bytes()).unwrap();
 
-    // actr.sig
-    zip.start_file("actr.sig", store_opts).unwrap();
+    // manifest.sig
+    zip.start_file("manifest.sig", store_opts).unwrap();
     zip.write_all(sig_bytes).unwrap();
 
     // binary

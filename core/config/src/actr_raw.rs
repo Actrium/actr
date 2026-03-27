@@ -1,6 +1,6 @@
-//! Hyper actr runtime configuration structures - direct TOML mapping for actr.toml
+//! Hyper runtime configuration structures - direct TOML mapping for actr.toml
 //!
-//! `ActrRawConfig` maps the flat-section layout of `actr.toml`, which contains
+//! `RuntimeRawConfig` maps the flat-section layout of `actr.toml`, which contains
 //! deployment, signaling, and observability settings.
 
 use crate::error::Result;
@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
-/// Direct mapping of actr.toml (actr runtime configuration, no package info)
+/// Direct mapping of actr.toml (runtime configuration, no package info)
 ///
-/// Unlike `RawConfig` which has `[system.signaling]`, `ActrRawConfig` uses
+/// Unlike `ManifestRawConfig` which has `[system.signaling]`, `RuntimeRawConfig` uses
 /// flat section names: `[signaling]`, `[deployment]`, etc.
 ///
 /// ```toml
@@ -28,7 +28,7 @@ use std::str::FromStr;
 /// realm_id = 33554432
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActrRawConfig {
+pub struct RuntimeRawConfig {
     /// Config file format version
     #[serde(default = "default_edition")]
     pub edition: u32,
@@ -74,6 +74,8 @@ pub struct ActrRawConfig {
     pub scripts: HashMap<String, String>,
 }
 
+pub type ActrRawConfig = RuntimeRawConfig;
+
 /// Service capabilities declaration (reported to signaling for load balancing)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawCapabilitiesConfig {
@@ -98,7 +100,7 @@ fn default_edition() -> u32 {
     1
 }
 
-impl ActrRawConfig {
+impl RuntimeRawConfig {
     /// Load actr runtime configuration from file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -106,7 +108,7 @@ impl ActrRawConfig {
     }
 }
 
-impl FromStr for ActrRawConfig {
+impl FromStr for RuntimeRawConfig {
     type Err = crate::error::ConfigError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -129,7 +131,7 @@ url = "ws://localhost:8081/signaling/ws"
 [deployment]
 realm_id = 1001
 "#;
-        let config = ActrRawConfig::from_str(toml_content).unwrap();
+        let config = RuntimeRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert_eq!(
             config.signaling.url.as_deref(),
@@ -188,7 +190,7 @@ type = "acme:EchoService:1.0.0"
 dev = "cargo run"
 test = "cargo test"
 "#;
-        let config = ActrRawConfig::from_str(toml_content).unwrap();
+        let config = RuntimeRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert_eq!(
             config.ais_endpoint.url.as_deref(),
@@ -202,21 +204,24 @@ test = "cargo test"
         assert!(!config.webrtc.force_relay);
         assert_eq!(config.webrtc.stun_urls.len(), 1);
         assert_eq!(config.websocket.listen_port, Some(9001));
-        assert_eq!(
-            config.observability.filter_level.as_deref(),
-            Some("info")
-        );
+        assert_eq!(config.observability.filter_level.as_deref(), Some("info"));
 
         let caps = config.capabilities.unwrap();
         assert_eq!(caps.max_concurrent_requests, Some(100));
         assert_eq!(caps.region.as_deref(), Some("cn-beijing"));
         assert_eq!(
-            caps.tags.as_ref().and_then(|t| t.get("env")).map(|s| s.as_str()),
+            caps.tags
+                .as_ref()
+                .and_then(|t| t.get("env"))
+                .map(|s| s.as_str()),
             Some("prod")
         );
 
         assert!(config.acl.is_some());
-        assert_eq!(config.scripts.get("dev").map(|s| s.as_str()), Some("cargo run"));
+        assert_eq!(
+            config.scripts.get("dev").map(|s| s.as_str()),
+            Some("cargo run")
+        );
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! # actr-config
 //!
-//! Configuration file parser and project manifest support for Actor-RTC framework.
+//! Configuration parsers for workload manifests and Hyper runtime config.
 //!
 //! This crate provides a two-layer configuration system:
-//! - `RawConfig`: Direct TOML mapping (no processing)
+//! - `ManifestRawConfig`: Direct TOML mapping for `manifest.toml`
+//! - `RuntimeRawConfig`: Direct TOML mapping for `actr.toml`
 //! - `Config`: Fully parsed and validated final configuration
 //!
 //! The parser uses an edition-based system, allowing the configuration format
@@ -16,7 +17,7 @@
 //! use actr_config::ConfigParser;
 //!
 //! // Parse configuration from file
-//! let config = ConfigParser::from_file("actr.toml")?;
+//! let config = ConfigParser::from_manifest_file("manifest.toml")?;
 //!
 //! // Access parsed values
 //! println!("Package: {}", config.package.name);
@@ -26,17 +27,17 @@
 //! ```
 
 // Core modules
+pub mod actr_raw;
 pub mod config;
 pub mod error;
-pub mod actr_raw;
 pub mod lock;
 pub mod parser;
 pub mod raw;
 
 // Re-exports for convenience
+pub use actr_raw::*;
 pub use config::*;
 pub use error::*;
-pub use actr_raw::*;
 pub use lock::*;
 pub use parser::*;
 pub use raw::*;

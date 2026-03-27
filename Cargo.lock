@@ -2488,6 +2488,7 @@ dependencies = [
  "actr-config",
  "actr-framework",
  "actr-hyper",
+ "actr-pack",
  "actr-protocol",
  "actr-runtime",
  "android_logger",

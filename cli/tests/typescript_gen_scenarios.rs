@@ -129,7 +129,7 @@ fn write_ts_project_files(root: &Path) {
 
 fn write_actr_toml_local_only(root: &Path) {
     fs::write(
-        root.join("actr.toml"),
+        root.join("manifest.toml"),
         r#"edition = 1
 [package]
 name = "LocalService"
@@ -152,7 +152,7 @@ realm_id = 1
 
 fn write_actr_toml_with_remote(root: &Path) {
     fs::write(
-        root.join("actr.toml"),
+        root.join("manifest.toml"),
         r#"edition = 1
 [package]
 name = "RemoteApp"
@@ -176,7 +176,7 @@ realm_id = 1
 
 fn write_actr_toml_both(root: &Path) {
     fs::write(
-        root.join("actr.toml"),
+        root.join("manifest.toml"),
         r#"edition = 1
 [package]
 name = "BothService"
@@ -200,7 +200,7 @@ realm_id = 1
 
 fn write_actr_toml_both_with_two_remotes(root: &Path) {
     fs::write(
-        root.join("actr.toml"),
+        root.join("manifest.toml"),
         r#"edition = 1
 [package]
 name = "BothTwoRemotesService"
@@ -225,7 +225,7 @@ realm_id = 1
 
 fn write_lock_file_empty(root: &Path) {
     fs::write(
-        root.join("Actr.lock.toml"),
+        root.join("manifest.lock.toml"),
         r#"[metadata]
 version = 1
 generated_at = "2026-03-03T00:00:00Z"
@@ -236,7 +236,7 @@ generated_at = "2026-03-03T00:00:00Z"
 
 fn write_lock_file_with_echo(root: &Path) {
     fs::write(
-        root.join("Actr.lock.toml"),
+        root.join("manifest.lock.toml"),
         r#"[metadata]
 version = 1
 generated_at = "2026-03-03T00:00:00Z"
@@ -256,7 +256,7 @@ files = [
 
 fn write_lock_file_with_echo_and_profile(root: &Path) {
     fs::write(
-        root.join("Actr.lock.toml"),
+        root.join("manifest.lock.toml"),
         r#"[metadata]
 version = 1
 generated_at = "2026-03-03T00:00:00Z"

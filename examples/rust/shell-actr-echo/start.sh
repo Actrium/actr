@@ -135,9 +135,9 @@ echo "🛠️ Generating server code..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$ECHO_SERVER_DIR"
-echo "Running actr deps install (server)..."
+echo "Running actr install (server)..."
 $ACTR_GEN_CMD deps install || {
-    echo -e "${RED}❌ actr deps install failed (server)${NC}"
+    echo -e "${RED}❌ actr install failed (server)${NC}"
     exit 1
 }
 OUTPUT_FILE="$LOG_DIR/actr-gen-echo-server.log"
@@ -340,12 +340,12 @@ sleep 2
 # Step 3.5: Install client dependencies and generate code
 # Client depends on server (acme:EchoService:1.0.0), so must be done AFTER server registers
 echo ""
-echo "📎 Installing client dependencies (actr deps install)..."
+echo "📎 Installing client dependencies (actr install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$ECHO_CLIENT_DIR"
 $ACTR_GEN_CMD deps install || {
-    echo -e "${YELLOW}⚠️  actr deps install returned non-zero (client), continuing...${NC}"
+    echo -e "${YELLOW}⚠️  actr install returned non-zero (client), continuing...${NC}"
 }
 echo -e "${GREEN}✅ Client dependencies resolved${NC}"
 

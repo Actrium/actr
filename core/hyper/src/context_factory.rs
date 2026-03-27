@@ -41,7 +41,7 @@ pub struct ContextFactory {
     /// Signaling client for discovery
     pub(crate) signaling_client: Arc<dyn SignalingClient>,
 
-    /// Actr.lock.toml for dependency fingerprint lookups
+    /// manifest.lock.toml for dependency fingerprint lookups
     pub(crate) actr_lock: Option<LockFile>,
 }
 
@@ -93,7 +93,7 @@ impl ContextFactory {
         self.outproc_gate = Some(gate);
     }
 
-    /// Set the loaded `Actr.lock.toml`.
+    /// Set the loaded `manifest.lock.toml`.
     ///
     /// # Usage
     ///

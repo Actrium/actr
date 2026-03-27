@@ -134,7 +134,7 @@ impl KotlinGenerator {
     /// Analyze proto file to determine if it's local or remote
     /// Convention: files under "local/" are local, files under "remote/" are remote
     ///
-    /// Now reads actr_type from Actr.lock.toml instead of inferring from directory names.
+    /// Now reads actr_type from manifest.lock.toml instead of inferring from directory names.
     /// Returns None if the proto file has no service definitions (skip it).
     #[allow(dead_code)]
     fn analyze_proto_file(
@@ -328,15 +328,15 @@ impl KotlinGenerator {
         })
     }
 
-    /// Load Actr.lock.toml and build a mapping from dependency name to canonical actr_type.
+    /// Load manifest.lock.toml and build a mapping from dependency name to canonical actr_type.
     /// Returns a HashMap where key is the dependency name (e.g., "echo-real-server")
     /// and value is the actr_type (e.g., "acme:EchoService")
     #[allow(dead_code)]
     fn load_actr_type_map(&self, context: &GenContext) -> Result<HashMap<String, String>> {
-        // Find project root by looking for Actr.lock.toml relative to input path
+        // Find project root by looking for manifest.lock.toml relative to input path
         // The input path is typically "protos" or a similar directory
         let project_root = context.input_path.parent().unwrap_or(&context.input_path);
-        let lock_file_path = project_root.join("Actr.lock.toml");
+        let lock_file_path = project_root.join("manifest.lock.toml");
 
         debug!(
             "load_actr_type_map: looking for lock file at {:?}",
@@ -345,7 +345,7 @@ impl KotlinGenerator {
 
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "Actr.lock.toml not found at {:?}.\n\
+                "manifest.lock.toml not found at {:?}.\n\
                  Please run 'actr install' first to generate the lock file.",
                 lock_file_path
             )));
@@ -353,7 +353,7 @@ impl KotlinGenerator {
 
         let lock_file = LockFile::from_file(&lock_file_path).map_err(|e| {
             ActrCliError::config_error(format!(
-                "Failed to parse Actr.lock.toml: {}\n\
+                "Failed to parse manifest.lock.toml: {}\n\
                  Please run 'actr install' to regenerate the lock file.",
                 e
             ))
@@ -366,7 +366,10 @@ impl KotlinGenerator {
             map.insert(dep.name.clone(), dep.actr_type.clone());
         }
 
-        info!("📦 Loaded {} dependencies from Actr.lock.toml", map.len());
+        info!(
+            "📦 Loaded {} dependencies from manifest.lock.toml",
+            map.len()
+        );
         Ok(map)
     }
 

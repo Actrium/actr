@@ -27,8 +27,8 @@ impl ActrNodePy {
     #[staticmethod]
     fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let config =
-                ConfigParser::from_file(&path).map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let config = ConfigParser::from_manifest_file(&path)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
             ensure_observability_initialized(Some(config.observability.clone()));
             let hyper_data_dir = config.config_dir.join(".hyper");
             let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(

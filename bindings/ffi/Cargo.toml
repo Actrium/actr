@@ -18,6 +18,7 @@ actr-framework.workspace = true
 actr-runtime.workspace = true
 actr-hyper = { workspace = true, features = ["opentelemetry"] }
 actr-config = { workspace = true, features = ["opentelemetry"] }
+actr-pack.workspace = true
 
 # UniFFI
 uniffi = { version = "0.30.0", features = ["tokio"] }

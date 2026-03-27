@@ -337,6 +337,8 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
+use std::str::FromStr;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -610,10 +612,25 @@ impl Hyper {
         config: actr_config::Config,
     ) -> HyperResult<crate::lifecycle::ActrNode> {
         let loaded = self.load_workload_package(package).await?;
-        let node =
-            crate::lifecycle::ActrNode::build(config, loaded.workload, Some(loaded.manifest))
-                .await
-                .map_err(|e| HyperError::Runtime(e.to_string()))?;
+        let packaged_lock = actr_pack::read_lock_file(package.bytes())
+            .map_err(|e| HyperError::Runtime(e.to_string()))?
+            .map(|bytes| {
+                let raw = std::str::from_utf8(&bytes).map_err(|e| {
+                    HyperError::Runtime(format!("manifest.lock.toml is not valid UTF-8: {e}"))
+                })?;
+                actr_config::lock::LockFile::from_str(raw).map_err(|e| {
+                    HyperError::Runtime(format!("failed to parse manifest.lock.toml: {e}"))
+                })
+            })
+            .transpose()?;
+        let node = crate::lifecycle::ActrNode::build(
+            config,
+            loaded.workload,
+            Some(loaded.manifest),
+            packaged_lock,
+        )
+        .await
+        .map_err(|e| HyperError::Runtime(e.to_string()))?;
         Ok(node)
     }
 

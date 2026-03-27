@@ -8,7 +8,7 @@
 
         <div class="section">
             <h2>Current Configuration</h2>
-            <p>Current content of <code>actr.toml</code>:</p>
+            <p>Current content of <code>manifest.toml</code>:</p>
             <pre><code class="language-toml">{{config_example}}</code></pre>
         </div>
 
@@ -25,7 +25,7 @@ actr discovery
 actr discovery --filter "my-service-*"</code></pre>
 
             <h3>2. Install Dependencies</h3>
-            <p>Download and lock proto files for dependencies listed in <code>actr.toml</code>:</p>
+            <p>Download and lock proto files for dependencies listed in <code>manifest.toml</code>:</p>
             <pre><code class="language-bash"># Install all dependencies
 actr install
 
@@ -44,7 +44,7 @@ actr gen --output src/generated{{/if}}</code></pre>
 
         <div class="section">
             <h2>Configuration Reference</h2>
-            <p>Layout of the <code>actr.toml</code> file:</p>
+            <p>Layout of the <code>manifest.toml</code> file:</p>
 
             <table class="config-table">
                 <tr>

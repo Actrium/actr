@@ -33,7 +33,7 @@ enum VerificationStatus {
 )]
 pub struct FingerprintCommand {
     /// Configuration file path
-    #[arg(short, long, default_value = "actr.toml")]
+    #[arg(short, long, default_value = "manifest.toml")]
     pub config: String,
 
     /// Output format (text, json, yaml)
@@ -118,8 +118,8 @@ async fn execute_proto_fingerprint(args: &FingerprintCommand, proto_path: &str) 
 async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
     // Load configuration
     let config_path = Path::new(&args.config);
-    let config = ConfigParser::from_file(config_path)
-        .with_context(|| format!("Failed to load config from {}", args.config))?;
+    let config = ConfigParser::from_manifest_file(config_path)
+        .with_context(|| format!("Failed to load manifest from {}", args.config))?;
 
     // Convert actr_config::ProtoFile to actr_service_compat::ProtoFile
     let mut proto_files: Vec<ProtoFile> = config

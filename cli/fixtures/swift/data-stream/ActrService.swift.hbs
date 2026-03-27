@@ -28,8 +28,8 @@ final class ActrService: ObservableObject {
 
         do {
             let bundle = Bundle.main
-            guard let configPath = bundle.path(forResource: "Actr", ofType: "toml") else {
-                throw ActrError.StateError(msg: "actr.toml not found in bundle")
+            guard let configPath = bundle.path(forResource: "manifest", ofType: "toml") else {
+                throw ActrError.StateError(msg: "manifest.toml not found in bundle")
             }
             guard let packagePath = bundle.paths(forResourcesOfType: "actr", inDirectory: nil).first else {
                 throw ActrError.StateError(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")

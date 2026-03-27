@@ -20,7 +20,7 @@ pub struct PackageManifest {
     pub capabilities: Vec<String>,
     /// Ed25519 signature over the manifest contents, excluding the `signature` field itself.
     pub signature: Vec<u8>,
-    /// Raw manifest bytes (original `actr.toml` from the `.actr` package).
+    /// Raw manifest bytes (original `manifest.toml` from the `.actr` package).
     /// Preserved for transparent forwarding to AIS for signature verification.
     pub manifest_raw: Vec<u8>,
     /// Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu").

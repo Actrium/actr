@@ -1,4 +1,4 @@
-//! Lock file management for actr.lock.toml
+//! Lock file management for manifest.lock.toml
 //!
 //! This module provides lock file structures for dependency locking.
 //! Proto content is cached to the project's `proto/` folder, not in the lock file.
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
 
-/// Lock file structure for actr.lock.toml
+/// Lock file structure for manifest.lock.toml
 ///
 /// Format matches documentation spec:
 /// ```toml
@@ -54,7 +54,7 @@ pub struct LockMetadata {
 /// A locked dependency entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockedDependency {
-    /// Service name (identifier in lock file, matches actr.toml dependency name property)
+    /// Service name (identifier in lock file, matches manifest.toml dependency name property)
     pub name: String,
 
     /// Actor type (e.g., "acme+user-service")

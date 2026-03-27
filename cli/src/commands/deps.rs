@@ -7,7 +7,6 @@ use clap::{Args, Subcommand};
 
 use super::discovery::DiscoveryCommand;
 use super::fingerprint::FingerprintCommand;
-use super::install::InstallCommand;
 use crate::core::{CommandContext, CommandResult};
 
 #[derive(Args, Debug)]
@@ -18,8 +17,6 @@ pub struct DepsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DepsCommand {
-    /// Install service dependencies
-    Install(InstallCommand),
     /// Discover network services
     Discover(DiscoveryCommand),
     /// Compute semantic fingerprints
@@ -32,18 +29,10 @@ pub async fn execute_with_context(
 ) -> Result<CommandResult> {
     use crate::core::Command;
     match &args.command {
-        DepsCommand::Install(cmd) => {
-            let command = InstallCommand::from_args(cmd);
-            {
-                let container = context.container.lock().unwrap();
-                container.validate(&command.required_components())?;
-            }
-            command.execute(context).await
-        }
         DepsCommand::Discover(cmd) => {
-            if !std::path::Path::new("actr.toml").exists() {
+            if !std::path::Path::new("manifest.toml").exists() {
                 return Err(anyhow::anyhow!(
-                    "No actr.toml found in current directory.\n\u{1f4a1} Hint: Run 'actr init' to initialize a new project first."
+                    "No manifest.toml found in current directory.\n\u{1f4a1} Hint: Run 'actr init' to initialize a new workload project first."
                 ));
             }
             let command = DiscoveryCommand::from_args(cmd);

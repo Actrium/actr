@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Direct mapping of actr.toml (no processing applied)
+/// Direct mapping of manifest.toml (no processing applied)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawConfig {
+pub struct ManifestRawConfig {
     /// Config file format version (determines which Parser to use)
     #[serde(default = "default_edition")]
     pub edition: u32,
@@ -44,6 +44,8 @@ pub struct RawConfig {
     #[serde(default)]
     pub scripts: HashMap<String, String>,
 }
+
+pub type RawConfig = ManifestRawConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
@@ -292,7 +294,7 @@ fn default_edition() -> u32 {
     1
 }
 
-impl RawConfig {
+impl ManifestRawConfig {
     /// Load raw configuration from file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -307,7 +309,7 @@ impl RawConfig {
     }
 }
 
-impl FromStr for RawConfig {
+impl FromStr for ManifestRawConfig {
     type Err = crate::error::ConfigError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -332,7 +334,7 @@ port_range_end = 50100
 public_ips = ["1.2.3.4"]
 turn_urls = ["turn:Example"]
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.system.webrtc.port_range_start, Some(50000));
         assert_eq!(config.system.webrtc.port_range_end, Some(50100));
         assert_eq!(config.system.webrtc.public_ips[0], "1.2.3.4");
@@ -362,7 +364,7 @@ realm_id = 1001
 run = "cargo run"
 "#;
 
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.exports.len(), 1);
@@ -388,7 +390,7 @@ url = "http://localhost:8081/ais"
 realm_id = 1001
 "#;
 
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(
             config.system.ais_endpoint.url.as_deref(),
             Some("http://localhost:8081/ais")
@@ -404,7 +406,7 @@ manufacturer = "acme"
 [dependencies]
 user-service = {}
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("user-service").unwrap();
         assert!(matches!(dep, RawDependency::Empty {}));
     }
@@ -418,7 +420,7 @@ manufacturer = "acme"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
         if let RawDependency::Specified {
             actr_type,
@@ -443,7 +445,7 @@ manufacturer = "acme"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
         if let RawDependency::Specified { service, .. } = dep {
             assert!(service.is_none());

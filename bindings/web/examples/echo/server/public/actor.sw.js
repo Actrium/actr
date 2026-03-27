@@ -13,8 +13,8 @@
  *   package_wasm   - filename of the WASM binary (e.g. "echo_server_bg.wasm")
  *
  * .actr ZIP format (all entries use STORE / no compression):
- *   actr.toml                  - package manifest
- *   actr.sig                   - Ed25519 signature (64 bytes)
+ *   manifest.toml                  - package manifest
+ *   manifest.sig                   - Ed25519 signature (64 bytes)
  *   bin/actor.wasm             - WASM binary
  *   resources/glue.js          - wasm-bindgen JS glue
  *
@@ -205,8 +205,8 @@ function parseActrZip(buffer) {
  * Verify an .actr package signature and binary hash.
  *
  * This is the Web equivalent of Rust Hyper's verify_package:
- *   1. Read actr.sig (64 bytes Ed25519 signature)
- *   2. Read actr.toml (signed manifest)
+ *   1. Read manifest.sig (64 bytes Ed25519 signature)
+ *   2. Read manifest.toml (signed manifest)
  *   3. Verify Ed25519 signature: crypto.subtle.verify('Ed25519', pubkey, sig, manifest)
  *   4. Read binary, compute SHA-256, compare with manifest binary.hash
  *
@@ -215,16 +215,16 @@ function parseActrZip(buffer) {
  * @returns {Promise<void>} Resolves if verification passes, throws on failure
  */
 async function verifyActrPackage(entries, mfrPubkeyB64) {
-    // 1. Read actr.sig
-    const sigBytes = entries.get('actr.sig');
+    // 1. Read manifest.sig
+    const sigBytes = entries.get('manifest.sig');
     if (!sigBytes || sigBytes.byteLength !== 64) {
-        throw new Error('[SW] Package verification failed: actr.sig missing or invalid (expected 64 bytes)');
+        throw new Error('[SW] Package verification failed: manifest.sig missing or invalid (expected 64 bytes)');
     }
 
-    // 2. Read actr.toml
-    const manifestBytes = entries.get('actr.toml');
+    // 2. Read manifest.toml
+    const manifestBytes = entries.get('manifest.toml');
     if (!manifestBytes) {
-        throw new Error('[SW] Package verification failed: actr.toml missing');
+        throw new Error('[SW] Package verification failed: manifest.toml missing');
     }
 
     // 3. Import MFR public key and verify Ed25519 signature

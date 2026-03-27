@@ -26,7 +26,32 @@ impl ActrSystemWrapper {
         config_path: String,
         package_path: String,
     ) -> ActrResult<Arc<Self>> {
-        let config = actr_config::ConfigParser::from_file(&config_path).map_err(|e| {
+        let manifest_raw = actr_pack::read_manifest_raw(
+            &std::fs::read(&package_path).map_err(|e| ActrError::ConfigError {
+                msg: format!("Failed to read package at {}: {}", package_path, e),
+            })?,
+        )
+        .map_err(|e| ActrError::ConfigError {
+            msg: format!("Failed to read manifest.toml from {}: {}", package_path, e),
+        })?;
+        let manifest: actr_config::ManifestRawConfig =
+            manifest_raw.parse().map_err(|e: actr_config::ConfigError| ActrError::ConfigError {
+                msg: format!("Failed to parse package manifest from {}: {}", package_path, e),
+            })?;
+        let package_info =
+            manifest
+                .package
+                .clone()
+                .into_package_info()
+                .map_err(|e| ActrError::ConfigError {
+                    msg: format!("Failed to extract package info from {}: {}", package_path, e),
+                })?;
+        let config = actr_config::ConfigParser::from_runtime_file(
+            &config_path,
+            package_info,
+            manifest.package.tags,
+        )
+        .map_err(|e| {
             ActrError::ConfigError {
                 msg: format!("Failed to parse config file at {}: {}", config_path, e),
             }

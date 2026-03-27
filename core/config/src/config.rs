@@ -8,7 +8,7 @@ use url::Url;
 /// Actor execution mode
 ///
 /// Determines how the actor runtime obtains credentials and cooperates with the Hyper host layer.
-/// Specified via the `mode` field in `[system.deployment]` section of `actr.toml`.
+/// Specified via the `mode` field in `[system.deployment]` section of the runtime `actr.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum ActrMode {
     /// Native process mode (default)
@@ -105,7 +105,7 @@ pub struct Config {
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 
-    /// Directory containing the configuration file (actr.toml)
+    /// Directory containing the source configuration file (`manifest.toml` or runtime `actr.toml`)
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
@@ -117,7 +117,7 @@ pub struct Config {
     /// AIS (Actor Identity Service) HTTP endpoint for credential registration.
     ///
     /// Required in native mode. In process/wasm mode, Hyper handles registration.
-    /// Corresponds to `[system.deployment] ais_endpoint = "..."` in actr.toml.
+    /// Corresponds to `[system.deployment] ais_endpoint = "..."` in runtime `actr.toml`.
     pub ais_endpoint: Option<String>,
 }
 

@@ -23,14 +23,15 @@ pub struct VerifiedPackage {
 /// Verify an .actr package.
 ///
 /// Verification flow:
-/// 1. Read actr.sig (64 bytes raw Ed25519 signature)
-/// 2. Read actr.toml (raw bytes)
-/// 3. Verify Ed25519 signature over actr.toml bytes
-/// 4. Parse actr.toml -> PackageManifest
+/// 1. Read manifest.sig (64 bytes raw Ed25519 signature)
+/// 2. Read manifest.toml (raw bytes)
+/// 3. Verify Ed25519 signature over manifest.toml bytes
+/// 4. Parse manifest.toml -> PackageManifest
 /// 5. Read binary, verify SHA-256 matches manifest.binary.hash
 /// 6. For each resource, verify SHA-256 matches entry hash
 /// 7. For each proto file, verify SHA-256 matches entry hash
-/// 8. Return VerifiedPackage with manifest + raw bytes
+/// 8. For the optional packaged lock file, verify SHA-256 matches manifest.lock_file.hash
+/// 9. Return VerifiedPackage with manifest + raw bytes
 pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackage, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
@@ -116,6 +117,24 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
         }
     }
 
+    // 8. Verify packaged manifest.lock.toml hash when present
+    if let Some(lock_file) = &manifest.lock_file {
+        let lock_bytes = read_zip_entry(&mut archive, &lock_file.path)
+            .map_err(|_| PackError::BinaryNotFound(lock_file.path.clone()))?;
+        let computed = sha256_hex(&lock_bytes);
+        if computed != lock_file.hash {
+            tracing::warn!(
+                expected = %lock_file.hash,
+                computed = %computed,
+                path = %lock_file.path,
+                "manifest lock hash mismatch"
+            );
+            return Err(PackError::LockFileHashMismatch {
+                path: lock_file.path.clone(),
+            });
+        }
+    }
+
     tracing::info!(
         actr_type = %manifest.actr_type_str(),
         "package verification passed"
@@ -168,6 +187,7 @@ mod tests {
             signing_key_id: None,
             resources: vec![],
             proto_files: vec![],
+            lock_file: None,
             metadata: ManifestMetadata::default(),
         }
     }
@@ -240,7 +260,7 @@ mod tests {
 
     #[test]
     fn missing_signature_detected() {
-        // Create a ZIP without actr.sig
+        // Create a ZIP without manifest.sig
         let cursor = std::io::Cursor::new(Vec::new());
         let mut zip = zip::ZipWriter::new(cursor);
         let opts = zip::write::SimpleFileOptions::default()

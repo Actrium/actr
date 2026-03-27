@@ -56,7 +56,8 @@ fn read_zip_entry<R: Read + std::io::Seek>(
 pub fn read_signature(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
-    let sig = read_zip_entry(&mut archive, "manifest.sig").map_err(|_| PackError::SignatureNotFound)?;
+    let sig =
+        read_zip_entry(&mut archive, "manifest.sig").map_err(|_| PackError::SignatureNotFound)?;
     if sig.len() != 64 {
         return Err(PackError::SignatureVerificationFailed(format!(
             "manifest.sig must be exactly 64 bytes, got {}",
@@ -66,13 +67,13 @@ pub fn read_signature(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
     Ok(sig)
 }
 
-/// Read Actr.lock.toml from an .actr package (if present).
+/// Read manifest.lock.toml from an .actr package (if present).
 ///
 /// Returns None if the package does not contain a lock file.
 pub fn read_lock_file(actr_bytes: &[u8]) -> Result<Option<Vec<u8>>, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
-    match read_zip_entry(&mut archive, "Actr.lock.toml") {
+    match read_zip_entry(&mut archive, "manifest.lock.toml") {
         Ok(bytes) => Ok(Some(bytes)),
         Err(_) => Ok(None),
     }

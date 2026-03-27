@@ -6,8 +6,8 @@ use crate::config::{
     ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
+use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::actr_raw::ActrRawConfig;
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ impl ParserV1 {
         Self { base_dir }
     }
 
-    pub fn parse(&self, mut raw: RawConfig) -> Result<Config> {
+    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<Config> {
         // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
@@ -126,11 +126,16 @@ impl ParserV1 {
         })
     }
 
-    /// Parse a `ActrRawConfig` (from actr.toml) into a `Config`.
+    /// Parse a `RuntimeRawConfig` (from actr.toml) into a `Config`.
     ///
     /// Since the runtime configuration has no `[package]` section, the caller must provide
     /// package info separately (typically read from actr.toml or .actr package).
-    pub fn parse_actr(&self, raw: ActrRawConfig, package: PackageInfo, tags: Vec<String>) -> Result<Config> {
+    pub fn parse_runtime(
+        &self,
+        raw: RuntimeRawConfig,
+        package: PackageInfo,
+        tags: Vec<String>,
+    ) -> Result<Config> {
         // Validate required runtime fields
         let signaling_url_str = raw
             .signaling
@@ -181,8 +186,8 @@ impl ParserV1 {
 
         Ok(Config {
             package,
-            exports: vec![],       // runtime config has no exports
-            dependencies: vec![],  // dependencies come from actr.toml
+            exports: vec![],      // runtime config has no exports
+            dependencies: vec![], // dependencies come from the runtime package metadata / lock file
             signaling_url,
             realm: self_realm,
             realm_secret: raw.deployment.realm_secret,
@@ -707,7 +712,7 @@ run = "cargo run"
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
 
         // Create proto file
         let proto_dir = tmpdir.path().join("proto");
@@ -720,7 +725,7 @@ run = "cargo run"
         // Parse
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.realm.realm_id, 1001);
@@ -756,12 +761,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         let dep = config.get_dependency("shared").unwrap();
         assert_eq!(dep.alias, "shared");
@@ -796,12 +801,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(
             config.ais_endpoint.as_deref(),
@@ -826,12 +831,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
 
         assert!(matches!(
             result,
@@ -860,12 +865,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -894,12 +899,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -963,30 +968,30 @@ realm_id = 1001
         let tmpdir = TempDir::new().unwrap();
 
         // Default (no mode field) -> Native
-        let path = tmpdir.path().join("actr.toml");
+        let path = tmpdir.path().join("manifest.toml");
         fs::write(&path, base_toml("")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
 
         // mode = "process"
         fs::write(&path, base_toml("mode = \"process\"")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
 
         // mode = "wasm"
         fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
 
         // Invalid value -> error
         fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
-        let result = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap());
+        let result = ParserV1::new(&path).parse_manifest(RawConfig::from_file(&path).unwrap());
         assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 }

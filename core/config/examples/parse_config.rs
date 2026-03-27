@@ -1,4 +1,4 @@
-//! Example showing how to parse an actr.toml configuration file
+//! Example showing how to parse a manifest.toml workload file
 
 use actr_config::ConfigParser;
 use actr_protocol::ActrTypeExt;
@@ -8,12 +8,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get config path from command line or use default
     let config_path = env::args()
         .nth(1)
-        .unwrap_or_else(|| "../actr.toml".to_string());
+        .unwrap_or_else(|| "../manifest.toml".to_string());
 
     println!("🔧 Loading configuration from: {config_path}");
 
     // Load and parse the configuration
-    let config = ConfigParser::from_file(&config_path)?;
+    let config = ConfigParser::from_manifest_file(&config_path)?;
 
     println!("\n📦 Package Information:");
     println!("  Name: {}", config.package.name);

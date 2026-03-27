@@ -70,7 +70,7 @@ pub struct ActrNode {
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
 
-    /// Actr.lock.toml content (loaded at startup for fingerprint lookups)
+    /// Packaged manifest.lock.toml content loaded at startup for fingerprint lookups
     pub(crate) actr_lock: Option<actr_config::lock::LockFile>,
     /// Network event receiver (from NetworkEventHandle)
     pub(crate) network_event_rx:
@@ -584,6 +584,7 @@ impl ActrNode {
         config: actr_config::Config,
         workload: crate::workload::Workload,
         package_manifest: Option<crate::verify::PackageManifest>,
+        packaged_lock: Option<actr_config::lock::LockFile>,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -662,24 +663,17 @@ impl ActrNode {
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
 
-        // Load Actr.lock.toml (optional)
-        let actr_lock_path = config.config_dir.join("Actr.lock.toml");
-        let actr_lock = match actr_config::lock::LockFile::from_file(&actr_lock_path) {
-            Ok(lock) => {
-                tracing::info!(
-                    "📋 Loaded Actr.lock.toml with {} dependencies",
-                    lock.dependencies.len()
-                );
-                Some(lock)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "⚠️ Actr.lock.toml not loaded (path: {:?}, ERR: {}). Continuing without dependency fingerprints.",
-                    actr_lock_path,
-                    e
-                );
-                None
-            }
+        let actr_lock = if let Some(lock) = packaged_lock {
+            tracing::info!(
+                "📋 Loaded packaged manifest.lock.toml with {} dependencies",
+                lock.dependencies.len()
+            );
+            Some(lock)
+        } else {
+            tracing::warn!(
+                "⚠️ manifest.lock.toml not found in package. Continuing without dependency fingerprints."
+            );
+            None
         };
 
         tracing::info!("✅ ActrNode initialized");
@@ -935,7 +929,9 @@ impl ActrNode {
                     .as_mut()
                     .expect("ContextFactory must exist")
                     .set_actr_lock(actr_lock);
-                tracing::info!("✅ Actr.lock.toml set in ContextFactory for fingerprint lookups");
+                tracing::info!(
+                    "✅ manifest.lock.toml set in ContextFactory for fingerprint lookups"
+                );
             }
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

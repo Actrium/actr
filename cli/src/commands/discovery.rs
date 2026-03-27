@@ -572,7 +572,7 @@ impl DiscoveryCommand {
             .load_config(
                 config_manager
                     .get_project_root()
-                    .join("actr.toml")
+                    .join("manifest.toml")
                     .as_path(),
             )
             .await?;
