@@ -13,21 +13,21 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
     )?;
     if is_service {
         ProjectTemplate::load_file(
-            &fixtures_root.join("swift/echo/actr.toml.service.hbs"),
+            &fixtures_root.join("swift/echo/manifest.toml.service.hbs"),
             files,
-            "actr.toml",
+            "manifest.toml",
         )?;
     } else {
         ProjectTemplate::load_file(
-            &fixtures_root.join("swift/echo/actr.toml.hbs"),
+            &fixtures_root.join("swift/echo/manifest.toml.hbs"),
             files,
-            "actr.toml",
+            "manifest.toml",
         )?;
     }
     ProjectTemplate::load_file(
-        &fixtures_root.join("swift/Actr.lock.toml.hbs"),
+        &fixtures_root.join("swift/manifest.lock.toml.hbs"),
         files,
-        "Actr.lock.toml",
+        "manifest.lock.toml",
     )?;
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/gitignore.hbs"),

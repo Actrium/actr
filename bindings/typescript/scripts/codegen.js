@@ -26,10 +26,10 @@ function parseArgs(argv) {
 
 function usage() {
   const message = [
-    'Usage: codegen --config <actr.toml> [--out <generated-dir>] [--proto-root <protos/remote>] [--lock <Actr.lock.toml>] [--dist-import <path>]',
+    'Usage: codegen --config <manifest.toml> [--out <generated-dir>] [--proto-root <protos/remote>] [--lock <manifest.lock.toml>] [--dist-import <path>]',
     '',
     'Example:',
-    '  node scripts/codegen.js --config examples/echo-client/actr.toml',
+    '  node scripts/codegen.js --config examples/echo-client/manifest.toml',
   ].join('\n');
   console.error(message);
 }
@@ -1376,7 +1376,7 @@ async function main() {
       path.join(configDir, 'protos', 'remote'),
   );
   const lockPath = path.resolve(
-    args.lock || path.join(configDir, 'Actr.lock.toml'),
+    args.lock || path.join(configDir, 'manifest.lock.toml'),
   );
   const repoRoot = findRepoRoot(configDir);
   const distImport =

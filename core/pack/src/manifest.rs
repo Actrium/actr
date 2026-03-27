@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Package manifest, parsed from actr.toml inside .actr package.
+/// Package manifest, parsed from manifest.toml inside .actr package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageManifest {
     pub manufacturer: String,
@@ -17,6 +17,9 @@ pub struct PackageManifest {
     /// Proto files included in the package for service API definition.
     #[serde(default)]
     pub proto_files: Vec<ProtoFileEntry>,
+    /// Optional workload dependency lock file packaged with the workload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_file: Option<LockFileEntry>,
     #[serde(default)]
     pub metadata: ManifestMetadata,
 }
@@ -47,6 +50,14 @@ pub struct ProtoFileEntry {
     /// File name (e.g. "echo.proto")
     pub name: String,
     /// Path inside the ZIP (e.g. "proto/echo.proto")
+    pub path: String,
+    /// SHA-256 hash hex string (64 chars)
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockFileEntry {
+    /// Path inside the ZIP (always `manifest.lock.toml` for packaged workloads).
     pub path: String,
     /// SHA-256 hash hex string (64 chars)
     pub hash: String,

@@ -4,7 +4,7 @@
 
 TypeScript/Node.js bindings for ACTR. The binding is now `package-first`:
 local source-defined workloads were removed. `actr-ts` currently supports
-client-only nodes created from `actr.toml`, then uses discovery plus explicit
+client-only nodes created from `manifest.toml`, then uses discovery plus explicit
 remote calls.
 
 ## Overview
@@ -32,7 +32,7 @@ npm install @actrium/actr
 import { ActrNode, PayloadType } from '@actrium/actr';
 
 async function main() {
-  const node = await ActrNode.fromConfig('./actr.toml');
+  const node = await ActrNode.fromConfig('./manifest.toml');
   const actorRef = await node.start();
 
   const [serverId] = await actorRef.discover(
@@ -75,7 +75,7 @@ main().catch(console.error);
 
 ## Configuration
 
-Create an `actr.toml` configuration file:
+Create a `manifest.toml` configuration file:
 
 ```toml
 edition = 1
@@ -114,12 +114,12 @@ Prerequisites:
 Generate for echo-client:
 
 ```bash
-npm run codegen -- --config examples/echo-client/actr.toml
+npm run codegen -- --config examples/echo-client/manifest.toml
 ```
 
 Notes:
 
-- The generator reads `Actr.lock.toml` first; ensure it includes the
+- The generator reads `manifest.lock.toml` first; ensure it includes the
   dependencies you want emitted.
 - Proto sources default to `examples/echo-client/protos/remote`.
 - Outputs include protobuf codecs, route helpers, and `local.actor.ts`.

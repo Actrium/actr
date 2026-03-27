@@ -22,7 +22,7 @@ npm run dev
 
 ```
 {{PROJECT_NAME}}/
-├── actr.toml              # Actor configuration
+├── manifest.toml          # Actor configuration
 ├── package.json           # Node.js dependencies
 ├── vite.config.ts         # Vite dev server config
 ├── index.html             # Entry HTML page
@@ -32,7 +32,7 @@ npm run dev
 ├── src/
 │   ├── main.ts            # Application entry point
 │   └── generated/         # Auto-generated code (actr gen)
-│       ├── actr-config.ts # Configuration from actr.toml
+│       ├── actr-config.ts # Configuration from manifest.toml
 │       ├── index.ts       # Re-exports
 │       └── *.actorref.ts  # Typed RPC wrappers
 ├── wasm/                  # Rust WASM crate

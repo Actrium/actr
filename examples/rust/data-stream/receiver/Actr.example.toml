@@ -1,36 +1,25 @@
 edition = 1
-exports = ["../proto/file_transfer.proto"]
 
-[package]
-name = "FileTransferService"
-manufacturer = "acme"
-version = "1.0.0"
-description = "File transfer receiver using DataStream API"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "example"]
-
-[dependencies]
-
-[system.signaling]
+[signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.ais_endpoint]
+[ais_endpoint]
 url = "http://localhost:8081/ais"
 
-[system.deployment]
+[deployment]
 realm_id = 33554432
 realm_secret = "rs_AeEwCl5kEEd4foT3KSH-ZSgIFfrBzvnO"
 
-[system.discovery]
+[discovery]
 visible = true
 
-[system.webrtc]
+[webrtc]
 force_relay = false
 stun_urls = ["stun:localhost:3478"]
 turn_urls = ["turn:localhost:3478"]
 
 # ACL configuration - allow file transfer sender
+
 [acl]
 
 [[acl.rules]]

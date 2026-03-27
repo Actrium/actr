@@ -18,9 +18,9 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
 
     if is_service {
         ProjectTemplate::load_file(
-            &ts_fixtures.join("actr.toml.service.hbs"),
+            &ts_fixtures.join("manifest.toml.service.hbs"),
             files,
-            "actr.toml",
+            "manifest.toml",
         )?;
         ProjectTemplate::load_file(
             &ts_fixtures.join("index.service.ts.hbs"),
@@ -28,7 +28,11 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
             "src/actr_service.ts",
         )?;
     } else {
-        ProjectTemplate::load_file(&ts_fixtures.join("actr.toml.hbs"), files, "actr.toml")?;
+        ProjectTemplate::load_file(
+            &ts_fixtures.join("manifest.toml.hbs"),
+            files,
+            "manifest.toml",
+        )?;
         ProjectTemplate::load_file(
             &ts_fixtures.join("index.ts.hbs"),
             files,

@@ -6,6 +6,7 @@ use crate::config::{
     ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
+use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
 use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
@@ -30,7 +31,7 @@ impl ParserV1 {
         Self { base_dir }
     }
 
-    pub fn parse(&self, mut raw: RawConfig) -> Result<Config> {
+    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<Config> {
         // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
@@ -44,8 +45,13 @@ impl ParserV1 {
         // 3. Parse package
         let package = self.parse_package(&raw.package)?;
 
-        // 4. Parse exports
-        let exports = self.parse_exports(&raw.exports)?;
+        // 4. Parse exports (prefer [package].exports, fallback to top-level exports)
+        let export_paths = if !raw.package.exports.is_empty() {
+            &raw.package.exports
+        } else {
+            &raw.exports
+        };
+        let exports = self.parse_exports(export_paths)?;
 
         // 5. Get realm
         let self_realm = Realm {
@@ -114,7 +120,105 @@ impl ParserV1 {
             websocket_listen_port: raw.system.websocket.listen_port,
             websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
+            hyper_data_dir: raw
+                .system
+                .storage
+                .hyper_data_dir
+                .unwrap_or_else(|| config_dir.join(".hyper")),
             config_dir,
+            trust_mode: raw
+                .system
+                .deployment
+                .trust_mode
+                .unwrap_or_else(|| "development".to_string()),
+            execution_mode,
+            ais_endpoint: Some(ais_endpoint.to_string()),
+        })
+    }
+
+    /// Parse a `RuntimeRawConfig` (from actr.toml) into a `Config`.
+    ///
+    /// Since the runtime configuration has no `[package]` section, the caller must provide
+    /// package info separately (typically read from actr.toml or .actr package).
+    pub fn parse_runtime(
+        &self,
+        raw: RuntimeRawConfig,
+        package: PackageInfo,
+        tags: Vec<String>,
+    ) -> Result<Config> {
+        // Validate required runtime fields
+        let signaling_url_str = raw
+            .signaling
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("signaling.url"))?;
+        let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
+
+        let ais_endpoint = raw
+            .ais_endpoint
+            .url
+            .as_ref()
+            .ok_or(ConfigError::MissingField("ais_endpoint.url"))
+            .and_then(|url| Url::parse(url).map_err(ConfigError::InvalidUrl))?;
+
+        let self_realm = Realm {
+            realm_id: raw
+                .deployment
+                .realm_id
+                .ok_or(ConfigError::MissingField("deployment.realm_id"))?,
+        };
+
+        let execution_mode = parse_actr_mode(raw.deployment.mode.as_deref())?;
+
+        // Build observability from flat config
+        let observability = ObservabilityConfig {
+            filter_level: raw
+                .observability
+                .filter_level
+                .unwrap_or_else(|| "info".to_string()),
+            tracing_enabled: raw.observability.tracing_enabled.unwrap_or(false),
+            tracing_endpoint: raw
+                .observability
+                .tracing_endpoint
+                .unwrap_or_else(|| DEFAULT_TRACING_ENDPOINT.to_string()),
+            tracing_service_name: raw
+                .observability
+                .tracing_service_name
+                .unwrap_or_else(|| package.name.clone()),
+        };
+
+        // Parse ACL
+        let acl = if let Some(acl_value) = raw.acl {
+            Some(self.parse_acl(acl_value, self_realm.realm_id)?)
+        } else {
+            None
+        };
+
+        Ok(Config {
+            package,
+            exports: vec![],      // runtime config has no exports
+            dependencies: vec![], // dependencies come from the runtime package metadata / lock file
+            signaling_url,
+            realm: self_realm,
+            realm_secret: raw.deployment.realm_secret,
+            visible_in_discovery: raw.discovery.visible.unwrap_or(true),
+            acl,
+            mailbox_path: None,
+            tags,
+            scripts: raw.scripts,
+            webrtc: self.parse_webrtc(&raw.webrtc)?,
+            websocket_listen_port: raw.websocket.listen_port,
+            websocket_advertised_host: raw.websocket.advertised_host,
+            observability,
+            hyper_data_dir: raw
+                .storage
+                .hyper_data_dir
+                .unwrap_or_else(|| self.base_dir.join(".hyper")),
+            config_dir: self.base_dir.clone(),
+            trust_mode: raw
+                .deployment
+                .trust_mode
+                .unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })
@@ -490,12 +594,17 @@ impl ParserV1 {
                     .deployment
                     .ais_endpoint
                     .or(parent.deployment.ais_endpoint),
+                trust_mode: child.deployment.trust_mode.or(parent.deployment.trust_mode),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),
             },
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
+                hyper_data_dir: child
+                    .storage
+                    .hyper_data_dir
+                    .or(parent.storage.hyper_data_dir),
             },
             webrtc: crate::raw::RawWebRtcConfig {
                 stun_urls: if child.webrtc.stun_urls.is_empty() {
@@ -626,7 +735,7 @@ run = "cargo run"
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
 
         // Create proto file
         let proto_dir = tmpdir.path().join("proto");
@@ -639,7 +748,7 @@ run = "cargo run"
         // Parse
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.realm.realm_id, 1001);
@@ -675,12 +784,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         let dep = config.get_dependency("shared").unwrap();
         assert_eq!(dep.alias, "shared");
@@ -715,12 +824,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let config = parser.parse(raw).unwrap();
+        let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(
             config.ais_endpoint.as_deref(),
@@ -745,12 +854,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
 
         assert!(matches!(
             result,
@@ -779,12 +888,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -813,12 +922,12 @@ realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
+        let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -856,7 +965,7 @@ port_range_end = 50000
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
     }
@@ -882,30 +991,30 @@ realm_id = 1001
         let tmpdir = TempDir::new().unwrap();
 
         // Default (no mode field) -> Native
-        let path = tmpdir.path().join("actr.toml");
+        let path = tmpdir.path().join("manifest.toml");
         fs::write(&path, base_toml("")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
 
         // mode = "process"
         fs::write(&path, base_toml("mode = \"process\"")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
 
         // mode = "wasm"
         fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
         let config = ParserV1::new(&path)
-            .parse(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
 
         // Invalid value -> error
         fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
-        let result = ParserV1::new(&path).parse(RawConfig::from_file(&path).unwrap());
+        let result = ParserV1::new(&path).parse_manifest(RawConfig::from_file(&path).unwrap());
         assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 }

@@ -26,7 +26,7 @@ impl ProjectInitializer for KotlinInitializer {
         if !context.is_current_dir {
             info!("  cd {}", context.project_dir.display());
         }
-        info!("  actr install  # Install remote protobuf dependencies from actr.toml");
+        info!("  actr install  # Install remote protobuf dependencies from manifest.toml");
 
         match context.template {
             ProjectTemplateName::Echo => {
@@ -102,8 +102,8 @@ impl KotlinInitializer {
                 context.project_dir.join("gradle.properties"),
             ),
             (
-                fixtures_root.join("kotlin/echo/actr.toml"),
-                context.project_dir.join("actr.toml"),
+                fixtures_root.join("kotlin/echo/manifest.toml"),
+                context.project_dir.join("manifest.toml"),
             ),
             (
                 fixtures_root.join("kotlin/gitignore"),
@@ -220,8 +220,8 @@ impl KotlinInitializer {
                 context.project_dir.join("gradle.properties"),
             ),
             (
-                fixtures_root.join("kotlin/data-stream/actr.toml"),
-                context.project_dir.join("actr.toml"),
+                fixtures_root.join("kotlin/data-stream/manifest.toml"),
+                context.project_dir.join("manifest.toml"),
             ),
             (
                 fixtures_root.join("kotlin/gitignore"),

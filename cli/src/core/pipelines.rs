@@ -139,7 +139,7 @@ impl ValidationPipeline {
             .load_config(
                 self.config_manager
                     .get_project_root()
-                    .join("actr.toml")
+                    .join("manifest.toml")
                     .as_path(),
             )
             .await?;
@@ -509,7 +509,7 @@ impl InstallPipeline {
     /// Update lock file with new format (no embedded proto content)
     async fn update_lock_file(&self, dependencies: &[ResolvedDependency]) -> Result<()> {
         let project_root = self.config_manager.get_project_root();
-        let lock_file_path = project_root.join("Actr.lock.toml");
+        let lock_file_path = project_root.join("manifest.lock.toml");
 
         // Load existing lock file or create new one
         let mut lock_file = if lock_file_path.exists() {

@@ -1,31 +1,18 @@
 edition = 1
-exports = []
 
-[package]
-name = "ws-echo-client-app"
-manufacturer = "acme"
-version = "1.0.0"
-description = "WebSocket Echo Client App"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "client", "websocket"]
-
-[dependencies]
-WsEchoService = { actr_type = "acme:WsEchoService:1.0.0" }
-
-[system.signaling]
+[signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.ais_endpoint]
+[ais_endpoint]
 url = "http://localhost:8081/ais"
 
-[system.deployment]
+[deployment]
 realm_id = 1001
 
-[system.discovery]
+[discovery]
 visible = true
 
-[system.observability]
+[observability]
 filter_level = "info"
 tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
@@ -35,6 +22,7 @@ tracing_service_name = "ws-echo-client-app"
 # The server ws_address is discovered through the signaling service, and the client connects to it directly over WebSocket
 
 # ACL configuration - allow responses from the WsEchoService server
+
 [acl]
 
 [[acl.rules]]

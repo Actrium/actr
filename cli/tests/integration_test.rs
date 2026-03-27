@@ -11,7 +11,7 @@ fn test_config_parser_loads_valid_config() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    // Create a minimal valid actr.toml
+    // Create a minimal valid manifest.toml
     let actr_toml = r#"edition = 1
 exports = []
 
@@ -38,11 +38,11 @@ visible = true
 dev = "cargo run"
 test = "cargo test"
 "#;
-    let config_path = temp_dir.path().join("actr.toml");
+    let config_path = temp_dir.path().join("manifest.toml");
     fs::write(&config_path, actr_toml).unwrap();
 
     // Load configuration
-    let config = ConfigParser::from_file(&config_path).expect("Failed to parse config");
+    let config = ConfigParser::from_manifest_file(&config_path).expect("Failed to parse config");
 
     // Verify basic fields
     assert_eq!(config.package.name, "test-service");

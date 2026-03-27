@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Direct mapping of actr.toml (no processing applied)
+/// Direct mapping of manifest.toml (no processing applied)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RawConfig {
+pub struct ManifestRawConfig {
     /// Config file format version (determines which Parser to use)
     #[serde(default = "default_edition")]
     pub edition: u32,
@@ -45,6 +45,8 @@ pub struct RawConfig {
     pub scripts: HashMap<String, String>,
 }
 
+pub type RawConfig = ManifestRawConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
     /// Package name (also used as the actor type name)
@@ -69,6 +71,30 @@ pub struct RawPackageConfig {
     /// Service tags (e.g., ["latest", "stable", "v1.0"])
     #[serde(default)]
     pub tags: Vec<String>,
+
+    /// Signature algorithm (default: "ed25519")
+    #[serde(default)]
+    pub signature_algorithm: Option<String>,
+
+    /// Exported proto file paths (new location, preferred over top-level `exports`)
+    #[serde(default)]
+    pub exports: Vec<PathBuf>,
+}
+
+impl RawPackageConfig {
+    pub fn into_package_info(self) -> Result<crate::config::PackageInfo> {
+        Ok(crate::config::PackageInfo {
+            name: self.name.clone(),
+            actr_type: actr_protocol::ActrType {
+                manufacturer: self.manufacturer.clone(),
+                name: self.name,
+                version: self.version,
+            },
+            description: self.description,
+            authors: self.authors.unwrap_or_default(),
+            license: self.license,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +210,11 @@ pub struct RawDeploymentConfig {
     /// in process/wasm mode, Hyper handles registration and injects credentials.
     #[serde(default)]
     pub ais_endpoint: Option<String>,
+
+    /// Trust mode: "development" (default) | "production"
+    /// Used for determining security level and certificate cache logic
+    #[serde(default)]
+    pub trust_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -196,6 +227,10 @@ pub struct RawDiscoveryConfig {
 pub struct RawStorageConfig {
     #[serde(default)]
     pub mailbox_path: Option<PathBuf>,
+
+    /// Hyper data directory for this node instance (defaults to `.hyper` in config dir)
+    #[serde(default)]
+    pub hyper_data_dir: Option<PathBuf>,
 }
 
 /// WebRTC configuration
@@ -268,7 +303,7 @@ fn default_edition() -> u32 {
     1
 }
 
-impl RawConfig {
+impl ManifestRawConfig {
     /// Load raw configuration from file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
@@ -283,7 +318,7 @@ impl RawConfig {
     }
 }
 
-impl FromStr for RawConfig {
+impl FromStr for ManifestRawConfig {
     type Err = crate::error::ConfigError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -308,7 +343,7 @@ port_range_end = 50100
 public_ips = ["1.2.3.4"]
 turn_urls = ["turn:Example"]
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.system.webrtc.port_range_start, Some(50000));
         assert_eq!(config.system.webrtc.port_range_end, Some(50100));
         assert_eq!(config.system.webrtc.public_ips[0], "1.2.3.4");
@@ -338,7 +373,7 @@ realm_id = 1001
 run = "cargo run"
 "#;
 
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.exports.len(), 1);
@@ -364,7 +399,7 @@ url = "http://localhost:8081/ais"
 realm_id = 1001
 "#;
 
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         assert_eq!(
             config.system.ais_endpoint.url.as_deref(),
             Some("http://localhost:8081/ais")
@@ -380,7 +415,7 @@ manufacturer = "acme"
 [dependencies]
 user-service = {}
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("user-service").unwrap();
         assert!(matches!(dep, RawDependency::Empty {}));
     }
@@ -394,7 +429,7 @@ manufacturer = "acme"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
         if let RawDependency::Specified {
             actr_type,
@@ -419,7 +454,7 @@ manufacturer = "acme"
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0" }
 "#;
-        let config = RawConfig::from_str(toml_content).unwrap();
+        let config = ManifestRawConfig::from_str(toml_content).unwrap();
         let dep = config.dependencies.get("shared").unwrap();
         if let RawDependency::Specified { service, .. } = dep {
             assert!(service.is_none());

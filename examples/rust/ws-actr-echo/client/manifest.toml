@@ -1,0 +1,12 @@
+[package]
+name = "ws-echo-client-app"
+manufacturer = "acme"
+version = "1.0.0"
+description = "WebSocket Echo Client App"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "client", "websocket"]
+exports = []
+
+[dependencies]
+WsEchoService = { actr_type = "acme:WsEchoService:1.0.0" }

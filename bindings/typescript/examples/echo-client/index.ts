@@ -15,7 +15,7 @@ const RPC_TIMEOUT_MS = 15000;
 const RPC_PAYLOAD_TYPE: PayloadType = 0;
 
 async function main() {
-  const node = await ActrNode.fromConfig('./actr.toml');
+  const node = await ActrNode.fromConfig('./manifest.toml');
   const actorRef = await node.start();
 
   console.log('Actor ID:', actorRef.actorId());

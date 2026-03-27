@@ -9,7 +9,7 @@
 ### 传统设计（cargo/npm 模式）
 
 ```
-actr.lock.toml (5KB)
+manifest.lock.toml (5KB)
   - metadata
   - dependencies (只有引用)
 
@@ -35,7 +35,7 @@ actr.lock.toml (5KB)
 ### 新设计（引用模式）
 
 ```
-actr.lock.toml (5KB)
+manifest.lock.toml (5KB)
   - metadata
   - dependencies (路径引用 + 指纹)
 
@@ -105,12 +105,12 @@ shared-cache = { name = "redis-proxy", actr_type = "acme+CacheService" }
 | 字段 | 位置 | 含义 | 作用 |
 |------|------|------|------|
 | `alias` | actr.toml | 本地引用名 | 代码中 `use crate::my_echo::*;` 导入生成的模块 |
-| `name` | actr.toml / Actr.lock.toml | 远程服务唯一标识 | 服务注册表中的服务名称，用于服务发现和指纹验证 |
-| `actr_type` | actr.toml / Actr.lock.toml | 服务类型标识 | 如 `"acme+EchoService"`，用于代码生成时的模块路径 |
+| `name` | actr.toml / manifest.lock.toml | 远程服务唯一标识 | 服务注册表中的服务名称，用于服务发现和指纹验证 |
+| `actr_type` | actr.toml / manifest.lock.toml | 服务类型标识 | 如 `"acme+EchoService"`，用于代码生成时的模块路径 |
 
-### Actr.lock.toml (锁定的依赖)
+### manifest.lock.toml (锁定的依赖)
 
-> 说明：Actr.lock.toml **推荐**用于锁定远程依赖和 fingerprint，但对纯本地部署不是硬性要求。
+> 说明：manifest.lock.toml **推荐**用于锁定远程依赖和 fingerprint，但对纯本地部署不是硬性要求。
 > 缺少该文件时 runtime 仍然可以启动，只是无法使用基于 fingerprint 的精确依赖匹配，
 > 远程发现将退化为协商流程或在首次远程调用时提示依赖未锁定。
 
@@ -337,10 +337,10 @@ let dep = LockedDependency::new(
 lock_file.add_dependency(dep);
 
 // 保存
-lock_file.save_to_file("actr.lock.toml")?;
+lock_file.save_to_file("manifest.lock.toml")?;
 
 // 加载
-let restored = LockFile::from_file("actr.lock.toml")?;
+let restored = LockFile::from_file("manifest.lock.toml")?;
 
 // 获取依赖
 if let Some(locked_dep) = lock_file.get_dependency("user-service") {

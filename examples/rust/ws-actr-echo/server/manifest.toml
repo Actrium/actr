@@ -1,0 +1,11 @@
+[package]
+name = "WsEchoService"
+manufacturer = "acme"
+version = "1.0.0"
+description = "WebSocket Echo Server - Echo service over a direct WebSocket transport"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example", "websocket"]
+exports = ["../proto/echo.proto"]
+
+[dependencies]

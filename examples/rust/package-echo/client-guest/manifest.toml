@@ -1,0 +1,12 @@
+[package]
+name = "package-echo-client-guest"
+manufacturer = "acme"
+version = "0.1.0"
+description = "Package Echo Client Guest — cdylib workload for the client host"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example", "client-guest"]
+exports = []
+
+[dependencies]
+EchoService = {}

@@ -12,7 +12,7 @@ export class ActrNode {
   /**
    * Create a client-only ActrNode directly from a TOML config file path.
    *
-   * @param configPath - Path to actr.toml
+   * @param configPath - Path to manifest.toml
    * @returns ActrNode instance
    */
   static async fromConfig(configPath: string): Promise<ActrNode> {

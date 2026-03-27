@@ -8,7 +8,7 @@ This module provides Python bindings for actr-runtime, including:
 Recommended usage:
     from actr import ActrNode, ActrType, Dest
 
-    node = await ActrNode.from_toml("actr.toml")
+    node = await ActrNode.from_toml("manifest.toml")
     ref = await node.start()
     targets = await ref.discover(ActrType("actrium", "EchoService", "0.2.1-beta"))
     response = await ref.call(Dest.actor(targets[0]), "echo.EchoService.Echo", request)

@@ -5,7 +5,7 @@ Language: 中文（简体）
 
 这是 ACTR 的 TypeScript/Node.js 绑定。当前实现已经切到
 `package-first`：本地源码形式的 workload 已被移除。`actr-ts` 现在只支持
-从 `actr.toml` 创建 client-only 节点，然后通过发现 + 显式远端调用访问服务。
+从 `manifest.toml` 创建 client-only 节点，然后通过发现 + 显式远端调用访问服务。
 
 ## 概述
 
@@ -32,7 +32,7 @@ npm install @actrium/actr
 import { ActrNode, PayloadType } from '@actrium/actr';
 
 async function main() {
-  const node = await ActrNode.fromConfig('./actr.toml');
+  const node = await ActrNode.fromConfig('./manifest.toml');
   const actorRef = await node.start();
 
   const [serverId] = await actorRef.discover(
@@ -75,7 +75,7 @@ main().catch(console.error);
 
 ## 配置
 
-创建 `actr.toml` 配置文件：
+创建 `manifest.toml` 配置文件：
 
 ```toml
 edition = 1
@@ -113,12 +113,12 @@ tracing_enabled = false
 为 echo-client 生成：
 
 ```bash
-npm run codegen -- --config examples/echo-client/actr.toml
+npm run codegen -- --config examples/echo-client/manifest.toml
 ```
 
 注意：
 
-- 生成器优先读取 `Actr.lock.toml`；请确保包含你想生成的依赖。
+- 生成器优先读取 `manifest.lock.toml`；请确保包含你想生成的依赖。
 - proto 默认来源为 `examples/echo-client/protos/remote`。
 - 输出包括 protobuf 编解码、路由辅助，以及 `local.actor.ts`。
 

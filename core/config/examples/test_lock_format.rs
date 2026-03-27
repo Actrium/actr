@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lock_file.add_dependency(dep);
 
     // Serialize to TOML
-    println!("=== Generated actr.lock.toml ===\n");
+    println!("=== Generated manifest.lock.toml ===\n");
     let toml_str = toml::to_string_pretty(&lock_file)?;
     println!("{toml_str}");
 

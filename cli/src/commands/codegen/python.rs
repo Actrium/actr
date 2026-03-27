@@ -63,14 +63,14 @@ impl LanguageGenerator for PythonGenerator {
             context.input_path.as_path()
         };
 
-        // 1. Read Actr.lock.toml from current working directory
+        // 1. Read manifest.lock.toml from current working directory
         // The lock file should always be in the project root, not in the protos directory
-        let lock_file_path = PathBuf::from("Actr.lock.toml");
+        let lock_file_path = PathBuf::from("manifest.lock.toml");
 
         // Check if lock file exists - required for code generation
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "Actr.lock.toml not found at {}. Please run 'actr install' first.",
+                "manifest.lock.toml not found at {}. Please run 'actr install' first.",
                 lock_file_path.display()
             )));
         }
@@ -165,8 +165,8 @@ impl LanguageGenerator for PythonGenerator {
                         "Remote file '{}' not found in lock file.\n\
                          Available remote files in lock:\n  {}\n\n\
                          This usually means:\n\
-                         1. The dependency is not listed in actr.toml\n\
-                         2. You need to run 'actr install' to update Actr.lock.toml\n\
+                         1. The dependency is not listed in manifest.toml\n\
+                         2. You need to run 'actr install' to update manifest.lock.toml\n\
                          3. The proto file path in the dependency doesn't match",
                         remote_relative_path,
                         remote_services_map

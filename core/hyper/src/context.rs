@@ -42,7 +42,7 @@ pub struct RuntimeContext {
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
-    actr_lock: Option<LockFile>, // Actr.lock.toml for fingerprint lookups
+    actr_lock: Option<LockFile>, // packaged manifest.lock.toml for fingerprint lookups
 }
 
 impl RuntimeContext {
@@ -59,7 +59,7 @@ impl RuntimeContext {
     /// - `media_frame_registry`: callback registry for `MediaTrack`
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
-    /// - `actr_lock`: dependency config from `Actr.lock.toml` used for fingerprint lookup
+    /// - `actr_lock`: dependency config from the packaged `manifest.lock.toml` used for fingerprint lookup
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub fn new(
         self_id: ActrId,
@@ -209,7 +209,7 @@ impl RuntimeContext {
             .await
     }
 
-    /// Get dependency fingerprint from Actr.lock.toml
+    /// Get dependency fingerprint from the packaged manifest.lock.toml
     fn get_dependency_fingerprint(&self, target_type: &ActrType) -> Option<String> {
         let actr_lock = self.actr_lock.as_ref()?;
 
@@ -452,14 +452,14 @@ impl Context for RuntimeContext {
         let service_name = format!("{}:{}", target_type.manufacturer, target_type.name);
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // Step 1: Get fingerprint from Actr.lock.toml (when available)
+        // Step 1: Get fingerprint from manifest.lock.toml (when available)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         let client_fingerprint = match self.get_dependency_fingerprint(target_type) {
             Some(fingerprint) => fingerprint,
             None => {
                 if self.actr_lock.is_none() {
                     tracing::debug!(
-                        "Actr.lock.toml not loaded; sending discovery without fingerprint for '{}'",
+                        "manifest.lock.toml not loaded; sending discovery without fingerprint for '{}'",
                         service_name
                     );
                     String::new()
@@ -467,14 +467,14 @@ impl Context for RuntimeContext {
                     tracing::error!(
                         severity = 10,
                         error_category = "dependency_missing",
-                        "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in Actr.lock.toml.\n\
+                        "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in manifest.lock.toml.\n\
                          Please run 'actr install' to generate the lock file with all dependencies.",
                         service_name
                     );
                     return Err(ActrError::DependencyNotFound {
                         service_name: service_name.clone(),
                         message: format!(
-                            "Dependency '{}' not found in Actr.lock.toml. Run 'actr install' to resolve dependencies.",
+                            "Dependency '{}' not found in manifest.lock.toml. Run 'actr install' to resolve dependencies.",
                             service_name
                         ),
                     });

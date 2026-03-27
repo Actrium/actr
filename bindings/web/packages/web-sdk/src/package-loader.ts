@@ -11,7 +11,7 @@
  * In the Web platform, the equivalent is:
  *   1. Fetch .actr package from a URL (or accept raw bytes)
  *   2. Parse the ZIP (STORE method, no compression)
- *   3. Extract actr.toml manifest, WASM binary, JS glue, and actor.sw.js
+ *   3. Extract manifest.toml manifest, WASM binary, JS glue, and actor.sw.js
  *   4. Return structured package contents for inspection or SW loading
  *
  * The actual WASM loading in the Service Worker happens via actor.sw.js
@@ -19,15 +19,15 @@
  * This module provides main-thread inspection of .actr packages.
  *
  * .actr ZIP structure (all entries STORE / no compression):
- *   actr.toml             - package manifest (TOML)
- *   actr.sig              - Ed25519 signature (64 bytes)
+ *   manifest.toml             - package manifest (TOML)
+ *   manifest.sig              - Ed25519 signature (64 bytes)
  *   bin/actor.wasm        - WASM binary
  *   resources/glue.js     - wasm-bindgen JS glue
  *   resources/actor.sw.js - Service Worker entry
  */
 
 /**
- * Parsed actr.toml manifest
+ * Parsed manifest.toml manifest
  */
 export interface ActrManifest {
   manufacturer: string;
@@ -54,7 +54,7 @@ export interface ActrManifest {
  * Result of parsing a .actr package
  */
 export interface LoadedActrPackage {
-  /** Parsed manifest from actr.toml */
+  /** Parsed manifest from manifest.toml */
   manifest: ActrManifest;
   /** Raw WASM binary bytes */
   wasmBytes: Uint8Array;
@@ -101,10 +101,10 @@ function parseStoreZip(buffer: ArrayBuffer): Map<string, Uint8Array> {
   return entries;
 }
 
-// ── Minimal TOML parser for actr.toml ──
+// ── Minimal TOML parser for manifest.toml ──
 
 /**
- * Parse a minimal subset of TOML used in actr.toml.
+ * Parse a minimal subset of TOML used in manifest.toml.
  * Handles top-level keys, [section] headers, [[array]] items.
  */
 function parseActrToml(text: string): ActrManifest {
@@ -203,7 +203,7 @@ export async function loadActrPackage(url: string): Promise<LoadedActrPackage> {
 /**
  * Parse raw .actr package bytes (ArrayBuffer).
  *
- * Extracts all ZIP entries, parses actr.toml manifest,
+ * Extracts all ZIP entries, parses manifest.toml manifest,
  * and returns structured access to WASM binary, JS glue, etc.
  *
  * @param buffer - Raw .actr ZIP bytes
@@ -213,9 +213,9 @@ export function parseActrPackage(buffer: ArrayBuffer): LoadedActrPackage {
   const files = parseStoreZip(buffer);
 
   // Parse manifest
-  const tomlBytes = files.get('actr.toml');
+  const tomlBytes = files.get('manifest.toml');
   if (!tomlBytes) {
-    throw new Error('Invalid .actr package: missing actr.toml');
+    throw new Error('Invalid .actr package: missing manifest.toml');
   }
   const manifest = parseActrToml(new TextDecoder().decode(tomlBytes));
 

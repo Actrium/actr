@@ -2,7 +2,7 @@
 
 [English](./README.md) | 中文
 
-这是 ACTR 的 TypeScript/Node.js 绑定。当前实现已经切到 `package-first`：本地源码形式的 workload 已被移除。`actr-ts` 现在只支持从 `actr.toml` 创建 client-only 节点，然后通过发现 + 显式远端调用访问服务。
+这是 ACTR 的 TypeScript/Node.js 绑定。当前实现已经切到 `package-first`：本地源码形式的 workload 已被移除。`actr-ts` 现在只支持从 `manifest.toml` 创建 client-only 节点，然后通过发现 + 显式远端调用访问服务。
 
 ## 快速开始
 
@@ -10,7 +10,7 @@
 import { ActrNode, PayloadType } from '@actrium/actr';
 
 async function main() {
-  const node = await ActrNode.fromConfig('./actr.toml');
+  const node = await ActrNode.fromConfig('./manifest.toml');
   const actorRef = await node.start();
 
   const [serverId] = await actorRef.discover(

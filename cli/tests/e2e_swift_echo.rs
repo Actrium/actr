@@ -69,7 +69,7 @@ extension EchoServiceWorkload: Workload where T == EchoServiceHandlerImpl {
 struct EchoServiceCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
+        let configPath = (cwd as NSString).appendingPathComponent("manifest.toml")
         let distPath = (cwd as NSString).appendingPathComponent("dist")
         let packageName = try FileManager.default
             .contentsOfDirectory(atPath: distPath)
@@ -114,7 +114,7 @@ extension EchoAppWorkload: Workload {
 struct EchoAppCLI {
     static func main() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let configPath = (cwd as NSString).appendingPathComponent("actr.toml")
+        let configPath = (cwd as NSString).appendingPathComponent("manifest.toml")
         let distPath = (cwd as NSString).appendingPathComponent("dist")
         let packageName = try FileManager.default
             .contentsOfDirectory(atPath: distPath)

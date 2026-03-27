@@ -54,10 +54,10 @@ val copyProtos =
             into("src/main/proto")
         }
 
-// Copy Actr.lock.toml to assets for runtime service resolution
+// Copy manifest.lock.toml to assets for runtime service resolution
 val copyLockFile =
         tasks.register<Copy>("copyLockFile") {
-            from("${rootProject.projectDir}/Actr.lock.toml")
+            from("${rootProject.projectDir}/manifest.lock.toml")
             into("src/main/assets")
         }
 

@@ -19,7 +19,7 @@ use actr_cli::commands::ops as ops_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DocCommand, GenCommand, InitCommand,
-    RunCommand,
+    InstallCommand, RunCommand,
 };
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
@@ -55,6 +55,9 @@ enum Commands {
 
     /// Manage project configuration
     Config(ConfigCommand),
+
+    /// Install service dependencies declared in manifest.toml
+    Install(InstallCommand),
 
     /// Run project scripts
     Run(RunCommand),
@@ -169,7 +172,7 @@ async fn main() -> Result<()> {
 }
 
 async fn build_container() -> Result<ServiceContainer> {
-    let config_path = std::path::Path::new("actr.toml");
+    let config_path = std::path::Path::new("manifest.toml");
     let mut builder = ContainerBuilder::new();
     let mut config_manager = None;
 
@@ -237,6 +240,14 @@ async fn execute_command(
         Commands::Config(cmd) => {
             use actr_cli::core::Command;
             cmd.execute(context).await
+        }
+        Commands::Install(cmd) => {
+            let command = InstallCommand::from_args(cmd);
+            {
+                let container = context.container.lock().unwrap();
+                container.validate(&command.required_components())?;
+            }
+            command.execute(context).await
         }
         Commands::Run(cmd) => match cmd.execute().await {
             Ok(_) => Ok(actr_cli::core::CommandResult::Success(

@@ -10,7 +10,7 @@ use crate::manifest::PackageManifest;
 
 /// Options for creating an .actr package.
 pub struct PackOptions {
-    /// Manifest template (binary.hash will be computed and filled)
+    /// Manifest template (binary.hash/size will be computed and filled)
     pub manifest: PackageManifest,
     /// Binary bytes (the actor wasm/native binary)
     pub binary_bytes: Vec<u8>,
@@ -21,6 +21,8 @@ pub struct PackOptions {
     pub proto_files: Vec<(String, Vec<u8>)>,
     /// Ed25519 signing key
     pub signing_key: SigningKey,
+    /// Optional manifest.lock.toml content — packed as `manifest.lock.toml` in the ZIP
+    pub lock_file: Option<Vec<u8>>,
 }
 
 /// Create an .actr package (ZIP STORE format).
@@ -62,6 +64,14 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
         })
         .collect();
 
+    manifest.lock_file = opts
+        .lock_file
+        .as_ref()
+        .map(|bytes| crate::manifest::LockFileEntry {
+            path: "manifest.lock.toml".to_string(),
+            hash: sha256_hex(bytes),
+        });
+
     // 3. Serialize manifest to TOML
     let manifest_toml = manifest.to_toml()?;
     let manifest_bytes = manifest_toml.as_bytes();
@@ -83,13 +93,19 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
     let mut zip = zip::ZipWriter::new(buf);
     let store_opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
-    // actr.toml
-    zip.start_file("actr.toml", store_opts)?;
+    // manifest.toml (the signed payload)
+    zip.start_file("manifest.toml", store_opts)?;
     zip.write_all(manifest_bytes)?;
 
-    // actr.sig (64 bytes raw)
-    zip.start_file("actr.sig", store_opts)?;
+    // manifest.sig (64 bytes raw Ed25519)
+    zip.start_file("manifest.sig", store_opts)?;
     zip.write_all(&sig_bytes)?;
+
+    // manifest.lock.toml (dependency lock, optional)
+    if let Some(lock_bytes) = &opts.lock_file {
+        zip.start_file("manifest.lock.toml", store_opts)?;
+        zip.write_all(lock_bytes)?;
+    }
 
     // binary
     zip.start_file(&manifest.binary.path, store_opts)?;
@@ -140,6 +156,7 @@ mod tests {
             signing_key_id: None,
             resources: vec![],
             proto_files: vec![],
+            lock_file: None,
             metadata: ManifestMetadata::default(),
         }
     }
@@ -153,6 +170,7 @@ mod tests {
             resources: vec![],
             proto_files: vec![],
             signing_key,
+            lock_file: None,
         };
         let result = pack(&opts);
         assert!(result.is_ok());
@@ -171,6 +189,7 @@ mod tests {
             resources: vec![],
             proto_files: vec![],
             signing_key: signing_key.clone(),
+            lock_file: None,
         };
         let package = pack(&opts).unwrap();
         let result = crate::verify::verify(&package, &verifying_key).unwrap();

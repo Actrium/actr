@@ -1,0 +1,11 @@
+[package]
+name = "EchoService"
+manufacturer = "acme"
+version = "1.0.0"
+description = "Echo Real Server"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+exports = ["../proto/echo.proto"]
+
+[dependencies]

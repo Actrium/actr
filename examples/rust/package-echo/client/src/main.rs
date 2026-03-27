@@ -78,18 +78,7 @@ fn load_package_public_key() -> Result<Vec<u8>> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. Load configuration
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_file(&config_path)?;
-
-    let _obs_guard = init_observability(&config.observability)?;
-
-    info!("🚀 Package Echo Client Host starting");
-    info!("📡 Signaling server: {}", config.signaling_url);
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. Load WorkloadPackage and initialize Hyper
+    // 1. Load WorkloadPackage and extract manifest
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let package_path = package_path();
     let package_bytes = std::fs::read(&package_path).inspect_err(|e| {
@@ -103,7 +92,32 @@ async fn main() -> Result<()> {
         "📦 Loaded client-guest package: {} bytes",
         package_bytes.len()
     );
-    let package = WorkloadPackage::new(package_bytes);
+    let package = WorkloadPackage::new(package_bytes.clone());
+
+    // Parse the PackageManifest from inside .actr (flat structure, no [package] section)
+    let manifest = actr_pack::read_manifest(&package_bytes)?;
+    let package_info = actr_config::PackageInfo {
+        name: manifest.name.clone(),
+        actr_type: actr_protocol::ActrType {
+            manufacturer: manifest.manufacturer.clone(),
+            name: manifest.name,
+            version: manifest.version,
+        },
+        description: manifest.metadata.description,
+        authors: vec![],
+        license: manifest.metadata.license,
+    };
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 2. Load runtime configuration
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
+
+    let _obs_guard = init_observability(&config.observability)?;
+
+    info!("🚀 Package Echo Client Host starting");
+    info!("📡 Signaling server: {}", config.signaling_url);
 
     let hyper_data_dir = config.config_dir.join(".hyper");
 

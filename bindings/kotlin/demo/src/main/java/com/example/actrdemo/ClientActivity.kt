@@ -131,7 +131,7 @@ class ClientActivity : AppCompatActivity() {
             try {
                 // Copy config file from assets to internal storage
                 val configPath = copyAssetToInternalStorage("actr.toml")
-                copyAssetToInternalStorage("Actr.lock.toml")
+                copyAssetToInternalStorage("manifest.lock.toml")
                 val packagePath = copyFirstPackageAssetToInternalStorage()
                 Log.i(TAG, "Config path: $configPath")
 

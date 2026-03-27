@@ -57,7 +57,7 @@ impl ProjectInitializer for RustInitializer {
         }
         if context.echo_role == Some(EchoRole::Service) {
             println!(
-                "  actr install      # Create Actr.lock.toml (no remote deps, generates empty lock)"
+                "  actr install      # Create manifest.lock.toml (no remote deps, generates empty lock)"
             );
             println!("  actr gen -l rust  # Generate Actor framework code from local proto");
             println!("  cargo run         # Start the EchoService (Ctrl+C to stop)");

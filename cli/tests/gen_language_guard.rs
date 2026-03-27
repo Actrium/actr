@@ -16,7 +16,7 @@ fn run_actr(args: &[&str], cwd: &Path) -> Output {
 }
 
 fn write_minimal_actr_files(root: &Path) {
-    let actr_toml = r#"edition = 1
+    let manifest_toml = r#"edition = 1
 exports = []
 
 [package]
@@ -42,8 +42,8 @@ visible = true
 dev = "echo dev"
 "#;
 
-    fs::write(root.join("actr.toml"), actr_toml).unwrap();
-    fs::write(root.join("Actr.lock.toml"), "[metadata]\nversion = 1\n").unwrap();
+    fs::write(root.join("manifest.toml"), manifest_toml).unwrap();
+    fs::write(root.join("manifest.lock.toml"), "[metadata]\nversion = 1\n").unwrap();
 }
 
 #[test]
