@@ -94,15 +94,25 @@ async fn main() -> Result<()> {
     );
     let package = WorkloadPackage::new(package_bytes.clone());
 
-    let manifest_str = actr_pack::read_manifest_raw(&package_bytes)?;
-    let manifest_raw: actr_config::RawConfig = toml::from_str(&manifest_str)?;
-    let package_info = manifest_raw.package.into_package_info()?;
+    // Parse the PackageManifest from inside .actr (flat structure, no [package] section)
+    let manifest = actr_pack::read_manifest(&package_bytes)?;
+    let package_info = actr_config::PackageInfo {
+        name: manifest.name.clone(),
+        actr_type: actr_protocol::ActrType {
+            manufacturer: manifest.manufacturer.clone(),
+            name: manifest.name,
+            version: manifest.version,
+        },
+        description: manifest.metadata.description,
+        authors: vec![],
+        license: manifest.metadata.license,
+    };
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 2. Load runtime configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_actr_file(&config_path, package_info, vec![])?;
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
 
     let _obs_guard = init_observability(&config.observability)?;
 

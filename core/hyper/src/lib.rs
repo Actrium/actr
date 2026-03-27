@@ -1669,11 +1669,13 @@ mod tests {
                 signing_key_id: None,
                 resources: vec![],
                 proto_files: vec![],
+                lock_file: None,
                 metadata: actr_pack::ManifestMetadata::default(),
             },
             binary_bytes: binary_bytes.to_vec(),
             resources: vec![],
             proto_files: vec![],
+            lock_file: None,
             signing_key,
         })
         .unwrap();

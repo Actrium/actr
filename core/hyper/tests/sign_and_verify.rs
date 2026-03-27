@@ -81,6 +81,7 @@ fn build_actr_package(
         signing_key_id: None,
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let opts = actr_pack::PackOptions {
@@ -88,6 +89,7 @@ fn build_actr_package(
         binary_bytes: binary.to_vec(),
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         signing_key: signing_key.clone(),
     };
     actr_pack::pack(&opts).unwrap()
@@ -258,6 +260,7 @@ async fn load_workload_package_rejects_invalid_target() {
         signing_key_id: None,
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let package = actr_pack::pack(&actr_pack::PackOptions {
@@ -265,6 +268,7 @@ async fn load_workload_package_rejects_invalid_target() {
         binary_bytes: minimal_wasm(),
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         signing_key: signing_key.clone(),
     })
     .unwrap();

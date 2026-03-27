@@ -126,7 +126,11 @@ impl ParserV1 {
                 .hyper_data_dir
                 .unwrap_or_else(|| config_dir.join(".hyper")),
             config_dir,
-            trust_mode: raw.system.deployment.trust_mode.unwrap_or_else(|| "development".to_string()),
+            trust_mode: raw
+                .system
+                .deployment
+                .trust_mode
+                .unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })
@@ -211,7 +215,10 @@ impl ParserV1 {
                 .hyper_data_dir
                 .unwrap_or_else(|| self.base_dir.join(".hyper")),
             config_dir: self.base_dir.clone(),
-            trust_mode: raw.deployment.trust_mode.unwrap_or_else(|| "development".to_string()),
+            trust_mode: raw
+                .deployment
+                .trust_mode
+                .unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })
@@ -594,7 +601,10 @@ impl ParserV1 {
             },
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
-                hyper_data_dir: child.storage.hyper_data_dir.or(parent.storage.hyper_data_dir),
+                hyper_data_dir: child
+                    .storage
+                    .hyper_data_dir
+                    .or(parent.storage.hyper_data_dir),
             },
             webrtc: crate::raw::RawWebRtcConfig {
                 stun_urls: if child.webrtc.stun_urls.is_empty() {
@@ -955,7 +965,7 @@ port_range_end = 50000
 
         let raw = RawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
-        let result = parser.parse(raw);
+        let result = parser.parse_manifest(raw);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
     }
