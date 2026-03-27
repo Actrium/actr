@@ -109,6 +109,12 @@ pub struct Config {
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
+    /// Hyper data directory (.hyper), resolved relatively or absolutely from config_dir
+    pub hyper_data_dir: PathBuf,
+
+    /// Trust mode: "development" or "production"
+    pub trust_mode: String,
+
     /// Actor execution mode (affects credential acquisition and Hyper cooperation strategy)
     ///
     /// Corresponds to `[system.deployment] mode = "native" | "process" | "wasm"`, defaults to `Native`.
@@ -460,6 +466,8 @@ mod tests {
                 authors: vec![],
                 license: None,
             },
+            hyper_data_dir: PathBuf::from("."),
+            trust_mode: "development".to_string(),
             exports: vec![],
             dependencies: vec![
                 Dependency {

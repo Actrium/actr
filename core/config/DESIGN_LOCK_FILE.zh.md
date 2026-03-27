@@ -9,7 +9,7 @@
 ### 传统设计（cargo/npm 模式）
 
 ```
-actr.lock.toml (5KB)
+manifest.lock.toml (5KB)
   - metadata
   - dependencies (只有引用)
 
@@ -35,7 +35,7 @@ actr.lock.toml (5KB)
 ### 新设计（引用模式）
 
 ```
-actr.lock.toml (5KB)
+manifest.lock.toml (5KB)
   - metadata
   - dependencies (路径引用 + 指纹)
 
@@ -337,10 +337,10 @@ let dep = LockedDependency::new(
 lock_file.add_dependency(dep);
 
 // 保存
-lock_file.save_to_file("actr.lock.toml")?;
+lock_file.save_to_file("manifest.lock.toml")?;
 
 // 加载
-let restored = LockFile::from_file("actr.lock.toml")?;
+let restored = LockFile::from_file("manifest.lock.toml")?;
 
 // 获取依赖
 if let Some(locked_dep) = lock_file.get_dependency("user-service") {

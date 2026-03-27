@@ -1,11 +1,40 @@
-[package]
-name = "WsEchoService"
-manufacturer = "acme"
-version = "1.0.0"
-description = "WebSocket Echo Server - Echo service over a direct WebSocket transport"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "example", "websocket"]
-exports = ["../proto/echo.proto"]
+edition = 1
 
-[dependencies]
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[deployment]
+realm_id = 1001
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "ws-echo-server"
+
+# Direct WebSocket configuration
+# After the node starts, it listens for inbound WebSocket connections on this port,
+# and registers ws://advertised_host:listen_port with the signaling server.
+# After discovering the address through the signaling server, clients connect to it directly over WebSocket.
+
+[websocket]
+listen_port = 9001
+advertised_host = "127.0.0.1"
+
+# ACL configuration - allow ws-echo clients to connect
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "acme:ws-echo-client-app:1.0.0"
+
+[scripts]
+dev = "cargo run"
+test = "cargo test"

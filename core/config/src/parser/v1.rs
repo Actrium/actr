@@ -120,7 +120,13 @@ impl ParserV1 {
             websocket_listen_port: raw.system.websocket.listen_port,
             websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
             observability,
+            hyper_data_dir: raw
+                .system
+                .storage
+                .hyper_data_dir
+                .unwrap_or_else(|| config_dir.join(".hyper")),
             config_dir,
+            trust_mode: raw.system.deployment.trust_mode.unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })
@@ -200,7 +206,12 @@ impl ParserV1 {
             websocket_listen_port: raw.websocket.listen_port,
             websocket_advertised_host: raw.websocket.advertised_host,
             observability,
+            hyper_data_dir: raw
+                .storage
+                .hyper_data_dir
+                .unwrap_or_else(|| self.base_dir.join(".hyper")),
             config_dir: self.base_dir.clone(),
+            trust_mode: raw.deployment.trust_mode.unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
         })
@@ -576,12 +587,14 @@ impl ParserV1 {
                     .deployment
                     .ais_endpoint
                     .or(parent.deployment.ais_endpoint),
+                trust_mode: child.deployment.trust_mode.or(parent.deployment.trust_mode),
             },
             discovery: crate::raw::RawDiscoveryConfig {
                 visible: child.discovery.visible.or(parent.discovery.visible),
             },
             storage: crate::raw::RawStorageConfig {
                 mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
+                hyper_data_dir: child.storage.hyper_data_dir.or(parent.storage.hyper_data_dir),
             },
             webrtc: crate::raw::RawWebRtcConfig {
                 stun_urls: if child.webrtc.stun_urls.is_empty() {

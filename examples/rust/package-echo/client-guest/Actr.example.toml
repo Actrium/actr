@@ -1,12 +1,30 @@
-[package]
-name = "package-echo-client-guest"
-manufacturer = "acme"
-version = "0.1.0"
-description = "Package Echo Client Guest — cdylib workload for the client host"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "example", "client-guest"]
-exports = []
+edition = 1
 
-[dependencies]
-EchoService = {}
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[deployment]
+realm_id = 1001
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "package-echo-client-guest"
+
+[webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "actrium:EchoService:0.2.1"

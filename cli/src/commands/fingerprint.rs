@@ -597,7 +597,7 @@ fn verify_fingerprint_against_lock(
     proto_files: &[ProtoFile],
     config_path: &Path,
 ) -> Result<VerificationStatus> {
-    let lock_path = config_path.with_file_name("actr.lock.toml");
+    let lock_path = config_path.with_file_name("manifest.lock.toml");
     if !lock_path.exists() {
         return Ok(VerificationStatus::NoLockFile);
     }

@@ -6,7 +6,7 @@
 use crate::error::Result;
 use crate::raw::{
     RawAisEndpointConfig, RawDeploymentConfig, RawDiscoveryConfig, RawObservabilityConfig,
-    RawSignalingConfig, RawWebRtcConfig, RawWebSocketConfig,
+    RawSignalingConfig, RawStorageConfig, RawWebRtcConfig, RawWebSocketConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -60,6 +60,10 @@ pub struct RuntimeRawConfig {
     /// Observability (logging, tracing)
     #[serde(default)]
     pub observability: RawObservabilityConfig,
+
+    /// Storage constraints (hyper dir, mailbox etc.)
+    #[serde(default)]
+    pub storage: RawStorageConfig,
 
     /// Service capabilities (for signaling load balancing)
     #[serde(default)]

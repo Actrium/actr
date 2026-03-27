@@ -61,24 +61,20 @@ source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 echo ""
 echo "🗑️  Cleaning stale database files..."
 rm -rf "$WORKSPACE_ROOT/database"
-# Remove runtime config files to ensure they're freshly copied from Hyper.example.toml,
+# Remove runtime config files to ensure they're freshly copied from Actr.example.toml,
 # and manifest files from Actr.example.toml
 rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
-rm -f "$SERVER_DIR/manifest.toml" "$CLIENT_DIR/manifest.toml" "$CLIENT_GUEST_DIR/manifest.toml"
 echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
 # Ensure manifest.toml and actr.toml files exist
 echo ""
 echo "🔍 Checking config files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ensure_manifest_toml "$SERVER_DIR"
-ensure_manifest_toml "$CLIENT_DIR"
-ensure_manifest_toml "$CLIENT_GUEST_DIR"
-# actr.toml = runtime config (from Hyper.example.toml)
-cp "$SERVER_DIR/Hyper.example.toml" "$SERVER_DIR/actr.toml"
-cp "$CLIENT_DIR/Hyper.example.toml" "$CLIENT_DIR/actr.toml"
-cp "$CLIENT_GUEST_DIR/Hyper.example.toml" "$CLIENT_GUEST_DIR/actr.toml" 2>/dev/null || true
-echo -e "${GREEN}✅ Synchronized manifest.toml from Actr.example.toml and actr.toml from Hyper.example.toml${NC}"
+ensure_actr_toml "$SERVER_DIR"
+ensure_actr_toml "$CLIENT_DIR"
+ensure_actr_toml "$CLIENT_GUEST_DIR"
+# actr.toml = runtime config (from Actr.example.toml)
+echo -e "${GREEN}✅ Synchronized actr.toml from Actr.example.toml${NC}"
 
 # Ensure actrix-config.toml exists
 ensure_actrix_config "$WORKSPACE_ROOT"

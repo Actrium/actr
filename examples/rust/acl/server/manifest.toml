@@ -1,0 +1,11 @@
+[package]
+name = "greeter.GreeterService"
+manufacturer = "acme"
+version = "1.0.0"
+description = "ACL Protected Greeter Server"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+exports = ["../proto/greeter.proto"]
+
+[dependencies]

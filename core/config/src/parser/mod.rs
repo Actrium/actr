@@ -1,9 +1,8 @@
 //! Configuration parsers for manifest.toml and actr.toml
 
-use crate::actr_raw::RuntimeRawConfig;
 use crate::config::PackageInfo;
 use crate::error::{ConfigError, Result};
-use crate::{Config, ManifestRawConfig};
+use crate::{Config, ManifestRawConfig, RuntimeRawConfig};
 use std::path::Path;
 
 mod v1;

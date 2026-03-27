@@ -210,6 +210,11 @@ pub struct RawDeploymentConfig {
     /// in process/wasm mode, Hyper handles registration and injects credentials.
     #[serde(default)]
     pub ais_endpoint: Option<String>,
+
+    /// Trust mode: "development" (default) | "production"
+    /// Used for determining security level and certificate cache logic
+    #[serde(default)]
+    pub trust_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -222,6 +227,10 @@ pub struct RawDiscoveryConfig {
 pub struct RawStorageConfig {
     #[serde(default)]
     pub mailbox_path: Option<PathBuf>,
+
+    /// Hyper data directory for this node instance (defaults to `.hyper` in config dir)
+    #[serde(default)]
+    pub hyper_data_dir: Option<PathBuf>,
 }
 
 /// WebRTC configuration
