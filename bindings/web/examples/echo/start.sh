@@ -2,14 +2,17 @@
 # Web Echo Example — Full Package Verification Flow
 #
 # Demonstrates the complete signing → verification → AIS registration flow for Web:
-#   1. Build WASM guests (server + client) to wasm32-unknown-unknown via wasm-pack
-#   2. `actr pkg build` — pack WASM + JS glue into signed .actr packages (MFR key)
+#   1. Build server runtime WASM (wasm-pack, pure host — no business logic)
+#      Build echo-actr guest WASM (cargo build, standard entry! FFI — shared with native)
+#      Build client WASM (wasm-pack, monolithic runtime + handler)
+#   2. `actr pkg build` — pack guest WASM into signed .actr packages (MFR key)
 #   3. Start actrix (signaling + AIS + MFR)
 #   4. Seed realm + MFR manufacturer records in DB
 #   5. `actr pkg publish` — publish server package to MFR registry
-#   6. Copy .actr packages to public/packages/
+#   6. Deploy runtime WASM + .actr packages to public/packages/
 #   7. Inject MFR public key into actr-config.ts for package verification
-#   8. Browser loads .actr → SW verifies Ed25519 sig + SHA-256 hash → AIS register
+#   8. Server: actor.sw.js loads runtime WASM, then loads echo-actr guest via guest bridge
+#      Guest bridge: AbiFrame → guest actr_handle → AbiReply
 #
 # Usage:
 #   ./start.sh
@@ -62,6 +65,16 @@ echo "🗑️  Cleaning stale data..."
 rm -rf "$SCRIPT_DIR/actrix-dev-db"
 rm -f "$SCRIPT_DIR/actrix-dev.toml"
 rm -f "$SCRIPT_DIR/.actrix.pid" "$SCRIPT_DIR/.server.pid" "$SCRIPT_DIR/.client.pid"
+
+# Kill any existing processes on ports used by this example (idempotent restart)
+for PORT in 8081 5173 5174; do
+    PIDS=$(lsof -ti:$PORT 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+        echo "  Killing existing process(es) on port $PORT: $PIDS"
+        echo "$PIDS" | xargs kill -9 2>/dev/null || true
+        sleep 0.5
+    fi
+done
 
 # Restore MFR pubkey placeholder in actr-config.ts files (reset from previous runs)
 SERVER_CONFIG="$SERVER_DIR/src/generated/actr-config.ts"
@@ -146,18 +159,18 @@ if [ $MISSING -eq 1 ]; then
     exit 1
 fi
 
-# ── Step 1: Build WASM guests (wasm-pack) ────────────────────────────────
+# ── Step 1: Build WASM (server runtime + echo-actr guest + client) ───────
 
 echo ""
-echo -e "${BLUE}📦 Step 1: Building WASM guests via wasm-pack...${NC}"
+echo -e "${BLUE}📦 Step 1: Building WASM artifacts...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 SERVER_WASM_OUT="$RELEASE_DIR/server-wasm"
 CLIENT_WASM_OUT="$RELEASE_DIR/client-wasm"
 mkdir -p "$SERVER_WASM_OUT" "$CLIENT_WASM_OUT"
 
-# Build server WASM
-echo "Building echo-server-web..."
+# ── 1a: Build server runtime WASM (pure runtime host, no echo business logic)
+echo "Building server runtime WASM (host only)..."
 cd "$SERVER_WASM_DIR"
 wasm-pack build \
     --target no-modules \
@@ -166,15 +179,29 @@ wasm-pack build \
     --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-SERVER_WASM_FILE="$SERVER_WASM_OUT/echo_server_bg.wasm"
-SERVER_JS_FILE="$SERVER_WASM_OUT/echo_server.js"
-if [ ! -f "$SERVER_WASM_FILE" ] || [ ! -f "$SERVER_JS_FILE" ]; then
-    echo -e "${RED}❌ Server wasm-pack build failed${NC}"
+SERVER_RUNTIME_WASM="$SERVER_WASM_OUT/echo_server_bg.wasm"
+SERVER_RUNTIME_JS="$SERVER_WASM_OUT/echo_server.js"
+if [ ! -f "$SERVER_RUNTIME_WASM" ] || [ ! -f "$SERVER_RUNTIME_JS" ]; then
+    echo -e "${RED}❌ Server runtime wasm-pack build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Server WASM built: $(du -h "$SERVER_WASM_FILE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Server runtime WASM built: $(du -h "$SERVER_RUNTIME_WASM" | cut -f1)${NC}"
 
-# Build client WASM
+# ── 1b: Build echo-actr guest WASM (standard guest, shared with native)
+ECHO_ACTR_DIR="$(cd "$ACTR_ROOT/../../echo-actr" && pwd)"
+echo "Building echo-actr guest WASM from $ECHO_ACTR_DIR..."
+cd "$ECHO_ACTR_DIR"
+cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
+cd "$SCRIPT_DIR"
+
+GUEST_WASM_FILE="$ECHO_ACTR_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
+if [ ! -f "$GUEST_WASM_FILE" ]; then
+    echo -e "${RED}❌ echo-actr guest WASM build failed${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✅ Echo-actr guest WASM built: $(du -h "$GUEST_WASM_FILE" | cut -f1)${NC}"
+
+# ── 1c: Build client WASM (monolithic: runtime + handler)
 echo "Building echo-client-web..."
 cd "$CLIENT_WASM_DIR"
 wasm-pack build \
@@ -221,21 +248,20 @@ $ACTR_CMD pkg keygen --output "$MFR_KEY_FILE" --force
 MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['public_key'])")
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
-# Build server .actr package
+# Build server .actr package (guest WASM only — no JS glue)
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
-    --binary "$SERVER_WASM_FILE" \
+    --binary "$GUEST_WASM_FILE" \
     --config "$SERVER_DIR/actr.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown" \
-    --resource "resources/glue.js=$SERVER_JS_FILE"
+    --target "wasm32-unknown-unknown"
 
 if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
     echo -e "${RED}❌ Server package build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1) (guest WASM only)${NC}"
 
 # Build client .actr package
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
@@ -431,11 +457,27 @@ echo ""
 echo -e "${BLUE}📡 Step 4: Publishing server .actr package via 'actr pkg publish'...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-$ACTR_CMD pkg publish \
-    --package "$SERVER_ACTR_PACKAGE" \
-    --keychain "$MFR_KEY_FILE" \
-    --endpoint "http://localhost:8081" \
-    --config "$SERVER_DIR/actr.toml"
+# Retry publish up to 5 times with 2s backoff (actrix may cache MFR records)
+PUBLISH_MAX_RETRIES=5
+PUBLISH_RETRY=0
+PUBLISH_OK=0
+while [ $PUBLISH_RETRY -lt $PUBLISH_MAX_RETRIES ]; do
+    if $ACTR_CMD pkg publish \
+        --package "$SERVER_ACTR_PACKAGE" \
+        --keychain "$MFR_KEY_FILE" \
+        --endpoint "http://localhost:8081" \
+        --config "$SERVER_DIR/actr.toml"; then
+        PUBLISH_OK=1
+        break
+    fi
+    PUBLISH_RETRY=$((PUBLISH_RETRY + 1))
+    echo -e "${YELLOW}⚠️  Publish failed (attempt $PUBLISH_RETRY/$PUBLISH_MAX_RETRIES), retrying in 2s...${NC}"
+    sleep 2
+done
+if [ $PUBLISH_OK -eq 0 ]; then
+    echo -e "${RED}❌ Server package publish failed after $PUBLISH_MAX_RETRIES attempts${NC}"
+    exit 1
+fi
 
 echo -e "${GREEN}✅ Server package published${NC}"
 
@@ -449,7 +491,12 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 mkdir -p "$SERVER_DIR/public/packages" "$CLIENT_DIR/public/packages"
 cp "$SERVER_ACTR_PACKAGE" "$SERVER_DIR/public/packages/echo-server.actr"
 cp "$CLIENT_ACTR_PACKAGE" "$CLIENT_DIR/public/packages/echo-client.actr"
-echo -e "${GREEN}✅ Packages deployed to public/packages/${NC}"
+echo -e "${GREEN}✅ .actr packages deployed to public/packages/${NC}"
+
+# Deploy server runtime WASM + JS glue (loaded separately by guest bridge)
+cp "$SERVER_RUNTIME_WASM" "$SERVER_DIR/public/packages/echo_server_bg.wasm"
+cp "$SERVER_RUNTIME_JS" "$SERVER_DIR/public/packages/echo_server.js"
+echo -e "${GREEN}✅ Server runtime WASM + JS deployed to public/packages/${NC}"
 
 # Sync actor.sw.js from web-sdk source
 SW_SRC="$PROJECT_ROOT/packages/web-sdk/src/actor.sw.js"
@@ -581,11 +628,13 @@ echo "🎉 Web Echo — Full Package Verification Flow"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "✅ Validated flow:"
-echo "   1. WASM guests compiled to wasm32-unknown-unknown (wasm-pack)"
+echo "   1. Server: runtime WASM (wasm-pack) + echo-actr guest WASM (cargo build)"
+echo "      Client: monolithic WASM (wasm-pack, runtime + handler)"
 echo "   2. actr pkg build → signed .actr packages (MFR key: $MFR_NAME)"
 echo "   3. actr pkg publish → server package registered with AIS"
 echo "   4. MFR public key injected → SW verifies package signatures"
-echo "   5. Browser loads .actr → verifies Ed25519 sig + SHA-256 hash"
+echo "   5. Server: guest bridge loads runtime + echo-actr guest separately"
+echo "      Browser verifies Ed25519 sig + SHA-256 hash"
 echo "   6. SW registers with AIS → obtains credential → starts WebRTC"
 echo ""
 echo "Services:"

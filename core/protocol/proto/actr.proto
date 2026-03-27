@@ -70,16 +70,16 @@ message IdentityClaims {
 
 // Time-limited HMAC TURN credential in the format compatible with `coturn --use-auth-secret`.
 message TurnCredential {
-  required string username   = 1;   // "<expires_at>:<actor_id>"
-  required string password   = 2;   // base64(HMAC-SHA1(turn_secret, username))
+  required string username   = 1; // "<expires_at>:<actor_id>"
+  required string password   = 2; // base64(HMAC-SHA1(turn_secret, username))
   required uint64 expires_at = 3;
 }
 
 // Credential structure for ActrId authentication
 message AIdCredential {
   required uint32 key_id    = 1;
-  required bytes  claims    = 2;   // `proto_encode(IdentityClaims)` in plaintext
-  required bytes  signature = 3;   // Ed25519 signature, 64 bytes
+  required bytes  claims    = 2; // `proto_encode(IdentityClaims)` in plaintext
+  required bytes  signature = 3; // Ed25519 signature, 64 bytes
 }
 
 // ============================================================================
@@ -96,8 +96,8 @@ message AclRule {
   // Source realm selector. "self" in config is resolved to realm_id by actor
   // before registration; "*" in config maps to any_realm = true.
   oneof source_realm {
-    bool   any_realm = 3;  // wildcard: matches any realm
-    uint32 realm_id  = 4;  // specific realm
+    bool   any_realm = 3; // wildcard: matches any realm
+    uint32 realm_id  = 4; // specific realm
   }
 }
 
@@ -187,7 +187,7 @@ message RegisterResponse {
     optional google.protobuf.Timestamp credential_expires_at = 4;
     // Operational advice: heartbeat interval for subsequent Signaling Server connection
     required uint32        signaling_heartbeat_interval_secs = 5;
-    required bytes         signing_pubkey                   = 6;   // AIS Ed25519 verifying key，32 bytes
+    required bytes         signing_pubkey                   = 6; // AIS Ed25519 verifying key，32 bytes
     required uint32        signing_key_id                   = 7;
     // PSK issued during initial registration and used for later renewals.
     optional bytes         psk                              = 10;
@@ -263,7 +263,7 @@ message RouteCandidatesRequest {
     enum NodeRankingFactor {
       MAXIMUM_POWER_RESERVE = 0;
       MINIMUM_MAILBOX_BACKLOG = 1;
-      EXACT_MATCH_FIRST = 2;  // exact fingerprint match ranked above compatible
+      EXACT_MATCH_FIRST = 2; // exact fingerprint match ranked above compatible
       NEAREST = 3;
       CLIENT_AFFINITY = 4;
     }

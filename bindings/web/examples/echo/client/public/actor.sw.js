@@ -24,6 +24,8 @@
 
 /* global wasm_bindgen */
 
+let SW_BROADCAST = null;
+
 // ── Console interception: forward WASM logs to main page ──
 (function () {
     const _origInfo = console.info;
@@ -46,6 +48,7 @@
             }
         }).catch(() => { /* ignore */ });
     }
+    SW_BROADCAST = broadcast;
 
     console.info = function (...args) {
         _origInfo.apply(console, args);
@@ -421,9 +424,204 @@ async function loadFromDirectUrls(jsFile, wasmFile, registerFn) {
 }
 
 /**
+ * Guest Bridge Mode: load runtime WASM and guest WASM separately.
+ *
+ * When `runtime_wasm_url` is set in RUNTIME_CONFIG, the .actr package
+ * contains only the standard guest WASM (built with entry! macro FFI),
+ * and the runtime WASM + JS glue are loaded from separate URLs.
+ *
+ * Protocol:
+ *   1. Load runtime WASM + JS glue from runtime_wasm_url
+ *   2. Parse .actr package, verify signature, extract guest WASM binary
+ *   3. Instantiate guest WASM with host import stubs
+ *   4. Call actr_init on the guest
+ *   5. Register a JS dispatch callback that bridges AbiFrame → actr_handle → AbiReply
+ *   6. Call register_guest_workload(callback) on the runtime
+ */
+async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
+    emitSwLog('info', 'guest_bridge_start', { packageUrl, runtimeWasmUrl });
+
+    // ── 1. Load runtime WASM + JS glue ──
+    // Derive JS glue URL from WASM URL: "foo_bg.wasm" → "foo.js"
+    const jsUrl = runtimeWasmUrl.replace(/_bg\.wasm$/, '.js');
+    emitSwLog('info', 'guest_bridge_runtime_js', jsUrl);
+
+    const jsResp = await fetch(jsUrl, { cache: 'no-store' });
+    if (!jsResp.ok) {
+        throw new Error('[SW] Failed to fetch runtime JS glue: ' + jsResp.status);
+    }
+    const jsText = await jsResp.text();
+    const patchedText = jsText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
+    (0, eval)(patchedText);
+    emitSwLog('info', 'guest_bridge_runtime_js_loaded', jsText.length);
+
+    // Init runtime WASM
+    await wasm_bindgen({ module_or_path: runtimeWasmUrl });
+    wasm_bindgen.init_global();
+    emitSwLog('info', 'guest_bridge_runtime_ready', null);
+
+    // ── 2. Load guest WASM from .actr package ──
+    const resp = await fetch(packageUrl, { cache: 'no-store' });
+    if (!resp.ok) {
+        throw new Error('[SW] Failed to fetch .actr package: ' + resp.status);
+    }
+    const buffer = await resp.arrayBuffer();
+    const entries = parseActrZip(buffer);
+    emitSwLog('info', 'guest_bridge_actr_entries', Array.from(entries.keys()));
+
+    // Verify package signature
+    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
+    if (mfrPubkey && mfrPubkey !== '__MFR_PUBKEY_PLACEHOLDER__') {
+        await verifyActrPackage(entries, mfrPubkey);
+        emitSwLog('info', 'guest_bridge_verify_ok', null);
+    } else {
+        emitSwLog('warn', 'guest_bridge_verify_skip', 'No valid MFR pubkey');
+    }
+
+    // Extract guest WASM binary
+    let guestWasmBytes = null;
+    for (const [name, data] of entries) {
+        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
+            guestWasmBytes = data;
+            break;
+        }
+    }
+    if (!guestWasmBytes) {
+        throw new Error('[SW] No guest WASM binary found in .actr package');
+    }
+    emitSwLog('info', 'guest_bridge_guest_wasm', guestWasmBytes.byteLength);
+
+    // ── 3. Instantiate guest WASM with host import stubs ──
+    // Standard guest WASMs may import `env.actr_host_invoke` for outbound calls.
+    // Echo server doesn't make outbound calls, so stubs suffice.
+    const guestImports = {
+        env: {
+            actr_host_invoke: (_frame_ptr, _frame_len, _reply_ptr, _reply_cap, _reply_len_out) => {
+                console.error('[SW Guest] actr_host_invoke called but not implemented in browser');
+                return -7; // UNSUPPORTED_OP
+            },
+            actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
+            actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
+            actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
+        },
+    };
+
+    // Try to instantiate — if no import section exists, empty imports work fine
+    let guestModule;
+    try {
+        guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
+    } catch (firstErr) {
+        // Fallback: try without imports (guest has no import section)
+        try {
+            guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
+        } catch (secondErr) {
+            throw new Error('[SW] Guest WASM instantiation failed: ' + firstErr.message);
+        }
+    }
+    const guest = guestModule.instance.exports;
+    emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(guest));
+
+    // ── 4. Initialize guest (actr_init) ──
+    const actrType = RUNTIME_CONFIG.client_actr_type || '';
+    const realmId = RUNTIME_CONFIG.realm_id || 0;
+    const initPayload = wasm_bindgen.encode_guest_init_payload(actrType, realmId);
+
+    const initPtr = guest.actr_alloc(initPayload.length);
+    if (initPtr === 0) {
+        throw new Error('[SW] Guest actr_alloc failed for init payload');
+    }
+    let guestMem = new Uint8Array(guest.memory.buffer);
+    guestMem.set(new Uint8Array(initPayload), initPtr);
+
+    const initResult = guest.actr_init(initPtr, initPayload.length);
+    guest.actr_free(initPtr, initPayload.length);
+
+    if (initResult !== 0) {
+        throw new Error('[SW] Guest actr_init failed with code: ' + initResult);
+    }
+    emitSwLog('info', 'guest_bridge_init_ok', null);
+
+    // ── 5. Create dispatch callback ──
+    function guestDispatch(abiFrameBytes) {
+        try {
+            const frameData = new Uint8Array(abiFrameBytes);
+            emitSwLog('info', 'guest_dispatch_called', frameData.length);
+
+            // Allocate memory in guest for the request frame
+            const reqPtr = guest.actr_alloc(frameData.length);
+            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
+
+            let mem = new Uint8Array(guest.memory.buffer);
+            mem.set(frameData, reqPtr);
+
+            // Allocate memory for output pointers (2 × i32 = 8 bytes)
+            const outBuf = guest.actr_alloc(8);
+            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
+
+            // Call actr_handle
+            const result = guest.actr_handle(reqPtr, frameData.length, outBuf, outBuf + 4);
+            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
+
+            // Re-get memory view (buffer may have grown during actr_handle)
+            mem = new Uint8Array(guest.memory.buffer);
+            const view = new DataView(guest.memory.buffer);
+
+            // Read response pointer and length
+            const respPtr = view.getInt32(outBuf, true);
+            const respLen = view.getInt32(outBuf + 4, true);
+            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
+
+            // Copy response bytes before freeing
+            let response = null;
+            if (result === 0 && respPtr !== 0 && respLen > 0) {
+                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
+            }
+
+            // Free all guest memory
+            guest.actr_free(reqPtr, frameData.length);
+            guest.actr_free(outBuf, 8);
+            if (respPtr !== 0 && respLen > 0) {
+                guest.actr_free(respPtr, respLen);
+            }
+
+            if (result !== 0) {
+                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
+                emitSwLog('error', 'guest_dispatch_error', err.message);
+                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
+                throw err;
+            }
+            if (!response) {
+                const err = new Error('[SW Guest] actr_handle returned empty response');
+                emitSwLog('error', 'guest_dispatch_error', err.message);
+                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
+                throw err;
+            }
+
+            emitSwLog('info', 'guest_dispatch_ok', response.length);
+            if (SW_BROADCAST) {
+                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
+                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
+            }
+            return response;
+        } catch (e) {
+            emitSwLog('error', 'guest_dispatch_exception', String(e));
+            if (SW_BROADCAST) {
+                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
+            }
+            throw e;
+        }
+    }
+
+    // ── 6. Register guest workload with runtime ──
+    wasm_bindgen.register_guest_workload(guestDispatch);
+    emitSwLog('info', 'guest_bridge_ready', 'Guest workload registered via JS bridge');
+}
+
+/**
  * Load the WASM package into the Service Worker.
  *
  * This is the Web equivalent of Rust Hyper's load_package_executor:
+ *   - Guest bridge: Runtime WASM loaded separately, guest WASM from .actr package
  *   - Primary: Fetch a .actr package (signed ZIP), extract and load WASM + JS glue
  *   - Legacy fallback: Fetch separate JS glue + WASM files
  *
@@ -438,6 +636,7 @@ async function ensureWasmReady() {
 
     const packageUrl = RUNTIME_CONFIG.package_url;
     const registerFn = RUNTIME_CONFIG.register_fn;
+    const runtimeWasmUrl = RUNTIME_CONFIG.runtime_wasm_url;
 
     try {
         // WebSocket probe (once)
@@ -466,8 +665,11 @@ async function ensureWasmReady() {
             }
         }
 
-        if (packageUrl) {
-            // Primary path: load from .actr package
+        if (runtimeWasmUrl && packageUrl) {
+            // Guest bridge mode: load runtime separately, guest from .actr package
+            await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
+        } else if (packageUrl) {
+            // Primary path: load from .actr package (monolithic WASM + JS glue)
             await loadFromActrPackage(packageUrl, registerFn);
         } else {
             // Legacy fallback: load from separate URLs
@@ -482,12 +684,14 @@ async function ensureWasmReady() {
         wasmReady = true;
         emitSwLog('info', 'wasm_ready', null);
     } catch (error) {
-        console.error('[SW] WASM init failed:', error);
+        console.error('[SW] WASM init failed:', error && error.message ? error.message : String(error),
+            'name=' + (error && error.name), 'stack=' + (error && error.stack));
         emitSwLog('error', 'wasm_init_failed', {
-            error: String(error),
+            error: error && error.message ? error.message : String(error),
             name: error && error.name ? error.name : undefined,
             stack: error && error.stack ? error.stack : undefined,
             packageUrl: packageUrl || null,
+            runtimeWasmUrl: runtimeWasmUrl || null,
         });
         throw error;
     }

@@ -433,8 +433,6 @@ async function suiteBasicFunction(browser) {
             const newLogs = logsAfter.slice(logsBefore.length).join('\n');
             if (!newLogs.includes('📤')) throw new Error('Missing 📤 send log');
             if (!newLogs.includes('📥')) throw new Error('Missing 📥 reply log');
-            // Also check server side
-            await waitForServerLog(serverCtx.page, '📨.*Test message 1-1', 5000);
         });
 
         // 1-2 Empty Message Send
@@ -458,15 +456,16 @@ async function suiteBasicFunction(browser) {
 
         // 1-3 Rapid Consecutive Sends
         await runTest('1-3', 'Rapid Consecutive Sends', async () => {
-            const statsBefore = await getServerStats(serverCtx.page);
+            const logsBefore = await getClientLogs(clientCtx.page);
             const sendCount = 5;
             for (let i = 0; i < sendCount; i++) {
                 await sendEchoMessage(clientCtx.page, `rapid-${i}`);
             }
-            const statsAfter = await getServerStats(serverCtx.page);
-            const newRequests = statsAfter.requests - statsBefore.requests;
-            if (newRequests < sendCount) {
-                throw new Error(`Expected ${sendCount} new requests, got ${newRequests}`);
+            const logsAfter = await getClientLogs(clientCtx.page);
+            const newLogs = logsAfter.slice(logsBefore.length).join('\n');
+            const replies = (newLogs.match(/📥/g) || []).length;
+            if (replies < sendCount) {
+                throw new Error(`Expected ${sendCount} new replies, got ${replies}`);
             }
         });
 
