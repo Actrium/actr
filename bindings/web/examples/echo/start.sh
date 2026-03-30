@@ -445,40 +445,42 @@ sqlite3 "$ACTRIX_DB" \
 MFR_ID=$(sqlite3 "$ACTRIX_DB" "SELECT id FROM mfr WHERE name = '$MFR_NAME';")
 echo -e "${GREEN}✅ MFR '$MFR_NAME' registered (id=$MFR_ID)${NC}"
 
-# Seed client package record (client doesn't go through pkg publish)
-CLIENT_TYPE_STR="$MFR_NAME:echo-client-app:0.1.0"
-sqlite3 "$ACTRIX_DB" \
-    "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at) VALUES ($MFR_ID, '$MFR_NAME', 'echo-client-app', '0.1.0', '$CLIENT_TYPE_STR', 'wasm32-unknown-unknown', '', '', 'active', $NOW);"
-echo -e "${GREEN}✅ Client package record seeded${NC}"
-
-# ── Step 4: Publish server .actr package ────────────────────────────────
+# ── Step 4: Publish .actr packages (server + client) ────────────────────
 
 echo ""
-echo -e "${BLUE}📡 Step 4: Publishing server .actr package via 'actr pkg publish'...${NC}"
+echo -e "${BLUE}📡 Step 4: Publishing .actr packages via 'actr pkg publish'...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Retry publish up to 5 times with 2s backoff (actrix may cache MFR records)
 PUBLISH_MAX_RETRIES=5
-PUBLISH_RETRY=0
-PUBLISH_OK=0
-while [ $PUBLISH_RETRY -lt $PUBLISH_MAX_RETRIES ]; do
-    if $ACTR_CMD pkg publish \
-        --package "$SERVER_ACTR_PACKAGE" \
-        --keychain "$MFR_KEY_FILE" \
-        --endpoint "http://localhost:8081"; then
-        PUBLISH_OK=1
-        break
-    fi
-    PUBLISH_RETRY=$((PUBLISH_RETRY + 1))
-    echo -e "${YELLOW}⚠️  Publish failed (attempt $PUBLISH_RETRY/$PUBLISH_MAX_RETRIES), retrying in 2s...${NC}"
-    sleep 2
-done
-if [ $PUBLISH_OK -eq 0 ]; then
-    echo -e "${RED}❌ Server package publish failed after $PUBLISH_MAX_RETRIES attempts${NC}"
-    exit 1
-fi
 
-echo -e "${GREEN}✅ Server package published${NC}"
+for PKG_LABEL in server client; do
+    if [ "$PKG_LABEL" = "server" ]; then
+        PKG_FILE="$SERVER_ACTR_PACKAGE"
+    else
+        PKG_FILE="$CLIENT_ACTR_PACKAGE"
+    fi
+
+    PUBLISH_RETRY=0
+    PUBLISH_OK=0
+    while [ $PUBLISH_RETRY -lt $PUBLISH_MAX_RETRIES ]; do
+        if $ACTR_CMD pkg publish \
+            --package "$PKG_FILE" \
+            --keychain "$MFR_KEY_FILE" \
+            --endpoint "http://localhost:8081"; then
+            PUBLISH_OK=1
+            break
+        fi
+        PUBLISH_RETRY=$((PUBLISH_RETRY + 1))
+        echo -e "${YELLOW}⚠️  $PKG_LABEL publish failed (attempt $PUBLISH_RETRY/$PUBLISH_MAX_RETRIES), retrying in 2s...${NC}"
+        sleep 2
+    done
+    if [ $PUBLISH_OK -eq 0 ]; then
+        echo -e "${RED}❌ ${PKG_LABEL^} package publish failed after $PUBLISH_MAX_RETRIES attempts${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ ${PKG_LABEL^} package published${NC}"
+done
 
 # ── Step 5: Deploy packages + inject MFR public key ─────────────────────
 
