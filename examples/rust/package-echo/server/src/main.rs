@@ -38,8 +38,7 @@ fn public_key_path() -> PathBuf {
     env::var("ACTR_PUBLIC_KEY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../echo-actr/public-key.json")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../echo-actr/public-key.json")
         })
 }
 
@@ -93,7 +92,7 @@ async fn main() -> Result<()> {
         authors: vec![],
         license: manifest.metadata.license,
     };
-    
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 2. Load runtime configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

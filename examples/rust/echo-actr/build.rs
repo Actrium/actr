@@ -80,9 +80,9 @@ fn find_plugin(name: &str) -> Option<PathBuf> {
 fn bootstrap_local_workspace_plugin(name: &str) -> Option<PathBuf> {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
     let candidate_roots = [
-        manifest_dir.join("../../.."),         // Inside actr repo: examples/rust/echo-actr -> actr
-        manifest_dir.join("../actr"),           // Standalone: next to actr repo
-        manifest_dir.parent()?.to_path_buf(),   // Other workspace configurations
+        manifest_dir.join("../../.."), // Inside actr repo: examples/rust/echo-actr -> actr
+        manifest_dir.join("../actr"),  // Standalone: next to actr repo
+        manifest_dir.parent()?.to_path_buf(), // Other workspace configurations
     ];
 
     for root in candidate_roots {
