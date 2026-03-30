@@ -40,8 +40,8 @@ pub fn check_acl_permission(
         None => {
             tracing::trace!(
                 "ACL: no ACL configured, allowing {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr(),
+                caller,
+                target_id,
             );
             return Ok(true);
         }
@@ -51,8 +51,8 @@ pub fn check_acl_permission(
     if acl.rules.is_empty() {
         tracing::warn!(
             "ACL: empty rule set, denying {} -> {} (default deny)",
-            caller.to_string_repr(),
-            target_id.to_string_repr(),
+            caller,
+            target_id,
         );
         return Ok(false);
     }
@@ -67,8 +67,8 @@ pub fn check_acl_permission(
         if !is_allow {
             tracing::debug!(
                 "ACL: DENY rule matched for {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr(),
+                caller,
+                target_id,
             );
             return Ok(false);
         }
@@ -78,8 +78,8 @@ pub fn check_acl_permission(
     if any_allow {
         tracing::debug!(
             "ACL: ALLOW rule matched for {} -> {}",
-            caller.to_string_repr(),
-            target_id.to_string_repr(),
+            caller,
+            target_id,
         );
         return Ok(true);
     }
@@ -87,8 +87,8 @@ pub fn check_acl_permission(
     // 6. No rule matches -- deny
     tracing::warn!(
         "ACL: no matching rule, denying {} -> {} (default deny)",
-        caller.to_string_repr(),
-        target_id.to_string_repr(),
+        caller,
+        target_id,
     );
     Ok(false)
 }

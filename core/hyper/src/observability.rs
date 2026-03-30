@@ -18,6 +18,8 @@ use opentelemetry_sdk::{
 use tracing_subscriber::{
     Layer, filter::EnvFilter, fmt, layer::SubscriberExt, prelude::*, registry::LookupSpan,
 };
+#[cfg(feature = "opentelemetry")]
+use tracing_subscriber::filter::Targets;
 
 /// Type alias for a boxed tracing layer that can be dynamically composed.
 ///
@@ -140,16 +142,28 @@ where
         create_default_fmt_layer().with_filter(env_filter).boxed()
     };
 
-    // Add OTel layer if enabled (unfiltered - tracing benefits from all events)
+    // Add OTel layer if enabled, with target-level filter to suppress noisy third-party crates
     let mut tracer_provider = None;
     if cfg.tracing_enabled {
         let provider = build_otel_provider(cfg)?;
         let tracer = provider.tracer("actr-runtime");
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
+        // Filter: use configured filter_level as default, suppress noisy third-party crates
+        let otel_default_level = cfg.filter_level.parse::<tracing::Level>()
+            .unwrap_or(tracing::Level::INFO);
+        let otel_filter = Targets::new()
+            .with_default(otel_default_level)
+            .with_target("tungstenite", tracing::Level::ERROR)       // OFF equivalent
+            .with_target("tokio_tungstenite", tracing::Level::ERROR) // OFF equivalent
+            .with_target("wasmtime", tracing::Level::WARN)
+            .with_target("webrtc_mdns::conn", tracing::Level::WARN)
+            .with_target("webrtc_ice::agent::agent_internal", tracing::Level::WARN)
+            .with_target("webrtc_sctp", tracing::Level::WARN);
+
         let _ = tracing_subscriber::registry()
             .with(filtered_output_layer)
-            .with(otel_layer)
+            .with(otel_layer.with_filter(otel_filter))
             .try_init();
         tracer_provider = Some(provider);
     } else {

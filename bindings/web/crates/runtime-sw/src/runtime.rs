@@ -652,7 +652,7 @@ impl SwRuntime {
         {
             log::info!(
                 "[SW] credentials restored from IndexedDB (actor_id={})",
-                actor_id.to_string_repr()
+                actor_id
             );
             // Also try to restore persisted TurnCredential
             let turn_credential =
@@ -680,7 +680,7 @@ impl SwRuntime {
 
         log::info!(
             "[SW] register via AIS HTTP: actr_type={}, psk={}",
-            client_actr_type.to_string_repr(),
+            client_actr_type,
             psk_token.is_some()
         );
 
@@ -699,7 +699,7 @@ impl SwRuntime {
 
                 log::info!(
                     "[SW] AIS registration success: actr_id={}",
-                    actor_id.to_string_repr()
+                    actor_id
                 );
 
                 // Persist PSK if returned
@@ -1134,7 +1134,7 @@ impl SwRuntime {
 
         log::info!(
             "[SW] route_candidates: request target_type={}",
-            self.target_actr_type.to_string_repr()
+            self.target_actr_type
         );
         let criteria = route_candidates_request::NodeSelectionCriteria {
             candidate_count: 1,
@@ -1194,7 +1194,7 @@ impl SwRuntime {
                     .ok_or_else(|| JsValue::from_str("No candidates"))?;
                 log::info!(
                     "[SW] route_candidates: selected {}",
-                    target.to_string_repr()
+                    target
                 );
                 self.target_id = Some(target.clone());
                 Ok(target)
@@ -1229,7 +1229,7 @@ impl SwRuntime {
 
         log::info!(
             "[SW] discover_target_for_type: request target_type={}",
-            target_type.to_string_repr()
+            target_type
         );
         let criteria = route_candidates_request::NodeSelectionCriteria {
             candidate_count: 1,
@@ -1288,7 +1288,7 @@ impl SwRuntime {
                     .ok_or_else(|| JsValue::from_str("No candidates"))?;
                 log::info!(
                     "[SW] discover_target_for_type: selected {}",
-                    target.to_string_repr()
+                    target
                 );
                 Ok(target)
             }
@@ -1343,8 +1343,8 @@ impl SwRuntime {
             .ok_or_else(|| JsValue::from_str("Missing credential"))?;
         log::info!(
             "[SW] role_negotiation: from={} to={}",
-            actor_id.to_string_repr(),
-            target.to_string_repr()
+            actor_id,
+            target
         );
         let payload = actr_relay::Payload::RoleNegotiation(RoleNegotiation {
             from: actor_id.clone(),
@@ -1959,7 +1959,7 @@ impl SwRuntime {
 
                 log::info!(
                     "[SW] Sending ICE restart offer to peer={}",
-                    target.to_string_repr()
+                    target
                 );
 
                 // Use ICE_RESTART_OFFER type (3) for the session description

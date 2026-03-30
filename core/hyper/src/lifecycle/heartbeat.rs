@@ -147,7 +147,7 @@ async fn send_heartbeat_and_handle_response(
 
     tracing::debug!(
         "💓 Heartbeat sent and Pong received for Actor {} (power_reserve={:.2}, mailbox_backlog={:.2}, availability={:?})",
-        actor_id.to_string_repr(),
+        actor_id,
         power_reserve,
         mailbox_backlog,
         availability
@@ -219,8 +219,8 @@ pub async fn heartbeat_task(
                 .await {
                     tracing::info!(
                         "🔄 Heartbeat actor_id updated: {} -> {}",
-                        actor_id.to_string_repr(),
-                        new_actor_id.to_string_repr(),
+                        actor_id,
+                        new_actor_id,
                     );
                     actor_id = new_actor_id;
                 }
@@ -246,7 +246,7 @@ async fn credential_refresh_task(
 ) {
     tracing::info!(
         "🔑 Refreshing credential for Actor {}",
-        actor_id.to_string_repr()
+        actor_id
     );
 
     match client
@@ -268,7 +268,7 @@ async fn credential_refresh_task(
 
                     tracing::info!(
                         "✅ Credential refreshed successfully for Actor {}",
-                        actor_id.serial_number,
+                        actor_id,
                     );
 
                     tracing::debug!("TurnCredential updated, TURN authentication ready");
@@ -315,7 +315,7 @@ async fn re_register_task(
 ) -> ActrId {
     tracing::info!(
         "🔄 Re-registering actor {} after credential expiry via AIS HTTP (type: {}/{})",
-        actor_id.to_string_repr(),
+        actor_id,
         register_request.actr_type.manufacturer,
         register_request.actr_type.name
     );
@@ -364,7 +364,7 @@ async fn re_register_task(
 
             tracing::info!(
                 "✅ Re-registration successful via AIS HTTP (ActrId: {})",
-                new_actor_id.to_string_repr(),
+                new_actor_id,
             );
 
             tracing::debug!("TurnCredential updated, TURN authentication ready");

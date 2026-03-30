@@ -90,6 +90,12 @@ impl ActrTypeExt for ActrType {
     }
 }
 
+impl std::fmt::Display for ActrType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string_repr())
+    }
+}
+
 /// Helpers for `ActrId` string conversions.
 pub trait ActrIdExt: Sized {
     /// Convert to `"<serial_hex>@<realm_id>/<actr_type>"`.
@@ -137,6 +143,12 @@ impl ActrIdExt for ActrId {
             serial_number,
             r#type: actr_type,
         })
+    }
+}
+
+impl std::fmt::Display for ActrId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_string_repr())
     }
 }
 

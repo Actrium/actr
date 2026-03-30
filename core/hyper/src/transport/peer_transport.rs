@@ -151,7 +151,11 @@ impl PeerTransport {
     /// 1. If Connected -> return transport
     /// 2. If Connecting -> wait for notify, then retry
     /// 3. If None -> insert Connecting(notify), create connection outside lock
-    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(
+        skip_all,
+        name = "PeerTransport.get_or_create_transport",
+        fields(dest = ?dest.as_actor_id().map(|id| id))
+    ))]
     pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
         // 0. Check if dest is being closed - fast fail
         // if self.closing_peers.read().await.contains(dest) {
@@ -318,22 +322,12 @@ impl PeerTransport {
     /// ```rust,ignore
     /// mgr.send(&dest, PayloadType::RpcSignal, b"hello").await?;
     /// ```
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "PeerTransport.send")
-    )]
     pub async fn send(
         &self,
         dest: &Dest,
         payload_type: PayloadType,
         data: &[u8],
     ) -> NetworkResult<()> {
-        tracing::debug!(
-            "[PeerTransport] Sending to {:?}: type={:?}, size={}",
-            dest,
-            payload_type,
-            data.len()
-        );
 
         // Get or create DestTransport for this Dest
         let transport = self.get_or_create_transport(dest).await?;

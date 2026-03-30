@@ -278,7 +278,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         .with_context(|| format!("Failed to read binary: {}", args.binary.display()))?;
 
     tracing::info!(
-        actr_type = %actr_type.to_string_repr(),
+        actr_type = %actr_type,
         binary_size = binary_bytes.len(),
         "building .actr package"
     );

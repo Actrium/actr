@@ -31,7 +31,7 @@ actr = { version = "0.2.0" }
 actr-framework = { version = "0.2.0" }
 actr-protocol = { version = "0.2.0" }
 actr-runtime = { version = "0.2.0" }
-actr-hyper = { version = "0.1.0" }
+actr-hyper = { version = "0.1.0", features = ["opentelemetry"] }
 actr-config = { version = "0.2.0" }
 actr-platform-native = { version = "0.2.0" }
 actr-pack = { version = "0.2.0" }

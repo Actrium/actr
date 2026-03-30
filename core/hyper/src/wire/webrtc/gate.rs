@@ -97,12 +97,14 @@ impl WebRtcGate {
         payload_type: PayloadType,
         pending_requests: PendingRequestsMap,
         mailbox: Arc<dyn Mailbox>,
+        local_id: Option<ActrId>,
     ) {
         // Extract and set tracing context from envelope
         #[cfg(feature = "opentelemetry")]
         {
             use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
-            let span = tracing::info_span!("webrtc.receive_rpc", request_id = %envelope.request_id);
+            let actr_id_str = local_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+            let span = tracing::info_span!("WebRtcGate.receive_rpc", actr_id = %actr_id_str, request_id = %envelope.request_id);
             set_parent_from_rpc_envelope(&span, &envelope);
             let _guard = span.enter();
         }
@@ -116,7 +118,7 @@ impl WebRtcGate {
             tracing::debug!(
                 "📬 Received RPC Response: request_id={}, target={}",
                 request_id,
-                target.to_string_repr()
+                target
             );
 
             // Convert envelope to result
@@ -143,6 +145,7 @@ impl WebRtcGate {
                 _ => MessagePriority::Normal,
             };
 
+            tracing::info!(request_id = %request_id, "rpc.mailbox.enqueue");
             // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
             // Convert Bytes to Vec<u8> (Mailbox uses Vec)
             match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
@@ -179,6 +182,7 @@ impl WebRtcGate {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
+        let local_id = self.local_id.clone();
 
         tokio::spawn(async move {
             loop {
@@ -197,9 +201,11 @@ impl WebRtcGate {
                                 // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
+                                        let current_local_id = local_id.read().await.clone();
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
-                                            let span = tracing::info_span!("webrtc.receive_rpc");
+                                            let actr_id_str = current_local_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+                                            let span = tracing::info_span!("WebRtcGate.receive_rpc", actr_id = %actr_id_str);
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
                                         };
@@ -210,6 +216,7 @@ impl WebRtcGate {
                                             payload_type,
                                             pending_requests.clone(),
                                             mailbox.clone(),
+                                            current_local_id,
                                         );
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_envelope_fut =
@@ -290,12 +297,24 @@ impl WebRtcGate {
     /// # Design Principle
     /// - Response reuses Request's request_id (caller is responsible)
     /// - Receiver matches to pending_requests by request_id and wakes up waiting caller
-    #[cfg_attr(feature = "opentelemetry", tracing::instrument(skip_all))]
+    #[cfg_attr(feature = "opentelemetry", tracing::instrument(
+        skip_all,
+        name = "WebRtcGate.send_response",
+        fields(actr_id = tracing::field::Empty)
+    ))]
     pub async fn send_response(
         &self,
         target: &ActrId,
         response_envelope: RpcEnvelope,
     ) -> ActorResult<()> {
+        // Fill actr_id span field at runtime
+        #[cfg(feature = "opentelemetry")]
+        {
+            let local_id = self.local_id.read().await;
+            if let Some(ref id) = *local_id {
+                tracing::Span::current().record("actr_id", &tracing::field::display(id));
+            }
+        }
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope

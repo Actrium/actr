@@ -114,7 +114,7 @@ impl PeerGate {
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
                             "Blocking new requests to peer {} (state: {:?})",
-                            peer_id.to_string_repr(),
+                            peer_id,
                             event
                         );
                     }
@@ -134,7 +134,7 @@ impl PeerGate {
                         if transport_manager.is_connecting(&dest).await {
                             tracing::debug!(
                                 "Ignoring transient close for peer {} while connection factory is still running",
-                                peer_id.to_string_repr()
+                                peer_id
                             );
                             continue;
                         }
@@ -152,13 +152,13 @@ impl PeerGate {
                             Ok(_) => {
                                 tracing::info!(
                                     "Successfully closed transport chain for peer {}",
-                                    peer_id.to_string_repr()
+                                    peer_id
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to close transport for peer {}: {}",
-                                    peer_id.to_string_repr(),
+                                    peer_id,
                                     e
                                 );
                             }
@@ -184,7 +184,7 @@ impl PeerGate {
                         tracing::info!(
                             "Cleaned {} pending requests for peer {}",
                             cleaned_count,
-                            peer_id.to_string_repr()
+                            peer_id
                         );
 
                         // Remove and send error to all pending requests for this peer
@@ -210,7 +210,7 @@ impl PeerGate {
                         closing_peers.write().await.remove(peer_id);
                         tracing::debug!(
                             "Unblocked peer {} after successful ICE restart",
-                            peer_id.to_string_repr()
+                            peer_id
                         );
                     }
 
@@ -242,7 +242,7 @@ impl PeerGate {
             tracing::debug!(
                 "Completed request: {} (target: {})",
                 request_id,
-                target.to_string_repr()
+                target
             );
             Ok(true)
         } else {
@@ -325,18 +325,24 @@ impl PeerGate {
     /// Send request and wait for response (with specified PayloadType).
     ///
     /// This is primarily used by language bindings / non-generic RPC paths.
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(
+            skip_all,
+            name = "PeerGate.send_request",
+            fields(
+                request_id = %envelope.request_id,
+                payload_type = ?payload_type,
+                target = %target
+            )
+        )
+    )]
     pub async fn send_request_with_type(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
-        tracing::debug!(
-            "PeerGate::send_request_with_type to {:?}, payload_type={:?}, request_id={}",
-            target,
-            payload_type,
-            envelope.request_id
-        );
 
         // 1. Create oneshot channel for receiving response
         let (response_tx, response_rx) = oneshot::channel();
@@ -395,47 +401,36 @@ impl PeerGate {
     }
 
     /// Send request and wait for response (bidirectional communication)
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "PeerGate.send_request")
-    )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         self.send_request_with_type(target, PayloadType::RpcReliable, envelope)
             .await
     }
 
     /// Send one-way message (no response expected)
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "PeerGate.send_message", fields(target = ?target.to_string_repr()))
-    )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!("PeerGate::send_message to {:?}", target.to_string_repr());
-
-        // // Check if target is being cleaned up
-        // if self.closing_peers.read().await.contains(target) {
-        //     return Err(ActrError::Unavailable(format!(
-        //         "Connection to {} is closing",
-        //         target.to_string_repr()
-        //     )));
-        // }
 
         self.send_message_with_type(target, PayloadType::RpcReliable, envelope)
             .await
     }
 
     /// Send one-way message with specified PayloadType.
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(
+            skip_all,
+            name = "PeerGate.send_message",
+            fields(
+                payload_type = ?payload_type,
+                target = %target
+            )
+        )
+    )]
     pub async fn send_message_with_type(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
-        tracing::debug!(
-            "PeerGate::send_message_with_type to {:?}, payload_type={:?}",
-            target.to_string_repr(),
-            payload_type
-        );
 
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);

@@ -1068,7 +1068,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_unregister_request(
         &self,
@@ -1106,7 +1106,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_heartbeat(
         &self,
@@ -1255,7 +1255,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_credential_update_request(
         &self,
