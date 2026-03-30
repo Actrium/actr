@@ -46,7 +46,7 @@ SERVER_WASM_DIR="$SERVER_DIR/wasm"
 CLIENT_WASM_DIR="$CLIENT_DIR/wasm"
 RELEASE_DIR="$SCRIPT_DIR/release"
 
-# MFR manufacturer name (must match actr.toml)
+# MFR manufacturer name (must match manifest.toml)
 MFR_NAME="acme"
 MFR_KEY_FILE=""
 MFR_PUBKEY=""
@@ -252,7 +252,7 @@ echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
     --binary "$GUEST_WASM_FILE" \
-    --config "$SERVER_DIR/actr.toml" \
+    --config "$SERVER_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE" \
     --target "wasm32-unknown-unknown"
@@ -267,7 +267,7 @@ echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1) (gu
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
     --binary "$CLIENT_WASM_FILE" \
-    --config "$CLIENT_DIR/actr.toml" \
+    --config "$CLIENT_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$CLIENT_ACTR_PACKAGE" \
     --target "wasm32-unknown-unknown" \
@@ -418,8 +418,8 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 sleep 2
 
-SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
-CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/manifest.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/manifest.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 
 ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
 
@@ -465,8 +465,7 @@ while [ $PUBLISH_RETRY -lt $PUBLISH_MAX_RETRIES ]; do
     if $ACTR_CMD pkg publish \
         --package "$SERVER_ACTR_PACKAGE" \
         --keychain "$MFR_KEY_FILE" \
-        --endpoint "http://localhost:8081" \
-        --config "$SERVER_DIR/actr.toml"; then
+        --endpoint "http://localhost:8081"; then
         PUBLISH_OK=1
         break
     fi
