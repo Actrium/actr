@@ -237,6 +237,7 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
             actr_type: d.actr_type.as_ref().map(|at| ActrTypeInfo {
                 manufacturer: at.manufacturer.clone(),
                 name: at.name.clone(),
+                version: at.version.clone(),
             }),
         })
         .collect();
@@ -294,6 +295,7 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
         package_name: config.package.name.clone(),
         manufacturer: config.package.actr_type.manufacturer.clone(),
         actr_name: config.package.actr_type.name.clone(),
+        version: config.package.actr_type.version.clone(),
         description: config.package.description.clone().unwrap_or_default(),
         authors: config.package.authors.clone(),
         license: config
@@ -305,6 +307,8 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
         signaling_url: config.signaling_url.to_string(),
         realm_id: config.realm.realm_id,
         visible_in_discovery: config.visible_in_discovery,
+        ais_endpoint: config.ais_endpoint.clone().unwrap_or_default(),
+        force_relay: config.webrtc.ice_transport_policy == actr_config::IceTransportPolicy::Relay,
         dependencies,
         stun_urls,
         turn_urls,
