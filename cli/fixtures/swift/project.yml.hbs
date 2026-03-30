@@ -24,12 +24,12 @@ targets:
     deploymentTarget: "15.0"
     sources:
       - path: {{PROJECT_NAME_PASCAL}}
-      - path: actr.toml
+      - path: manifest.toml
         type: file
         buildPhase: resources
       - path: dist
         buildPhase: resources
-      # IMPORTANT: Actr.lock.toml must be included as a resource
+      # IMPORTANT: manifest.lock.toml must be included as a resource
       #
       # Why this is necessary:
       # - The lock file contains actr_type metadata for dependencies
@@ -39,7 +39,7 @@ targets:
       # Note: An empty lock file is generated during `actr init` to satisfy
       # xcodegen's requirement that all referenced files must exist.
       # The file is populated with actual dependencies by `actr install`.
-      - path: Actr.lock.toml
+      - path: manifest.lock.toml
         type: file
         buildPhase: resources
     settings:

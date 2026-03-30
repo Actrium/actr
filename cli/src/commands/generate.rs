@@ -35,8 +35,8 @@ pub struct GenCommand {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
-    /// Path to actr.toml config file
-    #[arg(short, long, default_value = "actr.toml")]
+    /// Path to manifest.toml
+    #[arg(short, long, default_value = "manifest.toml")]
     pub config: PathBuf,
 
     /// Clean generated outputs before regenerating
@@ -79,8 +79,9 @@ impl Command for GenCommand {
             "🚀 Start code generation (language: {:?})...",
             self.language
         );
-        let config = ConfigParser::from_file(&self.config)
-            .map_err(|e| ActrCliError::config_error(format!("Failed to parse actr.toml: {e}")))?;
+        let config = ConfigParser::from_manifest_file(&self.config).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to parse manifest.toml: {e}"))
+        })?;
 
         let proto_files = self.preprocess()?;
         let proto_model = ProtoModel::parse(&proto_files, &self.input, &config)?;
@@ -166,14 +167,14 @@ impl GenCommand {
             .config
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let lock_file_path = config_dir.join("Actr.lock.toml");
+        let lock_file_path = config_dir.join("manifest.lock.toml");
 
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(
-                "Actr.lock.toml not found\n\n\
+                "manifest.lock.toml not found\n\n\
                 The lock file is required for code generation. Please run:\n\n\
                 \x20\x20\x20\x20actr install\n\n\
-                This will generate Actr.lock.toml based on your actr.toml configuration.",
+                This will generate manifest.lock.toml based on your manifest.toml configuration.",
             ));
         }
 
@@ -187,16 +188,16 @@ impl GenCommand {
 
         match self.language {
             SupportedLanguage::Swift => {
-                let config = ConfigParser::from_file(&self.config).map_err(|e| {
-                    ActrCliError::config_error(format!("Failed to parse actr.toml: {e}"))
+                let config = ConfigParser::from_manifest_file(&self.config).map_err(|e| {
+                    ActrCliError::config_error(format!("Failed to parse manifest.toml: {e}"))
                 })?;
                 let project_name = &config.package.name;
                 let pascal_name = to_pascal_case(project_name);
                 Ok(PathBuf::from(format!("{}/Generated", pascal_name)))
             }
             SupportedLanguage::Kotlin => {
-                let config = ConfigParser::from_file(&self.config).map_err(|e| {
-                    ActrCliError::config_error(format!("Failed to parse actr.toml: {e}"))
+                let config = ConfigParser::from_manifest_file(&self.config).map_err(|e| {
+                    ActrCliError::config_error(format!("Failed to parse manifest.toml: {e}"))
                 })?;
                 let clean_name: String = config
                     .package

@@ -1,37 +1,25 @@
 edition = 1
-exports = []
 
-[package]
-name = "echo-client-app"
-manufacturer = "acme"
-version = "1.0.0"
-description = "Echo Client App"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "client"]
-
-[dependencies]
-EchoService = { actr_type = "acme:EchoService:1.0.0" }
-
-[system.signaling]
+[signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.ais_endpoint]
+[ais_endpoint]
 url = "http://localhost:8081/ais"
 
-[system.deployment]
+[deployment]
 realm_id = 33554432
 realm_secret = "rs_AeEwCl5kEEd4foT3KSH-ZSgIFfrBzvnO"
 
-[system.discovery]
+[discovery]
 visible = true
 
-[system.tracing]
+[tracing]
 enabled = true
 endpoint = "http://localhost:4317"
 service_name = "echo-real-client-app"
 
 # ACL configuration - allow echo server
+
 [acl]
 
 [[acl.rules]]

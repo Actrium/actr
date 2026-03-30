@@ -61,19 +61,19 @@ source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
 echo ""
 echo "🗑️  Cleaning stale database files..."
 rm -rf "$WORKSPACE_ROOT/database"
-# Also remove actr.toml files to ensure they are freshly copied from Actr.example.toml
+# Remove runtime config files to ensure they're freshly copied from Actr.example.toml,
+# and manifest files from Actr.example.toml
 rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
-# Ensure actr.toml files exist
+# Ensure manifest.toml and actr.toml files exist
 echo ""
-echo "🔍 Checking actr.toml files..."
+echo "🔍 Checking config files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 ensure_actr_toml "$SERVER_DIR"
 ensure_actr_toml "$CLIENT_DIR"
-cp "$SERVER_DIR/Actr.example.toml" "$SERVER_DIR/actr.toml"
-cp "$CLIENT_DIR/Actr.example.toml" "$CLIENT_DIR/actr.toml"
-cp "$CLIENT_GUEST_DIR/Actr.example.toml" "$CLIENT_GUEST_DIR/actr.toml"
+ensure_actr_toml "$CLIENT_GUEST_DIR"
+# actr.toml = runtime config (from Actr.example.toml)
 echo -e "${GREEN}✅ Synchronized actr.toml from Actr.example.toml${NC}"
 
 # Ensure actrix-config.toml exists
@@ -144,7 +144,7 @@ echo "Target:        $ECHO_ACTR_TARGET"
 
 # Patch client actr.toml ACL to reference the correct EchoService version
 perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
-    "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
+    "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml" 2>/dev/null || true
 
 # 1. Compile to WASM
 rustup target add "$ECHO_ACTR_TARGET" >/dev/null
@@ -178,17 +178,15 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
 BUILD_CONFIG="$ECHO_ACTR_DIR/dist/build-config.toml"
 
-# Generate a temporary build config that matches echo-actr's package identity
+# Generate a temporary build manifest (manifest.toml format: exports under [package])
 cat > "$BUILD_CONFIG" << TOML
-edition = 1
-exports = ["$ECHO_ACTR_DIR/proto/echo.proto"]
-
 [package]
 manufacturer = "actrium"
 name = "EchoService"
 version = "$ECHO_ACTR_VERSION"
 description = "Signed Echo guest actor"
 license = "Apache-2.0"
+exports = ["$ECHO_ACTR_DIR/proto/echo.proto"]
 TOML
 
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
@@ -247,10 +245,10 @@ CLIENT_GUEST_PACKAGE_NAME="acme-package-echo-client-guest-${CLIENT_GUEST_VERSION
 CLIENT_GUEST_PACKAGE="$CLIENT_GUEST_DIST_DIR/$CLIENT_GUEST_PACKAGE_NAME"
 CLIENT_GUEST_PUBLIC_KEY="$CLIENT_GUEST_DIST_DIR/public-key.json"
 
-# Package the client-guest binary
+# Package the client-guest binary (uses manifest.toml = Actr.example.toml)
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
     --binary "$CLIENT_GUEST_BINARY" \
-    --config "$CLIENT_GUEST_DIR/actr.toml" \
+    --config "$CLIENT_GUEST_DIR/manifest.toml" \
     --key "$CLIENT_GUEST_DEV_KEY" \
     --target "$CLIENT_GUEST_TARGET" \
     --output "$CLIENT_GUEST_PACKAGE"
@@ -457,7 +455,7 @@ if [ $KEY_COUNTER -eq $MAX_KEY_WAIT ]; then
     exit 1
 fi
 
-# Extract realm IDs from actr.toml files
+# Extract realm IDs from actr.toml (runtime config) files
 SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 
@@ -528,8 +526,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg publish \
     --package "$ACTR_PACKAGE" \
     --keychain "$SIGNING_KEY" \
-    --endpoint "http://localhost:8081" \
-    --config "$BUILD_CONFIG"
+    --endpoint "http://localhost:8081"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ actr pkg publish failed${NC}"
@@ -588,8 +585,8 @@ with open(public_key_path, "r", encoding="utf-8") as fh:
     public_key = json.load(fh)["public_key"]
 
 with zipfile.ZipFile(package_path, "r") as zf:
-    manifest = zf.read("actr.toml").decode("utf-8")
-    signature = base64.b64encode(zf.read("actr.sig")).decode("ascii")
+    manifest = zf.read("manifest.toml").decode("utf-8")
+    signature = base64.b64encode(zf.read("manifest.sig")).decode("ascii")
 
 manifest_data = tomllib.loads(manifest)
 manufacturer = manifest_data["manufacturer"]

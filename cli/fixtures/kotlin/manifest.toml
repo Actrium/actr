@@ -1,0 +1,40 @@
+edition = 1
+exports = []
+
+[package]
+name = "echo-client-app"
+manufacturer = "{{MANUFACTURER}}"
+description = "An Actor-RTC Android client"
+authors = []
+
+[dependencies]
+EchoService = {}
+
+[system.signaling]
+url = "{{SIGNALING_URL}}"
+
+[system.ais_endpoint]
+url = "{{AIS_ENDPOINT_URL}}"
+
+[system.webrtc]
+stun_urls = ["stun:{{SIGNALING_HOST}}:3478"]
+turn_urls = ["turn:{{SIGNALING_HOST}}:3478"]
+force_relay = true
+
+[system.deployment]
+realm_id = 2368266035
+
+[system.discovery]
+visible = false
+
+# ACL configuration - allow echo server
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+principals = [
+    { actr_type = { manufacturer = "{{MANUFACTURER}}", name = "EchoService", version = "1.0.0" } },
+]
+
+[scripts]
+dev = "./gradlew assembleDebug"

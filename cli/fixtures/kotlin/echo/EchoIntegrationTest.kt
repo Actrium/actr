@@ -61,9 +61,9 @@ class EchoIntegrationTest {
     @Test
     fun testRpcCallToEchoServer(): Unit = runBlocking {
         Log.i(TAG, "=== Starting RPC Call Test (Client Only - Server is remote) ===")
-        val configPath = copyAssetToInternalStorage("actr.toml")
+        val configPath = copyAssetToInternalStorage("manifest.toml")
         // Also copy lock file - required by ActrSystem
-        copyAssetToInternalStorage("Actr.lock.toml")
+        copyAssetToInternalStorage("manifest.lock.toml")
         var clientRef: ActrRef? = null
 
         try {

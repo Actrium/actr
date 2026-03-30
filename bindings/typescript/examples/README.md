@@ -41,4 +41,4 @@ node --import tsx examples/echo-client/index.ts
 Notes:
 
 - Make sure your target services are running and discoverable.
-- The client uses `actr.toml` in `examples/echo-client` for discovery.
+- The client uses `manifest.toml` in `examples/echo-client` for discovery.

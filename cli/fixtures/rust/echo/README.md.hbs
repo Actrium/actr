@@ -17,8 +17,7 @@ cargo run
 
 ## How it works
 
-- `actr.toml` declares a dependency on `echo-echo-server` (the remote EchoService).
+- `manifest.toml` declares a dependency on `echo-echo-server` (the remote EchoService).
 - `actr install` fetches `protos/remote/echo-echo-server/echo.proto`.
 - `actr gen -l rust` generates `src/generated/` with protobuf types and Actor framework code.
 - `src/main.rs` discovers the remote EchoService and sends a single RPC call.
-

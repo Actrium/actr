@@ -56,25 +56,25 @@ impl LanguageGenerator for SwiftGenerator {
             context.input_path.as_path()
         };
 
-        // 1. Load Actr.lock.toml if available (it always has actr_type)
-        // Try to find Actr.lock.toml by searching up from proto_root
+        // 1. Load manifest.lock.toml if available (it always has actr_type)
+        // Try to find manifest.lock.toml by searching up from proto_root
         let lock_file_path = proto_root
             .ancestors()
             .find_map(|p| {
-                let lock_path = p.join("Actr.lock.toml");
+                let lock_path = p.join("manifest.lock.toml");
                 if lock_path.exists() {
                     Some(lock_path)
                 } else {
                     None
                 }
             })
-            .unwrap_or_else(|| proto_root.join("Actr.lock.toml"));
+            .unwrap_or_else(|| proto_root.join("manifest.lock.toml"));
         let lock_file = LockFile::from_file(&lock_file_path).ok();
         if lock_file.is_some() {
-            debug!("Loaded Actr.lock.toml from: {:?}", lock_file_path);
+            debug!("Loaded manifest.lock.toml from: {:?}", lock_file_path);
         } else {
             debug!(
-                "Actr.lock.toml not found at: {:?} (will fallback to Config only)",
+                "manifest.lock.toml not found at: {:?} (will fallback to Config only)",
                 lock_file_path
             );
         }

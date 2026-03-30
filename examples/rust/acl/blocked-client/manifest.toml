@@ -1,0 +1,12 @@
+[package]
+name = "blocked-greeter-client"
+manufacturer = "acme"
+version = "1.0.0"
+description = "Blocked Greeter Client (should be denied by ACL)"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+exports = []
+
+[dependencies]
+greeter.GreeterService = { actr_type = "acme:greeter.GreeterService:1.0.0" }

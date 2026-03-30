@@ -17,7 +17,7 @@ impl ActrNode {
     /// Create a client-only ActrNode directly from a config file path.
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
-        let config = actr_config::ConfigParser::from_file(&config_path)
+        let config = actr_config::ConfigParser::from_manifest_file(&config_path)
             .map_err(crate::error::config_error_to_napi)?;
 
         crate::logger::init_observability(config.observability.clone());

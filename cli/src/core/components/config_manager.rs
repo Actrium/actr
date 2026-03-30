@@ -60,13 +60,13 @@ impl TomlConfigManager {
 #[async_trait]
 impl ConfigManager for TomlConfigManager {
     async fn load_config(&self, path: &Path) -> Result<Config> {
-        ConfigParser::from_file(path)
+        ConfigParser::from_manifest_file(path)
             .with_context(|| format!("Failed to parse config: {}", path.display()))
     }
 
     async fn save_config(&self, _config: &Config, _path: &Path) -> Result<()> {
         Err(anyhow::anyhow!(
-            "Saving parsed Config is not supported; update actr.toml directly"
+            "Saving parsed Config is not supported; update manifest.toml directly"
         ))
     }
 
@@ -129,7 +129,7 @@ impl ConfigManager for TomlConfigManager {
         let mut errors = Vec::new();
         let warnings = Vec::new();
 
-        let config = match ConfigParser::from_file(&self.config_path) {
+        let config = match ConfigParser::from_manifest_file(&self.config_path) {
             Ok(config) => config,
             Err(e) => {
                 errors.push(format!("Failed to parse config: {e}"));

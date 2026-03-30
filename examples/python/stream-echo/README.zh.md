@@ -24,7 +24,7 @@ stream-echo/
 │   │   └── local/
 │   │       └── stream_server.proto    # Server 服务定义
 │   ├── actr.toml                      # Server 配置
-│   ├── Actr.lock.toml                # 依赖锁文件
+│   ├── manifest.lock.toml                # 依赖锁文件
 │   ├── server.py                      # Server 主程序
 │   └── stream_server.py              # Server 服务实现（生成的 scaffold）
 │
@@ -36,7 +36,7 @@ stream-echo/
     │       └── stream-register-server-python/
     │           └── stream_server.proto  # Server 服务定义（依赖）
     ├── actr.toml                      # Client 配置
-    ├── Actr.lock.toml                # 依赖锁文件
+    ├── manifest.lock.toml                # 依赖锁文件
     └── client.py                      # Client 实现
 ```
 
@@ -235,5 +235,5 @@ name = "StreamEchoClient"
 
 运行 `actr install` 会：
 1. 从 Signaling Server 下载远程服务的 proto 文件
-2. 生成 `Actr.lock.toml` 锁定依赖版本
+2. 生成 `manifest.lock.toml` 锁定依赖版本
 3. 将远程 proto 文件缓存到 `protos/remote/` 目录

@@ -1,41 +1,30 @@
 edition = 1
-exports = ["../proto/echo.proto"]
 
-[package]
-name = "EchoService"
-manufacturer = "acme"
-version = "0.1.0"
-description = "Package Echo Host - echo service loaded from signed .actr package"
-authors = ["Actr Dev Team"]
-license = "Apache-2.0"
-tags = ["dev", "example", "package"]
-
-[dependencies]
-
-[system.signaling]
+[signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.ais_endpoint]
+[ais_endpoint]
 url = "http://localhost:8081/ais"
 
-[system.deployment]
+[deployment]
 realm_id = 1001
 
-[system.discovery]
+[discovery]
 visible = true
 
-[system.observability]
+[observability]
 filter_level = "info"
 tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
 tracing_service_name = "package-echo-server"
 
-[system.webrtc]
+[webrtc]
 force_relay = false
 stun_urls = ["stun:localhost:3478"]
 turn_urls = ["turn:localhost:3478"]
 
 # ACL configuration - allow package echo client-guest
+
 [acl]
 
 [[acl.rules]]

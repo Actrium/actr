@@ -1,0 +1,12 @@
+[package]
+name = "GenericClient"
+manufacturer = "acme"
+version = "1.0.0"
+description = "File transfer sender using DataStream API"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example"]
+exports = []
+
+[dependencies]
+FileTransferService = { actr_type = "acme:FileTransferService:1.0.0" }

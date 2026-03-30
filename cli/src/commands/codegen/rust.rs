@@ -20,7 +20,7 @@ impl LanguageGenerator for RustGenerator {
         let plugin_path = self.ensure_protoc_plugin(&context.config_path)?;
 
         let manufacturer = context.config.package.actr_type.manufacturer.clone();
-        debug!("Using manufacturer from actr.toml: {}", manufacturer);
+        debug!("Using manufacturer from manifest.toml: {}", manufacturer);
 
         let output = &context.output;
 
@@ -512,7 +512,7 @@ mod tests {{
    ```rust
    #[tokio::main]
    async fn main() -> ActorResult<()> {{
-       let config = actr::config::ConfigParser::from_file("actr.toml")?;
+       let config = actr::config::ConfigParser::from_manifest_file("manifest.toml")?;
        let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
        let package = WorkloadPackage::new(std::fs::read("dist/service.actr")?);
        let (node, _manifest) = hyper.attach(&package, config).await?;
@@ -1043,7 +1043,7 @@ mod tests {
         )
         .unwrap();
 
-        let config_path = tmp.path().join("actr.toml");
+        let config_path = tmp.path().join("manifest.toml");
         std::fs::write(
             &config_path,
             r#"edition = 1
@@ -1069,7 +1069,7 @@ realm_id = 1001
         )
         .unwrap();
 
-        let config = ConfigParser::from_file(&config_path).unwrap();
+        let config = ConfigParser::from_manifest_file(&config_path).unwrap();
         let proto_files = vec![local_proto, remote_proto];
         let proto_model = ProtoModel::parse(&proto_files, &proto_root, &config).unwrap();
 

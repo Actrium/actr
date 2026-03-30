@@ -11,12 +11,12 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
     ProjectTemplate::load_file(
         &python_fixtures.join("Actr.server.toml.jinja2"),
         files,
-        "server/actr.toml",
+        "server/manifest.toml",
     )?;
     ProjectTemplate::load_file(
         &python_fixtures.join("Actr.client.toml.jinja2"),
         files,
-        "client/actr.toml",
+        "client/manifest.toml",
     )?;
     ProjectTemplate::load_file(
         &python_fixtures.join("server.py.jinja2"),

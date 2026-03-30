@@ -109,7 +109,7 @@ fn rust_echo_app_scaffold() {
     // -- files exist --
     for path in &[
         "Cargo.toml",
-        "actr.toml",
+        "manifest.toml",
         "src/main.rs",
         "README.md",
         "protos/local/local.proto",
@@ -127,8 +127,8 @@ fn rust_echo_app_scaffold() {
         "missing dependency actr in Cargo.toml"
     );
 
-    // -- actr.toml --
-    let actr = std::fs::read_to_string(dir.join("actr.toml")).unwrap();
+    // -- manifest.toml --
+    let actr = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
     assert!(
         actr.contains("wss://actrix1.develenv.com/signaling/ws"),
         "signaling URL"
@@ -178,15 +178,15 @@ fn rust_echo_service_scaffold() {
     // -- files exist --
     for path in &[
         "Cargo.toml",
-        "actr.toml",
+        "manifest.toml",
         "src/main.rs",
         "src/echo_service.rs",
     ] {
         assert!(dir.join(path).exists(), "{path} should exist");
     }
 
-    // -- actr.toml --
-    let actr = std::fs::read_to_string(dir.join("actr.toml")).unwrap();
+    // -- manifest.toml --
+    let actr = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
     assert!(
         actr.contains(r#"exports = ["protos/local/echo.proto"]"#),
         "should export echo.proto"
@@ -244,7 +244,7 @@ fn rust_echo_both_app_uses_local_service_dependency() {
     let tmp = TempDir::new().unwrap();
     let dir = init_rust_echo_both(tmp.path(), "echo-pair");
 
-    let app_actr = std::fs::read_to_string(dir.join("echo-app/actr.toml")).unwrap();
+    let app_actr = std::fs::read_to_string(dir.join("echo-app/manifest.toml")).unwrap();
     assert!(
         app_actr.contains("EchoService = {}"),
         "role=both app should depend on local echo-service, got:\n{app_actr}"
@@ -312,10 +312,10 @@ service ChatService {
 }
 "#;
 
-/// Helper: write a minimal Actr.lock.toml so `actr gen` doesn't abort.
+/// Helper: write a minimal manifest.lock.toml so `actr gen` doesn't abort.
 fn write_lock_toml(dir: &std::path::Path) {
     std::fs::write(
-        dir.join("Actr.lock.toml"),
+        dir.join("manifest.lock.toml"),
         "[metadata]\nversion = 1\ngenerated_at = \"2026-01-01T00:00:00Z\"\n",
     )
     .unwrap();

@@ -755,7 +755,7 @@ impl TypeScriptGenerator {
         output.push_str("  }\n}\n");
 
         output.push_str(
-            "\nasync function main(): Promise<void> {\n  const node = await ActrNode.fromConfig('./actr.toml', new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
+            "\nasync function main(): Promise<void> {\n  const node = await ActrNode.fromConfig('./manifest.toml', new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
         );
         output.push_str(&local_methods.len().to_string());
         output.push_str(");\n  console.log('Remote RPC methods:', ");
@@ -1261,10 +1261,10 @@ impl TypeScriptGenerator {
             .config_path
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        let lock_path = config_dir.join("Actr.lock.toml");
+        let lock_path = config_dir.join("manifest.lock.toml");
         if !lock_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "Actr.lock.toml not found at {}. Please run `actr install` first.",
+                "manifest.lock.toml not found at {}. Please run `actr install` first.",
                 lock_path.display()
             )));
         }
@@ -1285,7 +1285,7 @@ impl TypeScriptGenerator {
             let lock_key = remote_file.trim_start_matches("remote/").to_string();
             let actr_type = lock_mapping.get(&lock_key).ok_or_else(|| {
                 ActrCliError::config_error(format!(
-                    "Remote proto '{}' missing in Actr.lock.toml.\n\
+                    "Remote proto '{}' missing in manifest.lock.toml.\n\
                      Please run `actr install` and retry.",
                     lock_key
                 ))
@@ -1302,7 +1302,9 @@ impl TypeScriptGenerator {
 
 fn normalize_actr_type_for_typescript_plugin(raw: &str) -> Result<String> {
     let parsed = ActrType::from_string_repr(raw).map_err(|e| {
-        ActrCliError::config_error(format!("Invalid actr_type '{raw}' in Actr.lock.toml: {e}"))
+        ActrCliError::config_error(format!(
+            "Invalid actr_type '{raw}' in manifest.lock.toml: {e}"
+        ))
     })?;
     Ok(parsed.to_string_repr())
 }

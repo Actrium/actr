@@ -148,9 +148,9 @@ fi
 echo ""
 echo "🛠️ Generating receiver code..."
 cd "$RECEIVER_DIR"
-echo "Running actr deps install..."
+echo "Running actr install..."
 $ACTR_GEN_CMD deps install || {
-    echo -e "${RED}❌ actr deps install failed (receiver)${NC}"
+    echo -e "${RED}❌ actr install failed (receiver)${NC}"
     exit 1
 }
 OUTPUT_FILE="$LOG_DIR/actr-gen-receiver.log"
@@ -407,15 +407,15 @@ fi
 sleep 2
 
 # Step 4.5: Install sender dependencies and generate code
-# The receiver is now registered with actrix, so actr deps install can
+# The receiver is now registered with actrix, so actr install can
 # discover it via service discovery and resolve the dependency.
 echo ""
-echo "📦 Installing sender dependencies (actr deps install)..."
+echo "📦 Installing sender dependencies (actr install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 cd "$SENDER_DIR"
-echo "Running actr deps install..."
+echo "Running actr install..."
 $ACTR_GEN_CMD deps install || {
-    echo -e "${RED}❌ actr deps install failed (sender)${NC}"
+    echo -e "${RED}❌ actr install failed (sender)${NC}"
     exit 1
 }
 echo -e "${GREEN}✅ Sender dependencies installed${NC}"

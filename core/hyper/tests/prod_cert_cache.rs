@@ -49,6 +49,7 @@ fn make_signed_package(
         signing_key_id: Some(key_id),
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         metadata: actr_pack::ManifestMetadata::default(),
     };
     let opts = actr_pack::PackOptions {
@@ -56,6 +57,7 @@ fn make_signed_package(
         binary_bytes: wasm,
         resources: vec![],
         proto_files: vec![],
+        lock_file: None,
         signing_key: signing_key.clone(),
     };
     actr_pack::pack(&opts).unwrap()

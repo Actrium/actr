@@ -5,13 +5,13 @@ pub enum PackError {
     #[error("invalid package: {0}")]
     InvalidPackage(String),
 
-    #[error("manifest (actr.toml) not found in package")]
+    #[error("manifest.toml not found in package")]
     ManifestNotFound,
 
     #[error("manifest parse error: {0}")]
     ManifestParseError(String),
 
-    #[error("signature (actr.sig) not found in package")]
+    #[error("manifest.sig not found in package")]
     SignatureNotFound,
 
     #[error("binary not found in package: {0}")]
@@ -25,6 +25,9 @@ pub enum PackError {
 
     #[error("proto file hash mismatch: {path}")]
     ProtoHashMismatch { path: String },
+
+    #[error("manifest lock file hash mismatch: {path}")]
+    LockFileHashMismatch { path: String },
 
     #[error("signature verification failed: {0}")]
     SignatureVerificationFailed(String),

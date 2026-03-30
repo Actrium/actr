@@ -9,7 +9,7 @@ const RPC_TIMEOUT_MS = 15000;
 const RPC_PAYLOAD_TYPE: PayloadType = PayloadType.RpcReliable;
 
 async function main(): Promise<void> {
-  const node = await ActrNode.fromConfig('./actr.toml');
+  const node = await ActrNode.fromConfig('./manifest.toml');
   const actorRef = await node.start();
 
   const [target] = await actorRef.discover(

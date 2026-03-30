@@ -1,6 +1,6 @@
 # Actr Python SDK (`actr` + `actr_raw`)
 
-The Python binding is now `package-first`. Source-defined local workloads were removed. The current Python API only creates client-only nodes from `actr.toml`, then uses discovery plus explicit remote calls.
+The Python binding is now `package-first`. Source-defined local workloads were removed. The current Python API only creates client-only nodes from `manifest.toml`, then uses discovery plus explicit remote calls.
 
 ## Quick Start
 
@@ -8,7 +8,7 @@ The Python binding is now `package-first`. Source-defined local workloads were r
 from actr import ActrNode, ActrType, Dest
 
 async def main() -> None:
-    node = await ActrNode.from_toml("actr.toml")
+    node = await ActrNode.from_toml("manifest.toml")
     ref = await node.start()
 
     targets = await ref.discover(ActrType("actrium", "EchoService", "0.2.1-beta"), 1)

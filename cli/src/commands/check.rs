@@ -27,7 +27,7 @@ pub struct CheckCommand {
     #[arg(value_name = "SERVICE_NAME")]
     pub packages: Vec<String>,
 
-    /// Configuration file to load services from (defaults to actr.toml)
+    /// Manifest file to load services from (defaults to manifest.toml)
     #[arg(short = 'f', long = "file")]
     pub config_file: Option<String>,
 
@@ -39,7 +39,7 @@ pub struct CheckCommand {
     #[arg(long, default_value = "10")]
     pub timeout: u64,
 
-    /// Also verify services are installed in Actr.lock.toml
+    /// Also verify services are installed in manifest.lock.toml
     #[arg(long)]
     pub lock: bool,
 }
@@ -47,7 +47,7 @@ pub struct CheckCommand {
 #[async_trait]
 impl Command for CheckCommand {
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult> {
-        let config_path = self.config_file.as_deref().unwrap_or("actr.toml");
+        let config_path = self.config_file.as_deref().unwrap_or("manifest.toml");
 
         let pipeline = {
             let mut container = context.container.lock().unwrap();
@@ -68,8 +68,8 @@ impl Command for CheckCommand {
             return Ok(CommandResult::Error(msg));
         }
 
-        let config = ConfigParser::from_file(config_path)
-            .with_context(|| format!("Failed to load config: {}", config_path))?;
+        let config = ConfigParser::from_manifest_file(config_path)
+            .with_context(|| format!("Failed to load manifest: {}", config_path))?;
 
         println!(
             "🌐 Checking signaling server: {}...",
@@ -148,9 +148,11 @@ impl Command for CheckCommand {
         if self.lock {
             println!("🔒 Verifying lock file integrity...");
             info!("🔒 Verifying lock file integrity...");
-            let lock_path = std::path::Path::new("Actr.lock.toml");
+            let lock_path = std::path::Path::new("manifest.lock.toml");
             if !lock_path.exists() {
-                return Ok(CommandResult::Error("Actr.lock.toml not found".to_string()));
+                return Ok(CommandResult::Error(
+                    "manifest.lock.toml not found".to_string(),
+                ));
             }
 
             let lock_file = actr_config::LockFile::from_file(lock_path)
@@ -172,7 +174,7 @@ impl Command for CheckCommand {
                     }
                 } else {
                     return Ok(CommandResult::Error(format!(
-                        "{} Dependency '{}' not found in Actr.lock.toml",
+                        "{} Dependency '{}' not found in manifest.lock.toml",
                         "❌".red(),
                         spec.alias
                     )));

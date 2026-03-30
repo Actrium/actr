@@ -6,17 +6,19 @@
 //!
 //! ```text
 //! {mfr}-{name}-{version}-{target}.actr
-//! +-- actr.toml           # manifest (TOML)
-//! +-- actr.sig            # Ed25519 signature (64 bytes raw)
+//! +-- manifest.toml       # manifest (TOML, signed payload)
+//! +-- manifest.sig        # Ed25519 signature (64 bytes raw)
+//! +-- manifest.lock.toml  # dependency lock (optional)
 //! +-- bin/actor.wasm      # binary (STORE mode, uncompressed)
+//! +-- proto/*.proto       # exported proto files (optional)
 //! ```
 //!
 //! ## Signing chain
 //!
 //! ```text
-//! binary bytes -> SHA-256 -> actr.toml[binary.hash]
-//!                                  |
-//!                          actr.toml bytes -> Ed25519 sign -> actr.sig
+//! binary bytes -> SHA-256 -> manifest.toml[binary.hash]
+//!                                    |
+//!                          manifest.toml bytes -> Ed25519 sign -> manifest.sig
 //! ```
 
 pub mod error;
@@ -26,8 +28,12 @@ pub mod pack;
 pub mod verify;
 
 pub use error::PackError;
-pub use load::{load_binary, read_manifest, read_manifest_raw, read_proto_files, read_signature};
-pub use manifest::{BinaryEntry, ManifestMetadata, PackageManifest, ProtoFileEntry, ResourceEntry};
+pub use load::{
+    load_binary, read_lock_file, read_manifest, read_manifest_raw, read_proto_files, read_signature,
+};
+pub use manifest::{
+    BinaryEntry, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry, ResourceEntry,
+};
 pub use pack::{PackOptions, pack};
 pub use verify::{VerifiedPackage, verify};
 

@@ -2,7 +2,7 @@
 
 use crate::commands::Command;
 use crate::error::{ActrCliError, Result};
-use crate::utils::{execute_command_streaming, is_actr_project, warn_if_not_actr_project};
+use crate::utils::{execute_command_streaming, warn_if_not_actr_project};
 use actr_config::ConfigParser;
 use async_trait::async_trait;
 use clap::Args;
@@ -24,9 +24,9 @@ impl Command for RunCommand {
 
         let _project_root = std::env::current_dir()?;
 
-        // Load configuration if available
-        let config = if is_actr_project() {
-            Some(ConfigParser::from_file("actr.toml")?)
+        // Load workload manifest if available.
+        let config = if std::path::Path::new("manifest.toml").exists() {
+            Some(ConfigParser::from_manifest_file("manifest.toml")?)
         } else {
             None
         };
@@ -36,7 +36,7 @@ impl Command for RunCommand {
 
         let Some(ref config) = config else {
             return Err(ActrCliError::command_error(
-                "No actr.toml found. Run 'actr init' to create a project.".to_string(),
+                "No manifest.toml found. Run 'actr init' to create a workload project.".to_string(),
             ));
         };
 
@@ -45,7 +45,7 @@ impl Command for RunCommand {
         let Some(command) = config.get_script(script_name) else {
             if available_scripts.is_empty() {
                 return Err(ActrCliError::command_error(
-                    "No scripts defined in actr.toml. Add a [scripts] section.".to_string(),
+                    "No scripts defined in manifest.toml. Add a [scripts] section.".to_string(),
                 ));
             }
             return Err(ActrCliError::command_error(format!(

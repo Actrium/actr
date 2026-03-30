@@ -13,20 +13,20 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         "project.yml",
     )?;
     ProjectTemplate::load_file(
-        &fixtures_root.join("swift/data-stream/actr.toml.hbs"),
+        &fixtures_root.join("swift/data-stream/manifest.toml.hbs"),
         files,
-        "actr.toml",
+        "manifest.toml",
     )?;
-    // Load empty Actr.lock.toml template
+    // Load empty manifest.lock.toml template
     // This is REQUIRED for Swift projects because:
     // 1. project.yml references it as a resource file
     // 2. xcodegen requires all referenced files to exist during project generation
     // 3. The lock file will be populated later by `actr install`
     // See: fixtures/swift/project.yml.hbs:30-32 for the resource reference
     ProjectTemplate::load_file(
-        &fixtures_root.join("swift/Actr.lock.toml.hbs"),
+        &fixtures_root.join("swift/manifest.lock.toml.hbs"),
         files,
-        "Actr.lock.toml",
+        "manifest.lock.toml",
     )?;
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/gitignore.hbs"),

@@ -1,31 +1,21 @@
 edition = 1
-exports = []
 
-[package]
-name = "RelayClient"
-manufacturer = "actr-example"
-version = "1.0.0"
-description = "Media Relay Client - sends media frames to actr-b via WebRTC P2P"
-authors = ["Actr Dev Team"]
-
-[dependencies]
-RelayService = { actr_type = "actr-example:RelayService:1.0.0" }
-
-[system.signaling]
+[signaling]
 url = "ws://localhost:8081/signaling/ws"
 
-[system.ais_endpoint]
+[ais_endpoint]
 url = "http://localhost:8081/ais"
 
-[system.deployment]
+[deployment]
 realm_id = 33554433
 realm_secret = "rs_MediaRelayExampleSecret123"
 
-[system.discovery]
+[discovery]
 visible = true
 
 # ACL configuration - allow actr-b receiver to communicate with us
 # This is BIDIRECTIONAL: we allow RelayService to relay TO us
+
 [acl]
 
 [[acl.rules]]

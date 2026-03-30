@@ -1,0 +1,9 @@
+[package]
+name = "RelayService"
+manufacturer = "actr-example"
+version = "1.0.0"
+description = "Media Relay Receiver - receives media frames via RPC"
+authors = ["Actr Dev Team"]
+
+exports = ["../proto/media_relay.proto"]
+[dependencies]

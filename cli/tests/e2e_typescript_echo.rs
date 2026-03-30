@@ -177,7 +177,8 @@ fn typescript_echo_e2e_service_and_app() {
         &run_npm_with_path(&["run", "typecheck"], &app_dir, &path),
         "npm run typecheck (app)",
     );
-    std::fs::remove_file(app_dir.join("Actr.lock.toml")).expect("failed to remove app lock file");
+    std::fs::remove_file(app_dir.join("manifest.lock.toml"))
+        .expect("failed to remove app lock file");
 
     let mut app = Command::new("npm")
         .args(["run", "dev"])

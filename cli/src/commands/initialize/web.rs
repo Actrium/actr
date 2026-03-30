@@ -49,7 +49,7 @@ impl ProjectInitializer for WebInitializer {
             info!("  cd {}", context.project_dir.display());
         }
         info!("  npm install           # Install dependencies");
-        info!("  actr install          # Create Actr.lock.toml");
+        info!("  actr install          # Create manifest.lock.toml");
         info!(
             "  actr gen -l web       # Generate code (TypeScript types, WASM scaffold, actor.sw.js)"
         );
