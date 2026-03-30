@@ -837,6 +837,7 @@ fn grpc_status_to_response(status: tonic::Status) -> Response {
         tonic::Code::InvalidArgument => StatusCode::BAD_REQUEST,
         tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
         tonic::Code::Unauthenticated => StatusCode::UNAUTHORIZED,
+        tonic::Code::FailedPrecondition | tonic::Code::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
 

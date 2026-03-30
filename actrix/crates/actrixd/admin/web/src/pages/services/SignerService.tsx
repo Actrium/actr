@@ -1,48 +1,52 @@
 import { useEffect, useState, useCallback } from "react";
-import { api, type ServiceDetail, type KeyEntry } from "../../lib/api";
+import { api, type ServiceDetail, type KeyEntry, type ServiceStatus } from "../../lib/api";
 import { ServicePageLayout, ConfigSection, StatusSection } from "../../components/layout/ServicePageLayout";
 import { HowItWorks } from "../../components/ui/HowItWorks";
 import { ServiceMetrics } from "./shared";
 import { CollapsibleCard } from "../../components/ui/CollapsibleCard";
 
-function SignerLifecycleDiagram({ config }: { config: Record<string, unknown> }) {
-  const ttl = Number(config.key_ttl_seconds ?? 3600);
-  const tolerance = Number(config.tolerance_seconds ?? 300);
+const sectionTitleStyle = {
+  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontSize: "15.5px",
+  fontWeight: 700,
+  lineHeight: 1.2,
+  color: "#334155",
+} as const;
 
-  // Timeline proportions
-  const totalSpan = ttl + tolerance;
-  const activeRatio = ttl / totalSpan;
+const sectionSubtitleStyle = {
+  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontSize: "11.5px",
+  lineHeight: 1.45,
+  color: "#64748b",
+} as const;
 
-  // Layout constants
-  const padL = 30;
-  const barW = 520;
-  const barH = 28;
+function IssuanceDiagram() {
+  const totalH = 506;
+  const panelX = 10;
+  const panelW = 880;
 
-  // Top-section columns
-  const aisX = 80;    // AIS center
-  const sgX = 280;    // Signer center
-  const cacheX = 480; // KeyCache center
-  const verX = 640;   // Signaling/TURN center
+  const nodeH = 62;
+  const nodeY = 60;
+  const storageY = nodeY + nodeH + 18;
+  const rotationY = storageY + 54;
 
-  // Lifecycle section y-offsets (shifted down for taller top section)
-  const dividerY = 210;
-  const lcTitleY = dividerY + 20;
-  const barY = dividerY + 58;
-
-  const totalH = barY + barH + 48;
-  const activeW = Math.round(barW * activeRatio);
-  const toleranceW = barW - activeW;
+  const aPanelH = 264;
+  const bPanelY = aPanelH + 20;
+  const bPanelH = 210;
 
   return (
     <svg
-      viewBox={`0 0 720 ${totalH}`}
-      className="max-w-3xl mx-auto"
+      viewBox={`0 0 900 ${totalH}`}
+      role="img"
+      aria-label="Credential Issuance Flow"
+      className="block h-auto w-full"
+      preserveAspectRatio="xMidYMin meet"
       xmlns="http://www.w3.org/2000/svg"
     >
       <defs>
-        <marker id="sgn-ab" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
-          <path d="M0,0 L7,2.5 L0,5" fill="#3b82f6" />
-        </marker>
+        <filter id="sgn-shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.07" />
+        </filter>
         <marker id="sgn-ag" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
           <path d="M0,0 L7,2.5 L0,5" fill="#10b981" />
         </marker>
@@ -52,170 +56,321 @@ function SignerLifecycleDiagram({ config }: { config: Record<string, unknown> })
         <marker id="sgn-ap" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
           <path d="M0,0 L7,2.5 L0,5" fill="#8b5cf6" />
         </marker>
+        <marker id="sgn-at" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#f97316" />
+        </marker>
+        <marker id="sgn-ak" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#22c55e" />
+        </marker>
         <marker id="sgn-ar" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
           <path d="M0,0 L7,2.5 L0,5" fill="#9ca3af" />
         </marker>
+        <marker id="sgn-ab" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#3b82f6" />
+        </marker>
       </defs>
+      <style>{`
+        text { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        .sgn-muted { fill: #64748b; font-size: 11.5px; }
+        .sgn-chip-title { font-size: 10.5px; font-weight: 700; }
+        .sgn-chip-caption, .sgn-arrow-label { font-size: 9.4px; }
+        .sgn-chip-caption { fill: #64748b; }
+        .sgn-node-title { font-size: 12.5px; font-weight: 700; }
+        .sgn-node-subtitle { font-size: 9px; }
+        .sgn-detail-text { font-size: 9px; }
+        .sgn-panel { fill: #ffffff; stroke-width: 1.15px; }
+        .sgn-label-chip { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }
+      `}</style>
 
-      {/* ═══════════════════════════════════════════════════ */}
-      {/* Section 1: Issuance — AIS ↔ Signer ↔ SQLite       */}
-      {/* ═══════════════════════════════════════════════════ */}
+      {/* ── Sub-panel A: Key Lifecycle ── */}
+      <rect x={panelX} y="10" width={panelW} height={aPanelH} rx="16" className="sgn-panel" stroke="#c7d2fe" />
+      <rect x="26" y="24" width="188" height="24" rx="12" fill="#eef2ff" stroke="#a5b4fc" strokeWidth="1" />
+      <text x="120" y="40" textAnchor="middle" className="sgn-chip-title" fill="#4338ca">A · Key Lifecycle</text>
+      <text x="228" y="40" className="sgn-chip-caption">background refresh</text>
 
-      {/* AIS box */}
-      <rect x={aisX - 50} y="10" width="100" height="40" rx="8" fill="#e0e7ff" stroke="#6366f1" strokeWidth="1.5" />
-      <text x={aisX} y="28" textAnchor="middle" fontSize="11" fontWeight="600" fill="#3730a3">AIS</text>
-      <text x={aisX} y="41" textAnchor="middle" fontSize="8" fill="#6366f1">Identity Issuer</text>
+      <rect x="36" y={nodeY} width="136" height={nodeH} rx="14" fill="#eef2ff" stroke="#6366f1" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+      <text x="104" y={nodeY + 24} textAnchor="middle" className="sgn-node-title" fill="#3730a3">AIS</text>
+      <text x="104" y={nodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#6366f1">refresh controller</text>
 
-      {/* Signer box */}
-      <rect x={sgX - 56} y="10" width="112" height="40" rx="8" fill="#fef3c7" stroke="#d97706" strokeWidth="1.5" />
-      <text x={sgX} y="28" textAnchor="middle" fontSize="11" fontWeight="600" fill="#92400e">Signer</text>
-      <text x={sgX} y="41" textAnchor="middle" fontSize="8" fill="#d97706">Signing Oracle</text>
+      <rect x="240" y={nodeY} width="154" height={nodeH} rx="14" fill="#fffbeb" stroke="#d97706" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+      <text x="317" y={nodeY + 24} textAnchor="middle" className="sgn-node-title" fill="#92400e">Signer (KS)</text>
+      <text x="317" y={nodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#d97706">guards private keys</text>
 
-      {/* SQLite box (below Signer) */}
-      <rect x={sgX - 30} y="64" width="60" height="22" rx="4" fill="#f1f5f9" stroke="#94a3b8" strokeWidth="1" />
-      <text x={sgX} y="79" textAnchor="middle" fontSize="8" fontWeight="600" fill="#475569">SQLite</text>
-      <line x1={sgX} y1="50" x2={sgX} y2="64" stroke="#94a3b8" strokeWidth="1" markerEnd="url(#sgn-ar)" />
-      <text x={sgX + 36} y="73" fontSize="6.5" fill="#94a3b8">signing keys</text>
+      <line x1="317" y1={nodeY + nodeH} x2="317" y2={storageY} stroke="#f59e0b" strokeWidth="1.2" strokeDasharray="4 3" markerEnd="url(#sgn-at)" />
+      <rect x="244" y={storageY} width="146" height="30" rx="10" fill="#fff7ed" stroke="#fdba74" strokeWidth="1" />
+      <text x="317" y={storageY + 12} textAnchor="middle" fontSize="8.8" fontWeight="700" fill="#9a3412">Signer storage backend</text>
+      <text x="317" y={storageY + 23} textAnchor="middle" fontSize="7.8" fill="#c2410c">private keys never leave process</text>
 
-      {/* ① AIS → Signer: GenerateSigningKey */}
-      <line x1={aisX + 50} y1="20" x2={sgX - 58} y2="20" stroke="#3b82f6" strokeWidth="1.5" markerEnd="url(#sgn-ab)" />
-      <text x={(aisX + sgX) / 2} y="16" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#3b82f6">① GenerateSigningKey</text>
+      <rect x="472" y={nodeY} width="146" height={nodeH} rx="14" fill="#f8fafc" stroke="#94a3b8" strokeWidth="1.3" filter="url(#sgn-shadow)" />
+      <text x="545" y={nodeY + 24} textAnchor="middle" fontSize="11.2" fontWeight="600" fill="#334155">ais_keys.db</text>
+      <text x="545" y={nodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#64748b">AIS private verifier cache</text>
 
-      {/* Signer → AIS: key_id + verifying_key */}
-      <line x1={sgX - 58} y1="32" x2={aisX + 50} y2="32" stroke="#10b981" strokeWidth="1.5" markerEnd="url(#sgn-ag)" />
-      <text x={(aisX + sgX) / 2} y="44" textAnchor="middle" fontSize="7" fill="#10b981">key_id + verifying_key</text>
+      <rect x="642" y={nodeY} width="166" height={nodeH} rx="14" fill="#f0fdf4" stroke="#22c55e" strokeWidth="1.3" filter="url(#sgn-shadow)" />
+      <text x="725" y={nodeY + 24} textAnchor="middle" fontSize="11.2" fontWeight="600" fill="#166534">signaling_key_cache.db</text>
+      <text x="725" y={nodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#16a34a">shared verifier store</text>
 
-      {/* ② AIS → Signer: Sign(key_id, msg) */}
-      <line x1={aisX + 50} y1="58" x2={sgX - 58} y2="58" stroke="#6366f1" strokeWidth="1.2" strokeDasharray="3 2" markerEnd="url(#sgn-ap)" />
-      <text x={(aisX + sgX) / 2} y="55" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#6366f1">② Sign(key_id, msg)</text>
+      <line x1="172" y1={nodeY + 24} x2="240" y2={nodeY + 24} stroke="#6366f1" strokeWidth="1.6" markerEnd="url(#sgn-ap)" />
+      <rect x="146" y={nodeY - 18} width="120" height="16" rx="8" className="sgn-label-chip" />
+      <text x="206" y={nodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#4338ca">GenerateSigningKey RPC</text>
 
-      {/* Signer → AIS: 64-byte signature */}
-      <line x1={sgX - 58} y1="70" x2={aisX + 50} y2="70" stroke="#10b981" strokeWidth="1.2" strokeDasharray="3 2" markerEnd="url(#sgn-ag)" />
-      <text x={(aisX + sgX) / 2} y="81" textAnchor="middle" fontSize="7" fill="#10b981">64-byte Ed25519 signature</text>
+      <line x1="240" y1={nodeY + 42} x2="172" y2={nodeY + 42} stroke="#10b981" strokeWidth="1.5" markerEnd="url(#sgn-ag)" />
+      <rect x="142" y={nodeY + 52} width="128" height="16" rx="8" className="sgn-label-chip" />
+      <text x="206" y={nodeY + 64} textAnchor="middle" className="sgn-arrow-label" fill="#059669">key_id + verifier + expiry</text>
 
-      {/* Cluster-private label */}
-      <text x={(aisX + sgX) / 2} y="96" textAnchor="middle" fontSize="6.5" fill="#94a3b8">
-        gRPC · nonce-auth · cluster-private
-      </text>
+      <line x1="394" y1={nodeY + 24} x2="472" y2={nodeY + 24} stroke="#94a3b8" strokeWidth="1.4" markerEnd="url(#sgn-ar)" />
+      <rect x="373" y={nodeY - 18} width="120" height="16" rx="8" className="sgn-label-chip" />
+      <text x="433" y={nodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#64748b">store active verifier</text>
 
-      {/* ═══════════════════════════════════════════════════ */}
-      {/* Section 2: Key distribution + verification         */}
-      {/* ═══════════════════════════════════════════════════ */}
+      <path d={`M 394 ${nodeY + 46} Q 520 ${storageY + 26} 642 ${nodeY + 46}`} fill="none" stroke="#22c55e" strokeWidth="1.4" markerEnd="url(#sgn-ak)" />
+      <rect x="444" y={storageY + 12} width="148" height="16" rx="8" className="sgn-label-chip" />
+      <text x="518" y={storageY + 24} textAnchor="middle" className="sgn-arrow-label" fill="#16a34a">propagate to shared cache</text>
 
-      {/* KeyCache box */}
-      <rect x={cacheX - 56} y="10" width="112" height="40" rx="8" fill="#ecfdf5" stroke="#22c55e" strokeWidth="1.2" />
-      <text x={cacheX} y="28" textAnchor="middle" fontSize="10" fontWeight="600" fill="#166534">KeyCache</text>
-      <text x={cacheX} y="41" textAnchor="middle" fontSize="7" fill="#16a34a">shared SQLite</text>
+      <rect x="36" y={rotationY} width="828" height="40" rx="12" fill="#fff7ed" stroke="#fed7aa" strokeWidth="1" />
+      <text x="450" y={rotationY + 16} textAnchor="middle" fontSize="9.6" fontWeight="700" fill="#92400e">⟳ Background rotation</text>
+      <text x="450" y={rotationY + 29} textAnchor="middle" className="sgn-detail-text" fill="#b45309">Check every 10 min: rotate on near-expiry, or when periodic interval reached</text>
 
-      {/* Signaling / TURN box */}
-      <rect x={verX - 48} y="10" width="96" height="40" rx="8" fill="#f5f3ff" stroke="#8b5cf6" strokeWidth="1.2" />
-      <text x={verX} y="24" textAnchor="middle" fontSize="9" fontWeight="600" fill="#5b21b6">Signaling</text>
-      <text x={verX} y="35" textAnchor="middle" fontSize="9" fontWeight="600" fill="#5b21b6">TURN</text>
-      <text x={verX} y="46" textAnchor="middle" fontSize="7" fill="#a78bfa">verifiers</text>
+      {/* ── Sub-panel B: Per-Request Issuance ── */}
+      <rect x={panelX} y={bPanelY} width={panelW} height={bPanelH} rx="16" className="sgn-panel" stroke="#a7f3d0" />
+      <rect x="26" y={bPanelY + 14} width="206" height="24" rx="12" fill="#ecfdf5" stroke="#6ee7b7" strokeWidth="1" />
+      <text x="129" y={bPanelY + 30} textAnchor="middle" className="sgn-chip-title" fill="#065f46">B · Per-Request Issuance</text>
+      <text x="248" y={bPanelY + 30} className="sgn-chip-caption">on every RegisterRequest</text>
 
-      {/* ③ AIS → KeyCache: persist verifying key */}
-      <line x1={aisX + 50} y1="100" x2={cacheX - 58} y2="100" stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#sgn-ag)" />
-      <text x={(aisX + cacheX) / 2} y="97" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#22c55e">③ persist_key(key_id, verifying_key)</text>
+      <rect x="36" y={bPanelY + 54} width="144" height={nodeH} rx="14" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+      <text x="108" y={bPanelY + 78} textAnchor="middle" className="sgn-node-title" fill="#1e40af">Actor Peer</text>
+      <text x="108" y={bPanelY + 96} textAnchor="middle" className="sgn-node-subtitle" fill="#2563eb">requests registration</text>
 
-      {/* AIS lifeline down to step ③ */}
-      <line x1={aisX} y1="50" x2={aisX} y2="100" stroke="#c7d2fe" strokeWidth="1" strokeDasharray="4 3" />
+      <rect x="258" y={bPanelY + 54} width="240" height={nodeH} rx="14" fill="#eef2ff" stroke="#6366f1" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+      <text x="378" y={bPanelY + 74} textAnchor="middle" className="sgn-node-title" fill="#3730a3">AIS</text>
+      <text x="378" y={bPanelY + 90} textAnchor="middle" className="sgn-chip-caption" fill="#6366f1">verify MFR • build claims • select active key</text>
+      <text x="378" y={bPanelY + 102} textAnchor="middle" className="sgn-chip-caption" fill="#6366f1">call Sign RPC • assemble credential bundle</text>
 
-      {/* Actor Peer box (center-bottom) */}
-      <rect x={aisX - 50} y="132" width="100" height="34" rx="6" fill="#dbeafe" stroke="#3b82f6" strokeWidth="1.2" />
-      <text x={aisX} y="148" textAnchor="middle" fontSize="9" fontWeight="600" fill="#1e40af">Actor Peer</text>
-      <text x={aisX} y="160" textAnchor="middle" fontSize="7" fill="#60a5fa">client</text>
+      <rect x="664" y={bPanelY + 54} width="144" height={nodeH} rx="14" fill="#fffbeb" stroke="#d97706" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+      <text x="736" y={bPanelY + 78} textAnchor="middle" className="sgn-node-title" fill="#92400e">Signer (KS)</text>
+      <text x="736" y={bPanelY + 96} textAnchor="middle" className="sgn-node-subtitle" fill="#d97706">returns signature bytes</text>
 
-      {/* ④ AIS → Actor: AIdCredential */}
-      <line x1={aisX} y1="106" x2={aisX} y2="132" stroke="#3b82f6" strokeWidth="1.2" markerEnd="url(#sgn-ab)" />
-      <text x={aisX + 60} y="120" fontSize="7.5" fontWeight="600" fill="#3b82f6">④ AIdCredential</text>
-      <text x={aisX + 60} y="130" fontSize="6.5" fill="#64748b">key_id + claims + signature</text>
+      <line x1="180" y1={bPanelY + 80} x2="258" y2={bPanelY + 80} stroke="#3b82f6" strokeWidth="1.6" markerEnd="url(#sgn-ab)" />
+      <rect x="163" y={bPanelY + 58} width="112" height="16" rx="8" className="sgn-label-chip" />
+      <text x="219" y={bPanelY + 70} textAnchor="middle" className="sgn-arrow-label" fill="#1d4ed8">identity + attestation</text>
 
-      {/* ⑤ Actor → Signaling/TURN: present credential */}
-      <line x1={aisX + 50} y1="149" x2={verX - 50} y2="149" stroke="#8b5cf6" strokeWidth="1.2" markerEnd="url(#sgn-ap)" />
-      <text x={(aisX + verX) / 2} y="143" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#8b5cf6">⑤ present AIdCredential</text>
+      <line x1="498" y1={bPanelY + 80} x2="664" y2={bPanelY + 80} stroke="#d97706" strokeWidth="1.6" markerEnd="url(#sgn-ao)" />
+      <rect x="493" y={bPanelY + 58} width="176" height="16" rx="8" className="sgn-label-chip" />
+      <text x="581" y={bPanelY + 70} textAnchor="middle" className="sgn-arrow-label" fill="#92400e">Sign RPC: key_id + claims_bytes</text>
 
-      {/* ⑥ Signaling/TURN → KeyCache: lookup verifying key */}
-      <line x1={verX - 48} y1="60" x2={cacheX + 58} y2="60" stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#sgn-ag)" />
-      <text x={(verX + cacheX) / 2} y="57" textAnchor="middle" fontSize="7.5" fontWeight="600" fill="#22c55e">⑥ lookup(key_id)</text>
+      <line x1="664" y1={bPanelY + 96} x2="498" y2={bPanelY + 96} stroke="#10b981" strokeWidth="1.5" markerEnd="url(#sgn-ag)" />
+      <rect x="537" y={bPanelY + 106} width="88" height="16" rx="8" className="sgn-label-chip" />
+      <text x="581" y={bPanelY + 118} textAnchor="middle" className="sgn-arrow-label" fill="#059669">signature bytes</text>
 
-      {/* KeyCache → Signaling/TURN: verifying key */}
-      <line x1={cacheX + 58} y1="72" x2={verX - 48} y2="72" stroke="#22c55e" strokeWidth="1.2" strokeDasharray="3 2" markerEnd="url(#sgn-ag)" />
-      <text x={(verX + cacheX) / 2} y="84" textAnchor="middle" fontSize="7" fill="#16a34a">Ed25519 verifying key</text>
+      <line x1="258" y1={bPanelY + 96} x2="180" y2={bPanelY + 96} stroke="#10b981" strokeWidth="1.6" markerEnd="url(#sgn-ag)" />
+      <rect x="154" y={bPanelY + 106} width="130" height="16" rx="8" className="sgn-label-chip" />
+      <text x="219" y={bPanelY + 118} textAnchor="middle" className="sgn-arrow-label" fill="#059669">RegisterResponse bundle</text>
 
-      {/* Verification lifelines */}
-      <line x1={verX} y1="50" x2={verX} y2="149" stroke="#ddd6fe" strokeWidth="1" strokeDasharray="4 3" />
+      <rect x="36" y={bPanelY + 130} width="828" height="34" rx="10" fill="#f8fafc" stroke="#dbe4f0" strokeWidth="1" />
+      <text x="450" y={bPanelY + 144} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#166534">Response bundle</text>
+      <text x="450" y={bPanelY + 157} textAnchor="middle" className="sgn-detail-text" fill="#16a34a">AIdCredential + TurnCredential + Verifier + KeyID</text>
 
-      {/* GetVerifyingKey (remote/cluster) note */}
-      <rect x={sgX + 62} y="130" width="138" height="28" rx="5" fill="#faf5ff" stroke="#ddd6fe" strokeWidth="0.8" />
-      <text x={sgX + 131} y="143" textAnchor="middle" fontSize="7" fill="#8b5cf6">GetVerifyingKey (gRPC)</text>
-      <text x={sgX + 131} y="153" textAnchor="middle" fontSize="6.5" fill="#a78bfa">for remote/clustered verifiers</text>
-
-      {/* Auth note */}
-      <text x="360" y={dividerY - 8} textAnchor="middle" fontSize="7" fill="#94a3b8">
-        Signer RPCs authenticated via nonce-auth (HMAC-SHA256 + one-time nonce)
-      </text>
-
-      {/* ═══════════════════════════════════════════════════ */}
-      {/* Section 3: Key Lifecycle timeline                  */}
-      {/* ═══════════════════════════════════════════════════ */}
-
-      <line x1="16" y1={dividerY} x2="704" y2={dividerY} stroke="#e2e8f0" strokeWidth="1" />
-
-      <text x={padL} y={lcTitleY} fontSize="10" fontWeight="600" fill="#475569">Key Lifecycle</text>
-      <text x={padL} y={lcTitleY + 14} fontSize="8" fill="#94a3b8">
-        total validity = {ttl}s active + {tolerance}s tolerance
-      </text>
-
-      {/* Timeline bar — Active */}
-      <rect x={padL} y={barY} width={activeW} height={barH} rx="4"
-        fill="#dcfce7" stroke="#22c55e" strokeWidth="1.2" />
-      <text x={padL + activeW / 2} y={barY + 12} textAnchor="middle"
-        fontSize="9" fontWeight="600" fill="#166534">
-        Active ({ttl}s)
-      </text>
-      <text x={padL + activeW / 2} y={barY + 23} textAnchor="middle"
-        fontSize="7" fill="#16a34a">
-        sign + verify
-      </text>
-
-      {/* Timeline bar — Tolerance */}
-      <rect x={padL + activeW} y={barY} width={toleranceW} height={barH} rx="4"
-        fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.2" />
-      <text x={padL + activeW + toleranceW / 2} y={barY + 12} textAnchor="middle"
-        fontSize="9" fontWeight="600" fill="#92400e">
-        Tolerance ({tolerance}s)
-      </text>
-      <text x={padL + activeW + toleranceW / 2} y={barY + 23} textAnchor="middle"
-        fontSize="7" fill="#b45309">
-        verify only
-      </text>
-
-      {/* Time markers */}
-      <line x1={padL} y1={barY + barH + 4} x2={padL} y2={barY + barH + 14}
-        stroke="#64748b" strokeWidth="1" />
-      <text x={padL} y={barY + barH + 24} textAnchor="middle" fontSize="8" fill="#64748b">
-        Created
-      </text>
-
-      <line x1={padL + activeW} y1={barY + barH + 4} x2={padL + activeW} y2={barY + barH + 14}
-        stroke="#64748b" strokeWidth="1" />
-      <text x={padL + activeW} y={barY + barH + 24} textAnchor="middle" fontSize="8" fill="#64748b">
-        Expires
-      </text>
-
-      <line x1={padL + barW} y1={barY + barH + 4} x2={padL + barW} y2={barY + barH + 14}
-        stroke="#64748b" strokeWidth="1" />
-      <text x={padL + barW} y={barY + barH + 24} textAnchor="middle" fontSize="8" fill="#64748b">
-        Cleanup
-      </text>
-
-      {/* Cleanup note */}
-      <text x={padL + barW + 12} y={barY + barH + 24} fontSize="7" fill="#94a3b8">
-        lazy, every 100 reqs, min 10 keys
-      </text>
+      <text x="450" y={bPanelY + 188} textAnchor="middle" className="sgn-muted">AIS ↔ Signer transport: cluster-private gRPC with nonce-auth</text>
     </svg>
   );
 }
+
+function VerificationDiagram() {
+  const totalH = 472;
+  const panelX = 10;
+  const panelW = 880;
+  const nodeH = 62;
+
+  const cPanelY = 10;
+  const cPanelH = 218;
+  const dPanelY = cPanelY + cPanelH + 16;
+  const dPanelH = 218;
+
+  return (
+    <svg
+      viewBox={`0 0 900 ${totalH}`}
+      role="img"
+      aria-label="Runtime Verification Flow"
+      className="block h-auto w-full"
+      preserveAspectRatio="xMidYMin meet"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <filter id="sgn-shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.07" />
+        </filter>
+        <marker id="sgn-ag" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#10b981" />
+        </marker>
+        <marker id="sgn-ap" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#8b5cf6" />
+        </marker>
+        <marker id="sgn-at" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#f97316" />
+        </marker>
+        <marker id="sgn-ak" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+          <path d="M0,0 L7,2.5 L0,5" fill="#22c55e" />
+        </marker>
+      </defs>
+      <style>{`
+        text { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        .sgn-muted { fill: #64748b; font-size: 11.5px; }
+        .sgn-chip-title { font-size: 10.5px; font-weight: 700; }
+        .sgn-chip-caption, .sgn-arrow-label { font-size: 9.4px; }
+        .sgn-chip-caption { fill: #64748b; }
+        .sgn-node-title { font-size: 12.5px; font-weight: 700; }
+        .sgn-node-subtitle { font-size: 9px; }
+        .sgn-panel { fill: #ffffff; stroke-width: 1.15px; }
+        .sgn-label-chip { fill: #ffffff; stroke: #e2e8f0; stroke-width: 1; }
+      `}</style>
+
+      {/* ── Sub-panel C: Signaling path ── */}
+      <rect x={panelX} y={cPanelY} width={panelW} height={cPanelH} rx="16" className="sgn-panel" stroke="#c4b5fd" />
+      <rect x="26" y={cPanelY + 14} width="172" height="24" rx="12" fill="#ede9fe" stroke="#a78bfa" strokeWidth="1" />
+      <text x="112" y={cPanelY + 28} textAnchor="middle" className="sgn-chip-title" fill="#5b21b6">C · Signaling Path</text>
+      <text x="218" y={cPanelY + 28} className="sgn-chip-caption">offline Ed25519 verification</text>
+
+      {(() => {
+        const peerX = panelX + 24;
+        const sigX = panelX + 252;
+        const kcX = panelX + 552;
+        const cNodeY = cPanelY + 72;
+        return (
+          <>
+            <rect x={peerX} y={cNodeY} width="140" height={nodeH} rx="14" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+            <text x={peerX + 70} y={cNodeY + 24} textAnchor="middle" className="sgn-node-title" fill="#1e40af">Actor Peer</text>
+            <text x={peerX + 70} y={cNodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#2563eb">opens WebSocket session</text>
+
+            <rect x={sigX} y={cNodeY} width="220" height={nodeH} rx="14" fill="#f5f3ff" stroke="#8b5cf6" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+            <text x={sigX + 110} y={cNodeY + 20} textAnchor="middle" className="sgn-node-title" fill="#5b21b6">Signaling</text>
+            <text x={sigX + 110} y={cNodeY + 36} textAnchor="middle" className="sgn-chip-caption" fill="#7c3aed">Ed25519 check • decode claims</text>
+            <text x={sigX + 110} y={cNodeY + 48} textAnchor="middle" className="sgn-chip-caption" fill="#7c3aed">check expires • realm • actor_id</text>
+
+            <rect x={kcX} y={cNodeY} width="194" height={nodeH} rx="14" fill="#f0fdf4" stroke="#22c55e" strokeWidth="1.3" filter="url(#sgn-shadow)" />
+            <text x={kcX + 97} y={cNodeY + 24} textAnchor="middle" fontSize="11.2" fontWeight="600" fill="#166534">signaling_key_cache.db</text>
+            <text x={kcX + 97} y={cNodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#16a34a">lookup verifier by key_id</text>
+
+            <line x1={peerX + 140} y1={cNodeY + 16} x2={sigX} y2={cNodeY + 16} stroke="#8b5cf6" strokeWidth="1.6" markerEnd="url(#sgn-ap)" />
+            <rect x={154} y={cNodeY - 18} width="128" height="16" rx="8" className="sgn-label-chip" />
+            <text x={218} y={cNodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#7c3aed">upgrade request + credential</text>
+
+            <line x1={sigX + 220} y1={cNodeY + 16} x2={kcX} y2={cNodeY + 16} stroke="#22c55e" strokeWidth="1.5" markerEnd="url(#sgn-ak)" />
+            <rect x={467} y={cNodeY - 18} width="110" height="16" rx="8" className="sgn-label-chip" />
+            <text x={522} y={cNodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#16a34a">resolve verifier locally</text>
+
+            <line x1={kcX} y1={cNodeY + 48} x2={sigX + 220} y2={cNodeY + 48} stroke="#22c55e" strokeWidth="1.4" strokeDasharray="5 4" markerEnd="url(#sgn-ak)" />
+            <rect x={480} y={cNodeY + 66} width="84" height="16" rx="8" className="sgn-label-chip" />
+            <text x={522} y={cNodeY + 78} textAnchor="middle" className="sgn-arrow-label" fill="#16a34a">verifier material</text>
+
+            <line x1={sigX} y1={cNodeY + 48} x2={peerX + 140} y2={cNodeY + 48} stroke="#10b981" strokeWidth="1.4" strokeDasharray="5 4" markerEnd="url(#sgn-ag)" />
+            <rect x={158} y={cNodeY + 66} width="120" height="16" rx="8" className="sgn-label-chip" />
+            <text x={218} y={cNodeY + 78} textAnchor="middle" className="sgn-arrow-label" fill="#059669">session accepted or denied</text>
+          </>
+        );
+      })()}
+      <text x="450" y={cPanelY + cPanelH - 18} textAnchor="middle" className="sgn-muted">AIS propagates verifying keys to shared store; Signaling verifies locally without calling Signer</text>
+
+      {/* ── Sub-panel D: TURN path ── */}
+      <rect x={panelX} y={dPanelY} width={panelW} height={dPanelH} rx="16" className="sgn-panel" stroke="#fed7aa" />
+      <rect x="26" y={dPanelY + 14} width="148" height="24" rx="12" fill="#ffedd5" stroke="#fdba74" strokeWidth="1" />
+      <text x="100" y={dPanelY + 30} textAnchor="middle" className="sgn-chip-title" fill="#9a3412">D · TURN Path</text>
+      <text x="192" y={dPanelY + 30} className="sgn-chip-caption">independent HMAC-SHA1 auth</text>
+
+      {(() => {
+        const peerX = panelX + 24;
+        const turnX = panelX + 250;
+        const stepsX = panelX + 514;
+        const dNodeY = dPanelY + 74;
+        return (
+          <>
+            <rect x={peerX} y={dNodeY} width="150" height={nodeH} rx="14" fill="#eff6ff" stroke="#3b82f6" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+            <text x={peerX + 75} y={dNodeY + 24} textAnchor="middle" className="sgn-node-title" fill="#1e40af">Actor Peer</text>
+            <text x={peerX + 75} y={dNodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#2563eb">uses turn_credential</text>
+
+            <rect x={turnX} y={dNodeY} width="160" height={nodeH} rx="14" fill="#fff7ed" stroke="#f97316" strokeWidth="1.6" filter="url(#sgn-shadow)" />
+            <text x={turnX + 80} y={dNodeY + 24} textAnchor="middle" className="sgn-node-title" fill="#9a3412">TURN</text>
+            <text x={turnX + 80} y={dNodeY + 42} textAnchor="middle" className="sgn-node-subtitle" fill="#ea580c">TURN auth handler</text>
+
+            <rect x={stepsX} y={dNodeY - 2} width="282" height="72" rx="14" fill="#fefce8" stroke="#fde68a" strokeWidth="1.2" />
+            <text x={stepsX + 141} y={dNodeY + 18} textAnchor="middle" fontSize="9.2" fontWeight="700" fill="#92400e">TURN auth_handle steps</text>
+            <text x={stepsX + 141} y={dNodeY + 34} textAnchor="middle" className="sgn-arrow-label" fill="#b45309">split username → expires_at + actor_id</text>
+            <text x={stepsX + 141} y={dNodeY + 48} textAnchor="middle" className="sgn-arrow-label" fill="#b45309">reject expired credential before auth</text>
+            <text x={stepsX + 141} y={dNodeY + 62} textAnchor="middle" className="sgn-arrow-label" fill="#b45309">derive HMAC-SHA1 password → MD5 key</text>
+
+            <line x1={peerX + 150} y1={dNodeY + 16} x2={turnX} y2={dNodeY + 16} stroke="#f97316" strokeWidth="1.6" markerEnd="url(#sgn-at)" />
+            <rect x={159} y={dNodeY - 18} width="126" height="16" rx="8" className="sgn-label-chip" />
+            <text x={222} y={dNodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#ea580c">time-limited TURN credential</text>
+
+            <line x1={turnX + 160} y1={dNodeY + 16} x2={stepsX} y2={dNodeY + 16} stroke="#f97316" strokeWidth="1.4" markerEnd="url(#sgn-at)" />
+            <rect x={430} y={dNodeY - 18} width="84" height="16" rx="8" className="sgn-label-chip" />
+            <text x={472} y={dNodeY - 6} textAnchor="middle" className="sgn-arrow-label" fill="#ea580c">run auth_handle</text>
+
+            <line x1={stepsX} y1={dNodeY + 48} x2={turnX + 160} y2={dNodeY + 48} stroke="#10b981" strokeWidth="1.3" strokeDasharray="5 4" markerEnd="url(#sgn-ag)" />
+            <rect x={406} y={dNodeY + 66} width="132" height="16" rx="8" className="sgn-label-chip" />
+            <text x={472} y={dNodeY + 78} textAnchor="middle" className="sgn-arrow-label" fill="#059669">derived integrity key</text>
+
+            <line x1={turnX} y1={dNodeY + 48} x2={peerX + 150} y2={dNodeY + 48} stroke="#10b981" strokeWidth="1.3" strokeDasharray="5 4" markerEnd="url(#sgn-ag)" />
+            <rect x={161} y={dNodeY + 66} width="122" height="16" rx="8" className="sgn-label-chip" />
+            <text x={222} y={dNodeY + 78} textAnchor="middle" className="sgn-arrow-label" fill="#059669">allow or reject allocation</text>
+          </>
+        );
+      })()}
+      <text x="450" y={dPanelY + dPanelH - 18} textAnchor="middle" className="sgn-muted">AIS issues TurnCredential; TURN validates independently without Ed25519 state</text>
+    </svg>
+  );
+}
+
+function KeyLifecycleBar({ config }: { config: Record<string, unknown> }) {
+  const ttl = Number(config.key_ttl_seconds ?? 3600);
+  const tolerance = Number(config.tolerance_seconds ?? 300);
+  const totalSpan = ttl + tolerance;
+  const activePercent = Math.max(8, (ttl / totalSpan) * 100);
+  const tolerancePercent = Math.max(8, 100 - activePercent);
+
+  return (
+    <div className="w-full">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="text-[11.5px] text-slate-500">
+          Total validity = {ttl}s active + {tolerance}s tolerance
+        </p>
+        <span className="max-w-full rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10.5px] font-bold leading-4 text-slate-500 uppercase tracking-tight">
+          cleanup deletes keys only after tolerance
+        </span>
+      </div>
+
+      <div className="mt-4 overflow-hidden rounded-[14px] border border-slate-200 bg-slate-50">
+        <div className="flex h-12 text-[12.5px] font-bold">
+          <div
+            className="flex items-center justify-center bg-emerald-100 text-emerald-800"
+            style={{ width: `${activePercent}%` }}
+          >
+            Active ({ttl}s)
+          </div>
+          <div
+            className="flex items-center justify-center bg-amber-100 text-amber-800"
+            style={{ width: `${tolerancePercent}%` }}
+          >
+            Tolerance ({tolerance}s)
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 text-[11.5px] text-slate-600 md:grid-cols-3">
+        <div className="rounded-[14px] border border-emerald-100 bg-emerald-50 p-4">
+          <p className="font-bold text-emerald-700">Created → Expires</p>
+          <p className="mt-1.5 leading-relaxed">Active signing window. Signer can sign new payloads, and verifiers accept the key as fresh.</p>
+        </div>
+        <div className="rounded-[14px] border border-amber-100 bg-amber-50 p-4">
+          <p className="font-bold text-amber-700">Expires → Cleanup</p>
+          <p className="mt-1.5 leading-relaxed">Grace period. New signing has moved to a fresher key, but verifiers still accept this key to support late-arriving credentials.</p>
+        </div>
+        <div className="rounded-[14px] border border-slate-200 bg-slate-50 p-4">
+          <p className="font-bold text-slate-700">After cleanup</p>
+          <p className="mt-1.5 leading-relaxed">The key is purged from verifier caches. Any remaining credentials using this key will now fail verification.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 export function SignerService() {
   const [data, setData] = useState<ServiceDetail | null>(null);
@@ -224,19 +379,52 @@ export function SignerService() {
   const [error, setError] = useState("");
   const [cleaning, setCleaning] = useState(false);
   const [cleanupMsg, setCleanupMsg] = useState("");
+  const fallbackConfig: Record<string, unknown> = {
+    key_ttl_seconds: 3600,
+    tolerance_seconds: 86400,
+  };
+
+  function buildFallbackDetail(status: ServiceStatus | null): ServiceDetail {
+    return {
+      enabled: status != null,
+      status,
+      config: fallbackConfig,
+    };
+  }
+
+  function applyFallbackState(status: ServiceStatus | null) {
+    setData(buildFallbackDetail(status));
+    setKeys([]);
+    setTotalCount(0);
+    setError("");
+  }
 
   const fetchData = useCallback(async () => {
+    const keysPromise = api.getSignerKeys().catch(() => ({ keys: [], total_count: 0 }));
+
     try {
-      const [d, k] = await Promise.all([
+      const [detail, k] = await Promise.all([
         api.getServiceDetail("signer"),
-        api.getSignerKeys().catch(() => ({ keys: [], total_count: 0 })),
+        keysPromise,
       ]);
-      setData(d);
+      setData(detail);
       setKeys(k.keys);
       setTotalCount(k.total_count);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load");
+      try {
+        const [{ services }, k] = await Promise.all([
+          api.getServices(),
+          keysPromise,
+        ]);
+        const signerStatus = services.find((service) => service.name === "signer") ?? null;
+        setData(buildFallbackDetail(signerStatus));
+        setKeys(k.keys);
+        setTotalCount(k.total_count);
+        setError("");
+      } catch {
+        applyFallbackState(null);
+      }
     }
   }, []);
 
@@ -246,15 +434,9 @@ export function SignerService() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  if (error && !data) {
-    return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-        {error}
-      </div>
-    );
-  }
+  const diagramConfig = data?.config ?? fallbackConfig;
 
-  if (!data) {
+  if (!data && !error) {
     return <div className="text-sm text-gray-500">Loading...</div>;
   }
 
@@ -263,73 +445,137 @@ export function SignerService() {
       title="Signer Service"
       description="Signing Oracle — generates Ed25519 key pairs and signs on behalf of AIS; private keys never leave the process"
     >
-      <StatusSection
-        enabled={data.enabled}
-        healthy={data.status?.is_healthy}
-        disabledHint={<>This service is not enabled. Set the Signer bit (bit 4) in the <code>enable</code> bitmask to activate it.</>}
-      />
-
-      {data.enabled && <ServiceMetrics status={data.status} storageKey="signer" />}
-
-      {data.config && (
-        <HowItWorks storageKey="signer">
-          <p className="text-xs text-gray-500 mb-4">
-            Signer is a cluster-private signing oracle. AIS calls <strong>①&nbsp;GenerateSigningKey</strong> to
-            create an Ed25519 key pair — the signing key (private) stays in Signer's SQLite and is never
-            exposed. When issuing credentials, AIS calls <strong>②&nbsp;Sign</strong> with
-            a <code className="text-[11px] bg-gray-100 px-1 rounded">key_id</code> and message; Signer returns a
-            64-byte signature. AIS then <strong>③&nbsp;persists the verifying key</strong> (public) into a
-            shared KeyCache (SQLite) so local verifiers can look it up. The issued
-            <strong> ④&nbsp;AIdCredential</strong> (key_id + claims + signature) is sent to the Actor Peer, who
-            later <strong>⑤&nbsp;presents</strong> it to Signaling or TURN.
-            Those verifiers <strong>⑥&nbsp;lookup</strong> the verifying key from the shared KeyCache by key_id
-            and verify the Ed25519 signature locally — no round-trip to Signer needed.
-            A separate <strong>GetVerifyingKey</strong> gRPC exists for remote/clustered verifiers
-            that don't share the local KeyCache.
-          </p>
-          <SignerLifecycleDiagram config={data.config} />
-
-          <div className="mt-5 space-y-2 text-xs text-gray-500 border-t border-gray-100 pt-4">
-            <p className="font-semibold text-gray-600">Key concepts</p>
-            <ul className="list-disc pl-4 space-y-1.5">
-              <li>
-                <strong className="text-gray-600">Cluster-private</strong> — Signer is never exposed to
-                external clients. Only AIS communicates with it via authenticated gRPC (nonce-auth).
-              </li>
-              <li>
-                <strong className="text-gray-600">Private key isolation</strong> — Ed25519 signing keys
-                never leave Signer. AIS receives only the verifying key (public) and signatures;
-                all signing happens inside Signer's process boundary.
-              </li>
-              <li>
-                <strong className="text-gray-600">KeyCache distribution</strong> — AIS persists verifying
-                keys into a shared SQLite KeyCache. Signaling and TURN read from this cache to
-                verify AIdCredentials locally — zero network calls to Signer at verification time.
-              </li>
-              <li>
-                <strong className="text-gray-600">GetVerifyingKey (gRPC)</strong> — available for
-                remote/clustered verifiers that can't access the local KeyCache. Not used in
-                single-node deployments.
-              </li>
-              <li>
-                <strong className="text-gray-600">key_ttl_seconds</strong> — how long a key pair is
-                active for signing + verification. AIS refreshes before expiry.
-              </li>
-              <li>
-                <strong className="text-gray-600">tolerance_seconds</strong> — grace period after
-                expiry. Verification still works (old credentials remain valid);
-                new signing uses a fresher key.
-              </li>
-            </ul>
-          </div>
-        </HowItWorks>
+      {error && !data && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
       )}
 
-      {data.config_fields && (
+      {data && (
+        <StatusSection
+          enabled={data.enabled}
+          healthy={data.status?.is_healthy}
+          disabledHint={
+            <>
+              This service is not enabled. Set the Signer bit (bit 4) in the <code>enable</code> bitmask to activate it.
+              The issuance and verification diagrams below still describe the runtime design.
+            </>
+          }
+        />
+      )}
+
+      {data?.enabled && <ServiceMetrics status={data.status} storageKey="signer" />}
+
+      <HowItWorks storageKey="signer_v3" defaultExpanded>
+        {/* ── Concept cards ── */}
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl border border-gray-100 bg-white px-4 py-4">
+            <p className="text-sm font-semibold text-gray-700">1. Signing boundary</p>
+            <p className="mt-1.5 text-xs text-gray-500">
+              AIS asks Signer to generate keys and sign payloads. Private Ed25519 keys stay inside Signer's configured storage backend.
+            </p>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-white px-4 py-4">
+            <p className="text-sm font-semibold text-gray-700">2. Verifier distribution</p>
+            <p className="mt-1.5 text-xs text-gray-500">
+              AIS persists the verifier into local <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">ais_keys.db</code> and shared <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">signaling_key_cache.db</code> so Signaling verifies locally.
+            </p>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-white px-4 py-4">
+            <p className="text-sm font-semibold text-gray-700">3. TURN split</p>
+            <p className="mt-1.5 text-xs text-gray-500">
+              TURN does not verify Ed25519. It only checks the HMAC-SHA1 credential derived from{" "}
+              <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">turn_secret</code>.
+            </p>
+          </div>
+        </div>
+
+        {/* ── Section 1: Issuance ── */}
+        <div className="mt-10">
+          <h3 style={sectionTitleStyle}>1. Credential Issuance</h3>
+          <p className="mt-1" style={sectionSubtitleStyle}>
+            AIS refreshes verifier material in the background, then signs each register flow through cluster-private RPC.
+          </p>
+          <div className="mt-4 w-full rounded-[24px] border border-blue-100 bg-white p-4 sm:p-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+            <IssuanceDiagram />
+          </div>
+        </div>
+
+        {/* ── Section 2: Verification ── */}
+        <div className="mt-10">
+          <h3 style={sectionTitleStyle}>2. Runtime Verification</h3>
+          <p className="mt-1" style={sectionSubtitleStyle}>
+            Signaling verifies Ed25519 locally with shared verifier store, while TURN follows its own HMAC-SHA1 path.
+          </p>
+          <div className="mt-4 w-full rounded-[24px] border border-purple-100 bg-white p-4 sm:p-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+            <VerificationDiagram />
+          </div>
+        </div>
+
+        {/* ── Section 3: Bundle ── */}
+        <div className="mt-10">
+          <h3 style={sectionTitleStyle}>3. Credential Bundle</h3>
+          <p className="mt-1" style={sectionSubtitleStyle}>
+            AIS returns two credential families together: Ed25519-backed identity material and the separate TURN HMAC credential.
+          </p>
+          <div className="mt-4 w-full rounded-[24px] border border-violet-100 bg-white p-4 sm:p-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-[14px] border border-violet-100 bg-violet-50 p-5 text-[11.5px] text-slate-600">
+                <div className="inline-flex items-center rounded-full border border-violet-200 bg-white px-3 py-1 text-[10.5px] font-bold text-violet-700 uppercase tracking-tight">
+                  Ed25519 path
+                </div>
+                <p className="mt-4 text-[12.5px] font-bold text-violet-700">AIdCredential</p>
+                <p className="mt-2 leading-relaxed">Claims + <code className="rounded bg-white px-1.5 py-0.5 text-[10.5px] font-bold">key_id</code> + Ed25519 signature</p>
+              </div>
+              <div className="rounded-[14px] border border-orange-100 bg-orange-50 p-5 text-[11.5px] text-slate-600">
+                <div className="inline-flex items-center rounded-full border border-orange-200 bg-white px-3 py-1 text-[10.5px] font-bold text-orange-700 uppercase tracking-tight">
+                  TURN path
+                </div>
+                <p className="mt-4 text-[12.5px] font-bold text-orange-700">TurnCredential</p>
+                <p className="mt-2 leading-relaxed">Username = <code className="rounded bg-white px-1.5 py-0.5 text-[10.5px] font-bold">expires:actor_id</code></p>
+                <p className="mt-1 leading-relaxed">Password = HMAC-SHA1(secret, username)</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Section 4: Lifecycle ── */}
+        <div className="mt-10">
+          <h3 style={sectionTitleStyle}>4. Signing Key Lifecycle</h3>
+          <p className="mt-1" style={sectionSubtitleStyle}>
+            Key validity keeps a clear active window followed by a grace period so older credentials can still verify before cleanup.
+          </p>
+          <div className="mt-4 w-full rounded-[24px] border border-indigo-100 bg-white p-4 sm:p-6 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+            <KeyLifecycleBar config={diagramConfig} />
+          </div>
+        </div>
+
+        {/* ── Key concepts ── */}
+        <div className="mt-8 rounded-2xl border border-gray-100 bg-gray-50/50 px-5 py-5">
+          <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest">Key concepts</p>
+          <ul className="mt-3 space-y-2 text-[12px] text-gray-500 list-disc pl-5">
+            <li className="leading-relaxed">
+              <strong className="text-gray-700 font-semibold">Signer boundary</strong> — private Ed25519 keys stay inside Signer's storage backend; AIS only receives the verifying key, expiry metadata, and signatures.
+            </li>
+            <li className="leading-relaxed">
+              <strong className="text-gray-700 font-semibold">Local verification</strong> — AIS persists verifying keys into shared KeyCache; Signaling verifies AIdCredentials locally by <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">key_id</code> without a Signer round-trip.
+            </li>
+            <li className="leading-relaxed">
+              <strong className="text-gray-700 font-semibold">TURN is separate</strong> — TURN does not use KeyCache or Ed25519; it independently validates the HMAC-SHA1 credential derived from <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">turn_secret</code>.
+            </li>
+            <li className="leading-relaxed">
+              <strong className="text-gray-700 font-semibold">Lifecycle window</strong> — <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">key_ttl_seconds</code> defines the active window; <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">tolerance_seconds</code> keeps old credentials verifiable until cleanup.
+            </li>
+          </ul>
+        </div>
+      </HowItWorks>
+
+      {data?.config_fields && (
         <ConfigSection storageKey="signer" fields={data.config_fields} onRefresh={fetchData} />
       )}
 
-      <CollapsibleCard storageKey="signer_keys" title="Keys">
+      {data?.enabled && (
+        <CollapsibleCard storageKey="signer_keys" title="Keys">
         <div className="flex items-center justify-between mb-3">
           <span className="text-xs text-gray-500">
             {keys.length} of {totalCount} total
@@ -407,7 +653,8 @@ export function SignerService() {
             </table>
           </div>
         )}
-      </CollapsibleCard>
+        </CollapsibleCard>
+      )}
     </ServicePageLayout>
   );
 }

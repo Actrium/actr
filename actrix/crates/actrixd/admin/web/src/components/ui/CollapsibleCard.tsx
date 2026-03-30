@@ -43,9 +43,9 @@ export function CollapsibleCard({
   const Icon = expanded ? ChevronUp : ChevronDown;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white">
+    <div className="w-full rounded-xl border border-gray-200 bg-white">
       <div
-        className="flex items-center justify-between px-5 py-3 cursor-pointer select-none"
+        className="flex cursor-pointer select-none items-center justify-between px-4 py-3 lg:px-5"
         onClick={toggle}
       >
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
@@ -62,7 +62,7 @@ export function CollapsibleCard({
           <Icon size={16} />
         </button>
       </div>
-      {expanded && <div className="px-5 pb-5">{children}</div>}
+      {expanded && <div className="px-4 pb-4 lg:px-5 lg:pb-5">{children}</div>}
     </div>
   );
 }

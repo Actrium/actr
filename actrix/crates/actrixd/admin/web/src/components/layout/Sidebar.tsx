@@ -188,7 +188,7 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-r border-gray-200 bg-white transition-[width] duration-200",
+        "sticky top-0 flex h-screen shrink-0 self-start flex-col border-r border-gray-200 bg-white transition-[width] duration-200",
         collapsed ? "w-16" : "w-56",
       )}
     >
@@ -242,7 +242,7 @@ export function Sidebar() {
         </div>
       </div>
 
-      <nav className={cn("flex-1 space-y-1", collapsed ? "p-2" : "p-3")}>
+      <nav className={cn("min-h-0 flex-1 space-y-1 overflow-y-auto", collapsed ? "p-2" : "p-3")}>
         <NavItems items={navItems} collapsed={collapsed} />
 
         {/* Services section */}
