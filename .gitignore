@@ -47,6 +47,9 @@ examples/rust/wasm-echo/guest/built/
 examples/rust/dynclib-echo/guest/target/
 core/hyper/tests/wasm_actor_fixture/built/
 
+# echo-actr built artifacts
+examples/rust/echo-actr/dist/
+
 # Python ignore
 __pycache__/
 *.py[cod]

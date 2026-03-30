@@ -40,7 +40,7 @@ PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
 SERVER_DIR="$PACKAGE_ECHO_DIR/server"
 CLIENT_DIR="$PACKAGE_ECHO_DIR/client"
 CLIENT_GUEST_DIR="$PACKAGE_ECHO_DIR/client-guest"
-ECHO_ACTR_DIR="$ACTRIUM_DIR/echo-actr"
+ECHO_ACTR_DIR="$WORKSPACE_ROOT/echo-actr"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
