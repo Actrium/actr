@@ -7,7 +7,6 @@
 
 use crate::transport::InprocTransportManager;
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
 use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
 use std::sync::Arc;
 
@@ -132,13 +131,10 @@ impl InprocOutGate {
     /// Uses PayloadType::RpcReliable with no identifier
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "InprocOutGate.send_message", fields(target = ?target.to_string_repr()))
+        tracing::instrument(skip_all, name = "InprocOutGate.send_message", fields(target = %target))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!(
-            "InprocOutGate::send_message to {:?}",
-            target.to_string_repr()
-        );
+        tracing::debug!("InprocOutGate::send_message to {}", target);
 
         // Default to Reliable (no identifier)
         self.transport

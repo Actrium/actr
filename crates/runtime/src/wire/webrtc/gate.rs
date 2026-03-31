@@ -10,7 +10,7 @@ use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_mailbox::{Mailbox, MessagePriority};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, oneshot};
@@ -98,12 +98,19 @@ impl WebRtcGate {
             RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>,
         >,
         mailbox: Arc<dyn Mailbox>,
+        local_id: Option<ActrId>,
     ) {
+        #[cfg(not(feature = "opentelemetry"))]
+        let _ = &local_id;
         // Extract and set tracing context from envelope
         #[cfg(feature = "opentelemetry")]
         {
             use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
-            let span = tracing::info_span!("webrtc.receive_rpc", request_id = %envelope.request_id);
+            let span = if let Some(ref id) = local_id {
+                tracing::info_span!("webrtc.receive_rpc", request_id = %envelope.request_id, actr_id = %id)
+            } else {
+                tracing::info_span!("webrtc.receive_rpc", request_id = %envelope.request_id)
+            };
             set_parent_from_rpc_envelope(&span, &envelope);
             let _guard = span.enter();
         }
@@ -117,7 +124,7 @@ impl WebRtcGate {
             tracing::debug!(
                 "📬 Received RPC Response: request_id={}, target={}",
                 request_id,
-                target.to_string_repr()
+                target
             );
 
             // Convert envelope to result
@@ -148,10 +155,11 @@ impl WebRtcGate {
             // Convert Bytes to Vec<u8> (Mailbox uses Vec)
             match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
                 Ok(msg_id) => {
-                    tracing::debug!(
-                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
-                        msg_id,
-                        priority
+                    tracing::info!(
+                        request_id = %request_id,
+                        msg_id = %msg_id,
+                        priority = ?priority,
+                        "rpc.mailbox.enqueue"
                     );
                 }
                 Err(e) => {
@@ -180,6 +188,7 @@ impl WebRtcGate {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
+        let local_id = self.local_id.clone();
 
         tokio::spawn(async move {
             loop {
@@ -198,9 +207,14 @@ impl WebRtcGate {
                                 // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
+                                        let current_local_id = local_id.read().await.clone();
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
-                                            let span = tracing::info_span!("webrtc.receive_rpc");
+                                            let span = if let Some(ref id) = current_local_id {
+                                                tracing::info_span!("webrtc.receive_rpc", actr_id = %id)
+                                            } else {
+                                                tracing::info_span!("webrtc.receive_rpc")
+                                            };
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
                                         };
@@ -211,6 +225,7 @@ impl WebRtcGate {
                                             payload_type,
                                             pending_requests.clone(),
                                             mailbox.clone(),
+                                            current_local_id,
                                         );
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_envelope_fut =

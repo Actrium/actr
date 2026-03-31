@@ -140,16 +140,32 @@ where
         create_default_fmt_layer().with_filter(env_filter).boxed()
     };
 
-    // Add OTel layer if enabled (unfiltered - tracing benefits from all events)
+    // Add OTel layer if enabled (with noise filter for third-party libraries)
     let mut tracer_provider = None;
     if cfg.tracing_enabled {
         let provider = build_otel_provider(cfg)?;
         let tracer = provider.tracer("actr-runtime");
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
+        // Default OTel filter: use the configured filter_level (typically "info") so that
+        // debug-level spans (heartbeat, send_envelope, etc.) are excluded from export.
+        // Also suppress noisy third-party library spans regardless of level.
+        // Users can override via OTEL_SPAN_FILTER env var for fine-grained control.
+        let otel_filter_directive = std::env::var("OTEL_SPAN_FILTER")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "{},tungstenite=error,tokio_tungstenite=error,wasmtime=warn,webrtc_mdns::conn=warn,webrtc_ice::agent::agent_internal=warn,webrtc_sctp=warn",
+                    cfg.filter_level
+                )
+            });
+        let otel_filter =
+            EnvFilter::try_new(otel_filter_directive).unwrap_or_else(|_| EnvFilter::new("info"));
+
         let _ = tracing_subscriber::registry()
             .with(filtered_output_layer)
-            .with(otel_layer)
+            .with(otel_layer.with_filter(otel_filter))
             .try_init();
         tracer_provider = Some(provider);
     } else {

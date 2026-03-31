@@ -124,6 +124,26 @@ impl ActrIdExt for ActrId {
     }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Display trait implementations
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+impl std::fmt::Display for ActrType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}+{}", self.manufacturer, self.name)
+    }
+}
+
+impl std::fmt::Display for ActrId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:x}@{}:{}+{}",
+            self.serial_number, self.realm.realm_id, self.r#type.manufacturer, self.r#type.name
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
