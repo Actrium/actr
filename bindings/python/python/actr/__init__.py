@@ -52,10 +52,11 @@ class ActrNode:
     @staticmethod
     async def from_toml(path: str):
         """
-        Create a client-only ActrNode from a TOML configuration file.
+        Create a client-only ActrNode from `manifest.toml`.
+        The sibling `actr.toml` in the same directory is loaded automatically.
 
         Args:
-            path: Path to TOML configuration file
+            path: Path to manifest.toml
 
         Returns:
             ActrNode instance

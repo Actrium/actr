@@ -2,10 +2,18 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::types::{ActrId, ActrType, PayloadType};
+use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::Dest;
 use actr_hyper::{
     ActrNode as RuntimeActrNode, ActrRef as RuntimeActrRef, Hyper, HyperConfig, TrustMode,
 };
+
+fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig, actr_config::ConfigError> {
+    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
+    let runtime_path = manifest.config_dir.join("actr.toml");
+
+    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
+}
 
 #[napi]
 pub struct ActrNode {
@@ -14,11 +22,10 @@ pub struct ActrNode {
 
 #[napi]
 impl ActrNode {
-    /// Create a client-only ActrNode directly from a config file path.
+    /// Create a client-only ActrNode from manifest.toml and the sibling actr.toml.
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
-        let config = actr_config::ConfigParser::from_manifest_file(&config_path)
-            .map_err(crate::error::config_error_to_napi)?;
+        let config = load_runtime_config(&config_path).map_err(crate::error::config_error_to_napi)?;
 
         crate::logger::init_observability(config.observability.clone());
 

@@ -1,6 +1,6 @@
 # Actr Python SDK (`actr` + `actr_raw`)
 
-The Python binding is now `package-first`. Source-defined local workloads were removed. The current Python API only creates client-only nodes from `manifest.toml`, then uses discovery plus explicit remote calls.
+The Python binding is now `package-first`. Source-defined local workloads were removed. The current Python API creates client-only nodes from `manifest.toml` and auto-loads the sibling `actr.toml`, then uses discovery plus explicit remote calls.
 
 ## Quick Start
 
@@ -26,7 +26,8 @@ async def main() -> None:
 
 ## API
 
-- `ActrNode.from_toml(path)` creates a client-only node.
+- `ActrNode.from_toml(path)` creates a client-only node from `manifest.toml`
+  and auto-loads `actr.toml` from the same directory.
 - `ActrRef.discover(actr_type, count=1)` discovers remote actors.
 - `ActrRef.call(target, route_key, request, timeout_ms=30000, payload_type=...)` sends a remote RPC.
 - `ActrRef.tell(target, route_key, message, payload_type=...)` sends a one-way remote message.
