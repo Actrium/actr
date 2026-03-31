@@ -36,9 +36,8 @@ test = "cargo test"
     assert_eq!(config.package.name, "test-service");
     assert_eq!(config.package.actr_type.manufacturer, "test-company");
     assert_eq!(config.package.actr_type.name, "test-service");
-    // realm and signaling_url are not set from manifest.toml (they come from actr.toml)
-    assert!(config.realm.is_none());
-    assert!(config.signaling_url.is_none());
+    // ManifestConfig does not carry runtime fields (realm, signaling_url, ais_endpoint)
+    // — those live in RuntimeConfig (parsed from actr.toml).
 
     // Verify scripts
     assert_eq!(config.scripts.get("dev"), Some(&"cargo run".to_string()));

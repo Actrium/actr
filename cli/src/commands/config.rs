@@ -28,6 +28,10 @@ const KNOWN_KEYS: &[&str] = &[
     "ui.verbose",
     "ui.color",
     "ui.non_interactive",
+    "discovery.signaling_url",
+    "discovery.ais_endpoint",
+    "discovery.realm_id",
+    "discovery.realm_secret",
 ];
 
 #[derive(Args, Clone)]
@@ -129,10 +133,7 @@ impl ConfigCommand {
     fn write_scope(&self) -> ConfigScope {
         if self.global {
             ConfigScope::Global
-        } else if self.local
-            || Path::new("manifest.toml").exists()
-            || Path::new(".actr").exists()
-        {
+        } else if self.local || Path::new("manifest.toml").exists() || Path::new(".actr").exists() {
             ConfigScope::Local
         } else {
             ConfigScope::Global
@@ -432,6 +433,30 @@ impl ConfigCommand {
             format!("ui.verbose = {}", effective.ui.verbose),
             format!("ui.color = {}", effective.ui.color),
             format!("ui.non_interactive = {}", effective.ui.non_interactive),
+            format!(
+                "discovery.signaling_url = {}",
+                effective.discovery.signaling_url
+            ),
+            format!(
+                "discovery.ais_endpoint = {}",
+                effective.discovery.ais_endpoint
+            ),
+            format!(
+                "discovery.realm_id = {}",
+                effective
+                    .discovery
+                    .realm_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "<not set>".to_string())
+            ),
+            format!(
+                "discovery.realm_secret = {}",
+                effective
+                    .discovery
+                    .realm_secret
+                    .as_deref()
+                    .unwrap_or("<not set>")
+            ),
         ];
         Ok(CommandResult::Success(lines.join("\n")))
     }
@@ -479,7 +504,10 @@ impl ConfigCommand {
                 if let Some(config) = load_cli_config(&path)? {
                     config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
                 }
-                lines.push(format!("{} Global config syntax and schema are valid", "✅".green()));
+                lines.push(format!(
+                    "{} Global config syntax and schema are valid",
+                    "✅".green()
+                ));
                 lines.push(path.display().to_string());
             }
             ConfigScope::Local => {
@@ -487,7 +515,10 @@ impl ConfigCommand {
                 if let Some(config) = load_cli_config(&path)? {
                     config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
                 }
-                lines.push(format!("{} Local config syntax and schema are valid", "✅".green()));
+                lines.push(format!(
+                    "{} Local config syntax and schema are valid",
+                    "✅".green()
+                ));
                 lines.push(path.display().to_string());
             }
             ConfigScope::Merged => {
@@ -496,16 +527,28 @@ impl ConfigCommand {
 
                 if let Some(config) = load_cli_config(&global_path)? {
                     config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
-                    lines.push(format!("{} Global config parsed and validated", "✅".green()));
+                    lines.push(format!(
+                        "{} Global config parsed and validated",
+                        "✅".green()
+                    ));
                 } else {
-                    lines.push(format!("{} Global config not found (using defaults)", "ℹ️".cyan()));
+                    lines.push(format!(
+                        "{} Global config not found (using defaults)",
+                        "ℹ️".cyan()
+                    ));
                 }
 
                 if let Some(config) = load_cli_config(&local_path)? {
                     config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
-                    lines.push(format!("{} Local config parsed and validated", "✅".green()));
+                    lines.push(format!(
+                        "{} Local config parsed and validated",
+                        "✅".green()
+                    ));
                 } else {
-                    lines.push(format!("{} Local config not found (using defaults)", "ℹ️".cyan()));
+                    lines.push(format!(
+                        "{} Local config not found (using defaults)",
+                        "ℹ️".cyan()
+                    ));
                 }
 
                 // Validate the merged result
@@ -532,7 +575,11 @@ fn value_to_bool(v: &Value, key: &str) -> Result<bool> {
         Value::String(s) => match s.as_str() {
             "true" => Ok(true),
             "false" => Ok(false),
-            other => bail!("Key '{}' expects a boolean (true/false), got '{}'", key, other),
+            other => bail!(
+                "Key '{}' expects a boolean (true/false), got '{}'",
+                key,
+                other
+            ),
         },
         other => bail!("Key '{}' expects a boolean, got {:?}", key, other),
     }

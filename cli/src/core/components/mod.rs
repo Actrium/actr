@@ -17,10 +17,10 @@ pub use dependency_resolver::DefaultDependencyResolver;
 pub use fingerprint_validator::DefaultFingerprintValidator;
 pub use network_validator::DefaultNetworkValidator;
 pub use proto_processor::DefaultProtoProcessor;
-pub use service_discovery::NetworkServiceDiscovery;
+pub use service_discovery::{DiscoveryContext, NetworkServiceDiscovery};
 pub use user_interface::ConsoleUI;
 
-use actr_config::Config;
+use actr_config::ManifestConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -180,10 +180,10 @@ impl ValidationReport {
 #[async_trait]
 pub trait ConfigManager: Send + Sync {
     /// Load configuration file
-    async fn load_config(&self, path: &Path) -> Result<Config>;
+    async fn load_config(&self, path: &Path) -> Result<ManifestConfig>;
 
     /// Save configuration file
-    async fn save_config(&self, config: &Config, path: &Path) -> Result<()>;
+    async fn save_config(&self, config: &ManifestConfig, path: &Path) -> Result<()>;
 
     /// Update dependency configuration
     async fn update_dependency(&self, spec: &DependencySpec) -> Result<()>;
@@ -228,7 +228,7 @@ pub struct ConfigBackup {
 #[async_trait]
 pub trait DependencyResolver: Send + Sync {
     /// Parse dependencies from config
-    async fn resolve_spec(&self, config: &Config) -> Result<Vec<DependencySpec>>;
+    async fn resolve_spec(&self, config: &ManifestConfig) -> Result<Vec<DependencySpec>>;
 
     /// Resolve dependencies and fetch proto files
     async fn resolve_dependencies(

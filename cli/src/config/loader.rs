@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 /// Returns the path to the global user-level config file: ~/.actr/config.toml
 pub fn global_config_path() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
     Ok(home.join(".actr").join("config.toml"))
 }
 

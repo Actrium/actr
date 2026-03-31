@@ -609,7 +609,7 @@ impl Hyper {
     pub async fn attach_package(
         &self,
         package: &WorkloadPackage,
-        config: actr_config::Config,
+        config: actr_config::RuntimeConfig,
     ) -> HyperResult<crate::lifecycle::ActrNode> {
         let loaded = self.load_workload_package(package).await?;
         let packaged_lock = actr_pack::read_lock_file(package.bytes())

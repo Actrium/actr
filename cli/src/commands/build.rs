@@ -81,7 +81,12 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
             .exports
             .iter()
             .map(|pf| ProtoFile {
-                name: pf.file_name().unwrap_or("unknown.proto").to_string(),
+                name: pf
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.proto")
+                    .to_string(),
                 content: pf.content.clone(),
                 path: Some(pf.path.to_string_lossy().to_string()),
             })

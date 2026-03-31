@@ -6,8 +6,8 @@ use crate::assets::FixtureAssets;
 use crate::commands::Command;
 use crate::error::{ActrCliError, Result};
 use crate::project_language::DetectedProjectLanguage;
-use actr_config::Config;
 use actr_config::ConfigParser;
+use actr_config::ManifestConfig;
 use async_trait::async_trait;
 use clap::Args;
 use handlebars::Handlebars;
@@ -169,7 +169,7 @@ impl DocCommand {
 
     fn create_base_context(
         &self,
-        config: &Option<Config>,
+        config: &Option<ManifestConfig>,
         title: &str,
         active_nav: &str,
     ) -> BaseContext {
@@ -206,7 +206,7 @@ impl DocCommand {
     async fn generate_index_html(
         &self,
         output_dir: &str,
-        config: &Option<Config>,
+        config: &Option<ManifestConfig>,
         hb: &Handlebars<'_>,
     ) -> Result<()> {
         debug!("Generating index.html...");
@@ -308,7 +308,7 @@ impl DocCommand {
     async fn generate_api_html(
         &self,
         output_dir: &str,
-        config: &Option<Config>,
+        config: &Option<ManifestConfig>,
         hb: &Handlebars<'_>,
     ) -> Result<()> {
         debug!("Generating api.html...");
@@ -351,7 +351,7 @@ impl DocCommand {
     async fn generate_config_html(
         &self,
         output_dir: &str,
-        config: &Option<Config>,
+        config: &Option<ManifestConfig>,
         hb: &Handlebars<'_>,
     ) -> Result<()> {
         debug!("Generating config.html...");

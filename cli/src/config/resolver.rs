@@ -4,7 +4,9 @@
 //! a fully-resolved `EffectiveCliConfig` with no optional fields.
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
-use super::schema::{CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, UiConfig};
+use super::schema::{
+    CacheConfig, CliConfig, CodegenConfig, DiscoveryConfig, InitConfig, InstallConfig, UiConfig,
+};
 use anyhow::Result;
 
 /// Fully-resolved CLI configuration with all defaults applied.
@@ -20,6 +22,7 @@ pub struct EffectiveCliConfig {
     pub install: EffectiveInstallConfig,
     pub cache: EffectiveCacheConfig,
     pub ui: EffectiveUiConfig,
+    pub discovery: EffectiveDiscoveryConfig,
 }
 
 /// Resolved init settings
@@ -56,6 +59,25 @@ pub struct EffectiveUiConfig {
     pub verbose: bool,
     pub color: String,
     pub non_interactive: bool,
+}
+
+/// Resolved service discovery settings
+///
+/// Used by CLI discovery commands (check, install, discovery).
+/// Note: realm_id is Option because it has no default value and must be explicitly configured.
+#[derive(Debug, Clone)]
+pub struct EffectiveDiscoveryConfig {
+    /// Signaling server URL (default: ws://localhost:8081/signaling/ws)
+    pub signaling_url: String,
+
+    /// AIS endpoint (default: http://localhost:8081/ais)
+    pub ais_endpoint: String,
+
+    /// Realm ID (no default - must be configured)
+    pub realm_id: Option<u32>,
+
+    /// Realm secret (optional)
+    pub realm_secret: Option<String>,
 }
 
 impl Default for EffectiveCliConfig {
@@ -109,6 +131,12 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
                 color: o.ui.color.or(b.ui.color),
                 non_interactive: o.ui.non_interactive.or(b.ui.non_interactive),
             },
+            discovery: DiscoveryConfig {
+                signaling_url: o.discovery.signaling_url.or(b.discovery.signaling_url),
+                ais_endpoint: o.discovery.ais_endpoint.or(b.discovery.ais_endpoint),
+                realm_id: o.discovery.realm_id.or(b.discovery.realm_id),
+                realm_secret: o.discovery.realm_secret.or(b.discovery.realm_secret),
+            },
         },
     }
 }
@@ -132,16 +160,25 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
             prefer_cache: cfg.install.prefer_cache.unwrap_or(true),
         },
         cache: EffectiveCacheConfig {
-            dir: cfg
-                .cache
-                .dir
-                .unwrap_or_else(|| "~/.actr/cache".to_string()),
+            dir: cfg.cache.dir.unwrap_or_else(|| "~/.actr/cache".to_string()),
         },
         ui: EffectiveUiConfig {
             format: cfg.ui.format.unwrap_or_else(|| "toml".to_string()),
             verbose: cfg.ui.verbose.unwrap_or(false),
             color: cfg.ui.color.unwrap_or_else(|| "auto".to_string()),
             non_interactive: cfg.ui.non_interactive.unwrap_or(false),
+        },
+        discovery: EffectiveDiscoveryConfig {
+            signaling_url: cfg
+                .discovery
+                .signaling_url
+                .unwrap_or_else(|| "ws://localhost:8081/signaling/ws".to_string()),
+            ais_endpoint: cfg
+                .discovery
+                .ais_endpoint
+                .unwrap_or_else(|| "http://localhost:8081/ais".to_string()),
+            realm_id: cfg.discovery.realm_id,
+            realm_secret: cfg.discovery.realm_secret,
         },
     }
 }
@@ -207,5 +244,74 @@ mod tests {
     fn test_effective_cli_config_default() {
         let effective = EffectiveCliConfig::default();
         assert_eq!(effective.init.manufacturer, "acme");
+    }
+
+    #[test]
+    fn test_discovery_defaults() {
+        let config = CliConfig::default();
+        let effective = apply_defaults(config);
+        assert_eq!(
+            effective.discovery.signaling_url,
+            "ws://localhost:8081/signaling/ws"
+        );
+        assert_eq!(
+            effective.discovery.ais_endpoint,
+            "http://localhost:8081/ais"
+        );
+        assert!(effective.discovery.realm_id.is_none());
+        assert!(effective.discovery.realm_secret.is_none());
+    }
+
+    #[test]
+    fn test_discovery_merge_overlay_wins() {
+        let base = CliConfig {
+            discovery: DiscoveryConfig {
+                signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
+                realm_id: Some(1000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let overlay = CliConfig {
+            discovery: DiscoveryConfig {
+                signaling_url: Some("ws://overlay:8081/signaling/ws".to_string()),
+                realm_id: Some(2000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = merge_configs(Some(base), Some(overlay));
+        assert_eq!(
+            merged.discovery.signaling_url.as_deref(),
+            Some("ws://overlay:8081/signaling/ws")
+        );
+        assert_eq!(merged.discovery.realm_id, Some(2000));
+    }
+
+    #[test]
+    fn test_discovery_partial_override() {
+        let base = CliConfig {
+            discovery: DiscoveryConfig {
+                signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
+                realm_id: Some(1000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let overlay = CliConfig {
+            discovery: DiscoveryConfig {
+                realm_id: Some(2000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = merge_configs(Some(base), Some(overlay));
+        // signaling_url from base
+        assert_eq!(
+            merged.discovery.signaling_url.as_deref(),
+            Some("ws://base:8081/signaling/ws")
+        );
+        // realm_id from overlay
+        assert_eq!(merged.discovery.realm_id, Some(2000));
     }
 }

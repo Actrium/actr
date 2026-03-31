@@ -3,9 +3,8 @@
 //! Configuration parsers for workload manifests and Hyper runtime config.
 //!
 //! This crate provides a two-layer configuration system:
-//! - `ManifestRawConfig`: Direct TOML mapping for `manifest.toml`
-//! - `RuntimeRawConfig`: Direct TOML mapping for `actr.toml`
-//! - `Config`: Fully parsed and validated final configuration
+//! - `ManifestRawConfig` / `ManifestConfig`: Parsed from `manifest.toml` (package metadata)
+//! - `RuntimeRawConfig` / `RuntimeConfig`: Parsed from `actr.toml` (deployment config)
 //!
 //! The parser uses an edition-based system, allowing the configuration format
 //! to evolve over time while maintaining backward compatibility.
@@ -16,15 +15,15 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use actr_config::ConfigParser;
 //!
-//! // Parse configuration from file
-//! let config = ConfigParser::from_manifest_file("manifest.toml")?;
+//! // Parse manifest.toml (workload package metadata)
+//! let manifest = ConfigParser::from_manifest_file("manifest.toml")?;
+//! println!("Package: {}", manifest.package.name);
 //!
-//! // Access parsed values
-//! println!("Package: {}", config.package.name);
-//! // Realm comes from actr.toml, not manifest.toml
-//! if let Some(realm) = &config.realm {
-//!     println!("Realm: {}", realm.realm_id);
-//! }
+//! // Parse actr.toml (runtime deployment config) — requires package info
+//! let package = manifest.package.clone();
+//! let runtime = ConfigParser::from_runtime_file("actr.toml", package, manifest.tags.clone())?;
+//! println!("Signaling: {}", runtime.signaling_url);
+//! println!("Realm: {}", runtime.realm.realm_id);
 //! # Ok(())
 //! # }
 //! ```
@@ -44,6 +43,9 @@ pub use error::*;
 pub use lock::*;
 pub use parser::*;
 pub use raw::*;
+
+/// Re-export the new config types
+pub use config::{ManifestConfig, RuntimeConfig};
 
 /// Re-export commonly used types
 pub use serde::{Deserialize, Serialize};

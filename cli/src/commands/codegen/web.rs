@@ -228,6 +228,10 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
 
     let raw_toml = std::fs::read_to_string(&context.config_path).unwrap_or_default();
 
+    // Resolve CLI config for runtime-specific fields (signaling_url, realm_id).
+    // ManifestConfig does not carry these fields; they come from CLI discovery config.
+    let cli_config = crate::config::resolver::resolve_effective_cli_config().ok();
+
     // Map dependencies
     let dependencies: Vec<DependencyInfo> = config
         .dependencies
@@ -241,31 +245,18 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
         })
         .collect();
 
-    // ICE servers → stun/turn URLs
-    let stun_urls: Vec<String> = config
-        .webrtc
-        .ice_servers
-        .iter()
-        .flat_map(|s| s.urls.iter())
-        .filter(|u| u.starts_with("stun:"))
-        .cloned()
-        .collect();
-    let turn_urls: Vec<String> = config
-        .webrtc
-        .ice_servers
-        .iter()
-        .flat_map(|s| s.urls.iter())
-        .filter(|u| u.starts_with("turn:"))
-        .cloned()
-        .collect();
+    // ICE servers — ManifestConfig does not carry webrtc config (that belongs to RuntimeConfig /
+    // actr.toml). Web clients discover ICE servers at runtime; default to empty lists here.
+    let stun_urls: Vec<String> = Vec::new();
+    let turn_urls: Vec<String> = Vec::new();
 
-    // Observability
-    let obs = &config.observability;
+    // Observability — ManifestConfig does not carry observability config (RuntimeConfig only).
+    // Use sensible defaults so the generated TypeScript client can be overridden at runtime.
     let observability = ObservabilityInfo {
-        filter_level: obs.filter_level.clone(),
-        tracing_enabled: obs.tracing_enabled,
-        tracing_endpoint: obs.tracing_endpoint.clone(),
-        tracing_service_name: obs.tracing_service_name.clone(),
+        filter_level: "info".to_string(),
+        tracing_enabled: false,
+        tracing_endpoint: "http://localhost:4317".to_string(),
+        tracing_service_name: config.package.name.clone(),
     };
 
     // Map proto model services
@@ -302,9 +293,15 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
             .clone()
             .unwrap_or_else(|| "Apache-2.0".to_string()),
         tags: config.tags.clone(),
-        signaling_url: config.signaling_url.as_ref().map(|u| u.to_string()).unwrap_or_default(),
-        realm_id: config.realm.as_ref().map(|r| r.realm_id).unwrap_or(0),
-        visible_in_discovery: config.visible_in_discovery,
+        signaling_url: cli_config
+            .as_ref()
+            .map(|c| c.discovery.signaling_url.clone())
+            .unwrap_or_else(|| "ws://localhost:8081/signaling/ws".to_string()),
+        realm_id: cli_config
+            .as_ref()
+            .and_then(|c| c.discovery.realm_id)
+            .unwrap_or(0),
+        visible_in_discovery: false, // Default for web, or map from cli_config if added
         dependencies,
         stun_urls,
         turn_urls,

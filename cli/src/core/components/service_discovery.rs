@@ -2,11 +2,10 @@ use crate::core::{
     AvailabilityStatus, HealthStatus, ProtoFile, ServiceDetails, ServiceDiscovery, ServiceFilter,
     ServiceInfo,
 };
-use actr_config::Config;
 use actr_hyper::AisClient;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, ActrType, DiscoveryRequest, ErrorResponse,
-    GetServiceSpecRequest, RegisterRequest, SignalingEnvelope, actr_to_signaling,
+    GetServiceSpecRequest, Realm, RegisterRequest, SignalingEnvelope, actr_to_signaling,
     discovery_response, get_service_spec_response, register_response, signaling_envelope,
     signaling_to_actr,
 };
@@ -34,8 +33,30 @@ struct SignalingState {
     credential: AIdCredential,
 }
 
+/// Discovery context for CLI service discovery operations
+///
+/// This contains the minimal information needed for CLI to perform service discovery,
+/// separate from runtime configuration (actr.toml).
+#[derive(Debug, Clone)]
+pub struct DiscoveryContext {
+    /// Package actor type (from manifest.toml)
+    pub package_actr_type: ActrType,
+
+    /// Signaling server URL
+    pub signaling_url: Url,
+
+    /// AIS endpoint URL
+    pub ais_endpoint: String,
+
+    /// Realm for temporary actor registration
+    pub realm: Realm,
+
+    /// Optional realm secret for authentication
+    pub realm_secret: Option<String>,
+}
+
 pub struct NetworkServiceDiscovery {
-    config: Config,
+    context: DiscoveryContext,
     state: Mutex<Option<SignalingState>>,
 }
 
@@ -43,9 +64,9 @@ impl NetworkServiceDiscovery {
     const LOOKUP_RETRY_ATTEMPTS: usize = 45;
     const LOOKUP_RETRY_DELAY: Duration = Duration::from_secs(2);
 
-    pub fn new(config: Config) -> Self {
+    pub fn new(context: DiscoveryContext) -> Self {
         Self {
-            config,
+            context,
             state: Mutex::new(None),
         }
     }
@@ -130,9 +151,8 @@ impl NetworkServiceDiscovery {
 
     async fn connect_and_register(&self) -> Result<SignalingState> {
         let register_request = RegisterRequest {
-            actr_type: self.config.package.actr_type.clone(),
-            realm: self.config.realm
-                .ok_or_else(|| anyhow!("realm is required for service discovery (set in actr.toml)"))?,
+            actr_type: self.context.package_actr_type.clone(),
+            realm: self.context.realm,
             service_spec: None,
             service: None,
             acl: None,
@@ -140,9 +160,8 @@ impl NetworkServiceDiscovery {
             ..Default::default()
         };
 
-        let mut ais_client =
-            AisClient::new(self.config.ais_endpoint.as_deref().unwrap_or_default());
-        if let Some(realm_secret) = &self.config.realm_secret {
+        let mut ais_client = AisClient::new(&self.context.ais_endpoint);
+        if let Some(realm_secret) = &self.context.realm_secret {
             ais_client = ais_client.with_realm_secret(realm_secret.clone());
         }
 
@@ -161,10 +180,8 @@ impl NetworkServiceDiscovery {
             None => return Err(anyhow!("AIS registration response is missing result")),
         };
 
-        let base_signaling_url = self.config.signaling_url.as_ref()
-            .ok_or_else(|| anyhow!("signaling_url is required for service discovery (set in actr.toml)"))?;
         let signaling_url = Self::build_signaling_url_with_identity(
-            base_signaling_url,
+            &self.context.signaling_url,
             &actr_id,
             &credential,
         );

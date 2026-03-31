@@ -1,4 +1,4 @@
-use actr_config::Config;
+use actr_config::ManifestConfig;
 use actr_protocol::ActrTypeExt;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -24,7 +24,7 @@ impl Default for DefaultDependencyResolver {
 
 #[async_trait]
 impl DependencyResolver for DefaultDependencyResolver {
-    async fn resolve_spec(&self, config: &Config) -> Result<Vec<DependencySpec>> {
+    async fn resolve_spec(&self, config: &ManifestConfig) -> Result<Vec<DependencySpec>> {
         let specs: Vec<DependencySpec> = config
             .dependencies
             .iter()

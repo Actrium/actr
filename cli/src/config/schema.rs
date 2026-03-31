@@ -33,6 +33,10 @@ pub struct CliConfig {
     /// UI/Output settings
     #[serde(default)]
     pub ui: UiConfig,
+
+    /// Service discovery settings (for CLI discovery commands)
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
 }
 
 impl CliConfig {
@@ -41,7 +45,10 @@ impl CliConfig {
         // Validate version
         if let Some(v) = self.version {
             if v != 1 {
-                return Err(format!("Unsupported config version: {}. Supported version is 1", v));
+                return Err(format!(
+                    "Unsupported config version: {}. Supported version is 1",
+                    v
+                ));
             }
         }
 
@@ -85,6 +92,51 @@ impl CliConfig {
                     color,
                     valid_colors.join(", ")
                 ));
+            }
+        }
+
+        // Validate discovery.signaling_url
+        if let Some(ref url) = self.discovery.signaling_url {
+            if url.trim().is_empty() {
+                return Err("discovery.signaling_url cannot be empty".to_string());
+            }
+            // Basic URL validation
+            if !url.starts_with("ws://") && !url.starts_with("wss://") {
+                return Err(format!(
+                    "discovery.signaling_url '{}' must start with ws:// or wss://",
+                    url
+                ));
+            }
+        }
+
+        // Validate discovery.ais_endpoint
+        if let Some(ref url) = self.discovery.ais_endpoint {
+            if url.trim().is_empty() {
+                return Err("discovery.ais_endpoint cannot be empty".to_string());
+            }
+            // Basic URL validation
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(format!(
+                    "discovery.ais_endpoint '{}' must start with http:// or https://",
+                    url
+                ));
+            }
+        }
+
+        // Validate discovery.realm_id
+        if let Some(realm_id) = self.discovery.realm_id {
+            if realm_id == 0 {
+                return Err("discovery.realm_id must be a positive integer".to_string());
+            }
+        }
+
+        // Validate discovery.realm_secret
+        if let Some(ref secret) = self.discovery.realm_secret {
+            if secret.is_empty() {
+                return Err(
+                    "discovery.realm_secret cannot be empty string (omit the field instead)"
+                        .to_string(),
+                );
             }
         }
 
@@ -148,6 +200,35 @@ pub struct UiConfig {
 
     /// Non-interactive mode (skip prompts)
     pub non_interactive: Option<bool>,
+}
+
+/// Service discovery settings
+///
+/// These settings are used by CLI discovery commands (check, install, discovery)
+/// to connect to signaling server and AIS for service discovery.
+/// This is separate from runtime configuration (actr.toml).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    /// Signaling server URL for CLI discovery
+    ///
+    /// Default: ws://localhost:8081/signaling/ws
+    pub signaling_url: Option<String>,
+
+    /// AIS (Actor Identity Service) endpoint for CLI discovery
+    ///
+    /// Default: http://localhost:8081/ais
+    pub ais_endpoint: Option<String>,
+
+    /// Realm ID for CLI temporary actor registration
+    ///
+    /// No default value - must be explicitly configured
+    pub realm_id: Option<u32>,
+
+    /// Realm secret for authentication (optional)
+    ///
+    /// Only required if target realm has secret validation enabled
+    pub realm_secret: Option<String>,
 }
 
 #[cfg(test)]
@@ -242,7 +323,11 @@ mod tests {
                 },
                 ..Default::default()
             };
-            assert!(config.validate().is_ok(), "Language {} should be valid", lang);
+            assert!(
+                config.validate().is_ok(),
+                "Language {} should be valid",
+                lang
+            );
         }
     }
 
@@ -256,7 +341,11 @@ mod tests {
                 },
                 ..Default::default()
             };
-            assert!(config.validate().is_ok(), "Format {} should be valid", format);
+            assert!(
+                config.validate().is_ok(),
+                "Format {} should be valid",
+                format
+            );
         }
     }
 
@@ -272,5 +361,67 @@ mod tests {
             };
             assert!(config.validate().is_ok(), "Color {} should be valid", color);
         }
+    }
+
+    #[test]
+    fn test_validate_valid_discovery_config() {
+        let config = CliConfig {
+            discovery: DiscoveryConfig {
+                signaling_url: Some("ws://localhost:8081/signaling/ws".to_string()),
+                ais_endpoint: Some("http://localhost:8081/ais".to_string()),
+                realm_id: Some(1001),
+                realm_secret: Some("secret".to_string()),
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_signaling_url() {
+        let config = CliConfig {
+            discovery: DiscoveryConfig {
+                signaling_url: Some("http://localhost:8081".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_ais_endpoint() {
+        let config = CliConfig {
+            discovery: DiscoveryConfig {
+                ais_endpoint: Some("ws://localhost:8081".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_realm_id() {
+        let config = CliConfig {
+            discovery: DiscoveryConfig {
+                realm_id: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_realm_secret() {
+        let config = CliConfig {
+            discovery: DiscoveryConfig {
+                realm_secret: Some("".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 }

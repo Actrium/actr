@@ -3,9 +3,7 @@
 //! The check command validates that services are available in the registry
 //! and optionally verifies they match the configured dependencies.
 
-use crate::core::{
-    Command, CommandContext, CommandResult, ComponentType, DependencySpec, NetworkCheckOptions,
-};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType, NetworkCheckOptions};
 use actr_config::ConfigParser;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -75,11 +73,20 @@ impl Command for CheckCommand {
         let config = ConfigParser::from_manifest_file(config_path)
             .with_context(|| format!("Failed to load manifest: {}", config_path))?;
 
-        // Determine signaling URL: --signaling flag > manifest > skip
+        // Determine signaling URL: --signaling flag > CLI config discovery > manifest (deprecated)
+        let cli_config = crate::config::resolver::resolve_effective_cli_config().ok();
         let signaling_url_str: Option<String> = self
             .signaling
             .clone()
-            .or_else(|| config.signaling_url.as_ref().map(|u| u.to_string()));
+            .or_else(|| {
+                cli_config
+                    .as_ref()
+                    .map(|c| c.discovery.signaling_url.clone())
+            })
+            .or_else(|| {
+                #[allow(deprecated)]
+                None // Manifest no longer carries signaling_url
+            });
 
         if let Some(ref signaling_url) = signaling_url_str {
             println!("🌐 Checking signaling server: {}...", signaling_url);
@@ -104,30 +111,13 @@ impl Command for CheckCommand {
             }
         } else {
             println!(
-                "⚠️  No signaling URL available — skipping connectivity check.\n   Use --signaling <URL> to test signaling server connectivity."
+                "⚠️  No signaling URL available — skipping connectivity check.\n   Use --signaling <URL> or `actr config set discovery.signaling_url <URL>` to test signaling server connectivity."
             );
         }
 
         // 2. Resolve Dependencies to check
 
-        let all_specs: Vec<DependencySpec> = config
-            .dependencies
-            .iter()
-            .map(|d| DependencySpec {
-                alias: d.alias.clone(),
-                name: d
-                    .service
-                    .as_ref()
-                    .map(|service| service.name.clone())
-                    .or_else(|| d.actr_type.as_ref().map(|ty| ty.name.clone()))
-                    .unwrap_or_else(|| d.alias.clone()),
-                actr_type: d.actr_type.clone(),
-                fingerprint: d
-                    .service
-                    .as_ref()
-                    .map(|service| service.fingerprint.clone()),
-            })
-            .collect();
+        let all_specs = pipeline.dependency_resolver().resolve_spec(&config).await?;
 
         let specs_to_check = if self.packages.is_empty() {
             all_specs

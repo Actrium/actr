@@ -2,8 +2,8 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    ActrMode, Config, Dependency, IceServer, IceTransportPolicy, PackageInfo, ProtoFile,
-    ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
+    Dependency, IceServer, IceTransportPolicy, ManifestConfig, PackageInfo, ProtoFile,
+    RuntimeConfig, ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::actr_raw::RuntimeRawConfig;
@@ -31,7 +31,7 @@ impl ParserV1 {
         Self { base_dir }
     }
 
-    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<Config> {
+    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<ManifestConfig> {
         // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
@@ -71,49 +71,28 @@ impl ParserV1 {
             self.base_dir.clone()
         };
 
-        // 7. Build final config
-        // signaling_url and realm are NOT set from manifest.toml — they come from actr.toml
-        let package_name = package.name.clone();
-        Ok(Config {
+        // 7. Build manifest config — runtime fields are NOT included
+        Ok(ManifestConfig {
             package,
             exports,
             dependencies,
-            signaling_url: None,
-            realm: None,
-            realm_secret: None,
-            visible_in_discovery: true,
             acl,
-            mailbox_path: None,
             tags: raw.package.tags,
             scripts: raw.scripts,
-            webrtc: WebRtcConfig::default(),
-            websocket_listen_port: None,
-            websocket_advertised_host: None,
-            observability: ObservabilityConfig {
-                filter_level: "info".to_string(),
-                tracing_enabled: false,
-                tracing_endpoint: DEFAULT_TRACING_ENDPOINT.to_string(),
-                tracing_service_name: package_name,
-            },
-            hyper_data_dir: config_dir.join(".hyper"),
             config_dir,
-            trust_mode: "development".to_string(),
-            execution_mode: ActrMode::default(),
-            ais_endpoint: None,
-            package_path: None,
         })
     }
 
-    /// Parse a `RuntimeRawConfig` (from actr.toml) into a `Config`.
+    /// Parse a `RuntimeRawConfig` (from actr.toml) into a `RuntimeConfig`.
     ///
     /// Since the runtime configuration has no `[package]` section, the caller must provide
-    /// package info separately (typically read from actr.toml or .actr package).
+    /// package info separately (typically read from the .actr package).
     pub fn parse_runtime(
         &self,
         raw: RuntimeRawConfig,
         package: PackageInfo,
         tags: Vec<String>,
-    ) -> Result<Config> {
+    ) -> Result<RuntimeConfig> {
         // Validate required runtime fields
         let signaling_url_str = raw
             .signaling
@@ -135,8 +114,6 @@ impl ParserV1 {
                 .realm_id
                 .ok_or(ConfigError::MissingField("deployment.realm_id"))?,
         };
-
-        let execution_mode = parse_actr_mode(raw.deployment.mode.as_deref())?;
 
         // Build observability from flat config
         let observability = ObservabilityConfig {
@@ -163,23 +140,19 @@ impl ParserV1 {
         };
 
         // Parse package path (resolve relative paths against config_dir)
-        let package_path = raw
-            .package
-            .and_then(|pkg| pkg.path)
-            .map(|path| {
-                if path.is_absolute() {
-                    path
-                } else {
-                    self.base_dir.join(path)
-                }
-            });
+        let package_path = raw.package.and_then(|pkg| pkg.path).map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                self.base_dir.join(path)
+            }
+        });
 
-        Ok(Config {
+        Ok(RuntimeConfig {
             package,
-            exports: vec![],      // runtime config has no exports
-            dependencies: vec![], // dependencies come from the runtime package metadata / lock file
-            signaling_url: Some(signaling_url),
-            realm: Some(self_realm),
+            signaling_url,
+            realm: self_realm,
+            ais_endpoint: ais_endpoint.to_string(),
             realm_secret: raw.deployment.realm_secret,
             visible_in_discovery: raw.discovery.visible.unwrap_or(true),
             acl,
@@ -199,8 +172,6 @@ impl ParserV1 {
                 .deployment
                 .trust_mode
                 .unwrap_or_else(|| "development".to_string()),
-            execution_mode,
-            ais_endpoint: Some(ais_endpoint.to_string()),
             package_path,
         })
     }
@@ -527,19 +498,7 @@ impl ParserV1 {
     }
 }
 
-/// Convert mode string from TOML to `ActrMode` enum
-///
-/// Valid values: `"native"` (default), `"process"`, `"wasm"`.
-fn parse_actr_mode(s: Option<&str>) -> Result<ActrMode> {
-    match s.unwrap_or("native") {
-        "native" => Ok(ActrMode::Native),
-        "process" => Ok(ActrMode::Process),
-        "wasm" => Ok(ActrMode::Wasm),
-        other => Err(ConfigError::InvalidConfig(format!(
-            "system.deployment.mode value '{other}' is invalid, valid values are: native | process | wasm"
-        ))),
-    }
-}
+/// (ActrMode removed)】previous execution mode parsing no longer needed.
 
 #[cfg(test)]
 mod tests {
@@ -582,13 +541,9 @@ run = "cargo run"
         let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(config.package.name, "test-service");
-        // realm and signaling_url are not set from manifest.toml
-        assert!(config.realm.is_none());
-        assert!(config.signaling_url.is_none());
+        // ManifestConfig carries only manifest-level fields
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
-        // ais_endpoint is not set from manifest.toml
-        assert!(config.ais_endpoint.is_none());
     }
 
     #[test]
@@ -619,10 +574,9 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
         assert_eq!(dep.actr_type.as_ref().unwrap().name, "logging-service");
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
-        // realm is not set from manifest.toml; cross_realm_dependencies returns [] when realm is None
-        assert!(config.realm.is_none());
-        assert!(config.cross_realm_dependencies().is_empty());
-        assert!(config.ais_endpoint.is_none());
+        // ManifestConfig does not carry runtime fields (realm, signaling_url, ais_endpoint)
+        // cross_realm_dependencies() is a ManifestConfig method based on dependency realm IDs
+        assert!(!config.dependencies.is_empty());
     }
 
     #[test]
@@ -645,9 +599,7 @@ manufacturer = "acme"
 
         assert_eq!(config.package.name, "test");
         assert_eq!(config.package.actr_type.manufacturer, "acme");
-        assert!(config.signaling_url.is_none());
-        assert!(config.realm.is_none());
-        assert!(config.ais_endpoint.is_none());
+        // ManifestConfig does not carry runtime fields (realm, signaling_url, ais_endpoint)
     }
 
     #[test]
@@ -701,8 +653,9 @@ manufacturer = "acme"
     }
 
     #[test]
-    fn test_parse_execution_mode_defaults_native() {
-        // manifest.toml does not carry execution mode; default is Native
+    fn test_parse_execution_mode_not_in_manifest() {
+        // manifest.toml does not carry execution mode — that belongs to RuntimeConfig (actr.toml).
+        // Verify that parsing manifest.toml succeeds and produces a valid ManifestConfig.
         let toml_content = r#"
 edition = 1
 
@@ -718,6 +671,8 @@ manufacturer = "acme"
         let config = ParserV1::new(&path)
             .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
-        assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
+        // ManifestConfig fields are present; no execution_mode field exists on ManifestConfig
+        assert_eq!(config.package.name, "test");
+        assert_eq!(config.package.actr_type.manufacturer, "acme");
     }
 }
