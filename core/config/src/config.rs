@@ -64,7 +64,10 @@ pub struct RuntimeConfig {
     /// Access control list
     pub acl: Option<Acl>,
 
-    /// Mailbox database path (`None` → in-memory mode)
+    /// Mailbox database path
+    ///
+    /// - `Some(path)`: use persistent SQLite database
+    /// - `None`: use in-memory mode (`:memory:`)
     pub mailbox_path: Option<PathBuf>,
 
     /// Service tags
@@ -76,7 +79,10 @@ pub struct RuntimeConfig {
     /// WebRTC configuration
     pub webrtc: WebRtcConfig,
 
-    /// Port for listening to inbound WebSocket connections (direct mode)
+    /// Port for listening to inbound WebSocket connections (direct mode, optional)
+    ///
+    /// When configured, the node starts a WebSocket server on this port at startup.
+    /// Peer nodes can connect directly via `ws://<host>:<port>` without relaying.
     pub websocket_listen_port: Option<u16>,
 
     /// WebSocket hostname or IP advertised to the signaling server
