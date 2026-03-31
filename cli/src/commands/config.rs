@@ -21,17 +21,17 @@ const KNOWN_KEYS: &[&str] = &[
     "codegen.language",
     "codegen.output",
     "codegen.clean_before_generate",
-    "install.auto_lock",
-    "install.prefer_cache",
     "cache.dir",
+    "cache.auto_lock",
+    "cache.prefer_cache",
     "ui.format",
     "ui.verbose",
     "ui.color",
     "ui.non_interactive",
-    "discovery.signaling_url",
-    "discovery.ais_endpoint",
-    "discovery.realm_id",
-    "discovery.realm_secret",
+    "network.signaling_url",
+    "network.ais_endpoint",
+    "network.realm_id",
+    "network.realm_secret",
 ];
 
 #[derive(Args, Clone)]
@@ -268,14 +268,26 @@ impl ConfigCommand {
             "codegen.clean_before_generate" => {
                 config.codegen.clean_before_generate = Some(value_to_bool(&parsed_value, key)?);
             }
-            "install.auto_lock" => {
-                config.install.auto_lock = Some(value_to_bool(&parsed_value, key)?);
-            }
-            "install.prefer_cache" => {
-                config.install.prefer_cache = Some(value_to_bool(&parsed_value, key)?);
-            }
             "cache.dir" => {
                 config.cache.dir = Some(value_to_string(&parsed_value)?);
+            }
+            "cache.auto_lock" => {
+                config.cache.auto_lock = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "cache.prefer_cache" => {
+                config.cache.prefer_cache = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "network.signaling_url" => {
+                config.network.signaling_url = Some(value_to_string(&parsed_value)?);
+            }
+            "network.ais_endpoint" => {
+                config.network.ais_endpoint = Some(value_to_string(&parsed_value)?);
+            }
+            "network.realm_id" => {
+                config.network.realm_id = Some(value_to_u32(&parsed_value, key)?);
+            }
+            "network.realm_secret" => {
+                config.network.realm_secret = Some(value_to_string(&parsed_value)?);
             }
             "ui.format" => {
                 config.ui.format = Some(value_to_string(&parsed_value)?);
@@ -323,19 +335,39 @@ impl ConfigCommand {
                 config.codegen.clean_before_generate = None;
                 had
             }
-            "install.auto_lock" => {
-                let had = config.install.auto_lock.is_some();
-                config.install.auto_lock = None;
-                had
-            }
-            "install.prefer_cache" => {
-                let had = config.install.prefer_cache.is_some();
-                config.install.prefer_cache = None;
-                had
-            }
             "cache.dir" => {
                 let had = config.cache.dir.is_some();
                 config.cache.dir = None;
+                had
+            }
+            "cache.auto_lock" => {
+                let had = config.cache.auto_lock.is_some();
+                config.cache.auto_lock = None;
+                had
+            }
+            "cache.prefer_cache" => {
+                let had = config.cache.prefer_cache.is_some();
+                config.cache.prefer_cache = None;
+                had
+            }
+            "network.signaling_url" => {
+                let had = config.network.signaling_url.is_some();
+                config.network.signaling_url = None;
+                had
+            }
+            "network.ais_endpoint" => {
+                let had = config.network.ais_endpoint.is_some();
+                config.network.ais_endpoint = None;
+                had
+            }
+            "network.realm_id" => {
+                let had = config.network.realm_id.is_some();
+                config.network.realm_id = None;
+                had
+            }
+            "network.realm_secret" => {
+                let had = config.network.realm_secret.is_some();
+                config.network.realm_secret = None;
                 had
             }
             "ui.format" => {
@@ -426,33 +458,30 @@ impl ConfigCommand {
                 "codegen.clean_before_generate = {}",
                 effective.codegen.clean_before_generate
             ),
-            format!("install.auto_lock = {}", effective.install.auto_lock),
-            format!("install.prefer_cache = {}", effective.install.prefer_cache),
             format!("cache.dir = {}", effective.cache.dir),
+            format!("cache.auto_lock = {}", effective.cache.auto_lock),
+            format!("cache.prefer_cache = {}", effective.cache.prefer_cache),
             format!("ui.format = {}", effective.ui.format),
             format!("ui.verbose = {}", effective.ui.verbose),
             format!("ui.color = {}", effective.ui.color),
             format!("ui.non_interactive = {}", effective.ui.non_interactive),
             format!(
-                "discovery.signaling_url = {}",
-                effective.discovery.signaling_url
+                "network.signaling_url = {}",
+                effective.network.signaling_url
             ),
+            format!("network.ais_endpoint = {}", effective.network.ais_endpoint),
             format!(
-                "discovery.ais_endpoint = {}",
-                effective.discovery.ais_endpoint
-            ),
-            format!(
-                "discovery.realm_id = {}",
+                "network.realm_id = {}",
                 effective
-                    .discovery
+                    .network
                     .realm_id
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "<not set>".to_string())
             ),
             format!(
-                "discovery.realm_secret = {}",
+                "network.realm_secret = {}",
                 effective
-                    .discovery
+                    .network
                     .realm_secret
                     .as_deref()
                     .unwrap_or("<not set>")
@@ -583,4 +612,11 @@ fn value_to_bool(v: &Value, key: &str) -> Result<bool> {
         },
         other => bail!("Key '{}' expects a boolean, got {:?}", key, other),
     }
+}
+
+fn value_to_u32(v: &Value, key: &str) -> Result<u32> {
+    // Accept both numbers and strings (e.g., `1001` or `"1001"`).
+    let s = value_to_string(v)?;
+    s.parse::<u32>()
+        .map_err(|_| anyhow::anyhow!("Key '{}' expects a positive integer, got '{}'", key, s))
 }

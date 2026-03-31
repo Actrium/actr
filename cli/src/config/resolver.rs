@@ -5,7 +5,7 @@
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
 use super::schema::{
-    CacheConfig, CliConfig, CodegenConfig, DiscoveryConfig, InitConfig, InstallConfig, UiConfig,
+    CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, NetworkConfig, UiConfig,
 };
 use anyhow::Result;
 
@@ -19,10 +19,9 @@ use anyhow::Result;
 pub struct EffectiveCliConfig {
     pub init: EffectiveInitConfig,
     pub codegen: EffectiveCodegenConfig,
-    pub install: EffectiveInstallConfig,
     pub cache: EffectiveCacheConfig,
     pub ui: EffectiveUiConfig,
-    pub discovery: EffectiveDiscoveryConfig,
+    pub network: EffectiveNetworkConfig,
 }
 
 /// Resolved init settings
@@ -39,17 +38,12 @@ pub struct EffectiveCodegenConfig {
     pub clean_before_generate: bool,
 }
 
-/// Resolved install settings
-#[derive(Debug, Clone)]
-pub struct EffectiveInstallConfig {
-    pub auto_lock: bool,
-    pub prefer_cache: bool,
-}
-
 /// Resolved cache settings
 #[derive(Debug, Clone)]
 pub struct EffectiveCacheConfig {
     pub dir: String,
+    pub auto_lock: bool,
+    pub prefer_cache: bool,
 }
 
 /// Resolved UI/output settings
@@ -61,19 +55,19 @@ pub struct EffectiveUiConfig {
     pub non_interactive: bool,
 }
 
-/// Resolved service discovery settings
+/// Resolved network settings
 ///
-/// Used by CLI discovery commands (check, install, discovery).
-/// Note: realm_id is Option because it has no default value and must be explicitly configured.
+/// Used by CLI network operations (check/install/discovery).
+/// Note: realm_id defaults to 1 if not explicitly configured.
 #[derive(Debug, Clone)]
-pub struct EffectiveDiscoveryConfig {
+pub struct EffectiveNetworkConfig {
     /// Signaling server URL (default: ws://localhost:8081/signaling/ws)
     pub signaling_url: String,
 
     /// AIS endpoint (default: http://localhost:8081/ais)
     pub ais_endpoint: String,
 
-    /// Realm ID (no default - must be configured)
+    /// Realm ID (default: 1)
     pub realm_id: Option<u32>,
 
     /// Realm secret (optional)
@@ -118,12 +112,10 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
                     .clean_before_generate
                     .or(b.codegen.clean_before_generate),
             },
-            install: InstallConfig {
-                auto_lock: o.install.auto_lock.or(b.install.auto_lock),
-                prefer_cache: o.install.prefer_cache.or(b.install.prefer_cache),
-            },
             cache: CacheConfig {
                 dir: o.cache.dir.or(b.cache.dir),
+                auto_lock: o.cache.auto_lock.or(b.cache.auto_lock),
+                prefer_cache: o.cache.prefer_cache.or(b.cache.prefer_cache),
             },
             ui: UiConfig {
                 format: o.ui.format.or(b.ui.format),
@@ -131,12 +123,13 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
                 color: o.ui.color.or(b.ui.color),
                 non_interactive: o.ui.non_interactive.or(b.ui.non_interactive),
             },
-            discovery: DiscoveryConfig {
-                signaling_url: o.discovery.signaling_url.or(b.discovery.signaling_url),
-                ais_endpoint: o.discovery.ais_endpoint.or(b.discovery.ais_endpoint),
-                realm_id: o.discovery.realm_id.or(b.discovery.realm_id),
-                realm_secret: o.discovery.realm_secret.or(b.discovery.realm_secret),
+            network: NetworkConfig {
+                signaling_url: o.network.signaling_url.or(b.network.signaling_url),
+                ais_endpoint: o.network.ais_endpoint.or(b.network.ais_endpoint),
+                realm_id: o.network.realm_id.or(b.network.realm_id),
+                realm_secret: o.network.realm_secret.or(b.network.realm_secret),
             },
+            install: InstallConfig {},
         },
     }
 }
@@ -155,12 +148,10 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
                 .unwrap_or_else(|| "src/generated".to_string()),
             clean_before_generate: cfg.codegen.clean_before_generate.unwrap_or(false),
         },
-        install: EffectiveInstallConfig {
-            auto_lock: cfg.install.auto_lock.unwrap_or(true),
-            prefer_cache: cfg.install.prefer_cache.unwrap_or(true),
-        },
         cache: EffectiveCacheConfig {
             dir: cfg.cache.dir.unwrap_or_else(|| "~/.actr/cache".to_string()),
+            auto_lock: cfg.cache.auto_lock.unwrap_or(true),
+            prefer_cache: cfg.cache.prefer_cache.unwrap_or(true),
         },
         ui: EffectiveUiConfig {
             format: cfg.ui.format.unwrap_or_else(|| "toml".to_string()),
@@ -168,17 +159,17 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
             color: cfg.ui.color.unwrap_or_else(|| "auto".to_string()),
             non_interactive: cfg.ui.non_interactive.unwrap_or(false),
         },
-        discovery: EffectiveDiscoveryConfig {
+        network: EffectiveNetworkConfig {
             signaling_url: cfg
-                .discovery
+                .network
                 .signaling_url
                 .unwrap_or_else(|| "ws://localhost:8081/signaling/ws".to_string()),
             ais_endpoint: cfg
-                .discovery
+                .network
                 .ais_endpoint
                 .unwrap_or_else(|| "http://localhost:8081/ais".to_string()),
-            realm_id: cfg.discovery.realm_id,
-            realm_secret: cfg.discovery.realm_secret,
+            realm_id: cfg.network.realm_id.or(Some(1)),
+            realm_secret: cfg.network.realm_secret,
         },
     }
 }
@@ -195,9 +186,9 @@ mod tests {
         assert_eq!(effective.codegen.language, "rust");
         assert_eq!(effective.codegen.output, "src/generated");
         assert!(!effective.codegen.clean_before_generate);
-        assert!(effective.install.auto_lock);
-        assert!(effective.install.prefer_cache);
         assert_eq!(effective.cache.dir, "~/.actr/cache");
+        assert!(effective.cache.auto_lock);
+        assert!(effective.cache.prefer_cache);
         assert_eq!(effective.ui.format, "toml");
         assert!(!effective.ui.verbose);
         assert_eq!(effective.ui.color, "auto");
@@ -247,25 +238,22 @@ mod tests {
     }
 
     #[test]
-    fn test_discovery_defaults() {
+    fn test_network_defaults() {
         let config = CliConfig::default();
         let effective = apply_defaults(config);
         assert_eq!(
-            effective.discovery.signaling_url,
+            effective.network.signaling_url,
             "ws://localhost:8081/signaling/ws"
         );
-        assert_eq!(
-            effective.discovery.ais_endpoint,
-            "http://localhost:8081/ais"
-        );
-        assert!(effective.discovery.realm_id.is_none());
-        assert!(effective.discovery.realm_secret.is_none());
+        assert_eq!(effective.network.ais_endpoint, "http://localhost:8081/ais");
+        assert_eq!(effective.network.realm_id, Some(1));
+        assert!(effective.network.realm_secret.is_none());
     }
 
     #[test]
-    fn test_discovery_merge_overlay_wins() {
+    fn test_network_merge_overlay_wins() {
         let base = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
                 realm_id: Some(1000),
                 ..Default::default()
@@ -273,7 +261,7 @@ mod tests {
             ..Default::default()
         };
         let overlay = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 signaling_url: Some("ws://overlay:8081/signaling/ws".to_string()),
                 realm_id: Some(2000),
                 ..Default::default()
@@ -282,16 +270,16 @@ mod tests {
         };
         let merged = merge_configs(Some(base), Some(overlay));
         assert_eq!(
-            merged.discovery.signaling_url.as_deref(),
+            merged.network.signaling_url.as_deref(),
             Some("ws://overlay:8081/signaling/ws")
         );
-        assert_eq!(merged.discovery.realm_id, Some(2000));
+        assert_eq!(merged.network.realm_id, Some(2000));
     }
 
     #[test]
-    fn test_discovery_partial_override() {
+    fn test_network_partial_override() {
         let base = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
                 realm_id: Some(1000),
                 ..Default::default()
@@ -299,7 +287,7 @@ mod tests {
             ..Default::default()
         };
         let overlay = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 realm_id: Some(2000),
                 ..Default::default()
             },
@@ -308,10 +296,10 @@ mod tests {
         let merged = merge_configs(Some(base), Some(overlay));
         // signaling_url from base
         assert_eq!(
-            merged.discovery.signaling_url.as_deref(),
+            merged.network.signaling_url.as_deref(),
             Some("ws://base:8081/signaling/ws")
         );
         // realm_id from overlay
-        assert_eq!(merged.discovery.realm_id, Some(2000));
+        assert_eq!(merged.network.realm_id, Some(2000));
     }
 }

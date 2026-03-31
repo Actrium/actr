@@ -295,11 +295,11 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
         tags: config.tags.clone(),
         signaling_url: cli_config
             .as_ref()
-            .map(|c| c.discovery.signaling_url.clone())
+            .map(|c| c.network.signaling_url.clone())
             .unwrap_or_else(|| "ws://localhost:8081/signaling/ws".to_string()),
         realm_id: cli_config
             .as_ref()
-            .and_then(|c| c.discovery.realm_id)
+            .and_then(|c| c.network.realm_id)
             .unwrap_or(0),
         visible_in_discovery: false, // Default for web, or map from cli_config if added
         dependencies,

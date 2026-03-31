@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching package workload...");
     // Extract values needed for bootstrap_credential before config is moved into attach_package()
-    let realm_id = config.realm.as_ref().map(|r| r.realm_id).unwrap_or(0);
+    let realm_id = config.realm.realm_id;
     let service_spec = config.calculate_service_spec();
     let acl = config.acl.clone();
     let mut node = hyper

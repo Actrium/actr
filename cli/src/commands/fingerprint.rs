@@ -126,12 +126,7 @@ async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
         .exports
         .iter()
         .map(|pf| ProtoFile {
-            name: pf
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown.proto")
-                .to_string(),
+            name: pf.file_name().unwrap_or("unknown.proto").to_string(),
             content: pf.content.clone(),
             path: Some(pf.path.to_string_lossy().to_string()),
         })

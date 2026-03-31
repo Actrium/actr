@@ -40,7 +40,7 @@ pub struct InitCommand {
 
     /// Manufacturer for generated actor types (overrides CLI config default: acme)
     #[arg(long)]
-    pub manufacturer: Option<String>,
+    manufacturer: Option<String>,
 }
 
 #[async_trait]
@@ -48,7 +48,6 @@ impl Command for InitCommand {
     async fn execute(&self) -> Result<()> {
         // Resolve effective CLI config to use as defaults
         let cli_config = resolve_effective_cli_config().unwrap_or_default();
-        let effective_manufacturer = cli_config.init.manufacturer;
 
         // Show welcome header
         println!("🎯 Actor-RTC Project Initialization");
@@ -65,17 +64,9 @@ impl Command for InitCommand {
             None
         };
 
-        // Use --manufacturer if explicitly provided, otherwise use effective CLI config default
-        let manufacturer_owned: String = match &self.manufacturer {
-            Some(m) => m.clone(),
-            None => effective_manufacturer,
-        };
-        let manufacturer = manufacturer_owned.trim();
-        if manufacturer.is_empty() {
-            return Err(ActrCliError::InvalidProject(
-                "Manufacturer cannot be empty".to_string(),
-            ));
-        }
+        // Resolve effective manufacturer from CLI args and config
+        let manufacturer_owned = self.effective_manufacturer(&cli_config)?;
+        let manufacturer = manufacturer_owned.as_str();
 
         // role=both requires custom manufacturer to avoid conflicts with public 'acme' services
         if matches!(echo_role, Some(EchoRole::Both)) && manufacturer == DEFAULT_MANUFACTURER {
@@ -155,6 +146,29 @@ impl Command for InitCommand {
 }
 
 impl InitCommand {
+    /// Resolve the effective manufacturer, applying precedence:
+    /// CLI flag > CLI config default. Ensures the result is non-empty.
+    pub fn effective_manufacturer(
+        &self,
+        cli_config: &crate::config::resolver::EffectiveCliConfig,
+    ) -> Result<String> {
+        let effective_manufacturer = cli_config.init.manufacturer.clone();
+
+        let manufacturer_owned: String = match &self.manufacturer {
+            Some(m) => m.clone(),
+            None => effective_manufacturer,
+        };
+
+        let manufacturer = manufacturer_owned.trim();
+        if manufacturer.is_empty() {
+            return Err(ActrCliError::InvalidProject(
+                "Manufacturer cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(manufacturer.to_string())
+    }
+
     fn resolve_project_info(&self, name: &str) -> Result<(PathBuf, String)> {
         if name == "." {
             // Initialize in current directory - name will be inferred

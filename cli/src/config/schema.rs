@@ -34,9 +34,9 @@ pub struct CliConfig {
     #[serde(default)]
     pub ui: UiConfig,
 
-    /// Service discovery settings (for CLI discovery commands)
+    /// Network settings for CLI service discovery and connectivity checks
     #[serde(default)]
-    pub discovery: DiscoveryConfig,
+    pub network: NetworkConfig,
 }
 
 impl CliConfig {
@@ -95,46 +95,46 @@ impl CliConfig {
             }
         }
 
-        // Validate discovery.signaling_url
-        if let Some(ref url) = self.discovery.signaling_url {
+        // Validate network.signaling_url
+        if let Some(ref url) = self.network.signaling_url {
             if url.trim().is_empty() {
-                return Err("discovery.signaling_url cannot be empty".to_string());
+                return Err("network.signaling_url cannot be empty".to_string());
             }
             // Basic URL validation
             if !url.starts_with("ws://") && !url.starts_with("wss://") {
                 return Err(format!(
-                    "discovery.signaling_url '{}' must start with ws:// or wss://",
+                    "network.signaling_url '{}' must start with ws:// or wss://",
                     url
                 ));
             }
         }
 
-        // Validate discovery.ais_endpoint
-        if let Some(ref url) = self.discovery.ais_endpoint {
+        // Validate network.ais_endpoint
+        if let Some(ref url) = self.network.ais_endpoint {
             if url.trim().is_empty() {
-                return Err("discovery.ais_endpoint cannot be empty".to_string());
+                return Err("network.ais_endpoint cannot be empty".to_string());
             }
             // Basic URL validation
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return Err(format!(
-                    "discovery.ais_endpoint '{}' must start with http:// or https://",
+                    "network.ais_endpoint '{}' must start with http:// or https://",
                     url
                 ));
             }
         }
 
-        // Validate discovery.realm_id
-        if let Some(realm_id) = self.discovery.realm_id {
+        // Validate network.realm_id
+        if let Some(realm_id) = self.network.realm_id {
             if realm_id == 0 {
-                return Err("discovery.realm_id must be a positive integer".to_string());
+                return Err("network.realm_id must be a positive integer".to_string());
             }
         }
 
-        // Validate discovery.realm_secret
-        if let Some(ref secret) = self.discovery.realm_secret {
+        // Validate network.realm_secret
+        if let Some(ref secret) = self.network.realm_secret {
             if secret.is_empty() {
                 return Err(
-                    "discovery.realm_secret cannot be empty string (omit the field instead)"
+                    "network.realm_secret cannot be empty string (omit the field instead)"
                         .to_string(),
                 );
             }
@@ -170,11 +170,7 @@ pub struct CodegenConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct InstallConfig {
-    /// Automatically generate/update lock file after installation
-    pub auto_lock: Option<bool>,
-
-    /// Prefer cached packages over re-downloading
-    pub prefer_cache: Option<bool>,
+    // Intentionally empty: package install behavior flags are managed under `cache.*`.
 }
 
 /// Cache settings
@@ -183,6 +179,12 @@ pub struct InstallConfig {
 pub struct CacheConfig {
     /// Cache directory path (supports ~ expansion)
     pub dir: Option<String>,
+
+    /// Automatically generate/update lock file after installation
+    pub auto_lock: Option<bool>,
+
+    /// Prefer cached packages over re-downloading
+    pub prefer_cache: Option<bool>,
 }
 
 /// UI/Output settings
@@ -202,27 +204,23 @@ pub struct UiConfig {
     pub non_interactive: Option<bool>,
 }
 
-/// Service discovery settings
+/// Network settings
 ///
-/// These settings are used by CLI discovery commands (check, install, discovery)
-/// to connect to signaling server and AIS for service discovery.
+/// These settings are used by CLI network operations (check/install/discovery)
+/// to connect to signaling server and AIS.
 /// This is separate from runtime configuration (actr.toml).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct DiscoveryConfig {
+pub struct NetworkConfig {
     /// Signaling server URL for CLI discovery
-    ///
-    /// Default: ws://localhost:8081/signaling/ws
     pub signaling_url: Option<String>,
 
     /// AIS (Actor Identity Service) endpoint for CLI discovery
-    ///
-    /// Default: http://localhost:8081/ais
     pub ais_endpoint: Option<String>,
 
     /// Realm ID for CLI temporary actor registration
     ///
-    /// No default value - must be explicitly configured
+    /// Defaults to 1 if not explicitly configured
     pub realm_id: Option<u32>,
 
     /// Realm secret for authentication (optional)
@@ -364,9 +362,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_valid_discovery_config() {
+    fn test_validate_valid_network_config() {
         let config = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 signaling_url: Some("ws://localhost:8081/signaling/ws".to_string()),
                 ais_endpoint: Some("http://localhost:8081/ais".to_string()),
                 realm_id: Some(1001),
@@ -380,7 +378,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_signaling_url() {
         let config = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 signaling_url: Some("http://localhost:8081".to_string()),
                 ..Default::default()
             },
@@ -392,7 +390,7 @@ mod tests {
     #[test]
     fn test_validate_invalid_ais_endpoint() {
         let config = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 ais_endpoint: Some("ws://localhost:8081".to_string()),
                 ..Default::default()
             },
@@ -404,7 +402,7 @@ mod tests {
     #[test]
     fn test_validate_zero_realm_id() {
         let config = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 realm_id: Some(0),
                 ..Default::default()
             },
@@ -416,7 +414,7 @@ mod tests {
     #[test]
     fn test_validate_empty_realm_secret() {
         let config = CliConfig {
-            discovery: DiscoveryConfig {
+            network: NetworkConfig {
                 realm_secret: Some("".to_string()),
                 ..Default::default()
             },

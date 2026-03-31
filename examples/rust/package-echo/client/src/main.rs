@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
     // 3. Attach package workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching client-guest package workload...");
-    let realm_id = config.realm.as_ref().map(|r| r.realm_id).unwrap_or(0);
+    let realm_id = config.realm.realm_id;
     let service_spec = config.calculate_service_spec();
     let acl = config.acl.clone();
     let mut node = hyper

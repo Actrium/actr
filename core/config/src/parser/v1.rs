@@ -242,7 +242,7 @@ impl ParserV1 {
                         .map(|s| self.parse_service_ref(s))
                         .transpose()?;
                     let realm = Realm {
-                        realm_id: realm.unwrap_or(self_realm.realm_id),
+                        realm_id: realm.unwrap_or(1),
                     };
                     Ok(Dependency {
                         alias: alias.clone(),

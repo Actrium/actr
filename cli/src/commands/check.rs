@@ -40,10 +40,6 @@ pub struct CheckCommand {
     /// Also verify services are installed in manifest.lock.toml
     #[arg(long)]
     pub lock: bool,
-
-    /// Signaling server URL (overrides manifest; required when manifest has no signaling_url)
-    #[arg(long)]
-    pub signaling: Option<String>,
 }
 
 #[async_trait]
@@ -73,46 +69,31 @@ impl Command for CheckCommand {
         let config = ConfigParser::from_manifest_file(config_path)
             .with_context(|| format!("Failed to load manifest: {}", config_path))?;
 
-        // Determine signaling URL: --signaling flag > CLI config discovery > manifest (deprecated)
-        let cli_config = crate::config::resolver::resolve_effective_cli_config().ok();
-        let signaling_url_str: Option<String> = self
-            .signaling
-            .clone()
-            .or_else(|| {
-                cli_config
-                    .as_ref()
-                    .map(|c| c.discovery.signaling_url.clone())
-            })
-            .or_else(|| {
-                #[allow(deprecated)]
-                None // Manifest no longer carries signaling_url
-            });
+        // Resolve signaling URL from default + global CLI config + project CLI config.
+        // `resolve_effective_cli_config` applies built-in defaults, so we always have a URL.
+        let cli_config =
+            crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
+        let signaling_url = cli_config.network.signaling_url;
 
-        if let Some(ref signaling_url) = signaling_url_str {
-            println!("🌐 Checking signaling server: {}...", signaling_url);
-            info!("🌐 Checking signaling server: {}...", signaling_url);
-            let signaling_status = pipeline
-                .network_validator()
-                .check_connectivity(signaling_url, &options)
-                .await?;
-            if signaling_status.is_reachable {
-                let latency = signaling_status.response_time_ms.unwrap_or(0);
-                println!("  ✔ Signaling server is reachable ({}ms)", latency);
-                info!("  ✔ Signaling server is reachable ({}ms)", latency);
-            } else {
-                let err = signaling_status
-                    .error
-                    .unwrap_or_else(|| "Unknown error".to_string());
-                return Ok(CommandResult::Error(format!(
-                    "{} Signaling server unreachable: {}",
-                    "❌".red(),
-                    err.red()
-                )));
-            }
+        println!("🌐 Checking signaling server: {}...", signaling_url);
+        info!("🌐 Checking signaling server: {}...", signaling_url);
+        let signaling_status = pipeline
+            .network_validator()
+            .check_connectivity(&signaling_url, &options)
+            .await?;
+        if signaling_status.is_reachable {
+            let latency = signaling_status.response_time_ms.unwrap_or(0);
+            println!("  ✔ Signaling server is reachable ({}ms)", latency);
+            info!("  ✔ Signaling server is reachable ({}ms)", latency);
         } else {
-            println!(
-                "⚠️  No signaling URL available — skipping connectivity check.\n   Use --signaling <URL> or `actr config set discovery.signaling_url <URL>` to test signaling server connectivity."
-            );
+            let err = signaling_status
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            return Ok(CommandResult::Error(format!(
+                "{} Signaling server unreachable: {}",
+                "❌".red(),
+                err.red()
+            )));
         }
 
         // 2. Resolve Dependencies to check

@@ -80,15 +80,22 @@ pub struct RuntimeConfig {
     pub websocket_listen_port: Option<u16>,
 
     /// WebSocket hostname or IP advertised to the signaling server
+    ///
+    /// Used together with `websocket_listen_port`. Reported to the signaling server
+    /// during registration so that peer nodes know how to connect directly.
+    ///
+    /// Defaults to "127.0.0.1" (suitable for local testing only).
     pub websocket_advertised_host: Option<String>,
 
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 
-    /// Directory containing `actr.toml`
+    /// Directory containing the source configuration file (`manifest.toml` or runtime `actr.toml`)
+    ///
+    /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
-    /// Hyper data directory (.hyper)
+    /// Hyper data directory (.hyper), resolved relatively or absolutely from config_dir
     pub hyper_data_dir: PathBuf,
 
     /// Trust mode: "development" or "production"

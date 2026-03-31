@@ -202,26 +202,22 @@ async fn build_container() -> Result<ServiceContainer> {
 
     if let Some(manager) = config_manager {
         let config = manager.load_config(config_path).await?;
-        let cli_config = actr_cli::config::resolver::resolve_effective_cli_config().ok();
+        let effective_cli =
+            actr_cli::config::resolver::resolve_effective_cli_config().unwrap_or_default();
 
-        let signaling_url = cli_config
-            .as_ref()
-            .and_then(|c| Url::parse(&c.discovery.signaling_url).ok())
-            .unwrap_or_else(|| Url::parse("ws://localhost:8081/signaling/ws").unwrap());
+        let signaling_url = Url::parse(&effective_cli.network.signaling_url).map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid network.signaling_url '{}': {}",
+                effective_cli.network.signaling_url,
+                e
+            )
+        })?;
 
-        let ais_endpoint = cli_config
-            .as_ref()
-            .map(|c| c.discovery.ais_endpoint.clone())
-            .unwrap_or_else(|| "http://localhost:8081/ais".to_string());
+        let ais_endpoint = effective_cli.network.ais_endpoint.clone();
 
-        let realm_id = cli_config
-            .as_ref()
-            .and_then(|c| c.discovery.realm_id)
-            .unwrap_or(1);
+        let realm_id = effective_cli.network.realm_id.unwrap_or(1);
 
-        let realm_secret = cli_config
-            .as_ref()
-            .and_then(|c| c.discovery.realm_secret.clone());
+        let realm_secret = effective_cli.network.realm_secret.clone();
 
         let discovery_context = DiscoveryContext {
             package_actr_type: config.package.actr_type.clone(),
