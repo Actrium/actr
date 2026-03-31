@@ -22,8 +22,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 // Use types from sub-crates
 use crate::wire::webrtc::SignalingClient;
-// Use extension traits from actr-protocol
-use actr_protocol::{ActrIdExt, ActrTypeExt};
+
 // Use heartbeat functions
 use crate::lifecycle::heartbeat::heartbeat_task;
 
@@ -242,8 +241,8 @@ fn check_acl_permission(
         None => {
             tracing::trace!(
                 "ACL: No ACL configured, allowing {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr()
+                caller,
+                target_id
             );
             return Ok(true);
         }
@@ -253,8 +252,8 @@ fn check_acl_permission(
     if acl_rules.rules.is_empty() {
         tracing::warn!(
             "ACL: ACL configured but no rules defined, denying {} -> {} (default deny)",
-            caller.to_string_repr(),
-            target_id.to_string_repr()
+            caller,
+            target_id
         );
         return Ok(false);
     }
@@ -280,7 +279,7 @@ fn check_acl_permission(
                 tracing::trace!(
                     "ACL: Rule {} matched principal: caller={}, principal_realm={:?}, principal_type={:?}",
                     rule_idx,
-                    caller.to_string_repr(),
+                    caller,
                     principal.realm.as_ref().map(|r| r.realm_id),
                     principal.actr_type.as_ref().map(|t| &t.name)
                 );
@@ -297,8 +296,8 @@ fn check_acl_permission(
                 "ACL: Rule {} matched, permission={} for {} -> {}",
                 rule_idx,
                 if is_allow { "ALLOW" } else { "DENY" },
-                caller.to_string_repr(),
-                target_id.to_string_repr()
+                caller,
+                target_id
             );
 
             return Ok(is_allow);
@@ -308,8 +307,8 @@ fn check_acl_permission(
     // 5. No rule matched - deny by default (secure by default)
     tracing::warn!(
         "ACL: No matching rule found, denying {} -> {} (default deny)",
-        caller.to_string_repr(),
-        target_id.to_string_repr()
+        caller,
+        target_id
     );
     Ok(false)
 }
@@ -882,7 +881,7 @@ impl<W: Workload> ActrNode<W> {
     /// - Multi-hop calls: trace_id spans all hops, request_id per hop
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "ActrNode.handle_incoming")
+        tracing::instrument(skip_all, name = "ActrNode.handle_incoming", fields(actr_id))
     )]
     pub async fn handle_incoming(
         &self,
@@ -896,7 +895,7 @@ impl<W: Workload> ActrNode<W> {
             tracing::debug!(
                 "📨 Handling incoming message: route_key={}, caller={}, request_id={}",
                 envelope.route_key,
-                caller.to_string_repr(),
+                caller,
                 envelope.request_id
             );
         } else {
@@ -914,6 +913,9 @@ impl<W: Workload> ActrNode<W> {
             )
         })?;
 
+        // Record actr_id on the current span for OTel export
+        tracing::Span::current().record("actr_id", tracing::field::display(actor_id));
+
         // 0.1. ACL Permission Check (before processing message)
         let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
             .map_err(|err_msg| {
@@ -929,7 +931,7 @@ impl<W: Workload> ActrNode<W> {
                 error_category = "acl_denied",
                 request_id = %envelope.request_id,
                 route_key = %envelope.route_key,
-                caller = %caller_id.map(|c| c.to_string_repr()).unwrap_or_else(|| "<none>".to_string()),
+                caller = %caller_id.map(|c| c.to_string()).unwrap_or_else(|| "<none>".to_string()),
                 "🚫 ACL: Permission denied"
             );
 
@@ -938,9 +940,9 @@ impl<W: Workload> ActrNode<W> {
                     message: format!(
                         "ACL denied: {} is not allowed to call {}",
                         caller_id
-                            .map(|c| c.to_string_repr())
+                            .map(|c| c.to_string())
                             .unwrap_or_else(|| "<unknown>".to_string()),
-                        actor_id.to_string_repr()
+                        actor_id
                     ),
                 },
             ));
@@ -1052,7 +1054,7 @@ impl<W: Workload> ActrNode<W> {
 
         // Get ActrType from configuration
         let actr_type = self.config.actr_type().clone();
-        tracing::info!("📋 Actor type: {}", actr_type.to_string_repr());
+        tracing::info!("📋 Actor type: {}", actr_type);
 
         // Calculate ServiceSpec from config exports
         let service_spec = self.config.calculate_service_spec();
@@ -1096,10 +1098,7 @@ impl<W: Workload> ActrNode<W> {
                 let credential = register_ok.credential;
 
                 tracing::info!("✅ Registration successful");
-                tracing::info!(
-                    "🆔 Assigned ActrId: {}",
-                    actr_protocol::ActrIdExt::to_string_repr(&actor_id)
-                );
+                tracing::info!("🆔 Assigned ActrId: {}", actor_id);
                 tracing::info!(
                     "🔐 Received credential (token_key_id: {})",
                     credential.token_key_id
@@ -1555,6 +1554,8 @@ impl<W: Workload> ActrNode<W> {
                     })?;
                 let response_tx = workload_to_shell.clone();
                 let shutdown = shutdown_token.clone();
+                #[cfg(feature = "opentelemetry")]
+                let actr_id_str = actor_id.to_string();
 
                 let inproc_handle = tokio::spawn(async move {
                     loop {
@@ -1571,7 +1572,7 @@ impl<W: Workload> ActrNode<W> {
                                         // Extract and set tracing context from envelope
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
-                                                let span = tracing::info_span!("actrNode.lane.receive_rpc", request_id = %request_id);
+                                                let span = tracing::info_span!("actrNode.lane.receive_rpc", actr_id = %actr_id_str, request_id = %request_id);
                                                 set_parent_from_rpc_envelope(&span, &envelope);
                                                 span
                                             };
@@ -1778,6 +1779,8 @@ impl<W: Workload> ActrNode<W> {
             let mailbox = node_ref.mailbox.clone();
             let gate = node_ref.webrtc_gate.clone();
             let shutdown = shutdown_token.clone();
+            #[cfg(feature = "opentelemetry")]
+            let actr_id_str_mb = actor_id.to_string();
 
             let mailbox_handle = tokio::spawn(async move {
                 loop {
@@ -1808,7 +1811,7 @@ impl<W: Workload> ActrNode<W> {
                                                 let request_id = envelope.request_id.clone();
                                                 #[cfg(feature = "opentelemetry")]
                                                 let span = {
-                                                        let span = tracing::info_span!("actrNode.mailbox.receive_rpc", request_id = %request_id);
+                                                        let span = tracing::info_span!("actrNode.mailbox.receive_rpc", actr_id = %actr_id_str_mb, request_id = %request_id);
                                                         set_parent_from_rpc_envelope(&span, &envelope);
                                                         span
                                                     };

@@ -8,8 +8,6 @@ use crate::lifecycle::CredentialState;
 use crate::transport::error::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
-#[cfg(feature = "opentelemetry")]
-use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, PeerToSignaling, Ping, Pong,
@@ -397,7 +395,7 @@ impl WebSocketSignalingClient {
         let credential_state_opt = self.credential_state.lock().await.clone();
         if let (Some(actor_id), Some(credential_state)) = (actor_id_opt, credential_state_opt) {
             let credential = credential_state.credential().await;
-            let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
+            let actor_str = format!("{actor_id}");
             let token_b64 =
                 base64::engine::general_purpose::STANDARD.encode(&credential.encrypted_token);
             {
@@ -871,7 +869,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_unregister_request(
         &self,
@@ -909,7 +907,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_heartbeat(
         &self,
@@ -1020,7 +1018,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id.to_string_repr()))
+        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id))
     )]
     async fn send_credential_update_request(
         &self,

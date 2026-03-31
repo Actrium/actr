@@ -10,7 +10,7 @@ use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{Dest, OutprocTransportManager};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, ActrIdExt, PayloadType, ProtocolError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrId, PayloadType, ProtocolError, RpcEnvelope};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
@@ -95,9 +95,8 @@ impl OutprocOutGate {
                     } => {
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
-                            "🚫 Blocking new requests to peer {} (state: {:?})",
-                            peer_id.to_string_repr(),
-                            event
+                            "🚫 Blocking new requests to peer {} (state: Disconnected/Failed)",
+                            peer_id,
                         );
                     }
 
@@ -121,13 +120,13 @@ impl OutprocOutGate {
                             Ok(_) => {
                                 tracing::info!(
                                     "✅ Successfully closed transport chain for peer {}",
-                                    peer_id.to_string_repr()
+                                    peer_id
                                 );
                             }
                             Err(e) => {
                                 tracing::warn!(
                                     "⚠️ Failed to close transport for peer {}: {}",
-                                    peer_id.to_string_repr(),
+                                    peer_id,
                                     e
                                 );
                             }
@@ -153,7 +152,7 @@ impl OutprocOutGate {
                         tracing::info!(
                             "🧹 Cleaned {} pending requests for peer {}",
                             cleaned_count,
-                            peer_id.to_string_repr()
+                            peer_id
                         );
 
                         // Remove and send error to all pending requests for this peer
@@ -178,7 +177,7 @@ impl OutprocOutGate {
                         closing_peers.write().await.remove(peer_id);
                         tracing::debug!(
                             "✅ Unblocked peer {} after successful ICE restart",
-                            peer_id.to_string_repr()
+                            peer_id
                         );
                     }
 
@@ -207,11 +206,7 @@ impl OutprocOutGate {
         if let Some((target, tx)) = pending.remove(request_id) {
             // Wake up waiting request with result (success or error)
             let _ = tx.send(result);
-            tracing::debug!(
-                "✅ Completed request: {} (target: {})",
-                request_id,
-                target.to_string_repr()
-            );
+            tracing::debug!("✅ Completed request: {} (target: {})", request_id, target);
             Ok(true)
         } else {
             tracing::warn!("⚠️  No pending request for: {}", request_id);
@@ -333,13 +328,10 @@ impl OutprocOutGate {
     /// Send one-way message (no response expected)
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "OutprocOutGate.send_message", fields(target = ?target.to_string_repr()))
+        tracing::instrument(skip_all, name = "OutprocOutGate.send_message", fields(target = %target))
     )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!(
-            "📤 OutprocGate::send_message to {:?}",
-            target.to_string_repr()
-        );
+        tracing::debug!("📤 OutprocGate::send_message to {:?}", target);
 
         // // Check if target is being cleaned up
         // if self.closing_peers.read().await.contains(target) {
@@ -362,7 +354,7 @@ impl OutprocOutGate {
     ) -> ActorResult<()> {
         tracing::debug!(
             "📤 OutprocGate::send_message_with_type to {:?}, payload_type={:?}",
-            target.to_string_repr(),
+            target,
             payload_type
         );
 
