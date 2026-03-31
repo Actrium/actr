@@ -10,9 +10,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use actr_cli::core::{
     ActrCliError, Command, CommandContext, ConfigManager, ConsoleUI, ContainerBuilder,
     DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
-    DefaultNetworkValidator, DefaultProtoProcessor, ErrorReporter, NetworkServiceDiscovery,
-    ServiceContainer, TomlConfigManager,
+    DefaultNetworkValidator, DefaultProtoProcessor, DiscoveryContext, ErrorReporter,
+    NetworkServiceDiscovery, ServiceContainer, TomlConfigManager,
 };
+use url::Url;
 
 use actr_cli::commands::deps as deps_cmd;
 use actr_cli::commands::ops as ops_cmd;
@@ -201,8 +202,37 @@ async fn build_container() -> Result<ServiceContainer> {
 
     if let Some(manager) = config_manager {
         let config = manager.load_config(config_path).await?;
-        container =
-            container.register_service_discovery(Arc::new(NetworkServiceDiscovery::new(config)));
+        let cli_config = actr_cli::config::resolver::resolve_effective_cli_config().ok();
+
+        let signaling_url = cli_config
+            .as_ref()
+            .and_then(|c| Url::parse(&c.discovery.signaling_url).ok())
+            .unwrap_or_else(|| Url::parse("ws://localhost:8081/signaling/ws").unwrap());
+
+        let ais_endpoint = cli_config
+            .as_ref()
+            .map(|c| c.discovery.ais_endpoint.clone())
+            .unwrap_or_else(|| "http://localhost:8081/ais".to_string());
+
+        let realm_id = cli_config
+            .as_ref()
+            .and_then(|c| c.discovery.realm_id)
+            .unwrap_or(1);
+
+        let realm_secret = cli_config
+            .as_ref()
+            .and_then(|c| c.discovery.realm_secret.clone());
+
+        let discovery_context = DiscoveryContext {
+            package_actr_type: config.package.actr_type.clone(),
+            signaling_url,
+            ais_endpoint,
+            realm: actr_protocol::Realm { realm_id },
+            realm_secret,
+        };
+
+        container = container
+            .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
     }
     Ok(container)
 }

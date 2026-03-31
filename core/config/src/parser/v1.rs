@@ -8,7 +8,7 @@ use crate::config::{
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawConfig, RawDependency, RawPackageConfig, RawSystemConfig};
+use crate::{RawConfig, RawDependency, RawPackageConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,13 +39,10 @@ impl ParserV1 {
             raw
         };
 
-        // 2. Validate required fields
-        self.validate_required_fields(&raw)?;
-
-        // 3. Parse package
+        // 2. Parse package
         let package = self.parse_package(&raw.package)?;
 
-        // 4. Parse exports (prefer [package].exports, fallback to top-level exports)
+        // 3. Parse exports (prefer [package].exports, fallback to top-level exports)
         let export_paths = if !raw.package.exports.is_empty() {
             &raw.package.exports
         } else {
@@ -53,86 +50,57 @@ impl ParserV1 {
         };
         let exports = self.parse_exports(export_paths)?;
 
-        // 5. Get realm
-        let self_realm = Realm {
-            realm_id: raw
-                .system
-                .deployment
-                .realm_id
-                .ok_or(ConfigError::MissingField("system.deployment.realm"))?,
-        };
+        // 4. Parse dependencies with a placeholder realm (realm comes from actr.toml at runtime)
+        //    For dependencies with no explicit realm override, they will use realm_id 0 as a
+        //    placeholder; the runtime resolves the actual realm from actr.toml.
+        let placeholder_realm = Realm { realm_id: 0 };
+        let dependencies = self.parse_dependencies(&raw.dependencies, &placeholder_realm)?;
 
-        // 5.1. Parse execution mode
-        let execution_mode = parse_actr_mode(raw.system.deployment.mode.as_deref())?;
-
-        // 6. Parse dependencies
-        let dependencies = self.parse_dependencies(&raw.dependencies, &self_realm)?;
-
-        // 7. Parse signaling URL
-        let signaling_url_str = raw
-            .system
-            .signaling
-            .url
-            .as_ref()
-            .ok_or(ConfigError::MissingField("system.signaling.url"))?;
-
-        let signaling_url = Url::parse(signaling_url_str).map_err(ConfigError::InvalidUrl)?;
-        let ais_endpoint = raw
-            .system
-            .ais_endpoint
-            .url
-            .as_ref()
-            .ok_or(ConfigError::MissingField("system.ais_endpoint.url"))
-            .and_then(|url| Url::parse(url).map_err(ConfigError::InvalidUrl))?;
-
-        // 8. Parse observability config
-        let observability = self.parse_observability(&raw.system, &package);
-
-        // 10. Parse ACL (read from top-level acl, placed last to avoid partial move)
+        // 5. Parse ACL
         let acl = if let Some(acl_value) = raw.acl {
-            Some(self.parse_acl(acl_value, self_realm.realm_id)?)
+            // Use realm_id 0 as placeholder since realm is not known at manifest parse time
+            Some(self.parse_acl(acl_value, 0)?)
         } else {
             None
         };
 
-        // 11. Determine config_dir
-        // If raw.config_dir exists, resolve it relative to the current base_dir
+        // 6. Determine config_dir
         let config_dir = if let Some(dir) = raw.config_dir {
             self.base_dir.join(dir)
         } else {
             self.base_dir.clone()
         };
 
-        // 12. Build final config
+        // 7. Build final config
+        // signaling_url and realm are NOT set from manifest.toml — they come from actr.toml
+        let package_name = package.name.clone();
         Ok(Config {
             package,
             exports,
             dependencies,
-            signaling_url,
-            realm: self_realm,
-            realm_secret: raw.system.deployment.realm_secret.clone(),
-            visible_in_discovery: raw.system.discovery.visible.unwrap_or(true),
+            signaling_url: None,
+            realm: None,
+            realm_secret: None,
+            visible_in_discovery: true,
             acl,
-            mailbox_path: raw.system.storage.mailbox_path,
+            mailbox_path: None,
             tags: raw.package.tags,
             scripts: raw.scripts,
-            webrtc: self.parse_webrtc(&raw.system.webrtc)?,
-            websocket_listen_port: raw.system.websocket.listen_port,
-            websocket_advertised_host: raw.system.websocket.advertised_host.clone(),
-            observability,
-            hyper_data_dir: raw
-                .system
-                .storage
-                .hyper_data_dir
-                .unwrap_or_else(|| config_dir.join(".hyper")),
+            webrtc: WebRtcConfig::default(),
+            websocket_listen_port: None,
+            websocket_advertised_host: None,
+            observability: ObservabilityConfig {
+                filter_level: "info".to_string(),
+                tracing_enabled: false,
+                tracing_endpoint: DEFAULT_TRACING_ENDPOINT.to_string(),
+                tracing_service_name: package_name,
+            },
+            hyper_data_dir: config_dir.join(".hyper"),
             config_dir,
-            trust_mode: raw
-                .system
-                .deployment
-                .trust_mode
-                .unwrap_or_else(|| "development".to_string()),
-            execution_mode,
-            ais_endpoint: Some(ais_endpoint.to_string()),
+            trust_mode: "development".to_string(),
+            execution_mode: ActrMode::default(),
+            ais_endpoint: None,
+            package_path: None,
         })
     }
 
@@ -194,12 +162,24 @@ impl ParserV1 {
             None
         };
 
+        // Parse package path (resolve relative paths against config_dir)
+        let package_path = raw
+            .package
+            .and_then(|pkg| pkg.path)
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    self.base_dir.join(path)
+                }
+            });
+
         Ok(Config {
             package,
             exports: vec![],      // runtime config has no exports
             dependencies: vec![], // dependencies come from the runtime package metadata / lock file
-            signaling_url,
-            realm: self_realm,
+            signaling_url: Some(signaling_url),
+            realm: Some(self_realm),
             realm_secret: raw.deployment.realm_secret,
             visible_in_discovery: raw.discovery.visible.unwrap_or(true),
             acl,
@@ -221,6 +201,7 @@ impl ParserV1 {
                 .unwrap_or_else(|| "development".to_string()),
             execution_mode,
             ais_endpoint: Some(ais_endpoint.to_string()),
+            package_path,
         })
     }
 
@@ -501,31 +482,6 @@ impl ParserV1 {
         })
     }
 
-    fn parse_observability(
-        &self,
-        raw_system: &RawSystemConfig,
-        package: &PackageInfo,
-    ) -> ObservabilityConfig {
-        ObservabilityConfig {
-            filter_level: raw_system
-                .observability
-                .filter_level
-                .clone()
-                .unwrap_or_else(|| "info".to_string()),
-            tracing_enabled: raw_system.observability.tracing_enabled.unwrap_or(false),
-            tracing_endpoint: raw_system
-                .observability
-                .tracing_endpoint
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TRACING_ENDPOINT.to_string()),
-            tracing_service_name: raw_system
-                .observability
-                .tracing_service_name
-                .clone()
-                .unwrap_or_else(|| package.name.clone()),
-        }
-    }
-
     fn merge_inheritance(&self, child: RawConfig, parent_path: PathBuf) -> Result<RawConfig> {
         let parent_full_path = self.base_dir.join(&parent_path);
         let mut parent = RawConfig::from_file(&parent_full_path)?;
@@ -545,7 +501,7 @@ impl ParserV1 {
             parent
         };
 
-        // Merge logic
+        // Merge logic — system config is no longer part of manifest.toml
         Ok(RawConfig {
             edition: child.edition, // Verified consistent
             inherit: None,
@@ -561,7 +517,6 @@ impl ParserV1 {
                 d.extend(child.dependencies);
                 d
             },
-            system: self.merge_system_config(parent.system, child.system),
             acl: child.acl.or(parent.acl),
             scripts: {
                 let mut s = parent.scripts;
@@ -569,121 +524,6 @@ impl ParserV1 {
                 s
             },
         })
-    }
-
-    fn merge_system_config(
-        &self,
-        parent: RawSystemConfig,
-        child: RawSystemConfig,
-    ) -> RawSystemConfig {
-        RawSystemConfig {
-            signaling: crate::raw::RawSignalingConfig {
-                url: child.signaling.url.or(parent.signaling.url),
-            },
-            ais_endpoint: crate::raw::RawAisEndpointConfig {
-                url: child.ais_endpoint.url.or(parent.ais_endpoint.url),
-            },
-            deployment: crate::raw::RawDeploymentConfig {
-                realm_id: child.deployment.realm_id.or(parent.deployment.realm_id),
-                realm_secret: child
-                    .deployment
-                    .realm_secret
-                    .or(parent.deployment.realm_secret),
-                mode: child.deployment.mode.or(parent.deployment.mode),
-                ais_endpoint: child
-                    .deployment
-                    .ais_endpoint
-                    .or(parent.deployment.ais_endpoint),
-                trust_mode: child.deployment.trust_mode.or(parent.deployment.trust_mode),
-            },
-            discovery: crate::raw::RawDiscoveryConfig {
-                visible: child.discovery.visible.or(parent.discovery.visible),
-            },
-            storage: crate::raw::RawStorageConfig {
-                mailbox_path: child.storage.mailbox_path.or(parent.storage.mailbox_path),
-                hyper_data_dir: child
-                    .storage
-                    .hyper_data_dir
-                    .or(parent.storage.hyper_data_dir),
-            },
-            webrtc: crate::raw::RawWebRtcConfig {
-                stun_urls: if child.webrtc.stun_urls.is_empty() {
-                    parent.webrtc.stun_urls
-                } else {
-                    child.webrtc.stun_urls
-                },
-                turn_urls: if child.webrtc.turn_urls.is_empty() {
-                    parent.webrtc.turn_urls
-                } else {
-                    child.webrtc.turn_urls
-                },
-                force_relay: child.webrtc.force_relay || parent.webrtc.force_relay,
-                ice_host_acceptance_min_wait: child
-                    .webrtc
-                    .ice_host_acceptance_min_wait
-                    .or(parent.webrtc.ice_host_acceptance_min_wait),
-                ice_srflx_acceptance_min_wait: child
-                    .webrtc
-                    .ice_srflx_acceptance_min_wait
-                    .or(parent.webrtc.ice_srflx_acceptance_min_wait),
-                ice_prflx_acceptance_min_wait: child
-                    .webrtc
-                    .ice_prflx_acceptance_min_wait
-                    .or(parent.webrtc.ice_prflx_acceptance_min_wait),
-                ice_relay_acceptance_min_wait: child
-                    .webrtc
-                    .ice_relay_acceptance_min_wait
-                    .or(parent.webrtc.ice_relay_acceptance_min_wait),
-                port_range_start: child
-                    .webrtc
-                    .port_range_start
-                    .or(parent.webrtc.port_range_start),
-                port_range_end: child.webrtc.port_range_end.or(parent.webrtc.port_range_end),
-                public_ips: if child.webrtc.public_ips.is_empty() {
-                    parent.webrtc.public_ips
-                } else {
-                    child.webrtc.public_ips
-                },
-            },
-            observability: crate::raw::RawObservabilityConfig {
-                filter_level: child
-                    .observability
-                    .filter_level
-                    .or(parent.observability.filter_level.clone()),
-                tracing_enabled: child
-                    .observability
-                    .tracing_enabled
-                    .or(parent.observability.tracing_enabled),
-                tracing_endpoint: child
-                    .observability
-                    .tracing_endpoint
-                    .or(parent.observability.tracing_endpoint),
-                tracing_service_name: child
-                    .observability
-                    .tracing_service_name
-                    .or(parent.observability.tracing_service_name),
-            },
-            websocket: crate::raw::RawWebSocketConfig {
-                listen_port: child.websocket.listen_port.or(parent.websocket.listen_port),
-                advertised_host: child
-                    .websocket
-                    .advertised_host
-                    .or(parent.websocket.advertised_host),
-            },
-        }
-    }
-
-    fn validate_required_fields(&self, raw: &RawConfig) -> Result<()> {
-        if raw.system.signaling.url.is_none() {
-            return Err(ConfigError::MissingField("system.signaling.url"));
-        }
-        if raw.system.ais_endpoint.url.is_none() {
-            return Err(ConfigError::MissingField("system.ais_endpoint.url"));
-        }
-        if raw.system.deployment.realm_id.is_none() {
-            return Err(ConfigError::MissingField("system.deployment.realm"));
-        }
-        Ok(())
     }
 }
 
@@ -721,15 +561,6 @@ manufacturer = "acme"
 [dependencies]
 user-service = {}
 
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
-
 [scripts]
 run = "cargo run"
 "#;
@@ -751,13 +582,13 @@ run = "cargo run"
         let config = parser.parse_manifest(raw).unwrap();
 
         assert_eq!(config.package.name, "test-service");
-        assert_eq!(config.realm.realm_id, 1001);
+        // realm and signaling_url are not set from manifest.toml
+        assert!(config.realm.is_none());
+        assert!(config.signaling_url.is_none());
         assert_eq!(config.dependencies.len(), 1);
         assert_eq!(config.exports.len(), 1);
-        assert_eq!(
-            config.ais_endpoint.as_deref(),
-            Some("http://localhost:8081/ais")
-        );
+        // ais_endpoint is not set from manifest.toml
+        assert!(config.ais_endpoint.is_none());
     }
 
     #[test]
@@ -772,15 +603,6 @@ version = "1.0.0"
 
 [dependencies]
 shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:abc123", realm = 9999 }
-
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -797,30 +619,20 @@ realm_id = 1001
         assert_eq!(dep.actr_type.as_ref().unwrap().name, "logging-service");
         assert_eq!(dep.service.as_ref().unwrap().name, "LoggingService");
         assert_eq!(dep.service.as_ref().unwrap().fingerprint, "abc123");
-        assert!(dep.is_cross_realm(&config.realm));
-        assert_eq!(
-            config.ais_endpoint.as_deref(),
-            Some("http://localhost:8081/ais")
-        );
+        // realm is not set from manifest.toml; cross_realm_dependencies returns [] when realm is None
+        assert!(config.realm.is_none());
+        assert!(config.cross_realm_dependencies().is_empty());
+        assert!(config.ais_endpoint.is_none());
     }
 
     #[test]
-    fn test_parse_explicit_ais_endpoint() {
+    fn test_parse_package_fields() {
         let toml_content = r#"
 edition = 1
 
 [package]
 name = "test"
 manufacturer = "acme"
-
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
-
-[system.ais_endpoint]
-url = "https://registry.example.com/custom-ais"
-
-[system.deployment]
-realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -831,40 +643,11 @@ realm_id = 1001
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
-        assert_eq!(
-            config.ais_endpoint.as_deref(),
-            Some("https://registry.example.com/custom-ais")
-        );
-    }
-
-    #[test]
-    fn test_missing_ais_endpoint_is_error() {
-        let toml_content = r#"
-edition = 1
-
-[package]
-name = "test"
-manufacturer = "acme"
-
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
-
-[system.deployment]
-realm_id = 1001
-"#;
-
-        let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("manifest.toml");
-        fs::write(&config_path, toml_content).unwrap();
-
-        let raw = RawConfig::from_file(&config_path).unwrap();
-        let parser = ParserV1::new(&config_path);
-        let result = parser.parse_manifest(raw);
-
-        assert!(matches!(
-            result,
-            Err(ConfigError::MissingField("system.ais_endpoint.url"))
-        ));
+        assert_eq!(config.package.name, "test");
+        assert_eq!(config.package.actr_type.manufacturer, "acme");
+        assert!(config.signaling_url.is_none());
+        assert!(config.realm.is_none());
+        assert!(config.ais_endpoint.is_none());
     }
 
     #[test]
@@ -876,15 +659,6 @@ edition = 1
 [package]
 name = "test"
 manufacturer = "1acme"
-
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -910,15 +684,6 @@ edition = 1
 [package]
 name = "test-"
 manufacturer = "acme"
-
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
 "#;
 
         let tmpdir = TempDir::new().unwrap();
@@ -936,85 +701,23 @@ realm_id = 1001
     }
 
     #[test]
-    fn test_invalid_port_range() {
-        // Test invalid port range (start > end)
+    fn test_parse_execution_mode_defaults_native() {
+        // manifest.toml does not carry execution mode; default is Native
         let toml_content = r#"
 edition = 1
 
 [package]
 name = "test"
 manufacturer = "acme"
-
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
-
-[system.webrtc]
-port_range_start = 50100
-port_range_end = 50000
 "#;
 
         let tmpdir = TempDir::new().unwrap();
-        let config_path = tmpdir.path().join("actr.toml");
-        fs::write(&config_path, toml_content).unwrap();
-
-        let raw = RawConfig::from_file(&config_path).unwrap();
-        let parser = ParserV1::new(&config_path);
-        let result = parser.parse_manifest(raw);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), ConfigError::InvalidConfig(_)));
-    }
-
-    #[test]
-    fn test_parse_execution_mode() {
-        let base_toml = |mode_line: &str| {
-            format!(
-                r#"edition = 1
-[package]
-name = "test"
-manufacturer = "acme"
-[system.signaling]
-url = "ws://localhost:8081"
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-[system.deployment]
-realm_id = 1001
-{mode_line}"#
-            )
-        };
-
-        let tmpdir = TempDir::new().unwrap();
-
-        // Default (no mode field) -> Native
         let path = tmpdir.path().join("manifest.toml");
-        fs::write(&path, base_toml("")).unwrap();
+        fs::write(&path, toml_content).unwrap();
+
         let config = ParserV1::new(&path)
             .parse_manifest(RawConfig::from_file(&path).unwrap())
             .unwrap();
         assert_eq!(config.execution_mode, crate::config::ActrMode::Native);
-
-        // mode = "process"
-        fs::write(&path, base_toml("mode = \"process\"")).unwrap();
-        let config = ParserV1::new(&path)
-            .parse_manifest(RawConfig::from_file(&path).unwrap())
-            .unwrap();
-        assert_eq!(config.execution_mode, crate::config::ActrMode::Process);
-
-        // mode = "wasm"
-        fs::write(&path, base_toml("mode = \"wasm\"")).unwrap();
-        let config = ParserV1::new(&path)
-            .parse_manifest(RawConfig::from_file(&path).unwrap())
-            .unwrap();
-        assert_eq!(config.execution_mode, crate::config::ActrMode::Wasm);
-
-        // Invalid value -> error
-        fs::write(&path, base_toml("mode = \"invalid\"")).unwrap();
-        let result = ParserV1::new(&path).parse_manifest(RawConfig::from_file(&path).unwrap());
-        assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 }

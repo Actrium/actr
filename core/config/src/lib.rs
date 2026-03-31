@@ -21,7 +21,10 @@
 //!
 //! // Access parsed values
 //! println!("Package: {}", config.package.name);
-//! println!("Realm: {}", config.realm.realm_id);
+//! // Realm comes from actr.toml, not manifest.toml
+//! if let Some(realm) = &config.realm {
+//!     println!("Realm: {}", realm.realm_id);
+//! }
 //! # Ok(())
 //! # }
 //! ```

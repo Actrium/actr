@@ -302,8 +302,8 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
             .clone()
             .unwrap_or_else(|| "Apache-2.0".to_string()),
         tags: config.tags.clone(),
-        signaling_url: config.signaling_url.to_string(),
-        realm_id: config.realm.realm_id,
+        signaling_url: config.signaling_url.as_ref().map(|u| u.to_string()).unwrap_or_default(),
+        realm_id: config.realm.as_ref().map(|r| r.realm_id).unwrap_or(0),
         visible_in_discovery: config.visible_in_discovery,
         dependencies,
         stun_urls,

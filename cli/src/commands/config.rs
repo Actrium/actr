@@ -4,6 +4,9 @@
 //! - Global: `~/.actr/config.toml`
 //! - Local override: `.actr/config.toml`
 
+use crate::config::loader::{global_config_path, load_cli_config, local_config_path};
+use crate::config::resolver::resolve_effective_cli_config;
+use crate::config::schema::CliConfig;
 use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -11,6 +14,21 @@ use clap::{Args, Subcommand};
 use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
 use toml::Value;
+
+/// All known schema field paths — used to validate `set` keys.
+const KNOWN_KEYS: &[&str] = &[
+    "init.manufacturer",
+    "codegen.language",
+    "codegen.output",
+    "codegen.clean_before_generate",
+    "install.auto_lock",
+    "install.prefer_cache",
+    "cache.dir",
+    "ui.format",
+    "ui.verbose",
+    "ui.color",
+    "ui.non_interactive",
+];
 
 #[derive(Args, Clone)]
 pub struct ConfigCommand {
@@ -28,21 +46,31 @@ pub struct ConfigCommand {
 
 #[derive(Subcommand, Clone)]
 pub enum ConfigSubcommand {
+    /// Set a configuration key to a value
     Set {
+        /// Configuration key (e.g., init.manufacturer)
         key: String,
+        /// Value to assign
         value: String,
     },
+    /// Get the current value of a configuration key
     Get {
+        /// Configuration key (e.g., init.manufacturer)
         key: String,
     },
+    /// List all known schema fields with current effective values
     List,
+    /// Show the raw TOML of the active scope
     Show {
         #[arg(long, default_value = "toml")]
         format: OutputFormat,
     },
+    /// Remove a configuration key
     Unset {
+        /// Configuration key to remove (e.g., init.manufacturer)
         key: String,
     },
+    /// Validate syntax and schema of all config files
     Test,
 }
 
@@ -101,23 +129,14 @@ impl ConfigCommand {
     fn write_scope(&self) -> ConfigScope {
         if self.global {
             ConfigScope::Global
-        } else if self.local {
-            ConfigScope::Local
-        } else if Path::new("manifest.toml").exists() || Path::new(".actr").exists() {
+        } else if self.local
+            || Path::new("manifest.toml").exists()
+            || Path::new(".actr").exists()
+        {
             ConfigScope::Local
         } else {
             ConfigScope::Global
         }
-    }
-
-    fn global_config_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
-        Ok(home.join(".actr").join("config.toml"))
-    }
-
-    fn local_config_path() -> PathBuf {
-        PathBuf::from(".actr").join("config.toml")
     }
 
     fn scope_label(scope: ConfigScope) -> &'static str {
@@ -130,47 +149,61 @@ impl ConfigCommand {
 
     fn scope_path(scope: ConfigScope) -> Result<PathBuf> {
         match scope {
-            ConfigScope::Global => Self::global_config_path(),
-            ConfigScope::Local => Ok(Self::local_config_path()),
+            ConfigScope::Global => global_config_path(),
+            ConfigScope::Local => Ok(local_config_path()),
             ConfigScope::Merged => bail!("Merged scope does not map to a single file"),
         }
     }
 
-    fn empty_table() -> Value {
-        Value::Table(toml::map::Map::new())
-    }
-
-    fn read_value_from_file(path: &Path) -> Result<Value> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
-        let value = content
-            .parse::<Value>()
-            .with_context(|| format!("Failed to parse {}", path.display()))?;
-        Ok(value)
-    }
-
-    fn read_optional_value(path: &Path) -> Result<Option<Value>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        Self::read_value_from_file(path).map(Some)
-    }
-
+    /// Load the raw TOML Value for a specific scope.
     fn load_scope_value(&self, scope: ConfigScope) -> Result<Value> {
         match scope {
-            ConfigScope::Global => Ok(Self::read_optional_value(&Self::global_config_path()?)?
-                .unwrap_or_else(Self::empty_table)),
-            ConfigScope::Local => Ok(Self::read_optional_value(&Self::local_config_path())?
-                .unwrap_or_else(Self::empty_table)),
+            ConfigScope::Global => {
+                let path = global_config_path()?;
+                if !path.exists() {
+                    return Ok(Value::Table(toml::map::Map::new()));
+                }
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read {}", path.display()))?;
+                content
+                    .parse::<Value>()
+                    .with_context(|| format!("Failed to parse {}", path.display()))
+            }
+            ConfigScope::Local => {
+                let path = local_config_path();
+                if !path.exists() {
+                    return Ok(Value::Table(toml::map::Map::new()));
+                }
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read {}", path.display()))?;
+                content
+                    .parse::<Value>()
+                    .with_context(|| format!("Failed to parse {}", path.display()))
+            }
             ConfigScope::Merged => self.load_merged_value(),
         }
     }
 
     fn load_merged_value(&self) -> Result<Value> {
-        let mut merged = Self::read_optional_value(&Self::global_config_path()?)?
-            .unwrap_or_else(Self::empty_table);
-        if let Some(local) = Self::read_optional_value(&Self::local_config_path())? {
-            Self::merge_values(&mut merged, local);
+        let global_path = global_config_path()?;
+        let mut merged = if global_path.exists() {
+            let content = std::fs::read_to_string(&global_path)
+                .with_context(|| format!("Failed to read {}", global_path.display()))?;
+            content
+                .parse::<Value>()
+                .with_context(|| format!("Failed to parse {}", global_path.display()))?
+        } else {
+            Value::Table(toml::map::Map::new())
+        };
+
+        let local_path = local_config_path();
+        if local_path.exists() {
+            let content = std::fs::read_to_string(&local_path)
+                .with_context(|| format!("Failed to read {}", local_path.display()))?;
+            let local_value = content
+                .parse::<Value>()
+                .with_context(|| format!("Failed to parse {}", local_path.display()))?;
+            Self::merge_values(&mut merged, local_value);
         }
         Ok(merged)
     }
@@ -190,38 +223,6 @@ impl ConfigCommand {
         }
     }
 
-    fn ensure_table(value: &mut Value) -> Result<&mut toml::map::Map<String, Value>> {
-        if !matches!(value, Value::Table(_)) {
-            *value = Self::empty_table();
-        }
-        match value {
-            Value::Table(table) => Ok(table),
-            _ => bail!("Configuration root must be a TOML table"),
-        }
-    }
-
-    fn set_nested_value(value: &mut Value, key: &str, raw_value: &str) -> Result<()> {
-        let parsed_value = raw_value
-            .parse::<Value>()
-            .unwrap_or_else(|_| Value::String(raw_value.to_string()));
-        let parts: Vec<&str> = key.split('.').collect();
-        if parts.is_empty() {
-            bail!("Configuration key cannot be empty");
-        }
-
-        let mut current = value;
-        for part in &parts[..parts.len() - 1] {
-            let table = Self::ensure_table(current)?;
-            current = table
-                .entry((*part).to_string())
-                .or_insert_with(Self::empty_table);
-        }
-
-        let table = Self::ensure_table(current)?;
-        table.insert(parts[parts.len() - 1].to_string(), parsed_value);
-        Ok(())
-    }
-
     fn get_nested_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
         let mut current = value;
         for part in key.split('.') {
@@ -233,60 +234,155 @@ impl ConfigCommand {
         Some(current)
     }
 
-    fn unset_nested_value(value: &mut Value, key: &str) -> bool {
-        let parts: Vec<&str> = key.split('.').collect();
-        if parts.is_empty() {
-            return false;
-        }
-
-        let mut current = value;
-        for part in &parts[..parts.len() - 1] {
-            current = match current {
-                Value::Table(table) => match table.get_mut(*part) {
-                    Some(next) => next,
-                    None => return false,
-                },
-                _ => return false,
-            };
-        }
-
-        match current {
-            Value::Table(table) => table.remove(parts[parts.len() - 1]).is_some(),
-            _ => false,
-        }
-    }
-
-    fn collect_keys(prefix: Option<&str>, value: &Value, out: &mut Vec<String>) {
-        if let Value::Table(table) = value {
-            for (key, nested) in table {
-                let full_key = match prefix {
-                    Some(prefix) => format!("{prefix}.{key}"),
-                    None => key.clone(),
-                };
-                out.push(full_key.clone());
-                Self::collect_keys(Some(&full_key), nested, out);
-            }
-        }
-    }
-
-    fn write_scope_value(scope: ConfigScope, value: &Value) -> Result<PathBuf> {
+    fn write_scope_file(scope: ConfigScope, config: &CliConfig) -> Result<PathBuf> {
         let path = Self::scope_path(scope)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
-        let content = toml::to_string_pretty(value)
-            .with_context(|| format!("Failed to serialize {}", path.display()))?;
+        let content = toml::to_string_pretty(config)
+            .with_context(|| format!("Failed to serialize config for {}", path.display()))?;
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(path)
     }
 
+    /// Apply a key=value setting to a `CliConfig` struct.
+    fn apply_key_to_config(config: &mut CliConfig, key: &str, raw_value: &str) -> Result<()> {
+        // Parse the value as TOML so we handle booleans/numbers correctly
+        let parsed_value: Value = raw_value
+            .parse::<Value>()
+            .unwrap_or_else(|_| Value::String(raw_value.to_string()));
+
+        match key {
+            "init.manufacturer" => {
+                config.init.manufacturer = Some(value_to_string(&parsed_value)?);
+            }
+            "codegen.language" => {
+                config.codegen.language = Some(value_to_string(&parsed_value)?);
+            }
+            "codegen.output" => {
+                config.codegen.output = Some(value_to_string(&parsed_value)?);
+            }
+            "codegen.clean_before_generate" => {
+                config.codegen.clean_before_generate = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "install.auto_lock" => {
+                config.install.auto_lock = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "install.prefer_cache" => {
+                config.install.prefer_cache = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "cache.dir" => {
+                config.cache.dir = Some(value_to_string(&parsed_value)?);
+            }
+            "ui.format" => {
+                config.ui.format = Some(value_to_string(&parsed_value)?);
+            }
+            "ui.verbose" => {
+                config.ui.verbose = Some(value_to_bool(&parsed_value, key)?);
+            }
+            "ui.color" => {
+                config.ui.color = Some(value_to_string(&parsed_value)?);
+            }
+            "ui.non_interactive" => {
+                config.ui.non_interactive = Some(value_to_bool(&parsed_value, key)?);
+            }
+            other => {
+                bail!(
+                    "Unknown configuration key '{}'. Known keys:\n{}",
+                    other,
+                    KNOWN_KEYS.join("\n")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove a key from a `CliConfig` struct.
+    fn unset_key_from_config(config: &mut CliConfig, key: &str) -> Result<bool> {
+        let was_set = match key {
+            "init.manufacturer" => {
+                let had = config.init.manufacturer.is_some();
+                config.init.manufacturer = None;
+                had
+            }
+            "codegen.language" => {
+                let had = config.codegen.language.is_some();
+                config.codegen.language = None;
+                had
+            }
+            "codegen.output" => {
+                let had = config.codegen.output.is_some();
+                config.codegen.output = None;
+                had
+            }
+            "codegen.clean_before_generate" => {
+                let had = config.codegen.clean_before_generate.is_some();
+                config.codegen.clean_before_generate = None;
+                had
+            }
+            "install.auto_lock" => {
+                let had = config.install.auto_lock.is_some();
+                config.install.auto_lock = None;
+                had
+            }
+            "install.prefer_cache" => {
+                let had = config.install.prefer_cache.is_some();
+                config.install.prefer_cache = None;
+                had
+            }
+            "cache.dir" => {
+                let had = config.cache.dir.is_some();
+                config.cache.dir = None;
+                had
+            }
+            "ui.format" => {
+                let had = config.ui.format.is_some();
+                config.ui.format = None;
+                had
+            }
+            "ui.verbose" => {
+                let had = config.ui.verbose.is_some();
+                config.ui.verbose = None;
+                had
+            }
+            "ui.color" => {
+                let had = config.ui.color.is_some();
+                config.ui.color = None;
+                had
+            }
+            "ui.non_interactive" => {
+                let had = config.ui.non_interactive.is_some();
+                config.ui.non_interactive = None;
+                had
+            }
+            other => {
+                bail!(
+                    "Unknown configuration key '{}'. Known keys:\n{}",
+                    other,
+                    KNOWN_KEYS.join("\n")
+                );
+            }
+        };
+        Ok(was_set)
+    }
+
     async fn set_config(&self, key: &str, raw_value: &str) -> Result<CommandResult> {
         let scope = self.write_scope();
-        let mut value = self.load_scope_value(scope)?;
-        Self::set_nested_value(&mut value, key, raw_value)?;
-        let path = Self::write_scope_value(scope, &value)?;
+
+        // Load existing config (or default)
+        let path = Self::scope_path(scope)?;
+        let mut config = load_cli_config(&path)?.unwrap_or_default();
+
+        // Apply the setting
+        Self::apply_key_to_config(&mut config, key, raw_value)?;
+
+        // Validate after change
+        config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        // Write back
+        let path = Self::write_scope_file(scope, &config)?;
 
         Ok(CommandResult::Success(format!(
             "{} Updated {} config: {} = {}\n{}",
@@ -319,27 +415,25 @@ impl ConfigCommand {
     }
 
     async fn list_config(&self) -> Result<CommandResult> {
-        let scope = self.read_scope();
-        let value = self.load_scope_value(scope)?;
-        let mut keys = Vec::new();
-        Self::collect_keys(None, &value, &mut keys);
-        keys.sort();
-        keys.dedup();
-
-        if keys.is_empty() {
-            return Ok(CommandResult::Success(format!(
-                "{} No configuration keys in {} scope",
-                "📋".yellow(),
-                Self::scope_label(scope)
-            )));
-        }
-
-        Ok(CommandResult::Success(format!(
-            "{} {} configuration keys:\n{}",
-            "📋".cyan(),
-            Self::scope_label(scope),
-            keys.join("\n")
-        )))
+        // Resolve effective config to show all fields with current values
+        let effective = resolve_effective_cli_config()?;
+        let lines: Vec<String> = vec![
+            format!("init.manufacturer = {}", effective.init.manufacturer),
+            format!("codegen.language = {}", effective.codegen.language),
+            format!("codegen.output = {}", effective.codegen.output),
+            format!(
+                "codegen.clean_before_generate = {}",
+                effective.codegen.clean_before_generate
+            ),
+            format!("install.auto_lock = {}", effective.install.auto_lock),
+            format!("install.prefer_cache = {}", effective.install.prefer_cache),
+            format!("cache.dir = {}", effective.cache.dir),
+            format!("ui.format = {}", effective.ui.format),
+            format!("ui.verbose = {}", effective.ui.verbose),
+            format!("ui.color = {}", effective.ui.color),
+            format!("ui.non_interactive = {}", effective.ui.non_interactive),
+        ];
+        Ok(CommandResult::Success(lines.join("\n")))
     }
 
     async fn show_config(&self, format: &OutputFormat) -> Result<CommandResult> {
@@ -355,15 +449,18 @@ impl ConfigCommand {
 
     async fn unset_config(&self, key: &str) -> Result<CommandResult> {
         let scope = self.write_scope();
-        let mut value = self.load_scope_value(scope)?;
-        if !Self::unset_nested_value(&mut value, key) {
+        let path = Self::scope_path(scope)?;
+        let mut config = load_cli_config(&path)?.unwrap_or_default();
+
+        let was_set = Self::unset_key_from_config(&mut config, key)?;
+        if !was_set {
             bail!(
                 "Configuration key '{}' not found in {} scope",
                 key,
                 Self::scope_label(scope)
             );
         }
-        let path = Self::write_scope_value(scope, &value)?;
+        let path = Self::write_scope_file(scope, &config)?;
         Ok(CommandResult::Success(format!(
             "{} Removed {} from {} config\n{}",
             "✅".green(),
@@ -378,29 +475,65 @@ impl ConfigCommand {
         let mut lines = Vec::new();
         match scope {
             ConfigScope::Global => {
-                let path = Self::global_config_path()?;
-                Self::read_optional_value(&path)?;
-                lines.push(format!("{} Global config syntax is valid", "✅".green()));
+                let path = global_config_path()?;
+                if let Some(config) = load_cli_config(&path)? {
+                    config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
+                }
+                lines.push(format!("{} Global config syntax and schema are valid", "✅".green()));
                 lines.push(path.display().to_string());
             }
             ConfigScope::Local => {
-                let path = Self::local_config_path();
-                Self::read_optional_value(&path)?;
-                lines.push(format!("{} Local config syntax is valid", "✅".green()));
+                let path = local_config_path();
+                if let Some(config) = load_cli_config(&path)? {
+                    config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
+                }
+                lines.push(format!("{} Local config syntax and schema are valid", "✅".green()));
                 lines.push(path.display().to_string());
             }
             ConfigScope::Merged => {
-                let global_path = Self::global_config_path()?;
-                let local_path = Self::local_config_path();
-                Self::read_optional_value(&global_path)?;
-                Self::read_optional_value(&local_path)?;
-                let merged = self.load_merged_value()?;
-                toml::to_string_pretty(&merged)?;
-                lines.push(format!("{} Global config parsed", "✅".green()));
-                lines.push(format!("{} Local config parsed", "✅".green()));
+                let global_path = global_config_path()?;
+                let local_path = local_config_path();
+
+                if let Some(config) = load_cli_config(&global_path)? {
+                    config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
+                    lines.push(format!("{} Global config parsed and validated", "✅".green()));
+                } else {
+                    lines.push(format!("{} Global config not found (using defaults)", "ℹ️".cyan()));
+                }
+
+                if let Some(config) = load_cli_config(&local_path)? {
+                    config.validate().map_err(|e| anyhow::anyhow!("{}", e))?;
+                    lines.push(format!("{} Local config parsed and validated", "✅".green()));
+                } else {
+                    lines.push(format!("{} Local config not found (using defaults)", "ℹ️".cyan()));
+                }
+
+                // Validate the merged result
+                resolve_effective_cli_config()?;
                 lines.push(format!("{} Merged view is valid", "✅".green()));
             }
         }
         Ok(CommandResult::Success(lines.join("\n")))
+    }
+}
+
+/// Convert a TOML Value to a String, extracting the inner string value.
+fn value_to_string(v: &Value) -> Result<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        other => Ok(other.to_string()),
+    }
+}
+
+/// Convert a TOML Value to a bool.
+fn value_to_bool(v: &Value, key: &str) -> Result<bool> {
+    match v {
+        Value::Boolean(b) => Ok(*b),
+        Value::String(s) => match s.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => bail!("Key '{}' expects a boolean (true/false), got '{}'", key, other),
+        },
+        other => bail!("Key '{}' expects a boolean, got {:?}", key, other),
     }
 }

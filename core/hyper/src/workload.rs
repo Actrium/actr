@@ -46,6 +46,7 @@ pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Se
 
 /// Runtime workload enum.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Workload {
     #[cfg(feature = "wasm-engine")]
     Wasm(crate::wasm::WasmWorkload),

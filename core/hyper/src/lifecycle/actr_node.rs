@@ -591,6 +591,18 @@ impl ActrNode {
 
         tracing::info!("🚀 Initializing ActrNode");
 
+        // Validate required runtime configuration
+        if config.signaling_url.is_none() {
+            return Err(ActrError::InvalidArgument(
+                "signaling_url is required in runtime config (actr.toml)".to_string()
+            ));
+        }
+        if config.realm.is_none() {
+            return Err(ActrError::InvalidArgument(
+                "realm is required in runtime config (actr.toml)".to_string()
+            ));
+        }
+
         // Initialize Mailbox
         let mailbox_path = config
             .mailbox_path
@@ -632,7 +644,7 @@ impl ActrNode {
         };
 
         let signaling_config = SignalingConfig {
-            server_url: config.signaling_url.clone(),
+            server_url: config.signaling_url.clone().unwrap(), // validated at build() entry
             connection_timeout: 30,
             heartbeat_interval: 30,
             reconnect_config: ReconnectConfig::default(),
@@ -794,7 +806,7 @@ impl ActrNode {
 
         let register_request = RegisterRequest {
             actr_type: actr_type.clone(),
-            realm: self.config.realm,
+            realm: self.config.realm.unwrap(), // validated at build() entry
             service_spec,
             acl: self.config.acl.clone(),
             service: None,
@@ -871,7 +883,7 @@ impl ActrNode {
             let actor_id = register_ok.actr_id.clone();
             let credential_state = CredentialState::new(
                 register_ok.credential.clone(),
-                register_ok.credential_expires_at.clone(),
+                register_ok.credential_expires_at,
                 Some(register_ok.turn_credential.clone()),
             );
             self.signaling_client.set_actor_id(actor_id).await;

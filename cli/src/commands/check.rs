@@ -42,6 +42,10 @@ pub struct CheckCommand {
     /// Also verify services are installed in manifest.lock.toml
     #[arg(long)]
     pub lock: bool,
+
+    /// Signaling server URL (overrides manifest; required when manifest has no signaling_url)
+    #[arg(long)]
+    pub signaling: Option<String>,
 }
 
 #[async_trait]
@@ -71,31 +75,37 @@ impl Command for CheckCommand {
         let config = ConfigParser::from_manifest_file(config_path)
             .with_context(|| format!("Failed to load manifest: {}", config_path))?;
 
-        println!(
-            "🌐 Checking signaling server: {}...",
-            config.signaling_url.as_str()
-        );
-        info!(
-            "🌐 Checking signaling server: {}...",
-            config.signaling_url.as_str()
-        );
-        let signaling_status = pipeline
-            .network_validator()
-            .check_connectivity(config.signaling_url.as_str(), &options)
-            .await?;
-        if signaling_status.is_reachable {
-            let latency = signaling_status.response_time_ms.unwrap_or(0);
-            println!("  ✔ Signaling server is reachable ({}ms)", latency);
-            info!("  ✔ Signaling server is reachable ({}ms)", latency);
+        // Determine signaling URL: --signaling flag > manifest > skip
+        let signaling_url_str: Option<String> = self
+            .signaling
+            .clone()
+            .or_else(|| config.signaling_url.as_ref().map(|u| u.to_string()));
+
+        if let Some(ref signaling_url) = signaling_url_str {
+            println!("🌐 Checking signaling server: {}...", signaling_url);
+            info!("🌐 Checking signaling server: {}...", signaling_url);
+            let signaling_status = pipeline
+                .network_validator()
+                .check_connectivity(signaling_url, &options)
+                .await?;
+            if signaling_status.is_reachable {
+                let latency = signaling_status.response_time_ms.unwrap_or(0);
+                println!("  ✔ Signaling server is reachable ({}ms)", latency);
+                info!("  ✔ Signaling server is reachable ({}ms)", latency);
+            } else {
+                let err = signaling_status
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string());
+                return Ok(CommandResult::Error(format!(
+                    "{} Signaling server unreachable: {}",
+                    "❌".red(),
+                    err.red()
+                )));
+            }
         } else {
-            let err = signaling_status
-                .error
-                .unwrap_or_else(|| "Unknown error".to_string());
-            return Ok(CommandResult::Error(format!(
-                "{} Signaling server unreachable: {}",
-                "❌".red(),
-                err.red()
-            )));
+            println!(
+                "⚠️  No signaling URL available — skipping connectivity check.\n   Use --signaling <URL> to test signaling server connectivity."
+            );
         }
 
         // 2. Resolve Dependencies to check

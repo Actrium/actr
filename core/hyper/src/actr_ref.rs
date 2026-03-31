@@ -97,6 +97,9 @@ impl ActrRef {
     ///
     /// Returns up to `count` actor IDs registered under `target_type`.
     /// Convenience wrapper for app-side discovery without holding a `RuntimeContext`.
+    ///
+    /// Note: The signaling protocol currently returns one candidate per request.
+    /// This method will make up to `count` requests to collect multiple unique candidates.
     pub async fn discover_route_candidates(
         &self,
         target_type: &ActrType,
@@ -104,15 +107,21 @@ impl ActrRef {
     ) -> ActorResult<Vec<ActrId>> {
         let ctx = self.app_context().await;
         let mut results = Vec::with_capacity(count);
+
         for _ in 0..count {
             match ctx.discover_route_candidate(target_type).await {
                 Ok(id) => {
                     if !results.contains(&id) {
                         results.push(id);
                     }
-                    break; // signaling returns one candidate per request; stop after first
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Return partial results if we have any, otherwise propagate error
+                    if results.is_empty() {
+                        return Err(e);
+                    }
+                    break;
+                }
             }
         }
         Ok(results)

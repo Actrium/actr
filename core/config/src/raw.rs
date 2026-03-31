@@ -32,10 +32,6 @@ pub struct ManifestRawConfig {
     #[serde(default)]
     pub dependencies: HashMap<String, RawDependency>,
 
-    /// System configuration
-    #[serde(default)]
-    pub system: RawSystemConfig,
-
     /// Access control list (raw TOML value, parsed later)
     #[serde(default)]
     pub acl: Option<toml::Value>,
@@ -331,26 +327,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_webrtc_with_port_range() {
-        let toml_content = r#"
-edition = 1
-[package]
-name = "test"
-manufacturer = "acme"
-[system.webrtc]
-port_range_start = 50000
-port_range_end = 50100
-public_ips = ["1.2.3.4"]
-turn_urls = ["turn:Example"]
-"#;
-        let config = ManifestRawConfig::from_str(toml_content).unwrap();
-        assert_eq!(config.system.webrtc.port_range_start, Some(50000));
-        assert_eq!(config.system.webrtc.port_range_end, Some(50100));
-        assert_eq!(config.system.webrtc.public_ips[0], "1.2.3.4");
-        assert_eq!(config.system.webrtc.turn_urls[0], "turn:Example");
-    }
-
-    #[test]
     fn test_parse_basic_config() {
         let toml_content = r#"
 edition = 1
@@ -363,12 +339,6 @@ manufacturer = "acme"
 [dependencies]
 user-service = {}
 
-[system.signaling]
-url = "ws://localhost:8081"
-
-[system.deployment]
-realm_id = 1001
-
 [scripts]
 run = "cargo run"
 "#;
@@ -378,32 +348,6 @@ run = "cargo run"
         assert_eq!(config.package.name, "test-service");
         assert_eq!(config.exports.len(), 1);
         assert!(config.dependencies.contains_key("user-service"));
-    }
-
-    #[test]
-    fn test_parse_explicit_ais_endpoint() {
-        let toml_content = r#"
-edition = 1
-
-[package]
-name = "test"
-manufacturer = "acme"
-
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
-
-[system.ais_endpoint]
-url = "http://localhost:8081/ais"
-
-[system.deployment]
-realm_id = 1001
-"#;
-
-        let config = ManifestRawConfig::from_str(toml_content).unwrap();
-        assert_eq!(
-            config.system.ais_endpoint.url.as_deref(),
-            Some("http://localhost:8081/ais")
-        );
     }
 
     #[test]

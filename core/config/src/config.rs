@@ -58,10 +58,16 @@ pub struct Config {
     pub dependencies: Vec<Dependency>,
 
     /// Signaling server URL (validated)
-    pub signaling_url: Url,
+    ///
+    /// Set by `parse_runtime` from `actr.toml`.
+    /// Not present in `parse_manifest` output — manifest.toml no longer carries system fields.
+    pub signaling_url: Option<Url>,
 
     /// Owning Realm (Security Realm)
-    pub realm: Realm,
+    ///
+    /// Set by `parse_runtime` from `actr.toml`.
+    /// Not present in `parse_manifest` output — manifest.toml no longer carries system fields.
+    pub realm: Option<Realm>,
 
     /// Realm secret for AIS registration authentication (optional)
     ///
@@ -125,6 +131,13 @@ pub struct Config {
     /// Required in native mode. In process/wasm mode, Hyper handles registration.
     /// Corresponds to `[system.deployment] ais_endpoint = "..."` in runtime `actr.toml`.
     pub ais_endpoint: Option<String>,
+
+    /// Path to the workload package (.actr file), resolved to absolute path
+    ///
+    /// When specified in `actr.toml` via `[package] path = "..."`, this field
+    /// contains the resolved absolute path to the workload package file.
+    /// Relative paths are resolved against `config_dir`.
+    pub package_path: Option<PathBuf>,
 }
 
 /// Package info
@@ -300,10 +313,15 @@ impl Config {
     }
 
     /// Get all cross-Realm dependencies
+    ///
+    /// Returns an empty vec if `realm` is `None` (manifest-only configs without system fields).
     pub fn cross_realm_dependencies(&self) -> Vec<&Dependency> {
+        let Some(self_realm) = &self.realm else {
+            return vec![];
+        };
         self.dependencies
             .iter()
-            .filter(|d| d.realm.realm_id != self.realm.realm_id)
+            .filter(|d| d.realm.realm_id != self_realm.realm_id)
             .collect()
     }
 
@@ -494,8 +512,8 @@ mod tests {
                     service: None,
                 },
             ],
-            signaling_url: Url::parse("ws://localhost:8081").unwrap(),
-            realm: Realm { realm_id: 1001 },
+            signaling_url: Some(Url::parse("ws://localhost:8081").unwrap()),
+            realm: Some(Realm { realm_id: 1001 }),
             realm_secret: None,
             visible_in_discovery: true,
             acl: None,
@@ -514,6 +532,7 @@ mod tests {
             config_dir: PathBuf::from("."),
             execution_mode: ActrMode::Native,
             ais_endpoint: None,
+            package_path: None,
         };
 
         // Test dependency lookup

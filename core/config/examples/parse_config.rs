@@ -66,9 +66,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n🌐 System Configuration:");
-    println!("  Signaling URL: {}", config.signaling_url);
+    println!("  Signaling URL: {:?}", config.signaling_url);
     println!("  AIS Endpoint: {:?}", config.ais_endpoint);
-    println!("  Realm ID: {}", config.realm.realm_id);
+    println!("  Realm ID: {:?}", config.realm.as_ref().map(|r| r.realm_id));
     println!("  Visible in discovery: {}", config.visible_in_discovery);
 
     println!("\n✅ Configuration successfully parsed and validated!");

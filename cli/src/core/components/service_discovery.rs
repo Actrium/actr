@@ -131,7 +131,8 @@ impl NetworkServiceDiscovery {
     async fn connect_and_register(&self) -> Result<SignalingState> {
         let register_request = RegisterRequest {
             actr_type: self.config.package.actr_type.clone(),
-            realm: self.config.realm.clone(),
+            realm: self.config.realm
+                .ok_or_else(|| anyhow!("realm is required for service discovery (set in actr.toml)"))?,
             service_spec: None,
             service: None,
             acl: None,
@@ -160,8 +161,10 @@ impl NetworkServiceDiscovery {
             None => return Err(anyhow!("AIS registration response is missing result")),
         };
 
+        let base_signaling_url = self.config.signaling_url.as_ref()
+            .ok_or_else(|| anyhow!("signaling_url is required for service discovery (set in actr.toml)"))?;
         let signaling_url = Self::build_signaling_url_with_identity(
-            &self.config.signaling_url,
+            base_signaling_url,
             &actr_id,
             &credential,
         );

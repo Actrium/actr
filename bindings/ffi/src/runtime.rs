@@ -67,8 +67,8 @@ impl ActrSystemWrapper {
         crate::logger::init_observability(config.observability.clone());
 
         info!(
-            signaling_url = %config.signaling_url,
-            realm_id = config.realm.realm_id,
+            signaling_url = config.signaling_url.as_ref().map(|u| u.as_str()).unwrap_or(""),
+            realm_id = config.realm.as_ref().map(|r| r.realm_id).unwrap_or(0),
             package_path = %package_path,
             "Creating package-backed runtime wrapper",
         );

@@ -2,6 +2,7 @@
 
 use crate::commands::initialize::{self, InitContext};
 use crate::commands::{Command, SupportedLanguage};
+use crate::config::resolver::resolve_effective_cli_config;
 use crate::error::{ActrCliError, Result};
 use crate::template::{DEFAULT_MANUFACTURER, EchoRole, ProjectTemplateName};
 use async_trait::async_trait;
@@ -24,6 +25,7 @@ pub struct InitCommand {
     pub project_name: Option<String>,
 
     /// Signaling server URL
+    /// TODO: will be removed when manifest.toml strips system fields
     #[arg(long)]
     pub signaling: Option<String>,
 
@@ -36,14 +38,18 @@ pub struct InitCommand {
     #[arg(long)]
     pub role: Option<EchoRole>,
 
-    /// Manufacturer for generated actor types (default: acme)
-    #[arg(long, default_value = DEFAULT_MANUFACTURER)]
-    pub manufacturer: String,
+    /// Manufacturer for generated actor types (overrides CLI config default: acme)
+    #[arg(long)]
+    pub manufacturer: Option<String>,
 }
 
 #[async_trait]
 impl Command for InitCommand {
     async fn execute(&self) -> Result<()> {
+        // Resolve effective CLI config to use as defaults
+        let cli_config = resolve_effective_cli_config().unwrap_or_default();
+        let effective_manufacturer = cli_config.init.manufacturer;
+
         // Show welcome header
         println!("🎯 Actor-RTC Project Initialization");
         println!("----------------------------------------");
@@ -58,7 +64,13 @@ impl Command for InitCommand {
         } else {
             None
         };
-        let manufacturer = self.manufacturer.trim();
+
+        // Use --manufacturer if explicitly provided, otherwise use effective CLI config default
+        let manufacturer_owned: String = match &self.manufacturer {
+            Some(m) => m.clone(),
+            None => effective_manufacturer,
+        };
+        let manufacturer = manufacturer_owned.trim();
         if manufacturer.is_empty() {
             return Err(ActrCliError::InvalidProject(
                 "Manufacturer cannot be empty".to_string(),
