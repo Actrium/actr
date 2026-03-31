@@ -2,17 +2,18 @@
 # Web Echo Example — Full Package Verification Flow
 #
 # Demonstrates the complete signing → verification → AIS registration flow for Web:
-#   1. Build server runtime WASM (wasm-pack, pure host — no business logic)
-#      Build echo-actr guest WASM (cargo build, standard entry! FFI — shared with native)
-#      Build client WASM (wasm-pack, monolithic runtime + handler)
-#   2. `actr pkg build` — pack guest WASM into signed .actr packages (MFR key)
+#   1. Build shared runtime WASM (wasm-pack, pure host — no business logic)
+#      Build echo-actr server guest WASM (cargo build, standard entry! FFI)
+#      Build echo-client guest WASM (cargo build, entry! FFI + JSPI outbound calls)
+#   2. `actr pkg build` — pack guest WASMs into signed .actr packages (MFR key)
 #   3. Start actrix (signaling + AIS + MFR)
 #   4. Seed realm + MFR manufacturer records in DB
-#   5. `actr pkg publish` — publish server package to MFR registry
-#   6. Deploy runtime WASM + .actr packages to public/packages/
+#   5. `actr pkg publish` — publish packages to MFR registry
+#   6. Deploy shared runtime WASM + .actr packages to public/packages/
 #   7. Inject MFR public key into actr-config.ts for package verification
-#   8. Server: actor.sw.js loads runtime WASM, then loads echo-actr guest via guest bridge
-#      Guest bridge: AbiFrame → guest actr_handle → AbiReply
+#   8. Both server and client: actor.sw.js loads shared runtime WASM,
+#      then loads guest WASM via guest bridge
+#      Client guest uses JSPI for outbound discover/call operations
 #
 # Usage:
 #   ./start.sh
@@ -43,7 +44,7 @@ ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 CLIENT_DIR="$SCRIPT_DIR/client"
 SERVER_WASM_DIR="$SERVER_DIR/wasm"
-CLIENT_WASM_DIR="$CLIENT_DIR/wasm"
+CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
 RELEASE_DIR="$SCRIPT_DIR/release"
 
 # MFR manufacturer name (must match manifest.toml)
@@ -159,65 +160,60 @@ if [ $MISSING -eq 1 ]; then
     exit 1
 fi
 
-# ── Step 1: Build WASM (server runtime + echo-actr guest + client) ───────
+# ── Step 1: Build WASM (shared runtime + server guest + client guest) ────
 
 echo ""
 echo -e "${BLUE}📦 Step 1: Building WASM artifacts...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-SERVER_WASM_OUT="$RELEASE_DIR/server-wasm"
-CLIENT_WASM_OUT="$RELEASE_DIR/client-wasm"
-mkdir -p "$SERVER_WASM_OUT" "$CLIENT_WASM_OUT"
+RUNTIME_WASM_OUT="$RELEASE_DIR/runtime-wasm"
+mkdir -p "$RUNTIME_WASM_OUT"
 
-# ── 1a: Build server runtime WASM (pure runtime host, no echo business logic)
-echo "Building server runtime WASM (host only)..."
+# ── 1a: Build shared runtime WASM (pure runtime host, no business logic)
+# Both server and client load this same runtime. Guest WASMs are loaded separately.
+echo "Building shared runtime WASM (host only)..."
 cd "$SERVER_WASM_DIR"
 wasm-pack build \
     --target no-modules \
-    --out-dir "$SERVER_WASM_OUT" \
-    --out-name echo_server \
+    --out-dir "$RUNTIME_WASM_OUT" \
+    --out-name actr_runtime_sw \
     --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-SERVER_RUNTIME_WASM="$SERVER_WASM_OUT/echo_server_bg.wasm"
-SERVER_RUNTIME_JS="$SERVER_WASM_OUT/echo_server.js"
-if [ ! -f "$SERVER_RUNTIME_WASM" ] || [ ! -f "$SERVER_RUNTIME_JS" ]; then
-    echo -e "${RED}❌ Server runtime wasm-pack build failed${NC}"
+RUNTIME_WASM="$RUNTIME_WASM_OUT/actr_runtime_sw_bg.wasm"
+RUNTIME_JS="$RUNTIME_WASM_OUT/actr_runtime_sw.js"
+if [ ! -f "$RUNTIME_WASM" ] || [ ! -f "$RUNTIME_JS" ]; then
+    echo -e "${RED}❌ Shared runtime wasm-pack build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Server runtime WASM built: $(du -h "$SERVER_RUNTIME_WASM" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Shared runtime WASM built: $(du -h "$RUNTIME_WASM" | cut -f1)${NC}"
 
-# ── 1b: Build echo-actr guest WASM (standard guest, shared with native)
+# ── 1b: Build echo-actr server guest WASM (standard guest, shared with native)
 ECHO_ACTR_DIR="$(cd "$ACTR_ROOT/../../echo-actr" && pwd)"
-echo "Building echo-actr guest WASM from $ECHO_ACTR_DIR..."
+echo "Building echo-actr server guest WASM from $ECHO_ACTR_DIR..."
 cd "$ECHO_ACTR_DIR"
 cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-GUEST_WASM_FILE="$ECHO_ACTR_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
-if [ ! -f "$GUEST_WASM_FILE" ]; then
-    echo -e "${RED}❌ echo-actr guest WASM build failed${NC}"
+SERVER_GUEST_WASM="$ECHO_ACTR_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
+if [ ! -f "$SERVER_GUEST_WASM" ]; then
+    echo -e "${RED}❌ echo-actr server guest WASM build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Echo-actr guest WASM built: $(du -h "$GUEST_WASM_FILE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Server guest WASM built: $(du -h "$SERVER_GUEST_WASM" | cut -f1)${NC}"
 
-# ── 1c: Build client WASM (monolithic: runtime + handler)
-echo "Building echo-client-web..."
-cd "$CLIENT_WASM_DIR"
-wasm-pack build \
-    --target no-modules \
-    --out-dir "$CLIENT_WASM_OUT" \
-    --out-name echo_client \
-    --release 2>&1 | tail -5
+# ── 1c: Build echo-client guest WASM (proxy guest with JSPI outbound calls)
+echo "Building echo-client guest WASM from $CLIENT_GUEST_DIR..."
+cd "$CLIENT_GUEST_DIR"
+cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-CLIENT_WASM_FILE="$CLIENT_WASM_OUT/echo_client_bg.wasm"
-CLIENT_JS_FILE="$CLIENT_WASM_OUT/echo_client.js"
-if [ ! -f "$CLIENT_WASM_FILE" ] || [ ! -f "$CLIENT_JS_FILE" ]; then
-    echo -e "${RED}❌ Client wasm-pack build failed${NC}"
+CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_client_guest_web.wasm"
+if [ ! -f "$CLIENT_GUEST_WASM" ]; then
+    echo -e "${RED}❌ Client guest WASM build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Client WASM built: $(du -h "$CLIENT_WASM_FILE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Client guest WASM built: $(du -h "$CLIENT_GUEST_WASM" | cut -f1)${NC}"
 
 # ── Step 2: Build signed .actr packages ──────────────────────────────────
 
@@ -251,7 +247,7 @@ echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 # Build server .actr package (guest WASM only — no JS glue)
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
-    --binary "$GUEST_WASM_FILE" \
+    --binary "$SERVER_GUEST_WASM" \
     --config "$SERVER_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE" \
@@ -261,23 +257,22 @@ if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
     echo -e "${RED}❌ Server package build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1) (guest WASM only)${NC}"
+echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1) (server guest WASM)${NC}"
 
-# Build client .actr package
+# Build client .actr package (guest WASM only — no JS glue, uses JSPI for outbound calls)
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
-    --binary "$CLIENT_WASM_FILE" \
+    --binary "$CLIENT_GUEST_WASM" \
     --config "$CLIENT_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$CLIENT_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown" \
-    --resource "resources/glue.js=$CLIENT_JS_FILE"
+    --target "wasm32-unknown-unknown"
 
 if [ ! -f "$CLIENT_ACTR_PACKAGE" ]; then
     echo -e "${RED}❌ Client package build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Client .actr: $(du -h "$CLIENT_ACTR_PACKAGE" | cut -f1)${NC}"
+echo -e "${GREEN}✅ Client .actr: $(du -h "$CLIENT_ACTR_PACKAGE" | cut -f1) (client guest WASM)${NC}"
 
 # ── Step 3: Start actrix (signaling + AIS + MFR) ────────────────────────
 
@@ -494,10 +489,13 @@ cp "$SERVER_ACTR_PACKAGE" "$SERVER_DIR/public/packages/echo-server.actr"
 cp "$CLIENT_ACTR_PACKAGE" "$CLIENT_DIR/public/packages/echo-client.actr"
 echo -e "${GREEN}✅ .actr packages deployed to public/packages/${NC}"
 
-# Deploy server runtime WASM + JS glue (loaded separately by guest bridge)
-cp "$SERVER_RUNTIME_WASM" "$SERVER_DIR/public/packages/echo_server_bg.wasm"
-cp "$SERVER_RUNTIME_JS" "$SERVER_DIR/public/packages/echo_server.js"
-echo -e "${GREEN}✅ Server runtime WASM + JS deployed to public/packages/${NC}"
+# Deploy shared runtime WASM + JS glue to both server and client
+# Both use the same runtime WASM; guest WASMs are loaded from .actr packages.
+cp "$RUNTIME_WASM" "$SERVER_DIR/public/packages/actr_runtime_sw_bg.wasm"
+cp "$RUNTIME_JS" "$SERVER_DIR/public/packages/actr_runtime_sw.js"
+cp "$RUNTIME_WASM" "$CLIENT_DIR/public/packages/actr_runtime_sw_bg.wasm"
+cp "$RUNTIME_JS" "$CLIENT_DIR/public/packages/actr_runtime_sw.js"
+echo -e "${GREEN}✅ Shared runtime WASM + JS deployed to both server and client${NC}"
 
 # Sync actor.sw.js from web-sdk source
 SW_SRC="$PROJECT_ROOT/packages/web-sdk/src/actor.sw.js"
@@ -629,12 +627,14 @@ echo "🎉 Web Echo — Full Package Verification Flow"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "✅ Validated flow:"
-echo "   1. Server: runtime WASM (wasm-pack) + echo-actr guest WASM (cargo build)"
-echo "      Client: monolithic WASM (wasm-pack, runtime + handler)"
+echo "   1. Shared runtime WASM (wasm-pack) loaded by both server and client"
+echo "      Server guest: echo-actr WASM (cargo build, no outbound calls)"
+echo "      Client guest: echo-client-guest WASM (cargo build, JSPI outbound calls)"
 echo "   2. actr pkg build → signed .actr packages (MFR key: $MFR_NAME)"
 echo "   3. actr pkg publish → server package registered with AIS"
 echo "   4. MFR public key injected → SW verifies package signatures"
 echo "   5. Server: guest bridge loads runtime + echo-actr guest separately"
+echo "      Client: guest bridge loads runtime + client-guest (JSPI for outbound)"
 echo "      Browser verifies Ed25519 sig + SHA-256 hash"
 echo "   6. SW registers with AIS → obtains credential → starts WebRTC"
 echo ""

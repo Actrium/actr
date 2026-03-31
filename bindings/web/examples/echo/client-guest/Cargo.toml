@@ -1,0 +1,26 @@
+[package]
+name = "echo-client-guest-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Echo Client Guest WASM for Web — proxy workload using entry! FFI"
+
+# Standalone project, not part of any workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+cdylib = ["actr-framework/cdylib"]
+
+[dependencies]
+actr-framework = { path = "../../../../../core/framework" }
+actr-protocol = { path = "../../../../../core/protocol" }
+async-trait = "0.1"
+bytes = "1.0"
+prost = "0.14"
+
+[build-dependencies]
+prost-build = "0.14"
