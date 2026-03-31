@@ -28,7 +28,7 @@ use tracing::Instrument as _;
 /// ActrNode - runtime node with optional workload
 pub struct ActrNode {
     /// Runtime configuration
-    pub(crate) config: actr_config::Config,
+    pub(crate) config: actr_config::RuntimeConfig,
 
     /// SQLite persistent mailbox
     pub(crate) mailbox: Arc<dyn Mailbox>,
@@ -581,7 +581,7 @@ impl ActrNode {
     /// This is the internal constructor behind the public node builders and
     /// Hyper package attach helpers.
     pub(crate) async fn build(
-        config: actr_config::Config,
+        config: actr_config::RuntimeConfig,
         workload: crate::workload::Workload,
         package_manifest: Option<crate::verify::PackageManifest>,
         packaged_lock: Option<actr_config::lock::LockFile>,
@@ -744,10 +744,7 @@ impl ActrNode {
     /// Called by the Hyper layer before `start()`, writing the already-issued `RegisterOk`
     /// into ActrNode so that `start()` skips the signaling registration step.
     pub fn inject_credential(&mut self, register_ok: register_response::RegisterOk) {
-        tracing::debug!(
-            execution_mode = %self.config.execution_mode,
-            "Injected pre-registration credential; start() will skip AIS registration"
-        );
+        tracing::debug!("Injected pre-registration credential; start() will skip AIS registration");
         self.injected_registration = Some(register_ok);
     }
 
@@ -794,7 +791,7 @@ impl ActrNode {
 
         let register_request = RegisterRequest {
             actr_type: actr_type.clone(),
-            realm: self.config.realm,
+            realm: self.config.realm.clone(),
             service_spec,
             acl: self.config.acl.clone(),
             service: None,
@@ -807,16 +804,11 @@ impl ActrNode {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         let register_ok = if let Some(injected) = self.injected_registration.take() {
             tracing::info!(
-                execution_mode = %self.config.execution_mode,
                 "Using Hyper pre-injected registration credential; skipping AIS registration"
             );
             injected
         } else {
-            let ais_endpoint = self.config.ais_endpoint.as_ref().ok_or_else(|| {
-                ActrError::Unavailable(
-                    "ais_endpoint is required for actor node registration".to_string(),
-                )
-            })?;
+            let ais_endpoint = &self.config.ais_endpoint;
             tracing::info!(
                 ais_endpoint = %ais_endpoint,
                 "Registering actor with AIS via HTTP"
@@ -871,7 +863,7 @@ impl ActrNode {
             let actor_id = register_ok.actr_id.clone();
             let credential_state = CredentialState::new(
                 register_ok.credential.clone(),
-                register_ok.credential_expires_at.clone(),
+                register_ok.credential_expires_at,
                 Some(register_ok.turn_credential.clone()),
             );
             self.signaling_client.set_actor_id(actor_id).await;
@@ -1136,8 +1128,7 @@ impl ActrNode {
                 } else {
                     Duration::from_secs(30)
                 };
-                let ais_endpoint_for_heartbeat =
-                    self.config.ais_endpoint.clone().unwrap_or_default();
+                let ais_endpoint_for_heartbeat = self.config.ais_endpoint.clone();
                 let heartbeat_handle = tokio::spawn(crate::lifecycle::heartbeat::heartbeat_task(
                     shutdown,
                     client,

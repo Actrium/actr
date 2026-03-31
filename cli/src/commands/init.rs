@@ -2,6 +2,7 @@
 
 use crate::commands::initialize::{self, InitContext};
 use crate::commands::{Command, SupportedLanguage};
+use crate::config::resolver::resolve_effective_cli_config;
 use crate::error::{ActrCliError, Result};
 use crate::template::{DEFAULT_MANUFACTURER, EchoRole, ProjectTemplateName};
 use async_trait::async_trait;
@@ -24,6 +25,7 @@ pub struct InitCommand {
     pub project_name: Option<String>,
 
     /// Signaling server URL
+    /// TODO: will be removed when manifest.toml strips system fields
     #[arg(long)]
     pub signaling: Option<String>,
 
@@ -36,14 +38,17 @@ pub struct InitCommand {
     #[arg(long)]
     pub role: Option<EchoRole>,
 
-    /// Manufacturer for generated actor types (default: acme)
-    #[arg(long, default_value = DEFAULT_MANUFACTURER)]
-    pub manufacturer: String,
+    /// Manufacturer for generated actor types (overrides CLI config default: acme)
+    #[arg(long)]
+    manufacturer: Option<String>,
 }
 
 #[async_trait]
 impl Command for InitCommand {
     async fn execute(&self) -> Result<()> {
+        // Resolve effective CLI config to use as defaults
+        let cli_config = resolve_effective_cli_config().unwrap_or_default();
+
         // Show welcome header
         println!("🎯 Actor-RTC Project Initialization");
         println!("----------------------------------------");
@@ -58,12 +63,10 @@ impl Command for InitCommand {
         } else {
             None
         };
-        let manufacturer = self.manufacturer.trim();
-        if manufacturer.is_empty() {
-            return Err(ActrCliError::InvalidProject(
-                "Manufacturer cannot be empty".to_string(),
-            ));
-        }
+
+        // Resolve effective manufacturer from CLI args and config
+        let manufacturer_owned = self.effective_manufacturer(&cli_config)?;
+        let manufacturer = manufacturer_owned.as_str();
 
         // role=both requires custom manufacturer to avoid conflicts with public 'acme' services
         if matches!(echo_role, Some(EchoRole::Both)) && manufacturer == DEFAULT_MANUFACTURER {
@@ -143,6 +146,29 @@ impl Command for InitCommand {
 }
 
 impl InitCommand {
+    /// Resolve the effective manufacturer, applying precedence:
+    /// CLI flag > CLI config default. Ensures the result is non-empty.
+    pub fn effective_manufacturer(
+        &self,
+        cli_config: &crate::config::resolver::EffectiveCliConfig,
+    ) -> Result<String> {
+        let effective_manufacturer = cli_config.init.manufacturer.clone();
+
+        let manufacturer_owned: String = match &self.manufacturer {
+            Some(m) => m.clone(),
+            None => effective_manufacturer,
+        };
+
+        let manufacturer = manufacturer_owned.trim();
+        if manufacturer.is_empty() {
+            return Err(ActrCliError::InvalidProject(
+                "Manufacturer cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(manufacturer.to_string())
+    }
+
     fn resolve_project_info(&self, name: &str) -> Result<(PathBuf, String)> {
         if name == "." {
             // Initialize in current directory - name will be inferred

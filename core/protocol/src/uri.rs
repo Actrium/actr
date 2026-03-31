@@ -133,6 +133,12 @@ pub struct ActrUriBuilder {
     version: String,
 }
 
+impl Default for ActrUriBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActrUriBuilder {
     /// Create a new builder
     pub fn new() -> Self {

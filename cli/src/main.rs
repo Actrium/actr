@@ -10,9 +10,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use actr_cli::core::{
     ActrCliError, Command, CommandContext, ConfigManager, ConsoleUI, ContainerBuilder,
     DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
-    DefaultNetworkValidator, DefaultProtoProcessor, ErrorReporter, NetworkServiceDiscovery,
-    ServiceContainer, TomlConfigManager,
+    DefaultNetworkValidator, DefaultProtoProcessor, DiscoveryContext, ErrorReporter,
+    NetworkServiceDiscovery, ServiceContainer, TomlConfigManager,
 };
+use url::Url;
 
 use actr_cli::commands::deps as deps_cmd;
 use actr_cli::commands::ops as ops_cmd;
@@ -201,8 +202,33 @@ async fn build_container() -> Result<ServiceContainer> {
 
     if let Some(manager) = config_manager {
         let config = manager.load_config(config_path).await?;
-        container =
-            container.register_service_discovery(Arc::new(NetworkServiceDiscovery::new(config)));
+        let effective_cli =
+            actr_cli::config::resolver::resolve_effective_cli_config().unwrap_or_default();
+
+        let signaling_url = Url::parse(&effective_cli.network.signaling_url).map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid network.signaling_url '{}': {}",
+                effective_cli.network.signaling_url,
+                e
+            )
+        })?;
+
+        let ais_endpoint = effective_cli.network.ais_endpoint.clone();
+
+        let realm_id = effective_cli.network.realm_id.unwrap_or(1);
+
+        let realm_secret = effective_cli.network.realm_secret.clone();
+
+        let discovery_context = DiscoveryContext {
+            package_actr_type: config.package.actr_type.clone(),
+            signaling_url,
+            ais_endpoint,
+            realm: actr_protocol::Realm { realm_id },
+            realm_secret,
+        };
+
+        container = container
+            .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
     }
     Ok(container)
 }

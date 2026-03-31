@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
     let _obs_guard = init_observability(&config.observability)?;
 
     info!("🚀 Package Echo Client Host starting");
-    info!("📡 Signaling server: {}", config.signaling_url);
+    info!("📡 Signaling server: {:?}", config.signaling_url);
 
     let hyper_data_dir = config.config_dir.join(".hyper");
 

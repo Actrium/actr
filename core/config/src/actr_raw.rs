@@ -76,9 +76,31 @@ pub struct RuntimeRawConfig {
     /// Script commands (dev-time only)
     #[serde(default)]
     pub scripts: HashMap<String, String>,
+
+    /// Path to the workload package (.actr file)
+    ///
+    /// When specified, the runtime can automatically load the workload package
+    /// without requiring explicit path arguments. Supports both absolute and
+    /// relative paths (relative to the config file directory).
+    ///
+    /// Example:
+    /// ```toml
+    /// [package]
+    /// path = "dist/service.actr"
+    /// ```
+    #[serde(default)]
+    pub package: Option<RawPackagePathConfig>,
 }
 
 pub type ActrRawConfig = RuntimeRawConfig;
+
+/// Workload package path configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawPackagePathConfig {
+    /// Path to the .actr package file (relative to config dir or absolute)
+    #[serde(default)]
+    pub path: Option<std::path::PathBuf>,
+}
 
 /// Service capabilities declaration (reported to signaling for load balancing)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -235,5 +257,29 @@ test = "cargo test"
         assert_eq!(config.edition, 1);
         assert!(config.signaling.url.is_none());
         assert!(config.capabilities.is_none());
+    }
+
+    #[test]
+    fn test_parse_actr_config_with_package_path() {
+        let toml_content = r#"
+edition = 1
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[deployment]
+realm_id = 1001
+
+[package]
+path = "dist/service.actr"
+"#;
+        let config = RuntimeRawConfig::from_str(toml_content).unwrap();
+        assert_eq!(config.edition, 1);
+        assert!(config.package.is_some());
+        let package = config.package.unwrap();
+        assert_eq!(
+            package.path.as_ref().map(|p| p.to_str().unwrap()),
+            Some("dist/service.actr")
+        );
     }
 }

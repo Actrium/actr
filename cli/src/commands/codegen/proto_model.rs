@@ -1,6 +1,6 @@
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
-use actr_config::Config;
+use actr_config::ManifestConfig;
 use actr_protocol::{ActrType, ActrTypeExt};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -49,7 +49,11 @@ pub struct MethodModel {
 }
 
 impl ProtoModel {
-    pub fn parse(proto_files: &[PathBuf], input_path: &Path, config: &Config) -> Result<Self> {
+    pub fn parse(
+        proto_files: &[PathBuf],
+        input_path: &Path,
+        config: &ManifestConfig,
+    ) -> Result<Self> {
         let proto_root = if input_path.is_file() {
             input_path.parent().unwrap_or_else(|| Path::new("."))
         } else {
