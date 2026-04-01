@@ -39,6 +39,7 @@ use futures_util::stream::SplitSink;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -48,10 +49,17 @@ use webrtc::data_channel::RTCDataChannel;
 // ── WebRTC DataChannel fragmentation constants ────────────────────────────────
 
 /// Maximum size of a single WebRTC DataChannel message.
-const DC_MAX_MESSAGE_SIZE: usize = 64 * 1024;
+///
+/// The SCTP transport layer uses a buffer of `u16::MAX` (65535) bytes.
+/// Using `64 * 1024` (65536) would exceed this by 1 byte, causing
+/// `ErrShortBuffer` on the SCTP layer.
+const DC_MAX_MESSAGE_SIZE: usize = 65535;
 
 /// Size of the fragment header prepended to every DataChannel message.
 const FRAGMENT_HEADER_SIZE: usize = 8;
+
+/// Stale fragment entries older than this are evicted from ReassemblyBuffer.
+const REASSEMBLY_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Maximum payload bytes that fit in one DataChannel message after the header.
 const DC_MAX_PAYLOAD_SIZE: usize = DC_MAX_MESSAGE_SIZE - FRAGMENT_HEADER_SIZE;
@@ -61,10 +69,17 @@ const DC_MAX_PAYLOAD_SIZE: usize = DC_MAX_MESSAGE_SIZE - FRAGMENT_HEADER_SIZE;
 /// Holds the pieces of a multi-fragment message while waiting for all fragments.
 struct FragmentEntry {
     total: u16,
+    /// Timestamp when the first fragment arrived (for TTL eviction).
+    created_at: Instant,
     fragments: HashMap<u16, bytes::Bytes>,
 }
 
 /// Accumulates in-flight fragmented messages keyed by `msg_id`.
+///
+/// ## Safety features
+///
+/// - **TTL eviction**: Stale entries older than [`REASSEMBLY_TTL`] are removed
+///   on each `insert()` call to prevent unbounded memory growth.
 pub struct ReassemblyBuffer {
     pending: HashMap<u32, FragmentEntry>,
 }
@@ -87,8 +102,12 @@ impl ReassemblyBuffer {
         total_frags: u16,
         payload: bytes::Bytes,
     ) -> Option<bytes::Bytes> {
+        // Evict stale entries
+        self.evict_stale();
+
         let entry = self.pending.entry(msg_id).or_insert_with(|| FragmentEntry {
             total: total_frags,
+            created_at: Instant::now(),
             fragments: HashMap::new(),
         });
         entry.fragments.insert(frag_index, payload);
@@ -109,11 +128,41 @@ impl ReassemblyBuffer {
             None
         }
     }
+
+    /// Remove entries that have been pending longer than [`REASSEMBLY_TTL`].
+    fn evict_stale(&mut self) {
+        let now = Instant::now();
+        let before = self.pending.len();
+        self.pending.retain(|msg_id, entry| {
+            let age = now.duration_since(entry.created_at);
+            if age > REASSEMBLY_TTL {
+                tracing::warn!(
+                    "evicting stale reassembly entry: msg_id={} \
+                     (age={:.1}s, {}/{} fragments received)",
+                    msg_id,
+                    age.as_secs_f64(),
+                    entry.fragments.len(),
+                    entry.total,
+                );
+                false
+            } else {
+                true
+            }
+        });
+        let evicted = before - self.pending.len();
+        if evicted > 0 {
+            tracing::info!(
+                "evicted {} stale reassembly entries ({} remaining)",
+                evicted,
+                self.pending.len()
+            );
+        }
+    }
 }
 
 // ── Fragment header encode / decode ───────────────────────────────────────────
 
-/// Encode a fragment header into `buf` (must have at least 8 bytes of capacity).
+/// Encode a fragment header into `buf` (8 bytes).
 #[inline]
 fn encode_fragment_header(buf: &mut Vec<u8>, msg_id: u32, frag_index: u16, total_frags: u16) {
     buf.extend_from_slice(&msg_id.to_be_bytes());
@@ -703,7 +752,7 @@ mod tests {
     fn test_fragment_count_200kb() {
         let size: usize = 200 * 1024; // 200 KB
         let count = size.div_ceil(DC_MAX_PAYLOAD_SIZE);
-        // 200*1024 / (64*1024 - 8) = 204800 / 65528 ≈ 3.126 → 4 fragments
+        // 200*1024 / (65535 - 8) = 204800 / 65527 = 3.126 -> 4 fragments
         assert_eq!(count, 4);
     }
 
