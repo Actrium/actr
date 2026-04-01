@@ -76,7 +76,7 @@ async fn prepare_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result
     spawn_local(async move {
         log::info!(
             "[DataStreamServer] sending data stream back to client: {}",
-            caller_for_stream.to_string_repr()
+            caller_for_stream
         );
 
         for i in 1..=expected_for_stream {

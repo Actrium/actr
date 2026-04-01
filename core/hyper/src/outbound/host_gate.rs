@@ -7,7 +7,6 @@
 
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
@@ -96,10 +95,6 @@ impl HostGate {
     ///
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "HostGate.send_request")
-    )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         tracing::info!(
             "HostGate::send_request to {:?}, request_id={}",
@@ -130,12 +125,8 @@ impl HostGate {
     ///
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "HostGate.send_message", fields(target = ?target.to_string_repr()))
-    )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        tracing::debug!("HostGate::send_message to {:?}", target.to_string_repr());
+        tracing::debug!("HostGate::send_message to {}", target);
 
         // Default to Reliable (no identifier)
         self.transport

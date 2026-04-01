@@ -107,7 +107,7 @@ impl WebContext for RuntimeContext {
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
                     "[Context] ensure_connection skipped for {}: {}",
-                    target.to_string_repr(),
+                    target,
                     error
                 );
             }
@@ -150,7 +150,7 @@ impl WebContext for RuntimeContext {
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
                     "[Context] ensure_connection skipped for {}: {}",
-                    target.to_string_repr(),
+                    target,
                     error
                 );
             }
@@ -195,7 +195,7 @@ impl WebContext for RuntimeContext {
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
                     "[Context] ensure_connection skipped for {}: {}",
-                    target.to_string_repr(),
+                    target,
                     error
                 );
             }

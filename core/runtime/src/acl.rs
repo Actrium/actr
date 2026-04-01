@@ -5,7 +5,7 @@
 //! This module is pure functions with no IO dependencies, suitable for
 //! both native and wasm32 targets.
 
-use actr_protocol::{Acl, AclRule, ActrId, ActrIdExt as _};
+use actr_protocol::{Acl, AclRule, ActrId};
 
 /// Check whether the caller has permission to access the target Actor
 ///
@@ -40,8 +40,8 @@ pub fn check_acl_permission(
         None => {
             tracing::trace!(
                 "ACL: no ACL configured, allowing {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr(),
+                caller,
+                target_id,
             );
             return Ok(true);
         }
@@ -51,8 +51,8 @@ pub fn check_acl_permission(
     if acl.rules.is_empty() {
         tracing::warn!(
             "ACL: empty rule set, denying {} -> {} (default deny)",
-            caller.to_string_repr(),
-            target_id.to_string_repr(),
+            caller,
+            target_id,
         );
         return Ok(false);
     }
@@ -65,30 +65,22 @@ pub fn check_acl_permission(
         }
         let is_allow = rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
         if !is_allow {
-            tracing::debug!(
-                "ACL: DENY rule matched for {} -> {}",
-                caller.to_string_repr(),
-                target_id.to_string_repr(),
-            );
+            tracing::debug!("ACL: DENY rule matched for {} -> {}", caller, target_id,);
             return Ok(false);
         }
         any_allow = true;
     }
 
     if any_allow {
-        tracing::debug!(
-            "ACL: ALLOW rule matched for {} -> {}",
-            caller.to_string_repr(),
-            target_id.to_string_repr(),
-        );
+        tracing::debug!("ACL: ALLOW rule matched for {} -> {}", caller, target_id,);
         return Ok(true);
     }
 
     // 6. No rule matches -- deny
     tracing::warn!(
         "ACL: no matching rule, denying {} -> {} (default deny)",
-        caller.to_string_repr(),
-        target_id.to_string_repr(),
+        caller,
+        target_id,
     );
     Ok(false)
 }

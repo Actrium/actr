@@ -106,7 +106,7 @@ impl WebSocketGate {
             tracing::debug!(
                 "📬 WS Received RPC Response: request_id={}, target={}",
                 request_id,
-                target.to_string_repr()
+                target
             );
 
             let result = match (envelope.payload, envelope.error) {

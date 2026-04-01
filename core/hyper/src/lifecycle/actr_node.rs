@@ -9,8 +9,6 @@ use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
-use actr_protocol::ActrTypeExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, PayloadType, RegisterRequest, RpcEnvelope,
@@ -432,7 +430,15 @@ impl ActrNode {
     /// - Multi-hop calls: trace_id spans all hops, request_id per hop
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "ActrNode.handle_incoming")
+        tracing::instrument(
+            skip_all,
+            name = "ActrNode.handle_incoming",
+            fields(
+                actr_id = %self.actor_id.as_ref().map(|id| id.to_string()).unwrap_or_default(),
+                route_key = %envelope.route_key,
+                request_id = %envelope.request_id,
+            )
+        )
     )]
     pub async fn handle_incoming(
         &self,
@@ -444,7 +450,7 @@ impl ActrNode {
             tracing::debug!(
                 "📨 Handling incoming message: route_key={}, caller={}, request_id={}",
                 envelope.route_key,
-                caller.to_string_repr(),
+                caller,
                 envelope.request_id
             );
         } else {
@@ -473,7 +479,7 @@ impl ActrNode {
                 request_id = %envelope.request_id,
                 route_key = %envelope.route_key,
                 caller = %caller_id
-                    .map(|c| c.to_string_repr())
+                    .map(|c| c.to_string())
                     .unwrap_or_else(|| "<none>".to_string()),
                 "🚫 ACL: Permission denied"
             );
@@ -481,9 +487,9 @@ impl ActrNode {
             return Err(ActrError::PermissionDenied(format!(
                 "ACL denied: {} is not allowed to call {}",
                 caller_id
-                    .map(|c| c.to_string_repr())
+                    .map(|c| c.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string()),
-                actor_id.to_string_repr()
+                actor_id.to_string()
             )));
         }
 
@@ -758,7 +764,7 @@ impl ActrNode {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // Get ActrType from configuration
         let actr_type = self.config.actr_type().clone();
-        tracing::info!("📋 Actor type: {}", actr_type.to_string_repr());
+        tracing::info!("📋 Actor type: {}", actr_type);
 
         // Calculate ServiceSpec from config exports
         let service_spec = self.config.calculate_service_spec();
@@ -886,7 +892,7 @@ impl ActrNode {
             let actor_id = register_ok.actr_id;
             let credential = register_ok.credential;
 
-            tracing::info!("🆔 Assigned ActrId: {}", actor_id.to_string_repr());
+            tracing::info!("🆔 Assigned ActrId: {}", actor_id);
             tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
             tracing::info!(
                 "💓 Signaling heartbeat interval: {} seconds",
@@ -1201,7 +1207,7 @@ impl ActrNode {
                     shutdown.cancelled().await;
                     tracing::info!(
                         "📡 Shutdown signal received, sending UnregisterRequest for Actor {}",
-                        actor_id_for_unreg.to_string_repr()
+                        actor_id_for_unreg
                     );
 
                     // 1. Close all WebRTC peer connections first (if any)
@@ -1235,20 +1241,20 @@ impl ActrNode {
                         Ok(Ok(_)) => {
                             tracing::info!(
                                 "✅ UnregisterRequest sent to signaling server for Actor {}",
-                                actor_id_for_unreg.to_string_repr()
+                                actor_id_for_unreg
                             );
                         }
                         Ok(Err(e)) => {
                             tracing::warn!(
                                 "⚠️ Failed to send UnregisterRequest for Actor {}: {}",
-                                actor_id_for_unreg.to_string_repr(),
+                                actor_id_for_unreg,
                                 e
                             );
                         }
                         Err(_) => {
                             tracing::warn!(
                                 "⚠️ UnregisterRequest timeout (5s) for Actor {}",
-                                actor_id_for_unreg.to_string_repr()
+                                actor_id_for_unreg
                             );
                         }
                     }
@@ -1377,7 +1383,8 @@ impl ActrNode {
                                         // Extract and set tracing context from envelope
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
-                                            let span = tracing::info_span!("actrNode.lane.receive_rpc", request_id = %request_id);
+                                            let actr_id_str = node.actor_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+                                            let span = tracing::info_span!("ActrNode.lane_receive", actr_id = %actr_id_str, request_id = %request_id);
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
                                         };
@@ -1614,10 +1621,14 @@ impl ActrNode {
                                         match RpcEnvelope::decode(&msg_record.payload[..]) {
                                             Ok(envelope) => {
                                                 let request_id = envelope.request_id.clone();
+                                                let queue_latency_ms = (chrono::Utc::now() - msg_record.created_at).num_milliseconds();
+                                                tracing::info!(request_id = %request_id, queue_latency_ms = queue_latency_ms, "rpc.mailbox.dequeued");
+
                                                 tracing::debug!("📦 Processing message: request_id={}", request_id);
                                                 #[cfg(feature = "opentelemetry")]
                                                 let span = {
-                                                    let span = tracing::info_span!("actrNode.mailbox.receive_rpc", request_id = %request_id);
+                                                    let actr_id_str = node.actor_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+                                                    let span = tracing::info_span!("ActrNode.mailbox_receive", actr_id = %actr_id_str, request_id = %request_id, queue_wait_ms = queue_latency_ms);
                                                     set_parent_from_rpc_envelope(&span, &envelope);
                                                     span
                                                 };
