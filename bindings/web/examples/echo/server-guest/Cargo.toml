@@ -1,0 +1,29 @@
+[package]
+name = "echo-server-guest-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Echo Server Guest WASM for Web — standard entry! FFI (mirrors echo-actr)"
+
+# Standalone project, not part of any workspace
+[workspace]
+
+[lib]
+name = "echo_guest"
+crate-type = ["cdylib"]
+
+[features]
+default = []
+cdylib = ["actr-framework/cdylib"]
+
+[dependencies]
+actr-framework = { path = "../../../../../core/framework" }
+actr-protocol = { path = "../../../../../core/protocol" }
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.0"
+prost = "0.14"
+serde = { version = "1.0", features = ["derive"] }
+
+[build-dependencies]
+prost-build = "0.14"

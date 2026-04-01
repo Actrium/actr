@@ -10,6 +10,14 @@ client/dist/
 client/wasm/target/
 client/wasm/Cargo.lock
 
+# Server guest
+server-guest/target/
+server-guest/Cargo.lock
+
+# Client guest
+client-guest/target/
+client-guest/Cargo.lock
+
 # Generated WASM artifacts
 server/public/echo_server_bg.wasm*
 server/public/echo_server.js

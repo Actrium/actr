@@ -3,7 +3,7 @@
 #
 # Demonstrates the complete signing → verification → AIS registration flow for Web:
 #   1. Build shared runtime WASM (wasm-pack, pure host — no business logic)
-#      Build echo-actr server guest WASM (cargo build, standard entry! FFI)
+#      Build echo server guest WASM (cargo build, standard entry! FFI, local server-guest crate)
 #      Build echo-client guest WASM (cargo build, entry! FFI + JSPI outbound calls)
 #   2. `actr pkg build` — pack guest WASMs into signed .actr packages (MFR key)
 #   3. Start actrix (signaling + AIS + MFR)
@@ -44,6 +44,7 @@ ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
 SERVER_DIR="$SCRIPT_DIR/server"
 CLIENT_DIR="$SCRIPT_DIR/client"
 SERVER_WASM_DIR="$SERVER_DIR/wasm"
+SERVER_GUEST_DIR="$SCRIPT_DIR/server-guest"
 CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
 RELEASE_DIR="$SCRIPT_DIR/release"
 
@@ -188,16 +189,15 @@ if [ ! -f "$RUNTIME_WASM" ] || [ ! -f "$RUNTIME_JS" ]; then
 fi
 echo -e "${GREEN}✅ Shared runtime WASM built: $(du -h "$RUNTIME_WASM" | cut -f1)${NC}"
 
-# ── 1b: Build echo-actr server guest WASM (standard guest, shared with native)
-ECHO_ACTR_DIR="$(cd "$ACTR_ROOT/../../echo-actr" && pwd)"
-echo "Building echo-actr server guest WASM from $ECHO_ACTR_DIR..."
-cd "$ECHO_ACTR_DIR"
+# ── 1b: Build echo server guest WASM (standard guest, local server-guest crate)
+echo "Building echo server guest WASM from $SERVER_GUEST_DIR..."
+cd "$SERVER_GUEST_DIR"
 cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-SERVER_GUEST_WASM="$ECHO_ACTR_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
+SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
 if [ ! -f "$SERVER_GUEST_WASM" ]; then
-    echo -e "${RED}❌ echo-actr server guest WASM build failed${NC}"
+    echo -e "${RED}❌ Server guest WASM build failed${NC}"
     exit 1
 fi
 echo -e "${GREEN}✅ Server guest WASM built: $(du -h "$SERVER_GUEST_WASM" | cut -f1)${NC}"
@@ -628,12 +628,12 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "✅ Validated flow:"
 echo "   1. Shared runtime WASM (wasm-pack) loaded by both server and client"
-echo "      Server guest: echo-actr WASM (cargo build, no outbound calls)"
+echo "      Server guest: server-guest WASM (cargo build, no outbound calls)"
 echo "      Client guest: echo-client-guest WASM (cargo build, JSPI outbound calls)"
 echo "   2. actr pkg build → signed .actr packages (MFR key: $MFR_NAME)"
 echo "   3. actr pkg publish → server package registered with AIS"
 echo "   4. MFR public key injected → SW verifies package signatures"
-echo "   5. Server: guest bridge loads runtime + echo-actr guest separately"
+echo "   5. Server: guest bridge loads runtime + server-guest separately"
 echo "      Client: guest bridge loads runtime + client-guest (JSPI for outbound)"
 echo "      Browser verifies Ed25519 sig + SHA-256 hash"
 echo "   6. SW registers with AIS → obtains credential → starts WebRTC"
