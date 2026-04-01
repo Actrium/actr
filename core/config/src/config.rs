@@ -30,6 +30,12 @@ pub struct ManifestConfig {
     /// Script commands
     pub scripts: HashMap<String, String>,
 
+    /// Final packaged binary configuration
+    pub binary: Option<BinaryConfig>,
+
+    /// Source build configuration
+    pub build: Option<BuildConfig>,
+
     /// Directory containing `manifest.toml`
     pub config_dir: PathBuf,
 }
@@ -128,6 +134,49 @@ pub struct PackageInfo {
 
     /// License
     pub license: Option<String>,
+}
+
+/// Final packaged binary metadata
+#[derive(Debug, Clone)]
+pub struct BinaryConfig {
+    /// Final artifact path on disk
+    pub path: PathBuf,
+
+    /// Target triple written into the package manifest
+    pub target: Option<String>,
+}
+
+/// Build tool kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildTool {
+    Cargo,
+}
+
+/// Cargo artifact kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildArtifact {
+    Lib,
+    Bin,
+}
+
+/// Cargo profile kind
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildProfile {
+    Dev,
+    Release,
+}
+
+/// Source build configuration
+#[derive(Debug, Clone)]
+pub struct BuildConfig {
+    pub tool: BuildTool,
+    pub manifest_path: PathBuf,
+    pub artifact: BuildArtifact,
+    pub target: Option<String>,
+    pub profile: BuildProfile,
+    pub features: Vec<String>,
+    pub no_default_features: bool,
+    pub post_build: Vec<String>,
 }
 
 /// Parsed proto file (file level)
@@ -407,6 +456,15 @@ impl PackageInfo {
     }
 }
 
+impl BuildProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Release => "release",
+        }
+    }
+}
+
 // ============================================================================
 // Dependency helper methods
 // ============================================================================
@@ -497,6 +555,8 @@ mod tests {
             acl: None,
             tags: vec![],
             scripts: HashMap::new(),
+            binary: None,
+            build: None,
             config_dir: PathBuf::from("."),
         };
 

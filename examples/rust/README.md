@@ -10,18 +10,20 @@ All examples share the workspace-root `actrix-config.toml`. Do not keep or add p
 
 ## Actr Configuration
 
-Every example binary expects a local `actr.toml` in its crate directory. The repository only tracks `Actr.example.toml`; the start scripts copy it for you. If you run binaries directly with `cargo run`, create your own config first (one-time per crate):
+Most example binaries expect a local `actr.toml` in their crate directory. The repository only tracks `Actr.example.toml`; the start scripts copy it for you. If you run binaries directly with `cargo run`, create your own config first (one-time per crate):
 
 ```bash
 cp data-stream/sender/Actr.example.toml data-stream/sender/actr.toml
 cp data-stream/receiver/Actr.example.toml data-stream/receiver/actr.toml
 cp shell-actr-echo/server/Actr.example.toml shell-actr-echo/server/actr.toml
 cp shell-actr-echo/client/Actr.example.toml shell-actr-echo/client/actr.toml
-cp package-echo/server/Actr.example.toml package-echo/server/actr.toml
 cp package-echo/client/Actr.example.toml package-echo/client/actr.toml
+cp package-echo/client-guest/Actr.example.toml package-echo/client-guest/actr.toml
 cp media-relay/actr-a/Actr.example.toml media-relay/actr-a/actr.toml
 cp media-relay/actr-b/Actr.example.toml media-relay/actr-b/actr.toml
 ```
+
+`package-echo` is the exception for the packaged server host: it uses the tracked `package-echo/server-actr.toml` runtime-config template, and `package-echo/start.sh` regenerates that file before running `actr run -c server-actr.toml`.
 
 ## Prerequisites
 
@@ -85,6 +87,6 @@ Both `--bin` and `-p` work identically in a workspace context.
 - **Media Relay** – media frames relayed from `actr-a` to `actr-b`.
   - Start: `bash media-relay/start.sh`
   - Behavior: boots actrix (root config) → `actr-b` example → `actr-a` example; checks frame reception; exits automatically on success.
-- **Package Echo** – echo RPC against a host that loads a signed `.actr` package from release assets.
+- **Package Echo** – echo RPC against a host that loads a signed `.actr` package built locally.
   - Start: `bash package-echo/start.sh`
-  - Behavior: boots actrix (root config) → downloads and verifies the `echo-actr` release package → package host example → client example; asserts echo reply contains the packaged service response.
+  - Behavior: boots actrix (root config) → builds and signs the local `echo-actr` package → regenerates `server-actr.toml` → runs `actr run -c server-actr.toml` → launches the client example; asserts echo reply contains the packaged service response.

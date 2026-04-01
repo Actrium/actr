@@ -15,12 +15,13 @@ use actr_cli::core::{
 };
 use url::Url;
 
+use actr_cli::commands::build as build_cmd;
 use actr_cli::commands::deps as deps_cmd;
 use actr_cli::commands::ops as ops_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DocCommand, GenCommand, InitCommand,
-    InstallCommand, RunCommand,
+    InstallCommand, LogsCommand, PsCommand, RunCommand, StopCommand,
 };
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
@@ -60,8 +61,20 @@ enum Commands {
     /// Install service dependencies declared in manifest.toml
     Install(InstallCommand),
 
-    /// Run project scripts
+    /// Build source artifact and package a signed .actr workload
+    Build(build_cmd::BuildCommand),
+
+    /// Run a packaged workload
     Run(RunCommand),
+
+    /// List detached runtime instances
+    Ps(PsCommand),
+
+    /// Show logs for a detached runtime instance
+    Logs(LogsCommand),
+
+    /// Stop a detached runtime instance
+    Stop(StopCommand),
 
     /// Package management (build, sign, verify, keygen)
     Pkg(pkg_cmd::PkgArgs),
@@ -101,7 +114,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // pkg command does not need ServiceContainer; handle early
+    // commands that do not need ServiceContainer; handle early
+    if matches!(&cli.command, Some(Commands::Build(_))) {
+        if let Some(Commands::Build(args)) = cli.command {
+            return build_cmd::execute(args).await;
+        }
+    }
+
     if matches!(&cli.command, Some(Commands::Pkg(_))) {
         if let Some(Commands::Pkg(args)) = cli.command {
             return pkg_cmd::execute(args).await;
@@ -275,9 +294,28 @@ async fn execute_command(
             }
             command.execute(context).await
         }
+        Commands::Build(_) => unreachable!("build is handled before build_container"),
         Commands::Run(cmd) => match cmd.execute().await {
             Ok(_) => Ok(actr_cli::core::CommandResult::Success(
                 "Script executed".to_string(),
+            )),
+            Err(e) => Err(e.into()),
+        },
+        Commands::Ps(cmd) => match cmd.execute().await {
+            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
+                "Help displayed".to_string(),
+            )),
+            Err(e) => Err(e.into()),
+        },
+        Commands::Logs(cmd) => match cmd.execute().await {
+            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
+                "Help displayed".to_string(),
+            )),
+            Err(e) => Err(e.into()),
+        },
+        Commands::Stop(cmd) => match cmd.execute().await {
+            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
+                "Help displayed".to_string(),
             )),
             Err(e) => Err(e.into()),
         },

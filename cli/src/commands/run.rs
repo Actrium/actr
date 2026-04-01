@@ -1,8 +1,12 @@
 //! Run command implementation - Execute .actr packages
 
 use crate::commands::Command;
+use crate::commands::runtime_state::{
+    RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_pid,
+};
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -21,7 +25,7 @@ pub struct RunCommand {
 #[async_trait]
 impl Command for RunCommand {
     async fn execute(&self) -> Result<()> {
-        // Execute package runtime mode directly
+        // The run command only supports packaged workloads via runtime config.
         self.execute_package_mode().await
     }
 }
@@ -30,24 +34,24 @@ impl RunCommand {
     async fn execute_package_mode(&self) -> Result<()> {
         use actr_hyper::{WorkloadPackage, init_observability};
 
-        info!("🚀 Starting package execution mode");
+        info!("🚀 Starting packaged workload");
 
-        // Resolve config path: use provided path or default to ./actr.toml
+        // Resolve runtime config path: use the provided path or default to ./actr.toml.
         let config_path = self
             .config
             .clone()
             .unwrap_or_else(|| PathBuf::from("actr.toml"));
 
-        // Check if config file exists
+        // Check if the runtime config file exists.
         if !config_path.exists() {
             return Err(ActrCliError::command_error(format!(
-                "Configuration file not found: {}\n\n\
-                 Please create an actr.toml file or specify a config file with -c/--config",
+                "Runtime config file not found: {}\n\n\
+                 Create a runtime config file or specify one with -c/--config.",
                 config_path.display()
             )));
         }
 
-        // 1. Resolve package path (CLI flag > actr.toml > error)
+        // 1. Resolve package path from the runtime config.
         let package_path = self.resolve_package_path(&config_path).await?;
         info!("📦 Loading package: {}", package_path.display());
 
@@ -104,8 +108,10 @@ impl RunCommand {
         info!("✅ ActrNode started");
 
         // 11. Choose run mode based on detach flag
+        let config_path = absolutize_from_cwd(&config_path)?;
+
         if self.detach {
-            self.run_detached(actr_ref, &config).await?;
+            self.run_detached(actr_ref, &config, &config_path).await?;
         } else {
             self.run_foreground(actr_ref).await?;
         }
@@ -130,10 +136,11 @@ impl RunCommand {
         &self,
         actr_ref: actr_hyper::ActrRef,
         config: &actr_config::RuntimeConfig,
+        config_path: &Path,
     ) -> Result<()> {
         #[cfg(unix)]
         {
-            self.daemonize_unix(actr_ref, config).await
+            self.daemonize_unix(actr_ref, config, config_path).await
         }
 
         #[cfg(not(unix))]
@@ -145,7 +152,7 @@ impl RunCommand {
     }
 
     async fn resolve_package_path(&self, config_path: &Path) -> Result<PathBuf> {
-        // Load config to get package path
+        // Load runtime config to get the packaged workload path.
         let config_content = tokio::fs::read_to_string(config_path).await?;
         let raw_config: actr_config::RuntimeRawConfig = toml::from_str(&config_content)
             .map_err(|e| ActrCliError::command_error(format!("Failed to parse config: {}", e)))?;
@@ -161,11 +168,13 @@ impl RunCommand {
             }
         }
 
-        Err(ActrCliError::command_error(
-            "Package path not specified in actr.toml.\n\n\
-             Add [package] path = \"dist/service.actr\" to actr.toml"
-                .to_string(),
-        ))
+        Err(ActrCliError::command_error(format!(
+            "Package path not specified in runtime config: {}\n\n\
+             Add the packaged workload path to your config:\n\
+             [package]\n\
+             path = \"dist/service.actr\"",
+            config_path.display()
+        )))
     }
 
     fn build_package_info(
@@ -211,7 +220,8 @@ impl RunCommand {
             }
             other => {
                 return Err(ActrCliError::command_error(format!(
-                    "Invalid trust mode: {}. Use 'development' or 'production'",
+                    "Invalid trust mode in runtime config: {}.\n\n\
+                     Set [deployment] trust_mode to \"development\" or \"production\".",
                     other
                 )));
             }
@@ -234,9 +244,13 @@ impl RunCommand {
             return Err(ActrCliError::command_error(format!(
                 "Public key not found for development trust mode.\n\n\
                  Expected location: {}\n\n\
-                 Solutions:\n\
-                 1. Generate key: actr pkg keygen --output public-key.json\n\
-                 2. Use production mode: actr run -c actr.toml --trust-mode production",
+                 Update your runtime config or package directory:\n\
+                 1. Keep [deployment] trust_mode = \"development\" and place public-key.json next to the .actr package\n\
+                 2. Or switch to production mode in config:\n\
+                    [deployment]\n\
+                    trust_mode = \"production\"\n\
+                    [ais_endpoint]\n\
+                    url = \"http://localhost:8081/ais\"",
                 key_path.display()
             )));
         }
@@ -309,7 +323,7 @@ impl RunCommand {
                     "Failed to register with AIS at {}.\n\n\
              Possible causes:\n\
              - AIS server is not running\n\
-             - Incorrect endpoint URL\n\
+             - Incorrect [ais_endpoint] url in the runtime config\n\
              - Network connectivity issues\n\n\
              Error: {}",
                     ais_endpoint, e
@@ -322,6 +336,7 @@ impl RunCommand {
         &self,
         actr_ref: actr_hyper::ActrRef,
         config: &actr_config::RuntimeConfig,
+        config_path: &Path,
     ) -> Result<()> {
         use nix::unistd::{ForkResult, fork, setsid};
         use std::fs::OpenOptions;
@@ -329,22 +344,22 @@ impl RunCommand {
 
         info!("🚀 Starting in detached mode...");
 
-        // Prepare log directory
-        let log_dir = config.hyper_data_dir.join("logs");
-        tokio::fs::create_dir_all(&log_dir).await?;
-        let log_file = log_dir.join(format!("actr-{}.log", std::process::id()));
+        let runtime_store = RuntimeStateStore::new(config.hyper_data_dir.clone());
+        runtime_store.ensure_layout().await?;
 
         // Fork process
         match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => {
                 // Parent process: print info and exit
                 let actr_id = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
+                let child_pid = child.as_raw() as u32;
+                let log_file = log_path_for_pid(runtime_store.hyper_dir(), child_pid);
                 println!("✅ ActrNode started in background");
                 println!("   ActrId: {}", actr_id);
-                println!("   PID: {}", child);
+                println!("   PID: {}", child_pid);
                 println!("   Logs: {}", log_file.display());
                 println!("\nTo view logs: tail -f {}", log_file.display());
-                println!("To stop: kill {}", child);
+                println!("To stop: actr stop --actr-id {}", actr_id);
 
                 // Parent process exits immediately
                 std::process::exit(0);
@@ -356,6 +371,9 @@ impl RunCommand {
                 setsid().map_err(|e| {
                     ActrCliError::command_error(format!("Failed to create new session: {}", e))
                 })?;
+
+                let pid = std::process::id();
+                let log_file = log_path_for_pid(runtime_store.hyper_dir(), pid);
 
                 // 2. Redirect stdout/stderr to log file
                 let log = OpenOptions::new()
@@ -369,22 +387,26 @@ impl RunCommand {
                 nix::unistd::dup2(log_fd, std::io::stderr().as_raw_fd())
                     .map_err(|e| ActrCliError::command_error(format!("dup2 failed: {}", e)))?;
 
-                // 3. Write PID file
                 let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
-                let pid_file = log_dir.join(format!("{}.pid", actr_id_str));
-                tokio::fs::write(&pid_file, format!("{}", std::process::id())).await?;
+                let record = RuntimeRecord::new(
+                    actr_id_str.clone(),
+                    pid,
+                    config_path.to_path_buf(),
+                    log_file.clone(),
+                    Utc::now(),
+                );
+                runtime_store.write_record(&record).await?;
 
-                info!("🚀 Running as daemon, PID: {}", std::process::id());
+                info!("🚀 Running as daemon, PID: {}", pid);
                 info!("📝 Log file: {}", log_file.display());
 
-                // 4. Run until signal received
+                // 3. Run until signal received
                 actr_ref
                     .wait_for_ctrl_c_and_shutdown()
                     .await
                     .map_err(|e| ActrCliError::command_error(format!("Shutdown error: {}", e)))?;
 
-                // 5. Clean up PID file
-                let _ = tokio::fs::remove_file(&pid_file).await;
+                runtime_store.mark_stopped(pid, Utc::now()).await?;
 
                 info!("👋 Daemon shutdown complete");
                 Ok(())

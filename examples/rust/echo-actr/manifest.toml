@@ -4,9 +4,21 @@ edition = 1
 name = "EchoService"
 manufacturer = "actrium"
 version = "0.2.2"
+description = "Signed Echo guest actor distributed as an ActrPackage"
+license = "Apache-2.0"
 
 exports = ["proto/echo.proto"]
 
 [binary]
-path = "target/wasm32-wasip1/release/echo_guest.wasm"
-target = "wasm32-wasip1"
+path = "dist/echo-actr-0.2.2-wasm32-unknown-unknown.wasm"
+target = "wasm32-unknown-unknown"
+
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+target = "wasm32-unknown-unknown"
+post_build = [
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && "${WASM_OPT:-wasm-opt}" --asyncify -O "target/wasm32-unknown-unknown/release/echo_guest.wasm" -o "$ACTR_BUILD_BINARY_PATH"',
+]

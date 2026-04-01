@@ -39,6 +39,14 @@ pub struct ManifestRawConfig {
     /// Script commands
     #[serde(default)]
     pub scripts: HashMap<String, String>,
+
+    /// Final packaged binary configuration
+    #[serde(default)]
+    pub binary: Option<RawBinaryConfig>,
+
+    /// Source build configuration
+    #[serde(default)]
+    pub build: Option<RawBuildConfig>,
 }
 
 pub type RawConfig = ManifestRawConfig;
@@ -75,6 +83,41 @@ pub struct RawPackageConfig {
     /// Exported proto file paths (new location, preferred over top-level `exports`)
     #[serde(default)]
     pub exports: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawBinaryConfig {
+    pub path: PathBuf,
+
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawBuildConfig {
+    #[serde(default)]
+    pub tool: Option<String>,
+
+    #[serde(default)]
+    pub manifest_path: Option<PathBuf>,
+
+    #[serde(default)]
+    pub artifact: Option<String>,
+
+    #[serde(default)]
+    pub target: Option<String>,
+
+    #[serde(default)]
+    pub profile: Option<String>,
+
+    #[serde(default)]
+    pub features: Vec<String>,
+
+    #[serde(default)]
+    pub no_default_features: bool,
+
+    #[serde(default)]
+    pub post_build: Vec<String>,
 }
 
 impl RawPackageConfig {

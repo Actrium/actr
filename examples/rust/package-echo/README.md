@@ -248,6 +248,8 @@ The `start.sh` script performs a complete end-to-end test:
 
 ### Step 3-4: Start Server
 - Builds package-echo-server binary
+- Regenerates `server-actr.toml` with the current package path
+- Runs `actr run -c server-actr.toml`
 - Loads `.actr` package in production trust mode
 - Registers with AIS and obtains credential
 
@@ -379,17 +381,16 @@ Instead of the full test script, you can run components individually:
 cd ../../../actrix
 cargo run -- --config examples/rust/package-echo/actrix-config.toml
 
-# Run server with actr run
+# Run server with actr run (Note: start.sh will first generate/overwrite server-actr.toml)
 cd examples/rust/package-echo
 cargo run -p actr-cli -- run \
-    --config server/actr.toml \
-    --package dist/actrium-EchoService-0.1.0-wasm32-unknown-unknown.actr \
-    --trust-mode production \
-    --ais-endpoint http://localhost:8081/ais
+    --config server-actr.toml
 
 # Run client
 cargo run --bin package-echo-client
 ```
+
+Before running the server manually, make sure `server-actr.toml` points to a real `.actr` package. The committed file is only a template; `start.sh` rewrites it with the actual package path after building and signing `echo-actr`.
 
 ## Project Structure
 
@@ -399,10 +400,7 @@ package-echo/
 ├── start.sh               # End-to-end test script
 ├── actrix-config.toml     # Actrix server configuration
 ├── dev-key.json           # Development signing key
-├── server/                # Echo server (loads .actr package)
-│   ├── src/
-│   ├── actr.toml          # Runtime configuration
-│   └── manifest.toml      # Package manifest
+├── server-actr.toml       # Server runtime config template (overwritten by start.sh)
 ├── client/                # Echo client (native)
 │   ├── src/
 │   ├── actr.toml
