@@ -9,8 +9,6 @@ use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc_envelope};
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
-use actr_protocol::ActrTypeExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, PayloadType, RegisterRequest, RpcEnvelope,

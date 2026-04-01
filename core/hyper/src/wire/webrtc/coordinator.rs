@@ -477,10 +477,7 @@ impl WebRtcCoordinator {
     ) -> bool {
         // Quick check: if DataChannel is already open, return immediately
         if webrtc_conn.has_open_data_channel().await {
-            tracing::debug!(
-                "✅ DataChannel already open for peer {}",
-                peer_id
-            );
+            tracing::debug!("✅ DataChannel already open for peer {}", peer_id);
             return true;
         }
 
@@ -597,11 +594,7 @@ impl WebRtcCoordinator {
                             duration_since_change.as_secs()
                         );
 
-                        tracing::warn!(
-                            "🧹 Marking peer {} for cleanup: {}",
-                            peer_id,
-                            reason
-                        );
+                        tracing::warn!("🧹 Marking peer {} for cleanup: {}", peer_id, reason);
 
                         Some((peer_id.clone(), reason))
                     } else {
@@ -719,19 +712,13 @@ impl WebRtcCoordinator {
                             }
                         }
                         SdpType::RenegotiationOffer => {
-                            tracing::info!(
-                                "📥 Received RenegotiationOffer from {:?}",
-                                source
-                            );
+                            tracing::info!("📥 Received RenegotiationOffer from {:?}", source);
                             if let Err(e) = self.handle_renegotiation_offer(&source, sd.sdp).await {
                                 tracing::error!("❌ Failed to handle RenegotiationOffer: {}", e);
                             }
                         }
                         SdpType::IceRestartOffer => {
-                            tracing::info!(
-                                "♻️ Received ICE Restart Offer from {:?}",
-                                source
-                            );
+                            tracing::info!("♻️ Received ICE Restart Offer from {:?}", source);
                             if let Err(e) = self.handle_ice_restart_offer(&source, sd.sdp).await {
                                 tracing::error!("❌ Failed to handle ICE Restart Offer: {}", e);
                             }
@@ -752,10 +739,7 @@ impl WebRtcCoordinator {
                         self.handle_role_assignment(assign, peer).await;
                     }
                     Some(actr_relay::Payload::IceCandidate(ice)) => {
-                        tracing::debug!(
-                            "📥 Received ICE Candidate from {:?}",
-                            source
-                        );
+                        tracing::debug!("📥 Received ICE Candidate from {:?}", source);
                         if let Err(e) = self.handle_ice_candidate(&source, ice.candidate).await {
                             tracing::error!("❌ Failed to handle ICE Candidate: {}", e);
                         }
@@ -891,10 +875,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
     ) -> ActorResult<oneshot::Receiver<()>> {
-        tracing::info!(
-            "🚀 Initiating P2P connection to {}",
-            target
-        );
+        tracing::info!("🚀 Initiating P2P connection to {}", target);
 
         // Role negotiation: determine if we should be offerer or answerer
         let role_result =
@@ -981,10 +962,7 @@ impl WebRtcCoordinator {
                 // Wait for connection to be ready with timeout
                 match tokio::time::timeout(INITIAL_CONNECTION_TIMEOUT, ready_rx).await {
                     Ok(Ok(())) => {
-                        tracing::info!(
-                            "✅ Connection established to serial={}",
-                            target
-                        );
+                        tracing::info!("✅ Connection established to serial={}", target);
                         // Return a new channel that's already signaled
                         let (tx, rx) = oneshot::channel();
                         let _ = tx.send(());
@@ -1002,10 +980,7 @@ impl WebRtcCoordinator {
                         ))
                     }
                     Err(_) => {
-                        tracing::warn!(
-                            "⚠️ Connection timed out for serial={}",
-                            target
-                        );
+                        tracing::warn!("⚠️ Connection timed out for serial={}", target);
                         // Cleanup failed connection attempt
                         self.cleanup_failed_connection(target, webrtc_conn).await;
                         Err(ActrError::TimedOut)
@@ -1013,11 +988,7 @@ impl WebRtcCoordinator {
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "⚠️ Connection failed for serial={}: {}",
-                    target,
-                    e
-                );
+                tracing::warn!("⚠️ Connection failed for serial={}: {}", target, e);
                 Err(e)
             }
         }
@@ -1133,23 +1104,14 @@ impl WebRtcCoordinator {
 
         // 4. Clear pending candidates
         self.pending_candidates.write().await.remove(target);
-        tracing::debug!(
-            "🧹 Clearing pending candidates for serial={}",
-            target
-        );
+        tracing::debug!("🧹 Clearing pending candidates for serial={}", target);
 
         // 5. Clear negotiation state
         if self.peer_negotiation.lock().await.remove(target).is_some() {
-            tracing::debug!(
-                "🧹 Clearing negotiation state for serial={}",
-                target
-            );
+            tracing::debug!("🧹 Clearing negotiation state for serial={}", target);
         }
 
-        tracing::debug!(
-            "🧹 Cleaned up cancelled connection for serial={}",
-            target
-        );
+        tracing::debug!("🧹 Cleaned up cancelled connection for serial={}", target);
     }
 
     /// Perform a single offer connection attempt (without retry logic)
@@ -1451,10 +1413,7 @@ impl WebRtcCoordinator {
                     receive_handles: Vec::new(),
                 },
             );
-            tracing::debug!(
-                "🔒 Inserted placeholder peer state for {} (answerer)",
-                from
-            );
+            tracing::debug!("🔒 Inserted placeholder peer state for {} (answerer)", from);
         } // Release lock immediately
 
         // 3. Register state change handler (combines cleanup + ready notification)
@@ -1746,10 +1705,7 @@ impl WebRtcCoordinator {
         };
 
         if is_renegotiation {
-            tracing::info!(
-                "🔄 Handling renegotiation Answer from {}",
-                from
-            );
+            tracing::info!("🔄 Handling renegotiation Answer from {}", from);
         } else {
             tracing::info!("📥 Handling initial Answer from {}", from);
         }
@@ -1763,10 +1719,7 @@ impl WebRtcCoordinator {
         self.flush_pending_candidates(from, &peer_connection)
             .await?;
 
-        tracing::info!(
-            "✅ WebRTC connection negotiation completed: {}",
-            from
-        );
+        tracing::info!("✅ WebRTC connection negotiation completed: {}", from);
 
         // Wait for DataChannel to be ready using the same window as initial connection setup.
         let peers = Arc::clone(&self.peers);
@@ -2168,10 +2121,7 @@ impl WebRtcCoordinator {
                         continue;
                     } else {
                         // Connecting timeout, treat as not connected
-                        tracing::warn!(
-                            "⏰ Connection to {} timed out while connecting",
-                            target
-                        );
+                        tracing::warn!("⏰ Connection to {} timed out while connecting", target);
                         break false;
                     }
                 }
@@ -2309,10 +2259,7 @@ impl WebRtcCoordinator {
             ActrError::InvalidArgument("WebRTC only supports Actor targets, not Shell".to_string())
         })?;
 
-        tracing::debug!(
-            "🏭 [Factory] Creating WebRTC connection to {:?}",
-            target_id
-        );
+        tracing::debug!("🏭 [Factory] Creating WebRTC connection to {:?}", target_id);
 
         // 2. Check if connection already exists
         {
@@ -2478,10 +2425,7 @@ impl WebRtcCoordinator {
 
         wait_result?;
 
-        tracing::info!(
-            "✅ [Factory] WebRTC connection ready: {:?}",
-            target_id
-        );
+        tracing::info!("✅ [Factory] WebRTC connection ready: {:?}", target_id);
 
         // Final cancellation check
         if let Some(token) = cancel_token {
@@ -2723,10 +2667,7 @@ impl WebRtcCoordinator {
         target: &actr_protocol::ActrId,
         peer_connection: &Arc<RTCPeerConnection>,
     ) -> ActorResult<()> {
-        tracing::info!(
-            "🔄 Starting SDP renegotiation with {}",
-            target
-        );
+        tracing::info!("🔄 Starting SDP renegotiation with {}", target);
 
         // 1. Create new Offer (includes all tracks: old + new)
         let offer = peer_connection.create_offer(None).await.map_err(|e| {
@@ -2843,10 +2784,7 @@ impl WebRtcCoordinator {
             let peer_connection = state.peer_connection.clone();
             let restart_wake = state.restart_wake.clone();
 
-            tracing::info!(
-                "♻️ Initiating ICE restart to serial={}",
-                target
-            );
+            tracing::info!("♻️ Initiating ICE restart to serial={}", target);
 
             // 5. Spawn restart task (STILL WITHIN THE LOCK - this is the fix!)
             let handle = tokio::spawn(async move {
@@ -2864,10 +2802,7 @@ impl WebRtcCoordinator {
 
                 match restart_result {
                     Ok(true) => {
-                        tracing::info!(
-                            "✅ ICE restart succeeded for serial={}",
-                            target_clone
-                        );
+                        tracing::info!("✅ ICE restart succeeded for serial={}", target_clone);
                     }
                     Ok(false) => {
                         // ICE restart failed after all retries, clean up and try to establish new connection
@@ -2886,11 +2821,7 @@ impl WebRtcCoordinator {
                         }
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "❌ ICE restart failed for serial={}: {}",
-                            target_clone,
-                            e
-                        );
+                        tracing::error!("❌ ICE restart failed for serial={}: {}", target_clone, e);
 
                         // Clean up resources on error
                         if let Some(coord) = coordinator_weak.upgrade() {
@@ -2916,10 +2847,7 @@ impl WebRtcCoordinator {
             // This completes the atomic state transition - no race condition possible
             state.restart_task_handle = Some(handle);
         } else {
-            tracing::warn!(
-                "🚫 Skip ICE restart to serial={}: peer not found",
-                target
-            );
+            tracing::warn!("🚫 Skip ICE restart to serial={}: peer not found", target);
         }
 
         // Lock is released here - all state is consistent
@@ -2957,10 +2885,7 @@ impl WebRtcCoordinator {
             return Err(e);
         }
 
-        tracing::info!(
-            "✅ IceRestartRequest sent to offerer serial={}",
-            target
-        );
+        tracing::info!("✅ IceRestartRequest sent to offerer serial={}", target);
         Ok(())
     }
 
@@ -2987,10 +2912,7 @@ impl WebRtcCoordinator {
                     (state.is_offerer, has_inflight)
                 }
                 None => {
-                    tracing::warn!(
-                        "⚠️ IceRestartRequest from unknown peer serial={}",
-                        from
-                    );
+                    tracing::warn!("⚠️ IceRestartRequest from unknown peer serial={}", from);
                     return Ok(());
                 }
             }
@@ -3348,18 +3270,11 @@ impl WebRtcCoordinator {
             // 2. Clears all caches
             // 3. Broadcasts ConnectionClosed event
             if let Err(e) = state.webrtc_conn.close().await {
-                tracing::warn!(
-                    "⚠️ Failed to close WebRtcConnection for {}: {}",
-                    target,
-                    e
-                );
+                tracing::warn!("⚠️ Failed to close WebRtcConnection for {}: {}", target, e);
             }
             tracing::info!("🧹 Dropped peer connection for {}", target);
         } else {
-            tracing::warn!(
-                "⚠️ drop_peer_connection: peer not found {}",
-                target
-            );
+            tracing::warn!("⚠️ drop_peer_connection: peer not found {}", target);
         }
     }
 
@@ -3373,10 +3288,7 @@ impl WebRtcCoordinator {
         from: &ActrId,
         offer_sdp: String,
     ) -> ActorResult<()> {
-        tracing::info!(
-            "🔄 Processing renegotiation Offer from {}",
-            from
-        );
+        tracing::info!("🔄 Processing renegotiation Offer from {}", from);
 
         // 1. Get existing peer connection
         let peer_connection = {
@@ -3477,10 +3389,7 @@ impl WebRtcCoordinator {
         self.flush_pending_candidates(from, &peer_connection)
             .await?;
 
-        tracing::info!(
-            "✅ Completed ICE restart answer to serial={}",
-            from
-        );
+        tracing::info!("✅ Completed ICE restart answer to serial={}", from);
 
         Ok(())
     }
@@ -3693,10 +3602,7 @@ impl WebRtcCoordinator {
             realm_id: self.local_id.realm.realm_id,
         });
 
-        tracing::debug!(
-            "🔄 Sending role negotiation to serial={}",
-            target
-        );
+        tracing::debug!("🔄 Sending role negotiation to serial={}", target);
         self.send_actr_relay(target, payload).await?;
 
         rx.await.map_err(|_| {
@@ -3721,11 +3627,7 @@ impl WebRtcCoordinator {
                     // First run the base WebRtcConnection cleanup.
                     webrtc_conn.handle_state_change(state).await;
 
-                    tracing::info!(
-                        "📡 PeerConnection state for {} -> {:?}",
-                        target,
-                        state
-                    );
+                    tracing::info!("📡 PeerConnection state for {} -> {:?}", target, state);
 
                     // Update state tracking for health check
                     if let Some(c) = coord.upgrade() {

@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Subcommand};

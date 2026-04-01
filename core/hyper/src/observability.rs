@@ -15,11 +15,11 @@ use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     propagation::TraceContextPropagator, resource::Resource, trace::SdkTracerProvider,
 };
+#[cfg(feature = "opentelemetry")]
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{
     Layer, filter::EnvFilter, fmt, layer::SubscriberExt, prelude::*, registry::LookupSpan,
 };
-#[cfg(feature = "opentelemetry")]
-use tracing_subscriber::filter::Targets;
 
 /// Type alias for a boxed tracing layer that can be dynamically composed.
 ///
@@ -150,11 +150,13 @@ where
         let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
         // Filter: use configured filter_level as default, suppress noisy third-party crates
-        let otel_default_level = cfg.filter_level.parse::<tracing::Level>()
+        let otel_default_level = cfg
+            .filter_level
+            .parse::<tracing::Level>()
             .unwrap_or(tracing::Level::INFO);
         let otel_filter = Targets::new()
             .with_default(otel_default_level)
-            .with_target("tungstenite", tracing::Level::ERROR)       // OFF equivalent
+            .with_target("tungstenite", tracing::Level::ERROR) // OFF equivalent
             .with_target("tokio_tungstenite", tracing::Level::ERROR) // OFF equivalent
             .with_target("wasmtime", tracing::Level::WARN)
             .with_target("webrtc_mdns::conn", tracing::Level::WARN)

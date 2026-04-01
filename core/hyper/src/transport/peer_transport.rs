@@ -328,7 +328,6 @@ impl PeerTransport {
         payload_type: PayloadType,
         data: &[u8],
     ) -> NetworkResult<()> {
-
         // Get or create DestTransport for this Dest
         let transport = self.get_or_create_transport(dest).await?;
 

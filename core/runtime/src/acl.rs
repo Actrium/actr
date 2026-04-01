@@ -5,7 +5,7 @@
 //! This module is pure functions with no IO dependencies, suitable for
 //! both native and wasm32 targets.
 
-use actr_protocol::{Acl, AclRule, ActrId, ActrIdExt as _};
+use actr_protocol::{Acl, AclRule, ActrId};
 
 /// Check whether the caller has permission to access the target Actor
 ///
@@ -65,22 +65,14 @@ pub fn check_acl_permission(
         }
         let is_allow = rule.permission == actr_protocol::acl_rule::Permission::Allow as i32;
         if !is_allow {
-            tracing::debug!(
-                "ACL: DENY rule matched for {} -> {}",
-                caller,
-                target_id,
-            );
+            tracing::debug!("ACL: DENY rule matched for {} -> {}", caller, target_id,);
             return Ok(false);
         }
         any_allow = true;
     }
 
     if any_allow {
-        tracing::debug!(
-            "ACL: ALLOW rule matched for {} -> {}",
-            caller,
-            target_id,
-        );
+        tracing::debug!("ACL: ALLOW rule matched for {} -> {}", caller, target_id,);
         return Ok(true);
     }
 

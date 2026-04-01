@@ -7,7 +7,6 @@
 
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 

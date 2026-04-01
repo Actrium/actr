@@ -10,9 +10,7 @@ use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::{Dest, PayloadTypeExt, PeerTransport};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrIdExt, Classify, PayloadType, RpcEnvelope,
-};
+use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, oneshot};
@@ -208,10 +206,7 @@ impl PeerGate {
                         ..
                     } => {
                         closing_peers.write().await.remove(peer_id);
-                        tracing::debug!(
-                            "Unblocked peer {} after successful ICE restart",
-                            peer_id
-                        );
+                        tracing::debug!("Unblocked peer {} after successful ICE restart", peer_id);
                     }
 
                     _ => {} // Ignore other events
@@ -239,11 +234,7 @@ impl PeerGate {
         if let Some((target, tx)) = pending.remove(request_id) {
             // Wake up waiting request with result (success or error)
             let _ = tx.send(result);
-            tracing::debug!(
-                "Completed request: {} (target: {})",
-                request_id,
-                target
-            );
+            tracing::debug!("Completed request: {} (target: {})", request_id, target);
             Ok(true)
         } else {
             tracing::warn!("No pending request for: {}", request_id);
@@ -343,7 +334,6 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
-
         // 1. Create oneshot channel for receiving response
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -408,7 +398,6 @@ impl PeerGate {
 
     /// Send one-way message (no response expected)
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-
         self.send_message_with_type(target, PayloadType::RpcReliable, envelope)
             .await
     }
@@ -431,7 +420,6 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
-
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
         self.send_with_retry(&dest, payload_type, &data).await

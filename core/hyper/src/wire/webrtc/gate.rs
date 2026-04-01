@@ -8,7 +8,7 @@ use crate::inbound::DataStreamRegistry;
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, ActrIdExt, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
@@ -97,17 +97,7 @@ impl WebRtcGate {
         payload_type: PayloadType,
         pending_requests: PendingRequestsMap,
         mailbox: Arc<dyn Mailbox>,
-        local_id: Option<ActrId>,
     ) {
-        // Extract and set tracing context from envelope
-        #[cfg(feature = "opentelemetry")]
-        {
-            use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
-            let actr_id_str = local_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
-            let span = tracing::info_span!("WebRtcGate.receive_rpc", actr_id = %actr_id_str, request_id = %envelope.request_id);
-            set_parent_from_rpc_envelope(&span, &envelope);
-            let _guard = span.enter();
-        }
         let request_id = envelope.request_id.clone();
 
         // Determine if Response or Request
@@ -182,6 +172,7 @@ impl WebRtcGate {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
+        #[cfg(feature = "opentelemetry")]
         let local_id = self.local_id.clone();
 
         tokio::spawn(async move {
@@ -201,10 +192,14 @@ impl WebRtcGate {
                                 // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
+                                        #[cfg(feature = "opentelemetry")]
                                         let current_local_id = local_id.read().await.clone();
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
-                                            let actr_id_str = current_local_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
+                                            let actr_id_str = current_local_id
+                                                .as_ref()
+                                                .map(|id| id.to_string())
+                                                .unwrap_or_default();
                                             let span = tracing::info_span!("WebRtcGate.receive_rpc", actr_id = %actr_id_str);
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
@@ -216,7 +211,6 @@ impl WebRtcGate {
                                             payload_type,
                                             pending_requests.clone(),
                                             mailbox.clone(),
-                                            current_local_id,
                                         );
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_envelope_fut =

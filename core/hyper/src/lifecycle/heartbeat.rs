@@ -7,7 +7,7 @@ use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkError;
 use crate::wire::webrtc::SignalingClient;
-use actr_protocol::{ActrId, ActrIdExt, RegisterRequest, ServiceAvailabilityState};
+use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
 use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;
 use std::time::Duration;
@@ -244,10 +244,7 @@ async fn credential_refresh_task(
     actor_id: ActrId,
     credential_state: CredentialState,
 ) {
-    tracing::info!(
-        "🔑 Refreshing credential for Actor {}",
-        actor_id
-    );
+    tracing::info!("🔑 Refreshing credential for Actor {}", actor_id);
 
     match client
         .send_credential_update_request(actor_id.clone(), credential_state.credential().await)
