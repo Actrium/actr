@@ -66,7 +66,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
     );
     log::info!(
         "[DataStreamClient] discovering server type: {}",
-        server_type().to_string_repr()
+        server_type()
     );
 
     let receive_stream_id = req.stream_id.clone();
@@ -99,7 +99,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
 
     log::info!(
         "[DataStreamClient] discovered server: {}",
-        server_id.to_string_repr()
+        server_id
     );
 
     let prepare_req = serde_json::to_vec(&PrepareServerStreamRequest {

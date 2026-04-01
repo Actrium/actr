@@ -121,6 +121,7 @@ impl WebSocketServer {
                                     let capture_src = captured_source_id.clone();
                                     let capture_cred = captured_credential.clone();
 
+                                    #[allow(clippy::result_large_err)]
                                     let callback = move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
                                                          res: tokio_tungstenite::tungstenite::handshake::server::Response|
                                      -> Result<

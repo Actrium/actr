@@ -5,49 +5,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use url::Url;
 
-/// Actor execution mode
+/// Manifest configuration — parsed from `manifest.toml`.
 ///
-/// Determines how the actor runtime obtains credentials and cooperates with the Hyper host layer.
-/// Specified via the `mode` field in `[system.deployment]` section of the runtime `actr.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum ActrMode {
-    /// Native process mode (default)
-    ///
-    /// The actor runtime runs in a standalone process, registers with the signaling server
-    /// and obtains credentials on its own.
-    /// Suitable for development/debugging or deployments not managed by Hyper.
-    #[default]
-    Native,
-
-    /// Subprocess mode
-    ///
-    /// The actor runtime is launched as a subprocess by the Hyper layer.
-    /// Credentials are injected by Hyper via `inject_credential()` or
-    /// `ACTR_REGISTER_OK` environment variable; skips signaling registration
-    /// at startup and directly uses the issued credentials.
-    Process,
-
-    /// WASM module mode
-    ///
-    /// The actor runtime runs as a WASM module inside the Hyper host.
-    /// Credentials are injected via host functions or `inject_credential()` (TBD).
-    Wasm,
-}
-
-impl std::fmt::Display for ActrMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ActrMode::Native => write!(f, "native"),
-            ActrMode::Process => write!(f, "process"),
-            ActrMode::Wasm => write!(f, "wasm"),
-        }
-    }
-}
-
-/// Final config (inheritance, defaults, validation, and type conversion applied)
-/// Note: no edition field -- edition only affects the parsing phase
+/// Carries workload package metadata, proto exports, dependencies, ACL, and scripts.
+/// Does **not** contain runtime fields like `signaling_url`, `realm`, or `ais_endpoint`
+/// — those belong to [`RuntimeConfig`] parsed from `actr.toml`.
 #[derive(Debug, Clone)]
-pub struct Config {
+pub struct ManifestConfig {
     /// Package info
     pub package: PackageInfo,
 
@@ -57,15 +21,41 @@ pub struct Config {
     /// Service dependencies (expanded)
     pub dependencies: Vec<Dependency>,
 
+    /// Access control list
+    pub acl: Option<Acl>,
+
+    /// Service tags (e.g., "latest", "stable", "v1.0")
+    pub tags: Vec<String>,
+
+    /// Script commands
+    pub scripts: HashMap<String, String>,
+
+    /// Directory containing `manifest.toml`
+    pub config_dir: PathBuf,
+}
+
+/// Runtime configuration — parsed from `actr.toml`.
+///
+/// Carries all deployment and networking settings needed by the actor runtime.
+/// Required fields (`signaling_url`, `realm`, `ais_endpoint`) are **non-Option**;
+/// the parser validates their presence before construction.
+#[derive(Debug, Clone)]
+pub struct RuntimeConfig {
+    /// Package info (provided by caller, e.g. from the .actr package or lock file)
+    pub package: PackageInfo,
+
+    // ── Required runtime fields (non-Option) ──
     /// Signaling server URL (validated)
     pub signaling_url: Url,
 
     /// Owning Realm (Security Realm)
     pub realm: Realm,
 
-    /// Realm secret for AIS registration authentication (optional)
-    ///
-    /// Required when the realm has secret-based access control enabled.
+    /// AIS (Actor Identity Service) HTTP endpoint
+    pub ais_endpoint: String,
+
+    // ── Optional runtime fields ──
+    /// Realm secret for AIS registration authentication
     pub realm_secret: Option<String>,
 
     /// Whether visible in service discovery
@@ -80,7 +70,7 @@ pub struct Config {
     /// - `None`: use in-memory mode (`:memory:`)
     pub mailbox_path: Option<PathBuf>,
 
-    /// Service tags (e.g., "latest", "stable", "v1.0")
+    /// Service tags
     pub tags: Vec<String>,
 
     /// Script commands
@@ -92,20 +82,22 @@ pub struct Config {
     /// Port for listening to inbound WebSocket connections (direct mode, optional)
     ///
     /// When configured, the node starts a WebSocket server on this port at startup.
-    /// Peer nodes can connect directly via `ws://<host-IP>:<port>/` without relaying.
+    /// Peer nodes can connect directly via `ws://<host>:<port>` without relaying.
     pub websocket_listen_port: Option<u16>,
 
-    /// WebSocket hostname or IP advertised to the signaling server (direct mode, optional)
+    /// WebSocket hostname or IP advertised to the signaling server
     ///
     /// Used together with `websocket_listen_port`. Reported to the signaling server
     /// during registration so that peer nodes know how to connect directly.
-    /// Defaults to `"127.0.0.1"` (suitable for local testing only).
+    ///
+    /// Defaults to "127.0.0.1" (suitable for local testing only).
     pub websocket_advertised_host: Option<String>,
 
     /// Observability configuration (logging + tracing)
     pub observability: ObservabilityConfig,
 
     /// Directory containing the source configuration file (`manifest.toml` or runtime `actr.toml`)
+    ///
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
@@ -115,16 +107,8 @@ pub struct Config {
     /// Trust mode: "development" or "production"
     pub trust_mode: String,
 
-    /// Actor execution mode (affects credential acquisition and Hyper cooperation strategy)
-    ///
-    /// Corresponds to `[system.deployment] mode = "native" | "process" | "wasm"`, defaults to `Native`.
-    pub execution_mode: ActrMode,
-
-    /// AIS (Actor Identity Service) HTTP endpoint for credential registration.
-    ///
-    /// Required in native mode. In process/wasm mode, Hyper handles registration.
-    /// Corresponds to `[system.deployment] ais_endpoint = "..."` in runtime `actr.toml`.
-    pub ais_endpoint: Option<String>,
+    /// Path to the workload package (.actr file)
+    pub package_path: Option<PathBuf>,
 }
 
 /// Package info
@@ -275,11 +259,11 @@ pub struct ObservabilityConfig {
 }
 
 // ============================================================================
-// Config helper methods
+// ManifestConfig helper methods
 // ============================================================================
 
-impl Config {
-    /// Get the package's ActrType (for registration)
+impl ManifestConfig {
+    /// Get the package's ActrType
     pub fn actr_type(&self) -> &ActrType {
         &self.package.actr_type
     }
@@ -299,14 +283,6 @@ impl Config {
         self.dependencies.iter().find(|d| d.alias == alias)
     }
 
-    /// Get all cross-Realm dependencies
-    pub fn cross_realm_dependencies(&self) -> Vec<&Dependency> {
-        self.dependencies
-            .iter()
-            .filter(|d| d.realm.realm_id != self.realm.realm_id)
-            .collect()
-    }
-
     /// Get a script command
     pub fn get_script(&self, name: &str) -> Option<&str> {
         self.scripts.get(name).map(|s| s.as_str())
@@ -317,16 +293,14 @@ impl Config {
         self.scripts.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Calculate ServiceSpec from config
+    /// Calculate ServiceSpec from manifest
     ///
     /// Returns None if no proto files are exported
     pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
-        // If no exports, no ServiceSpec
         if self.exports.is_empty() {
             return None;
         }
 
-        // Convert exports to ProtoFile format for fingerprint calculation
         let proto_files: Vec<actr_service_compat::ProtoFile> = self
             .exports
             .iter()
@@ -342,17 +316,14 @@ impl Config {
             })
             .collect();
 
-        // Calculate service fingerprint
         let fingerprint =
             actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
                 .ok()?;
 
-        // Build Protobuf entries
         let protobufs = self
             .exports
             .iter()
             .map(|export| {
-                // Calculate individual file fingerprint
                 let file_fingerprint =
                     actr_service_compat::Fingerprint::calculate_proto_semantic_fingerprint(
                         &export.content,
@@ -372,7 +343,6 @@ impl Config {
             })
             .collect();
 
-        // Get current timestamp
         let published_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
@@ -386,6 +356,38 @@ impl Config {
             published_at: Some(published_at),
             tags: self.tags.clone(),
         })
+    }
+}
+
+// ============================================================================
+// RuntimeConfig helper methods
+// ============================================================================
+
+impl RuntimeConfig {
+    /// Get the package's ActrType (for registration)
+    pub fn actr_type(&self) -> &ActrType {
+        &self.package.actr_type
+    }
+
+    /// Get all cross-Realm dependencies.
+    ///
+    /// Returns an empty vec (runtime config does not carry dependencies).
+    pub fn cross_realm_dependencies(&self) -> Vec<&Dependency> {
+        // RuntimeConfig does not have dependencies field
+        vec![]
+    }
+
+    /// Get a script command
+    pub fn get_script(&self, name: &str) -> Option<&str> {
+        self.scripts.get(name).map(|s| s.as_str())
+    }
+
+    /// Calculate ServiceSpec from runtime config.
+    ///
+    /// Returns None — runtime config does not carry proto exports.
+    /// Use `ManifestConfig::calculate_service_spec()` instead.
+    pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
+        None
     }
 }
 
@@ -453,8 +455,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_methods() {
-        let config = Config {
+    fn test_manifest_config_methods() {
+        let config = ManifestConfig {
             package: PackageInfo {
                 name: "test-service".to_string(),
                 actr_type: ActrType {
@@ -466,8 +468,6 @@ mod tests {
                 authors: vec![],
                 license: None,
             },
-            hyper_data_dir: PathBuf::from("."),
-            trust_mode: "development".to_string(),
             exports: vec![],
             dependencies: vec![
                 Dependency {
@@ -494,8 +494,43 @@ mod tests {
                     service: None,
                 },
             ],
+            acl: None,
+            tags: vec![],
+            scripts: HashMap::new(),
+            config_dir: PathBuf::from("."),
+        };
+
+        // Test dependency lookup
+        assert!(config.get_dependency("user-service").is_some());
+        assert!(config.get_dependency("not-exists").is_none());
+
+        // Test fingerprint matching
+        let user_dep = config.get_dependency("user-service").unwrap();
+        assert!(user_dep.matches_fingerprint("abc123"));
+        assert!(!user_dep.matches_fingerprint("different"));
+
+        let logger_dep = config.get_dependency("shared-logger").unwrap();
+        assert!(logger_dep.matches_fingerprint("any-fingerprint"));
+        assert!(!logger_dep.requires_exact_fingerprint());
+    }
+
+    #[test]
+    fn test_runtime_config_methods() {
+        let config = RuntimeConfig {
+            package: PackageInfo {
+                name: "test-service".to_string(),
+                actr_type: ActrType {
+                    manufacturer: "acme".to_string(),
+                    name: "test-service".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                description: None,
+                authors: vec![],
+                license: None,
+            },
             signaling_url: Url::parse("ws://localhost:8081").unwrap(),
             realm: Realm { realm_id: 1001 },
+            ais_endpoint: "http://localhost:8081/ais".to_string(),
             realm_secret: None,
             visible_in_discovery: true,
             acl: None,
@@ -512,27 +547,13 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
-            execution_mode: ActrMode::Native,
-            ais_endpoint: None,
+            hyper_data_dir: PathBuf::from(".hyper"),
+            trust_mode: "development".to_string(),
+            package_path: None,
         };
 
-        // Test dependency lookup
-        assert!(config.get_dependency("user-service").is_some());
-        assert!(config.get_dependency("not-exists").is_none());
-
-        // Test cross-Realm dependency
-        let cross_realm = config.cross_realm_dependencies();
-        assert_eq!(cross_realm.len(), 1);
-        assert_eq!(cross_realm[0].alias, "shared-logger");
-
-        // Test fingerprint matching (with service field = strict matching)
-        let user_dep = config.get_dependency("user-service").unwrap();
-        assert!(user_dep.matches_fingerprint("abc123"));
-        assert!(!user_dep.matches_fingerprint("different"));
-
-        // No service field = loose dependency, any fingerprint matches
-        let logger_dep = config.get_dependency("shared-logger").unwrap();
-        assert!(logger_dep.matches_fingerprint("any-fingerprint"));
-        assert!(!logger_dep.requires_exact_fingerprint());
+        assert_eq!(config.actr_type().name, "test-service");
+        assert!(config.cross_realm_dependencies().is_empty());
+        assert!(config.calculate_service_spec().is_none());
     }
 }

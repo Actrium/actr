@@ -1,6 +1,6 @@
 use crate::commands::codegen::proto_model::ProtoModel;
 use crate::error::Result;
-use actr_config::Config;
+use actr_config::ManifestConfig;
 use async_trait::async_trait;
 use std::path::PathBuf;
 
@@ -24,7 +24,7 @@ pub struct GenContext {
     pub input_path: PathBuf,
     pub output: PathBuf,
     pub config_path: PathBuf,
-    pub config: Config,
+    pub config: ManifestConfig,
     pub no_scaffold: bool,
     pub overwrite_user_code: bool,
     pub no_format: bool,

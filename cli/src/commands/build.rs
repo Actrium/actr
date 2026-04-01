@@ -87,13 +87,16 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
             })
             .collect();
 
+        // Calculate service fingerprint
         let fingerprint = Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
             .context("Failed to calculate service fingerprint")?;
         info!("📋 Service fingerprint: {fingerprint}");
 
+        // Build Protobuf entries
         let files = proto_files
             .iter()
             .map(|pf| {
+                // Calculate individual file fingerprint
                 let file_fp = Fingerprint::calculate_proto_semantic_fingerprint(&pf.content)
                     .unwrap_or_else(|_| "error".to_string());
                 debug!("  {} → {}", pf.name, file_fp);
@@ -111,6 +114,7 @@ pub async fn execute(args: BuildArgs) -> Result<()> {
         })
     };
 
+    // Get current timestamp
     let lock_file = ManifestLockFile {
         version: 1,
         updated_at: Utc::now().to_rfc3339(),

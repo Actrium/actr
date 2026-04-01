@@ -10,7 +10,8 @@ export class ActrNode {
   constructor(private native: NativeActrNode) {}
 
   /**
-   * Create a client-only ActrNode directly from a TOML config file path.
+   * Create a client-only ActrNode from `manifest.toml`.
+   * The sibling `actr.toml` in the same directory is loaded automatically.
    *
    * @param configPath - Path to manifest.toml
    * @returns ActrNode instance

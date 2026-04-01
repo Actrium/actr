@@ -3,9 +3,7 @@
 //! The check command validates that services are available in the registry
 //! and optionally verifies they match the configured dependencies.
 
-use crate::core::{
-    Command, CommandContext, CommandResult, ComponentType, DependencySpec, NetworkCheckOptions,
-};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType, NetworkCheckOptions};
 use actr_config::ConfigParser;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -71,17 +69,17 @@ impl Command for CheckCommand {
         let config = ConfigParser::from_manifest_file(config_path)
             .with_context(|| format!("Failed to load manifest: {}", config_path))?;
 
-        println!(
-            "🌐 Checking signaling server: {}...",
-            config.signaling_url.as_str()
-        );
-        info!(
-            "🌐 Checking signaling server: {}...",
-            config.signaling_url.as_str()
-        );
+        // Resolve signaling URL from default + global CLI config + project CLI config.
+        // `resolve_effective_cli_config` applies built-in defaults, so we always have a URL.
+        let cli_config =
+            crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
+        let signaling_url = cli_config.network.signaling_url;
+
+        println!("🌐 Checking signaling server: {}...", signaling_url);
+        info!("🌐 Checking signaling server: {}...", signaling_url);
         let signaling_status = pipeline
             .network_validator()
-            .check_connectivity(config.signaling_url.as_str(), &options)
+            .check_connectivity(&signaling_url, &options)
             .await?;
         if signaling_status.is_reachable {
             let latency = signaling_status.response_time_ms.unwrap_or(0);
@@ -100,24 +98,7 @@ impl Command for CheckCommand {
 
         // 2. Resolve Dependencies to check
 
-        let all_specs: Vec<DependencySpec> = config
-            .dependencies
-            .iter()
-            .map(|d| DependencySpec {
-                alias: d.alias.clone(),
-                name: d
-                    .service
-                    .as_ref()
-                    .map(|service| service.name.clone())
-                    .or_else(|| d.actr_type.as_ref().map(|ty| ty.name.clone()))
-                    .unwrap_or_else(|| d.alias.clone()),
-                actr_type: d.actr_type.clone(),
-                fingerprint: d
-                    .service
-                    .as_ref()
-                    .map(|service| service.fingerprint.clone()),
-            })
-            .collect();
+        let all_specs = pipeline.dependency_resolver().resolve_spec(&config).await?;
 
         let specs_to_check = if self.packages.is_empty() {
             all_specs

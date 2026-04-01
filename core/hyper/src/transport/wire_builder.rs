@@ -100,7 +100,7 @@ impl DefaultWireBuilder {
             if let Some(url) = map.get(actor_id) {
                 tracing::debug!(
                     "🔎 [Factory] Using discovered WebSocket URL for {}: {}",
-                    actor_id.serial_number,
+                    actor_id,
                     url
                 );
                 return Some(url.clone());

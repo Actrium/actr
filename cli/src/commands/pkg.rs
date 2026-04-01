@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Subcommand};
@@ -278,7 +278,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
         .with_context(|| format!("Failed to read binary: {}", args.binary.display()))?;
 
     tracing::info!(
-        actr_type = %actr_type.to_string_repr(),
+        actr_type = %actr_type,
         binary_size = binary_bytes.len(),
         "building .actr package"
     );

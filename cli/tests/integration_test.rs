@@ -11,7 +11,7 @@ fn test_config_parser_loads_valid_config() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    // Create a minimal valid manifest.toml
+    // Create a minimal valid manifest.toml (no system fields — those belong in actr.toml)
     let actr_toml = r#"edition = 1
 exports = []
 
@@ -21,18 +21,6 @@ manufacturer = "test-company"
 description = "A test service"
 
 [dependencies]
-
-[system.signaling]
-url = "ws://localhost:8080/"
-
-[system.ais_endpoint]
-url = "http://localhost:8080/ais"
-
-[system.deployment]
-realm_id = 1001
-
-[system.discovery]
-visible = true
 
 [scripts]
 dev = "cargo run"
@@ -48,8 +36,8 @@ test = "cargo test"
     assert_eq!(config.package.name, "test-service");
     assert_eq!(config.package.actr_type.manufacturer, "test-company");
     assert_eq!(config.package.actr_type.name, "test-service");
-    assert_eq!(config.realm.realm_id, 1001);
-    assert!(config.visible_in_discovery);
+    // ManifestConfig does not carry runtime fields (realm, signaling_url, ais_endpoint)
+    // — those live in RuntimeConfig (parsed from actr.toml).
 
     // Verify scripts
     assert_eq!(config.scripts.get("dev"), Some(&"cargo run".to_string()));

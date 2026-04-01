@@ -29,7 +29,7 @@ fn package_path() -> PathBuf {
             let echo_actr_version = echo_actr_version();
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(format!(
-                    "../../../../../echo-actr/dist/actrium-EchoService-{echo_actr_version}-wasm32-unknown-unknown.actr"
+                    "../../echo-actr/dist/actrium-EchoService-{echo_actr_version}-wasm32-unknown-unknown.actr"
                 ))
         })
 }
@@ -38,8 +38,7 @@ fn public_key_path() -> PathBuf {
     env::var("ACTR_PUBLIC_KEY_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../../../echo-actr/public-key.json")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../echo-actr/public-key.json")
         })
 }
 
@@ -93,7 +92,7 @@ async fn main() -> Result<()> {
         authors: vec![],
         license: manifest.metadata.license,
     };
-    
+
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 2. Load runtime configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

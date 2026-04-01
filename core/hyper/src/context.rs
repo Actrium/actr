@@ -120,7 +120,14 @@ impl RuntimeContext {
     /// Execute a non-generic RPC request call (useful for language bindings).
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.call_raw",
+            fields(
+                actr_id = %self.self_id,
+                route_key = %route_key,
+            )
+        )
     )]
     pub async fn call_raw(
         &self,
@@ -156,7 +163,14 @@ impl RuntimeContext {
     /// Execute a non-generic RPC message call (fire-and-forget, useful for language bindings).
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "RuntimeContext.tell_raw")
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.tell_raw",
+            fields(
+                actr_id = %self.self_id,
+                route_key = %route_key,
+            )
+        )
     )]
     pub async fn tell_raw(
         &self,
@@ -308,7 +322,11 @@ impl Context for RuntimeContext {
     // ========== Communication Methods ==========
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "RuntimeContext.call")
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.call",
+            fields(actr_id = %self.self_id)
+        )
     )]
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
         use actr_protocol::prost::Message as ProstMessage;
@@ -357,7 +375,11 @@ impl Context for RuntimeContext {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "RuntimeContext.tell")
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.tell",
+            fields(actr_id = %self.self_id)
+        )
     )]
     async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
         // 1. Encode the message.
@@ -442,6 +464,17 @@ impl Context for RuntimeContext {
             .await
     }
 
+    #[cfg_attr(
+        feature = "opentelemetry",
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.discover_route_candidate",
+            fields(
+                actr_id = %self.self_id,
+                target_type = %target_type,
+            )
+        )
+    )]
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
         if !self.signaling_client.is_connected() {
             return Err(ActrError::Unavailable(
@@ -513,7 +546,11 @@ impl Context for RuntimeContext {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "RuntimeContext.call_raw")
+        tracing::instrument(
+            skip_all,
+            name = "RuntimeContext.call_raw",
+            fields(actr_id = %self.self_id)
+        )
     )]
     async fn call_raw(
         &self,

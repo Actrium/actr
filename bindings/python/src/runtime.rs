@@ -1,4 +1,4 @@
-use actr_config::ConfigParser;
+use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::{Bytes, Context};
 use actr_hyper::context::RuntimeContext;
 use actr_hyper::{
@@ -17,6 +17,13 @@ use crate::{ActrIdPy, ActrTypePy};
 type WrappedNode = RuntimeActrNode;
 type WrappedRef = ActrRef;
 
+fn load_runtime_config(manifest_path: &str) -> Result<RuntimeConfig, actr_config::ConfigError> {
+    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
+    let runtime_path = manifest.config_dir.join("actr.toml");
+
+    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
+}
+
 #[pyclass(name = "ActrNode")]
 pub struct ActrNodePy {
     pub(crate) inner: Option<WrappedNode>,
@@ -27,7 +34,7 @@ impl ActrNodePy {
     #[staticmethod]
     fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let config = ConfigParser::from_manifest_file(&path)
+            let config = load_runtime_config(&path)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             ensure_observability_initialized(Some(config.observability.clone()));
             let hyper_data_dir = config.config_dir.join(".hyper");

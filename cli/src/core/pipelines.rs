@@ -109,6 +109,11 @@ impl ValidationPipeline {
         &self.config_manager
     }
 
+    /// Get dependency resolver component
+    pub fn dependency_resolver(&self) -> &Arc<dyn DependencyResolver> {
+        &self.dependency_resolver
+    }
+
     fn dependency_lookup_key(spec: &DependencySpec) -> String {
         spec.actr_type
             .as_ref()

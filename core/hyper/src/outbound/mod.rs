@@ -66,10 +66,6 @@ impl Gate {
     /// Uses enum dispatch to statically dispatch to the concrete implementation:
     /// - `Host`: zero serialization and direct `RpcEnvelope` passing
     /// - `Peer`: Protobuf serialization through the transport layer
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "Gate.send_request")
-    )]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         match self {
             Gate::Host(gate) => gate.send_request(target, envelope).await,
@@ -106,10 +102,6 @@ impl Gate {
     /// # Semantics
     ///
     /// Fire-and-forget: return immediately after sending.
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(skip_all, name = "Gate.send_message")
-    )]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
             Gate::Host(gate) => gate.send_message(target, envelope).await,

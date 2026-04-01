@@ -1,4 +1,4 @@
-use actr_config::Config;
+use actr_config::ManifestConfig;
 use actr_protocol::ActrTypeExt;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -59,14 +59,14 @@ impl TomlConfigManager {
 
 #[async_trait]
 impl ConfigManager for TomlConfigManager {
-    async fn load_config(&self, path: &Path) -> Result<Config> {
+    async fn load_config(&self, path: &Path) -> Result<ManifestConfig> {
         ConfigParser::from_manifest_file(path)
             .with_context(|| format!("Failed to parse config: {}", path.display()))
     }
 
-    async fn save_config(&self, _config: &Config, _path: &Path) -> Result<()> {
+    async fn save_config(&self, _config: &ManifestConfig, _path: &Path) -> Result<()> {
         Err(anyhow::anyhow!(
-            "Saving parsed Config is not supported; update manifest.toml directly"
+            "Saving parsed ManifestConfig is not supported; update manifest.toml directly"
         ))
     }
 

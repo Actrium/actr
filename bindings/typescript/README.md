@@ -4,8 +4,8 @@
 
 TypeScript/Node.js bindings for ACTR. The binding is now `package-first`:
 local source-defined workloads were removed. `actr-ts` currently supports
-client-only nodes created from `manifest.toml`, then uses discovery plus explicit
-remote calls.
+client-only nodes created from `manifest.toml` plus a sibling `actr.toml`,
+then uses discovery plus explicit remote calls.
 
 ## Overview
 
@@ -61,7 +61,8 @@ main().catch(console.error);
 
 ## API
 
-- `ActrNode.fromConfig(configPath)` creates a client-only node.
+- `ActrNode.fromConfig(configPath)` creates a client-only node from `manifest.toml`
+  and auto-loads `actr.toml` from the same directory.
 - `ActrRef.discover(targetType, count)` resolves remote actors.
 - `ActrRef.call(target, routeKey, payloadType, payload, timeoutMs)` sends a remote RPC.
 - `ActrRef.tell(target, routeKey, payloadType, payload)` sends a one-way remote message.
@@ -75,7 +76,7 @@ main().catch(console.error);
 
 ## Configuration
 
-Create a `manifest.toml` configuration file:
+Create a `manifest.toml` file plus a sibling `actr.toml` runtime file:
 
 ```toml
 edition = 1
@@ -89,14 +90,24 @@ description = "My Actor"
 manufacturer = "actr"
 name = "my-actor"
 
+```
+
+```toml
+# actr.toml
+edition = 1
+
 [network]
-bind_address = "0.0.0.0:0"
+signaling_url = "ws://localhost:8081/signaling/ws"
+ais_endpoint = "http://localhost:8080"
+
+[network.realm]
+realm_id = 1
 
 [network.discovery]
 multicast_address = "239.255.42.99:4242"
 interface = "0.0.0.0"
 
-[observability]
+[system.observability]
 filter_level = "info"
 tracing_enabled = false
 ```

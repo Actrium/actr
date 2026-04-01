@@ -336,7 +336,7 @@ impl WebRtcConnection {
                 if buffered == 0 {
                     if attempt > 0 {
                         tracing::debug!(
-                            peer_id = %self.peer_id.serial_number,
+                            peer_id = %self.peer_id,
                             channel = %label,
                             channel_idx = idx,
                             attempts = attempt,
@@ -348,7 +348,7 @@ impl WebRtcConnection {
 
                 if attempt == MAX_POLLS - 1 {
                     tracing::warn!(
-                        peer_id = %self.peer_id.serial_number,
+                        peer_id = %self.peer_id,
                         channel = %label,
                         channel_idx = idx,
                         buffered_bytes = buffered,
@@ -371,7 +371,7 @@ impl WebRtcConnection {
         if !self.session.try_close() {
             tracing::debug!(
                 "🔒 [close] serial={} already closed (session_id={}), skipping",
-                self.peer_id.serial_number,
+                self.peer_id,
                 self.session.session_id
             );
             return Ok(());
@@ -382,7 +382,7 @@ impl WebRtcConnection {
 
         tracing::debug!(
             "🔒 [close] serial={} session_id={} step 1: marking closed",
-            self.peer_id.serial_number,
+            self.peer_id,
             self.session.session_id
         );
         *self.connected.write().await = false;
@@ -392,7 +392,7 @@ impl WebRtcConnection {
 
         tracing::debug!(
             "🔒 [close] serial={} step 2: closing peer_connection",
-            self.peer_id.serial_number
+            self.peer_id
         );
         self.peer_connection.close().await?;
 
@@ -922,7 +922,7 @@ impl WebRtcConnection {
                 let buffered = dc.buffered_amount().await;
                 if buffered > 0 {
                     tracing::warn!(
-                        peer_id = %this.peer_id.serial_number,
+                        peer_id = %this.peer_id,
                         channel = %label,
                         payload_type = ?payload_type,
                         buffered_bytes = buffered,
