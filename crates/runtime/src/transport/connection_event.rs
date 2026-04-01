@@ -43,12 +43,14 @@ pub enum ConnectionEvent {
     /// Connection state changed
     StateChanged {
         peer_id: ActrId,
+        session_id: u64,
         state: ConnectionState,
     },
 
     /// DataChannel closed for specific payload type
     DataChannelClosed {
         peer_id: ActrId,
+        session_id: u64,
         payload_type: PayloadType,
     },
 
@@ -57,17 +59,22 @@ pub enum ConnectionEvent {
     /// indicating SCTP layer is ready for data transmission
     DataChannelOpened {
         peer_id: ActrId,
+        session_id: u64,
         payload_type: PayloadType,
     },
 
     /// Connection fully closed (triggers full cleanup)
-    ConnectionClosed { peer_id: ActrId },
+    ConnectionClosed { peer_id: ActrId, session_id: u64 },
 
     /// ICE restart started
-    IceRestartStarted { peer_id: ActrId },
+    IceRestartStarted { peer_id: ActrId, session_id: u64 },
 
     /// ICE restart completed
-    IceRestartCompleted { peer_id: ActrId, success: bool },
+    IceRestartCompleted {
+        peer_id: ActrId,
+        session_id: u64,
+        success: bool,
+    },
 
     /// New offer received (triggers cleanup of existing connection)
     NewOfferReceived { peer_id: ActrId, sdp: String },
@@ -83,11 +90,24 @@ impl ConnectionEvent {
             ConnectionEvent::StateChanged { peer_id, .. } => peer_id,
             ConnectionEvent::DataChannelClosed { peer_id, .. } => peer_id,
             ConnectionEvent::DataChannelOpened { peer_id, .. } => peer_id,
-            ConnectionEvent::ConnectionClosed { peer_id } => peer_id,
-            ConnectionEvent::IceRestartStarted { peer_id } => peer_id,
+            ConnectionEvent::ConnectionClosed { peer_id, .. } => peer_id,
+            ConnectionEvent::IceRestartStarted { peer_id, .. } => peer_id,
             ConnectionEvent::IceRestartCompleted { peer_id, .. } => peer_id,
             ConnectionEvent::NewOfferReceived { peer_id, .. } => peer_id,
             ConnectionEvent::NewRoleAssignment { peer_id, .. } => peer_id,
+        }
+    }
+
+    /// Get the session_id from the event (None for events without session)
+    pub fn session_id(&self) -> Option<u64> {
+        match self {
+            Self::StateChanged { session_id, .. }
+            | Self::DataChannelClosed { session_id, .. }
+            | Self::DataChannelOpened { session_id, .. }
+            | Self::ConnectionClosed { session_id, .. }
+            | Self::IceRestartStarted { session_id, .. }
+            | Self::IceRestartCompleted { session_id, .. } => Some(*session_id),
+            _ => None,
         }
     }
 
@@ -117,7 +137,7 @@ impl ConnectionEvent {
 }
 
 /// Default broadcast channel capacity
-const DEFAULT_CHANNEL_CAPACITY: usize = 64;
+const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Connection event broadcaster
 ///
@@ -205,6 +225,7 @@ mod tests {
         let peer_id = test_peer_id();
         broadcaster.send(ConnectionEvent::ConnectionClosed {
             peer_id: peer_id.clone(),
+            session_id: 0,
         });
 
         let event = rx.recv().await.unwrap();
@@ -220,6 +241,7 @@ mod tests {
         let peer_id = test_peer_id();
         let count = broadcaster.send(ConnectionEvent::StateChanged {
             peer_id: peer_id.clone(),
+            session_id: 0,
             state: ConnectionState::Connected,
         });
 
@@ -251,7 +273,8 @@ mod tests {
         // Should trigger cleanup
         assert!(
             ConnectionEvent::ConnectionClosed {
-                peer_id: peer_id.clone()
+                peer_id: peer_id.clone(),
+                session_id: 0,
             }
             .should_trigger_cleanup()
         );
@@ -259,6 +282,7 @@ mod tests {
         assert!(
             ConnectionEvent::StateChanged {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 state: ConnectionState::Closed,
             }
             .should_trigger_cleanup()
@@ -267,6 +291,7 @@ mod tests {
         assert!(
             ConnectionEvent::IceRestartCompleted {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 success: false,
             }
             .should_trigger_cleanup()
@@ -276,6 +301,7 @@ mod tests {
         assert!(
             !ConnectionEvent::StateChanged {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 state: ConnectionState::Disconnected,
             }
             .should_trigger_cleanup()
@@ -284,6 +310,7 @@ mod tests {
         assert!(
             !ConnectionEvent::IceRestartCompleted {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 success: true,
             }
             .should_trigger_cleanup()
@@ -298,6 +325,7 @@ mod tests {
         assert!(
             ConnectionEvent::StateChanged {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 state: ConnectionState::Disconnected,
             }
             .is_recoverable_state()
@@ -306,6 +334,7 @@ mod tests {
         assert!(
             ConnectionEvent::StateChanged {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 state: ConnectionState::Failed,
             }
             .is_recoverable_state()
@@ -315,6 +344,7 @@ mod tests {
         assert!(
             !ConnectionEvent::StateChanged {
                 peer_id: peer_id.clone(),
+                session_id: 0,
                 state: ConnectionState::Closed,
             }
             .is_recoverable_state()
@@ -322,7 +352,8 @@ mod tests {
 
         assert!(
             !ConnectionEvent::ConnectionClosed {
-                peer_id: peer_id.clone()
+                peer_id: peer_id.clone(),
+                session_id: 0,
             }
             .is_recoverable_state()
         );

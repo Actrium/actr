@@ -365,6 +365,7 @@ impl WebRtcCoordinator {
                                 ConnectionEvent::DataChannelClosed {
                                     peer_id,
                                     payload_type,
+                                    ..
                                 } => {
                                     // Only cleanup if peer still exists (avoid duplicate cleanup)
                                     if coord.peers.read().await.contains_key(peer_id) {
@@ -382,7 +383,7 @@ impl WebRtcCoordinator {
                                         None
                                     }
                                 }
-                                ConnectionEvent::ConnectionClosed { peer_id } => {
+                                ConnectionEvent::ConnectionClosed { peer_id, .. } => {
                                     if coord.peers.read().await.contains_key(peer_id) {
                                         tracing::warn!(
                                             "⚠️ Connection closed for peer {}; triggering coordinator cleanup",
@@ -397,7 +398,7 @@ impl WebRtcCoordinator {
                                         None
                                     }
                                 }
-                                ConnectionEvent::StateChanged { peer_id, state } => {
+                                ConnectionEvent::StateChanged { peer_id, state, .. } => {
                                     use crate::transport::connection_event::ConnectionState;
                                     if matches!(state, ConnectionState::Closed) {
                                         if coord.peers.read().await.contains_key(peer_id) {
@@ -495,7 +496,7 @@ impl WebRtcCoordinator {
                 }
                 res = event_rx.recv() => {
                     match res {
-                        Ok(ConnectionEvent::DataChannelOpened { peer_id, payload_type })
+                        Ok(ConnectionEvent::DataChannelOpened { peer_id, payload_type, .. })
                             if peer_id == target_peer =>
                         {
                             tracing::info!(
@@ -794,6 +795,7 @@ impl WebRtcCoordinator {
             self.event_broadcaster
                 .send(ConnectionEvent::ConnectionClosed {
                     peer_id: peer_id.clone(),
+                    session_id: 0,
                 });
 
             if let Err(e) = pc.close().await {
@@ -1010,6 +1012,7 @@ impl WebRtcCoordinator {
             self.event_broadcaster
                 .send(ConnectionEvent::ConnectionClosed {
                     peer_id: target.clone(),
+                    session_id: 0,
                 });
         }
 
@@ -1073,6 +1076,7 @@ impl WebRtcCoordinator {
             self.event_broadcaster
                 .send(ConnectionEvent::ConnectionClosed {
                     peer_id: target.clone(),
+                    session_id: 0,
                 });
         }
 

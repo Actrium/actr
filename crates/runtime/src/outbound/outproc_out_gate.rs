@@ -85,13 +85,30 @@ impl OutprocOutGate {
         transport_manager: Arc<OutprocTransportManager>,
     ) {
         tokio::spawn(async move {
-            while let Ok(event) = event_rx.recv().await {
+            loop {
+                let event = match event_rx.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            "⚠️ OutprocOutGate event listener lagged by {} events, continuing",
+                            n
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::debug!(
+                            "🔌 OutprocOutGate event listener stopped (channel closed)"
+                        );
+                        break;
+                    }
+                };
                 tracing::debug!("🔄 OutprocOutGate received connection event: {:?}", event);
                 match &event {
                     // Block new requests when connection enters Disconnected/Failed state
                     ConnectionEvent::StateChanged {
                         peer_id,
                         state: ConnectionState::Disconnected | ConnectionState::Failed,
+                        ..
                     } => {
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
@@ -104,8 +121,9 @@ impl OutprocOutGate {
                     ConnectionEvent::StateChanged {
                         peer_id,
                         state: ConnectionState::Closed,
+                        ..
                     }
-                    | ConnectionEvent::ConnectionClosed { peer_id } => {
+                    | ConnectionEvent::ConnectionClosed { peer_id, .. } => {
                         // Mark peer as closing (release lock immediately to avoid deadlock)
                         {
                             closing_peers.write().await.insert(peer_id.clone());
@@ -173,6 +191,7 @@ impl OutprocOutGate {
                     ConnectionEvent::IceRestartCompleted {
                         peer_id,
                         success: true,
+                        ..
                     } => {
                         closing_peers.write().await.remove(peer_id);
                         tracing::debug!(

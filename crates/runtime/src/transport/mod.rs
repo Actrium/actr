@@ -16,6 +16,7 @@ mod inproc_manager;
 mod lane;
 mod manager;
 mod route_table;
+pub mod session;
 mod wire_builder;
 mod wire_handle;
 mod wire_pool;
@@ -49,3 +50,6 @@ pub use backoff::ExponentialBackoff;
 
 // Connection events
 pub use connection_event::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
+
+// Connection session
+pub use session::ConnectionSession;
