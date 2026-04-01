@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = []
 test-utils = ["dep:actr-mock-signaling", "dep:rusqlite"]
+wasm-engine = ["actr-hyper/wasm-engine"]
 
 [[bin]]
 name = "actr"
@@ -26,6 +27,9 @@ actr-hyper = { path = "../core/hyper", version = "0.1.0" }
 
 # Package format (.actr ZIP STORE)
 actr-pack.workspace = true
+
+# Platform provider for native execution
+actr-platform-native = { path = "../core/platform-native", version = "0.2.0" }
 
 # Key generation for actr dev keygen
 rand.workspace = true
@@ -122,6 +126,9 @@ futures-util = "0.3"
 uuid = { version = "1.19.0", features = ["v4"] }
 rust-embed = "8.11.0"
 actr-mock-signaling = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["process", "signal", "fs"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

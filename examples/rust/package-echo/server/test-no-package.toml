@@ -1,0 +1,11 @@
+# Incomplete runtime config for testing missing package path error
+# This file intentionally omits the [package] section and ais_endpoint
+# to test error handling when package path is not specified
+
+edition = 1
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[deployment]
+realm_id = 1001

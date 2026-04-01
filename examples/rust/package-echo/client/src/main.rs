@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching client-guest package workload...");
     let realm_id = config.realm.realm_id;
-    let service_spec = config.calculate_service_spec();
+    let service_spec = None; // RuntimeConfig doesn't have exports, so no ServiceSpec
     let acl = config.acl.clone();
     let mut node = hyper
         .attach_package(&package, config)

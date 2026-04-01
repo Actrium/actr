@@ -65,11 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n🔖 Tags: {:?}", config.tags);
-    // Note: runtime fields (signaling_url, ais_endpoint, realm, visible_in_discovery) are
-    // carried by RuntimeConfig (parsed from actr.toml), not ManifestConfig.
-
-    println!("\n✅ Configuration successfully parsed and validated!");
+    println!("\n✅ Manifest configuration successfully parsed and validated!");
+    println!("  (Runtime fields like signaling_url, realm, ais_endpoint are in actr.toml)");
 
     Ok(())
 }

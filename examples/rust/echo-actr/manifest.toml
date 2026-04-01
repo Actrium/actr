@@ -1,0 +1,12 @@
+edition = 1
+
+[package]
+name = "EchoService"
+manufacturer = "actrium"
+version = "0.2.2"
+
+exports = ["proto/echo.proto"]
+
+[binary]
+path = "target/wasm32-wasip1/release/echo_guest.wasm"
+target = "wasm32-wasip1"
