@@ -9,25 +9,13 @@ use tracing::info;
 
 #[derive(Args)]
 pub struct RunCommand {
-    /// Runtime configuration file (actr.toml) - required
+    /// Runtime configuration file (defaults to ./actr.toml if not specified)
     #[arg(short = 'c', long = "config", value_name = "FILE")]
-    pub config: PathBuf,
+    pub config: Option<PathBuf>,
 
     /// Run in detached mode (background)
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
-
-    /// Trust mode: "development" or "production" (overrides actr.toml)
-    #[arg(long)]
-    pub trust_mode: Option<String>,
-
-    /// AIS endpoint URL (overrides actr.toml)
-    #[arg(long)]
-    pub ais_endpoint: Option<String>,
-
-    /// Package path (overrides actr.toml [package] section)
-    #[arg(long, short = 'p', value_name = "FILE")]
-    pub package: Option<PathBuf>,
 }
 
 #[async_trait]
@@ -44,10 +32,20 @@ impl RunCommand {
 
         info!("🚀 Starting package execution mode");
 
-        let config_path = &self.config;
+        // Resolve config path: use provided path or default to ./actr.toml
+        let config_path = self.config.clone().unwrap_or_else(|| PathBuf::from("actr.toml"));
+
+        // Check if config file exists
+        if !config_path.exists() {
+            return Err(ActrCliError::command_error(format!(
+                "Configuration file not found: {}\n\n\
+                 Please create an actr.toml file or specify a config file with -c/--config",
+                config_path.display()
+            )));
+        }
 
         // 1. Resolve package path (CLI flag > actr.toml > error)
-        let package_path = self.resolve_package_path(config_path).await?;
+        let package_path = self.resolve_package_path(&config_path).await?;
         info!("📦 Loading package: {}", package_path.display());
 
         // 2. Load package bytes
@@ -63,19 +61,11 @@ impl RunCommand {
         let package_info = self.build_package_info(&manifest);
 
         // 4. Load runtime configuration
-        let mut config = actr_config::ConfigParser::from_runtime_file(
-            config_path,
+        let config = actr_config::ConfigParser::from_runtime_file(
+            &config_path,
             package_info.clone(),
             vec![],
         )?;
-
-        // 5. Apply CLI overrides
-        if let Some(ref trust_mode) = self.trust_mode {
-            config.trust_mode = trust_mode.clone();
-        }
-        if let Some(ref ais_endpoint) = self.ais_endpoint {
-            config.ais_endpoint = ais_endpoint.clone();
-        }
 
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
         info!("🔐 Trust mode: {}", config.trust_mode);
@@ -97,7 +87,9 @@ impl RunCommand {
         info!("✅ Package attached");
 
         // 9. Bootstrap credential via AIS
-        let register_ok = self.bootstrap_credential(&hyper, &node, &config).await?;
+        let register_ok = self
+            .bootstrap_credential(&hyper, &node, &config, &package_bytes, &manifest)
+            .await?;
         node.inject_credential(register_ok);
         info!("✅ AIS registration successful");
 
@@ -150,11 +142,6 @@ impl RunCommand {
     }
 
     async fn resolve_package_path(&self, config_path: &Path) -> Result<PathBuf> {
-        // Priority: CLI flag > actr.toml > error
-        if let Some(ref package_path) = self.package {
-            return Ok(package_path.clone());
-        }
-
         // Load config to get package path
         let config_content = tokio::fs::read_to_string(config_path).await?;
         let raw_config: actr_config::RuntimeRawConfig = toml::from_str(&config_content)
@@ -172,10 +159,8 @@ impl RunCommand {
         }
 
         Err(ActrCliError::command_error(
-            "Package path not specified.\n\n\
-             Specify package path using one of:\n\
-             1. CLI flag: actr run -c actr.toml --package dist/service.actr\n\
-             2. Config file: Add [package] path = \"dist/service.actr\" to actr.toml"
+            "Package path not specified in actr.toml.\n\n\
+             Add [package] path = \"dist/service.actr\" to actr.toml"
                 .to_string(),
         ))
     }
@@ -214,9 +199,14 @@ impl RunCommand {
                 }
             }
             "production" => {
-                // Use AIS-based MFR certificate cache
+                // Use AIS-based MFR certificate cache.
+                // TrustMode::Production expects the base endpoint without /ais suffix.
+                let base_endpoint = config
+                    .ais_endpoint
+                    .trim_end_matches("/ais")
+                    .to_string();
                 TrustMode::Production {
-                    ais_endpoint: config.ais_endpoint.clone(),
+                    ais_endpoint: base_endpoint,
                 }
             }
             other => {
@@ -282,11 +272,33 @@ impl RunCommand {
         hyper: &actr_hyper::Hyper,
         node: &actr_hyper::ActrNode,
         config: &actr_config::RuntimeConfig,
+        package_bytes: &[u8],
+        manifest: &actr_pack::PackageManifest,
     ) -> Result<actr_protocol::register_response::RegisterOk> {
         let ais_endpoint = &config.ais_endpoint;
         let realm = &config.realm;
 
-        let service_spec = None; // RuntimeConfig doesn't have exports, so no ServiceSpec
+        // Calculate ServiceSpec from package manifest and proto files
+        let service_spec = actr_pack::calculate_service_spec_from_package(package_bytes, manifest)
+            .map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to calculate ServiceSpec from package: {}",
+                    e
+                ))
+            })?;
+
+        // Log ServiceSpec info if present
+        if let Some(ref spec) = service_spec {
+            info!(
+                "📋 ServiceSpec: name={}, fingerprint={}, {} proto files",
+                spec.name,
+                spec.fingerprint,
+                spec.protobufs.len()
+            );
+        } else {
+            info!("📋 No ServiceSpec (package contains no proto files)");
+        }
+
         let acl = config.acl.clone();
 
         hyper

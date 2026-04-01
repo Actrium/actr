@@ -10,9 +10,10 @@ keywords = ["actor", "cli", "codegen", "protobuf", "framework"]
 categories = ["command-line-utilities", "development-tools"]
 
 [features]
-default = []
+default = ["wasm-engine", "dynclib-engine"]
 test-utils = ["dep:actr-mock-signaling", "dep:rusqlite"]
 wasm-engine = ["actr-hyper/wasm-engine"]
+dynclib-engine = ["actr-hyper/dynclib-engine"]
 
 [[bin]]
 name = "actr"
