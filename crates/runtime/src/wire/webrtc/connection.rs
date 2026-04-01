@@ -8,7 +8,7 @@ use actr_protocol::{ActrId, PayloadType};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
@@ -49,8 +49,8 @@ pub struct WebRtcConnection {
     /// Event broadcaster for connection state changes
     event_tx: broadcast::Sender<ConnectionEvent>,
 
-    /// connection status
-    connected: Arc<RwLock<bool>>,
+    /// connection status (AtomicBool for lock-free reads, avoids blocking_read deadlocks)
+    connected: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for WebRtcConnection {
@@ -60,7 +60,7 @@ impl std::fmt::Debug for WebRtcConnection {
             .field("peer_connection", &"<RTCPeerConnection>")
             .field("data_channels", &"<[Option<Arc<RTCDataChannel>>; 4]>")
             .field("media_tracks", &"<HashMap<String, Arc<Track>>>")
-            .field("connected", &self.connected)
+            .field("connected", &self.connected.load(Ordering::SeqCst))
             .finish()
     }
 }
@@ -86,7 +86,7 @@ impl WebRtcConnection {
             track_ssrcs: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new([None, None, None, None])),
             event_tx,
-            connected: Arc::new(RwLock::new(true)),
+            connected: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -109,12 +109,7 @@ impl WebRtcConnection {
         );
 
         // Update flag and detect transitions from connected -> disconnected.
-        let was_connected = {
-            let mut flag = self.connected.write().await;
-            let prev = *flag;
-            *flag = is_connected;
-            prev
-        };
+        let was_connected = self.connected.swap(is_connected, Ordering::SeqCst);
 
         // Convert WebRTC state to our ConnectionState
         let connection_state = match state {
@@ -174,7 +169,7 @@ impl WebRtcConnection {
 
     /// establish Connect（WebRTC Connect already alreadyvia signaling establish ， this in only is mark record ）
     pub async fn connect(&self) -> NetworkResult<()> {
-        *self.connected.write().await = true;
+        self.connected.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -197,10 +192,10 @@ impl WebRtcConnection {
         self.event_tx.subscribe()
     }
 
-    /// Checkwhether already Connect
+    /// Check whether already connected
     #[inline]
     pub fn is_connected(&self) -> bool {
-        *self.connected.blocking_read()
+        self.connected.load(Ordering::SeqCst)
     }
 
     /// Check if any DataChannel is open
@@ -219,12 +214,21 @@ impl WebRtcConnection {
     }
 
     /// Close connection and broadcast ConnectionClosed event
+    ///
+    /// Uses AtomicBool swap as a close guard to prevent concurrent re-entry.
+    /// Each lock is scoped so it is released before acquiring the next one,
+    /// following the canonical order: data_channels → media_tracks →
+    /// track_sequence_numbers → track_ssrcs → lane_cache.
     pub async fn close(&self) -> NetworkResult<()> {
-        tracing::debug!(
-            "🔒 [close] Acquiring connected write lock for peer {:?}",
-            self.peer_id
-        );
-        *self.connected.write().await = false;
+        // Atomically check-and-set: if already closed, return early.
+        // This prevents concurrent/re-entrant close() from proceeding.
+        if !self.connected.swap(false, Ordering::SeqCst) {
+            tracing::debug!(
+                "🔒 [close] Already closed for peer {:?}, skipping",
+                self.peer_id
+            );
+            return Ok(());
+        }
 
         tracing::debug!(
             "🔒 [close] Calling peer_connection.close() for peer {:?}",
@@ -232,45 +236,35 @@ impl WebRtcConnection {
         );
         self.peer_connection.close().await?;
 
-        // clear blank DataChannel Cache
-        tracing::debug!(
-            "🔒 [close] Acquiring data_channels write lock for peer {:?}",
-            self.peer_id
-        );
-        let mut channels = self.data_channels.write().await;
-        *channels = [None, None, None, None];
+        // Clear DataChannel cache (scoped to release lock before next acquire)
+        {
+            let mut channels = self.data_channels.write().await;
+            *channels = [None, None, None, None];
+        }
 
-        // clear blank MediaTrack Cache
-        tracing::debug!(
-            "🔒 [close] Acquiring media_tracks write lock for peer {:?}",
-            self.peer_id
-        );
-        let mut tracks = self.media_tracks.write().await;
-        tracks.clear();
+        // Clear MediaTrack cache
+        {
+            let mut tracks = self.media_tracks.write().await;
+            tracks.clear();
+        }
 
-        // clear blank sequence number cache
-        tracing::debug!(
-            "🔒 [close] Acquiring track_sequence_numbers write lock for peer {:?}",
-            self.peer_id
-        );
-        let mut seq_nums = self.track_sequence_numbers.write().await;
-        seq_nums.clear();
+        // Clear sequence number cache
+        {
+            let mut seq_nums = self.track_sequence_numbers.write().await;
+            seq_nums.clear();
+        }
 
-        // clear blank SSRC cache
-        tracing::debug!(
-            "🔒 [close] Acquiring track_ssrcs write lock for peer {:?}",
-            self.peer_id
-        );
-        let mut ssrcs = self.track_ssrcs.write().await;
-        ssrcs.clear();
+        // Clear SSRC cache
+        {
+            let mut ssrcs = self.track_ssrcs.write().await;
+            ssrcs.clear();
+        }
 
-        // clear blank Lane Cache
-        tracing::debug!(
-            "🔒 [close] Acquiring lane_cache write lock for peer {:?}",
-            self.peer_id
-        );
-        let mut cache = self.lane_cache.write().await;
-        *cache = [None, None, None, None];
+        // Clear Lane cache
+        {
+            let mut cache = self.lane_cache.write().await;
+            *cache = [None, None, None, None];
+        }
 
         // Broadcast ConnectionClosed event
         tracing::debug!(
@@ -360,10 +354,10 @@ impl WebRtcConnection {
 
         if need_recreate {
             // Clear stale cache entries before recreating.
-            let mut cache = self.lane_cache.write().await;
-            cache[idx] = None;
             let mut channels = self.data_channels.write().await;
             channels[idx] = None;
+            let mut cache = self.lane_cache.write().await;
+            cache[idx] = None;
         }
 
         // 2. Createnew DataLane
@@ -386,10 +380,11 @@ impl WebRtcConnection {
     /// to be recreated on next `get_lane` call.
     pub async fn invalidate_lane(&self, payload_type: PayloadType) {
         let idx = payload_type as usize;
-        let mut cache = self.lane_cache.write().await;
-        cache[idx] = None;
+        // Canonical lock order: data_channels → lane_cache
         let mut channels = self.data_channels.write().await;
         channels[idx] = None;
+        let mut cache = self.lane_cache.write().await;
+        cache[idx] = None;
     }
 
     /// inner part Method：Create DataChannel Lane（ not carry Cache）
