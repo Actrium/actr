@@ -491,37 +491,107 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     }
     emitSwLog('info', 'guest_bridge_guest_wasm', guestWasmBytes.byteLength);
 
-    // ── 3. Instantiate guest WASM with host import stubs ──
-    // Standard guest WASMs may import `env.actr_host_invoke` for outbound calls.
-    // Echo server doesn't make outbound calls, so stubs suffice.
-    const guestImports = {
-        env: {
-            actr_host_invoke: (_frame_ptr, _frame_len, _reply_ptr, _reply_cap, _reply_len_out) => {
-                console.error('[SW Guest] actr_host_invoke called but not implemented in browser');
-                return -7; // UNSUPPORTED_OP
+    // ── 3. Detect JSPI support ──
+    // JSPI (JavaScript Promise Integration) allows WASM imports to suspend
+    // execution when they return a Promise, without needing asyncify.
+    // Available in Chrome 129+ (Sep 2024).
+    const hasJSPI = typeof WebAssembly.Suspending === 'function'
+        && typeof WebAssembly.promising === 'function';
+    emitSwLog('info', 'guest_bridge_jspi', hasJSPI);
+
+    // ── 4. Instantiate guest WASM with host imports ──
+    let guest;
+    let promisingActrHandle = null;  // JSPI-wrapped actr_handle (returns Promise)
+
+    if (hasJSPI) {
+        // ── JSPI path: async actr_host_invoke, promising actr_handle ──
+        // The guest's actr_host_invoke import is wrapped with WebAssembly.Suspending
+        // so the WASM execution suspends while the host performs async operations
+        // (discover, call_raw). No wasm-opt --asyncify needed.
+        const asyncHostInvoke = async function (frame_ptr, frame_len, reply_ptr, reply_cap, reply_len_out) {
+            try {
+                // Read ABI frame from guest memory
+                const mem = new Uint8Array(guest.memory.buffer);
+                const frameData = mem.slice(frame_ptr, frame_ptr + frame_len);
+
+                // Call runtime's guest_host_invoke_async (returns a Promise)
+                const replyBytes = await wasm_bindgen.guest_host_invoke_async(frameData);
+
+                if (replyBytes.length > reply_cap) {
+                    // BUFFER_TOO_SMALL: write needed size and return error
+                    const view = new DataView(guest.memory.buffer);
+                    view.setInt32(reply_len_out, replyBytes.length, true);
+                    return -6; // BUFFER_TOO_SMALL
+                }
+
+                // Write reply into guest memory
+                const writeMem = new Uint8Array(guest.memory.buffer);
+                writeMem.set(replyBytes, reply_ptr);
+                const writeView = new DataView(guest.memory.buffer);
+                writeView.setInt32(reply_len_out, replyBytes.length, true);
+
+                return 0; // SUCCESS
+            } catch (e) {
+                emitSwLog('error', 'guest_host_invoke_error', String(e));
+                return -1; // GENERIC_ERROR
+            }
+        };
+
+        const guestImports = {
+            env: {
+                actr_host_invoke: new WebAssembly.Suspending(asyncHostInvoke),
+                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
+                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
+                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
             },
-            actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
-            actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
-            actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
-        },
-    };
+        };
 
-    // Try to instantiate — if no import section exists, empty imports work fine
-    let guestModule;
-    try {
-        guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
-    } catch (firstErr) {
-        // Fallback: try without imports (guest has no import section)
+        let guestModule;
         try {
-            guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
-        } catch (secondErr) {
-            throw new Error('[SW] Guest WASM instantiation failed: ' + firstErr.message);
+            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
+        } catch (firstErr) {
+            try {
+                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
+            } catch (secondErr) {
+                throw new Error('[SW] Guest WASM instantiation failed (JSPI): ' + firstErr.message);
+            }
         }
-    }
-    const guest = guestModule.instance.exports;
-    emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(guest));
+        guest = guestModule.instance.exports;
 
-    // ── 4. Initialize guest (actr_init) ──
+        // Wrap actr_handle as promising (returns Promise instead of i32)
+        promisingActrHandle = WebAssembly.promising(guest.actr_handle);
+        emitSwLog('info', 'guest_bridge_guest_instantiated_jspi', Object.keys(guest));
+    } else {
+        // ── Sync-only path: stubs for actr_host_invoke ──
+        // Guest WASMs that don't make outbound calls (e.g. echo server) work fine.
+        // Guest WASMs requiring outbound calls will fail with UNSUPPORTED_OP.
+        const guestImports = {
+            env: {
+                actr_host_invoke: (_frame_ptr, _frame_len, _reply_ptr, _reply_cap, _reply_len_out) => {
+                    console.error('[SW Guest] actr_host_invoke called but JSPI not available');
+                    return -7; // UNSUPPORTED_OP
+                },
+                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
+                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
+                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
+            },
+        };
+
+        let guestModule;
+        try {
+            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
+        } catch (firstErr) {
+            try {
+                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
+            } catch (secondErr) {
+                throw new Error('[SW] Guest WASM instantiation failed: ' + firstErr.message);
+            }
+        }
+        guest = guestModule.instance.exports;
+        emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(guest));
+    }
+
+    // ── 5. Initialize guest (actr_init) ──
     const actrType = RUNTIME_CONFIG.client_actr_type || '';
     const realmId = RUNTIME_CONFIG.realm_id || 0;
     const initPayload = wasm_bindgen.encode_guest_init_payload(actrType, realmId);
@@ -541,8 +611,13 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     }
     emitSwLog('info', 'guest_bridge_init_ok', null);
 
-    // ── 5. Create dispatch callback ──
-    function guestDispatch(abiFrameBytes) {
+    // ── 6. Create dispatch callback ──
+    // When JSPI is available, actr_handle may suspend (returns Promise).
+    // When JSPI is not available, actr_handle is synchronous.
+    const actrHandleFn = promisingActrHandle || guest.actr_handle;
+    const isAsync = !!promisingActrHandle;
+
+    async function guestDispatchAsync(abiFrameBytes) {
         try {
             const frameData = new Uint8Array(abiFrameBytes);
             emitSwLog('info', 'guest_dispatch_called', frameData.length);
@@ -558,8 +633,10 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
             const outBuf = guest.actr_alloc(8);
             if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
 
-            // Call actr_handle
-            const result = guest.actr_handle(reqPtr, frameData.length, outBuf, outBuf + 4);
+            // Call actr_handle (may return Promise with JSPI, or i32 without)
+            const result = isAsync
+                ? await actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4)
+                : actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4);
             emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
 
             // Re-get memory view (buffer may have grown during actr_handle)
@@ -612,9 +689,76 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
         }
     }
 
-    // ── 6. Register guest workload with runtime ──
-    wasm_bindgen.register_guest_workload(guestDispatch);
-    emitSwLog('info', 'guest_bridge_ready', 'Guest workload registered via JS bridge');
+    // Sync wrapper for backward compatibility when JSPI is not available
+    function guestDispatchSync(abiFrameBytes) {
+        try {
+            const frameData = new Uint8Array(abiFrameBytes);
+            emitSwLog('info', 'guest_dispatch_called', frameData.length);
+
+            const reqPtr = guest.actr_alloc(frameData.length);
+            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
+
+            let mem = new Uint8Array(guest.memory.buffer);
+            mem.set(frameData, reqPtr);
+
+            const outBuf = guest.actr_alloc(8);
+            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
+
+            const result = guest.actr_handle(reqPtr, frameData.length, outBuf, outBuf + 4);
+            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
+
+            mem = new Uint8Array(guest.memory.buffer);
+            const view = new DataView(guest.memory.buffer);
+
+            const respPtr = view.getInt32(outBuf, true);
+            const respLen = view.getInt32(outBuf + 4, true);
+            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
+
+            let response = null;
+            if (result === 0 && respPtr !== 0 && respLen > 0) {
+                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
+            }
+
+            guest.actr_free(reqPtr, frameData.length);
+            guest.actr_free(outBuf, 8);
+            if (respPtr !== 0 && respLen > 0) {
+                guest.actr_free(respPtr, respLen);
+            }
+
+            if (result !== 0) {
+                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
+                emitSwLog('error', 'guest_dispatch_error', err.message);
+                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
+                throw err;
+            }
+            if (!response) {
+                const err = new Error('[SW Guest] actr_handle returned empty response');
+                emitSwLog('error', 'guest_dispatch_error', err.message);
+                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
+                throw err;
+            }
+
+            emitSwLog('info', 'guest_dispatch_ok', response.length);
+            if (SW_BROADCAST) {
+                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
+                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
+            }
+            return response;
+        } catch (e) {
+            emitSwLog('error', 'guest_dispatch_exception', String(e));
+            if (SW_BROADCAST) {
+                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
+            }
+            throw e;
+        }
+    }
+
+    // ── 7. Register guest workload with runtime ──
+    // Use async dispatch when JSPI is available (returns Promise → Rust awaits it).
+    // Use sync dispatch when JSPI is not available (returns Uint8Array directly).
+    const dispatchFn = isAsync ? guestDispatchAsync : guestDispatchSync;
+    wasm_bindgen.register_guest_workload(dispatchFn);
+    emitSwLog('info', 'guest_bridge_ready', 'Guest workload registered via JS bridge (JSPI=' + hasJSPI + ')');
 }
 
 /**

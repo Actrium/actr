@@ -420,8 +420,35 @@ async function suiteBasicFunction(browser) {
         try {
             await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
         } catch (warmupErr) {
+            // Dump console logs and DOM logs for diagnosis
+            const consoleLogs = [..._currentTestConsoleLogs];
+            if (consoleLogs.length > 0) {
+                console.log(C.yellow(`    ┌── Console logs during warmup (${consoleLogs.length} lines) ──`));
+                for (const line of consoleLogs) {
+                    console.log(C.dim(`    │ ${line.slice(0, 500)}`));
+                }
+                console.log(C.yellow(`    └${'─'.repeat(50)}`));
+            }
+            // Dump client DOM logs
+            const domLogs = await getClientLogs(clientCtx.page);
+            if (domLogs.length > 0) {
+                console.log(C.yellow(`    ┌── Client DOM logs (${domLogs.length} entries) ──`));
+                for (const line of domLogs) {
+                    console.log(C.dim(`    │ ${line.slice(0, 500)}`));
+                }
+                console.log(C.yellow(`    └${'─'.repeat(50)}`));
+            }
+            // Dump server DOM logs
+            const serverDomLogs = await getServerLogs(serverCtx.page);
+            if (serverDomLogs.length > 0) {
+                console.log(C.yellow(`    ┌── Server DOM logs (${serverDomLogs.length} entries) ──`));
+                for (const line of serverDomLogs) {
+                    console.log(C.dim(`    │ ${line.slice(0, 500)}`));
+                }
+                console.log(C.yellow(`    └${'─'.repeat(50)}`));
+            }
             // Record as a failure and return — don't crash subsequent suites
-            record('1-0', 'Basic Echo Connectivity', 'fail', 0, warmupErr.message);
+            record('1-0', 'Basic Echo Connectivity', 'fail', 0, warmupErr.message, consoleLogs);
             return;
         }
 

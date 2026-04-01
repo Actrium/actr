@@ -3,7 +3,7 @@
  *
  * Demonstrates how to use the @actr/web unified Actor API + Local Handler to call a remote Echo service:
  * 1. Create an Actor (shared P2P instance with the Local Handler WASM automatically loaded)
- * 2. The DOM sends requests via callRaw('echo.SendEcho.SendEcho', payload)
+ * 2. The DOM sends requests via callRaw('echo.EchoService.Echo', payload)
  * 3. The Local Handler (WASM) discovers the remote Echo Server using ctx.discover()
  * 4. The Local Handler forwards requests via ctx.call_raw() to the remote peer and returns responses
  */
@@ -198,7 +198,7 @@ async function doSendEcho(): Promise<void> {
 
         // Encode EchoRequest and call the local handler via callRaw
         const payload = encodeEchoRequest(message);
-        const responseData = await actor.callRaw('echo.SendEcho.SendEcho', payload);
+        const responseData = await actor.callRaw('echo.EchoService.Echo', payload);
         const response = decodeEchoResponse(responseData);
 
         log('ok', `📥 Reply: "${response.reply}"`);

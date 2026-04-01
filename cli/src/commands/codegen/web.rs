@@ -241,6 +241,7 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
             actr_type: d.actr_type.as_ref().map(|at| ActrTypeInfo {
                 manufacturer: at.manufacturer.clone(),
                 name: at.name.clone(),
+                version: at.version.clone(),
             }),
         })
         .collect();
@@ -285,6 +286,7 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
         package_name: config.package.name.clone(),
         manufacturer: config.package.actr_type.manufacturer.clone(),
         actr_name: config.package.actr_type.name.clone(),
+        version: config.package.actr_type.version.clone(),
         description: config.package.description.clone().unwrap_or_default(),
         authors: config.package.authors.clone(),
         license: config
@@ -302,6 +304,11 @@ fn build_codegen_request(context: &GenContext) -> Result<WebCodegenRequest> {
             .and_then(|c| c.network.realm_id)
             .unwrap_or(0),
         visible_in_discovery: false, // Default for web, or map from cli_config if added
+        ais_endpoint: cli_config
+            .as_ref()
+            .map(|c| c.network.ais_endpoint.clone())
+            .unwrap_or_else(|| "http://localhost:8081/ais".to_string()),
+        force_relay: false,
         dependencies,
         stun_urls,
         turn_urls,

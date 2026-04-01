@@ -98,8 +98,8 @@ export const runtimeConfig: SwRuntimeConfig = {
     // Guest .actr package (standard guest WASM built from echo-actr)
     package_url: '/packages/echo-server.actr',
     register_fn: '',
-    // Runtime WASM loaded separately (compiled from server/wasm as pure runtime host)
-    runtime_wasm_url: '/packages/echo_server_bg.wasm',
+    // Runtime WASM loaded separately (shared runtime host)
+    runtime_wasm_url: '/packages/actr_runtime_sw_bg.wasm',
     // MFR public key for package verification (injected by start.sh)
     mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',
 };

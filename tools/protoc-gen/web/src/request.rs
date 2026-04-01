@@ -22,6 +22,8 @@ pub struct WebCodegenRequest {
     pub package_name: String,
     pub manufacturer: String,
     pub actr_name: String,
+    #[serde(default)]
+    pub version: String,
     pub description: String,
     pub authors: Vec<String>,
     pub license: String,
@@ -31,6 +33,14 @@ pub struct WebCodegenRequest {
     pub signaling_url: String,
     pub realm_id: u32,
     pub visible_in_discovery: bool,
+
+    /// AIS (Actor Identity Service) HTTP endpoint
+    #[serde(default)]
+    pub ais_endpoint: String,
+
+    /// Whether to force relay (TURN-only) for ICE transport
+    #[serde(default)]
+    pub force_relay: bool,
 
     // ── Dependencies ──
     pub dependencies: Vec<DependencyInfo>,
@@ -61,6 +71,8 @@ pub struct DependencyInfo {
 pub struct ActrTypeInfo {
     pub manufacturer: String,
     pub name: String,
+    #[serde(default)]
+    pub version: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -134,7 +146,7 @@ impl WebCodegenRequest {
         types
     }
 
-    /// Get the target actr type for peer discovery
+    /// Get the target actr type for peer discovery (manufacturer:name:version)
     pub fn target_actr_type(&self) -> String {
         if self.is_server() {
             self.get_acl_allow_types()
@@ -147,15 +159,15 @@ impl WebCodegenRequest {
                 .and_then(|d| {
                     d.actr_type
                         .as_ref()
-                        .map(|t| format!("{}:{}", t.manufacturer, t.name))
+                        .map(|t| format!("{}:{}:{}", t.manufacturer, t.name, t.version))
                 })
                 .unwrap_or_default()
         }
     }
 
-    /// Get client actr type (this actor's type)
+    /// Get client actr type (this actor's type) — manufacturer:name:version
     pub fn client_actr_type(&self) -> String {
-        format!("{}:{}", self.manufacturer, self.actr_name)
+        format!("{}:{}:{}", self.manufacturer, self.actr_name, self.version)
     }
 
     /// Get crate/WASM module name (snake_case)

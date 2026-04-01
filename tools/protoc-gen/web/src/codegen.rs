@@ -96,8 +96,8 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     for dep in &req.dependencies {
         if let Some(ref at) = dep.actr_type {
             dep_entries.push(format!(
-                "  '{}': {{ actr_type: '{}:{}' }},",
-                dep.alias, at.manufacturer, at.name
+                "  '{}': {{ actr_type: '{}:{}:{}' }},",
+                dep.alias, at.manufacturer, at.name, at.version
             ));
         } else {
             dep_entries.push(format!("  '{}': {{}},", dep.alias));
@@ -146,11 +146,15 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     out.push_str("} as const;\n\n");
 
     // ActrType
+    let version = &req.version;
     out.push_str("/** ActrType */\n");
     out.push_str(&format!("export const {type_export_name} = {{\n"));
     out.push_str(&format!("  manufacturer: '{manufacturer}',\n"));
     out.push_str(&format!("  name: '{actr_name}',\n"));
-    out.push_str(&format!("  fullType: '{manufacturer}:{actr_name}',\n"));
+    out.push_str(&format!("  version: '{version}',\n"));
+    out.push_str(&format!(
+        "  fullType: '{manufacturer}:{actr_name}:{version}',\n"
+    ));
     out.push_str("} as const;\n\n");
 
     // Dependencies
@@ -185,6 +189,9 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     out.push_str("  },\n");
     out.push_str("  deployment: {\n");
     out.push_str(&format!("    realm_id: {realm_id},\n"));
+    if !req.ais_endpoint.is_empty() {
+        out.push_str(&format!("    ais_endpoint: '{}',\n", req.ais_endpoint));
+    }
     out.push_str("  },\n");
     out.push_str("  discovery: {\n");
     out.push_str(&format!("    visible: {},\n", req.visible_in_discovery));
@@ -209,7 +216,10 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
         ));
     }
     out.push_str("  },\n");
-    out.push_str("  webrtc: {\n");
+    out.push_str(&format!(
+        "  webrtc: {{\n    force_relay: {},\n",
+        req.force_relay
+    ));
     if !req.stun_urls.is_empty() {
         out.push_str(&format!(
             "    stun_urls: [{}],\n",
@@ -250,9 +260,42 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     let acl_allow = req.get_acl_allow_types();
     let acl_allow_js: Vec<String> = acl_allow.iter().map(|t| format!("'{t}'")).collect();
 
+    // Compute register_fn for WASM entry point
+    let register_fn = if is_server {
+        // Server: no register_fn (guest bridge loads runtime + guest separately)
+        String::new()
+    } else {
+        // Client: monolithic WASM, call register_{handler}_handler
+        let hn = req
+            .local_services
+            .first()
+            .map(|s| to_snake_case(&s.name))
+            .unwrap_or_else(|| "handler".to_string());
+        format!("register_{hn}_handler")
+    };
+
+    // package_url: default .actr package path served from public/packages/
+    let pkg_basename = if is_server {
+        format!("{}-server", req.package_name)
+    } else {
+        req.package_name.clone()
+    };
+    let package_url = format!("/packages/{pkg_basename}.actr");
+
+    // runtime_wasm_url: for server guest bridge mode, runtime WASM is loaded separately
+    let wasm_name = req.wasm_module_name();
+    let runtime_wasm_url = if is_server {
+        format!("/packages/{wasm_name}_bg.wasm")
+    } else {
+        String::new()
+    };
+
     out.push_str("// ── runtimeConfig (passed to Service Worker WASM registration) ──\n\n");
     out.push_str("/**\n * Service Worker runtime config\n * Passed from main thread to Service Worker via DOM_PORT_INIT\n */\n");
     out.push_str("export const runtimeConfig: SwRuntimeConfig = {\n");
+    if !req.ais_endpoint.is_empty() {
+        out.push_str(&format!("  ais_endpoint: '{}',\n", req.ais_endpoint));
+    }
     out.push_str("  signaling_url: system.signaling.url,\n");
     out.push_str("  realm_id: system.deployment.realm_id,\n");
     out.push_str(&format!("  client_actr_type: '{client_actr_type}',\n"));
@@ -263,6 +306,11 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
         acl_allow_js.join(", ")
     ));
     out.push_str(&format!("  is_server: {},\n", is_server));
+    out.push_str(&format!("  package_url: '{package_url}',\n"));
+    out.push_str(&format!("  register_fn: '{register_fn}',\n"));
+    out.push_str(&format!("  runtime_wasm_url: '{runtime_wasm_url}',\n"));
+    out.push_str("  // MFR public key for package verification (injected by deploy tooling)\n");
+    out.push_str("  mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',\n");
     out.push_str("};\n\n");
 
     // ActorClientConfig
@@ -277,13 +325,18 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     if !req.stun_urls.is_empty() {
         out.push_str("    ...system.webrtc.stun_urls.map((url) => ({ urls: url })),\n");
     }
-    // NOTE: TURN URLs are intentionally excluded from static iceServers.
-    // TURN credentials (username + credential) are managed dynamically
-    // by the signaling server and injected at runtime.
+    if !req.turn_urls.is_empty() {
+        out.push_str("    ...system.webrtc.turn_urls.map((url) => ({ urls: url })),\n");
+    }
     out.push_str("  ],\n");
-    out.push_str("  serviceWorkerPath: '/actor.sw.js',\n");
-    out.push_str("  autoReconnect: true,\n");
-    out.push_str("  debug: false,\n");
+    let ice_transport = if req.force_relay { "relay" } else { "all" };
+    out.push_str(&format!("  iceTransportPolicy: '{ice_transport}',\n"));
+    if !is_server {
+        // Client-side configs
+        out.push_str("  serviceWorkerPath: '/actor.sw.js',\n");
+        out.push_str("  autoReconnect: true,\n");
+        out.push_str("  debug: false,\n");
+    }
     out.push_str("  runtimeConfig,\n");
     out.push_str("};\n");
 
