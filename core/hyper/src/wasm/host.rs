@@ -178,6 +178,49 @@ impl WasmHost {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
+    // Register minimal WASI stubs for wasi_snapshot_preview1
+    // These are no-op implementations to satisfy WASM imports
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_get",
+            |_: i32, _: i32| -> i32 { 0 },
+        )
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register environ_get: {e}")))?;
+
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            |_: i32, _: i32| -> i32 { 0 },
+        )
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register environ_sizes_get: {e}")))?;
+
+    linker
+        .func_wrap("wasi_snapshot_preview1", "proc_exit", |_: i32| {})
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register proc_exit: {e}")))?;
+
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "fd_write",
+            |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+        )
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_write: {e}")))?;
+
+    linker
+        .func_wrap("wasi_snapshot_preview1", "fd_close", |_: i32| -> i32 { 0 })
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_close: {e}")))?;
+
+    linker
+        .func_wrap(
+            "wasi_snapshot_preview1",
+            "fd_seek",
+            |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 },
+        )
+        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_seek: {e}")))?;
+
+    // Register actr-specific imports
     linker
         .func_wrap(
             "env",

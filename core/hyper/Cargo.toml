@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 default = []
-wasm-engine = ["dep:wasmtime"]
+wasm-engine = ["dep:wasmtime", "dep:wasmtime-wasi"]
 dynclib-engine = ["dep:libloading"]
 opentelemetry = [
   "actr-config/opentelemetry",
@@ -114,6 +114,7 @@ webrtc-util = { version = "0.12", optional = true }
 
 # WASM Runtime (optional, native-only)
 wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
 
 # Dynclib Runtime (native shared library, optional)
 libloading = { version = "0.8", optional = true }

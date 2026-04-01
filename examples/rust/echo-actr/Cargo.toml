@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "echo-actr"
 version = "0.2.2"
@@ -19,27 +17,27 @@ default = []
 cdylib = ["actr-framework/cdylib"]
 
 [dependencies]
-actr-framework = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0", package = "actr-framework" }
-actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0", package = "actr-protocol" }
-anyhow = "1.0"
-async-trait = "0.1"
-bytes = "1.11"
-prost = "0.14"
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 
 [build-dependencies]
 prost-build = "0.14"
 
 [dev-dependencies]
-actr-pack = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0", package = "actr-pack" }
-actr-hyper = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0", package = "actr-hyper", features = ["wasm-engine"] }
-actr-platform-native = { git = "https://github.com/Actrium/actr.git", rev = "61fe00abe4e86b91f246eef1a03a60e7ebac8ae0", package = "actr-platform-native" }
+actr-pack = { workspace = true }
+actr-hyper = { workspace = true, features = ["wasm-engine"] }
+actr-platform-native = { workspace = true }
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 libloading = "0.8"
 serde_json = "1.0"
 tempfile = "3.23"
-tokio = { version = "1.48", features = ["full"] }
+tokio = { workspace = true }
 
 [lints.clippy]
 collapsible_if = "allow"
@@ -47,11 +45,3 @@ collapsible_else_if = "allow"
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
-
-# When developing inside the actr repo, override git deps with local paths.
-[patch."https://github.com/Actrium/actr.git"]
-actr-framework       = { path = "../../../core/framework" }
-actr-protocol        = { path = "../../../core/protocol" }
-actr-pack            = { path = "../../../core/pack" }
-actr-hyper           = { path = "../../../core/hyper" }
-actr-platform-native = { path = "../../../core/platform-native" }
