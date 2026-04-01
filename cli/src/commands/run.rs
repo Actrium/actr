@@ -33,7 +33,10 @@ impl RunCommand {
         info!("🚀 Starting package execution mode");
 
         // Resolve config path: use provided path or default to ./actr.toml
-        let config_path = self.config.clone().unwrap_or_else(|| PathBuf::from("actr.toml"));
+        let config_path = self
+            .config
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("actr.toml"));
 
         // Check if config file exists
         if !config_path.exists() {
@@ -201,10 +204,7 @@ impl RunCommand {
             "production" => {
                 // Use AIS-based MFR certificate cache.
                 // TrustMode::Production expects the base endpoint without /ais suffix.
-                let base_endpoint = config
-                    .ais_endpoint
-                    .trim_end_matches("/ais")
-                    .to_string();
+                let base_endpoint = config.ais_endpoint.trim_end_matches("/ais").to_string();
                 TrustMode::Production {
                     ais_endpoint: base_endpoint,
                 }

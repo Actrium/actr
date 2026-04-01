@@ -75,9 +75,9 @@ pub fn calculate_service_spec_from_package(
     let mut proto_contents = Vec::new();
 
     for proto_entry in &manifest.proto_files {
-        let mut file = archive
-            .by_name(&proto_entry.path)
-            .map_err(|e| PackError::InvalidPackage(format!("Proto file not found in ZIP: {}", e)))?;
+        let mut file = archive.by_name(&proto_entry.path).map_err(|e| {
+            PackError::InvalidPackage(format!("Proto file not found in ZIP: {}", e))
+        })?;
 
         let mut content = String::new();
         file.read_to_string(&mut content)
@@ -98,7 +98,9 @@ pub fn calculate_service_spec_from_package(
 
     let fingerprint =
         actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-            .map_err(|e| PackError::InvalidPackage(format!("Failed to calculate fingerprint: {}", e)))?;
+            .map_err(|e| {
+                PackError::InvalidPackage(format!("Failed to calculate fingerprint: {}", e))
+            })?;
 
     // 3. Construct ServiceSpec with per-file fingerprints
     let protobufs = proto_contents
