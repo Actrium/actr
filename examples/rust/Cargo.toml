@@ -14,9 +14,9 @@ members = [
     "acl/allowed-client",
     "acl/blocked-client",
     "acl/server",
-    "package-echo/server",
     "package-echo/client",
     "package-echo/client-guest",
+    "echo-actr",
 ]
 resolver = "2"
 

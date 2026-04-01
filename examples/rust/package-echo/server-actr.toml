@@ -1,0 +1,34 @@
+edition = 1
+
+[package]
+path = "/Users/kaito/Project/Actrium/actr-run-worktree/examples/rust/echo-actr/dist/actrium-EchoService-0.2.2-wasm32-unknown-unknown.actr"
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[deployment]
+realm_id = 1001
+trust_mode = "production"
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "package-echo-server"
+
+[webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "acme:package-echo-client-guest:0.1.0"

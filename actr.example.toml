@@ -8,25 +8,25 @@ url = "http://localhost:8081/ais"
 
 [deployment]
 realm_id = 1001
+# Trust mode: "development" or "production"
+# - development: uses self-signed public key from package directory
+# - production: fetches manufacturer public key from AIS/MFR
+trust_mode = "production"
 
 [discovery]
 visible = true
+
+[package]
+# Path to the .actr package file (relative to this config file or absolute)
+path = "dist/service.actr"
 
 [observability]
 filter_level = "info"
 tracing_enabled = false
 tracing_endpoint = "http://localhost:4317"
-tracing_service_name = "package-echo-server"
+tracing_service_name = "actr-service"
 
 [webrtc]
 force_relay = false
 stun_urls = ["stun:localhost:3478"]
 turn_urls = ["turn:localhost:3478"]
-
-# ACL configuration - allow package echo client-guest
-
-[acl]
-
-[[acl.rules]]
-permission = "allow"
-type = "acme:package-echo-client-guest:0.1.0"

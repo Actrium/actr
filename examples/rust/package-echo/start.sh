@@ -29,21 +29,67 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # ── Paths ────────────────────────────────────────────────────────────────
 
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Actrium root is 3 levels up from WORKSPACE_ROOT (examples/rust):
-#   examples/rust → actr/examples → actr → Actrium
-ACTRIUM_DIR="$(cd "$WORKSPACE_ROOT/../../.." && pwd)"
+# Repo root is 2 levels up from WORKSPACE_ROOT (examples/rust)
+ACTR_REPO_DIR="$(cd "$WORKSPACE_ROOT/../.." && pwd)"
+# Actrium root is one level above the repo root
+ACTRIUM_DIR="$(cd "$ACTR_REPO_DIR/.." && pwd)"
 ACTRIX_DIR="$ACTRIUM_DIR/actrix"
-ACTR_REPO_DIR="$ACTRIUM_DIR/actr"
 ACTR_CLI_MANIFEST="$ACTR_REPO_DIR/cli/Cargo.toml"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
-SERVER_DIR="$PACKAGE_ECHO_DIR/server"
 CLIENT_DIR="$PACKAGE_ECHO_DIR/client"
 CLIENT_GUEST_DIR="$PACKAGE_ECHO_DIR/client-guest"
 ECHO_ACTR_DIR="$WORKSPACE_ROOT/echo-actr"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
+
+# ── Check and install jq if needed ───────────────────────────────────────
+if ! command -v jq >/dev/null 2>&1; then
+    echo ""
+    echo -e "${YELLOW}⚠️  jq not found, attempting to install...${NC}"
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS - use Homebrew
+        if command -v brew >/dev/null 2>&1; then
+            echo "Installing jq via Homebrew..."
+            brew install jq
+        else
+            echo -e "${RED}❌ Homebrew not found. Please install jq manually:${NC}"
+            echo "   brew install jq"
+            echo "   or visit: https://jqlang.github.io/jq/download/"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        # Linux - try common package managers
+        if command -v apt-get >/dev/null 2>&1; then
+            echo "Installing jq via apt-get..."
+            sudo apt-get update && sudo apt-get install -y jq
+        elif command -v yum >/dev/null 2>&1; then
+            echo "Installing jq via yum..."
+            sudo yum install -y jq
+        elif command -v dnf >/dev/null 2>&1; then
+            echo "Installing jq via dnf..."
+            sudo dnf install -y jq
+        else
+            echo -e "${RED}❌ No supported package manager found. Please install jq manually.${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}❌ Unsupported OS: $OSTYPE. Please install jq manually.${NC}"
+        exit 1
+    fi
+
+    # Verify installation
+    if command -v jq >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ jq installed successfully: $(jq --version)${NC}"
+    else
+        echo -e "${RED}❌ jq installation failed${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✅ jq found: $(jq --version)${NC}"
+fi
 
 cd "$WORKSPACE_ROOT"
 
@@ -63,14 +109,13 @@ echo "🗑️  Cleaning stale database files..."
 rm -rf "$WORKSPACE_ROOT/database"
 # Remove runtime config files to ensure they're freshly copied from Actr.example.toml,
 # and manifest files from Actr.example.toml
-rm -f "$SERVER_DIR/actr.toml" "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
+rm -f "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml"
 echo -e "${GREEN}✅ Stale database cleaned${NC}"
 
 # Ensure manifest.toml and actr.toml files exist
 echo ""
 echo "🔍 Checking config files..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ensure_actr_toml "$SERVER_DIR"
 ensure_actr_toml "$CLIENT_DIR"
 ensure_actr_toml "$CLIENT_GUEST_DIR"
 # actr.toml = runtime config (from Actr.example.toml)
@@ -151,7 +196,17 @@ rustup target add "$ECHO_ACTR_TARGET" >/dev/null
 cargo build --manifest-path "$ECHO_ACTR_DIR/Cargo.toml" \
     --lib --release --target "$ECHO_ACTR_TARGET" 2>&1 | tail -5
 
-RAW_WASM="$ECHO_ACTR_DIR/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm"
+# Resolve WASM output path: workspace may use a shared target directory
+RAW_WASM=""
+for _candidate in \
+    "$ECHO_ACTR_DIR/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
+    "$(dirname "$ECHO_ACTR_DIR")/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
+    "$ACTR_REPO_DIR/target/examples/${ECHO_ACTR_TARGET}/release/echo_guest.wasm"; do
+    if [ -f "$_candidate" ]; then
+        RAW_WASM="$_candidate"
+        break
+    fi
+done
 if [ ! -f "$RAW_WASM" ]; then
     echo -e "${RED}❌ WASM compilation failed${NC}"
     exit 1
@@ -220,7 +275,8 @@ CLIENT_GUEST_DIST_DIR="$CLIENT_GUEST_DIR/dist"
 mkdir -p "$CLIENT_GUEST_DIST_DIR"
 
 # Build the cdylib (runs in workspace root, so target is at workspace level)
-WORKSPACE_TARGET_DIR="$WORKSPACE_ROOT/target"
+# Use workspace-level target dir from .cargo/config.toml (target-dir = "../../target/examples")
+WORKSPACE_TARGET_DIR="$ACTR_REPO_DIR/target/examples"
 if ! cargo build --manifest-path "$CLIENT_GUEST_DIR/Cargo.toml" 2>&1; then
     echo -e "${RED}❌ Failed to build client-guest cdylib${NC}"
     exit 1
@@ -259,14 +315,7 @@ if [ ! -f "$CLIENT_GUEST_PACKAGE" ]; then
 fi
 
 # Extract public key from dev-key.json for client-guest
-python3 - <<'PY' "$CLIENT_GUEST_DEV_KEY" "$CLIENT_GUEST_PUBLIC_KEY"
-import json, sys
-key_path, out_path = sys.argv[1:]
-with open(key_path) as f:
-    key = json.load(f)
-with open(out_path, "w") as f:
-    json.dump({"public_key": key["public_key"]}, f)
-PY
+jq '{public_key: .public_key}' "$CLIENT_GUEST_DEV_KEY" > "$CLIENT_GUEST_PUBLIC_KEY"
 
 echo -e "${GREEN}✅ client-guest package ready: $(du -h "$CLIENT_GUEST_PACKAGE" | cut -f1)${NC}"
 
@@ -387,62 +436,38 @@ echo ""
 echo "🔑 Setting up realms in actrix..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Wait until nonce auth storage is initialized, then force a verified AIS key load.
-MAX_KEY_WAIT=30
-KEY_COUNTER=0
+# Poll until the AIS signing key is ready.
+# Strategy: call /ais/rotate-key each iteration until /ais/current-key returns success.
+# The signer gRPC service may take a few seconds to initialize after actrix starts.
 NONCE_DB="$WORKSPACE_ROOT/database/nonce.db"
-AIS_KEY_DB="$WORKSPACE_ROOT/database/ais_keys.db"
-SIGNER_KEY_DB="$WORKSPACE_ROOT/database/signer_keys.db"
-echo "Warming up actrix AIS signing key..."
+MAX_KEY_WAIT=60
+KEY_COUNTER=0
+echo "Warming up actrix AIS signing key (up to ${MAX_KEY_WAIT}s)..."
+jq_status() {
+    # Extract .status from JSON, returning "missing" on any error.
+    local json="$1"
+    if [ -z "$json" ]; then echo "missing"; return; fi
+    echo "$json" | jq -r '.status // "missing"' 2>/dev/null || echo "missing"
+}
+
 while [ $KEY_COUNTER -lt $MAX_KEY_WAIT ]; do
-    NONCE_READY=0
-    if [ -f "$NONCE_DB" ] && sqlite3 "$NONCE_DB" ".tables" 2>/dev/null | grep -q "nonce_entries"; then
-        NONCE_READY=1
+    # Check if /ais/current-key already has a valid key
+    CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+    if [ "$(jq_status "$CURRENT_KEY_JSON")" = "success" ]; then
+        echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
+        break
     fi
 
-    if [ $NONCE_READY -eq 1 ]; then
-        CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
-        CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
-import json, sys
-raw = sys.argv[1]
-if not raw:
-    print("missing")
-    raise SystemExit(0)
-try:
-    data = json.loads(raw)
-except Exception:
-    print("invalid")
-    raise SystemExit(0)
-print(data.get("status", "missing"))
-PY
-)
-
-        if [ "$CURRENT_KEY_STATUS" != "success" ]; then
-            curl -sf -X POST "http://localhost:8081/ais/rotate-key" >/dev/null 2>&1 || true
+    # Nonce storage ready? Trigger rotation to accelerate key initialization.
+    if [ -f "$NONCE_DB" ] && sqlite3 "$NONCE_DB" ".tables" 2>/dev/null | grep -q "nonce_entries"; then
+        ROTATE_RESP=$(curl -sf -X POST "http://localhost:8081/ais/rotate-key" 2>/dev/null || true)
+        if [ "$(jq_status "$ROTATE_RESP")" = "success" ]; then
+            # Re-check immediately after successful rotation
             CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
-            CURRENT_KEY_STATUS=$(python3 - <<'PY' "$CURRENT_KEY_JSON"
-import json, sys
-raw = sys.argv[1]
-if not raw:
-    print("missing")
-    raise SystemExit(0)
-try:
-    data = json.loads(raw)
-except Exception:
-    print("invalid")
-    raise SystemExit(0)
-print(data.get("status", "missing"))
-PY
-)
-        fi
-
-        if [ "$CURRENT_KEY_STATUS" = "success" ] \
-            && [ -f "$AIS_KEY_DB" ] \
-            && [ -f "$SIGNER_KEY_DB" ] \
-            && [ "$(sqlite3 "$AIS_KEY_DB" 'select count(*) from current_key;' 2>/dev/null || echo 0)" -ge 1 ] \
-            && [ "$(sqlite3 "$SIGNER_KEY_DB" 'select count(*) from keys;' 2>/dev/null || echo 0)" -ge 1 ]; then
-            echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
-            break
+            if [ "$(jq_status "$CURRENT_KEY_JSON")" = "success" ]; then
+                echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
+                break
+            fi
         fi
     fi
 
@@ -451,12 +476,12 @@ PY
 done
 if [ $KEY_COUNTER -eq $MAX_KEY_WAIT ]; then
     echo -e "${RED}❌ AIS key warmup timed out after ${MAX_KEY_WAIT}s${NC}"
-    grep -aEn "Initial KS key load deferred|Background key rotation failed|GenerateSigningKey|Failed to get key record|Authentication failed" "$LOG_DIR/actrix.log" || true
+    grep -aEn "GenerateSigningKey|Authentication failed" "$LOG_DIR/actrix.log" || true
     exit 1
 fi
 
 # Extract realm IDs from actr.toml (runtime config) files
-SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+SERVER_REALM=1001
 CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/actr.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 
 # Insert realms directly into SQLite (same approach as actrix fullstack tests)
@@ -484,7 +509,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 NOW=$(date +%s)
 EXPIRES_AT=$((NOW + 86400 * 365))
-MFR_PUBKEY=$(sed -n 's/^[[:space:]]*"public_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PUBLIC_KEY_PATH")
+MFR_PUBKEY=$(jq -r '.public_key' "$PUBLIC_KEY_PATH")
 
 if [ -z "$MFR_PUBKEY" ]; then
     echo -e "${RED}❌ Failed to extract public_key from $PUBLIC_KEY_PATH${NC}"
@@ -657,25 +682,66 @@ echo ""
 echo "🔨 Building host binaries..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if ! cargo build --bin package-echo-server --bin package-echo-client 2>&1; then
+if ! cargo build --bin package-echo-client 2>&1; then
     echo -e "${RED}❌ Failed to build binaries${NC}"
     exit 1
 fi
 
 echo -e "${GREEN}✅ Binaries built successfully${NC}"
 
-# ── Step 4: Start package-backed echo server ─────────────────────────────
+# ── Step 4: Start package-backed echo server via actr run ─────────────────
 
 echo ""
-echo "🚀 Starting package-echo-server..."
+echo "🚀 Starting package-echo-server via actr run..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-ECHO_ACTR_VERSION="$ECHO_ACTR_VERSION" \
-ACTR_PACKAGE_PATH="$ACTR_PACKAGE" \
-TRUST_MODE="production" \
-AIS_ENDPOINT="http://localhost:8081/ais" \
+# Generate server actr.toml with the actual package path and trust mode
+SERVER_ACTR_CONFIG="$PACKAGE_ECHO_DIR/server-actr.toml"
+cat > "$SERVER_ACTR_CONFIG" << TOML
+edition = 1
+
+[package]
+path = "$ACTR_PACKAGE"
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+
+[deployment]
+realm_id = 1001
+trust_mode = "production"
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "package-echo-server"
+
+[webrtc]
+force_relay = false
+stun_urls = ["stun:localhost:3478"]
+turn_urls = ["turn:localhost:3478"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "acme:package-echo-client-guest:0.1.0"
+TOML
+
+ACTR_CLI_BIN="$ACTR_REPO_DIR/target/debug/actr"
+if [ ! -x "$ACTR_CLI_BIN" ]; then
+    echo "Building actr CLI..."
+    cargo build --manifest-path "$ACTR_CLI_MANIFEST" --bin actr 2>&1 | tail -3
+fi
+
 RUST_LOG="${RUST_LOG:-info}" \
-cargo run --bin package-echo-server > "$LOG_DIR/package-echo-server.log" 2>&1 &
+"$ACTR_CLI_BIN" run -c "$SERVER_ACTR_CONFIG" > "$LOG_DIR/package-echo-server.log" 2>&1 &
 SERVER_PID=$!
 
 echo "Server started (PID: $SERVER_PID)"
