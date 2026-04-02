@@ -10,7 +10,7 @@ license = "Apache-2.0"
 exports = ["proto/echo.proto"]
 
 [binary]
-path = "target/aarch64-apple-darwin/release/libecho_guest.dylib"
+path = "../../../target/examples/aarch64-apple-darwin/release/libecho_guest.dylib"
 target = "aarch64-apple-darwin"
 
 [build]

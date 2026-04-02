@@ -1,7 +1,5 @@
 use crate::commands::Command;
-use crate::commands::runtime_state::{
-    RuntimeStateStore, absolutize_from_cwd, resolve_hyper_dir, select_latest_record,
-};
+use crate::commands::runtime_state::{RuntimeStateStore, absolutize_from_cwd, resolve_hyper_dir};
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
 use clap::Args;
@@ -12,9 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[derive(Args, Debug)]
 pub struct LogsCommand {
-    /// Target ActrId
-    #[arg(long = "actr-id", value_name = "ID")]
-    pub actr_id: String,
+    /// WID (or unique prefix, min 8 chars) of the runtime
+    #[arg(value_name = "WID")]
+    pub wid: String,
 
     /// Runtime configuration file
     #[arg(short = 'c', long = "config", value_name = "FILE")]
@@ -34,13 +32,7 @@ impl Command for LogsCommand {
     async fn execute(&self) -> Result<()> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
-        let entries = store.records_for_actr_id(&self.actr_id).await?;
-        let Some(entry) = select_latest_record(&entries, true) else {
-            return Err(ActrCliError::command_error(format!(
-                "No detached runtime record found for ActrId {}",
-                self.actr_id
-            )));
-        };
+        let entry = store.resolve_wid_prefix(&self.wid).await?;
 
         let log_path = absolutize_log_path(&entry.record.log_path)?;
         if !log_path.exists() {

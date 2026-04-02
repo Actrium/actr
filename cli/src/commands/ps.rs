@@ -39,22 +39,21 @@ impl Command for PsCommand {
 
         let mut table = Table::new();
         table.set_header(vec![
+            Cell::new("WID").add_attribute(Attribute::Bold),
             Cell::new("ACTR_ID").add_attribute(Attribute::Bold),
             Cell::new("PID").add_attribute(Attribute::Bold),
             Cell::new("STATUS").add_attribute(Attribute::Bold),
             Cell::new("STARTED_AT").add_attribute(Attribute::Bold),
-            Cell::new("LOG").add_attribute(Attribute::Bold),
         ]);
 
         for entry in entries {
             let started_at = entry.started_at_display();
-            let log_path = entry.record.log_path.display().to_string();
             table.add_row(vec![
-                Cell::new(entry.record.actr_id),
+                Cell::new(entry.wid_short()),
+                Cell::new(&entry.record.actr_id),
                 Cell::new(entry.record.pid),
                 Cell::new(entry.status.as_str()),
                 Cell::new(started_at),
-                Cell::new(log_path),
             ]);
         }
 
