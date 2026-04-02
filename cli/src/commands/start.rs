@@ -45,11 +45,12 @@ impl Command for StartCommand {
 
         RunCommand {
             config: Some(config_path),
-            web: false,
-            port: None,
+            hyper_dir: self.hyper_dir.clone(),
             detach: true,
             internal_detached_child: false,
             internal_wid: Some(entry.record.wid.clone()),
+            web: false,
+            port: None,
         }
         .execute()
         .await

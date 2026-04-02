@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-04-02T11:51:43.659219+00:00",
+  "created_at": "2026-04-02T12:06:54.696128+00:00",
   "note": "Development signing key, for TrustMode::Development only, not for production use",
-  "private_key": "uDC343zHoIKfhTnNQtt4XgKe6M+tgUiCT5fYs6VTV+M=",
-  "public_key": "UPuTA6zLffmZd7YZMxyfT7OoVq/YjPTyilbZv4RTR2c="
+  "private_key": "7fB1uafmMUAHH++TQ+TLPvg6isnJEuA6DVubcB62uNY=",
+  "public_key": "2Oz7CHdxSqg0xOfTi9D9ObZEItdO1yDyXQ5oWhkYpr0="
 }
