@@ -37,6 +37,10 @@ pub struct CliConfig {
     /// Network settings for CLI service discovery and connectivity checks
     #[serde(default)]
     pub network: NetworkConfig,
+
+    /// Storage settings
+    #[serde(default)]
+    pub storage: StorageConfig,
 }
 
 impl CliConfig {
@@ -227,6 +231,15 @@ pub struct NetworkConfig {
     ///
     /// Only required if target realm has secret validation enabled
     pub realm_secret: Option<String>,
+}
+
+/// Storage settings
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Global hyper data directory path (supports ~ expansion).
+    /// When set, `actr ps/stop/logs` will use this directory from any working directory.
+    pub hyper_data_dir: Option<String>,
 }
 
 #[cfg(test)]

@@ -5,9 +5,11 @@
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
 use super::schema::{
-    CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, NetworkConfig, UiConfig,
+    CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, NetworkConfig, StorageConfig,
+    UiConfig,
 };
 use anyhow::Result;
+use std::path::PathBuf;
 
 /// Fully-resolved CLI configuration with all defaults applied.
 ///
@@ -22,6 +24,7 @@ pub struct EffectiveCliConfig {
     pub cache: EffectiveCacheConfig,
     pub ui: EffectiveUiConfig,
     pub network: EffectiveNetworkConfig,
+    pub storage: EffectiveStorageConfig,
 }
 
 /// Resolved init settings
@@ -72,6 +75,12 @@ pub struct EffectiveNetworkConfig {
 
     /// Realm secret (optional)
     pub realm_secret: Option<String>,
+}
+
+/// Resolved storage settings
+#[derive(Debug, Clone)]
+pub struct EffectiveStorageConfig {
+    pub hyper_data_dir: PathBuf,
 }
 
 impl Default for EffectiveCliConfig {
@@ -130,6 +139,9 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
                 realm_secret: o.network.realm_secret.or(b.network.realm_secret),
             },
             install: InstallConfig {},
+            storage: StorageConfig {
+                hyper_data_dir: o.storage.hyper_data_dir.or(b.storage.hyper_data_dir),
+            },
         },
     }
 }
@@ -171,7 +183,23 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
             realm_id: cfg.network.realm_id.or(Some(1)),
             realm_secret: cfg.network.realm_secret,
         },
+        storage: EffectiveStorageConfig {
+            hyper_data_dir: cfg
+                .storage
+                .hyper_data_dir
+                .map(expand_tilde)
+                .unwrap_or_else(|| expand_tilde("~/.actr/hyper".to_string())),
+        },
     }
+}
+
+fn expand_tilde(path: String) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    PathBuf::from(path)
 }
 
 #[cfg(test)]
@@ -193,6 +221,10 @@ mod tests {
         assert!(!effective.ui.verbose);
         assert_eq!(effective.ui.color, "auto");
         assert!(!effective.ui.non_interactive);
+        assert_eq!(
+            effective.storage.hyper_data_dir,
+            expand_tilde("~/.actr/hyper".to_string())
+        );
     }
 
     #[test]

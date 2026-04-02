@@ -1,13 +1,16 @@
+use crate::commands::process::is_process_alive;
 use crate::error::{ActrCliError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const RUNTIME_SCHEMA_VERSION: u32 = 1;
+const RUNTIME_SCHEMA_VERSION: u32 = 2;
+const WID_SHORT_CHARS: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RuntimeRecord {
+pub struct RuntimeRecord {
     pub schema_version: u32,
+    pub wid: String,
     pub actr_id: String,
     pub pid: u32,
     pub config_path: PathBuf,
@@ -17,7 +20,8 @@ pub(crate) struct RuntimeRecord {
 }
 
 impl RuntimeRecord {
-    pub(crate) fn new(
+    pub fn new(
+        wid: String,
         actr_id: String,
         pid: u32,
         config_path: PathBuf,
@@ -26,6 +30,7 @@ impl RuntimeRecord {
     ) -> Self {
         Self {
             schema_version: RUNTIME_SCHEMA_VERSION,
+            wid,
             actr_id,
             pid,
             config_path,
@@ -36,8 +41,52 @@ impl RuntimeRecord {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RawRuntimeRecord {
+    schema_version: u32,
+    wid: Option<String>,
+    actr_id: String,
+    pid: u32,
+    config_path: PathBuf,
+    log_path: PathBuf,
+    started_at: DateTime<Utc>,
+    stopped_at: Option<DateTime<Utc>>,
+}
+
+impl RawRuntimeRecord {
+    fn into_runtime_record(self, path: &Path, run_dir: &Path) -> Result<RuntimeRecord> {
+        if self.schema_version != RUNTIME_SCHEMA_VERSION {
+            return Err(ActrCliError::command_error(format!(
+                "Incompatible runtime record schema v{} in {}.\n\
+                 Delete all files in {} and re-run `actr run -d`.",
+                self.schema_version,
+                path.display(),
+                run_dir.display()
+            )));
+        }
+
+        let wid = self.wid.ok_or_else(|| {
+            ActrCliError::command_error(format!(
+                "Failed to parse runtime record {}: missing field `wid`",
+                path.display()
+            ))
+        })?;
+
+        Ok(RuntimeRecord {
+            schema_version: self.schema_version,
+            wid,
+            actr_id: self.actr_id,
+            pid: self.pid,
+            config_path: self.config_path,
+            log_path: self.log_path,
+            started_at: self.started_at,
+            stopped_at: self.stopped_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeStatus {
+pub enum RuntimeStatus {
     Running,
     Exited,
     Stale,
@@ -54,7 +103,7 @@ impl RuntimeStatus {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeRecordEntry {
+pub struct RuntimeRecordEntry {
     pub record: RuntimeRecord,
     pub status: RuntimeStatus,
 }
@@ -65,14 +114,18 @@ impl RuntimeRecordEntry {
             .started_at
             .to_rfc3339_opts(SecondsFormat::Secs, true)
     }
+
+    pub(crate) fn wid_short(&self) -> &str {
+        shorten_wid(&self.record.wid)
+    }
 }
 
-pub(crate) struct RuntimeStateStore {
+pub struct RuntimeStateStore {
     hyper_dir: PathBuf,
 }
 
 impl RuntimeStateStore {
-    pub(crate) fn new(hyper_dir: PathBuf) -> Self {
+    pub fn new(hyper_dir: PathBuf) -> Self {
         Self { hyper_dir }
     }
 
@@ -80,25 +133,42 @@ impl RuntimeStateStore {
         &self.hyper_dir
     }
 
-    pub(crate) fn run_dir(&self) -> PathBuf {
+    pub fn run_dir(&self) -> PathBuf {
         self.hyper_dir.join("run")
     }
 
-    pub(crate) async fn ensure_layout(&self) -> Result<()> {
+    pub async fn ensure_layout(&self) -> Result<()> {
         tokio::fs::create_dir_all(self.run_dir()).await?;
         tokio::fs::create_dir_all(self.hyper_dir.join("logs")).await?;
         Ok(())
     }
 
-    pub(crate) async fn write_record(&self, record: &RuntimeRecord) -> Result<()> {
+    pub(crate) fn record_path_for_wid(&self, wid: &str) -> PathBuf {
+        self.run_dir().join(format!("{wid}.json"))
+    }
+
+    pub async fn write_record(&self, record: &RuntimeRecord) -> Result<()> {
         self.ensure_layout().await?;
         let content = serde_json::to_vec_pretty(record)?;
-        tokio::fs::write(self.record_path_for_pid(record.pid), content).await?;
+        tokio::fs::write(self.record_path_for_wid(&record.wid), content).await?;
         Ok(())
     }
 
-    pub(crate) async fn mark_stopped(&self, pid: u32, stopped_at: DateTime<Utc>) -> Result<()> {
-        let path = self.record_path_for_pid(pid);
+    pub async fn read_record_by_wid(&self, wid: &str) -> Result<Option<RuntimeRecord>> {
+        self.read_record_from_path(&self.record_path_for_wid(wid))
+            .await
+    }
+
+    pub(crate) async fn delete_record_by_wid(&self, wid: &str) -> Result<()> {
+        let path = self.record_path_for_wid(wid);
+        if path.exists() {
+            tokio::fs::remove_file(&path).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn mark_stopped_by_wid(&self, wid: &str, stopped_at: DateTime<Utc>) -> Result<()> {
+        let path = self.record_path_for_wid(wid);
         let Some(mut record) = self.read_record_from_path(&path).await? else {
             return Ok(());
         };
@@ -110,7 +180,7 @@ impl RuntimeStateStore {
         Ok(())
     }
 
-    pub(crate) async fn list_records(&self) -> Result<Vec<RuntimeRecordEntry>> {
+    pub async fn list_records(&self) -> Result<Vec<RuntimeRecordEntry>> {
         let run_dir = self.run_dir();
         let mut entries = Vec::new();
 
@@ -138,17 +208,33 @@ impl RuntimeStateStore {
         Ok(entries)
     }
 
-    pub(crate) async fn records_for_actr_id(
-        &self,
-        actr_id: &str,
-    ) -> Result<Vec<RuntimeRecordEntry>> {
-        let mut entries = self.list_records().await?;
-        entries.retain(|entry| entry.record.actr_id == actr_id);
-        Ok(entries)
-    }
-
-    pub(crate) fn record_path_for_pid(&self, pid: u32) -> PathBuf {
-        self.run_dir().join(format!("{pid}.json"))
+    pub async fn resolve_wid_prefix(&self, prefix: &str) -> Result<RuntimeRecordEntry> {
+        if prefix.len() < 8 {
+            return Err(ActrCliError::command_error(
+                "WID prefix must be at least 8 characters".to_string(),
+            ));
+        }
+        let all = self.list_records().await?;
+        let matches: Vec<_> = all
+            .into_iter()
+            .filter(|e| e.record.wid.starts_with(prefix))
+            .collect();
+        match matches.len() {
+            0 => Err(ActrCliError::command_error(format!(
+                "No runtime record found for WID prefix '{prefix}'"
+            ))),
+            1 => Ok(matches.into_iter().next().unwrap()),
+            _ => {
+                let candidates = matches
+                    .iter()
+                    .map(|e| format!("  {} ({})", shorten_wid(&e.record.wid), e.record.actr_id))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(ActrCliError::command_error(format!(
+                    "Ambiguous WID prefix '{prefix}', matches:\n{candidates}"
+                )))
+            }
+        }
     }
 
     async fn read_record_from_path(&self, path: &Path) -> Result<Option<RuntimeRecord>> {
@@ -157,23 +243,14 @@ impl RuntimeStateStore {
         }
 
         let content = tokio::fs::read(path).await?;
-        let record: RuntimeRecord = serde_json::from_slice(&content).map_err(|error| {
+        let raw: RawRuntimeRecord = serde_json::from_slice(&content).map_err(|error| {
             ActrCliError::command_error(format!(
                 "Failed to parse runtime record {}: {}",
                 path.display(),
                 error
             ))
         })?;
-
-        if record.schema_version != RUNTIME_SCHEMA_VERSION {
-            return Err(ActrCliError::command_error(format!(
-                "Unsupported runtime record schema_version {} in {}",
-                record.schema_version,
-                path.display()
-            )));
-        }
-
-        Ok(Some(record))
+        Ok(Some(raw.into_runtime_record(path, &self.run_dir())?))
     }
 }
 
@@ -188,40 +265,25 @@ pub(crate) fn resolve_hyper_dir(
     }
 
     if let Some(config_path) = config_path {
-        return hyper_dir_from_config_path(config_path);
+        if let Some(dir) = hyper_dir_from_config_path(config_path)? {
+            return Ok(dir);
+        }
     }
 
-    let default_config = cwd.join("actr.toml");
-    if default_config.exists() {
-        return hyper_dir_from_config_path(&default_config);
-    }
-
-    Ok(cwd.join(".hyper"))
+    let effective = crate::config::resolver::resolve_effective_cli_config()
+        .map_err(|e| ActrCliError::command_error(format!("Failed to load CLI config: {e}")))?;
+    Ok(effective.storage.hyper_data_dir)
 }
 
 pub(crate) fn absolutize_from_cwd(path: &Path) -> Result<PathBuf> {
     Ok(absolutize_path(&std::env::current_dir()?, path))
 }
 
-pub(crate) fn log_path_for_pid(hyper_dir: &Path, pid: u32) -> PathBuf {
-    hyper_dir.join("logs").join(format!("actr-{pid}.log"))
+pub(crate) fn log_path_for_wid(hyper_dir: &Path, wid: &str) -> PathBuf {
+    hyper_dir.join("logs").join(format!("actr-{wid}.log"))
 }
 
-pub(crate) fn select_latest_record(
-    entries: &[RuntimeRecordEntry],
-    prefer_running: bool,
-) -> Option<&RuntimeRecordEntry> {
-    if prefer_running {
-        entries
-            .iter()
-            .find(|entry| entry.status == RuntimeStatus::Running)
-            .or_else(|| entries.first())
-    } else {
-        entries.first()
-    }
-}
-
-fn hyper_dir_from_config_path(config_path: &Path) -> Result<PathBuf> {
+fn hyper_dir_from_config_path(config_path: &Path) -> Result<Option<PathBuf>> {
     let config_path = absolutize_from_cwd(config_path)?;
     if !config_path.exists() {
         return Err(ActrCliError::command_error(format!(
@@ -242,10 +304,10 @@ fn hyper_dir_from_config_path(config_path: &Path) -> Result<PathBuf> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    Ok(match raw.storage.hyper_data_dir {
-        Some(path) => absolutize_path(&base_dir, &path),
-        None => base_dir.join(".hyper"),
-    })
+    Ok(raw
+        .storage
+        .hyper_data_dir
+        .map(|path| absolutize_path(&base_dir, &path)))
 }
 
 fn absolutize_path(base_dir: &Path, path: &Path) -> PathBuf {
@@ -266,25 +328,11 @@ fn runtime_status(record: &RuntimeRecord) -> RuntimeStatus {
     }
 }
 
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    use nix::errno::Errno;
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-
-    match kill(Pid::from_raw(pid), None) {
-        Ok(()) => true,
-        Err(Errno::EPERM) => true,
-        Err(Errno::ESRCH) => false,
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    false
+fn shorten_wid(wid: &str) -> &str {
+    let end = wid
+        .char_indices()
+        .nth(WID_SHORT_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(wid.len());
+    &wid[..end]
 }

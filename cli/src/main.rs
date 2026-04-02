@@ -21,7 +21,8 @@ use actr_cli::commands::ops as ops_cmd;
 use actr_cli::commands::pkg as pkg_cmd;
 use actr_cli::commands::{
     CheckCommand, Command as LegacyCommand, ConfigCommand, DocCommand, GenCommand, InitCommand,
-    InstallCommand, LogsCommand, PsCommand, RunCommand, StopCommand,
+    InstallCommand, LogsCommand, PsCommand, RestartCommand, RmCommand, RunCommand, StartCommand,
+    StopCommand,
 };
 
 /// ACTR-CLI - Actor-RTC Command Line Tool
@@ -67,14 +68,23 @@ enum Commands {
     /// Run a packaged workload
     Run(RunCommand),
 
+    /// Start a stopped detached runtime instance
+    Start(StartCommand),
+
     /// List detached runtime instances
     Ps(PsCommand),
 
     /// Show logs for a detached runtime instance
     Logs(LogsCommand),
 
+    /// Remove a detached runtime instance record
+    Rm(RmCommand),
+
     /// Stop a detached runtime instance
     Stop(StopCommand),
+
+    /// Restart a detached runtime instance
+    Restart(RestartCommand),
 
     /// Package management (build, sign, verify, keygen)
     Pkg(pkg_cmd::PkgArgs),
@@ -131,6 +141,32 @@ async fn main() -> Result<()> {
     if matches!(&cli.command, Some(Commands::Ops(_))) {
         if let Some(Commands::Ops(args)) = cli.command {
             return ops_cmd::execute(args).await;
+        }
+    }
+
+    if matches!(
+        &cli.command,
+        Some(
+            Commands::Run(_)
+                | Commands::Start(_)
+                | Commands::Restart(_)
+                | Commands::Stop(_)
+                | Commands::Ps(_)
+                | Commands::Rm(_)
+                | Commands::Logs(_)
+        )
+    ) {
+        if let Some(cmd) = cli.command {
+            return match cmd {
+                Commands::Run(command) => command.execute().await.map_err(Into::into),
+                Commands::Start(command) => command.execute().await.map_err(Into::into),
+                Commands::Restart(command) => command.execute().await.map_err(Into::into),
+                Commands::Stop(command) => command.execute().await.map_err(Into::into),
+                Commands::Ps(command) => command.execute().await.map_err(Into::into),
+                Commands::Rm(command) => command.execute().await.map_err(Into::into),
+                Commands::Logs(command) => command.execute().await.map_err(Into::into),
+                _ => unreachable!(),
+            };
         }
     }
 
@@ -295,30 +331,15 @@ async fn execute_command(
             command.execute(context).await
         }
         Commands::Build(_) => unreachable!("build is handled before build_container"),
-        Commands::Run(cmd) => match cmd.execute().await {
-            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
-                "Script executed".to_string(),
-            )),
-            Err(e) => Err(e.into()),
-        },
-        Commands::Ps(cmd) => match cmd.execute().await {
-            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
-                "Help displayed".to_string(),
-            )),
-            Err(e) => Err(e.into()),
-        },
-        Commands::Logs(cmd) => match cmd.execute().await {
-            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
-                "Help displayed".to_string(),
-            )),
-            Err(e) => Err(e.into()),
-        },
-        Commands::Stop(cmd) => match cmd.execute().await {
-            Ok(_) => Ok(actr_cli::core::CommandResult::Success(
-                "Help displayed".to_string(),
-            )),
-            Err(e) => Err(e.into()),
-        },
+        Commands::Run(_)
+        | Commands::Start(_)
+        | Commands::Restart(_)
+        | Commands::Stop(_)
+        | Commands::Ps(_)
+        | Commands::Rm(_)
+        | Commands::Logs(_) => {
+            unreachable!("runtime commands are handled before build_container")
+        }
         Commands::Deps(args) => deps_cmd::execute_with_context(args, context).await,
         Commands::Pkg(_) => unreachable!("pkg is handled before build_container"),
         Commands::Ops(_) => unreachable!("ops is handled before build_container"),

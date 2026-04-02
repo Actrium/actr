@@ -2,7 +2,7 @@
 
 use crate::commands::Command;
 use crate::commands::runtime_state::{
-    RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_pid, resolve_hyper_dir,
+    RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_wid, resolve_hyper_dir,
 };
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
@@ -25,6 +25,10 @@ pub struct RunCommand {
     /// Internal flag used when the detached child re-executes this command.
     #[arg(long = "internal-detached-child", hide = true)]
     pub internal_detached_child: bool,
+
+    /// Internal: WID passed from parent to detached child (or from start/restart for reuse).
+    #[arg(long = "internal-wid", hide = true)]
+    pub internal_wid: Option<String>,
 }
 
 #[async_trait]
@@ -129,13 +133,8 @@ impl RunCommand {
             info!("📝 Detached runtime state recorded");
         }
 
-        // 11. Choose run mode based on execution mode
-        if detached_runtime.is_some() {
-            self.run_foreground(actr_ref, detached_runtime.as_ref())
-                .await?;
-        } else {
-            self.run_foreground(actr_ref, None).await?;
-        }
+        self.run_foreground(actr_ref, detached_runtime.as_ref())
+            .await?;
 
         Ok(())
     }
@@ -156,7 +155,7 @@ impl RunCommand {
         if let Some(runtime) = detached_runtime {
             runtime
                 .runtime_store
-                .mark_stopped(runtime.pid, Utc::now())
+                .mark_stopped_by_wid(&runtime.wid, Utc::now())
                 .await?;
         }
 
@@ -350,6 +349,10 @@ impl RunCommand {
         use std::fs::OpenOptions;
         use std::os::unix::io::AsRawFd;
 
+        let wid = self.internal_wid.clone().ok_or_else(|| {
+            ActrCliError::command_error("--internal-wid is required for detached child".to_string())
+        })?;
+
         let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
         let runtime_store = RuntimeStateStore::new(hyper_dir);
         runtime_store.ensure_layout().await?;
@@ -358,7 +361,7 @@ impl RunCommand {
         })?;
 
         let pid = std::process::id();
-        let log_file = log_path_for_pid(runtime_store.hyper_dir(), pid);
+        let log_file = log_path_for_wid(runtime_store.hyper_dir(), &wid);
         let log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -378,6 +381,7 @@ impl RunCommand {
             config_path: config_path.to_path_buf(),
             log_file,
             pid,
+            wid,
         })
     }
 
@@ -394,22 +398,50 @@ impl RunCommand {
         actr_ref: &actr_hyper::ActrRef,
     ) -> Result<()> {
         let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
-        let record = RuntimeRecord::new(
-            actr_id_str,
-            detached_runtime.pid,
-            detached_runtime.config_path.clone(),
-            detached_runtime.log_file.clone(),
-            Utc::now(),
-        );
+
+        // Upsert: if a record already exists for this wid (start/restart scenario),
+        // update pid/started_at and clear stopped_at while preserving wid and actr_id.
+        let existing = detached_runtime
+            .runtime_store
+            .read_record_by_wid(&detached_runtime.wid)
+            .await?;
+
+        let record = if let Some(mut r) = existing {
+            r.pid = detached_runtime.pid;
+            r.started_at = Utc::now();
+            r.stopped_at = None;
+            r.config_path = detached_runtime.config_path.clone();
+            r.log_path = detached_runtime.log_file.clone();
+            r
+        } else {
+            RuntimeRecord::new(
+                detached_runtime.wid.clone(),
+                actr_id_str,
+                detached_runtime.pid,
+                detached_runtime.config_path.clone(),
+                detached_runtime.log_file.clone(),
+                Utc::now(),
+            )
+        };
+
         detached_runtime.runtime_store.write_record(&record).await
     }
 
     async fn spawn_detached_child(&self, config_path: &Path) -> Result<()> {
         #[cfg(unix)]
         {
+            use uuid::Uuid;
+
             let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
             let runtime_store = RuntimeStateStore::new(hyper_dir);
             runtime_store.ensure_layout().await?;
+
+            // Generate a new wid in the parent; pass it to the child via --internal-wid.
+            // For start/restart, the caller sets self.internal_wid to the existing wid.
+            let wid = self
+                .internal_wid
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
 
             let current_exe = std::env::current_exe().map_err(|e| {
                 ActrCliError::command_error(format!(
@@ -424,6 +456,8 @@ impl RunCommand {
                 .arg("--config")
                 .arg(config_path)
                 .arg("--internal-detached-child")
+                .arg("--internal-wid")
+                .arg(&wid)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -436,14 +470,14 @@ impl RunCommand {
             })?;
 
             let pid = child.id();
-            let log_file = log_path_for_pid(runtime_store.hyper_dir(), pid);
-            println!("Detached child process launched");
-            println!("   PID: {}", pid);
-            println!("   Logs: {}", log_file.display());
+            // The child runs as a daemon; we intentionally do not wait on it.
+            std::mem::forget(child);
+
+            println!("Detached runtime started");
+            println!("   WID:  {}", &wid[..12]);
+            println!("   PID:  {}", pid);
             println!();
-            println!("The workload is now initializing in the background child process.");
-            println!("Initialization is only complete after the child writes its runtime record.");
-            println!("Use `tail -f {}` to follow startup.", log_file.display());
+            println!("Follow logs: actr logs {} -f", &wid[..12]);
             return Ok(());
         }
 
@@ -462,4 +496,5 @@ struct DetachedRuntimeContext {
     config_path: PathBuf,
     log_file: PathBuf,
     pid: u32,
+    wid: String,
 }

@@ -18,9 +18,16 @@ pub mod logs;
 pub mod ops;
 pub(crate) mod package_build;
 pub mod pkg;
+pub(crate) mod process;
 pub mod ps;
+pub mod restart;
+pub mod rm;
 pub mod run;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod runtime_state;
+#[cfg(not(any(test, feature = "test-utils")))]
 pub(crate) mod runtime_state;
+pub mod start;
 pub mod stop;
 
 use crate::error::Result;
@@ -57,5 +64,8 @@ pub use init::InitCommand;
 pub use install::InstallCommand;
 pub use logs::LogsCommand;
 pub use ps::PsCommand;
+pub use restart::RestartCommand;
+pub use rm::RmCommand;
 pub use run::RunCommand;
+pub use start::StartCommand;
 pub use stop::StopCommand;
