@@ -61,7 +61,7 @@ pub struct RuntimeRawConfig {
     #[serde(default)]
     pub observability: RawObservabilityConfig,
 
-    /// Storage constraints (hyper dir, mailbox etc.)
+    /// Storage constraints (mailbox etc.)
     #[serde(default)]
     pub storage: RawStorageConfig,
 
@@ -334,6 +334,28 @@ path = "dist/service.actr"
         assert_eq!(
             package.path.as_ref().map(|p| p.to_str().unwrap()),
             Some("dist/service.actr")
+        );
+    }
+
+    #[test]
+    fn test_reject_runtime_hyper_data_dir() {
+        let toml_content = r#"
+edition = 1
+
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+
+[deployment]
+realm_id = 1001
+
+[storage]
+hyper_data_dir = ".hyper"
+"#;
+
+        let error = RuntimeRawConfig::from_str(toml_content).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `hyper_data_dir`"),
+            "unexpected error: {error}"
         );
     }
 }

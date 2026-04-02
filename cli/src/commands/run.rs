@@ -19,6 +19,10 @@ pub struct RunCommand {
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     pub config: Option<PathBuf>,
 
+    /// Hyper data directory
+    #[arg(long = "hyper-dir", value_name = "DIR")]
+    pub hyper_dir: Option<PathBuf>,
+
     /// Run in detached mode (background)
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
@@ -73,6 +77,7 @@ impl RunCommand {
         }
 
         let config_path = absolutize_from_cwd(&config_path)?;
+        let hyper_dir = resolve_hyper_dir(Some(&config_path), self.hyper_dir.as_deref())?;
 
         if self.detach && !self.internal_detached_child {
             return self.spawn_detached_child(&config_path).await;
@@ -116,7 +121,7 @@ impl RunCommand {
         })?;
 
         // 7. Initialize Hyper
-        let hyper = self.init_hyper(&config, &package_path).await?;
+        let hyper = self.init_hyper(&config, &package_path, &hyper_dir).await?;
         info!("✅ Hyper initialized");
 
         // 8. Attach package
@@ -222,6 +227,7 @@ impl RunCommand {
         &self,
         config: &actr_config::RuntimeConfig,
         package_path: &Path,
+        hyper_dir: &Path,
     ) -> Result<actr_hyper::Hyper> {
         use actr_hyper::{Hyper, HyperConfig, TrustMode};
         use actr_platform_native::NativePlatformProvider;
@@ -251,7 +257,7 @@ impl RunCommand {
             }
         };
 
-        let hyper_config = HyperConfig::new(&config.hyper_data_dir).with_trust_mode(trust_mode);
+        let hyper_config = HyperConfig::new(hyper_dir).with_trust_mode(trust_mode);
 
         let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
 
@@ -365,7 +371,7 @@ impl RunCommand {
             ActrCliError::command_error("--internal-wid is required for detached child".to_string())
         })?;
 
-        let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+        let hyper_dir = resolve_hyper_dir(Some(config_path), self.hyper_dir.as_deref())?;
         let runtime_store = RuntimeStateStore::new(hyper_dir);
         runtime_store.ensure_layout().await?;
         setsid().map_err(|e| {
@@ -444,7 +450,7 @@ impl RunCommand {
         {
             use uuid::Uuid;
 
-            let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+            let hyper_dir = resolve_hyper_dir(Some(config_path), self.hyper_dir.as_deref())?;
             let runtime_store = RuntimeStateStore::new(hyper_dir);
             runtime_store.ensure_layout().await?;
 
@@ -467,6 +473,12 @@ impl RunCommand {
                 .arg("run")
                 .arg("--config")
                 .arg(config_path)
+                .args(
+                    self.hyper_dir
+                        .as_ref()
+                        .map(|path| vec!["--hyper-dir".into(), path.display().to_string()])
+                        .unwrap_or_default(),
+                )
                 .arg("--internal-detached-child")
                 .arg("--internal-wid")
                 .arg(&wid)

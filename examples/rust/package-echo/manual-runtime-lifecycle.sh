@@ -181,7 +181,7 @@ wait_for_status() {
     local count=0
     while [[ $count -lt $retries ]]; do
         local output
-        output="$("$ACTR_CLI_BIN" ps -c "$TEST_CONFIG" --all --log 2>&1 || true)"
+        output="$("$ACTR_CLI_BIN" ps "${ACTR_RUNTIME_ARGS[@]}" --all --log 2>&1 || true)"
         if [[ "$output" == *"$expected_status"* ]]; then
             printf '%s\n' "$output" > "$COMMAND_DIR/ps-status-${expected_status}.txt"
             return 0
@@ -316,18 +316,14 @@ if replaced != 1:
 config_path.write_text(content)
 PY
 
-cat >> "$TEST_CONFIG" <<EOF
-
-[storage]
-hyper_data_dir = "$TEST_HYPER_DIR"
-EOF
+ACTR_RUNTIME_ARGS=(--hyper-dir "$TEST_HYPER_DIR" -c "$TEST_CONFIG")
 
 section "🛠️ Resolve Binaries"
 
-ACTR_CLI_BIN="$ACTR_REPO_DIR/target/debug/actr"
-if [[ ! -x "$ACTR_CLI_BIN" ]]; then
-    cargo build --manifest-path "$ACTR_CLI_MANIFEST" --bin actr
-fi
+ACTR_CLI_TARGET_DIR="$(cargo metadata --manifest-path "$ACTR_CLI_MANIFEST" --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+ACTR_CLI_BIN="$ACTR_CLI_TARGET_DIR/debug/actr"
+
+cargo build --manifest-path "$ACTR_CLI_MANIFEST" --bin actr
 [[ -x "$ACTR_CLI_BIN" ]] || fail "actr CLI not found at $ACTR_CLI_BIN"
 
 if [[ -x "$ACTRIX_DIR/target/debug/actrix" ]]; then
@@ -465,7 +461,7 @@ SQL
 
 section "🧪 actr run -d"
 
-RUN_OUTPUT="$("$ACTR_CLI_BIN" run -d -c "$TEST_CONFIG" 2>&1)"
+RUN_OUTPUT="$("$ACTR_CLI_BIN" run -d "${ACTR_RUNTIME_ARGS[@]}" 2>&1)"
 printf '%s\n' "$RUN_OUTPUT" > "$COMMAND_DIR/run-detached.txt"
 
 assert_contains "$RUN_OUTPUT" "Detached runtime started" "`actr run -d` should report detached startup"
@@ -491,7 +487,7 @@ assert_contains "$FULL_WID" "$WID_SHORT" "Detached runtime record should keep th
 assert_equals "$RUN_PID" "$RUNTIME_PID" "Runtime record PID should match detached startup output"
 [[ -f "$RUN_LOG_PATH" ]] || fail "Runtime log file not found: $RUN_LOG_PATH"
 
-PS_OUTPUT="$("$ACTR_CLI_BIN" ps -c "$TEST_CONFIG" --log 2>&1)"
+PS_OUTPUT="$("$ACTR_CLI_BIN" ps "${ACTR_RUNTIME_ARGS[@]}" --log 2>&1)"
 printf '%s\n' "$PS_OUTPUT" > "$COMMAND_DIR/ps-running.txt"
 
 assert_contains "$PS_OUTPUT" "WID" "`actr ps` should show WID column"
@@ -507,13 +503,13 @@ assert_contains "$PS_OUTPUT" "${RUN_STARTED_AT%%T*}" "`actr ps` should show star
 
 section "🛑 actr stop → actr start"
 
-STOP_OUTPUT="$("$ACTR_CLI_BIN" stop -c "$TEST_CONFIG" "$WID_SHORT" 2>&1)"
+STOP_OUTPUT="$("$ACTR_CLI_BIN" stop "${ACTR_RUNTIME_ARGS[@]}" "$WID_SHORT" 2>&1)"
 printf '%s\n' "$STOP_OUTPUT" > "$COMMAND_DIR/stop.txt"
 assert_contains "$STOP_OUTPUT" "Stopped runtime: $WID_SHORT" "`actr stop` should stop the runtime"
 
 wait_for_status "exited"
 
-START_OUTPUT="$("$ACTR_CLI_BIN" start -c "$TEST_CONFIG" "$WID_SHORT" 2>&1)"
+START_OUTPUT="$("$ACTR_CLI_BIN" start "${ACTR_RUNTIME_ARGS[@]}" "$WID_SHORT" 2>&1)"
 printf '%s\n' "$START_OUTPUT" > "$COMMAND_DIR/start.txt"
 assert_contains "$START_OUTPUT" "Detached runtime started" "`actr start` should launch the runtime again"
 
@@ -530,12 +526,12 @@ RUNTIME_PID="$START_PID"
 
 section "🔄 actr restart + logs -f"
 
-"$ACTR_CLI_BIN" logs -c "$TEST_CONFIG" -f "$WID_SHORT" > "$FOLLOW_CAPTURE" 2>&1 &
+"$ACTR_CLI_BIN" logs "${ACTR_RUNTIME_ARGS[@]}" -f "$WID_SHORT" > "$FOLLOW_CAPTURE" 2>&1 &
 LOGS_FOLLOW_PID=$!
 sleep 2
 
 START_LOG_PATH="$(record_field log_path)"
-RESTART_OUTPUT="$("$ACTR_CLI_BIN" restart -c "$TEST_CONFIG" "$WID_SHORT" 2>&1)"
+RESTART_OUTPUT="$("$ACTR_CLI_BIN" restart "${ACTR_RUNTIME_ARGS[@]}" "$WID_SHORT" 2>&1)"
 printf '%s\n' "$RESTART_OUTPUT" > "$COMMAND_DIR/restart.txt"
 assert_contains "$RESTART_OUTPUT" "Stopping runtime: $WID_SHORT" "`actr restart` should stop the runtime first"
 assert_contains "$RESTART_OUTPUT" "Starting runtime with config: $TEST_CONFIG" "`actr restart` should reuse the same config"
@@ -563,7 +559,7 @@ fi
 
 section "📁 v1 Runtime Schema Error"
 
-"$ACTR_CLI_BIN" stop -c "$TEST_CONFIG" "$WID_SHORT" > "$COMMAND_DIR/stop-before-schema.txt" 2>&1 || true
+"$ACTR_CLI_BIN" stop "${ACTR_RUNTIME_ARGS[@]}" "$WID_SHORT" > "$COMMAND_DIR/stop-before-schema.txt" 2>&1 || true
 RUNTIME_PID=""
 
 RUNTIME_RECORD_PATH="$(record_path)"
@@ -581,7 +577,7 @@ record_path.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 set +e
-SCHEMA_OUTPUT="$("$ACTR_CLI_BIN" ps -c "$TEST_CONFIG" --all 2>&1)"
+SCHEMA_OUTPUT="$("$ACTR_CLI_BIN" ps "${ACTR_RUNTIME_ARGS[@]}" --all 2>&1)"
 SCHEMA_STATUS=$?
 set -e
 printf '%s\n' "$SCHEMA_OUTPUT" > "$COMMAND_DIR/ps-schema-v1.txt"

@@ -17,8 +17,7 @@ use toml::Value;
 
 /// All known schema field paths — used to validate `set` keys.
 const KNOWN_KEYS: &[&str] = &[
-    "mfr.manufacturer",
-    "mfr.keychain",
+    "init.manufacturer",
     "codegen.language",
     "codegen.output",
     "codegen.clean_before_generate",
@@ -54,14 +53,14 @@ pub struct ConfigCommand {
 pub enum ConfigSubcommand {
     /// Set a configuration key to a value
     Set {
-        /// Configuration key (e.g., mfr.manufacturer)
+        /// Configuration key (e.g., init.manufacturer)
         key: String,
         /// Value to assign
         value: String,
     },
     /// Get the current value of a configuration key
     Get {
-        /// Configuration key (e.g., mfr.manufacturer)
+        /// Configuration key (e.g., init.manufacturer)
         key: String,
     },
     /// List all known schema fields with current effective values
@@ -73,7 +72,7 @@ pub enum ConfigSubcommand {
     },
     /// Remove a configuration key
     Unset {
-        /// Configuration key to remove (e.g., mfr.manufacturer)
+        /// Configuration key to remove (e.g., init.manufacturer)
         key: String,
     },
     /// Validate syntax and schema of all config files
@@ -152,7 +151,7 @@ impl ConfigCommand {
 
     fn scope_path(scope: ConfigScope) -> Result<PathBuf> {
         match scope {
-            ConfigScope::Global => global_config_path(),
+            ConfigScope::Global => Ok(global_config_path()?),
             ConfigScope::Local => Ok(local_config_path()),
             ConfigScope::Merged => bail!("Merged scope does not map to a single file"),
         }
@@ -258,11 +257,8 @@ impl ConfigCommand {
             .unwrap_or_else(|_| Value::String(raw_value.to_string()));
 
         match key {
-            "mfr.manufacturer" => {
-                config.mfr.manufacturer = Some(value_to_string(&parsed_value)?);
-            }
-            "mfr.keychain" => {
-                config.mfr.keychain = Some(value_to_string(&parsed_value)?);
+            "init.manufacturer" => {
+                config.init.manufacturer = Some(value_to_string(&parsed_value)?);
             }
             "codegen.language" => {
                 config.codegen.language = Some(value_to_string(&parsed_value)?);
@@ -294,6 +290,9 @@ impl ConfigCommand {
             "network.realm_secret" => {
                 config.network.realm_secret = Some(value_to_string(&parsed_value)?);
             }
+            "storage.hyper_data_dir" => {
+                config.storage.hyper_data_dir = Some(value_to_string(&parsed_value)?);
+            }
             "ui.format" => {
                 config.ui.format = Some(value_to_string(&parsed_value)?);
             }
@@ -320,14 +319,9 @@ impl ConfigCommand {
     /// Remove a key from a `CliConfig` struct.
     fn unset_key_from_config(config: &mut CliConfig, key: &str) -> Result<bool> {
         let was_set = match key {
-            "mfr.manufacturer" => {
-                let had = config.mfr.manufacturer.is_some();
-                config.mfr.manufacturer = None;
-                had
-            }
-            "mfr.keychain" => {
-                let had = config.mfr.keychain.is_some();
-                config.mfr.keychain = None;
+            "init.manufacturer" => {
+                let had = config.init.manufacturer.is_some();
+                config.init.manufacturer = None;
                 had
             }
             "codegen.language" => {
@@ -378,6 +372,11 @@ impl ConfigCommand {
             "network.realm_secret" => {
                 let had = config.network.realm_secret.is_some();
                 config.network.realm_secret = None;
+                had
+            }
+            "storage.hyper_data_dir" => {
+                let had = config.storage.hyper_data_dir.is_some();
+                config.storage.hyper_data_dir = None;
                 had
             }
             "ui.format" => {
@@ -461,11 +460,7 @@ impl ConfigCommand {
         // Resolve effective config to show all fields with current values
         let effective = resolve_effective_cli_config()?;
         let lines: Vec<String> = vec![
-            format!("mfr.manufacturer = {}", effective.mfr.manufacturer),
-            format!(
-                "mfr.keychain = {}",
-                effective.mfr.keychain.as_deref().unwrap_or("<not set>")
-            ),
+            format!("init.manufacturer = {}", effective.init.manufacturer),
             format!("codegen.language = {}", effective.codegen.language),
             format!("codegen.output = {}", effective.codegen.output),
             format!(
@@ -499,6 +494,10 @@ impl ConfigCommand {
                     .realm_secret
                     .as_deref()
                     .unwrap_or("<not set>")
+            ),
+            format!(
+                "storage.hyper_data_dir = {}",
+                effective.storage.hyper_data_dir.display()
             ),
         ];
         Ok(CommandResult::Success(lines.join("\n")))

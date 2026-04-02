@@ -59,6 +59,7 @@ impl Command for RestartCommand {
         println!("Starting runtime with config: {}", config_path.display());
         RunCommand {
             config: Some(config_path),
+            hyper_dir: self.hyper_dir.clone(),
             detach: true,
             internal_detached_child: false,
             internal_wid: Some(full_wid),

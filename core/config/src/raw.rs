@@ -256,13 +256,10 @@ pub struct RawDiscoveryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RawStorageConfig {
     #[serde(default)]
     pub mailbox_path: Option<PathBuf>,
-
-    /// Hyper data directory for this node instance (defaults to `.hyper` in config dir)
-    #[serde(default)]
-    pub hyper_data_dir: Option<PathBuf>,
 }
 
 /// WebRTC configuration

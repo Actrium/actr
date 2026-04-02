@@ -152,7 +152,7 @@ impl InitCommand {
         &self,
         cli_config: &crate::config::resolver::EffectiveCliConfig,
     ) -> Result<String> {
-        let effective_manufacturer = cli_config.mfr.manufacturer.clone();
+        let effective_manufacturer = cli_config.init.manufacturer.clone();
 
         let manufacturer_owned: String = match &self.manufacturer {
             Some(m) => m.clone(),
