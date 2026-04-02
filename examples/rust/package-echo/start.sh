@@ -755,7 +755,7 @@ echo "🚀 Starting package-echo-server via actr run..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Generate server actr.toml with the actual package path and trust mode
-SERVER_ACTR_CONFIG="$PACKAGE_ECHO_DIR/server-actr.toml"
+SERVER_ACTR_CONFIG="${SERVER_ACTR_CONFIG:-$PACKAGE_ECHO_DIR/server-actr.toml}"
 cat > "$SERVER_ACTR_CONFIG" << TOML
 edition = 1
 

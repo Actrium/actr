@@ -1,24 +1,144 @@
-//! {{PROJECT_NAME}} — Actor-RTC echo client
-//!
-//! This scaffold is client-only. Discover a remote service and call it directly.
+//! {{PROJECT_NAME}} — package-backed Rust echo app.
 
-use anyhow::Result;
+mod generated;
+
+use anyhow::{Context, Result, anyhow};
+use base64::Engine;
+use generated::echo::EchoRequest;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tracing::info;
 
-use actr::prelude::*;
+use actr_config::{ConfigParser, PackageInfo};
+use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
+
+const PACKAGE_PATH: &str = "dist/app.actr";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    info!("{} starting", env!("CARGO_PKG_NAME"));
+    let manifest = ConfigParser::from_manifest_file("manifest.toml")
+        .context("failed to parse manifest.toml")?;
+    ensure_package_built(Path::new(PACKAGE_PATH))?;
 
-    let config = actr::config::ConfigParser::from_manifest_file("manifest.toml")?;
-    let hyper_data_dir = actr::config::user_config::resolve_hyper_data_dir()?;
-    let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir)).await?;
-    // Load your client-guest package and attach it:
-    // let package = WorkloadPackage::new(std::fs::read("path/to/client-guest.actr")?);
-    // let node = hyper.attach_package(&package, config).await?;
-    // let actr_ref = node.start().await?;
+    let runtime = ConfigParser::from_runtime_file(
+        "actr.toml",
+        package_info(&manifest.package),
+        manifest.tags.clone(),
+    )
+    .context("failed to parse actr.toml")?;
 
-    info!("Client started with id {}", env!("CARGO_PKG_NAME"));
+    let _observability = init_observability(&runtime.observability)?;
+
+    let package_path = runtime
+        .package_path
+        .clone()
+        .ok_or_else(|| anyhow!("actr.toml is missing [package].path"))?;
+    let package_dir = package_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let trust_mode = load_trust_mode(&runtime.trust_mode, &runtime.ais_endpoint, &package_dir)?;
+
+    let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
+    let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode))
+        .await
+        .context("failed to initialize Hyper")?;
+
+    let package_bytes = std::fs::read(&package_path)
+        .with_context(|| format!("failed to read {}", package_path.display()))?;
+    let package = WorkloadPackage::new(package_bytes);
+
+    let mut node = hyper
+        .attach_package(&package, runtime.clone())
+        .await
+        .context("failed to attach local guest package")?;
+    let credential = hyper
+        .bootstrap_node_credential(
+            &node,
+            &runtime.ais_endpoint,
+            runtime.realm.realm_id,
+            None,
+            runtime.acl.clone(),
+        )
+        .await
+        .context("failed to bootstrap node credential")?;
+    node.inject_credential(credential);
+
+    let actr_ref = node.start().await.context("failed to start app node")?;
+    info!("Calling {{MANUFACTURER}}:EchoService:1.0.0");
+
+    let response = actr_ref
+        .call(EchoRequest {
+            message: "hello".to_string(),
+        })
+        .await
+        .context("Echo RPC failed")?;
+
+    println!("Echo reply: {}", response.reply);
+
+    actr_ref.shutdown();
+    actr_ref.wait_for_shutdown().await;
     Ok(())
+}
+
+fn package_info(package: &PackageInfo) -> PackageInfo {
+    package.clone()
+}
+
+fn ensure_package_built(package_path: &Path) -> Result<()> {
+    let public_key_path = package_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("public-key.json");
+
+    if package_path.exists() && public_key_path.exists() {
+        return Ok(());
+    }
+
+    let status = Command::new("actr")
+        .args(["build", "-o", PACKAGE_PATH])
+        .status()
+        .context("failed to run `actr build` for the local guest package")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "`actr build -o {}` failed with status {}",
+            PACKAGE_PATH,
+            status
+        ))
+    }
+}
+
+fn load_trust_mode(trust_mode: &str, ais_endpoint: &str, package_dir: &Path) -> Result<TrustMode> {
+    match trust_mode {
+        "development" => Ok(TrustMode::Development {
+            self_signed_pubkey: load_public_key(package_dir)?,
+        }),
+        "production" => Ok(TrustMode::Production {
+            ais_endpoint: ais_endpoint.trim_end_matches("/ais").to_string(),
+        }),
+        other => Err(anyhow!("unsupported trust mode: {other}")),
+    }
+}
+
+fn load_public_key(package_dir: &Path) -> Result<Vec<u8>> {
+    let key_path = package_dir.join("public-key.json");
+    let key_content = std::fs::read_to_string(&key_path)
+        .with_context(|| format!("failed to read {}", key_path.display()))?;
+    let key_json: serde_json::Value =
+        serde_json::from_str(&key_content).context("invalid public-key.json")?;
+    let public_key = key_json["public_key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("public-key.json is missing `public_key`"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(public_key)
+        .context("invalid base64 public key")?;
+
+    if bytes.len() != 32 {
+        return Err(anyhow!("public-key.json must contain a 32-byte key"));
+    }
+
+    Ok(bytes)
 }

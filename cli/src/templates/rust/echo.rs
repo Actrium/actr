@@ -37,6 +37,12 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
             files,
             "src/main.rs",
         )?;
+        ProjectTemplate::load_file(&fixtures_root.join("rust/lib.rs.hbs"), files, "src/lib.rs")?;
+        ProjectTemplate::load_file(
+            &fixtures_root.join("rust/echo/actr.toml.hbs"),
+            files,
+            "actr.toml",
+        )?;
     }
     let manifest_toml_hbs = if is_service {
         fixtures_root.join("rust/echo/manifest.toml.service.hbs")

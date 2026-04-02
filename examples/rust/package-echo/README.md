@@ -271,6 +271,8 @@ Two backends are supported via the `--backend` flag:
 - Loads `.actr` package in production trust mode
 - Registers with AIS and obtains credential
 
+When using `start_tmp_echo_actr.sh`, the same flow runs against `tmp_server-actr.toml` instead, so the default `server-actr.toml` template is left untouched by the temporary-workload path.
+
 ### Step 5: Run Client
 - Builds package-echo-client binary
 - Discovers echo service via Actrix
@@ -408,7 +410,7 @@ cargo run -p actr-cli -- run \
 cargo run --bin package-echo-client
 ```
 
-Before running the server manually, make sure `server-actr.toml` points to a real `.actr` package. The committed file is only a template; `start.sh` rewrites it with the actual package path after building and signing `echo-actr`.
+Before running the server manually, make sure `server-actr.toml` points to a real `.actr` package. The committed file is only a template; `start.sh` rewrites it with the actual package path after building and signing `echo-actr`. The temporary workload flow uses `tmp_server-actr.toml` for the same purpose.
 
 ## Detached Runtime Lifecycle Check
 
@@ -437,7 +439,8 @@ package-echo/
 ├── start.sh               # End-to-end test script
 ├── actrix-config.toml     # Actrix server configuration
 ├── dev-key.json           # Development signing key
-├── server-actr.toml       # Server runtime config template (overwritten by start.sh)
+├── server-actr.toml       # Default server runtime config template (overwritten by start.sh)
+├── tmp_server-actr.toml   # Temporary-workload runtime config template (overwritten by start_tmp_echo_actr.sh)
 ├── client/                # Echo client (native)
 │   ├── src/
 │   ├── actr.toml

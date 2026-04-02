@@ -1,23 +1,20 @@
 # {{PROJECT_NAME}}
 
-An Actor-RTC echo app that discovers a remote EchoService and sends an echo RPC.
+Rust echo app that installs the remote EchoService proto, generates a local bridge guest, and calls the service.
 
 ## Quick start
 
 ```bash
-# 1. Download the remote EchoService proto from the registry
 actr install
-
-# 2. Generate Actor framework code from the proto
 actr gen -l rust
-
-# 3. Run the app (connects, echoes "hello", prints the reply, and exits)
 cargo run
 ```
 
-## How it works
+## Files
 
-- `manifest.toml` declares a dependency on `echo-echo-server` (the remote EchoService).
-- `actr install` fetches `protos/remote/echo-echo-server/echo.proto`.
-- `actr gen -l rust` generates `src/generated/` with protobuf types and Actor framework code.
-- `src/main.rs` discovers the remote EchoService and sends a single RPC call.
+- `protos/local/local.proto` defines the local bridge service used for route forwarding.
+- `src/generated/` is created by `actr gen -l rust`.
+- `src/lib.rs` wraps the generated local bridge workload as the package guest.
+- `src/main.rs` builds `dist/app.actr` on demand, starts the local guest, and prints the echo reply.
+- `manifest.toml` declares the EchoService dependency and guest package build config.
+- `actr.toml` configures runtime startup for the local guest package.

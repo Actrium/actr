@@ -168,4 +168,5 @@ echo -e "${BLUE}🚀 Step 2: Running package-echo against the temporary workload
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 CARGO_TARGET_DIR="$WORKSPACE_TARGET_DIR" \
 ECHO_ACTR_DIR="$TMP_ECHO_ACTR_DIR" \
+SERVER_ACTR_CONFIG="$SCRIPT_DIR/tmp_server-actr.toml" \
     "$SCRIPT_DIR/start.sh" "${START_ARGS[@]}"
