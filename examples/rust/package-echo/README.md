@@ -407,11 +407,30 @@ cargo run --bin package-echo-client
 
 Before running the server manually, make sure `server-actr.toml` points to a real `.actr` package. The committed file is only a template; `start.sh` rewrites it with the actual package path after building and signing `echo-actr`.
 
+## Detached Runtime Lifecycle Check
+
+Use the dedicated lifecycle script when you want to validate the detached runtime management flow against the package-backed server config:
+
+```bash
+cd examples/rust/package-echo
+bash manual-runtime-lifecycle.sh
+```
+
+The script derives an isolated config from `server-actr.toml`, starts actrix, publishes the local package, and verifies:
+
+- `actr run -d` prints the WID plus the `actr logs <wid> -f` follow hint.
+- `actr ps` shows `WID`, `ACTR_ID`, `PID`, `STATUS`, and `STARTED_AT`.
+- `actr stop <wid-prefix>` followed by `actr start <wid-prefix>` keeps the same WID and assigns a new PID.
+- `actr restart <wid-prefix>` keeps the same WID and log file.
+- `actr logs <wid-prefix> -f` keeps streaming appended logs across restarts.
+- A v1 runtime record in `run_dir` returns an actionable schema error that includes the directory path.
+
 ## Project Structure
 
 ```
 package-echo/
 ├── README.md              # This file
+├── manual-runtime-lifecycle.sh # Detached runtime lifecycle verification
 ├── start.sh               # End-to-end test script
 ├── actrix-config.toml     # Actrix server configuration
 ├── dev-key.json           # Development signing key

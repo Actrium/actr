@@ -48,6 +48,7 @@ Run workspace commands from the repository root. Examples:
 - `bash data-stream/start.sh` – spin up actrix (root config), receiver, and sender.
 - `bash shell-actr-echo/start.sh` – run the echo server/client against the root actrix config.
 - `bash package-echo/start.sh` – run the signed package echo host/client demo against the root actrix config.
+- `bash package-echo/manual-runtime-lifecycle.sh` – verify detached runtime lifecycle commands against the package-backed server config.
 - `bash media-relay/start.sh` – launch the relay demo; actrix starts from the workspace root config.
 - `../audio-capture/README.md` – run the Swift sender plus Rust receiver audio capture demo.
 

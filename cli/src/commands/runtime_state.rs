@@ -1,9 +1,11 @@
+use crate::commands::process::is_process_alive;
 use crate::error::{ActrCliError, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const RUNTIME_SCHEMA_VERSION: u32 = 2;
+const WID_SHORT_CHARS: usize = 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeRecord {
@@ -39,6 +41,50 @@ impl RuntimeRecord {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct RawRuntimeRecord {
+    schema_version: u32,
+    wid: Option<String>,
+    actr_id: String,
+    pid: u32,
+    config_path: PathBuf,
+    log_path: PathBuf,
+    started_at: DateTime<Utc>,
+    stopped_at: Option<DateTime<Utc>>,
+}
+
+impl RawRuntimeRecord {
+    fn into_runtime_record(self, path: &Path, run_dir: &Path) -> Result<RuntimeRecord> {
+        if self.schema_version != RUNTIME_SCHEMA_VERSION {
+            return Err(ActrCliError::command_error(format!(
+                "Incompatible runtime record schema v{} in {}.\n\
+                 Delete all files in {} and re-run `actr run -d`.",
+                self.schema_version,
+                path.display(),
+                run_dir.display()
+            )));
+        }
+
+        let wid = self.wid.ok_or_else(|| {
+            ActrCliError::command_error(format!(
+                "Failed to parse runtime record {}: missing field `wid`",
+                path.display()
+            ))
+        })?;
+
+        Ok(RuntimeRecord {
+            schema_version: self.schema_version,
+            wid,
+            actr_id: self.actr_id,
+            pid: self.pid,
+            config_path: self.config_path,
+            log_path: self.log_path,
+            started_at: self.started_at,
+            stopped_at: self.stopped_at,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStatus {
     Running,
@@ -70,7 +116,7 @@ impl RuntimeRecordEntry {
     }
 
     pub(crate) fn wid_short(&self) -> &str {
-        &self.record.wid[..12]
+        shorten_wid(&self.record.wid)
     }
 }
 
@@ -181,7 +227,7 @@ impl RuntimeStateStore {
             _ => {
                 let candidates = matches
                     .iter()
-                    .map(|e| format!("  {} ({})", &e.record.wid[..12], e.record.actr_id))
+                    .map(|e| format!("  {} ({})", shorten_wid(&e.record.wid), e.record.actr_id))
                     .collect::<Vec<_>>()
                     .join("\n");
                 Err(ActrCliError::command_error(format!(
@@ -197,39 +243,14 @@ impl RuntimeStateStore {
         }
 
         let content = tokio::fs::read(path).await?;
-
-        // Two-phase deserialization: probe schema version first for a clear error message.
-        #[derive(Deserialize)]
-        struct VersionProbe {
-            schema_version: u32,
-        }
-        let probe: VersionProbe = serde_json::from_slice(&content).map_err(|error| {
+        let raw: RawRuntimeRecord = serde_json::from_slice(&content).map_err(|error| {
             ActrCliError::command_error(format!(
                 "Failed to parse runtime record {}: {}",
                 path.display(),
                 error
             ))
         })?;
-
-        if probe.schema_version != RUNTIME_SCHEMA_VERSION {
-            return Err(ActrCliError::command_error(format!(
-                "Incompatible runtime record schema v{} in {}.\n\
-                 Delete all files in {} and re-run `actr run -d`.",
-                probe.schema_version,
-                path.display(),
-                self.run_dir().display()
-            )));
-        }
-
-        let record: RuntimeRecord = serde_json::from_slice(&content).map_err(|error| {
-            ActrCliError::command_error(format!(
-                "Failed to parse runtime record {}: {}",
-                path.display(),
-                error
-            ))
-        })?;
-
-        Ok(Some(record))
+        Ok(Some(raw.into_runtime_record(path, &self.run_dir())?))
     }
 }
 
@@ -251,12 +272,7 @@ pub(crate) fn resolve_hyper_dir(
 
     let effective = crate::config::resolver::resolve_effective_cli_config()
         .map_err(|e| ActrCliError::command_error(format!("Failed to load CLI config: {e}")))?;
-    effective.storage.hyper_data_dir.ok_or_else(|| {
-        ActrCliError::command_error(
-            "No hyper data directory configured. \
-             Set [storage] hyper_data_dir in ~/.actr/config.toml or pass --hyper-dir",
-        )
-    })
+    Ok(effective.storage.hyper_data_dir)
 }
 
 pub(crate) fn absolutize_from_cwd(path: &Path) -> Result<PathBuf> {
@@ -312,25 +328,11 @@ fn runtime_status(record: &RuntimeRecord) -> RuntimeStatus {
     }
 }
 
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    use nix::errno::Errno;
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-
-    match kill(Pid::from_raw(pid), None) {
-        Ok(()) => true,
-        Err(Errno::EPERM) => true,
-        Err(Errno::ESRCH) => false,
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    false
+fn shorten_wid(wid: &str) -> &str {
+    let end = wid
+        .char_indices()
+        .nth(WID_SHORT_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(wid.len());
+    &wid[..end]
 }

@@ -410,6 +410,8 @@ impl RunCommand {
             r.pid = detached_runtime.pid;
             r.started_at = Utc::now();
             r.stopped_at = None;
+            r.config_path = detached_runtime.config_path.clone();
+            r.log_path = detached_runtime.log_file.clone();
             r
         } else {
             RuntimeRecord::new(

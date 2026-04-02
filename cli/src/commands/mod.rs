@@ -18,11 +18,15 @@ pub mod logs;
 pub mod ops;
 pub(crate) mod package_build;
 pub mod pkg;
+pub(crate) mod process;
 pub mod ps;
 pub mod restart;
 pub mod rm;
 pub mod run;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod runtime_state;
+#[cfg(not(any(test, feature = "test-utils")))]
+pub(crate) mod runtime_state;
 pub mod start;
 pub mod stop;
 

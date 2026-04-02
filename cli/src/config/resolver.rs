@@ -80,8 +80,7 @@ pub struct EffectiveNetworkConfig {
 /// Resolved storage settings
 #[derive(Debug, Clone)]
 pub struct EffectiveStorageConfig {
-    /// None = not globally configured; fall through to per-project default
-    pub hyper_data_dir: Option<PathBuf>,
+    pub hyper_data_dir: PathBuf,
 }
 
 impl Default for EffectiveCliConfig {
@@ -185,7 +184,11 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
             realm_secret: cfg.network.realm_secret,
         },
         storage: EffectiveStorageConfig {
-            hyper_data_dir: cfg.storage.hyper_data_dir.map(expand_tilde),
+            hyper_data_dir: cfg
+                .storage
+                .hyper_data_dir
+                .map(expand_tilde)
+                .unwrap_or_else(|| expand_tilde("~/.actr/hyper".to_string())),
         },
     }
 }
@@ -218,6 +221,10 @@ mod tests {
         assert!(!effective.ui.verbose);
         assert_eq!(effective.ui.color, "auto");
         assert!(!effective.ui.non_interactive);
+        assert_eq!(
+            effective.storage.hyper_data_dir,
+            expand_tilde("~/.actr/hyper".to_string())
+        );
     }
 
     #[test]

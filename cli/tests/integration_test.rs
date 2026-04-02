@@ -280,6 +280,40 @@ async fn test_resolve_wid_prefix_ambiguous() {
 }
 
 #[tokio::test]
+async fn test_resolve_wid_prefix_ambiguous_with_short_wid() {
+    use actr_cli::commands::runtime_state::{RuntimeRecord, RuntimeStateStore};
+    use chrono::Utc;
+    use tempfile::TempDir;
+
+    let hyper_dir = TempDir::new().unwrap();
+    let store = RuntimeStateStore::new(hyper_dir.path().to_path_buf());
+    store.ensure_layout().await.unwrap();
+
+    let wid1 = "aaaabbbb1".to_string();
+    let wid2 = "aaaabbbb2".to_string();
+
+    for (wid, actr_id) in [(&wid1, "actr-short-1"), (&wid2, "actr-short-2")] {
+        let record = RuntimeRecord::new(
+            wid.clone(),
+            actr_id.to_string(),
+            99999,
+            hyper_dir.path().join("actr.toml"),
+            hyper_dir.path().join("logs").join("actr-test.log"),
+            Utc::now(),
+        );
+        store.write_record(&record).await.unwrap();
+    }
+
+    let result = store.resolve_wid_prefix("aaaabbbb").await;
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("aaaabbbb1") && msg.contains("aaaabbbb2"),
+        "short wid candidates missing: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn test_upsert_record_updates_pid() {
     use actr_cli::commands::runtime_state::{RuntimeRecord, RuntimeStateStore};
     use chrono::Utc;
