@@ -12,6 +12,7 @@ pub mod project_language;
 pub mod templates;
 #[cfg(feature = "test-utils")]
 pub mod test_support;
+pub mod web_assets;
 pub use templates as template;
 pub mod utils;
 

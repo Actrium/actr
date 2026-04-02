@@ -34,8 +34,5 @@ type = "acme:echo-client-app:0.1.0"
 [web]
 port = 5174
 host = "0.0.0.0"
-static_dir = "server/dist"
 is_server = true
-package_url = "/packages/echo-server.actr"
-runtime_wasm_url = "/packages/actr_runtime_sw_bg.wasm"
 mfr_pubkey = "__MFR_PUBKEY_PLACEHOLDER__"

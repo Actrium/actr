@@ -30,4 +30,6 @@ fn main() {
     // Re-run build script if git head changes (monorepo: .git is in parent)
     println!("cargo:rerun-if-changed=../.git/HEAD");
     println!("cargo:rerun-if-changed=../.git/refs");
+    // Re-run if web runtime assets change
+    println!("cargo:rerun-if-changed=assets/web-runtime");
 }
