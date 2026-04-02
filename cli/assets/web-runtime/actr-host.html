@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Actor Host — actr run --web</title>
+    <style>
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 860px;
+            margin: 40px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e0e0
+        }
+
+        .container {
+            background: rgba(255, 255, 255, .05);
+            padding: 28px;
+            border-radius: 14px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, .3);
+            border: 1px solid rgba(255, 255, 255, .1)
+        }
+
+        h1 {
+            color: #00d4aa;
+            margin: 0 0 6px;
+            font-size: 1.8em
+        }
+
+        .subtitle {
+            color: #888;
+            margin-bottom: 24px;
+            font-size: .88em
+        }
+
+        /* Status bar — supports classes: ready, connected, error, connecting */
+        .status {
+            padding: 12px 18px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 165, 0, .12);
+            border: 1px solid rgba(255, 165, 0, .25)
+        }
+
+        .status.ready,
+        .status.connected,
+        .status.ok {
+            background: rgba(0, 212, 170, .1);
+            border-color: rgba(0, 212, 170, .3)
+        }
+
+        .status.error,
+        .status.err {
+            background: rgba(255, 60, 60, .1);
+            border-color: rgba(255, 60, 60, .3)
+        }
+
+        .status.connecting {
+            background: rgba(255, 165, 0, .12);
+            border: 1px solid rgba(255, 165, 0, .25)
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 16px;
+            margin-bottom: 20px;
+            font-size: .88em
+        }
+
+        .info-grid dt {
+            color: #888
+        }
+
+        .info-grid dd {
+            margin: 0;
+            color: #ccc;
+            word-break: break-all
+        }
+
+        /* Stats row (server) */
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 16px;
+            font-size: .92em
+        }
+
+        .stats .stat {
+            display: flex;
+            align-items: center;
+            gap: 6px
+        }
+
+        .stats .stat-label {
+            color: #888
+        }
+
+        .stats .stat-value {
+            font-weight: 600;
+            color: #00d4aa
+        }
+
+        /* Client send area */
+        .send-area {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px
+        }
+
+        .send-area input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid rgba(255, 255, 255, .15);
+            border-radius: 8px;
+            background: rgba(0, 0, 0, .3);
+            color: #e0e0e0;
+            font-size: .95em;
+            outline: none
+        }
+
+        .send-area input:focus {
+            border-color: #00d4aa
+        }
+
+        .send-area button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #00d4aa;
+            color: #1a1a2e;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap
+        }
+
+        .send-area button:disabled {
+            opacity: .4;
+            cursor: not-allowed
+        }
+
+        .send-area button:hover:not(:disabled) {
+            background: #00eabb
+        }
+
+        /* Log panels */
+        .log-panel {
+            background: rgba(0, 0, 0, .3);
+            border: 1px solid rgba(255, 255, 255, .08);
+            border-radius: 8px;
+            padding: 14px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: 'Fira Code', monospace;
+            font-size: .78em;
+            line-height: 1.65
+        }
+
+        .log-entry {
+            padding: 2px 0
+        }
+
+        .log-entry .time {
+            color: #666;
+            margin-right: 8px
+        }
+
+        .log-entry.info {
+            color: #8be9fd
+        }
+
+        .log-entry.success {
+            color: #50fa7b
+        }
+
+        .log-entry.warn {
+            color: #ffb86c
+        }
+
+        .log-entry.error {
+            color: #ff5555
+        }
+
+        /* Client result entries */
+        .entry {
+            padding: 2px 0
+        }
+
+        .entry .time {
+            color: #666;
+            margin-right: 8px
+        }
+
+        .entry .info {
+            color: #8be9fd
+        }
+
+        .entry .ok {
+            color: #50fa7b
+        }
+
+        .entry .err {
+            color: #ff5555
+        }
+
+        /* Legacy log classes for generic log */
+        .log-info {
+            color: #8be9fd
+        }
+
+        .log-warn {
+            color: #ffb86c
+        }
+
+        .log-error {
+            color: #ff5555
+        }
+
+        .log-success {
+            color: #50fa7b
+        }
+
+        .section-label {
+            color: #888;
+            font-size: .82em;
+            margin: 12px 0 6px;
+            text-transform: uppercase;
+            letter-spacing: .5px
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎭 Actor Host</h1>
+        <p class="subtitle">actr run --web</p>
+        <div id="status" class="status">⏳ Initializing…</div>
+
+        <!-- Info grid (always shown) -->
+        <dl class="info-grid">
+            <dt>Actor Type</dt>
+            <dd id="actorType">—</dd>
+            <dt>Role</dt>
+            <dd id="role">—</dd>
+            <dt>Signaling</dt>
+            <dd id="sigUrl">—</dd>
+            <dt>Realm</dt>
+            <dd id="realmId">—</dd>
+            <dt>Service</dt>
+            <dd id="serviceName">—</dd>
+        </dl>
+
+        <!-- Server stats (hidden for client) -->
+        <div id="serverStats" style="display:none">
+            <div class="stats">
+                <div class="stat"><span class="stat-label">Requests:</span><span class="stat-value"
+                        id="requestCount">0</span></div>
+                <div class="stat"><span class="stat-label">Success:</span><span class="stat-value"
+                        id="successCount">0</span></div>
+                <div class="stat"><span class="stat-label">Errors:</span><span class="stat-value"
+                        id="errorCount">0</span></div>
+            </div>
+        </div>
+
+        <!-- Client send area (hidden for server) -->
+        <div id="clientArea" style="display:none">
+            <div class="send-area">
+                <input id="msgInput" type="text" placeholder="Enter message to echo…" />
+                <button id="sendBtn" disabled>Send</button>
+            </div>
+            <div class="section-label">Echo Results</div>
+            <div id="result" class="log-panel"></div>
+        </div>
+
+        <!-- Server / generic log -->
+        <div class="section-label">Runtime Log</div>
+        <div id="log" class="log-panel"></div>
+    </div>
+
+    <script>
+        /* ═══════════════════════════════════════════════════════════════════
+           Inline @actr/dom — ServiceWorkerBridge + WebRtcCoordinator + FastPathForwarder
+           ═══════════════════════════════════════════════════════════════════ */
+
+        // ── FastPathForwarder ──
+        class FastPathForwarder {
+            constructor(bridge) { this.bridge = bridge; }
+            forward(streamId, data) {
+                const view = new Uint8Array(data);
+                this.bridge.sendToSW({ type: 'fast_path_data', payload: { streamId, data: view, timestamp: Date.now() } }, [view.buffer]);
+            }
+            dispose() { }
+        }
+
+        // ── ServiceWorkerBridge ──
+        class ServiceWorkerBridge {
+            constructor() {
+                this.swPort = null;
+                this.handlers = new Set();
+                this._ready = null;
+                this._resolveReady = null;
+                this._ready = new Promise(r => { this._resolveReady = r; });
+                this.clientId = 'client_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+            }
+            async initialize(swUrl, runtimeConfig) {
+                const reg = await navigator.serviceWorker.register(swUrl, { updateViaCache: 'none' });
+                await reg.update();
+                await navigator.serviceWorker.ready;
+                if (!navigator.serviceWorker.controller) {
+                    await new Promise(r => {
+                        const h = () => { navigator.serviceWorker.removeEventListener('controllerchange', h); r(); };
+                        navigator.serviceWorker.addEventListener('controllerchange', h);
+                        setTimeout(h, 3000);
+                    });
+                }
+                const target = navigator.serviceWorker.controller ?? reg.active;
+                if (!target) throw new Error('SW target not available');
+                const ch = new MessageChannel();
+                this.swPort = ch.port1;
+                this.swPort.onmessage = e => this._dispatch(e.data);
+                target.postMessage({ type: 'DOM_PORT_INIT', port: ch.port2, clientId: this.clientId, runtimeConfig }, [ch.port2]);
+                target.postMessage({ type: 'PING' });
+                this._resolveReady();
+            }
+            sendToSW(msg, transferables) {
+                if (!this.swPort) return;
+                transferables && transferables.length ? this.swPort.postMessage(msg, transferables) : this.swPort.postMessage(msg);
+            }
+            sendDataChannelPort(peerId, port) {
+                this.sendToSW({ type: 'register_datachannel_port', payload: { peerId, port } }, [port]);
+            }
+            onMessage(handler) { this.handlers.add(handler); return () => this.handlers.delete(handler); }
+            _dispatch(msg) { for (const h of this.handlers) { try { h(msg); } catch (e) { console.error('[Bridge]', e); } } }
+            getClientId() { return this.clientId; }
+            close() { if (this.swPort) { this.swPort.close(); this.swPort = null; } this.handlers.clear(); }
+        }
+
+        // ── WebRtcCoordinator ──
+        class WebRtcCoordinator {
+            constructor(bridge, forwarder, config) {
+                this.bridge = bridge;
+                this.forwarder = forwarder;
+                this.peers = new Map();
+                this.turnCred = null;
+                this.iceServers = config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
+                this.icePolicy = config.iceTransportPolicy;
+                this.lanes = [
+                    { id: 0, label: 'RPC_RELIABLE', ordered: true },
+                    { id: 1, label: 'RPC_SIGNAL', ordered: true },
+                    { id: 2, label: 'STREAM_RELIABLE', ordered: true },
+                    { id: 3, label: 'STREAM_LATENCY_FIRST', ordered: false, maxRetransmits: 3 },
+                ];
+                this.labelToId = new Map(this.lanes.map(l => [l.label, l.id]));
+                bridge.onMessage(m => {
+                    if (m.type === 'webrtc_command') this._handle(m.payload);
+                    else if (m.type === 'update_turn_credential') {
+                        this.turnCred = { username: m.payload.username, credential: m.payload.password };
+                    }
+                });
+            }
+            async _handle(cmd) {
+                const { action, peerId } = cmd;
+                try {
+                    switch (action) {
+                        case 'create_peer': return this._createPeer(peerId);
+                        case 'set_remote_description': return await this._setRemote(peerId, cmd.payload.sdp);
+                        case 'set_local_description': return await this._setLocal(peerId, cmd.payload.sdp);
+                        case 'add_ice_candidate': return await this._addIce(peerId, cmd.payload.candidate);
+                        case 'create_offer': await this._ensureChannels(peerId); return await this._createOffer(peerId);
+                        case 'create_ice_restart_offer': return await this._iceRestart(peerId);
+                        case 'create_answer': return await this._createAnswer(peerId);
+                        case 'close_peer': return this._close(peerId);
+                        case 'send_data': return this._send(peerId, cmd.payload.channelId, cmd.payload.data);
+                    }
+                } catch (e) { this._notify('command_error', { peerId, action, error: String(e) }); }
+            }
+            _createPeer(peerId) {
+                if (this.peers.has(peerId)) return;
+                const servers = (this.iceServers || []).map(s => {
+                    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+                    if (urls.some(u => u.startsWith('turn:') || u.startsWith('turns:')) && this.turnCred) {
+                        return { urls: s.urls, username: this.turnCred.username, credential: this.turnCred.credential };
+                    }
+                    return s;
+                });
+                const pc = new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: this.icePolicy });
+                const dcs = new Map();
+                pc.ondatachannel = e => { const lid = this.labelToId.get(e.channel.label); if (lid !== undefined) this._attach(peerId, lid, e.channel); };
+                pc.onicecandidate = e => { if (e.candidate) this._notify('ice_candidate', { peerId, candidate: e.candidate.toJSON() }); };
+                pc.onconnectionstatechange = () => {
+                    this._notify('connection_state_changed', { peerId, state: pc.connectionState });
+                    const p = this.peers.get(peerId); if (p) p.state = pc.connectionState;
+                };
+                this.peers.set(peerId, { peerId, connection: pc, dataChannels: dcs, state: pc.connectionState });
+            }
+            async _setRemote(pid, sdp) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); await p.connection.setRemoteDescription(sdp); }
+            async _setLocal(pid, sdp) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); await p.connection.setLocalDescription(sdp); }
+            async _createOffer(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const o = await p.connection.createOffer(); await p.connection.setLocalDescription(o); this._notify('local_description', { peerId: pid, sdp: o }); }
+            async _iceRestart(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const o = await p.connection.createOffer({ iceRestart: true }); await p.connection.setLocalDescription(o); this._notify('ice_restart_local_description', { peerId: pid, sdp: o }); }
+            async _createAnswer(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const a = await p.connection.createAnswer(); await p.connection.setLocalDescription(a); this._notify('local_description', { peerId: pid, sdp: a }); }
+            async _addIce(pid, cand) {
+                const p = this.peers.get(pid); if (!p) throw new Error('no peer');
+                if (!cand || typeof cand !== 'object') return;
+                const n = { ...cand, sdpMid: cand.sdpMid ?? cand.sdp_mid ?? null, sdpMLineIndex: cand.sdpMLineIndex ?? cand.sdp_mline_index ?? null, usernameFragment: cand.usernameFragment ?? cand.username_fragment ?? null };
+                if (n.sdpMid == null && n.sdpMLineIndex == null) n.sdpMLineIndex = 0;
+                await p.connection.addIceCandidate(new RTCIceCandidate(n));
+            }
+            _send(pid, cid, data) {
+                const p = this.peers.get(pid); if (!p) { this._notify('command_error', { peerId: pid, action: 'send_data', error: 'no peer' }); return; }
+                const ch = p.dataChannels.get(cid); if (!ch) return;
+                if (ch.readyState === 'open') { const out = new Uint8Array(1 + data.byteLength); out[0] = cid; out.set(data, 1); ch.send(out); }
+            }
+            _attach(pid, lid, ch) {
+                ch.binaryType = 'arraybuffer';
+                ch.onmessage = e => {
+                    const buf = e.data instanceof Blob ? null : e.data;
+                    if (buf instanceof ArrayBuffer && buf.byteLength >= 1) {
+                        const v = new Uint8Array(buf); const vcid = v[0];
+                        this.forwarder.forward(pid + ':' + vcid, buf.slice(1));
+                    } else if (e.data instanceof Blob) {
+                        e.data.arrayBuffer().then(ab => { if (ab.byteLength < 1) return; const v = new Uint8Array(ab); this.forwarder.forward(pid + ':' + v[0], ab.slice(1)); });
+                    }
+                };
+                ch.onopen = () => {
+                    this._notify('datachannel_open', { peerId: pid, channelId: lid, label: ch.label });
+                    if (lid === 0) {
+                        const mc = new MessageChannel();
+                        mc.port1.onmessage = e => {
+                            if (ch.readyState === 'open') {
+                                const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
+                                const out = new Uint8Array(1 + (src.length - 5)); out[0] = src[0]; out.set(src.subarray(5), 1); ch.send(out);
+                            }
+                        };
+                        this.bridge.sendDataChannelPort(pid, mc.port2);
+                    }
+                };
+                ch.onclose = () => this._notify('datachannel_close', { peerId: pid, channelId: lid });
+                const p = this.peers.get(pid); if (p) p.dataChannels.set(lid, ch);
+            }
+            async _ensureChannels(pid) {
+                const p = this.peers.get(pid); if (!p) throw new Error('no peer');
+                for (const l of this.lanes) { if (p.dataChannels.has(l.id)) continue; const c = p.connection.createDataChannel(l.label, { ordered: l.ordered, maxRetransmits: l.maxRetransmits }); this._attach(pid, l.id, c); }
+            }
+            _close(pid) {
+                const p = this.peers.get(pid); if (!p) return;
+                for (const c of p.dataChannels.values()) c.close(); p.connection.close(); this.peers.delete(pid);
+            }
+            _notify(eventType, data) { this.bridge.sendToSW({ type: 'webrtc_event', payload: { eventType, data } }); }
+            dispose() { for (const pid of this.peers.keys()) this._close(pid); }
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════
+           Minimal Protobuf helpers for EchoRequest / EchoResponse
+           EchoRequest  { string message = 1; }
+           EchoResponse { string reply = 1; uint64 timestamp = 2; }
+           ═══════════════════════════════════════════════════════════════════ */
+        function encodeVarint(value) {
+            const bytes = [];
+            while (value > 0x7f) { bytes.push((value & 0x7f) | 0x80); value >>>= 7; }
+            bytes.push(value & 0x7f);
+            return bytes;
+        }
+        function readVarint(data, offset) {
+            let result = 0, shift = 0, bytesRead = 0;
+            while (offset < data.length) {
+                const b = data[offset++]; bytesRead++;
+                result |= (b & 0x7f) << shift;
+                if ((b & 0x80) === 0) break;
+                shift += 7;
+            }
+            return [result >>> 0, bytesRead];
+        }
+        function encodeEchoRequest(message) {
+            const msgBytes = new TextEncoder().encode(message);
+            const header = [0x0a, ...encodeVarint(msgBytes.length)];
+            const buf = new Uint8Array(header.length + msgBytes.length);
+            buf.set(header);
+            buf.set(msgBytes, header.length);
+            return buf;
+        }
+        function decodeEchoResponse(data) {
+            let reply = '', timestamp = 0, pos = 0;
+            while (pos < data.length) {
+                const tag = data[pos++];
+                const fieldNumber = tag >>> 3;
+                const wireType = tag & 0x07;
+                if (wireType === 2) {
+                    const [len, br] = readVarint(data, pos); pos += br;
+                    if (fieldNumber === 1) reply = new TextDecoder().decode(data.subarray(pos, pos + len));
+                    pos += len;
+                } else if (wireType === 0) {
+                    const [val, br] = readVarint(data, pos); pos += br;
+                    if (fieldNumber === 2) timestamp = val;
+                } else break;
+            }
+            return { reply, timestamp };
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════
+           Actor Host Logic — fetch config, start SW, create DOM bridge,
+           then render server or client UI based on is_server flag.
+           ═══════════════════════════════════════════════════════════════════ */
+
+        const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
+        const resultEl = document.getElementById('result');
+        const sendBtn = document.getElementById('sendBtn');
+        const msgInput = document.getElementById('msgInput');
+
+        // Server stats
+        let requestCount = 0, successCount = 0, errorCount = 0;
+
+        // Global bridge ref (used by callRaw)
+        let _bridge = null;
+        let _rpcId = 0;
+        const _pendingRpc = new Map();
+
+        function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        function timeStr() { return new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+
+        /** Server log panel (adds .log-entry elements to #log) */
+        function serverLog(level, msg) {
+            const d = document.createElement('div');
+            d.className = 'log-entry ' + level;
+            d.innerHTML = '<span class="time">' + timeStr() + '</span>' + escapeHtml(msg);
+            logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+            while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+        }
+
+        /** Client result panel (adds .entry elements to #result) */
+        function clientLog(level, msg) {
+            const d = document.createElement('div');
+            d.className = 'entry';
+            d.innerHTML = '<span class="time">' + timeStr() + '</span><span class="' + level + '">' + escapeHtml(msg) + '</span>';
+            resultEl.appendChild(d); resultEl.scrollTop = resultEl.scrollHeight;
+            while (resultEl.children.length > 200) resultEl.removeChild(resultEl.firstChild);
+        }
+
+        /** Generic runtime log (also writes .log-entry to #log, for SW events) */
+        function runtimeLog(level, msg) {
+            const d = document.createElement('div');
+            d.className = 'log-entry ' + level;
+            d.innerHTML = '<span class="time">' + timeStr() + '</span>' + escapeHtml(msg);
+            logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+            while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+        }
+
+        function updateServerStats() {
+            document.getElementById('requestCount').textContent = String(requestCount);
+            document.getElementById('successCount').textContent = String(successCount);
+            document.getElementById('errorCount').textContent = String(errorCount);
+        }
+
+        /** callRaw — send RPC via SW bridge (mirrors @actr/web ActorRef.callRaw) */
+        function callRaw(routeKey, payload, timeout) {
+            timeout = timeout || 30000;
+            const requestId = 'req_' + (++_rpcId) + '_' + Date.now();
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    _pendingRpc.delete(requestId);
+                    reject(new Error('RPC timeout after ' + timeout + 'ms'));
+                }, timeout);
+                _pendingRpc.set(requestId, { resolve, reject, timer });
+                _bridge.sendToSW({
+                    type: 'control',
+                    payload: {
+                        action: 'rpc_call',
+                        request_id: requestId,
+                        request: { route_key: routeKey, payload: payload, timeout: timeout },
+                    },
+                });
+            });
+        }
+
+        /** Send echo (client mode) */
+        async function doSendEcho() {
+            if (!_bridge) { clientLog('err', '❌ Client is not initialized'); return; }
+            const message = msgInput.value.trim() || ('Hello! (' + new Date().toLocaleTimeString() + ')');
+            try {
+                sendBtn.disabled = true;
+                clientLog('info', '📤 Sending: "' + message + '"');
+                const payload = encodeEchoRequest(message);
+                const responseData = await callRaw('echo.EchoService.Echo', payload);
+                const response = decodeEchoResponse(new Uint8Array(responseData));
+                clientLog('ok', '📥 Reply: "' + response.reply + '"');
+                if (response.timestamp) clientLog('info', '⏱️ Timestamp: ' + new Date(response.timestamp * 1000).toLocaleString());
+            } catch (e) {
+                console.error('Echo failed:', e);
+                clientLog('err', '❌ Request failed: ' + e.message);
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        /* ── Main ── */
+        (async function main() {
+            try {
+                runtimeLog('info', 'Fetching runtime config…');
+                const resp = await fetch('/actr-runtime-config.json');
+                if (!resp.ok) throw new Error('Config fetch failed: ' + resp.status);
+                const cfg = await resp.json();
+                const isServer = !!cfg.is_server;
+
+                // Update info grid
+                document.getElementById('actorType').textContent = cfg.package.full_type || '—';
+                document.getElementById('role').textContent = isServer ? 'Server' : 'Client';
+                document.getElementById('sigUrl').textContent = cfg.signaling_url || '—';
+                document.getElementById('realmId').textContent = cfg.realm_id || '—';
+                document.getElementById('serviceName').textContent = cfg.package.full_type ? ('echo.' + cfg.package.actr_name || cfg.package.name || cfg.package.full_type) : '—';
+
+                // Show/hide role-specific UI
+                if (isServer) {
+                    document.getElementById('serverStats').style.display = '';
+                } else {
+                    document.getElementById('clientArea').style.display = '';
+                }
+
+                const swRuntimeConfig = {
+                    ais_endpoint: cfg.ais_endpoint,
+                    signaling_url: cfg.signaling_url,
+                    realm_id: cfg.realm_id,
+                    client_actr_type: cfg.package.full_type,
+                    target_actr_type: (cfg.acl_allow_types && cfg.acl_allow_types[0]) || '',
+                    service_fingerprint: '',
+                    acl_allow_types: cfg.acl_allow_types || [],
+                    is_server: cfg.is_server,
+                    package_url: cfg.package_url,
+                    register_fn: '',
+                    runtime_wasm_url: cfg.runtime_wasm_url,
+                    mfr_pubkey: cfg.mfr_pubkey || '',
+                };
+
+                const iceServers = [
+                    ...(cfg.stun_urls || []).map(u => ({ urls: u })),
+                    ...(cfg.turn_urls || []).map(u => ({ urls: u })),
+                ];
+
+                runtimeLog('info', 'Registering Service Worker…');
+                const bridge = new ServiceWorkerBridge();
+                _bridge = bridge;
+                await bridge.initialize('/actor.sw.js', swRuntimeConfig);
+                runtimeLog('success', 'Service Worker ready');
+
+                const forwarder = new FastPathForwarder(bridge);
+                const coordinator = new WebRtcCoordinator(bridge, forwarder, { iceServers, iceTransportPolicy: cfg.force_relay ? 'relay' : undefined });
+
+                // Handle RPC responses for callRaw (client mode)
+                bridge.onMessage(m => {
+                    if (m.type === 'control_response' && m.payload) {
+                        const { request_id, data, error } = m.payload;
+                        const pending = _pendingRpc.get(request_id);
+                        if (pending) {
+                            clearTimeout(pending.timer);
+                            _pendingRpc.delete(request_id);
+                            if (error) pending.reject(new Error('RPC error [' + (error.code || '?') + ']: ' + (error.message || '')));
+                            else pending.resolve(data || new Uint8Array());
+                        }
+                    }
+                });
+
+                // Listen for SW bridge messages (WebRTC events, sw_log)
+                bridge.onMessage(m => {
+                    if (m.type === 'webrtc_event' && m.payload && m.payload.eventType === 'sw_log') {
+                        const d = m.payload.data; runtimeLog(d.level || 'info', d.message || JSON.stringify(d));
+                    } else if (m.type === 'webrtc_event' && m.payload) {
+                        runtimeLog('info', '[WebRTC] ' + m.payload.eventType + ': ' + JSON.stringify(m.payload.data));
+                    }
+                });
+
+                // Listen for broadcast events from SW (echo_event, sw_log)
+                navigator.serviceWorker.addEventListener('message', e => {
+                    if (!e.data || !e.data.type) return;
+                    if (e.data.type === 'sw_log') {
+                        let msg = e.data.message || '';
+                        msg = msg.replace(/^\s*INFO\s+/, '');
+                        msg = msg.replace(/^\s*WARN\s+/, '⚠️ ');
+                        msg = msg.replace(/^\s*ERROR\s+/, '❌ ');
+                        runtimeLog(e.data.level || 'info', msg);
+                    } else if (e.data.type === 'echo_event' && isServer) {
+                        // Server: update stats from echo_event broadcasts
+                        switch (e.data.event) {
+                            case 'request':
+                                requestCount++;
+                                serverLog('info', '📨 Received Echo request: "' + (e.data.detail || '') + '"');
+                                break;
+                            case 'response':
+                                successCount++;
+                                serverLog('success', '✅ Sent Echo response: "' + (e.data.detail || '') + '"');
+                                break;
+                            case 'error':
+                                errorCount++;
+                                serverLog('error', '❌ Handling error: ' + (e.data.detail || ''));
+                                break;
+                        }
+                        updateServerStats();
+                    }
+                });
+
+                // Set status based on role
+                if (isServer) {
+                    statusEl.innerHTML = '<span>✅</span><span>Server is running</span>';
+                    statusEl.className = 'status ready';
+                    serverLog('success', '✅ Echo Server started successfully!');
+                    serverLog('info', '📡 Registered service: echo.EchoService');
+                    serverLog('info', '⏳ Waiting for clients to connect…');
+                } else {
+                    statusEl.textContent = '✅ Connected';
+                    statusEl.className = 'status connected';
+                    sendBtn.disabled = false;
+                    clientLog('ok', '✅ Client initialized successfully');
+                    clientLog('info', '⏳ Will automatically send an Echo test message in 5s…');
+                    // Auto-echo after 5 seconds
+                    setTimeout(async () => {
+                        clientLog('info', '🚀 Automatically sending Echo test message…');
+                        await doSendEcho();
+                    }, 5000);
+                }
+
+                runtimeLog('success', 'Actor initialized as ' + (isServer ? 'SERVER' : 'CLIENT') + ' (' + (cfg.package.full_type || 'unknown') + ')');
+
+                // Wire up client send button
+                if (!isServer) {
+                    sendBtn.addEventListener('click', doSendEcho);
+                    msgInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) doSendEcho(); });
+                }
+
+                // Keep-alive
+                setInterval(() => { if (navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'PING' }); }, 20000);
+
+                // Cleanup on page unload
+                window.addEventListener('beforeunload', () => { bridge.close(); });
+
+            } catch (e) {
+                statusEl.textContent = '❌ ' + e.message;
+                statusEl.className = 'status error';
+                runtimeLog('error', String(e));
+                console.error(e);
+            }
+        })();
+    </script>
+</body>
+
+</html>

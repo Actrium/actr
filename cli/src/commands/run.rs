@@ -10,7 +10,6 @@ use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
-use std::sync::Arc;
 use tracing::info;
 
 #[derive(Args)]
@@ -30,24 +29,13 @@ pub struct RunCommand {
     /// Internal: WID passed from parent to detached child (or from start/restart for reuse).
     #[arg(long = "internal-wid", hide = true)]
     pub internal_wid: Option<String>,
-    /// Run as a web server (serves static files + runtime config for browser-based actors)
-    #[arg(long = "web")]
-    pub web: bool,
-
-    /// Override web server port (default from config or 8080)
-    #[arg(long = "port", requires = "web")]
-    pub port: Option<u16>,
 }
 
 #[async_trait]
 impl Command for RunCommand {
     async fn execute(&self) -> Result<()> {
         // The run command only supports packaged workloads via runtime config.
-        if self.web {
-            self.execute_web_mode().await
-        } else {
-            self.execute_package_mode().await
-        }
+        self.execute_package_mode().await
     }
 }
 
@@ -550,27 +538,80 @@ impl RunCommand {
             .map(|w| config_dir.join(&w.static_dir))
             .unwrap_or_else(|| config_dir.join("public"));
 
-        // Build runtime config JSON to inject into the page
-        let runtime_config_json = self.build_web_runtime_config(&raw_config, &config_path)?;
+        // Resolve the .actr package from [package].path
+        let package_path = raw_config
+            .package
+            .as_ref()
+            .and_then(|p| p.path.as_ref())
+            .map(|p| {
+                if p.is_absolute() {
+                    p.clone()
+                } else {
+                    config_dir.join(p)
+                }
+            });
 
-        // // Ensure static dir exists
-        // if !static_dir.exists() {
-        //     return Err(ActrCliError::command_error(format!(
-        //         "Static directory not found: {}\n\n\
-        //          Please create the directory or configure [web] static_dir in your config file.",
-        //         static_dir.display()
-        //     )));
-        // }
+        // Read the package bytes for serving
+        let package_bytes = if let Some(ref pkg_path) = package_path {
+            if pkg_path.exists() {
+                Some(tokio::fs::read(pkg_path).await.map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to read package file {}: {}",
+                        pkg_path.display(),
+                        e
+                    ))
+                })?)
+            } else {
+                info!(
+                    "⚠️  Package file not found: {}, /packages/*.actr will not be served",
+                    pkg_path.display()
+                );
+                None
+            }
+        } else {
+            None
+        };
+
+        // Derive the package filename for the URL
+        let package_filename = package_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "package.actr".to_string());
+
+        // Build runtime config JSON — auto-inject embedded asset URLs
+        let runtime_config_json =
+            self.build_web_runtime_config(&raw_config, &config_path, &package_filename)?;
 
         let shared_state = Arc::new(WebServerState {
             runtime_config_json,
+            package_bytes,
+            package_filename,
         });
 
-        // Build router: serve static files + runtime config endpoint
+        // Build router:
+        // 1. /actr-runtime-config.json — generated runtime config
+        // 2. /actor.sw.js — embedded Service Worker
+        // 3. /packages/actr_runtime_sw_bg.wasm — embedded runtime WASM
+        // 4. /packages/actr_runtime_sw.js — embedded runtime JS glue
+        // 5. /packages/<name>.actr — the .actr package from [package].path
+        // 6. / — embedded host HTML (fallback: static_dir)
         let app = Router::new()
             .route("/actr-runtime-config.json", get(serve_runtime_config))
+            .route("/actor.sw.js", get(serve_actor_sw_js))
+            .route("/packages/actr_runtime_sw_bg.wasm", get(serve_runtime_wasm))
+            .route("/packages/actr_runtime_sw.js", get(serve_runtime_js))
+            .route("/packages/{filename}", get(serve_actr_package))
+            .with_state(shared_state.clone())
+            .fallback_service(if static_dir.exists() {
+                ServeDir::new(&static_dir)
+            } else {
+                // Serve embedded host page from a temp dir is not ideal,
+                // so we handle "/" in the fallback via the index route
+                ServeDir::new(&config_dir)
+            })
+            .route("/", get(serve_host_html))
             .with_state(shared_state)
-            .nest_service("/", ServeDir::new(&static_dir))
             .layer(CorsLayer::permissive())
             .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
                 axum::http::header::HeaderName::from_static("cross-origin-opener-policy"),
@@ -587,8 +628,13 @@ impl RunCommand {
 
         println!("🌐 Web server started");
         println!("   URL:        http://{}:{}", web_host, web_port);
-        println!("   Static dir: {}", static_dir.display());
+        if static_dir.exists() {
+            println!("   Static dir: {}", static_dir.display());
+        }
         println!("   Config:     {}", config_path.display());
+        if let Some(ref pkg_path) = package_path {
+            println!("   Package:    {}", pkg_path.display());
+        }
         println!("   Press Ctrl+C to stop");
 
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
@@ -608,6 +654,7 @@ impl RunCommand {
         &self,
         raw: &actr_config::RuntimeRawConfig,
         config_path: &Path,
+        package_filename: &str,
     ) -> Result<String> {
         let signaling_url = raw
             .signaling
@@ -695,7 +742,11 @@ impl RunCommand {
         // Extract web-specific fields
         let web = raw.web.as_ref();
         let is_server = web.and_then(|w| w.is_server).unwrap_or(false);
-        let package_url = web.and_then(|w| w.package_url.clone()).unwrap_or_default();
+        // Auto-generate package_url and runtime_wasm_url from embedded assets.
+        // Config-level overrides are still respected if present (backward compat).
+        let package_url = web
+            .and_then(|w| w.package_url.clone())
+            .unwrap_or_else(|| format!("/packages/{}", package_filename));
         let runtime_wasm_url = web
             .and_then(|w| w.runtime_wasm_url.clone())
             .unwrap_or_else(|| "/packages/actr_runtime_sw_bg.wasm".to_string());
@@ -732,6 +783,8 @@ impl RunCommand {
 
 struct WebServerState {
     runtime_config_json: String,
+    package_bytes: Option<Vec<u8>>,
+    package_filename: String,
 }
 
 async fn serve_runtime_config(
@@ -740,6 +793,73 @@ async fn serve_runtime_config(
     (
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         state.runtime_config_json.clone(),
+    )
+}
+
+/// Serve the embedded host HTML page at `/`.
+async fn serve_host_html(
+    axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        crate::web_assets::HOST_HTML,
+    )
+}
+
+/// Serve the embedded actor.sw.js Service Worker.
+async fn serve_actor_sw_js(
+    axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        crate::web_assets::ACTOR_SW_JS,
+    )
+}
+
+/// Serve the embedded runtime WASM binary.
+async fn serve_runtime_wasm(
+    axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/wasm")],
+        crate::web_assets::RUNTIME_WASM,
+    )
+}
+
+/// Serve the embedded runtime JS glue.
+async fn serve_runtime_js(
+    axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        crate::web_assets::RUNTIME_JS,
+    )
+}
+
+/// Serve the .actr package from [package].path.
+async fn serve_actr_package(
+    axum::extract::State(state): axum::extract::State<Arc<WebServerState>>,
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    if filename == state.package_filename {
+        if let Some(ref bytes) = state.package_bytes {
+            return (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                bytes.clone(),
+            );
+        }
+    }
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        [(axum::http::header::CONTENT_TYPE, "text/plain")],
+        b"Not found".to_vec(),
     )
 }
 
