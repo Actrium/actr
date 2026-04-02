@@ -4,7 +4,7 @@
 edition = 1
 
 [package]
-path = "../echo-actr/dist/actrium-EchoService-REPLACE_VERSION-wasm32-unknown-unknown.actr"
+path = "../echo-actr/dist/actrium-EchoService-0.2.2-wasm32-unknown-unknown.actr"
 
 [signaling]
 url = "ws://localhost:8081/signaling/ws"
