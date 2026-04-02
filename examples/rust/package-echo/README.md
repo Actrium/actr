@@ -6,8 +6,8 @@ End-to-end test for the Actr package-driven execution flow, demonstrating how to
 
 This example demonstrates:
 
-1. **Build**: Compile echo-actr WASM package and optimize with wasm-opt
-2. **Sign**: Create signed `.actr` archive using `actr pkg build`
+1. **Build**: Compile echo-actr package (WASM or native cdylib) and package it as a signed `.actr` archive
+2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr pkg build` (wasm)
 3. **Verify**: Validate package signature with `actr pkg verify`
 4. **Publish**: Register package with MFR (Manufacturer Registry) via `actr pkg publish`
 5. **Run**: Host server loads the package and exposes the echo service
@@ -78,7 +78,7 @@ Windows users must use **WSL 2** (Windows Subsystem for Linux 2):
    - Linux: Auto-installed via apt/yum/dnf if missing
    - Manual install: https://jqlang.github.io/jq/download/
 
-3. **wasm-opt** (WASM optimizer)
+3. **wasm-opt** (WASM optimizer, required for `--backend wasm` only)
    ```bash
    cargo install wasm-opt
    ```
@@ -194,22 +194,28 @@ cd examples/rust/package-echo
 ### 2. Run the Test
 
 ```bash
-# Use default test message "TestMsg"
+# Use default test message "TestMsg" with wasm backend (default)
 ./start.sh
 
-# Or send custom message
+# Send custom message
 ./start.sh "Hello World"
+
+# Use native cdylib backend (skips wasm-opt, uses actr build)
+./start.sh --backend cdylib
+
+# cdylib backend with custom message
+./start.sh --backend cdylib "Hello World"
 ```
 
 ### 3. Expected Output
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧪 Testing package-echo (local echo-actr package loader)
+🧪 Testing package-echo (backend: wasm)
     Using Actrix as signaling server
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ jq found: jq-1.8.1
-📦 Step 0: Compiling echo-actr WASM...
+📦 Step 0: Building echo-actr (wasm)...
 ✅ WASM compiled: 2.1M
 ✅ wasm-opt done: 1.8M
 📦 Step 0.5: Packing signed .actr package...
@@ -226,11 +232,20 @@ cd examples/rust/package-echo
 
 The `start.sh` script performs a complete end-to-end test:
 
-### Step 0: Compile WASM Package
+### Step 0: Build Package
+
+Two backends are supported via the `--backend` flag:
+
+**wasm (default)**
 - Compiles `echo-actr` to WASM (`wasm32-unknown-unknown`)
 - Optimizes with `wasm-opt --asyncify`
+- Packages with `actr pkg build`
 
-### Step 0.5: Build and Sign Package
+**cdylib**
+- Compiles `echo-actr` as a native shared library using `manifest-cdylib.toml`
+- Packages with `actr build` (no wasm-opt step)
+
+### Step 0.5: Sign and Verify Package
 - Creates signed `.actr` archive using `actr pkg build`
 - Verifies signature with `actr pkg verify`
 - Builds client-guest cdylib package
@@ -248,6 +263,8 @@ The `start.sh` script performs a complete end-to-end test:
 
 ### Step 3-4: Start Server
 - Builds package-echo-server binary
+- Regenerates `server-actr.toml` with the current package path
+- Runs `actr run -c server-actr.toml`
 - Loads `.actr` package in production trust mode
 - Registers with AIS and obtains credential
 
@@ -379,30 +396,45 @@ Instead of the full test script, you can run components individually:
 cd ../../../actrix
 cargo run -- --config examples/rust/package-echo/actrix-config.toml
 
-# Run server with actr run
+# Run server with actr run (Note: start.sh will first generate/overwrite server-actr.toml)
 cd examples/rust/package-echo
 cargo run -p actr-cli -- run \
-    --config server/actr.toml \
-    --package dist/actrium-EchoService-0.1.0-wasm32-unknown-unknown.actr \
-    --trust-mode production \
-    --ais-endpoint http://localhost:8081/ais
+    --config server-actr.toml
 
 # Run client
 cargo run --bin package-echo-client
 ```
+
+Before running the server manually, make sure `server-actr.toml` points to a real `.actr` package. The committed file is only a template; `start.sh` rewrites it with the actual package path after building and signing `echo-actr`.
+
+## Detached Runtime Lifecycle Check
+
+Use the dedicated lifecycle script when you want to validate the detached runtime management flow against the package-backed server config:
+
+```bash
+cd examples/rust/package-echo
+bash manual-runtime-lifecycle.sh
+```
+
+The script derives an isolated config from `server-actr.toml`, starts actrix, publishes the local package, and verifies:
+
+- `actr run -d` prints the WID plus the `actr logs <wid> -f` follow hint.
+- `actr ps` shows `WID`, `ACTR_ID`, `PID`, `STATUS`, and `STARTED_AT`.
+- `actr stop <wid-prefix>` followed by `actr start <wid-prefix>` keeps the same WID and assigns a new PID.
+- `actr restart <wid-prefix>` keeps the same WID and log file.
+- `actr logs <wid-prefix> -f` keeps streaming appended logs across restarts.
+- A v1 runtime record in `run_dir` returns an actionable schema error that includes the directory path.
 
 ## Project Structure
 
 ```
 package-echo/
 ├── README.md              # This file
+├── manual-runtime-lifecycle.sh # Detached runtime lifecycle verification
 ├── start.sh               # End-to-end test script
 ├── actrix-config.toml     # Actrix server configuration
 ├── dev-key.json           # Development signing key
-├── server/                # Echo server (loads .actr package)
-│   ├── src/
-│   ├── actr.toml          # Runtime configuration
-│   └── manifest.toml      # Package manifest
+├── server-actr.toml       # Server runtime config template (overwritten by start.sh)
 ├── client/                # Echo client (native)
 │   ├── src/
 │   ├── actr.toml

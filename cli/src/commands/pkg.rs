@@ -12,12 +12,16 @@
 
 use std::path::PathBuf;
 
-use actr_protocol::ActrType;
 use anyhow::{Context, Result};
 use base64::Engine;
 use clap::{Args, Subcommand};
 use ed25519_dalek::SigningKey;
 use serde::Serialize;
+
+use crate::commands::package_build::{
+    PackageBuildInput, build_package, default_pkg_output_path, load_signing_key,
+    load_verifying_key, load_verifying_key_from_dev_key, print_build_summary, resolve_key_path,
+};
 
 #[derive(Args, Debug)]
 pub struct PkgArgs {
@@ -239,174 +243,21 @@ fn parse_resource_arg(s: &str) -> Result<(String, PathBuf), String> {
 // --- build (.actr package creation) ---
 
 async fn execute_build(args: PkgBuildArgs) -> Result<()> {
-    use sha2::{Digest, Sha256};
-
-    // 1. Load signing key
-    let key_path = resolve_key_path(args.key.as_deref())?;
-    let signing_key = load_signing_key(&key_path)?;
-    let verifying_key = signing_key.verifying_key();
-    tracing::debug!(key_path = %key_path.display(), "signing key loaded");
-
-    // 2. Read manifest.toml for package metadata
-    let config_bytes = std::fs::read(&args.config)
-        .with_context(|| format!("Failed to read config: {}", args.config.display()))?;
-    let config_value: toml::Value =
-        toml::from_slice(&config_bytes).with_context(|| "Invalid manifest.toml")?;
-    let pkg = config_value
-        .get("package")
-        .ok_or_else(|| anyhow::anyhow!("manifest.toml missing [package] section"))?;
-
-    // Support flat [package].{manufacturer,name,version}.
-    let get_str = |key: &str| -> Result<String> {
-        pkg.get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("manifest.toml [package].{key} missing"))
+    let output_path = match args.output {
+        Some(path) => path,
+        None => default_pkg_output_path(&args.config, &args.target)?,
     };
 
-    let manufacturer = get_str("manufacturer")?;
-    let name = get_str("name")?;
-    let version = get_str("version")?;
-    let actr_type = ActrType {
-        manufacturer: manufacturer.clone(),
-        name: name.clone(),
-        version: version.clone(),
-    };
+    let summary = build_package(PackageBuildInput {
+        binary_path: args.binary,
+        config_path: args.config,
+        key_path: resolve_key_path(args.key.as_deref())?,
+        output_path,
+        target: args.target,
+        resources: args.resource,
+    })?;
 
-    // 3. Read binary
-    let binary_bytes = std::fs::read(&args.binary)
-        .with_context(|| format!("Failed to read binary: {}", args.binary.display()))?;
-
-    tracing::info!(
-        actr_type = %actr_type,
-        binary_size = binary_bytes.len(),
-        "building .actr package"
-    );
-
-    // 4. Create manifest
-    let manifest = actr_pack::PackageManifest {
-        manufacturer: manufacturer.clone(),
-        name: name.clone(),
-        version: version.clone(),
-        binary: actr_pack::BinaryEntry {
-            path: "bin/actor.wasm".to_string(),
-            target: args.target.clone(),
-            hash: String::new(),
-            size: None,
-        },
-        signature_algorithm: "ed25519".to_string(),
-        signing_key_id: Some(actr_pack::compute_key_id(&verifying_key.to_bytes())),
-        resources: vec![],
-        proto_files: vec![], // will be populated below from exports
-        lock_file: None,
-        metadata: actr_pack::ManifestMetadata {
-            description: pkg
-                .get("description")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            license: pkg
-                .get("license")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        },
-    };
-
-    // 5. Read proto files from `exports` array
-    //    Prefer [package].exports, fallback to top-level exports (backward compat)
-    let config_dir = args
-        .config
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let mut proto_files: Vec<(String, Vec<u8>)> = Vec::new();
-    let exports = pkg
-        .get("exports")
-        .and_then(|e| e.as_array())
-        .or_else(|| config_value.get("exports").and_then(|e| e.as_array()));
-    if let Some(exports) = exports {
-        for export_entry in exports {
-            if let Some(proto_path_str) = export_entry.as_str() {
-                let proto_path = config_dir.join(proto_path_str);
-                match std::fs::read(&proto_path) {
-                    Ok(content) => {
-                        let filename = proto_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown.proto")
-                            .to_string();
-                        println!("  proto:       {}", filename);
-                        proto_files.push((filename, content));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to read proto file {:?}: {}", proto_path, e);
-                    }
-                }
-            }
-        }
-    }
-
-    // 5b. Read resource files (--resource zip_path=local_path)
-    let resources: Vec<(String, Vec<u8>)> = args
-        .resource
-        .iter()
-        .map(|(zip_path, local_path)| {
-            let bytes = std::fs::read(local_path)
-                .with_context(|| format!("Failed to read resource: {}", local_path.display()))?;
-            println!("  resource:    {} ({} bytes)", zip_path, bytes.len());
-            Ok((zip_path.clone(), bytes))
-        })
-        .collect::<Result<_, anyhow::Error>>()?;
-
-    // 6. Load manifest.lock.toml if it exists (packed into the .actr for dependency auditing)
-    let lock_file = {
-        let lock_path = config_dir.join("manifest.lock.toml");
-        if lock_path.exists() {
-            let bytes = std::fs::read(&lock_path)
-                .with_context(|| format!("Failed to read {}", lock_path.display()))?;
-            println!("  lock:        manifest.lock.toml ({} bytes)", bytes.len());
-            Some(bytes)
-        } else {
-            None
-        }
-    };
-
-    // 7. Pack
-    let opts = actr_pack::PackOptions {
-        manifest,
-        binary_bytes: binary_bytes.clone(),
-        resources,
-        proto_files,
-        signing_key: signing_key.clone(),
-        lock_file,
-    };
-    let package_bytes = actr_pack::pack(&opts)?;
-
-    // 6. Write output
-    let output_path = args.output.unwrap_or_else(|| {
-        PathBuf::from(format!(
-            "{}-{}-{}-{}.actr",
-            manufacturer, name, version, args.target
-        ))
-    });
-    std::fs::write(&output_path, &package_bytes)
-        .with_context(|| format!("Failed to write package: {}", output_path.display()))?;
-
-    // 7. Summary
-    let mut hasher = Sha256::new();
-    hasher.update(&binary_bytes);
-    let hash_hex = hex::encode(hasher.finalize());
-
-    let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
-
-    println!("Package built successfully");
-    println!();
-    println!("  type:        {}:{}:{}", manufacturer, name, version);
-    println!("  target:      {}", args.target);
-    println!("  binary_hash: {}...", &hash_hex[..16]);
-    println!("  output:      {}", output_path.display());
-    println!("  size:        {} bytes", package_bytes.len());
-    println!();
-    println!("Public key (for verification):");
-    println!("  {pubkey_b64}");
+    print_build_summary(&summary);
 
     Ok(())
 }
@@ -860,58 +711,4 @@ async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-// --- Helpers ---
-
-fn resolve_key_path(custom: Option<&std::path::Path>) -> Result<PathBuf> {
-    if let Some(p) = custom {
-        return Ok(p.to_path_buf());
-    }
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
-    Ok(home.join(".actr").join("dev-key.json"))
-}
-
-fn load_signing_key(key_path: &std::path::Path) -> Result<SigningKey> {
-    if !key_path.exists() {
-        anyhow::bail!(
-            "Key file not found: {}\nRun `actr pkg keygen` to generate a key first.",
-            key_path.display()
-        );
-    }
-    let content = std::fs::read_to_string(key_path)?;
-    let json: serde_json::Value = serde_json::from_str(&content)?;
-    let private_b64 = json["private_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Key file missing private_key field"))?;
-    let private_bytes = base64::engine::general_purpose::STANDARD.decode(private_b64)?;
-    let key_arr: [u8; 32] = private_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("private_key must be exactly 32 bytes"))?;
-    Ok(SigningKey::from_bytes(&key_arr))
-}
-
-fn load_verifying_key(path: &std::path::Path) -> Result<ed25519_dalek::VerifyingKey> {
-    let content = std::fs::read_to_string(path)?;
-    let json: serde_json::Value = serde_json::from_str(&content)?;
-    let public_b64 = json["public_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Key file missing public_key field"))?;
-    let public_bytes = base64::engine::general_purpose::STANDARD.decode(public_b64)?;
-    let key_arr: [u8; 32] = public_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("public_key must be exactly 32 bytes"))?;
-    ed25519_dalek::VerifyingKey::from_bytes(&key_arr)
-        .map_err(|e| anyhow::anyhow!("Invalid public key: {e}"))
-}
-
-fn load_verifying_key_from_dev_key(path: &std::path::Path) -> Result<ed25519_dalek::VerifyingKey> {
-    if !path.exists() {
-        anyhow::bail!(
-            "No key file found at {}. Specify --pubkey or run `actr pkg keygen` first.",
-            path.display()
-        );
-    }
-    load_verifying_key(path)
 }

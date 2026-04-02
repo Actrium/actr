@@ -1,7 +1,7 @@
 edition = 1
 
 [package]
-path = "/Users/kaito/Project/Actrium/actr-run-worktree/examples/rust/echo-actr/dist/actrium-EchoService-0.2.2-wasm32-unknown-unknown.actr"
+path = "/Users/kaito/Project/Actrium/actr/examples/rust/echo-actr/dist/actrium-EchoService-0.2.2-aarch64-apple-darwin.actr"
 
 [signaling]
 url = "ws://localhost:8081/signaling/ws"

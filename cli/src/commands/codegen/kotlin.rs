@@ -56,10 +56,6 @@ impl KotlinGenerator {
 
         // Try common locations
         let possible_paths = [
-            // Development location
-            PathBuf::from(
-                "/Users/mafeng/Desktop/dev/framework-codegen-kotlin/protoc-gen-actrframework-kotlin",
-            ),
             // Relative to current directory
             PathBuf::from("../framework-codegen-kotlin/protoc-gen-actrframework-kotlin"),
             // In PATH

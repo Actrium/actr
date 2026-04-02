@@ -2,13 +2,14 @@
 
 use crate::config::ObservabilityConfig;
 use crate::config::{
-    Dependency, IceServer, IceTransportPolicy, ManifestConfig, PackageInfo, ProtoFile,
-    RuntimeConfig, ServiceRef, WebRtcAdvancedConfig, WebRtcConfig,
+    BinaryConfig, BuildArtifact, BuildConfig, BuildProfile, BuildTool, Dependency, IceServer,
+    IceTransportPolicy, ManifestConfig, PackageInfo, ProtoFile, RuntimeConfig, ServiceRef,
+    WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawConfig, RawDependency, RawPackageConfig};
+use crate::{RawBuildConfig, RawConfig, RawDependency, RawPackageConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,6 +72,22 @@ impl ParserV1 {
             self.base_dir.clone()
         };
 
+        let binary = raw
+            .binary
+            .as_ref()
+            .map(|raw_binary| self.parse_binary(raw_binary));
+        let build = raw
+            .build
+            .as_ref()
+            .map(|raw_build| self.parse_build(raw_build))
+            .transpose()?;
+
+        if raw.build.is_some() && raw.binary.is_none() {
+            return Err(ConfigError::InvalidConfig(
+                "[build] requires [binary] to declare the final packaged artifact path".to_string(),
+            ));
+        }
+
         // 7. Build manifest config — runtime fields are NOT included
         Ok(ManifestConfig {
             package,
@@ -79,6 +96,8 @@ impl ParserV1 {
             acl,
             tags: raw.package.tags,
             scripts: raw.scripts,
+            binary,
+            build,
             config_dir,
         })
     }
@@ -203,6 +222,59 @@ impl ParserV1 {
         })
     }
 
+    fn parse_binary(&self, raw: &crate::RawBinaryConfig) -> BinaryConfig {
+        BinaryConfig {
+            path: self.resolve_manifest_path(&raw.path),
+            target: raw.target.clone(),
+        }
+    }
+
+    fn parse_build(&self, raw: &RawBuildConfig) -> Result<BuildConfig> {
+        let tool = match raw.tool.as_deref().unwrap_or("cargo") {
+            "cargo" => BuildTool::Cargo,
+            other => {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "Unsupported [build].tool '{other}'; v1 only supports 'cargo'"
+                )));
+            }
+        };
+
+        let artifact = match raw.artifact.as_deref().unwrap_or("lib") {
+            "lib" => BuildArtifact::Lib,
+            "bin" => BuildArtifact::Bin,
+            other => {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "Unsupported [build].artifact '{other}'; expected 'lib' or 'bin'"
+                )));
+            }
+        };
+
+        let profile = match raw.profile.as_deref().unwrap_or("release") {
+            "release" => BuildProfile::Release,
+            "dev" => BuildProfile::Dev,
+            other => {
+                return Err(ConfigError::InvalidConfig(format!(
+                    "Unsupported [build].profile '{other}'; expected 'release' or 'dev'"
+                )));
+            }
+        };
+
+        Ok(BuildConfig {
+            tool,
+            manifest_path: self.resolve_manifest_path(
+                raw.manifest_path
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("Cargo.toml")),
+            ),
+            artifact,
+            target: raw.target.clone(),
+            profile,
+            features: raw.features.clone(),
+            no_default_features: raw.no_default_features,
+            post_build: raw.post_build.clone(),
+        })
+    }
+
     fn parse_exports(&self, paths: &[PathBuf]) -> Result<Vec<ProtoFile>> {
         paths
             .iter()
@@ -216,6 +288,14 @@ impl ParserV1 {
                 })
             })
             .collect()
+    }
+
+    fn resolve_manifest_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.base_dir.join(path)
+        }
     }
 
     fn parse_dependencies(
@@ -494,6 +574,8 @@ impl ParserV1 {
                 s.extend(child.scripts);
                 s
             },
+            binary: child.binary.or(parent.binary),
+            build: child.build.or(parent.build),
         })
     }
 }
@@ -650,6 +732,76 @@ manufacturer = "acme"
             result.unwrap_err(),
             ConfigError::InvalidActrType(_)
         ));
+    }
+
+    #[test]
+    fn test_parse_binary_and_build_config() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+version = "1.0.0"
+
+[binary]
+path = "dist/test.wasm"
+target = "wasm32-unknown-unknown"
+
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+target = "wasm32-unknown-unknown"
+features = ["feature-a", "feature-b"]
+no_default_features = true
+post_build = ["echo build"]
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("manifest.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let config = parser.parse_manifest(raw).unwrap();
+
+        let binary = config.binary.expect("binary config should exist");
+        assert_eq!(binary.path, tmpdir.path().join("dist/test.wasm"));
+        assert_eq!(binary.target.as_deref(), Some("wasm32-unknown-unknown"));
+
+        let build = config.build.expect("build config should exist");
+        assert_eq!(build.manifest_path, tmpdir.path().join("Cargo.toml"));
+        assert_eq!(build.artifact, BuildArtifact::Lib);
+        assert_eq!(build.profile, BuildProfile::Release);
+        assert_eq!(build.features, vec!["feature-a", "feature-b"]);
+        assert!(build.no_default_features);
+        assert_eq!(build.post_build, vec!["echo build"]);
+    }
+
+    #[test]
+    fn test_build_requires_binary_config() {
+        let toml_content = r#"
+edition = 1
+
+[package]
+name = "test"
+manufacturer = "acme"
+
+[build]
+tool = "cargo"
+"#;
+
+        let tmpdir = TempDir::new().unwrap();
+        let config_path = tmpdir.path().join("manifest.toml");
+        fs::write(&config_path, toml_content).unwrap();
+
+        let raw = RawConfig::from_file(&config_path).unwrap();
+        let parser = ParserV1::new(&config_path);
+        let result = parser.parse_manifest(raw);
+
+        assert!(matches!(result, Err(ConfigError::InvalidConfig(_))));
     }
 
     #[test]

@@ -9,13 +9,26 @@ pub mod discovery;
 pub mod dlq;
 pub mod doc;
 pub mod fingerprint;
+pub(crate) mod fingerprint_lock;
 pub mod generate;
 pub mod init;
 pub mod initialize;
 pub mod install;
+pub mod logs;
 pub mod ops;
+pub(crate) mod package_build;
 pub mod pkg;
+pub(crate) mod process;
+pub mod ps;
+pub mod restart;
+pub mod rm;
 pub mod run;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod runtime_state;
+#[cfg(not(any(test, feature = "test-utils")))]
+pub(crate) mod runtime_state;
+pub mod start;
+pub mod stop;
 
 use crate::error::Result;
 use async_trait::async_trait;
@@ -49,4 +62,10 @@ pub use fingerprint::FingerprintCommand;
 pub use generate::GenCommand;
 pub use init::InitCommand;
 pub use install::InstallCommand;
+pub use logs::LogsCommand;
+pub use ps::PsCommand;
+pub use restart::RestartCommand;
+pub use rm::RmCommand;
 pub use run::RunCommand;
+pub use start::StartCommand;
+pub use stop::StopCommand;

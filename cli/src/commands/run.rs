@@ -1,10 +1,15 @@
 //! Run command implementation - Execute .actr packages
 
 use crate::commands::Command;
+use crate::commands::runtime_state::{
+    RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_wid, resolve_hyper_dir,
+};
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
 use tracing::info;
 
 #[derive(Args)]
@@ -16,12 +21,20 @@ pub struct RunCommand {
     /// Run in detached mode (background)
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
+
+    /// Internal flag used when the detached child re-executes this command.
+    #[arg(long = "internal-detached-child", hide = true)]
+    pub internal_detached_child: bool,
+
+    /// Internal: WID passed from parent to detached child (or from start/restart for reuse).
+    #[arg(long = "internal-wid", hide = true)]
+    pub internal_wid: Option<String>,
 }
 
 #[async_trait]
 impl Command for RunCommand {
     async fn execute(&self) -> Result<()> {
-        // Execute package runtime mode directly
+        // The run command only supports packaged workloads via runtime config.
         self.execute_package_mode().await
     }
 }
@@ -30,24 +43,36 @@ impl RunCommand {
     async fn execute_package_mode(&self) -> Result<()> {
         use actr_hyper::{WorkloadPackage, init_observability};
 
-        info!("🚀 Starting package execution mode");
+        info!("🚀 Starting packaged workload");
 
-        // Resolve config path: use provided path or default to ./actr.toml
+        // Resolve runtime config path: use the provided path or default to ./actr.toml.
         let config_path = self
             .config
             .clone()
             .unwrap_or_else(|| PathBuf::from("actr.toml"));
 
-        // Check if config file exists
+        // Check if the runtime config file exists.
         if !config_path.exists() {
             return Err(ActrCliError::command_error(format!(
-                "Configuration file not found: {}\n\n\
-                 Please create an actr.toml file or specify a config file with -c/--config",
+                "Runtime config file not found: {}\n\n\
+                 Create a runtime config file or specify one with -c/--config.",
                 config_path.display()
             )));
         }
 
-        // 1. Resolve package path (CLI flag > actr.toml > error)
+        let config_path = absolutize_from_cwd(&config_path)?;
+
+        if self.detach && !self.internal_detached_child {
+            return self.spawn_detached_child(&config_path).await;
+        }
+
+        let detached_runtime = if self.internal_detached_child {
+            Some(self.prepare_detached_child(&config_path).await?)
+        } else {
+            None
+        };
+
+        // 1. Resolve package path from the runtime config.
         let package_path = self.resolve_package_path(&config_path).await?;
         info!("📦 Loading package: {}", package_path.display());
 
@@ -103,17 +128,22 @@ impl RunCommand {
             .map_err(|e| ActrCliError::command_error(format!("Failed to start ActrNode: {}", e)))?;
         info!("✅ ActrNode started");
 
-        // 11. Choose run mode based on detach flag
-        if self.detach {
-            self.run_detached(actr_ref, &config).await?;
-        } else {
-            self.run_foreground(actr_ref).await?;
+        if let Some(runtime) = detached_runtime.as_ref() {
+            self.write_runtime_record(runtime, &actr_ref).await?;
+            info!("📝 Detached runtime state recorded");
         }
+
+        self.run_foreground(actr_ref, detached_runtime.as_ref())
+            .await?;
 
         Ok(())
     }
 
-    async fn run_foreground(&self, actr_ref: actr_hyper::ActrRef) -> Result<()> {
+    async fn run_foreground(
+        &self,
+        actr_ref: actr_hyper::ActrRef,
+        detached_runtime: Option<&DetachedRuntimeContext>,
+    ) -> Result<()> {
         info!("📡 Running in foreground mode (Ctrl+C to stop)");
 
         // Block and wait for Ctrl+C
@@ -122,30 +152,19 @@ impl RunCommand {
             .await
             .map_err(|e| ActrCliError::command_error(format!("Shutdown error: {}", e)))?;
 
+        if let Some(runtime) = detached_runtime {
+            runtime
+                .runtime_store
+                .mark_stopped_by_wid(&runtime.wid, Utc::now())
+                .await?;
+        }
+
         info!("👋 Shutdown complete");
         Ok(())
     }
 
-    async fn run_detached(
-        &self,
-        actr_ref: actr_hyper::ActrRef,
-        config: &actr_config::RuntimeConfig,
-    ) -> Result<()> {
-        #[cfg(unix)]
-        {
-            self.daemonize_unix(actr_ref, config).await
-        }
-
-        #[cfg(not(unix))]
-        {
-            Err(ActrCliError::command_error(
-                "Detached mode is only supported on Unix systems".to_string(),
-            ))
-        }
-    }
-
     async fn resolve_package_path(&self, config_path: &Path) -> Result<PathBuf> {
-        // Load config to get package path
+        // Load runtime config to get the packaged workload path.
         let config_content = tokio::fs::read_to_string(config_path).await?;
         let raw_config: actr_config::RuntimeRawConfig = toml::from_str(&config_content)
             .map_err(|e| ActrCliError::command_error(format!("Failed to parse config: {}", e)))?;
@@ -161,11 +180,13 @@ impl RunCommand {
             }
         }
 
-        Err(ActrCliError::command_error(
-            "Package path not specified in actr.toml.\n\n\
-             Add [package] path = \"dist/service.actr\" to actr.toml"
-                .to_string(),
-        ))
+        Err(ActrCliError::command_error(format!(
+            "Package path not specified in runtime config: {}\n\n\
+             Add the packaged workload path to your config:\n\
+             [package]\n\
+             path = \"dist/service.actr\"",
+            config_path.display()
+        )))
     }
 
     fn build_package_info(
@@ -211,7 +232,8 @@ impl RunCommand {
             }
             other => {
                 return Err(ActrCliError::command_error(format!(
-                    "Invalid trust mode: {}. Use 'development' or 'production'",
+                    "Invalid trust mode in runtime config: {}.\n\n\
+                     Set [deployment] trust_mode to \"development\" or \"production\".",
                     other
                 )));
             }
@@ -234,9 +256,13 @@ impl RunCommand {
             return Err(ActrCliError::command_error(format!(
                 "Public key not found for development trust mode.\n\n\
                  Expected location: {}\n\n\
-                 Solutions:\n\
-                 1. Generate key: actr pkg keygen --output public-key.json\n\
-                 2. Use production mode: actr run -c actr.toml --trust-mode production",
+                 Update your runtime config or package directory:\n\
+                 1. Keep [deployment] trust_mode = \"development\" and place public-key.json next to the .actr package\n\
+                 2. Or switch to production mode in config:\n\
+                    [deployment]\n\
+                    trust_mode = \"production\"\n\
+                    [ais_endpoint]\n\
+                    url = \"http://localhost:8081/ais\"",
                 key_path.display()
             )));
         }
@@ -309,7 +335,7 @@ impl RunCommand {
                     "Failed to register with AIS at {}.\n\n\
              Possible causes:\n\
              - AIS server is not running\n\
-             - Incorrect endpoint URL\n\
+             - Incorrect [ais_endpoint] url in the runtime config\n\
              - Network connectivity issues\n\n\
              Error: {}",
                     ais_endpoint, e
@@ -318,78 +344,157 @@ impl RunCommand {
     }
 
     #[cfg(unix)]
-    async fn daemonize_unix(
-        &self,
-        actr_ref: actr_hyper::ActrRef,
-        config: &actr_config::RuntimeConfig,
-    ) -> Result<()> {
-        use nix::unistd::{ForkResult, fork, setsid};
+    async fn prepare_detached_child(&self, config_path: &Path) -> Result<DetachedRuntimeContext> {
+        use nix::unistd::setsid;
         use std::fs::OpenOptions;
         use std::os::unix::io::AsRawFd;
 
-        info!("🚀 Starting in detached mode...");
+        let wid = self.internal_wid.clone().ok_or_else(|| {
+            ActrCliError::command_error("--internal-wid is required for detached child".to_string())
+        })?;
 
-        // Prepare log directory
-        let log_dir = config.hyper_data_dir.join("logs");
-        tokio::fs::create_dir_all(&log_dir).await?;
-        let log_file = log_dir.join(format!("actr-{}.log", std::process::id()));
+        let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+        let runtime_store = RuntimeStateStore::new(hyper_dir);
+        runtime_store.ensure_layout().await?;
+        setsid().map_err(|e| {
+            ActrCliError::command_error(format!("Failed to create new session: {}", e))
+        })?;
 
-        // Fork process
-        match unsafe { fork() } {
-            Ok(ForkResult::Parent { child }) => {
-                // Parent process: print info and exit
-                let actr_id = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
-                println!("✅ ActrNode started in background");
-                println!("   ActrId: {}", actr_id);
-                println!("   PID: {}", child);
-                println!("   Logs: {}", log_file.display());
-                println!("\nTo view logs: tail -f {}", log_file.display());
-                println!("To stop: kill {}", child);
+        let pid = std::process::id();
+        let log_file = log_path_for_wid(runtime_store.hyper_dir(), &wid);
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)?;
 
-                // Parent process exits immediately
-                std::process::exit(0);
-            }
-            Ok(ForkResult::Child) => {
-                // Child process: continue running
+        let log_fd = log.as_raw_fd();
+        nix::unistd::dup2(log_fd, std::io::stdout().as_raw_fd())
+            .map_err(|e| ActrCliError::command_error(format!("dup2 failed: {}", e)))?;
+        nix::unistd::dup2(log_fd, std::io::stderr().as_raw_fd())
+            .map_err(|e| ActrCliError::command_error(format!("dup2 failed: {}", e)))?;
 
-                // 1. Create new session (detach from terminal)
-                setsid().map_err(|e| {
-                    ActrCliError::command_error(format!("Failed to create new session: {}", e))
-                })?;
+        info!("🚀 Detached child process initialized, PID: {}", pid);
+        info!("📝 Log file: {}", log_file.display());
 
-                // 2. Redirect stdout/stderr to log file
-                let log = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_file)?;
+        Ok(DetachedRuntimeContext {
+            runtime_store,
+            config_path: config_path.to_path_buf(),
+            log_file,
+            pid,
+            wid,
+        })
+    }
 
-                let log_fd = log.as_raw_fd();
-                nix::unistd::dup2(log_fd, std::io::stdout().as_raw_fd())
-                    .map_err(|e| ActrCliError::command_error(format!("dup2 failed: {}", e)))?;
-                nix::unistd::dup2(log_fd, std::io::stderr().as_raw_fd())
-                    .map_err(|e| ActrCliError::command_error(format!("dup2 failed: {}", e)))?;
+    #[cfg(not(unix))]
+    async fn prepare_detached_child(&self, _config_path: &Path) -> Result<DetachedRuntimeContext> {
+        Err(ActrCliError::command_error(
+            "Detached mode is only supported on Unix systems".to_string(),
+        ))
+    }
 
-                // 3. Write PID file
-                let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
-                let pid_file = log_dir.join(format!("{}.pid", actr_id_str));
-                tokio::fs::write(&pid_file, format!("{}", std::process::id())).await?;
+    async fn write_runtime_record(
+        &self,
+        detached_runtime: &DetachedRuntimeContext,
+        actr_ref: &actr_hyper::ActrRef,
+    ) -> Result<()> {
+        let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
 
-                info!("🚀 Running as daemon, PID: {}", std::process::id());
-                info!("📝 Log file: {}", log_file.display());
+        // Upsert: if a record already exists for this wid (start/restart scenario),
+        // update pid/started_at and clear stopped_at while preserving wid and actr_id.
+        let existing = detached_runtime
+            .runtime_store
+            .read_record_by_wid(&detached_runtime.wid)
+            .await?;
 
-                // 4. Run until signal received
-                actr_ref
-                    .wait_for_ctrl_c_and_shutdown()
-                    .await
-                    .map_err(|e| ActrCliError::command_error(format!("Shutdown error: {}", e)))?;
+        let record = if let Some(mut r) = existing {
+            r.pid = detached_runtime.pid;
+            r.started_at = Utc::now();
+            r.stopped_at = None;
+            r.config_path = detached_runtime.config_path.clone();
+            r.log_path = detached_runtime.log_file.clone();
+            r
+        } else {
+            RuntimeRecord::new(
+                detached_runtime.wid.clone(),
+                actr_id_str,
+                detached_runtime.pid,
+                detached_runtime.config_path.clone(),
+                detached_runtime.log_file.clone(),
+                Utc::now(),
+            )
+        };
 
-                // 5. Clean up PID file
-                let _ = tokio::fs::remove_file(&pid_file).await;
+        detached_runtime.runtime_store.write_record(&record).await
+    }
 
-                info!("👋 Daemon shutdown complete");
-                Ok(())
-            }
-            Err(e) => Err(ActrCliError::command_error(format!("Fork failed: {}", e))),
+    async fn spawn_detached_child(&self, config_path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use uuid::Uuid;
+
+            let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+            let runtime_store = RuntimeStateStore::new(hyper_dir);
+            runtime_store.ensure_layout().await?;
+
+            // Generate a new wid in the parent; pass it to the child via --internal-wid.
+            // For start/restart, the caller sets self.internal_wid to the existing wid.
+            let wid = self
+                .internal_wid
+                .clone()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+            let current_exe = std::env::current_exe().map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to resolve current executable for detached mode: {}",
+                    e
+                ))
+            })?;
+
+            let mut child = StdCommand::new(current_exe);
+            child
+                .arg("run")
+                .arg("--config")
+                .arg(config_path)
+                .arg("--internal-detached-child")
+                .arg("--internal-wid")
+                .arg(&wid)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+
+            let child = child.spawn().map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to launch detached child process: {}",
+                    e
+                ))
+            })?;
+
+            let pid = child.id();
+            // The child runs as a daemon; we intentionally do not wait on it.
+            std::mem::forget(child);
+
+            println!("Detached runtime started");
+            println!("   WID:  {}", &wid[..12]);
+            println!("   PID:  {}", pid);
+            println!();
+            println!("Follow logs: actr logs {} -f", &wid[..12]);
+            return Ok(());
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = config_path;
+            Err(ActrCliError::command_error(
+                "Detached mode is only supported on Unix systems".to_string(),
+            ))
         }
     }
+}
+
+struct DetachedRuntimeContext {
+    runtime_store: RuntimeStateStore,
+    config_path: PathBuf,
+    log_file: PathBuf,
+    pid: u32,
+    wid: String,
 }

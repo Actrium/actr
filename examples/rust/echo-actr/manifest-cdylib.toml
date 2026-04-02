@@ -1,0 +1,22 @@
+edition = 1
+
+[package]
+name = "EchoService"
+manufacturer = "actrium"
+version = "0.2.2"
+description = "Signed Echo guest actor distributed as an ActrPackage"
+license = "Apache-2.0"
+
+exports = ["proto/echo.proto"]
+
+[binary]
+path = "../../../target/examples/aarch64-apple-darwin/release/libecho_guest.dylib"
+target = "aarch64-apple-darwin"
+
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+target = "aarch64-apple-darwin"
+features = ["cdylib"]
