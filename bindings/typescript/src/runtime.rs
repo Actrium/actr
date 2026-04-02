@@ -29,7 +29,8 @@ impl ActrNode {
 
         crate::logger::init_observability(config.observability.clone());
 
-        let hyper_data_dir = config.config_dir.join(".hyper");
+        let hyper_data_dir =
+            actr_config::user_config::resolve_hyper_data_dir().map_err(crate::error::config_error_to_napi)?;
         let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
             TrustMode::Development {
                 self_signed_pubkey: vec![0u8; 32],

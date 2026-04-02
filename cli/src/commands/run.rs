@@ -10,6 +10,7 @@ use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::Arc;
 use tracing::info;
 
 #[derive(Args)]
@@ -17,6 +18,14 @@ pub struct RunCommand {
     /// Runtime configuration file (defaults to ./actr.toml if not specified)
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     pub config: Option<PathBuf>,
+
+    /// Run in web server mode (serves embedded runtime + host page over HTTP)
+    #[arg(long = "web")]
+    pub web: bool,
+
+    /// Override the HTTP port for web mode (default: from config [web].port or 8080)
+    #[arg(long = "port")]
+    pub port: Option<u16>,
 
     /// Run in detached mode (background)
     #[arg(short = 'd', long = "detach")]
@@ -34,8 +43,11 @@ pub struct RunCommand {
 #[async_trait]
 impl Command for RunCommand {
     async fn execute(&self) -> Result<()> {
-        // The run command only supports packaged workloads via runtime config.
-        self.execute_package_mode().await
+        if self.web {
+            self.execute_web_mode().await
+        } else {
+            self.execute_package_mode().await
+        }
     }
 }
 
@@ -239,7 +251,8 @@ impl RunCommand {
             }
         };
 
-        let hyper_config = HyperConfig::new(&config.hyper_data_dir).with_trust_mode(trust_mode);
+        let hyper_data_dir = resolve_hyper_dir(self.config.as_deref(), None)?;
+        let hyper_config = HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode);
 
         let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
 

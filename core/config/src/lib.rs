@@ -35,6 +35,7 @@ pub mod error;
 pub mod lock;
 pub mod parser;
 pub mod raw;
+pub mod user_config;
 
 // Re-exports for convenience
 pub use actr_raw::*;
@@ -43,6 +44,7 @@ pub use error::*;
 pub use lock::*;
 pub use parser::*;
 pub use raw::*;
+pub use user_config::*;
 
 /// Re-export the new config types
 pub use config::{ManifestConfig, RuntimeConfig};

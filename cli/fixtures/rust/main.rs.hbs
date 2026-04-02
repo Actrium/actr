@@ -12,7 +12,8 @@ async fn main() -> Result<()> {
     info!("{} starting", env!("CARGO_PKG_NAME"));
 
     let config = actr::config::ConfigParser::from_manifest_file("manifest.toml")?;
-    let hyper = Hyper::init(HyperConfig::new(config.config_dir.join(".hyper"))).await?;
+    let hyper_data_dir = actr::config::user_config::resolve_hyper_data_dir()?;
+    let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir)).await?;
     // Load your client-guest package and attach it:
     // let package = WorkloadPackage::new(std::fs::read("path/to/client-guest.actr")?);
     // let node = hyper.attach_package(&package, config).await?;

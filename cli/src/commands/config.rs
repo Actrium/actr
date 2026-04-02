@@ -152,7 +152,7 @@ impl ConfigCommand {
 
     fn scope_path(scope: ConfigScope) -> Result<PathBuf> {
         match scope {
-            ConfigScope::Global => global_config_path(),
+            ConfigScope::Global => Ok(global_config_path()?),
             ConfigScope::Local => Ok(local_config_path()),
             ConfigScope::Merged => bail!("Merged scope does not map to a single file"),
         }
@@ -294,6 +294,9 @@ impl ConfigCommand {
             "network.realm_secret" => {
                 config.network.realm_secret = Some(value_to_string(&parsed_value)?);
             }
+            "storage.hyper_data_dir" => {
+                config.storage.hyper_data_dir = Some(value_to_string(&parsed_value)?);
+            }
             "ui.format" => {
                 config.ui.format = Some(value_to_string(&parsed_value)?);
             }
@@ -378,6 +381,11 @@ impl ConfigCommand {
             "network.realm_secret" => {
                 let had = config.network.realm_secret.is_some();
                 config.network.realm_secret = None;
+                had
+            }
+            "storage.hyper_data_dir" => {
+                let had = config.storage.hyper_data_dir.is_some();
+                config.storage.hyper_data_dir = None;
                 had
             }
             "ui.format" => {
@@ -499,6 +507,10 @@ impl ConfigCommand {
                     .realm_secret
                     .as_deref()
                     .unwrap_or("<not set>")
+            ),
+            format!(
+                "storage.hyper_data_dir = {}",
+                effective.storage.hyper_data_dir.display()
             ),
         ];
         Ok(CommandResult::Success(lines.join("\n")))

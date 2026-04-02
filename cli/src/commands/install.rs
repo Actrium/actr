@@ -412,14 +412,28 @@ impl InstallCommand {
         println!("  ├─ 📋 Alias: {}", alias);
         println!("  ├─ 🏷️  Actor Type: {}", actr_type.to_string_repr());
 
-        // Discover service by actr_type
+        // Discover service by dependencies value (actr_type)
+        // Step 1: Build lookup key from manufacturer:name (matching service registration convention)
+        // Step 2: Filter by version from the full actr_type
         let service_discovery = install_pipeline.validation_pipeline().service_discovery();
 
-        // Find service matching the actr_type
-        let services = service_discovery.discover_services(None).await?;
+        let lookup_key = format!("{}:{}", actr_type.manufacturer, actr_type.name);
+        let filter = crate::core::ServiceFilter {
+            name_pattern: Some(lookup_key.clone()),
+            version_range: None,
+            tags: None,
+        };
+
+        let services = service_discovery.discover_services(Some(&filter)).await?;
+
+        // Filter by version
         let matching_service = services
             .iter()
-            .find(|s| s.actr_type == *actr_type)
+            .find(|s| {
+                s.actr_type.manufacturer == actr_type.manufacturer
+                    && s.actr_type.name == actr_type.name
+                    && s.actr_type.version == actr_type.version
+            })
             .ok_or_else(|| ActrCliError::ServiceNotFound {
                 name: actr_type.to_string_repr(),
             })?;
@@ -427,7 +441,8 @@ impl InstallCommand {
         let service_name = matching_service.name.clone();
         println!("  ├─ 🔍 Service discovered: {}", service_name);
 
-        // Get full service details
+        // Get full service details (proto files etc.)
+        // Use actr_type.name for ServiceSpec lookup (matching server-side spec.name = package.name)
         let service_details = service_discovery.get_service_details(&service_name).await?;
 
         println!(
@@ -458,15 +473,12 @@ impl InstallCommand {
         println!("  ├─ 🌐 Network connectivity test (Skipped) ✅");
 
         // Create dependency spec with alias
+        // name = alias ensures update_dependency won't write a redundant "name" field
         let resolved_spec = DependencySpec {
             alias: alias.to_string(),
             actr_type: Some(service_details.info.actr_type.clone()),
-            name: service_name.clone(),
-            fingerprint: Some(
-                fingerprint
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| service_details.info.fingerprint.clone()),
-            ),
+            name: alias.to_string(),
+            fingerprint: fingerprint.map(|s| s.to_string()),
         };
 
         println!("  └─ ✅ Added to installation plan");

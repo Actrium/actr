@@ -656,23 +656,6 @@ impl MockSignalingServer {
             return;
         }
 
-        // Auto-register sender's ActrId if not already mapped.
-        // This enables tests that skip the RegisterRequest flow (e.g. TestHarness)
-        // to still have correct ActrId-based message routing.
-        {
-            let map = state.client_to_actr_id.read().await;
-            let already_registered = map.get(sender_id).is_some();
-            drop(map);
-            if !already_registered {
-                state
-                    .client_to_actr_id
-                    .write()
-                    .await
-                    .insert(sender_id.to_string(), relay.source.clone());
-                tracing::debug!("auto-registered sender {} as {:?}", sender_id, relay.source);
-            }
-        }
-
         // Handle RoleNegotiation: server decides roles
         if let Some(actr_relay::Payload::RoleNegotiation(role_neg)) = relay.payload.as_ref() {
             let from_is_offerer = role_neg.from.serial_number < role_neg.to.serial_number;
@@ -717,67 +700,19 @@ impl MockSignalingServer {
                 tracestate: None,
             };
 
-            // Route precisely by ActrId: send each envelope only to the
-            // intended recipient, not broadcast to all clients.
-            let client_map = state.client_to_actr_id.read().await;
+            // Route by ActrId
             let clients = state.clients.read().await;
 
-            // Find client_id for `from` (receives envelope_for_from)
-            let from_cid = client_map.iter().find_map(|(cid, aid)| {
-                if aid == &role_neg.from {
-                    Some(cid.clone())
-                } else {
-                    None
-                }
-            });
-
-            // Find client_id for `to` (receives envelope_for_to)
-            let to_cid = client_map.iter().find_map(|(cid, aid)| {
-                if aid == &role_neg.to {
-                    Some(cid.clone())
-                } else {
-                    None
-                }
-            });
-
-            if let Some(cid) = from_cid {
-                if let Some(tx) = clients.get(&cid) {
+            // Find client_id for `from` and `to`
+            for (cid, tx) in clients.iter() {
+                if cid == sender_id {
                     let encoded = envelope_for_from.encode_to_vec();
                     let _ = tx.send(Message::Binary(encoded.into()));
-                }
-            } else {
-                // Fallback: broadcast to all other clients (target will filter by ActrId)
-                tracing::debug!(
-                    "RoleNegotiation: broadcasting RoleAssignment for from={:?}",
-                    role_neg.from
-                );
-                let encoded = envelope_for_from.encode_to_vec();
-                for (cid, tx) in clients.iter() {
-                    if cid != sender_id {
-                        let _ = tx.send(Message::Binary(encoded.clone().into()));
-                    }
-                }
-            }
-
-            if let Some(cid) = to_cid {
-                if let Some(tx) = clients.get(&cid) {
+                } else {
                     let encoded = envelope_for_to.encode_to_vec();
                     let _ = tx.send(Message::Binary(encoded.into()));
                 }
-            } else {
-                // Fallback: broadcast to all other clients (target will filter by ActrId)
-                tracing::debug!(
-                    "RoleNegotiation: broadcasting RoleAssignment for to={:?}",
-                    role_neg.to
-                );
-                let encoded = envelope_for_to.encode_to_vec();
-                for (cid, tx) in clients.iter() {
-                    if cid != sender_id {
-                        let _ = tx.send(Message::Binary(encoded.clone().into()));
-                    }
-                }
             }
-
             return;
         }
 
