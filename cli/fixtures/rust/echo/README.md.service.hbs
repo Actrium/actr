@@ -1,27 +1,31 @@
 # {{PROJECT_NAME}}
 
-An Actor-RTC EchoService provider that registers itself and handles echo RPC calls.
+An Actor-RTC EchoService workload package with generated code isolated under `src/generated/`.
 
 ## Quick start
 
 ```bash
-# 1. Generate Actor framework code from the local proto definition
+# 1. Create manifest.lock.toml
+actr install
+
+# 2. Regenerate src/generated/ from the local proto definition
 actr gen -l rust
 
-# 2. Run the service (registers EchoService and waits for calls)
-cargo run
+# 3. Build and package the workload
+actr build
 ```
 
 ## How it works
 
-- `protos/local/local.proto` defines the `EchoService` interface.
-- `actr gen -l rust` generates `src/generated/` with protobuf types, `EchoHandler` trait, and `EchoServiceActor`.
-- `src/main.rs` implements `EchoHandler` and registers `EchoServiceActor` with the Actor-RTC runtime.
-- The service stays running until interrupted (`Ctrl+C`).
+- `protos/local/echo.proto` defines the `EchoService` interface.
+- `actr init` only creates stable user-editable files and package metadata.
+- `src/generated/` is created exclusively by `actr gen -l rust`.
+- `src/echo_service.rs` is the protected user-code area for your business logic.
+- `actr build` compiles the cdylib workload and packages it into a signed `.actr` archive.
 
 ## Customizing
 
-Implement your own echo logic by modifying `EchoServiceImpl::echo` in `src/main.rs`:
+Implement your own echo logic by modifying `EchoServiceImpl::echo` in `src/echo_service.rs`:
 
 ```rust
 async fn echo(&self, request: EchoRequest) -> ActorResult<EchoResponse> {

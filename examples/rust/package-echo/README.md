@@ -205,6 +205,9 @@ cd examples/rust/package-echo
 
 # cdylib backend with custom message
 ./start.sh --backend cdylib "Hello World"
+
+# Generate a temporary echo-actr-xx service project and test it as the server workload
+./start_tmp_echo_actr.sh "Hello World"
 ```
 
 ### 3. Expected Output

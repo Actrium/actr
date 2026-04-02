@@ -59,8 +59,8 @@ impl ProjectInitializer for RustInitializer {
             println!(
                 "  actr install      # Create manifest.lock.toml (no remote deps, generates empty lock)"
             );
-            println!("  actr gen -l rust  # Generate Actor framework code from local proto");
-            println!("  cargo run         # Start the EchoService (Ctrl+C to stop)");
+            println!("  actr gen -l rust  # Regenerate src/generated from local proto");
+            println!("  actr build        # Compile and package the workload into a .actr archive");
         } else {
             println!("  actr install      # Download remote proto dependencies from registry");
             println!("  actr gen -l rust  # Generate Actor framework code");

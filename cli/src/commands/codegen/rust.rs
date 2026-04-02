@@ -147,10 +147,27 @@ impl LanguageGenerator for RustGenerator {
     }
 
     fn print_next_steps(&self, context: &GenContext) {
+        let has_local_services = context
+            .proto_model
+            .local_services
+            .iter()
+            .any(|service| !service.methods.is_empty());
+
         println!("\n🎉 Code generation completed!");
         println!("\n📋 Next steps:");
         println!("1. 📖 View generated code: {:?}", context.output);
-        if !context.no_scaffold {
+        if has_local_services {
+            if !context.no_scaffold {
+                println!(
+                    "2. ✏️  Implement business logic: in the *_service.rs files in the src/ directory"
+                );
+                println!("3. 📦 Build package: actr build");
+                println!("4. 🚀 Host the resulting .actr package from your runtime config");
+            } else {
+                println!("2. 📦 Build package: actr build");
+                println!("3. 🚀 Host the resulting .actr package from your runtime config");
+            }
+        } else if !context.no_scaffold {
             println!(
                 "2. ✏️  Implement business logic: in the *_service.rs files in the src/ directory"
             );

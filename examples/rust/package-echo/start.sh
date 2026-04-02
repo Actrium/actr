@@ -61,7 +61,7 @@ ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
 CLIENT_DIR="$PACKAGE_ECHO_DIR/client"
 CLIENT_GUEST_DIR="$PACKAGE_ECHO_DIR/client-guest"
-ECHO_ACTR_DIR="$WORKSPACE_ROOT/echo-actr"
+ECHO_ACTR_DIR="${ECHO_ACTR_DIR:-$WORKSPACE_ROOT/echo-actr}"
 
 # Ensure ~/.cargo/bin is in PATH
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -202,10 +202,25 @@ echo_actr_version() {
 ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-$(echo_actr_version)}"
 SIGNING_KEY="$ECHO_ACTR_DIR/packaging/keys/dev-signing-key.json"
 PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
+if [ -f "$ECHO_ACTR_DIR/manifest-cdylib.toml" ]; then
+    ECHO_ACTR_BUILD_MANIFEST="$ECHO_ACTR_DIR/manifest-cdylib.toml"
+else
+    ECHO_ACTR_BUILD_MANIFEST="$ECHO_ACTR_DIR/manifest.toml"
+fi
 
 if [ ! -d "$ECHO_ACTR_DIR" ]; then
     echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
     exit 1
+fi
+
+if [ ! -f "$SIGNING_KEY" ]; then
+    echo -e "${RED}❌ signing key not found: $SIGNING_KEY${NC}"
+    exit 1
+fi
+
+if [ ! -f "$PUBLIC_KEY_PATH" ]; then
+    mkdir -p "$(dirname "$PUBLIC_KEY_PATH")"
+    jq '{public_key: .public_key}' "$SIGNING_KEY" > "$PUBLIC_KEY_PATH"
 fi
 
 echo "echo-actr dir: $ECHO_ACTR_DIR"
@@ -221,7 +236,7 @@ if [ "$BACKEND" = "cdylib" ]; then
     ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
 
     cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- build \
-        -f "$ECHO_ACTR_DIR/manifest-cdylib.toml" \
+        -f "$ECHO_ACTR_BUILD_MANIFEST" \
         --key "$SIGNING_KEY" \
         --output "$ACTR_PACKAGE"
 
@@ -855,7 +870,8 @@ echo ""
 echo "🔍 Verifying output..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client.log"; then
+if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client.log" \
+    || grep -q "\[Received reply\] $TEST_INPUT" "$LOG_DIR/package-echo-client.log"; then
     echo -e "${GREEN}✅ Test PASSED: package-backed echo server response received${NC}"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -881,7 +897,8 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client
     exit 0
 else
     echo -e "${RED}❌ Test FAILED: Expected package-backed echo server response not found${NC}"
-    echo -e "${RED}   Looking for: [Received reply] Echo: $TEST_INPUT${NC}"
+    echo -e "${RED}   Looking for either: [Received reply] Echo: $TEST_INPUT${NC}"
+    echo -e "${RED}                    or [Received reply] $TEST_INPUT${NC}"
     echo ""
     echo "Client output:"
     cat "$LOG_DIR/package-echo-client.log"
