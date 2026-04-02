@@ -6,8 +6,8 @@ End-to-end test for the Actr package-driven execution flow, demonstrating how to
 
 This example demonstrates:
 
-1. **Build**: Compile echo-actr WASM package and optimize with wasm-opt
-2. **Sign**: Create signed `.actr` archive using `actr pkg build`
+1. **Build**: Compile echo-actr package (WASM or native cdylib) and package it as a signed `.actr` archive
+2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr pkg build` (wasm)
 3. **Verify**: Validate package signature with `actr pkg verify`
 4. **Publish**: Register package with MFR (Manufacturer Registry) via `actr pkg publish`
 5. **Run**: Host server loads the package and exposes the echo service
@@ -78,7 +78,7 @@ Windows users must use **WSL 2** (Windows Subsystem for Linux 2):
    - Linux: Auto-installed via apt/yum/dnf if missing
    - Manual install: https://jqlang.github.io/jq/download/
 
-3. **wasm-opt** (WASM optimizer)
+3. **wasm-opt** (WASM optimizer, required for `--backend wasm` only)
    ```bash
    cargo install wasm-opt
    ```
@@ -194,22 +194,28 @@ cd examples/rust/package-echo
 ### 2. Run the Test
 
 ```bash
-# Use default test message "TestMsg"
+# Use default test message "TestMsg" with wasm backend (default)
 ./start.sh
 
-# Or send custom message
+# Send custom message
 ./start.sh "Hello World"
+
+# Use native cdylib backend (skips wasm-opt, uses actr build)
+./start.sh --backend cdylib
+
+# cdylib backend with custom message
+./start.sh --backend cdylib "Hello World"
 ```
 
 ### 3. Expected Output
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧪 Testing package-echo (local echo-actr package loader)
+🧪 Testing package-echo (backend: wasm)
     Using Actrix as signaling server
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ jq found: jq-1.8.1
-📦 Step 0: Compiling echo-actr WASM...
+📦 Step 0: Building echo-actr (wasm)...
 ✅ WASM compiled: 2.1M
 ✅ wasm-opt done: 1.8M
 📦 Step 0.5: Packing signed .actr package...
@@ -226,11 +232,20 @@ cd examples/rust/package-echo
 
 The `start.sh` script performs a complete end-to-end test:
 
-### Step 0: Compile WASM Package
+### Step 0: Build Package
+
+Two backends are supported via the `--backend` flag:
+
+**wasm (default)**
 - Compiles `echo-actr` to WASM (`wasm32-unknown-unknown`)
 - Optimizes with `wasm-opt --asyncify`
+- Packages with `actr pkg build`
 
-### Step 0.5: Build and Sign Package
+**cdylib**
+- Compiles `echo-actr` as a native shared library using `manifest-cdylib.toml`
+- Packages with `actr build` (no wasm-opt step)
+
+### Step 0.5: Sign and Verify Package
 - Creates signed `.actr` archive using `actr pkg build`
 - Verifies signature with `actr pkg verify`
 - Builds client-guest cdylib package
