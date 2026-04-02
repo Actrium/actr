@@ -17,7 +17,8 @@ use toml::Value;
 
 /// All known schema field paths — used to validate `set` keys.
 const KNOWN_KEYS: &[&str] = &[
-    "init.manufacturer",
+    "mfr.manufacturer",
+    "mfr.keychain",
     "codegen.language",
     "codegen.output",
     "codegen.clean_before_generate",
@@ -32,6 +33,7 @@ const KNOWN_KEYS: &[&str] = &[
     "network.ais_endpoint",
     "network.realm_id",
     "network.realm_secret",
+    "storage.hyper_data_dir",
 ];
 
 #[derive(Args, Clone)]
@@ -52,14 +54,14 @@ pub struct ConfigCommand {
 pub enum ConfigSubcommand {
     /// Set a configuration key to a value
     Set {
-        /// Configuration key (e.g., init.manufacturer)
+        /// Configuration key (e.g., mfr.manufacturer)
         key: String,
         /// Value to assign
         value: String,
     },
     /// Get the current value of a configuration key
     Get {
-        /// Configuration key (e.g., init.manufacturer)
+        /// Configuration key (e.g., mfr.manufacturer)
         key: String,
     },
     /// List all known schema fields with current effective values
@@ -71,7 +73,7 @@ pub enum ConfigSubcommand {
     },
     /// Remove a configuration key
     Unset {
-        /// Configuration key to remove (e.g., init.manufacturer)
+        /// Configuration key to remove (e.g., mfr.manufacturer)
         key: String,
     },
     /// Validate syntax and schema of all config files
@@ -256,8 +258,11 @@ impl ConfigCommand {
             .unwrap_or_else(|_| Value::String(raw_value.to_string()));
 
         match key {
-            "init.manufacturer" => {
-                config.init.manufacturer = Some(value_to_string(&parsed_value)?);
+            "mfr.manufacturer" => {
+                config.mfr.manufacturer = Some(value_to_string(&parsed_value)?);
+            }
+            "mfr.keychain" => {
+                config.mfr.keychain = Some(value_to_string(&parsed_value)?);
             }
             "codegen.language" => {
                 config.codegen.language = Some(value_to_string(&parsed_value)?);
@@ -315,9 +320,14 @@ impl ConfigCommand {
     /// Remove a key from a `CliConfig` struct.
     fn unset_key_from_config(config: &mut CliConfig, key: &str) -> Result<bool> {
         let was_set = match key {
-            "init.manufacturer" => {
-                let had = config.init.manufacturer.is_some();
-                config.init.manufacturer = None;
+            "mfr.manufacturer" => {
+                let had = config.mfr.manufacturer.is_some();
+                config.mfr.manufacturer = None;
+                had
+            }
+            "mfr.keychain" => {
+                let had = config.mfr.keychain.is_some();
+                config.mfr.keychain = None;
                 had
             }
             "codegen.language" => {
@@ -451,7 +461,11 @@ impl ConfigCommand {
         // Resolve effective config to show all fields with current values
         let effective = resolve_effective_cli_config()?;
         let lines: Vec<String> = vec![
-            format!("init.manufacturer = {}", effective.init.manufacturer),
+            format!("mfr.manufacturer = {}", effective.mfr.manufacturer),
+            format!(
+                "mfr.keychain = {}",
+                effective.mfr.keychain.as_deref().unwrap_or("<not set>")
+            ),
             format!("codegen.language = {}", effective.codegen.language),
             format!("codegen.output = {}", effective.codegen.output),
             format!(

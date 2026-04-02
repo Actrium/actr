@@ -8,4 +8,4 @@ pub mod resolver;
 pub mod schema;
 
 pub use resolver::{EffectiveCliConfig, resolve_effective_cli_config};
-pub use schema::{CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, UiConfig};
+pub use schema::{CacheConfig, CliConfig, CodegenConfig, InstallConfig, MfrConfig, UiConfig};
