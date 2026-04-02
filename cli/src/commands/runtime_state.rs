@@ -255,7 +255,7 @@ impl RuntimeStateStore {
 }
 
 pub(crate) fn resolve_hyper_dir(
-    config_path: Option<&Path>,
+    _config_path: Option<&Path>,
     hyper_dir: Option<&Path>,
 ) -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
@@ -264,15 +264,8 @@ pub(crate) fn resolve_hyper_dir(
         return Ok(absolutize_path(&cwd, hyper_dir));
     }
 
-    if let Some(config_path) = config_path {
-        if let Some(dir) = hyper_dir_from_config_path(config_path)? {
-            return Ok(dir);
-        }
-    }
-
-    let effective = crate::config::resolver::resolve_effective_cli_config()
-        .map_err(|e| ActrCliError::command_error(format!("Failed to load CLI config: {e}")))?;
-    Ok(effective.storage.hyper_data_dir)
+    actr_config::user_config::resolve_hyper_data_dir()
+        .map_err(|e| ActrCliError::command_error(format!("Failed to load CLI config: {e}")))
 }
 
 pub(crate) fn absolutize_from_cwd(path: &Path) -> Result<PathBuf> {
@@ -281,33 +274,6 @@ pub(crate) fn absolutize_from_cwd(path: &Path) -> Result<PathBuf> {
 
 pub(crate) fn log_path_for_wid(hyper_dir: &Path, wid: &str) -> PathBuf {
     hyper_dir.join("logs").join(format!("actr-{wid}.log"))
-}
-
-fn hyper_dir_from_config_path(config_path: &Path) -> Result<Option<PathBuf>> {
-    let config_path = absolutize_from_cwd(config_path)?;
-    if !config_path.exists() {
-        return Err(ActrCliError::command_error(format!(
-            "Runtime config file not found: {}",
-            config_path.display()
-        )));
-    }
-
-    let raw = actr_config::RuntimeRawConfig::from_file(&config_path).map_err(|error| {
-        ActrCliError::command_error(format!(
-            "Failed to parse runtime config {}: {}",
-            config_path.display(),
-            error
-        ))
-    })?;
-    let base_dir = config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    Ok(raw
-        .storage
-        .hyper_data_dir
-        .map(|path| absolutize_path(&base_dir, &path)))
 }
 
 fn absolutize_path(base_dir: &Path, path: &Path) -> PathBuf {

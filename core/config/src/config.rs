@@ -107,9 +107,6 @@ pub struct RuntimeConfig {
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
-    /// Hyper data directory (.hyper), resolved relatively or absolutely from config_dir
-    pub hyper_data_dir: PathBuf,
-
     /// Trust mode: "development" or "production"
     pub trust_mode: String,
 
@@ -635,7 +632,6 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
-            hyper_data_dir: PathBuf::from(".hyper"),
             trust_mode: "development".to_string(),
             package_path: None,
             web: None,

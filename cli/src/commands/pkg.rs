@@ -58,7 +58,7 @@ pub struct PkgBuildArgs {
     )]
     pub config: PathBuf,
 
-    /// Signing key file (default: ~/.actr/dev-key.json)
+    /// Signing key file (overrides config mfr.keychain)
     #[arg(long, short = 'k', value_name = "FILE")]
     pub key: Option<PathBuf>,
 
@@ -87,7 +87,7 @@ pub struct PkgSignArgs {
     )]
     pub config: PathBuf,
 
-    /// Path to MFR signing key file (default: ~/.actr/dev-key.json)
+    /// Path to MFR signing key file (overrides config mfr.keychain)
     #[arg(long, short = 'k', value_name = "FILE")]
     pub key: Option<PathBuf>,
 
@@ -110,7 +110,7 @@ pub struct PkgVerifyArgs {
     #[arg(long, short = 'p', value_name = "FILE")]
     pub package: PathBuf,
 
-    /// Public key file (default: extract from package or use dev-key)
+    /// Public key file (default: derive from config mfr.keychain)
     #[arg(long, value_name = "FILE")]
     pub pubkey: Option<PathBuf>,
 }
@@ -184,7 +184,7 @@ pub async fn execute(args: PkgArgs) -> Result<()> {
 
 fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
     let key_path = match args.output {
-        Some(ref p) => p.clone(),
+        Some(ref path) => path.clone(),
         None => {
             let home = dirs::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
@@ -239,12 +239,10 @@ fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
     println!("  trust_mode = \"development\"");
     println!("  self_signed_pubkey = \"{}\"", public_b64);
 
-    // Auto-write keychain path to global config
     let global_path = crate::config::loader::global_config_path()?;
     let mut global_config =
         crate::config::loader::load_cli_config(&global_path)?.unwrap_or_default();
     global_config.mfr.keychain = Some(key_path.display().to_string());
-    // Ensure parent directory exists
     if let Some(parent) = global_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
@@ -471,7 +469,7 @@ async fn execute_verify(args: PkgVerifyArgs, config_keychain: Option<&str>) -> R
     let pubkey = if let Some(pubkey_path) = &args.pubkey {
         load_verifying_key(pubkey_path)?
     } else {
-        // Try config keychain or CLI fallback
+        // Try default dev-key location
         let key_path = resolve_key_path(None, config_keychain)?;
         load_verifying_key_from_dev_key(&key_path)?
     };

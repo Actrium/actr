@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
     info!("🚀 Package Echo Client Host starting");
     info!("📡 Signaling server: {:?}", config.signaling_url);
 
-    let hyper_data_dir = config.config_dir.join(".hyper");
+    let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
 
     let trust_mode = if env::var("TRUST_MODE")
         .map(|v| v == "production")

@@ -73,7 +73,8 @@ impl ActrSystemWrapper {
             "Creating package-backed runtime wrapper",
         );
 
-        let hyper_data_dir = config.config_dir.join(".hyper");
+        let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
+            .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?;
         let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
             TrustMode::Development {
                 self_signed_pubkey: vec![0u8; 32],

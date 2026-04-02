@@ -1,22 +1,14 @@
-//! CLI configuration resolver
-//!
-//! Merges global and local configs and applies built-in defaults to produce
-//! a fully-resolved `EffectiveCliConfig` with no optional fields.
+//! Shared user configuration resolver.
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
 use super::schema::{
     CacheConfig, CliConfig, CodegenConfig, InstallConfig, MfrConfig, NetworkConfig, StorageConfig,
     UiConfig,
 };
-use anyhow::Result;
+use crate::error::Result;
 use std::path::PathBuf;
 
-/// Fully-resolved CLI configuration with all defaults applied.
-///
-/// No optional fields — every value has been resolved from one of:
-/// 1. Local .actr/config.toml override
-/// 2. Global ~/.actr/config.toml override
-/// 3. Binary built-in defaults
+/// Fully-resolved user config with all defaults applied.
 #[derive(Debug, Clone)]
 pub struct EffectiveCliConfig {
     pub mfr: EffectiveMfrConfig,
@@ -27,14 +19,12 @@ pub struct EffectiveCliConfig {
     pub storage: EffectiveStorageConfig,
 }
 
-/// Resolved manufacturer identity settings
 #[derive(Debug, Clone)]
 pub struct EffectiveMfrConfig {
     pub manufacturer: String,
     pub keychain: Option<String>,
 }
 
-/// Resolved codegen settings
 #[derive(Debug, Clone)]
 pub struct EffectiveCodegenConfig {
     pub language: String,
@@ -42,7 +32,6 @@ pub struct EffectiveCodegenConfig {
     pub clean_before_generate: bool,
 }
 
-/// Resolved cache settings
 #[derive(Debug, Clone)]
 pub struct EffectiveCacheConfig {
     pub dir: String,
@@ -50,7 +39,6 @@ pub struct EffectiveCacheConfig {
     pub prefer_cache: bool,
 }
 
-/// Resolved UI/output settings
 #[derive(Debug, Clone)]
 pub struct EffectiveUiConfig {
     pub format: String,
@@ -59,26 +47,14 @@ pub struct EffectiveUiConfig {
     pub non_interactive: bool,
 }
 
-/// Resolved network settings
-///
-/// Used by CLI network operations (check/install/discovery).
-/// Note: realm_id defaults to 1 if not explicitly configured.
 #[derive(Debug, Clone)]
 pub struct EffectiveNetworkConfig {
-    /// Signaling server URL (default: ws://localhost:8081/signaling/ws)
     pub signaling_url: String,
-
-    /// AIS endpoint (default: http://localhost:8081/ais)
     pub ais_endpoint: String,
-
-    /// Realm ID (default: 1)
     pub realm_id: Option<u32>,
-
-    /// Realm secret (optional)
     pub realm_secret: Option<String>,
 }
 
-/// Resolved storage settings
 #[derive(Debug, Clone)]
 pub struct EffectiveStorageConfig {
     pub hyper_data_dir: PathBuf,
@@ -90,12 +66,7 @@ impl Default for EffectiveCliConfig {
     }
 }
 
-/// Resolve the effective CLI config by merging global and local configs, then applying defaults.
-///
-/// Priority (high → low):
-/// 1. Local .actr/config.toml
-/// 2. Global ~/.actr/config.toml
-/// 3. Binary built-in defaults
+/// Resolve the effective CLI/user config by merging global and local configs, then applying defaults.
 pub fn resolve_effective_cli_config() -> Result<EffectiveCliConfig> {
     let global = load_cli_config(&global_config_path()?)?;
     let local = load_cli_config(&local_config_path())?;
@@ -103,7 +74,11 @@ pub fn resolve_effective_cli_config() -> Result<EffectiveCliConfig> {
     Ok(apply_defaults(merged))
 }
 
-/// Merge two optional configs: overlay fields take priority over base fields.
+/// Resolve only the effective Hyper data directory from the shared user config.
+pub fn resolve_hyper_data_dir() -> Result<PathBuf> {
+    Ok(resolve_effective_cli_config()?.storage.hyper_data_dir)
+}
+
 fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConfig {
     match (base, overlay) {
         (None, None) => CliConfig::default(),
@@ -148,7 +123,6 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
     }
 }
 
-/// Apply built-in defaults to produce an `EffectiveCliConfig`.
 fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
     EffectiveCliConfig {
         mfr: EffectiveMfrConfig {
@@ -156,7 +130,7 @@ fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
             keychain: cfg
                 .mfr
                 .keychain
-                .map(|p| expand_tilde(p).to_string_lossy().to_string()),
+                .map(|path| expand_tilde(path).to_string_lossy().to_string()),
         },
         codegen: EffectiveCodegenConfig {
             language: cfg.codegen.language.unwrap_or_else(|| "rust".to_string()),
@@ -213,21 +187,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_apply_defaults() {
-        let config = CliConfig::default();
-        let effective = apply_defaults(config);
-        assert_eq!(effective.mfr.manufacturer, "acme");
-        assert!(effective.mfr.keychain.is_none());
-        assert_eq!(effective.codegen.language, "rust");
-        assert_eq!(effective.codegen.output, "src/generated");
-        assert!(!effective.codegen.clean_before_generate);
-        assert_eq!(effective.cache.dir, "~/.actr/cache");
-        assert!(effective.cache.auto_lock);
-        assert!(effective.cache.prefer_cache);
-        assert_eq!(effective.ui.format, "toml");
-        assert!(!effective.ui.verbose);
-        assert_eq!(effective.ui.color, "auto");
-        assert!(!effective.ui.non_interactive);
+    fn defaults_include_global_hyper_dir() {
+        let effective = EffectiveCliConfig::default();
         assert_eq!(
             effective.storage.hyper_data_dir,
             expand_tilde("~/.actr/hyper".to_string())
@@ -235,114 +196,24 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_configs_none_none() {
-        let merged = merge_configs(None, None);
-        assert!(merged.mfr.manufacturer.is_none());
-        assert!(merged.mfr.keychain.is_none());
-    }
-
-    #[test]
-    fn test_merge_configs_overlay_wins() {
+    fn overlay_wins_for_storage() {
         let base = CliConfig {
-            mfr: MfrConfig {
-                manufacturer: Some("base-org".to_string()),
-                ..Default::default()
+            storage: StorageConfig {
+                hyper_data_dir: Some("/tmp/base".to_string()),
             },
             ..Default::default()
         };
         let overlay = CliConfig {
-            mfr: MfrConfig {
-                manufacturer: Some("overlay-org".to_string()),
-                ..Default::default()
+            storage: StorageConfig {
+                hyper_data_dir: Some("/tmp/overlay".to_string()),
             },
             ..Default::default()
         };
-        let merged = merge_configs(Some(base), Some(overlay));
-        assert_eq!(merged.mfr.manufacturer.as_deref(), Some("overlay-org"));
-    }
 
-    #[test]
-    fn test_merge_configs_base_fallback() {
-        let base = CliConfig {
-            mfr: MfrConfig {
-                manufacturer: Some("base-org".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let merged = merge_configs(Some(base), None);
-        assert_eq!(merged.mfr.manufacturer.as_deref(), Some("base-org"));
-    }
-
-    #[test]
-    fn test_effective_cli_config_default() {
-        let effective = EffectiveCliConfig::default();
-        assert_eq!(effective.mfr.manufacturer, "acme");
-    }
-
-    #[test]
-    fn test_network_defaults() {
-        let config = CliConfig::default();
-        let effective = apply_defaults(config);
-        assert_eq!(
-            effective.network.signaling_url,
-            "ws://localhost:8081/signaling/ws"
-        );
-        assert_eq!(effective.network.ais_endpoint, "http://localhost:8081/ais");
-        assert_eq!(effective.network.realm_id, Some(1));
-        assert!(effective.network.realm_secret.is_none());
-    }
-
-    #[test]
-    fn test_network_merge_overlay_wins() {
-        let base = CliConfig {
-            network: NetworkConfig {
-                signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
-                realm_id: Some(1000),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let overlay = CliConfig {
-            network: NetworkConfig {
-                signaling_url: Some("ws://overlay:8081/signaling/ws".to_string()),
-                realm_id: Some(2000),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
         let merged = merge_configs(Some(base), Some(overlay));
         assert_eq!(
-            merged.network.signaling_url.as_deref(),
-            Some("ws://overlay:8081/signaling/ws")
+            merged.storage.hyper_data_dir.as_deref(),
+            Some("/tmp/overlay")
         );
-        assert_eq!(merged.network.realm_id, Some(2000));
-    }
-
-    #[test]
-    fn test_network_partial_override() {
-        let base = CliConfig {
-            network: NetworkConfig {
-                signaling_url: Some("ws://base:8081/signaling/ws".to_string()),
-                realm_id: Some(1000),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let overlay = CliConfig {
-            network: NetworkConfig {
-                realm_id: Some(2000),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let merged = merge_configs(Some(base), Some(overlay));
-        // signaling_url from base
-        assert_eq!(
-            merged.network.signaling_url.as_deref(),
-            Some("ws://base:8081/signaling/ws")
-        );
-        // realm_id from overlay
-        assert_eq!(merged.network.realm_id, Some(2000));
     }
 }

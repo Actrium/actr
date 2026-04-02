@@ -9,15 +9,23 @@ use async_trait::async_trait;
 use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
-use std::process::{Command as StdCommand, Stdio};
+use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::info;
+
+const DETACHED_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const DETACHED_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Args)]
 pub struct RunCommand {
     /// Runtime configuration file (defaults to ./actr.toml if not specified)
     #[arg(short = 'c', long = "config", value_name = "FILE")]
     pub config: Option<PathBuf>,
+
+    /// Hyper data directory
+    #[arg(long = "hyper-dir", value_name = "DIR")]
+    pub hyper_dir: Option<PathBuf>,
 
     /// Run in detached mode (background)
     #[arg(short = 'd', long = "detach")]
@@ -73,6 +81,7 @@ impl RunCommand {
         }
 
         let config_path = absolutize_from_cwd(&config_path)?;
+        let hyper_dir = resolve_hyper_dir(Some(&config_path), self.hyper_dir.as_deref())?;
 
         if self.detach && !self.internal_detached_child {
             return self.spawn_detached_child(&config_path).await;
@@ -116,7 +125,7 @@ impl RunCommand {
         })?;
 
         // 7. Initialize Hyper
-        let hyper = self.init_hyper(&config, &package_path).await?;
+        let hyper = self.init_hyper(&config, &package_path, &hyper_dir).await?;
         info!("✅ Hyper initialized");
 
         // 8. Attach package
@@ -222,6 +231,7 @@ impl RunCommand {
         &self,
         config: &actr_config::RuntimeConfig,
         package_path: &Path,
+        hyper_dir: &Path,
     ) -> Result<actr_hyper::Hyper> {
         use actr_hyper::{Hyper, HyperConfig, TrustMode};
         use actr_platform_native::NativePlatformProvider;
@@ -251,7 +261,7 @@ impl RunCommand {
             }
         };
 
-        let hyper_config = HyperConfig::new(&config.hyper_data_dir).with_trust_mode(trust_mode);
+        let hyper_config = HyperConfig::new(hyper_dir).with_trust_mode(trust_mode);
 
         let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
 
@@ -365,7 +375,7 @@ impl RunCommand {
             ActrCliError::command_error("--internal-wid is required for detached child".to_string())
         })?;
 
-        let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+        let hyper_dir = resolve_hyper_dir(Some(config_path), self.hyper_dir.as_deref())?;
         let runtime_store = RuntimeStateStore::new(hyper_dir);
         runtime_store.ensure_layout().await?;
         setsid().map_err(|e| {
@@ -444,7 +454,7 @@ impl RunCommand {
         {
             use uuid::Uuid;
 
-            let hyper_dir = resolve_hyper_dir(Some(config_path), None)?;
+            let hyper_dir = resolve_hyper_dir(Some(config_path), self.hyper_dir.as_deref())?;
             let runtime_store = RuntimeStateStore::new(hyper_dir);
             runtime_store.ensure_layout().await?;
 
@@ -454,6 +464,8 @@ impl RunCommand {
                 .internal_wid
                 .clone()
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
+            let wid_short = short_wid(&wid).to_string();
+            let log_path = log_path_for_wid(runtime_store.hyper_dir(), &wid);
 
             let current_exe = std::env::current_exe().map_err(|e| {
                 ActrCliError::command_error(format!(
@@ -467,6 +479,12 @@ impl RunCommand {
                 .arg("run")
                 .arg("--config")
                 .arg(config_path)
+                .args(
+                    self.hyper_dir
+                        .as_ref()
+                        .map(|path| vec!["--hyper-dir".into(), path.display().to_string()])
+                        .unwrap_or_default(),
+                )
                 .arg("--internal-detached-child")
                 .arg("--internal-wid")
                 .arg(&wid)
@@ -474,7 +492,7 @@ impl RunCommand {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
 
-            let child = child.spawn().map_err(|e| {
+            let mut child = child.spawn().map_err(|e| {
                 ActrCliError::command_error(format!(
                     "Failed to launch detached child process: {}",
                     e
@@ -482,14 +500,35 @@ impl RunCommand {
             })?;
 
             let pid = child.id();
-            // The child runs as a daemon; we intentionally do not wait on it.
-            std::mem::forget(child);
-
-            println!("Detached runtime started");
-            println!("   WID:  {}", &wid[..12]);
-            println!("   PID:  {}", pid);
-            println!();
-            println!("Follow logs: actr logs {} -f", &wid[..12]);
+            match wait_for_detached_runtime_ready(
+                &runtime_store,
+                &wid,
+                &log_path,
+                &mut child,
+                DETACHED_READY_TIMEOUT,
+                DETACHED_READY_POLL_INTERVAL,
+            )
+            .await?
+            {
+                DetachedRuntimeStartup::Ready => {
+                    println!("Detached runtime started");
+                    println!("   WID:  {}", wid_short);
+                    println!("   PID:  {}", pid);
+                    println!();
+                    println!("Follow logs: actr logs {} -f", wid_short);
+                }
+                DetachedRuntimeStartup::Initializing => {
+                    println!("Detached runtime launched but is still initializing");
+                    println!("   WID:   {}", wid_short);
+                    println!("   PID:   {}", pid);
+                    println!("   Logs:  {}", log_path.display());
+                    println!();
+                    println!(
+                        "Wait for the runtime record to be written before using `actr logs {} -f`.",
+                        wid_short
+                    );
+                }
+            }
             return Ok(());
         }
 
@@ -755,4 +794,179 @@ struct DetachedRuntimeContext {
     log_file: PathBuf,
     pid: u32,
     wid: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetachedRuntimeStartup {
+    Ready,
+    Initializing,
+}
+
+async fn wait_for_detached_runtime_ready(
+    runtime_store: &RuntimeStateStore,
+    wid: &str,
+    log_path: &Path,
+    child: &mut Child,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Result<DetachedRuntimeStartup> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if runtime_store.read_record_by_wid(wid).await?.is_some() {
+            return Ok(DetachedRuntimeStartup::Ready);
+        }
+
+        if let Some(status) = child.try_wait()? {
+            return Err(ActrCliError::command_error(format!(
+                "Detached child exited before runtime became ready (status: {status}). Check logs at {}",
+                log_path.display()
+            )));
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(DetachedRuntimeStartup::Initializing);
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+fn short_wid(wid: &str) -> &str {
+    const SHORT_WID_CHARS: usize = 12;
+
+    let end = wid
+        .char_indices()
+        .nth(SHORT_WID_CHARS)
+        .map(|(index, _)| index)
+        .unwrap_or(wid.len());
+    &wid[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DETACHED_READY_POLL_INTERVAL, DetachedRuntimeStartup, short_wid,
+        wait_for_detached_runtime_ready,
+    };
+    use crate::commands::runtime_state::{RuntimeRecord, RuntimeStateStore};
+    use chrono::Utc;
+    use std::process::Command as StdCommand;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_short_wid_handles_short_values() {
+        assert_eq!(short_wid("shortwid"), "shortwid");
+        assert_eq!(short_wid("1234567890123456"), "123456789012");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_wait_for_detached_runtime_ready_returns_ready_when_record_appears() {
+        let hyper_dir = TempDir::new().unwrap();
+        let store = RuntimeStateStore::new(hyper_dir.path().to_path_buf());
+        store.ensure_layout().await.unwrap();
+
+        let wid = "readywid-0000-0000-0000-000000000000".to_string();
+        let log_path = hyper_dir.path().join("logs").join("actr-ready.log");
+        let config_path = hyper_dir.path().join("actr.toml");
+        let writer_store = RuntimeStateStore::new(hyper_dir.path().to_path_buf());
+        let writer_wid = wid.clone();
+        let writer_log_path = log_path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let record = RuntimeRecord::new(
+                writer_wid,
+                "test-actr".to_string(),
+                99999,
+                config_path,
+                writer_log_path,
+                Utc::now(),
+            );
+            writer_store.write_record(&record).await.unwrap();
+        });
+
+        let mut child = StdCommand::new("sh")
+            .arg("-c")
+            .arg("sleep 5")
+            .spawn()
+            .unwrap();
+        let result = wait_for_detached_runtime_ready(
+            &store,
+            &wid,
+            &log_path,
+            &mut child,
+            Duration::from_secs(1),
+            DETACHED_READY_POLL_INTERVAL,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, DetachedRuntimeStartup::Ready);
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_wait_for_detached_runtime_ready_returns_error_when_child_exits() {
+        let hyper_dir = TempDir::new().unwrap();
+        let store = RuntimeStateStore::new(hyper_dir.path().to_path_buf());
+        store.ensure_layout().await.unwrap();
+
+        let log_path = hyper_dir.path().join("logs").join("actr-failed.log");
+        let mut child = StdCommand::new("sh")
+            .arg("-c")
+            .arg("exit 3")
+            .spawn()
+            .unwrap();
+
+        let error = wait_for_detached_runtime_ready(
+            &store,
+            "failedwid-0000",
+            &log_path,
+            &mut child,
+            Duration::from_secs(1),
+            DETACHED_READY_POLL_INTERVAL,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("Detached child exited before runtime became ready"));
+        assert!(error.contains(log_path.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_wait_for_detached_runtime_ready_returns_initializing_on_timeout() {
+        let hyper_dir = TempDir::new().unwrap();
+        let store = RuntimeStateStore::new(hyper_dir.path().to_path_buf());
+        store.ensure_layout().await.unwrap();
+
+        let log_path = hyper_dir.path().join("logs").join("actr-timeout.log");
+        let mut child = StdCommand::new("sh")
+            .arg("-c")
+            .arg("sleep 5")
+            .spawn()
+            .unwrap();
+
+        let result = wait_for_detached_runtime_ready(
+            &store,
+            "timeoutwid-0000",
+            &log_path,
+            &mut child,
+            Duration::from_millis(50),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, DetachedRuntimeStartup::Initializing);
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }

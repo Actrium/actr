@@ -182,10 +182,6 @@ impl ParserV1 {
             websocket_listen_port: raw.websocket.listen_port,
             websocket_advertised_host: raw.websocket.advertised_host,
             observability,
-            hyper_data_dir: raw
-                .storage
-                .hyper_data_dir
-                .unwrap_or_else(|| self.base_dir.join(".hyper")),
             config_dir: self.base_dir.clone(),
             trust_mode: raw
                 .deployment
