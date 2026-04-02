@@ -49,8 +49,6 @@ pub enum SupportedLanguage {
     Kotlin,
     #[value(name = "typescript")]
     TypeScript,
-    #[value(name = "web")]
-    Web,
 }
 
 // Re-export new architecture commands

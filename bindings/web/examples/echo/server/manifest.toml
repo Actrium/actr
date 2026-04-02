@@ -1,3 +1,7 @@
+# NOTE: This manifest is kept for web platform config reference.
+# For actr pkg build, use server-guest/manifest.toml instead.
+# For runtime config (signaling, AIS, WebRTC, ACL), use server-actr.toml.
+
 edition = 1
 exports = ["../proto/echo.proto"]
 
@@ -12,39 +16,10 @@ tags = ["dev", "server"]
 
 [dependencies]
 
-# Web platform specific configuration
+# Web platform specific configuration (for reference / tooling)
 [platform.web]
 generate_types = true
 types_output = "./src/generated"
 worker_type = "service-worker"
 service_worker_path = "/actor.sw.js"
 generate_sw_entry = true
-
-[system.ais_endpoint]
-url = "http://localhost:8080/ais"
-
-[system.signaling]
-url = "ws://localhost:8081/signaling/ws"
-
-[system.deployment]
-realm_id = 2368266035
-ais_endpoint = "http://localhost:8081/ais"
-
-[system.discovery]
-visible = true
-
-[system.observability]
-filter_level = "info"
-tracing_enabled = false
-
-[system.webrtc]
-force_relay = false
-stun_urls = ["stun:localhost:3478"]
-turn_urls = ["turn:localhost:3478"]
-
-# ACL configuration - allow echo clients
-[acl]
-
-[[acl.rules]]
-permission = "allow"
-types = ["acme:echo-client-app:0.1.0"]

@@ -62,6 +62,8 @@ impl Command for RestartCommand {
             detach: true,
             internal_detached_child: false,
             internal_wid: Some(full_wid),
+            web: false,
+            port: None,
         }
         .execute()
         .await

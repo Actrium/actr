@@ -115,6 +115,9 @@ pub struct RuntimeConfig {
 
     /// Path to the workload package (.actr file)
     pub package_path: Option<PathBuf>,
+
+    /// Web server configuration for `actr run --web`
+    pub web: Option<WebConfig>,
 }
 
 /// Package info
@@ -305,6 +308,31 @@ pub struct ObservabilityConfig {
 
     /// Service name reported to the tracing backend
     pub tracing_service_name: String,
+}
+
+/// Web server configuration (resolved from raw config)
+#[derive(Debug, Clone)]
+pub struct WebConfig {
+    /// HTTP server port
+    pub port: u16,
+
+    /// HTTP server bind host
+    pub host: String,
+
+    /// Absolute path to the directory to serve static files from
+    pub static_dir: PathBuf,
+
+    /// Whether this instance acts as a server (`true`) or client (`false`)
+    pub is_server: Option<bool>,
+
+    /// URL path to the .actr package (served from static dir)
+    pub package_url: Option<String>,
+
+    /// URL path to the shared runtime WASM
+    pub runtime_wasm_url: Option<String>,
+
+    /// MFR public key for package verification (Base64-encoded Ed25519)
+    pub mfr_pubkey: Option<String>,
 }
 
 // ============================================================================
@@ -610,6 +638,7 @@ mod tests {
             hyper_data_dir: PathBuf::from(".hyper"),
             trust_mode: "development".to_string(),
             package_path: None,
+            web: None,
         };
 
         assert_eq!(config.actr_type().name, "test-service");

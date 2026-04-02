@@ -9,7 +9,7 @@
  */
 
 import { createActor, Actor } from '@actr/web';
-import { actrConfig } from './generated';
+import { initConfig, buildActrConfig } from './generated';
 
 // ── Minimal protobuf helpers for EchoRequest / EchoResponse ──
 // EchoRequest  { string message = 1; }
@@ -142,9 +142,16 @@ function escapeHtml(s: string): string {
  */
 async function init(): Promise<void> {
     try {
-        statusEl.textContent = 'Connecting...';
+        statusEl.textContent = 'Loading config...';
         statusEl.className = 'status connecting';
 
+        log('info', '📡 Loading runtime config...');
+
+        // Load runtime config from /actr-runtime-config.json
+        await initConfig();
+        const actrConfig = buildActrConfig();
+
+        statusEl.textContent = 'Connecting...';
         log('info', '🚀 Initializing Echo Client...');
 
         // Create an actor via the unified Actor API.

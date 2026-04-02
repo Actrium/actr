@@ -7,7 +7,6 @@ mod scaffold;
 mod swift;
 mod traits;
 mod typescript;
-mod web;
 
 pub use crate::commands::SupportedLanguage;
 use crate::error::Result;
@@ -23,7 +22,6 @@ use swift::SwiftGenerator;
 use tracing::info;
 pub use traits::{GenContext, LanguageGenerator, ScaffoldType};
 use typescript::TypeScriptGenerator;
-use web::WebGenerator;
 
 pub struct GeneratorFactory;
 
@@ -35,7 +33,6 @@ impl GeneratorFactory {
             SupportedLanguage::Swift => Box::new(SwiftGenerator),
             SupportedLanguage::Kotlin => Box::new(KotlinGenerator),
             SupportedLanguage::TypeScript => Box::new(TypeScriptGenerator),
-            SupportedLanguage::Web => Box::new(WebGenerator),
         }
     }
 }
@@ -73,7 +70,6 @@ mod tests {
             SupportedLanguage::Swift,
             SupportedLanguage::Kotlin,
             SupportedLanguage::TypeScript,
-            SupportedLanguage::Web,
         ] {
             let _ = GeneratorFactory::get_generator(language);
         }

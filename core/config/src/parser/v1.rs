@@ -9,7 +9,7 @@ use crate::config::{
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawBuildConfig, RawConfig, RawDependency, RawPackageConfig};
+use crate::{RawBuildConfig, RawConfig, RawDependency, RawPackageConfig, WebConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -192,6 +192,15 @@ impl ParserV1 {
                 .trust_mode
                 .unwrap_or_else(|| "development".to_string()),
             package_path,
+            web: raw.web.map(|w| WebConfig {
+                port: w.port,
+                host: w.host,
+                static_dir: self.base_dir.join(&w.static_dir),
+                is_server: w.is_server,
+                package_url: w.package_url,
+                runtime_wasm_url: w.runtime_wasm_url,
+                mfr_pubkey: w.mfr_pubkey,
+            }),
         })
     }
 

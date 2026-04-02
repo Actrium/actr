@@ -17,7 +17,7 @@
  */
 
 import { createActor, type Actor } from '@actr/web';
-import { actrConfig, actorType, system } from './generated';
+import { initConfig, actorType, system, buildActrConfig } from './generated';
 
 // ── DOM Elements ──
 const statusEl = document.getElementById('status')!;
@@ -161,7 +161,13 @@ function handleSwLog(data: {
 async function startServer(): Promise<void> {
     try {
         log('info', '🚀 Starting Echo Server...');
-        log('info', '📦 WASM will be loaded by the Service Worker (actor.sw.js)');
+        log('info', '� Loading runtime config...');
+
+        // Load runtime config from /actr-runtime-config.json
+        await initConfig();
+        const actrConfig = buildActrConfig();
+
+        log('info', '�📦 WASM will be loaded by the Service Worker (actor.sw.js)');
 
         // Update the UI with server information
         updateServerInfo();
