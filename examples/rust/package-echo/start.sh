@@ -8,8 +8,10 @@
 #   4. Client discovers the echo service, sends messages, verifies responses
 #
 # Usage:
-#   ./start.sh              # Use default message "TestMsg"
-#   ./start.sh "Hello"      # Send custom message
+#   ./start.sh                        # Use default message "TestMsg"
+#   ./start.sh "Hello"                # Send custom message
+#   ./start.sh --backend cdylib       # Use native cdylib backend (default: wasm)
+#   ./start.sh --backend cdylib "Hi"  # cdylib backend with custom message
 
 set -e
 set -o pipefail
@@ -21,8 +23,28 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# ── Argument parsing ─────────────────────────────────────────────────────
+BACKEND="wasm"
+TEST_INPUT="TestMsg"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --backend)
+            BACKEND="$2"; shift 2 ;;
+        --backend=*)
+            BACKEND="${1#--backend=}"; shift ;;
+        -*)
+            echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            TEST_INPUT="$1"; shift ;;
+    esac
+done
+if [[ "$BACKEND" != "wasm" && "$BACKEND" != "cdylib" ]]; then
+    echo "Invalid --backend value: '$BACKEND' (must be 'wasm' or 'cdylib')" >&2
+    exit 1
+fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🧪 Testing package-echo (local echo-actr package loader)"
+echo "🧪 Testing package-echo (backend: $BACKEND)"
 echo "    Using Actrix as signaling server"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -155,10 +177,14 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# ── Step 0: Compile echo-actr WASM ──────────────────────────────────────
+# ── Step 0: Build echo-actr package ─────────────────────────────────────
 
 echo ""
-echo -e "${BLUE}📦 Step 0: Compiling echo-actr WASM...${NC}"
+if [ "$BACKEND" = "cdylib" ]; then
+    echo -e "${BLUE}📦 Step 0: Building echo-actr (cdylib / native)...${NC}"
+else
+    echo -e "${BLUE}📦 Step 0: Building echo-actr (wasm)...${NC}"
+fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo_actr_version() {
@@ -174,67 +200,84 @@ echo_actr_version() {
 }
 
 ECHO_ACTR_VERSION="${ECHO_ACTR_VERSION:-$(echo_actr_version)}"
-ECHO_ACTR_TARGET="wasm32-unknown-unknown"
 SIGNING_KEY="$ECHO_ACTR_DIR/packaging/keys/dev-signing-key.json"
 PUBLIC_KEY_PATH="$ECHO_ACTR_DIR/public-key.json"
 
-if [ ! -d "$ECHO_ACTR_DIR" ] && [ -z "${ACTR_PACKAGE_PATH:-}" ]; then
+if [ ! -d "$ECHO_ACTR_DIR" ]; then
     echo -e "${RED}❌ echo-actr repository not found: $ECHO_ACTR_DIR${NC}"
     exit 1
 fi
 
 echo "echo-actr dir: $ECHO_ACTR_DIR"
 echo "Version:       $ECHO_ACTR_VERSION"
-echo "Target:        $ECHO_ACTR_TARGET"
 
 # Patch client actr.toml ACL to reference the correct EchoService version
 perl -0pi -e "s/type = \"actrium:EchoService:[^\"]+\"/type = \"actrium:EchoService:${ECHO_ACTR_VERSION}\"/g" \
     "$CLIENT_DIR/actr.toml" "$CLIENT_GUEST_DIR/actr.toml" 2>/dev/null || true
 
-# 1. Compile to WASM
-rustup target add "$ECHO_ACTR_TARGET" >/dev/null
-cargo build --manifest-path "$ECHO_ACTR_DIR/Cargo.toml" \
-    --lib --release --target "$ECHO_ACTR_TARGET" 2>&1 | tail -5
+if [ "$BACKEND" = "cdylib" ]; then
+    ECHO_ACTR_TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
+    echo "Target:        $ECHO_ACTR_TARGET (cdylib)"
+    ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
 
-# Resolve WASM output path: workspace may use a shared target directory
-RAW_WASM=""
-for _candidate in \
-    "$ECHO_ACTR_DIR/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
-    "$(dirname "$ECHO_ACTR_DIR")/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
-    "$ACTR_REPO_DIR/target/examples/${ECHO_ACTR_TARGET}/release/echo_guest.wasm"; do
-    if [ -f "$_candidate" ]; then
-        RAW_WASM="$_candidate"
-        break
+    cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- build \
+        -f "$ECHO_ACTR_DIR/manifest-cdylib.toml" \
+        --key "$SIGNING_KEY" \
+        --output "$ACTR_PACKAGE"
+
+    if [ ! -f "$ACTR_PACKAGE" ]; then
+        echo -e "${RED}❌ actr build failed: $ACTR_PACKAGE not found${NC}"
+        exit 1
     fi
-done
-if [ ! -f "$RAW_WASM" ]; then
-    echo -e "${RED}❌ WASM compilation failed${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✅ WASM compiled: $(du -h "$RAW_WASM" | cut -f1)${NC}"
+    echo -e "${GREEN}✅ cdylib .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
+else
+    ECHO_ACTR_TARGET="wasm32-unknown-unknown"
+    echo "Target:        $ECHO_ACTR_TARGET"
 
-# 2. wasm-opt --asyncify
-WASM_OPT_CMD="${WASM_OPT:-wasm-opt}"
-if ! command -v "$WASM_OPT_CMD" >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  wasm-opt not found, installing via cargo...${NC}"
-    cargo install wasm-opt 2>&1 | tail -3
-fi
-mkdir -p "$ECHO_ACTR_DIR/dist"
-OPTIMIZED_WASM="$ECHO_ACTR_DIR/dist/echo-actr-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.wasm"
-"$WASM_OPT_CMD" --asyncify -O "$RAW_WASM" -o "$OPTIMIZED_WASM"
-echo -e "${GREEN}✅ wasm-opt done: $(du -h "$OPTIMIZED_WASM" | cut -f1)${NC}"
+    # 1. Compile to WASM
+    rustup target add "$ECHO_ACTR_TARGET" >/dev/null
+    cargo build --manifest-path "$ECHO_ACTR_DIR/Cargo.toml" \
+        --lib --release --target "$ECHO_ACTR_TARGET" 2>&1 | tail -5
 
-# ── Step 0.5: Pack .actr with actr pkg build ──────────────────────────────
+    # Resolve WASM output path: workspace may use a shared target directory
+    RAW_WASM=""
+    for _candidate in \
+        "$ECHO_ACTR_DIR/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
+        "$(dirname "$ECHO_ACTR_DIR")/target/${ECHO_ACTR_TARGET}/release/echo_guest.wasm" \
+        "$ACTR_REPO_DIR/target/examples/${ECHO_ACTR_TARGET}/release/echo_guest.wasm"; do
+        if [ -f "$_candidate" ]; then
+            RAW_WASM="$_candidate"
+            break
+        fi
+    done
+    if [ ! -f "$RAW_WASM" ]; then
+        echo -e "${RED}❌ WASM compilation failed${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ WASM compiled: $(du -h "$RAW_WASM" | cut -f1)${NC}"
 
-echo ""
-echo -e "${BLUE}📦 Step 0.5: Packing signed .actr package via actr pkg build...${NC}"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # 2. wasm-opt --asyncify
+    WASM_OPT_CMD="${WASM_OPT:-wasm-opt}"
+    if ! command -v "$WASM_OPT_CMD" >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  wasm-opt not found, installing via cargo...${NC}"
+        cargo install wasm-opt 2>&1 | tail -3
+    fi
+    mkdir -p "$ECHO_ACTR_DIR/dist"
+    OPTIMIZED_WASM="$ECHO_ACTR_DIR/dist/echo-actr-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.wasm"
+    "$WASM_OPT_CMD" --asyncify -O "$RAW_WASM" -o "$OPTIMIZED_WASM"
+    echo -e "${GREEN}✅ wasm-opt done: $(du -h "$OPTIMIZED_WASM" | cut -f1)${NC}"
 
-ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
-BUILD_CONFIG="$ECHO_ACTR_DIR/dist/build-config.toml"
+    # ── Step 0.5: Pack .actr with actr pkg build ──────────────────────────
 
-# Generate a temporary build manifest (manifest.toml format: exports under [package])
-cat > "$BUILD_CONFIG" << TOML
+    echo ""
+    echo -e "${BLUE}📦 Step 0.5: Packing signed .actr package via actr pkg build...${NC}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
+    BUILD_CONFIG="$ECHO_ACTR_DIR/dist/build-config.toml"
+
+    # Generate a temporary build manifest (manifest.toml format: exports under [package])
+    cat > "$BUILD_CONFIG" << TOML
 [package]
 manufacturer = "actrium"
 name = "EchoService"
@@ -244,18 +287,19 @@ license = "Apache-2.0"
 exports = ["$ECHO_ACTR_DIR/proto/echo.proto"]
 TOML
 
-cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
-    --binary "$OPTIMIZED_WASM" \
-    --config "$BUILD_CONFIG" \
-    --key "$SIGNING_KEY" \
-    --target "$ECHO_ACTR_TARGET" \
-    --output "$ACTR_PACKAGE"
+    cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg build \
+        --binary "$OPTIMIZED_WASM" \
+        --config "$BUILD_CONFIG" \
+        --key "$SIGNING_KEY" \
+        --target "$ECHO_ACTR_TARGET" \
+        --output "$ACTR_PACKAGE"
 
-if [ ! -f "$ACTR_PACKAGE" ]; then
-    echo -e "${RED}❌ actr pkg build failed: $ACTR_PACKAGE not found${NC}"
-    exit 1
+    if [ ! -f "$ACTR_PACKAGE" ]; then
+        echo -e "${RED}❌ actr pkg build failed: $ACTR_PACKAGE not found${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✅ .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
 fi
-echo -e "${GREEN}✅ .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"
 
 # Verify the package signature
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg verify \
@@ -777,12 +821,6 @@ echo ""
 echo "🚀 Running package-echo-client..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-if [ -n "$1" ]; then
-    TEST_INPUT="$1"
-else
-    TEST_INPUT="TestMsg"
-fi
-
 echo "Sending test message: \"$TEST_INPUT\""
 
 (
@@ -825,8 +863,8 @@ if grep -q "\[Received reply\].*Echo: $TEST_INPUT" "$LOG_DIR/package-echo-client
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   1. WASM compiled from $ECHO_ACTR_DIR"
-    echo "   2. actr pkg build → signed .actr (key: $SIGNING_KEY)"
+    echo "   1. $BACKEND artifact built from $ECHO_ACTR_DIR"
+    echo "   2. signed .actr package created (key: $SIGNING_KEY)"
     echo "   3. actr pkg publish → registered via challenge-response nonce"
     echo "   4. Hyper (TRUST_MODE=production) fetched pubkey from MFR, verified .actr"
     echo "   5. AIS issued credential (Path 1: published package lookup)"
