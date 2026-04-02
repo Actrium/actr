@@ -62,7 +62,9 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
 
     let effective_target = resolve_effective_target(&args, &config)?;
     let output_path = resolve_output_path(&manifest_path, &effective_target, args.output.as_ref())?;
-    let key_path = resolve_key_path(args.key.as_deref())?;
+
+    let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
+    let key_path = resolve_key_path(args.key.as_deref(), cli_config.mfr.keychain.as_deref())?;
 
     if !args.no_compile {
         let build = config.build.as_ref().ok_or_else(|| {
