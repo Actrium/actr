@@ -1,6 +1,6 @@
 # Repository Agents Guide
 
-This document summarizes the expectations for anyone operating or extending the ACTR example workspace in `/Users/kaito/Project/ar/actr-examples`.
+This document summarizes the expectations for anyone operating or extending the ACTR example workspace.
 
 ## Scope & Goals
 

@@ -1,7 +1,10 @@
+# NOTE: This file is a manual run template.
+# Update [package].path before using it directly.
+# start.sh overwrites this file with the actual package path for local runs.
 edition = 1
 
 [package]
-path = "/Users/kaito/Project/Actrium/actr-run-worktree/examples/rust/echo-actr/dist/actrium-EchoService-0.2.2-wasm32-unknown-unknown.actr"
+path = "../echo-actr/dist/actrium-EchoService-0.2.2-wasm32-unknown-unknown.actr"
 
 [signaling]
 url = "ws://localhost:8081/signaling/ws"

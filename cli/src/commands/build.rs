@@ -1,145 +1,365 @@
-//! Build command implementation
-//!
-//! Computes service fingerprint from exported proto files and writes manifest.lock.toml.
-//! This is a prerequisite for consumers to reference services by exact fingerprint.
+//! `actr build` - build source artifacts and package signed `.actr` workloads.
 
-use crate::error::Result;
-use actr_config::ConfigParser;
-use actr_service_compat::{Fingerprint, ProtoFile};
-use anyhow::Context;
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use std::process::{Command, Stdio};
 
-/// Build command arguments
-pub struct BuildArgs {
-    /// Configuration file path
-    pub config: String,
+use actr_config::{BuildArtifact, BuildConfig, BuildProfile, ConfigParser, ManifestConfig};
+use anyhow::{Context, Result};
+use cargo_metadata::MetadataCommand;
+use clap::Args;
+
+use crate::commands::package_build::{
+    PackageBuildInput, build_package, default_dist_output_path, print_build_summary,
+    resolve_key_path,
+};
+
+#[derive(Args, Debug)]
+#[command(
+    about = "Build source artifact and package a signed .actr workload",
+    long_about = "Build source artifact and package a signed .actr workload from manifest.toml"
+)]
+pub struct BuildCommand {
+    /// manifest.toml path
+    #[arg(
+        long,
+        short = 'f',
+        default_value = "manifest.toml",
+        value_name = "FILE"
+    )]
+    pub file: PathBuf,
+
+    /// Override target triple
+    #[arg(long, short = 't', value_name = "TARGET")]
+    pub target: Option<String>,
+
+    /// Output .actr file path
+    #[arg(long, short = 'o', value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Signing key file (default: ~/.actr/dev-key.json)
+    #[arg(long, short = 'k', value_name = "FILE")]
+    pub key: Option<PathBuf>,
+
+    /// Skip compilation and only package the declared binary artifact
+    #[arg(long)]
+    pub no_compile: bool,
 }
 
-impl Default for BuildArgs {
-    fn default() -> Self {
-        Self {
-            config: "manifest.toml".to_string(),
+pub async fn execute(args: BuildCommand) -> Result<()> {
+    let manifest_path = resolve_manifest_path(&args.file)?;
+    let config = ConfigParser::from_manifest_file(&manifest_path).with_context(|| {
+        format!(
+            "Failed to load manifest configuration from {}",
+            manifest_path.display()
+        )
+    })?;
+
+    let binary = config.binary.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "manifest.toml is missing [binary].\nDeclare the final packaged artifact path before running `actr build`."
+        )
+    })?;
+
+    let effective_target = resolve_effective_target(&args, &config)?;
+    let output_path = resolve_output_path(&manifest_path, &effective_target, args.output.as_ref())?;
+    let key_path = resolve_key_path(args.key.as_deref())?;
+
+    if !args.no_compile {
+        let build = config.build.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "manifest.toml is missing [build].\nAdd [build] or rerun with `--no-compile` to package an existing artifact."
+            )
+        })?;
+        compile_project(
+            &manifest_path,
+            &output_path,
+            &binary.path,
+            &effective_target,
+            build,
+        )?;
+    }
+
+    if !binary.path.exists() {
+        anyhow::bail!(
+            "Configured binary artifact not found: {}\nCheck [binary].path or your post_build steps.",
+            binary.path.display()
+        );
+    }
+
+    let summary = build_package(PackageBuildInput {
+        binary_path: binary.path.clone(),
+        config_path: manifest_path,
+        key_path,
+        output_path,
+        target: effective_target,
+        resources: vec![],
+    })?;
+
+    print_build_summary(&summary);
+    Ok(())
+}
+
+fn resolve_manifest_path(path: &Path) -> Result<PathBuf> {
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    if !candidate.exists() {
+        anyhow::bail!(
+            "manifest.toml not found: {}\nBy default `actr build` looks for ./manifest.toml. Use `-f, --file` to specify a different path.",
+            candidate.display()
+        );
+    }
+
+    Ok(candidate)
+}
+
+fn resolve_effective_target(args: &BuildCommand, config: &ManifestConfig) -> Result<String> {
+    if let Some(target) = &args.target {
+        return Ok(target.clone());
+    }
+
+    if let Some(target) = config
+        .binary
+        .as_ref()
+        .and_then(|binary| binary.target.clone())
+    {
+        return Ok(target);
+    }
+
+    if let Some(target) = config.build.as_ref().and_then(|build| build.target.clone()) {
+        return Ok(target);
+    }
+
+    resolve_host_target()
+}
+
+fn resolve_output_path(
+    manifest_path: &Path,
+    effective_target: &str,
+    output: Option<&PathBuf>,
+) -> Result<PathBuf> {
+    let manifest_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    match output {
+        Some(path) if path.is_absolute() => Ok(path.clone()),
+        Some(path) => Ok(manifest_dir.join(path)),
+        None => default_dist_output_path(manifest_path, effective_target),
+    }
+}
+
+fn compile_project(
+    manifest_path: &Path,
+    output_path: &Path,
+    binary_path: &Path,
+    effective_target: &str,
+    build: &BuildConfig,
+) -> Result<()> {
+    if !build.manifest_path.exists() {
+        anyhow::bail!(
+            "Cargo manifest not found: {}",
+            build.manifest_path.display()
+        );
+    }
+
+    ensure_target_installed(effective_target)?;
+    run_cargo_build(build, effective_target)?;
+    run_post_build_steps(
+        manifest_path,
+        output_path,
+        binary_path,
+        effective_target,
+        build,
+    )?;
+
+    if !binary_path.exists() {
+        anyhow::bail!(
+            "Binary artifact was not produced after build/post_build: {}",
+            binary_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn ensure_target_installed(target: &str) -> Result<()> {
+    let host_target = resolve_host_target()?;
+    if target == host_target {
+        return Ok(());
+    }
+
+    let status = Command::new("rustup")
+        .arg("target")
+        .arg("add")
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("Failed to run `rustup target add {target}`"))?;
+
+    if !status.success() {
+        anyhow::bail!("`rustup target add {target}` failed with status {status}");
+    }
+
+    Ok(())
+}
+
+fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command.arg("build");
+    command.arg("--manifest-path").arg(&build.manifest_path);
+
+    match build.artifact {
+        BuildArtifact::Lib => {
+            command.arg("--lib");
+        }
+        BuildArtifact::Bin => {
+            command
+                .arg("--bin")
+                .arg(resolve_cargo_bin_name(&build.manifest_path)?);
         }
     }
-}
 
-/// Lock file structure (manifest.lock.toml)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ManifestLockFile {
-    /// Lock file format version
-    pub version: u32,
-
-    /// Timestamp of last update (RFC3339)
-    pub updated_at: String,
-
-    /// Service info (populated when this project exports protos)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service: Option<ServiceLock>,
-}
-
-/// Locked service info
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServiceLock {
-    /// Service name (from package.name)
-    pub name: String,
-
-    /// Semantic fingerprint of all exported proto files combined
-    pub fingerprint: String,
-
-    /// Per-file fingerprints
-    pub files: Vec<FileLock>,
-}
-
-/// Per-proto-file lock entry
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileLock {
-    /// File name (relative)
-    pub name: String,
-
-    /// Semantic fingerprint of this file
-    pub fingerprint: String,
-}
-
-/// Execute the build command
-pub async fn execute(args: BuildArgs) -> Result<()> {
-    let config_path = Path::new(&args.config);
-    info!("🔨 Building project from {}", args.config);
-
-    let config = ConfigParser::from_manifest_file(config_path)
-        .with_context(|| format!("Failed to load manifest from {}", args.config))?;
-
-    let lock_path = config.config_dir.join("manifest.lock.toml");
-
-    let service_lock = if config.exports.is_empty() {
-        info!("ℹ️  No proto exports — skipping fingerprint computation");
-        None
-    } else {
-        let proto_files: Vec<ProtoFile> = config
-            .exports
-            .iter()
-            .map(|pf| ProtoFile {
-                name: pf.file_name().unwrap_or("unknown.proto").to_string(),
-                content: pf.content.clone(),
-                path: Some(pf.path.to_string_lossy().to_string()),
-            })
-            .collect();
-
-        // Calculate service fingerprint
-        let fingerprint = Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-            .context("Failed to calculate service fingerprint")?;
-        info!("📋 Service fingerprint: {fingerprint}");
-
-        // Build Protobuf entries
-        let files = proto_files
-            .iter()
-            .map(|pf| {
-                // Calculate individual file fingerprint
-                let file_fp = Fingerprint::calculate_proto_semantic_fingerprint(&pf.content)
-                    .unwrap_or_else(|_| "error".to_string());
-                debug!("  {} → {}", pf.name, file_fp);
-                FileLock {
-                    name: pf.name.clone(),
-                    fingerprint: file_fp,
-                }
-            })
-            .collect();
-
-        Some(ServiceLock {
-            name: config.package.name.clone(),
-            fingerprint,
-            files,
-        })
-    };
-
-    // Get current timestamp
-    let lock_file = ManifestLockFile {
-        version: 1,
-        updated_at: Utc::now().to_rfc3339(),
-        service: service_lock,
-    };
-
-    write_lock_file(&lock_path, &lock_file)?;
-    info!("✅ manifest.lock.toml written to {}", lock_path.display());
-
-    Ok(())
-}
-
-fn write_lock_file(path: &PathBuf, lock: &ManifestLockFile) -> Result<()> {
-    let content = toml::to_string_pretty(lock).context("Failed to serialize manifest.lock.toml")?;
-    std::fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
-}
-
-/// Read an existing lock file (returns None if not found)
-pub fn read_lock_file(config_dir: &Path) -> Option<ManifestLockFile> {
-    let path = config_dir.join("manifest.lock.toml");
-    if !path.exists() {
-        warn!("manifest.lock.toml not found at {}", path.display());
-        return None;
+    if build.profile == BuildProfile::Release {
+        command.arg("--release");
     }
-    let content = std::fs::read_to_string(&path).ok()?;
-    toml::from_str(&content).ok()
+
+    command.arg("--target").arg(effective_target);
+
+    if !build.features.is_empty() {
+        command.arg("--features").arg(build.features.join(","));
+    }
+
+    if build.no_default_features {
+        command.arg("--no-default-features");
+    }
+
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| {
+            format!(
+                "Failed to run cargo build for manifest {}",
+                build.manifest_path.display()
+            )
+        })?;
+
+    if !status.success() {
+        anyhow::bail!("cargo build failed with status {status}");
+    }
+
+    Ok(())
+}
+
+fn run_post_build_steps(
+    manifest_path: &Path,
+    output_path: &Path,
+    binary_path: &Path,
+    effective_target: &str,
+    build: &BuildConfig,
+) -> Result<()> {
+    if build.post_build.is_empty() {
+        return Ok(());
+    }
+
+    let manifest_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    for command_text in &build.post_build {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command_text)
+            .current_dir(&manifest_dir)
+            .env("ACTR_BUILD_MANIFEST_PATH", manifest_path)
+            .env("ACTR_BUILD_PROJECT_DIR", &manifest_dir)
+            .env("ACTR_BUILD_BINARY_PATH", binary_path)
+            .env("ACTR_BUILD_TARGET", effective_target)
+            .env("ACTR_BUILD_PROFILE", build.profile.as_str())
+            .env("ACTR_BUILD_OUTPUT_PATH", output_path)
+            .output()
+            .with_context(|| format!("Failed to run post_build command: {command_text}"))?;
+
+        if !output.stdout.is_empty() {
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+        if !output.stderr.is_empty() {
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        if !output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            anyhow::bail!(
+                "post_build command failed: {command_text}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                stdout,
+                stderr,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_cargo_bin_name(manifest_path: &Path) -> Result<String> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "Failed to read Cargo metadata from {}",
+                manifest_path.display()
+            )
+        })?;
+
+    let manifest_path =
+        std::fs::canonicalize(manifest_path).unwrap_or_else(|_| manifest_path.to_path_buf());
+
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| {
+            std::fs::canonicalize(package.manifest_path.as_std_path())
+                .map(|path| path == manifest_path)
+                .unwrap_or(false)
+        })
+        .or_else(|| metadata.root_package())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unable to resolve Cargo package for {}",
+                manifest_path.display()
+            )
+        })?;
+
+    Ok(package.name.clone())
+}
+
+fn resolve_host_target() -> Result<String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .context("Failed to run `rustc -vV` to resolve host target")?;
+
+    if !output.status.success() {
+        anyhow::bail!("`rustc -vV` failed with status {}", output.status);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let host = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .ok_or_else(|| anyhow::anyhow!("Unable to resolve host target from `rustc -vV`"))?;
+
+    Ok(host.trim().to_string())
 }
