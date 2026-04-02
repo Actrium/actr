@@ -25,14 +25,34 @@ pub struct PackageBuildSummary {
     pub public_key: String,
 }
 
-pub fn resolve_key_path(custom: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = custom {
+pub fn resolve_key_path(cli_arg: Option<&Path>, config_keychain: Option<&str>) -> Result<PathBuf> {
+    // Priority: CLI --key arg > config [mfr].keychain > error
+    if let Some(path) = cli_arg {
         return Ok(path.to_path_buf());
     }
 
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
-    Ok(home.join(".actr").join("dev-key.json"))
+    if let Some(keychain) = config_keychain {
+        let expanded = expand_key_path(keychain)?;
+        return Ok(expanded);
+    }
+
+    anyhow::bail!(
+        "No signing keychain configured.\n\n\
+         Run `actr pkg keygen` to generate one (auto-configures [mfr].keychain),\n\
+         or specify per-command: --key <path>\n\
+         or set globally: actr config set mfr.keychain <path>"
+    );
+}
+
+/// Expand ~ in keychain paths
+fn expand_key_path(path: &str) -> Result<PathBuf> {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
+        Ok(home.join(stripped))
+    } else {
+        Ok(PathBuf::from(path))
+    }
 }
 
 pub fn load_signing_key(key_path: &Path) -> Result<SigningKey> {

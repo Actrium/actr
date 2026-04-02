@@ -60,9 +60,6 @@ pub struct WebRtcConnection {
 
     /// Connection session (session_id + cancel_token + close-once)
     session: ConnectionSession,
-
-    /// connection status (legacy, will be replaced by session.is_closed())
-    connected: Arc<RwLock<bool>>,
 }
 
 impl std::fmt::Debug for WebRtcConnection {
@@ -72,7 +69,7 @@ impl std::fmt::Debug for WebRtcConnection {
             .field("peer_connection", &"<RTCPeerConnection>")
             .field("data_channels", &"<[Option<Arc<RTCDataChannel>>; 4]>")
             .field("media_tracks", &"<HashMap<String, Arc<Track>>>")
-            .field("connected", &self.connected)
+            .field("session", &self.session)
             .finish()
     }
 }
@@ -101,7 +98,6 @@ impl WebRtcConnection {
             event_tx,
             hook_callback,
             session: ConnectionSession::new(),
-            connected: Arc::new(RwLock::new(true)),
         }
     }
 
@@ -122,8 +118,8 @@ impl WebRtcConnection {
 
     /// Install a state-change handler on the underlying RTCPeerConnection.
     ///
-    /// This keeps `connected` in sync with the WebRTC connection state and
-    /// broadcasts state change events for upper layers to handle.
+    /// Broadcasts state change events for upper layers to handle, and
+    /// proactively calls `close()` on terminal states.
     pub(crate) async fn handle_state_change(&self, state: RTCPeerConnectionState) {
         // Guard: if session is cancelled, skip all side effects
         if self.session.is_cancelled() {
@@ -142,14 +138,6 @@ impl WebRtcConnection {
                 | RTCPeerConnectionState::Connecting
                 | RTCPeerConnectionState::Connected
         );
-
-        // Update flag and detect transitions from connected -> disconnected.
-        let was_connected = {
-            let mut flag = self.connected.write().await;
-            let prev = *flag;
-            *flag = is_connected;
-            prev
-        };
 
         // Convert WebRTC state to our ConnectionState
         let connection_state = match state {
@@ -218,9 +206,9 @@ impl WebRtcConnection {
         }
 
         // For Closed state, proactively close the connection and let
-        // `close()` perform all resource cleanup. Only trigger when we
-        // transition from connected -> disconnected to avoid loops.
-        if was_connected && matches!(state, RTCPeerConnectionState::Closed) {
+        // `close()` perform all resource cleanup.
+        // close() is idempotent via session.try_close(), safe to call repeatedly.
+        if matches!(state, RTCPeerConnectionState::Closed) {
             tracing::info!(
                 "🔻 WebRtcConnection entering terminal state {:?}, calling close()",
                 state
@@ -234,9 +222,8 @@ impl WebRtcConnection {
 
     /// Install a state-change handler on the underlying RTCPeerConnection.
     ///
-    /// This keeps `connected` in sync with the WebRTC connection state and
-    /// proactively closes the PeerConnection and clears internal caches when
-    /// entering a terminal state (Disconnected/Failed/Closed).
+    /// Proactively closes the PeerConnection and clears internal caches when
+    /// entering a terminal state (Closed).
     pub fn install_state_change_handler(&self) {
         let this = self.clone();
 
@@ -250,9 +237,8 @@ impl WebRtcConnection {
             }));
     }
 
-    /// establish Connect（WebRTC Connect already alreadyvia signaling establish ， this in only is mark record ）
+    /// Mark connection as established (WebRTC connection is already set up via signaling)
     pub async fn connect(&self) -> NetworkResult<()> {
-        *self.connected.write().await = true;
         Ok(())
     }
 
@@ -381,11 +367,10 @@ impl WebRtcConnection {
         self.session.cancel();
 
         tracing::debug!(
-            "🔒 [close] serial={} session_id={} step 1: marking closed",
+            "🔒 [close] serial={} session_id={} step 1: session marked closed",
             self.peer_id,
             self.session.session_id
         );
-        *self.connected.write().await = false;
 
         // Drain DataChannel send buffers before closing (graceful shutdown).
         self.drain_data_channels().await;
@@ -504,11 +489,15 @@ impl WebRtcConnection {
         }
 
         if need_recreate {
-            // Clear stale cache entries before recreating.
-            let mut cache = self.lane_cache.write().await;
-            cache[idx] = None;
-            let mut channels = self.data_channels.write().await;
-            channels[idx] = None;
+            // Clear stale cache entries before recreating (scoped locks).
+            {
+                let mut cache = self.lane_cache.write().await;
+                cache[idx] = None;
+            }
+            {
+                let mut channels = self.data_channels.write().await;
+                channels[idx] = None;
+            }
         }
 
         // 2. Create new DataLane
@@ -536,10 +525,14 @@ impl WebRtcConnection {
     /// Internal implementation of invalidate_lane
     async fn invalidate_lane_internal(&self, payload_type: PayloadType) {
         let idx = payload_type as usize;
-        let mut cache = self.lane_cache.write().await;
-        cache[idx] = None;
-        let mut channels = self.data_channels.write().await;
-        channels[idx] = None;
+        {
+            let mut cache = self.lane_cache.write().await;
+            cache[idx] = None;
+        }
+        {
+            let mut channels = self.data_channels.write().await;
+            channels[idx] = None;
+        }
     }
 
     /// Internal: Create DataChannel Lane (without cache)
@@ -1078,8 +1071,8 @@ mod tests {
 
     /// Test: multiple tasks calling close() concurrently do not deadlock
     ///
-    /// close() acquires write locks on multiple RwLocks sequentially (connected, data_channels,
-    /// media_tracks, track_sequence_numbers, track_ssrcs, lane_cache).
+    /// close() acquires write locks on multiple RwLocks sequentially (lane_cache, data_channels,
+    /// media_tracks, track_sequence_numbers, track_ssrcs).
     /// If two close() calls acquire them in different order or wait while holding locks, deadlock occurs.
     /// This test detects deadlock via timeout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1134,8 +1127,7 @@ mod tests {
             let conn = conn.clone();
             handles.push(tokio::spawn(async move {
                 for _ in 0..20 {
-                    // Use async read instead of blocking_read (is_connected) to avoid async context issues
-                    let _ = *conn.connected.read().await;
+                    let _ = conn.is_connected();
                     let _ = conn.has_open_data_channel().await;
                     tokio::task::yield_now().await;
                 }
@@ -1241,7 +1233,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 // Mix close and read operations to increase lock contention
                 if i % 3 == 0 {
-                    let _ = *conn.connected.read().await;
+                    let _ = conn.is_connected();
                 }
                 if i % 5 == 0 {
                     let _ = conn.has_open_data_channel().await;
@@ -1263,8 +1255,8 @@ mod tests {
                 );
                 // Verify final state: connection should be closed
                 assert!(
-                    !*conn.connected.read().await,
-                    "connected should be false after close()"
+                    !conn.is_connected(),
+                    "connection should report disconnected after close()"
                 );
             }
             Err(_) => {

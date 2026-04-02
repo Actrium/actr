@@ -5,7 +5,7 @@
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
 use super::schema::{
-    CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, NetworkConfig, StorageConfig,
+    CacheConfig, CliConfig, CodegenConfig, InstallConfig, MfrConfig, NetworkConfig, StorageConfig,
     UiConfig,
 };
 use anyhow::Result;
@@ -19,7 +19,7 @@ use std::path::PathBuf;
 /// 3. Binary built-in defaults
 #[derive(Debug, Clone)]
 pub struct EffectiveCliConfig {
-    pub init: EffectiveInitConfig,
+    pub mfr: EffectiveMfrConfig,
     pub codegen: EffectiveCodegenConfig,
     pub cache: EffectiveCacheConfig,
     pub ui: EffectiveUiConfig,
@@ -27,10 +27,11 @@ pub struct EffectiveCliConfig {
     pub storage: EffectiveStorageConfig,
 }
 
-/// Resolved init settings
+/// Resolved manufacturer identity settings
 #[derive(Debug, Clone)]
-pub struct EffectiveInitConfig {
+pub struct EffectiveMfrConfig {
     pub manufacturer: String,
+    pub keychain: Option<String>,
 }
 
 /// Resolved codegen settings
@@ -110,8 +111,9 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
         (None, Some(o)) => o,
         (Some(b), Some(o)) => CliConfig {
             version: o.version.or(b.version),
-            init: InitConfig {
-                manufacturer: o.init.manufacturer.or(b.init.manufacturer),
+            mfr: MfrConfig {
+                manufacturer: o.mfr.manufacturer.or(b.mfr.manufacturer),
+                keychain: o.mfr.keychain.or(b.mfr.keychain),
             },
             codegen: CodegenConfig {
                 language: o.codegen.language.or(b.codegen.language),
@@ -149,8 +151,12 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
 /// Apply built-in defaults to produce an `EffectiveCliConfig`.
 fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
     EffectiveCliConfig {
-        init: EffectiveInitConfig {
-            manufacturer: cfg.init.manufacturer.unwrap_or_else(|| "acme".to_string()),
+        mfr: EffectiveMfrConfig {
+            manufacturer: cfg.mfr.manufacturer.unwrap_or_else(|| "acme".to_string()),
+            keychain: cfg
+                .mfr
+                .keychain
+                .map(|p| expand_tilde(p).to_string_lossy().to_string()),
         },
         codegen: EffectiveCodegenConfig {
             language: cfg.codegen.language.unwrap_or_else(|| "rust".to_string()),
@@ -210,7 +216,8 @@ mod tests {
     fn test_apply_defaults() {
         let config = CliConfig::default();
         let effective = apply_defaults(config);
-        assert_eq!(effective.init.manufacturer, "acme");
+        assert_eq!(effective.mfr.manufacturer, "acme");
+        assert!(effective.mfr.keychain.is_none());
         assert_eq!(effective.codegen.language, "rust");
         assert_eq!(effective.codegen.output, "src/generated");
         assert!(!effective.codegen.clean_before_generate);
@@ -230,43 +237,47 @@ mod tests {
     #[test]
     fn test_merge_configs_none_none() {
         let merged = merge_configs(None, None);
-        assert!(merged.init.manufacturer.is_none());
+        assert!(merged.mfr.manufacturer.is_none());
+        assert!(merged.mfr.keychain.is_none());
     }
 
     #[test]
     fn test_merge_configs_overlay_wins() {
         let base = CliConfig {
-            init: super::super::schema::InitConfig {
+            mfr: MfrConfig {
                 manufacturer: Some("base-org".to_string()),
+                ..Default::default()
             },
             ..Default::default()
         };
         let overlay = CliConfig {
-            init: super::super::schema::InitConfig {
+            mfr: MfrConfig {
                 manufacturer: Some("overlay-org".to_string()),
+                ..Default::default()
             },
             ..Default::default()
         };
         let merged = merge_configs(Some(base), Some(overlay));
-        assert_eq!(merged.init.manufacturer.as_deref(), Some("overlay-org"));
+        assert_eq!(merged.mfr.manufacturer.as_deref(), Some("overlay-org"));
     }
 
     #[test]
     fn test_merge_configs_base_fallback() {
         let base = CliConfig {
-            init: super::super::schema::InitConfig {
+            mfr: MfrConfig {
                 manufacturer: Some("base-org".to_string()),
+                ..Default::default()
             },
             ..Default::default()
         };
         let merged = merge_configs(Some(base), None);
-        assert_eq!(merged.init.manufacturer.as_deref(), Some("base-org"));
+        assert_eq!(merged.mfr.manufacturer.as_deref(), Some("base-org"));
     }
 
     #[test]
     fn test_effective_cli_config_default() {
         let effective = EffectiveCliConfig::default();
-        assert_eq!(effective.init.manufacturer, "acme");
+        assert_eq!(effective.mfr.manufacturer, "acme");
     }
 
     #[test]
