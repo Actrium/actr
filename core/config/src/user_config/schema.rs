@@ -13,9 +13,9 @@ pub struct CliConfig {
     /// Config file format version (for future migration)
     pub version: Option<u32>,
 
-    /// Project initialization settings
+    /// Manufacturer identity settings (MFR)
     #[serde(default)]
-    pub init: InitConfig,
+    pub mfr: MfrConfig,
 
     /// Code generation settings
     #[serde(default)]
@@ -54,10 +54,18 @@ impl CliConfig {
             }
         }
 
-        if let Some(ref manufacturer) = self.init.manufacturer {
+        if let Some(ref manufacturer) = self.mfr.manufacturer {
             if manufacturer.trim().is_empty() {
                 return Err(ConfigError::ValidationError(
-                    "init.manufacturer cannot be empty".to_string(),
+                    "mfr.manufacturer cannot be empty".to_string(),
+                ));
+            }
+        }
+
+        if let Some(ref keychain) = self.mfr.keychain {
+            if keychain.trim().is_empty() {
+                return Err(ConfigError::ValidationError(
+                    "mfr.keychain cannot be empty string (omit the field instead)".to_string(),
                 ));
             }
         }
@@ -144,12 +152,15 @@ impl CliConfig {
     }
 }
 
-/// Project initialization settings.
+/// Manufacturer identity settings (MFR).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct InitConfig {
+pub struct MfrConfig {
     /// Default manufacturer for generated actor types (e.g., "acme")
     pub manufacturer: Option<String>,
+
+    /// Path to the signing keychain JSON file (supports `~` expansion)
+    pub keychain: Option<String>,
 }
 
 /// Code generation settings.

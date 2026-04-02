@@ -58,7 +58,7 @@ pub struct PkgBuildArgs {
     )]
     pub config: PathBuf,
 
-    /// Signing key file (default: ~/.actr/dev-key.json)
+    /// Signing key file (overrides config mfr.keychain)
     #[arg(long, short = 'k', value_name = "FILE")]
     pub key: Option<PathBuf>,
 
@@ -87,7 +87,7 @@ pub struct PkgSignArgs {
     )]
     pub config: PathBuf,
 
-    /// Path to MFR signing key file (default: ~/.actr/dev-key.json)
+    /// Path to MFR signing key file (overrides config mfr.keychain)
     #[arg(long, short = 'k', value_name = "FILE")]
     pub key: Option<PathBuf>,
 
@@ -110,7 +110,7 @@ pub struct PkgVerifyArgs {
     #[arg(long, short = 'p', value_name = "FILE")]
     pub package: PathBuf,
 
-    /// Public key file (default: extract from package or use dev-key)
+    /// Public key file (default: derive from config mfr.keychain)
     #[arg(long, value_name = "FILE")]
     pub pubkey: Option<PathBuf>,
 }
@@ -168,10 +168,13 @@ struct FinalPublishBody<'a> {
 }
 
 pub async fn execute(args: PkgArgs) -> Result<()> {
+    let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
+    let keychain_ref = cli_config.mfr.keychain.as_deref();
+
     match args.command {
-        PkgCommand::Build(a) => execute_build(a).await,
-        PkgCommand::Sign(a) => execute_sign(a).await,
-        PkgCommand::Verify(a) => execute_verify(a).await,
+        PkgCommand::Build(a) => execute_build(a, keychain_ref).await,
+        PkgCommand::Sign(a) => execute_sign(a, keychain_ref).await,
+        PkgCommand::Verify(a) => execute_verify(a, keychain_ref).await,
         PkgCommand::Keygen(a) => execute_keygen(a),
         PkgCommand::Publish(a) => execute_publish(a).await,
     }
@@ -180,7 +183,14 @@ pub async fn execute(args: PkgArgs) -> Result<()> {
 // --- keygen (moved from dev.rs, identical logic) ---
 
 fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
-    let key_path = resolve_key_path(args.output.as_deref())?;
+    let key_path = match args.output {
+        Some(ref path) => path.clone(),
+        None => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
+            home.join(".actr").join("dev-key.json")
+        }
+    };
 
     if key_path.exists() && !args.force {
         anyhow::bail!(
@@ -229,6 +239,24 @@ fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
     println!("  trust_mode = \"development\"");
     println!("  self_signed_pubkey = \"{}\"", public_b64);
 
+    let global_path = crate::config::loader::global_config_path()?;
+    let mut global_config =
+        crate::config::loader::load_cli_config(&global_path)?.unwrap_or_default();
+    global_config.mfr.keychain = Some(key_path.display().to_string());
+    if let Some(parent) = global_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    let content =
+        toml::to_string_pretty(&global_config).with_context(|| "Failed to serialize config")?;
+    std::fs::write(&global_path, content)
+        .with_context(|| format!("Failed to write {}", global_path.display()))?;
+    println!();
+    println!(
+        "✅ Global config updated: mfr.keychain = {}",
+        key_path.display()
+    );
+
     Ok(())
 }
 
@@ -242,7 +270,7 @@ fn parse_resource_arg(s: &str) -> Result<(String, PathBuf), String> {
 
 // --- build (.actr package creation) ---
 
-async fn execute_build(args: PkgBuildArgs) -> Result<()> {
+async fn execute_build(args: PkgBuildArgs, config_keychain: Option<&str>) -> Result<()> {
     let output_path = match args.output {
         Some(path) => path,
         None => default_pkg_output_path(&args.config, &args.target)?,
@@ -251,7 +279,7 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
     let summary = build_package(PackageBuildInput {
         binary_path: args.binary,
         config_path: args.config,
-        key_path: resolve_key_path(args.key.as_deref())?,
+        key_path: resolve_key_path(args.key.as_deref(), config_keychain)?,
         output_path,
         target: args.target,
         resources: args.resource,
@@ -272,13 +300,13 @@ async fn execute_build(args: PkgBuildArgs) -> Result<()> {
 //
 // The signed content is byte-level identical to what `actr pkg build` produces.
 
-async fn execute_sign(args: PkgSignArgs) -> Result<()> {
+async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Result<()> {
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
     // 1. Load signing key
-    let key_path = resolve_key_path(args.key.as_deref())?;
+    let key_path = resolve_key_path(args.key.as_deref(), config_keychain)?;
     let signing_key = load_signing_key(&key_path)?;
     let verifying_key = signing_key.verifying_key();
     let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
@@ -432,7 +460,7 @@ async fn execute_sign(args: PkgSignArgs) -> Result<()> {
 
 // --- verify ---
 
-async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
+async fn execute_verify(args: PkgVerifyArgs, config_keychain: Option<&str>) -> Result<()> {
     // 1. Read package
     let package_bytes = std::fs::read(&args.package)
         .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
@@ -442,7 +470,7 @@ async fn execute_verify(args: PkgVerifyArgs) -> Result<()> {
         load_verifying_key(pubkey_path)?
     } else {
         // Try default dev-key location
-        let key_path = resolve_key_path(None)?;
+        let key_path = resolve_key_path(None, config_keychain)?;
         load_verifying_key_from_dev_key(&key_path)?
     };
 

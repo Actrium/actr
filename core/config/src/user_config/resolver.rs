@@ -2,7 +2,7 @@
 
 use super::loader::{global_config_path, load_cli_config, local_config_path};
 use super::schema::{
-    CacheConfig, CliConfig, CodegenConfig, InitConfig, InstallConfig, NetworkConfig, StorageConfig,
+    CacheConfig, CliConfig, CodegenConfig, InstallConfig, MfrConfig, NetworkConfig, StorageConfig,
     UiConfig,
 };
 use crate::error::Result;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// Fully-resolved user config with all defaults applied.
 #[derive(Debug, Clone)]
 pub struct EffectiveCliConfig {
-    pub init: EffectiveInitConfig,
+    pub mfr: EffectiveMfrConfig,
     pub codegen: EffectiveCodegenConfig,
     pub cache: EffectiveCacheConfig,
     pub ui: EffectiveUiConfig,
@@ -20,8 +20,9 @@ pub struct EffectiveCliConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct EffectiveInitConfig {
+pub struct EffectiveMfrConfig {
     pub manufacturer: String,
+    pub keychain: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,8 +86,9 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
         (None, Some(o)) => o,
         (Some(b), Some(o)) => CliConfig {
             version: o.version.or(b.version),
-            init: InitConfig {
-                manufacturer: o.init.manufacturer.or(b.init.manufacturer),
+            mfr: MfrConfig {
+                manufacturer: o.mfr.manufacturer.or(b.mfr.manufacturer),
+                keychain: o.mfr.keychain.or(b.mfr.keychain),
             },
             codegen: CodegenConfig {
                 language: o.codegen.language.or(b.codegen.language),
@@ -123,8 +125,12 @@ fn merge_configs(base: Option<CliConfig>, overlay: Option<CliConfig>) -> CliConf
 
 fn apply_defaults(cfg: CliConfig) -> EffectiveCliConfig {
     EffectiveCliConfig {
-        init: EffectiveInitConfig {
-            manufacturer: cfg.init.manufacturer.unwrap_or_else(|| "acme".to_string()),
+        mfr: EffectiveMfrConfig {
+            manufacturer: cfg.mfr.manufacturer.unwrap_or_else(|| "acme".to_string()),
+            keychain: cfg
+                .mfr
+                .keychain
+                .map(|path| expand_tilde(path).to_string_lossy().to_string()),
         },
         codegen: EffectiveCodegenConfig {
             language: cfg.codegen.language.unwrap_or_else(|| "rust".to_string()),

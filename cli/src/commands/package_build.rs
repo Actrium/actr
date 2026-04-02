@@ -25,14 +25,23 @@ pub struct PackageBuildSummary {
     pub public_key: String,
 }
 
-pub fn resolve_key_path(custom: Option<&Path>) -> Result<PathBuf> {
+pub fn resolve_key_path(custom: Option<&Path>, config_keychain: Option<&str>) -> Result<PathBuf> {
     if let Some(path) = custom {
         return Ok(path.to_path_buf());
     }
 
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
-    Ok(home.join(".actr").join("dev-key.json"))
+    if let Some(path) = config_keychain {
+        if let Some(stripped) = path.strip_prefix("~/") {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Unable to determine home directory"))?;
+            return Ok(home.join(stripped));
+        }
+        return Ok(PathBuf::from(path));
+    }
+
+    anyhow::bail!(
+        "No signing key configured.\nSpecify --key, or set mfr.keychain in your CLI config."
+    )
 }
 
 pub fn load_signing_key(key_path: &Path) -> Result<SigningKey> {
