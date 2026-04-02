@@ -422,7 +422,10 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
         let info = ServiceInfo::from(entry.clone());
 
         // Try to get ServiceSpec with proto files
-        let proto_files = match self.get_service_proto(&entry.name).await {
+        // Use actr_type.name (e.g., "EchoService") as the lookup key,
+        // matching server-side ServiceSpec.name = package.name
+        let spec_lookup_name = &entry.actr_type.name;
+        let proto_files = match self.get_service_proto(spec_lookup_name).await {
             Ok(proto_files) => proto_files,
             Err(e) => {
                 tracing::warn!("Failed to get ServiceSpec for {name}: {e}");
