@@ -5,7 +5,6 @@ pub mod python;
 pub mod rust;
 pub mod swift;
 pub mod typescript;
-pub mod web;
 
 use self::kotlin::KotlinTemplate;
 use self::python::PythonTemplate;
@@ -95,8 +94,7 @@ pub struct TemplateContext {
     pub actr_protocols_version: String,
     #[serde(rename = "ACTR_LOCAL_PATH")]
     pub actr_local_path: Option<String>,
-    #[serde(rename = "ACTR_WEB_LOCAL_PATH")]
-    pub actr_web_local_path: Option<String>,
+
     #[serde(rename = "REALM_ID")]
     pub realm_id: u64,
     #[serde(rename = "STUN_URLS")]
@@ -131,7 +129,6 @@ impl TemplateContext {
             actr_swift_version: DEFAULT_ACTR_SWIFT_VERSION.to_string(),
             actr_protocols_version: DEFAULT_ACTR_PROTOCOLS_VERSION.to_string(),
             actr_local_path: resolve_actr_swift_local_path(),
-            actr_web_local_path: resolve_actr_web_local_path(),
             realm_id: 2368266035,
             stun_urls: r#"["stun:actrix1.develenv.com:3478"]"#.to_string(),
             turn_urls: r#"["turn:actrix1.develenv.com:3478"]"#.to_string(),
@@ -215,22 +212,6 @@ fn resolve_actr_swift_local_path() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-fn resolve_actr_web_local_path() -> Option<String> {
-    let base = std::env::var("ACTR_WEB_LOCAL_PATH").ok()?;
-    let root = Path::new(&base);
-    let candidates: [PathBuf; 4] = [
-        root.to_path_buf(),
-        root.join("web-sdk"),
-        root.join("bindings/web/packages/web-sdk"),
-        root.join("actr/bindings/web/packages/web-sdk"),
-    ];
-
-    candidates
-        .into_iter()
-        .find(|path| path.join("package.json").is_file())
-        .map(|path| path.to_string_lossy().into_owned())
-}
-
 pub trait LangTemplate: Send + Sync {
     fn load_files(
         &self,
@@ -252,7 +233,6 @@ impl ProjectTemplate {
             SupportedLanguage::Python => Box::new(PythonTemplate),
             SupportedLanguage::Rust => Box::new(RustTemplate),
             SupportedLanguage::TypeScript => Box::new(TypeScriptTemplate),
-            SupportedLanguage::Web => Box::new(self::web::WebTemplate),
         };
 
         Self {

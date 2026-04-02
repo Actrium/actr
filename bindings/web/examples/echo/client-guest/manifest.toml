@@ -1,0 +1,11 @@
+[package]
+name = "echo-client-app"
+manufacturer = "acme"
+version = "0.1.0"
+description = "Echo Client App"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "client"]
+
+[dependencies]
+EchoService = { actr_type = "acme:EchoService:0.1.0" }

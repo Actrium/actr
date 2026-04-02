@@ -274,17 +274,6 @@ impl DocCommand {
                 tree.push_str("│   ├── actr_service.ts # Entrypoint\n");
                 tree.push_str("│   └── generated/     # Generated code\n");
             }
-            DetectedProjectLanguage::Web => {
-                tree.push_str("├── package.json       # Node.js package manifest\n");
-                tree.push_str("├── tsconfig.json      # TypeScript config\n");
-                tree.push_str("├── vite.config.ts     # Vite bundler config\n");
-                tree.push_str("├── wasm/              # Rust WASM crate\n");
-                tree.push_str("│   └── src/           # Handler source\n");
-                tree.push_str("├── public/            # Static assets + SW\n");
-                tree.push_str("│   └── actor.sw.js    # Service Worker entry\n");
-                tree.push_str("├── src/               # TypeScript source\n");
-                tree.push_str("│   └── generated/     # Generated code\n");
-            }
             DetectedProjectLanguage::Rust
             | DetectedProjectLanguage::Unknown
             | DetectedProjectLanguage::Ambiguous => {

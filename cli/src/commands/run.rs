@@ -10,6 +10,7 @@ use chrono::Utc;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::Arc;
 use tracing::info;
 
 #[derive(Args)]
@@ -29,13 +30,24 @@ pub struct RunCommand {
     /// Internal: WID passed from parent to detached child (or from start/restart for reuse).
     #[arg(long = "internal-wid", hide = true)]
     pub internal_wid: Option<String>,
+    /// Run as a web server (serves static files + runtime config for browser-based actors)
+    #[arg(long = "web")]
+    pub web: bool,
+
+    /// Override web server port (default from config or 8080)
+    #[arg(long = "port", requires = "web")]
+    pub port: Option<u16>,
 }
 
 #[async_trait]
 impl Command for RunCommand {
     async fn execute(&self) -> Result<()> {
         // The run command only supports packaged workloads via runtime config.
-        self.execute_package_mode().await
+        if self.web {
+            self.execute_web_mode().await
+        } else {
+            self.execute_package_mode().await
+        }
     }
 }
 
@@ -489,6 +501,252 @@ impl RunCommand {
             ))
         }
     }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Web server mode
+    // ═════════════════════════════════════════════════════════════════
+
+    async fn execute_web_mode(&self) -> Result<()> {
+        use axum::Router;
+        use axum::routing::get;
+        use tower_http::cors::CorsLayer;
+        use tower_http::services::ServeDir;
+
+        info!("🌐 Starting web server mode");
+
+        // Resolve config path
+        let config_path = self
+            .config
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("actr.toml"));
+
+        if !config_path.exists() {
+            return Err(ActrCliError::command_error(format!(
+                "Configuration file not found: {}\n\n\
+                 Please create an actr.toml file with [web] section or specify with -c/--config",
+                config_path.display()
+            )));
+        }
+
+        // Parse config to get runtime settings
+        let config_content = tokio::fs::read_to_string(&config_path).await?;
+        let raw_config: actr_config::RuntimeRawConfig = toml::from_str(&config_content)
+            .map_err(|e| ActrCliError::command_error(format!("Failed to parse config: {}", e)))?;
+
+        let config_dir = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+        // Extract web config with defaults
+        let web_port = self
+            .port
+            .unwrap_or_else(|| raw_config.web.as_ref().map(|w| w.port).unwrap_or(8080));
+        let web_host = raw_config
+            .web
+            .as_ref()
+            .map(|w| w.host.clone())
+            .unwrap_or_else(|| "0.0.0.0".to_string());
+        let static_dir = raw_config
+            .web
+            .as_ref()
+            .map(|w| config_dir.join(&w.static_dir))
+            .unwrap_or_else(|| config_dir.join("public"));
+
+        // Build runtime config JSON to inject into the page
+        let runtime_config_json = self.build_web_runtime_config(&raw_config, &config_path)?;
+
+        // // Ensure static dir exists
+        // if !static_dir.exists() {
+        //     return Err(ActrCliError::command_error(format!(
+        //         "Static directory not found: {}\n\n\
+        //          Please create the directory or configure [web] static_dir in your config file.",
+        //         static_dir.display()
+        //     )));
+        // }
+
+        let shared_state = Arc::new(WebServerState {
+            runtime_config_json,
+        });
+
+        // Build router: serve static files + runtime config endpoint
+        let app = Router::new()
+            .route("/actr-runtime-config.json", get(serve_runtime_config))
+            .with_state(shared_state)
+            .nest_service("/", ServeDir::new(&static_dir))
+            .layer(CorsLayer::permissive())
+            .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                axum::http::header::HeaderName::from_static("cross-origin-opener-policy"),
+                axum::http::header::HeaderValue::from_static("same-origin"),
+            ))
+            .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                axum::http::header::HeaderName::from_static("cross-origin-embedder-policy"),
+                axum::http::header::HeaderValue::from_static("require-corp"),
+            ));
+
+        let addr: std::net::SocketAddr = format!("{}:{}", web_host, web_port)
+            .parse()
+            .map_err(|e| ActrCliError::command_error(format!("Invalid bind address: {}", e)))?;
+
+        println!("🌐 Web server started");
+        println!("   URL:        http://{}:{}", web_host, web_port);
+        println!("   Static dir: {}", static_dir.display());
+        println!("   Config:     {}", config_path.display());
+        println!("   Press Ctrl+C to stop");
+
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+            ActrCliError::command_error(format!("Failed to bind to {}: {}", addr, e))
+        })?;
+
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|e| ActrCliError::command_error(format!("Web server error: {}", e)))?;
+
+        println!("👋 Web server stopped");
+        Ok(())
+    }
+
+    fn build_web_runtime_config(
+        &self,
+        raw: &actr_config::RuntimeRawConfig,
+        config_path: &Path,
+    ) -> Result<String> {
+        let signaling_url = raw
+            .signaling
+            .url
+            .clone()
+            .unwrap_or_else(|| "ws://localhost:8081/signaling/ws".to_string());
+        let ais_endpoint = raw
+            .ais_endpoint
+            .url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:8081/ais".to_string());
+        let realm_id = raw.deployment.realm_id.unwrap_or(0);
+        let trust_mode = raw
+            .deployment
+            .trust_mode
+            .clone()
+            .unwrap_or_else(|| "production".to_string());
+        let visible = raw.discovery.visible.unwrap_or(true);
+        let force_relay = raw.webrtc.force_relay;
+        let stun_urls = &raw.webrtc.stun_urls;
+        let turn_urls = &raw.webrtc.turn_urls;
+
+        // Read package path to extract package info
+        let config_dir = config_path.parent().unwrap_or(Path::new("."));
+        let package_path = raw.package.as_ref().and_then(|p| p.path.as_ref()).map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                config_dir.join(p)
+            }
+        });
+
+        // Try to read package manifest for metadata
+        let mut package_name = String::new();
+        let mut manufacturer = String::new();
+        let mut actr_name = String::new();
+        let mut version = String::new();
+        let mut acl_rules: Vec<serde_json::Value> = Vec::new();
+
+        if let Some(ref pkg_path) = package_path {
+            if pkg_path.exists() {
+                if let Ok(bytes) = std::fs::read(pkg_path) {
+                    if let Ok(manifest) = actr_pack::read_manifest(&bytes) {
+                        package_name.clone_from(&manifest.name);
+                        manufacturer.clone_from(&manifest.manufacturer);
+                        actr_name.clone_from(&manifest.name);
+                        version.clone_from(&manifest.version);
+                    }
+                }
+            }
+        }
+
+        // Parse ACL from raw config
+        if let Some(ref acl_value) = raw.acl {
+            if let Some(rules) = acl_value.get("rules").and_then(|v| v.as_array()) {
+                for rule in rules {
+                    if let Some(table) = rule.as_table() {
+                        let permission = table
+                            .get("permission")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("allow");
+                        let type_str = table.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        acl_rules.push(serde_json::json!({
+                            "permission": permission,
+                            "type": type_str
+                        }));
+                    }
+                }
+            }
+        }
+
+        let acl_allow_types: Vec<&str> = acl_rules
+            .iter()
+            .filter_map(|r| {
+                if r.get("permission").and_then(|v| v.as_str()) == Some("allow") {
+                    r.get("type").and_then(|v| v.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let full_type = format!("{}:{}:{}", manufacturer, actr_name, version);
+
+        // Extract web-specific fields
+        let web = raw.web.as_ref();
+        let is_server = web.and_then(|w| w.is_server).unwrap_or(false);
+        let package_url = web.and_then(|w| w.package_url.clone()).unwrap_or_default();
+        let runtime_wasm_url = web
+            .and_then(|w| w.runtime_wasm_url.clone())
+            .unwrap_or_else(|| "/packages/actr_runtime_sw_bg.wasm".to_string());
+        let mfr_pubkey = web.and_then(|w| w.mfr_pubkey.clone()).unwrap_or_default();
+
+        let config_json = serde_json::json!({
+            "signaling_url": signaling_url,
+            "ais_endpoint": ais_endpoint,
+            "realm_id": realm_id,
+            "trust_mode": trust_mode,
+            "visible": visible,
+            "force_relay": force_relay,
+            "stun_urls": stun_urls,
+            "turn_urls": turn_urls,
+            "package": {
+                "name": package_name,
+                "manufacturer": manufacturer,
+                "actr_name": actr_name,
+                "version": version,
+                "full_type": full_type,
+            },
+            "acl_allow_types": acl_allow_types,
+            "is_server": is_server,
+            "package_url": package_url,
+            "runtime_wasm_url": runtime_wasm_url,
+            "mfr_pubkey": mfr_pubkey,
+        });
+
+        serde_json::to_string_pretty(&config_json).map_err(|e| {
+            ActrCliError::command_error(format!("Failed to serialize runtime config: {}", e))
+        })
+    }
+}
+
+struct WebServerState {
+    runtime_config_json: String,
+}
+
+async fn serve_runtime_config(
+    axum::extract::State(state): axum::extract::State<Arc<WebServerState>>,
+) -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        state.runtime_config_json.clone(),
+    )
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to install Ctrl+C handler");
 }
 
 struct DetachedRuntimeContext {

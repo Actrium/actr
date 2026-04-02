@@ -6,14 +6,23 @@
 #      Build echo server guest WASM (cargo build, standard entry! FFI, local server-guest crate)
 #      Build echo-client guest WASM (cargo build, entry! FFI + JSPI outbound calls)
 #   2. `actr pkg build` — pack guest WASMs into signed .actr packages (MFR key)
+#      Manifest files now live in guest directories (server-guest/manifest.toml, client-guest/manifest.toml)
 #   3. Start actrix (signaling + AIS + MFR)
 #   4. Seed realm + MFR manufacturer records in DB
 #   5. `actr pkg publish` — publish packages to MFR registry
 #   6. Deploy shared runtime WASM + .actr packages to public/packages/
-#   7. Inject MFR public key into actr-config.ts for package verification
+#   7. Generate actr-runtime-config.json from server-actr.toml / client-actr.toml
+#      (injecting MFR pubkey) and place in public/ for Vite dev mode
 #   8. Both server and client: actor.sw.js loads shared runtime WASM,
 #      then loads guest WASM via guest bridge
 #      Client guest uses JSPI for outbound discover/call operations
+#
+# Config architecture:
+#   - server-guest/manifest.toml  — package metadata for actr pkg build
+#   - client-guest/manifest.toml  — package metadata for actr pkg build
+#   - server-actr.toml            — runtime config (signaling, AIS, WebRTC, ACL, [web])
+#   - client-actr.toml            — runtime config (signaling, AIS, WebRTC, ACL, [web])
+#   - /actr-runtime-config.json   — served to browser (generated from *-actr.toml)
 #
 # Usage:
 #   ./start.sh
@@ -48,6 +57,10 @@ SERVER_GUEST_DIR="$SCRIPT_DIR/server-guest"
 CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
 RELEASE_DIR="$SCRIPT_DIR/release"
 
+# Runtime config files (split config: manifest in guest dir, runtime in *-actr.toml)
+SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"
+CLIENT_ACTR_TOML="$SCRIPT_DIR/client-actr.toml"
+
 # MFR manufacturer name (must match manifest.toml)
 MFR_NAME="acme"
 MFR_KEY_FILE=""
@@ -78,15 +91,10 @@ for PORT in 8081 5173 5174; do
     fi
 done
 
-# Restore MFR pubkey placeholder in actr-config.ts files (reset from previous runs)
-SERVER_CONFIG="$SERVER_DIR/src/generated/actr-config.ts"
-CLIENT_CONFIG="$CLIENT_DIR/src/generated/actr-config.ts"
-if [ -f "$SERVER_CONFIG" ]; then
-    sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_CONFIG"
-fi
-if [ -f "$CLIENT_CONFIG" ]; then
-    sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_CONFIG"
-fi
+# Reset MFR pubkey placeholder in *-actr.toml files
+sed -i '' "s|mfr_pubkey = '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey = '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
+sed -i '' "s|mfr_pubkey = '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey = '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
+
 echo -e "${GREEN}✅ Stale data cleaned${NC}"
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
@@ -114,13 +122,9 @@ cleanup() {
         kill $ACTRIX_PID 2>/dev/null || true
     fi
 
-    # Restore placeholder in actr-config.ts
-    if [ -f "$SERVER_CONFIG" ]; then
-        sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_CONFIG" 2>/dev/null || true
-    fi
-    if [ -f "$CLIENT_CONFIG" ]; then
-        sed -i '' "s|mfr_pubkey: '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_CONFIG" 2>/dev/null || true
-    fi
+    # Restore placeholder in *-actr.toml
+    sed -i '' "s|mfr_pubkey = '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey = '__MFR_PUBKEY_PLACEHOLDER__'|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
+    sed -i '' "s|mfr_pubkey = '[A-Za-z0-9+/=]\{20,\}'|mfr_pubkey = '__MFR_PUBKEY_PLACEHOLDER__'|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
 
     wait 2>/dev/null || true
     echo "✅ Cleanup complete"
@@ -244,11 +248,11 @@ $ACTR_CMD pkg keygen --output "$MFR_KEY_FILE" --force
 MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['public_key'])")
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
-# Build server .actr package (guest WASM only — no JS glue)
+# Build server .actr package using guest manifest
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
     --binary "$SERVER_GUEST_WASM" \
-    --config "$SERVER_DIR/manifest.toml" \
+    --config "$SERVER_GUEST_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE" \
     --target "wasm32-unknown-unknown"
@@ -259,11 +263,11 @@ if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
 fi
 echo -e "${GREEN}✅ Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1) (server guest WASM)${NC}"
 
-# Build client .actr package (guest WASM only — no JS glue, uses JSPI for outbound calls)
+# Build client .actr package using guest manifest
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
 $ACTR_CMD pkg build \
     --binary "$CLIENT_GUEST_WASM" \
-    --config "$CLIENT_DIR/manifest.toml" \
+    --config "$CLIENT_GUEST_DIR/manifest.toml" \
     --key "$MFR_KEY_FILE" \
     --output "$CLIENT_ACTR_PACKAGE" \
     --target "wasm32-unknown-unknown"
@@ -413,8 +417,9 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 sleep 2
 
-SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_DIR/manifest.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
-CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_DIR/manifest.toml" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+# Read realm_id from the actr.toml runtime configs
+SERVER_REALM=$(grep -E 'realm_id\s*=' "$SERVER_ACTR_TOML" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
+CLIENT_REALM=$(grep -E 'realm_id\s*=' "$CLIENT_ACTR_TOML" | head -1 | sed 's/.*=\s*//' | tr -d ' ')
 
 ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
 
@@ -480,7 +485,7 @@ done
 # ── Step 5: Deploy packages + inject MFR public key ─────────────────────
 
 echo ""
-echo -e "${BLUE}📋 Step 5: Deploying .actr packages + injecting MFR pubkey...${NC}"
+echo -e "${BLUE}📋 Step 5: Deploying .actr packages + generating runtime config...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Copy .actr packages to public/packages/
@@ -507,15 +512,134 @@ else
     echo -e "${YELLOW}⚠️  actor.sw.js not found at $SW_SRC${NC}"
 fi
 
-# Inject MFR public key into actr-config.ts (replaces __MFR_PUBKEY_PLACEHOLDER__)
-if [ -f "$SERVER_CONFIG" ]; then
-    sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$SERVER_CONFIG"
-    echo -e "${GREEN}✅ MFR pubkey injected into server actr-config.ts${NC}"
-fi
-if [ -f "$CLIENT_CONFIG" ]; then
-    sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$CLIENT_CONFIG"
-    echo -e "${GREEN}✅ MFR pubkey injected into client actr-config.ts${NC}"
-fi
+# Inject MFR public key into *-actr.toml files
+sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$SERVER_ACTR_TOML"
+sed -i '' "s|__MFR_PUBKEY_PLACEHOLDER__|${MFR_PUBKEY}|g" "$CLIENT_ACTR_TOML"
+echo -e "${GREEN}✅ MFR pubkey injected into server-actr.toml and client-actr.toml${NC}"
+
+# Generate actr-runtime-config.json for Vite dev mode (served as static file)
+# This replicates what `actr run --web` would serve at /actr-runtime-config.json
+generate_runtime_config_json() {
+    local ACTR_TOML="$1"
+    local OUTPUT="$2"
+    local IS_SERVER="$3"
+    local PKG_URL="$4"
+
+    local SIG_URL=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('signaling', {}).get('url', 'ws://localhost:8081/signaling/ws'))
+")
+    local AIS_URL=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('ais_endpoint', {}).get('url', 'http://localhost:8081/ais'))
+")
+    local REALM_ID=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('deployment', {}).get('realm_id', 0))
+")
+    local TRUST_MODE=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('deployment', {}).get('trust_mode', 'production'))
+")
+    local MFR_PK=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('web', {}).get('mfr_pubkey', ''))
+")
+    local RUNTIME_WASM_URL=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('web', {}).get('runtime_wasm_url', '/packages/actr_runtime_sw_bg.wasm'))
+")
+
+    # Read package info from the .actr package if available
+    local PKG_PATH=$(python3 -c "
+import tomllib
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(c.get('package', {}).get('path', ''))
+")
+    local PKG_FULL_PATH="$SCRIPT_DIR/$PKG_PATH"
+
+    local PKG_NAME="" PKG_MFR="" PKG_VERSION="" PKG_FULL_TYPE=""
+    if [ -f "$PKG_FULL_PATH" ]; then
+        PKG_NAME=$($ACTR_CMD pkg info "$PKG_FULL_PATH" 2>/dev/null | grep -E '^\s*name:' | sed 's/.*:\s*//' || echo "")
+        PKG_MFR=$($ACTR_CMD pkg info "$PKG_FULL_PATH" 2>/dev/null | grep -E '^\s*manufacturer:' | sed 's/.*:\s*//' || echo "")
+        PKG_VERSION=$($ACTR_CMD pkg info "$PKG_FULL_PATH" 2>/dev/null | grep -E '^\s*version:' | sed 's/.*:\s*//' || echo "")
+        if [ -n "$PKG_MFR" ] && [ -n "$PKG_NAME" ] && [ -n "$PKG_VERSION" ]; then
+            PKG_FULL_TYPE="${PKG_MFR}:${PKG_NAME}:${PKG_VERSION}"
+        fi
+    fi
+
+    # Read ACL allow types
+    local ACL_TYPES=$(python3 -c "
+import tomllib, json
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+rules = c.get('acl', {}).get('rules', [])
+types = [r.get('type', '') for r in rules if r.get('permission', 'allow') == 'allow' and r.get('type')]
+print(json.dumps(types))
+")
+
+    # Read WebRTC config
+    local FORCE_RELAY=$(python3 -c "
+import tomllib, json
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(json.dumps(c.get('webrtc', {}).get('force_relay', False)))
+")
+    local STUN_URLS=$(python3 -c "
+import tomllib, json
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(json.dumps(c.get('webrtc', {}).get('stun_urls', [])))
+")
+    local TURN_URLS=$(python3 -c "
+import tomllib, json
+with open('$ACTR_TOML', 'rb') as f:
+    c = tomllib.load(f)
+print(json.dumps(c.get('webrtc', {}).get('turn_urls', [])))
+")
+
+    cat > "$OUTPUT" <<JSONEOF
+{
+    "signaling_url": "$SIG_URL",
+    "ais_endpoint": "$AIS_URL",
+    "realm_id": $REALM_ID,
+    "trust_mode": "$TRUST_MODE",
+    "visible": true,
+    "force_relay": $FORCE_RELAY,
+    "stun_urls": $STUN_URLS,
+    "turn_urls": $TURN_URLS,
+    "package": {
+        "name": "$PKG_NAME",
+        "manufacturer": "$PKG_MFR",
+        "actr_name": "$PKG_NAME",
+        "version": "$PKG_VERSION",
+        "full_type": "$PKG_FULL_TYPE"
+    },
+    "acl_allow_types": $ACL_TYPES,
+    "is_server": $IS_SERVER,
+    "package_url": "$PKG_URL",
+    "runtime_wasm_url": "$RUNTIME_WASM_URL",
+    "mfr_pubkey": "$MFR_PK"
+}
+JSONEOF
+}
+
+generate_runtime_config_json "$SERVER_ACTR_TOML" "$SERVER_DIR/public/actr-runtime-config.json" "true" "/packages/echo-server.actr"
+generate_runtime_config_json "$CLIENT_ACTR_TOML" "$CLIENT_DIR/public/actr-runtime-config.json" "false" "/packages/echo-client.actr"
+echo -e "${GREEN}✅ actr-runtime-config.json generated for both server and client${NC}"
 
 # ── Step 6: Install web dependencies ────────────────────────────────────
 
@@ -631,12 +755,20 @@ echo "   1. Shared runtime WASM (wasm-pack) loaded by both server and client"
 echo "      Server guest: server-guest WASM (cargo build, no outbound calls)"
 echo "      Client guest: echo-client-guest WASM (cargo build, JSPI outbound calls)"
 echo "   2. actr pkg build → signed .actr packages (MFR key: $MFR_NAME)"
+echo "      Config split: manifest.toml in guest dirs, runtime in *-actr.toml"
 echo "   3. actr pkg publish → server package registered with AIS"
-echo "   4. MFR public key injected → SW verifies package signatures"
+echo "   4. MFR public key injected into *-actr.toml → actr-runtime-config.json"
 echo "   5. Server: guest bridge loads runtime + server-guest separately"
 echo "      Client: guest bridge loads runtime + client-guest (JSPI for outbound)"
 echo "      Browser verifies Ed25519 sig + SHA-256 hash"
 echo "   6. SW registers with AIS → obtains credential → starts WebRTC"
+echo ""
+echo "Config architecture:"
+echo "   server-guest/manifest.toml  → actr pkg build (package metadata)"
+echo "   client-guest/manifest.toml  → actr pkg build (package metadata)"
+echo "   server-actr.toml            → runtime config (signaling, AIS, WebRTC, ACL)"
+echo "   client-actr.toml            → runtime config (signaling, AIS, WebRTC, ACL)"
+echo "   /actr-runtime-config.json   → browser fetches at startup"
 echo ""
 echo "Services:"
 echo "   Actrix:  http://localhost:8081  (signaling + AIS)"
@@ -647,6 +779,10 @@ echo "📖 Logs:"
 echo "   tail -f $LOG_DIR/actrix.log"
 echo "   tail -f $LOG_DIR/server.log"
 echo "   tail -f $LOG_DIR/client.log"
+echo ""
+echo "💡 Production mode (alternative to Vite dev servers):"
+echo "   pnpm build --filter=@actr/example-echo-server"
+echo "   actr run --web -c server-actr.toml"
 echo ""
 
 if [ $TEST_EXIT_CODE -eq 0 ]; then

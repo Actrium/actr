@@ -90,6 +90,20 @@ pub struct RuntimeRawConfig {
     /// ```
     #[serde(default)]
     pub package: Option<RawPackagePathConfig>,
+
+    /// Web server configuration for `actr run --web`
+    ///
+    /// When specified, enables serving the actor as a web application.
+    ///
+    /// Example:
+    /// ```toml
+    /// [web]
+    /// port = 5174
+    /// host = "0.0.0.0"
+    /// static_dir = "public"
+    /// ```
+    #[serde(default)]
+    pub web: Option<RawWebConfig>,
 }
 
 pub type ActrRawConfig = RuntimeRawConfig;
@@ -120,6 +134,46 @@ pub struct RawCapabilitiesConfig {
     /// Custom tags (key-value pairs)
     #[serde(default)]
     pub tags: Option<HashMap<String, String>>,
+}
+
+/// Web server configuration for `actr run --web`
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawWebConfig {
+    /// HTTP server port (default: 8080)
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+
+    /// HTTP server bind host (default: "0.0.0.0")
+    #[serde(default = "default_web_host")]
+    pub host: String,
+
+    /// Directory to serve static files from (relative to config dir, default: "public")
+    #[serde(default = "default_web_static_dir")]
+    pub static_dir: String,
+
+    /// Whether this instance acts as a server (`true`) or client (`false`)
+    pub is_server: Option<bool>,
+
+    /// URL path to the .actr package (served from static dir, e.g. "/packages/echo-server.actr")
+    pub package_url: Option<String>,
+
+    /// URL path to the shared runtime WASM (e.g. "/packages/actr_runtime_sw_bg.wasm")
+    pub runtime_wasm_url: Option<String>,
+
+    /// MFR public key for package verification (Base64-encoded Ed25519 public key)
+    pub mfr_pubkey: Option<String>,
+}
+
+fn default_web_port() -> u16 {
+    8080
+}
+
+fn default_web_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_web_static_dir() -> String {
+    "public".to_string()
 }
 
 fn default_edition() -> u32 {

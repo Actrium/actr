@@ -4,7 +4,6 @@ mod rust;
 mod swift;
 pub mod traits;
 mod typescript;
-mod web;
 
 use crate::commands::SupportedLanguage;
 use crate::error::{ActrCliError, Result};
@@ -18,7 +17,6 @@ use std::path::Path;
 use std::process::Command;
 use swift::SwiftInitializer;
 use typescript::TypeScriptInitializer;
-use web::WebInitializer;
 
 pub use traits::{InitContext, ProjectInitializer};
 
@@ -121,7 +119,6 @@ impl InitializerFactory {
             SupportedLanguage::Swift => Ok(Box::new(SwiftInitializer)),
             SupportedLanguage::Kotlin => Ok(Box::new(KotlinInitializer)),
             SupportedLanguage::TypeScript => Ok(Box::new(TypeScriptInitializer)),
-            SupportedLanguage::Web => Ok(Box::new(WebInitializer)),
         }
     }
 }

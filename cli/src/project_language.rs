@@ -7,9 +7,6 @@ pub enum DetectedProjectLanguage {
     Kotlin,
     Python,
     TypeScript,
-    /// Web projects also use TypeScript markers (package.json, tsconfig.json)
-    /// but target a browser + Service Worker + WASM architecture.
-    Web,
     Ambiguous,
     Unknown,
 }
@@ -56,7 +53,6 @@ impl DetectedProjectLanguage {
             Self::Kotlin => "kotlin",
             Self::Python => "python",
             Self::TypeScript => "typescript",
-            Self::Web => "web",
             Self::Ambiguous => "ambiguous",
             Self::Unknown => "unknown",
         }
