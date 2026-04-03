@@ -47,6 +47,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq sqlite3 lsof perl
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -76,6 +80,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq sqlite3 lsof perl
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -101,8 +109,8 @@ jobs:
           git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Install protoc
-        run: brew install protobuf xcodegen opus
+      - name: Install macOS e2e dependencies
+        run: brew install protobuf xcodegen opus jq sqlite
       - name: Install UniFFI bindgen
         run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
       - uses: Swatinem/rust-cache@v2
