@@ -1,0 +1,28 @@
+edition = 1
+
+[signaling]
+url = "{{{SIGNALING_URL}}}/signaling/ws"
+
+[ais_endpoint]
+url = "{{{AIS_ENDPOINT_URL}}}"
+
+[deployment]
+realm_id = {{REALM_ID}}
+trust_mode = "development"
+
+[discovery]
+visible = false
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://127.0.0.1:4317"
+tracing_service_name = "{{PROJECT_NAME}}"
+
+[webrtc]
+force_relay = false
+stun_urls = {{{STUN_URLS}}}
+turn_urls = {{{TURN_URLS}}}
+
+[package]
+path = "dist/app.actr"

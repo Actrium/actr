@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
     }
 
     // Build service container for remaining commands
-    let container = build_container().await?;
+    let container = build_container(None).await?;
 
     let context = CommandContext {
         container: Arc::new(std::sync::Mutex::new(container)),
@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn build_container() -> Result<ServiceContainer> {
+async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer> {
     let config_path = std::path::Path::new("manifest.toml");
     let mut builder = ContainerBuilder::new();
     let mut config_manager = None;
@@ -274,12 +274,85 @@ async fn build_container() -> Result<ServiceContainer> {
 
         let realm_secret = effective_cli.network.realm_secret.clone();
 
+        // Read manifest.toml raw bytes and try to sign for AIS Path 2 identity verification.
+        // This allows `actr install` to register with AIS without a published package.
+        // AIS Path 2 requires `signing_key_id` in the manifest, so we inject it if missing.
+        let (manifest_raw, mfr_signature) = {
+            if config_path.exists() {
+                // Try to load signing key — check multiple locations
+                let try_load_key = |p: &std::path::Path| -> Option<ed25519_dalek::SigningKey> {
+                    let json_str = std::fs::read_to_string(p).ok()?;
+                    let json: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+                    let priv_b64 = json["private_key"].as_str()?;
+                    let priv_bytes = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        priv_b64,
+                    )
+                    .ok()?;
+                    let arr: [u8; 32] = priv_bytes.try_into().ok()?;
+                    Some(ed25519_dalek::SigningKey::from_bytes(&arr))
+                };
+
+                // Resolve keychain path: only use configured path from config.toml ([mfr].keychain)
+                let configured_key_path =
+                    key_override.map(std::path::PathBuf::from).or_else(|| {
+                        effective_cli.mfr.keychain.as_deref().map(|kc_path| {
+                            if let Some(stripped) = kc_path.strip_prefix("~/") {
+                                dirs::home_dir()
+                                    .map(|h| h.join(stripped))
+                                    .unwrap_or_else(|| std::path::PathBuf::from(kc_path))
+                            } else {
+                                std::path::PathBuf::from(kc_path)
+                            }
+                        })
+                    });
+
+                let signing_key = configured_key_path.as_deref().and_then(try_load_key);
+
+                match signing_key {
+                    Some(signing_key) => {
+                        use ed25519_dalek::Signer;
+                        let key_id =
+                            actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes());
+
+                        // Build a flat manifest for AIS Path 2 identity verification.
+                        // AIS verify_mfr_identity expects manufacturer/name/version/signing_key_id
+                        // at the TOML top level, but manifest.toml from `actr init` nests them
+                        // inside [package]. Construct a canonical flat TOML with the required fields.
+                        let actr_type = &config.package.actr_type;
+                        let manifest_bytes = format!(
+                            "manufacturer = \"{}\"\nname = \"{}\"\nversion = \"{}\"\nsigning_key_id = \"{}\"\n",
+                            actr_type.manufacturer, actr_type.name, actr_type.version, key_id
+                        )
+                        .into_bytes();
+
+                        let signature = signing_key.sign(&manifest_bytes).to_bytes().to_vec();
+                        (Some(manifest_bytes), Some(signature))
+                    }
+                    // Keep local-only commands like `actr gen` and `actr install`
+                    // usable without a configured signing key. When a keychain is
+                    // configured explicitly but cannot be read, fail fast because
+                    // the caller opted into AIS Path 2 signing.
+                    None => {
+                        if let Some(path) = configured_key_path {
+                            anyhow::bail!("Failed to load signing key from {}", path.display());
+                        }
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        };
+
         let discovery_context = DiscoveryContext {
             package_actr_type: config.package.actr_type.clone(),
             signaling_url,
             ais_endpoint,
             realm: actr_protocol::Realm { realm_id },
             realm_secret,
+            manifest_raw,
+            mfr_signature,
         };
 
         container = container
@@ -352,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_container() {
-        let container = build_container().await;
+        let container = build_container(None).await;
         assert!(container.is_ok());
     }
 }

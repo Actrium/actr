@@ -21,6 +21,51 @@ fn run_actr(args: &[&str], cwd: &std::path::Path) -> Output {
         .expect("failed to run actr binary")
 }
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should live under workspace root")
+        .to_path_buf()
+}
+
+fn append_workspace_patch(project_dir: &std::path::Path) {
+    let workspace = workspace_root();
+    let cargo_toml = project_dir.join("Cargo.toml");
+    let patch = format!(
+        r#"
+
+[patch.crates-io]
+actr = {{ path = "{}" }}
+actr-protocol = {{ path = "{}" }}
+actr-framework = {{ path = "{}" }}
+actr-hyper = {{ path = "{}" }}
+actr-runtime = {{ path = "{}" }}
+actr-config = {{ path = "{}" }}
+actr-service-compat = {{ path = "{}" }}
+actr-runtime-mailbox = {{ path = "{}" }}
+"#,
+        workspace.display(),
+        workspace.join("core/protocol").display(),
+        workspace.join("core/framework").display(),
+        workspace.join("core/hyper").display(),
+        workspace.join("core/runtime").display(),
+        workspace.join("core/config").display(),
+        workspace.join("core/service-compat").display(),
+        workspace.join("core/runtime-mailbox").display(),
+    );
+    let mut content = std::fs::read_to_string(&cargo_toml).unwrap();
+    content.push_str(&patch);
+    std::fs::write(&cargo_toml, content).unwrap();
+}
+
+fn cargo_check(project_dir: &std::path::Path) -> Output {
+    Command::new("cargo")
+        .args(["check"])
+        .current_dir(project_dir)
+        .output()
+        .expect("failed to run cargo check")
+}
+
 fn assert_actr_success(out: &Output, context: &str) {
     assert!(
         out.status.success(),
@@ -110,7 +155,9 @@ fn rust_echo_app_scaffold() {
     for path in &[
         "Cargo.toml",
         "manifest.toml",
+        "actr.toml",
         "src/main.rs",
+        "src/lib.rs",
         "README.md",
         "protos/local/local.proto",
         ".protoc-plugin.toml",
@@ -123,15 +170,39 @@ fn rust_echo_app_scaffold() {
     assert!(cargo.contains(r#"name = "my-echo-app""#), "package name");
     assert!(cargo.contains(r#"edition = "2024""#), "edition");
     assert!(
-        cargo.contains("actr = "),
-        "missing dependency actr in Cargo.toml"
+        cargo.contains("actr-framework = "),
+        "missing actr-framework dependency"
+    );
+    assert!(
+        cargo.contains("actr-hyper = "),
+        "missing actr-hyper dependency"
     );
 
     // -- manifest.toml --
     let actr = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
     assert!(
-        actr.contains("wss://actrix1.develenv.com/signaling/ws"),
-        "signaling URL"
+        actr.contains(r#"EchoService = { actr_type = "acme:EchoService:1.0.0" }"#),
+        "app should point to the real EchoService actr_type"
+    );
+    assert!(
+        actr.contains(r#"path = "dist/app.wasm""#),
+        "app should define a guest binary path"
+    );
+    assert!(actr.contains("[build]"), "app should define build settings");
+
+    // -- actr.toml --
+    let runtime = std::fs::read_to_string(dir.join("actr.toml")).unwrap();
+    assert!(
+        runtime.contains("wss://actrix1.develenv.com/signaling/ws"),
+        "runtime config should contain signaling URL"
+    );
+    assert!(
+        runtime.contains(r#"path = "dist/app.actr""#),
+        "runtime config should point to the local app package"
+    );
+    assert!(
+        runtime.contains("visible = false"),
+        "app runtime should not advertise itself for discovery"
     );
 
     // -- local.proto should contain the generated bridge service --
@@ -148,20 +219,35 @@ fn rust_echo_app_scaffold() {
     // -- main.rs --
     let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap();
     assert!(
-        !main.contains("mod echo_app"),
-        "main.rs should not declare mod echo_app"
+        main.contains("ensure_package_built(Path::new(PACKAGE_PATH))"),
+        "main.rs should build the local guest package on demand"
     );
     assert!(
-        main.contains("attach_package"),
-        "main.rs should reference attach_package for package-backed node"
+        main.contains("attach_package(&package, runtime.clone())"),
+        "main.rs should attach the local guest package"
     );
     assert!(
-        !main.contains("MyEchoAppClientAppHandler"),
-        "main.rs should not depend on generated handler traits"
+        main.contains("let response = actr_ref"),
+        "main.rs should call EchoService through the local guest"
     );
     assert!(
-        !main.contains("MyEchoAppClientAppWorkload"),
-        "main.rs should not depend on generated workload types"
+        main.contains(r#"println!("Echo reply: {}""#),
+        "main.rs should print the echo response"
+    );
+
+    // -- lib.rs --
+    let lib = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+    assert!(
+        lib.contains("pub mod generated;"),
+        "app lib should include generated modules"
+    );
+    assert!(
+        lib.contains("EchoAppBridge"),
+        "app lib should define a local bridge workload"
+    );
+    assert!(
+        lib.contains("ClientAppHandler for EchoAppBridge"),
+        "app lib should implement the generated bridge trait"
     );
 }
 
@@ -179,11 +265,27 @@ fn rust_echo_service_scaffold() {
     for path in &[
         "Cargo.toml",
         "manifest.toml",
-        "src/main.rs",
+        "build.rs",
+        "src/lib.rs",
         "src/echo_service.rs",
     ] {
         assert!(dir.join(path).exists(), "{path} should exist");
     }
+    assert!(
+        !dir.join("src/generated/mod.rs").exists(),
+        "init should not preseed src/generated; it must come from actr gen"
+    );
+
+    // -- Cargo.toml --
+    let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    assert!(
+        cargo.contains("crate-type = [\"rlib\", \"cdylib\"]"),
+        "service template should build as a workload library"
+    );
+    assert!(
+        cargo.contains("actr-framework = "),
+        "service template should depend on actr-framework directly"
+    );
 
     // -- manifest.toml --
     let actr = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
@@ -196,23 +298,23 @@ fn rust_echo_service_scaffold() {
         "actr_type.name should be EchoService"
     );
     assert!(
-        !actr.contains("echo-echo-server"),
-        "service should have no remote deps"
+        actr.contains("[binary]") && actr.contains("[build]"),
+        "service manifest should declare package build inputs"
     );
 
-    // -- main.rs --
-    let main = std::fs::read_to_string(dir.join("src/main.rs")).unwrap();
+    // -- lib.rs --
+    let main = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
     assert!(
-        !main.contains("discover_route_candidates"),
-        "service should not discover"
+        main.contains("EchoServiceWorkload"),
+        "service library should wire the generated workload wrapper"
     );
     assert!(
-        main.contains("package-backed Actor-RTC EchoService host"),
-        "service main should describe the package-backed host flow"
+        main.contains("entry!("),
+        "service library should expose the package entry point"
     );
     assert!(
-        main.contains("Source-defined Rust service workloads were removed"),
-        "service main should explain that source-defined workloads were removed"
+        !dir.join("src/main.rs").exists(),
+        "service package template should no longer generate a host main.rs"
     );
 
     // -- echo_service.rs --
@@ -237,6 +339,27 @@ fn rust_echo_service_scaffold() {
         "should define EchoService"
     );
     assert!(proto.contains("rpc Echo"), "should declare Echo rpc");
+
+    append_workspace_patch(&dir);
+    let check = cargo_check(&dir);
+    assert_actr_success(&check, "cargo check (service init)");
+}
+
+#[test]
+fn rust_echo_service_build_requires_gen_first() {
+    let tmp = TempDir::new().unwrap();
+    let dir = init_rust_echo_service(tmp.path(), "build-needs-gen");
+
+    let out = run_actr(&["build"], &dir);
+    assert!(
+        !out.status.success(),
+        "actr build should fail before actr gen"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Run `actr gen -l rust` before `actr build`."),
+        "missing gen-first guidance, stderr:\n{stderr}"
+    );
 }
 
 #[test]
@@ -246,12 +369,12 @@ fn rust_echo_both_app_uses_local_service_dependency() {
 
     let app_actr = std::fs::read_to_string(dir.join("echo-app/manifest.toml")).unwrap();
     assert!(
-        app_actr.contains("EchoService = {}"),
-        "role=both app should depend on local echo-service, got:\n{app_actr}"
+        app_actr.contains(r#"EchoService = { actr_type = "example:EchoService:1.0.0" }"#),
+        "role=both app should directly target the generated service actr_type, got:\n{app_actr}"
     );
     assert!(
-        !app_actr.contains("echo-echo-server"),
-        "role=both app should not depend on remote echo-echo-server"
+        !app_actr.contains("EchoService = {}"),
+        "role=both app should not use a placeholder dependency"
     );
 }
 

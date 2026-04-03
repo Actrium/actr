@@ -2,49 +2,30 @@ edition = 1
 exports = []
 
 [package]
-name = "echo-client-app"
+name = "{{PROJECT_NAME_PASCAL}}ClientApp"
 manufacturer = "{{MANUFACTURER}}"
-description = "An Actor-RTC service"
+version = "1.0.0"
+description = "Package-backed Rust echo client app"
 authors = []
 license = "Apache-2.0"
-tags = ["dev", "service"]
+tags = ["dev", "app"]
 
 [dependencies]
-{{#if IS_BOTH}}
-EchoService = {}
-{{else}}
 EchoService = { actr_type = "{{MANUFACTURER}}:EchoService:1.0.0" }
-{{/if}}
 
-[system.signaling]
-url = "{{{SIGNALING_URL}}}/signaling/ws"
+[binary]
+path = "dist/app.wasm"
+target = "wasm32-unknown-unknown"
 
-[system.ais_endpoint]
-url = "{{{AIS_ENDPOINT_URL}}}"
-
-[system.deployment]
-realm_id = {{REALM_ID}}
-
-[system.discovery]
-visible = true
-
-[system.observability]
-filter_level = "info"
-tracing_enabled = false
-tracing_endpoint = "http://127.0.0.1:4317"
-tracing_service_name = "{{PROJECT_NAME}}"
-
-[system.webrtc]
-force_relay = false
-stun_urls = {{{STUN_URLS}}}
-turn_urls = {{{TURN_URLS}}}
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+target = "wasm32-unknown-unknown"
+post_build = [
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && if command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1; then "${WASM_OPT:-wasm-opt}" --asyncify -O "target/wasm32-unknown-unknown/release/{{PROJECT_NAME_SNAKE}}_guest.wasm" -o "$ACTR_BUILD_BINARY_PATH"; else cp "target/wasm32-unknown-unknown/release/{{PROJECT_NAME_SNAKE}}_guest.wasm" "$ACTR_BUILD_BINARY_PATH"; fi',
+]
 
 [scripts]
 dev = "cargo run"
-test = "cargo test"
-
-[acl]
-
-[[acl.rules]]
-permission = "allow"
-type = "{{MANUFACTURER}}:EchoService:1.0.0"

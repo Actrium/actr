@@ -5,40 +5,20 @@ exports = ["protos/local/echo.proto"]
 name = "EchoService"
 manufacturer = "{{MANUFACTURER}}"
 version = "1.0.0"
-description = "Actor-RTC EchoService provider"
+description = "Actor-RTC EchoService workload package"
 authors = []
 license = "Apache-2.0"
 tags = ["dev", "service"]
 
-[system.signaling]
-url = "{{{SIGNALING_URL}}}/signaling/ws"
+[binary]
+path = "dist/{{PROJECT_NAME_SNAKE}}.cdylib"
 
-[system.ais_endpoint]
-url = "{{{AIS_ENDPOINT_URL}}}"
-
-[system.deployment]
-realm_id = {{REALM_ID}}
-
-[system.discovery]
-visible = true
-
-[system.observability]
-filter_level = "info"
-tracing_enabled = false
-tracing_endpoint = "http://127.0.0.1:4317"
-tracing_service_name = "{{PROJECT_NAME}}"
-
-[system.webrtc]
-force_relay = false
-stun_urls = {{{STUN_URLS}}}
-turn_urls = {{{TURN_URLS}}}
-
-[scripts]
-dev = "cargo run"
-test = "cargo test"
-
-[acl]
-
-[[acl.rules]]
-permission = "allow"
-type = "{{MANUFACTURER}}:echo-client-app"
+[build]
+tool = "cargo"
+manifest_path = "Cargo.toml"
+artifact = "lib"
+profile = "release"
+features = ["cdylib"]
+post_build = [
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && TARGET_ROOT="${CARGO_TARGET_DIR:-target}" && case "$(uname)" in Darwin) LIB_NAME="lib{{PROJECT_NAME_SNAKE}}.dylib" ;; Linux) LIB_NAME="lib{{PROJECT_NAME_SNAKE}}.so" ;; *) LIB_NAME="{{PROJECT_NAME_SNAKE}}.dll" ;; esac && for SRC in "$TARGET_ROOT/$ACTR_BUILD_TARGET/$ACTR_BUILD_PROFILE/$LIB_NAME" "$TARGET_ROOT/$ACTR_BUILD_PROFILE/$LIB_NAME"; do if [ -f "$SRC" ]; then cp "$SRC" "$ACTR_BUILD_BINARY_PATH"; exit 0; fi; done && echo "Unable to locate built workload library under $TARGET_ROOT" >&2 && exit 1',
+]

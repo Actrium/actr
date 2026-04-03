@@ -23,7 +23,7 @@ cp media-relay/actr-a/Actr.example.toml media-relay/actr-a/actr.toml
 cp media-relay/actr-b/Actr.example.toml media-relay/actr-b/actr.toml
 ```
 
-`package-echo` is the exception for the packaged server host: it uses the tracked `package-echo/server-actr.toml` runtime-config template, and `package-echo/start.sh` regenerates that file before running `actr run -c server-actr.toml`.
+`package-echo` is the exception for the packaged server host: it uses tracked runtime-config templates under `package-echo/`. `package-echo/start.sh` regenerates `server-actr.toml`, while `package-echo/start_tmp_echo_actr.sh` regenerates `tmp_server-actr.toml`, before running `actr run`.
 
 ## Prerequisites
 
@@ -48,6 +48,7 @@ Run workspace commands from the repository root. Examples:
 - `bash data-stream/start.sh` – spin up actrix (root config), receiver, and sender.
 - `bash shell-actr-echo/start.sh` – run the echo server/client against the root actrix config.
 - `bash package-echo/start.sh` – run the signed package echo host/client demo against the root actrix config.
+- `bash package-echo/start_tmp_echo_actr.sh` – generate a temporary `echo-actr-xx` service via `actr init/install/gen` and run the package echo demo against it.
 - `bash package-echo/manual-runtime-lifecycle.sh` – verify detached runtime lifecycle commands against the package-backed server config.
 - `bash media-relay/start.sh` – launch the relay demo; actrix starts from the workspace root config.
 - `../audio-capture/README.md` – run the Swift sender plus Rust receiver audio capture demo.
@@ -91,3 +92,5 @@ Both `--bin` and `-p` work identically in a workspace context.
 - **Package Echo** – echo RPC against a host that loads a signed `.actr` package built locally.
   - Start: `bash package-echo/start.sh`
   - Behavior: boots actrix (root config) → builds and signs the local `echo-actr` package → regenerates `server-actr.toml` → runs `actr run -c server-actr.toml` → launches the client example; asserts echo reply contains the packaged service response.
+  - Temp scaffold variant: `bash package-echo/start_tmp_echo_actr.sh`
+  - Temp behavior: creates a temporary `echo-actr-xx` Rust service project via `actr init`, runs `actr install` + `actr gen -l rust`, then reuses `package-echo/start.sh` with that generated workload and the isolated `tmp_server-actr.toml`.

@@ -3,25 +3,25 @@ name = "{{PROJECT_NAME}}"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "{{PROJECT_NAME_SNAKE}}_guest"
+crate-type = ["cdylib", "rlib"]
+
 [[bin]]
 name = "{{PROJECT_NAME}}"
 path = "src/main.rs"
 
 [dependencies]
-# Actor-RTC framework
-actr = "0.2"
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+actr-config = "0.2"
+actr-framework = "0.2"
+actr-hyper = { version = "0.1", features = ["wasm-engine"] }
+actr-protocol = "0.2"
 async-trait = "0.1"
-
-# Protobuf
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
 prost = "0.14"
 prost-types = "0.14"
-bytes = "1"
-
-# Logging
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-
-# Error handling
-anyhow = "1"

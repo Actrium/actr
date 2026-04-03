@@ -41,6 +41,8 @@ pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) 
     let generator = GeneratorFactory::get_generator(language);
 
     let mut all_files = generator.generate_infrastructure(context).await?;
+    let metadata = ActrGenMetadata::from_proto_model(language, &context.proto_model);
+    write_metadata(&context.output, &metadata)?;
     if !context.no_scaffold {
         all_files.extend(generator.generate_scaffold(context).await?);
     }

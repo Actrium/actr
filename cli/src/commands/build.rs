@@ -8,10 +8,12 @@ use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Args;
 
+use crate::commands::codegen::metadata_path;
 use crate::commands::package_build::{
     PackageBuildInput, build_package, default_dist_output_path, print_build_summary,
     resolve_key_path,
 };
+use crate::project_language::DetectedProjectLanguage;
 
 #[derive(Args, Debug)]
 #[command(
@@ -62,8 +64,6 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
 
     let effective_target = resolve_effective_target(&args, &config)?;
     let output_path = resolve_output_path(&manifest_path, &effective_target, args.output.as_ref())?;
-    let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
-    let key_path = resolve_key_path(args.key.as_deref(), cli_config.mfr.keychain.as_deref())?;
 
     if !args.no_compile {
         let build = config.build.as_ref().ok_or_else(|| {
@@ -71,6 +71,7 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
                 "manifest.toml is missing [build].\nAdd [build] or rerun with `--no-compile` to package an existing artifact."
             )
         })?;
+        ensure_rust_codegen_ready(build)?;
         compile_project(
             &manifest_path,
             &output_path,
@@ -87,6 +88,9 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
         );
     }
 
+    let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
+    let key_path = resolve_key_path(args.key.as_deref(), cli_config.mfr.keychain.as_deref())?;
+
     let summary = build_package(PackageBuildInput {
         binary_path: binary.path.clone(),
         config_path: manifest_path,
@@ -98,6 +102,29 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
 
     print_build_summary(&summary);
     Ok(())
+}
+
+fn ensure_rust_codegen_ready(build: &BuildConfig) -> Result<()> {
+    let project_root = build
+        .manifest_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    if DetectedProjectLanguage::detect(&project_root) != DetectedProjectLanguage::Rust {
+        return Ok(());
+    }
+
+    let generated_dir = project_root.join("src/generated");
+    let generated_meta = metadata_path(&generated_dir);
+    if generated_dir.exists() && generated_meta.exists() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Rust generated sources are missing or stale for {}.\nRun `actr gen -l rust` before `actr build`.",
+        project_root.display()
+    );
 }
 
 fn resolve_manifest_path(path: &Path) -> Result<PathBuf> {

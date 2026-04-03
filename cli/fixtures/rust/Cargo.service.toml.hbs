@@ -1,0 +1,24 @@
+[package]
+name = "{{PROJECT_NAME}}"
+version = "1.0.0"
+edition = "2024"
+build = "build.rs"
+
+[lib]
+name = "{{PROJECT_NAME_SNAKE}}"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["cdylib"]
+cdylib = ["actr-framework/cdylib"]
+
+[dependencies]
+actr-framework = "0.2"
+actr-protocol = "0.2"
+async-trait = "0.1"
+prost = "0.14"
+prost-types = "0.14"
+bytes = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(actr_has_generated)'] }
