@@ -468,30 +468,23 @@ echo "📦 Checking actrix availability..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTRIX_CMD=""
-if command -v actrix > /dev/null 2>&1; then
-    ACTRIX_CMD="actrix"
-    echo -e "${GREEN}✅ Using actrix from PATH: $(which actrix)${NC}"
-elif [ -n "$ACTRIX_DIR" ] && [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
-    ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
-    echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
-elif [ -n "$ACTRIX_DIR" ] && [ -x "$ACTRIX_DIR/target/release/actrix" ]; then
-    ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
-    echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
-else
-    echo -e "${YELLOW}⚠️  Actrix not found in PATH or build directory. Attempting build...${NC}"
-    if [ -n "$ACTRIX_DIR" ] && [ -d "$ACTRIX_DIR" ]; then
-        cd "$ACTRIX_DIR"
-        cargo build 2>&1 | tail -5
-        if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
-            ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
-        fi
-        cd "$WORKSPACE_ROOT"
-    fi
-
-    if [ -z "$ACTRIX_CMD" ]; then
-        echo -e "${RED}❌ Actrix not available. Install it first or set ACTRIX_DIR to a local actrix repository${NC}"
+# Always build from source when ACTRIX_DIR is available to ensure latest migrations
+if [ -n "$ACTRIX_DIR" ] && [ -d "$ACTRIX_DIR" ]; then
+    echo -e "${BLUE}🔧 Building actrix from source ($ACTRIX_DIR)...${NC}"
+    CARGO_TARGET_DIR="$ACTRIX_DIR/target" cargo build --manifest-path "$ACTRIX_DIR/Cargo.toml" --bin actrix 2>&1 | tail -5
+    if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
+        ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
+        echo -e "${GREEN}✅ Actrix built from source: $ACTRIX_CMD${NC}"
+    else
+        echo -e "${RED}❌ Failed to build actrix from source${NC}"
         exit 1
     fi
+elif command -v actrix > /dev/null 2>&1; then
+    ACTRIX_CMD="actrix"
+    echo -e "${GREEN}✅ Using actrix from PATH: $(which actrix)${NC}"
+else
+    echo -e "${RED}❌ Actrix not available. Set ACTRIX_DIR to a local actrix repository or install actrix${NC}"
+    exit 1
 fi
 
 # ── Step 2: Start actrix ────────────────────────────────────────────────

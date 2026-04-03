@@ -22,6 +22,7 @@ mkdir -p "$LOG_DIR"
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 
 ORIGINAL_ARGS=("$@")
+HAS_ARGS=$(( $# > 0 ? 1 : 0 ))
 BACKEND="cdylib"
 SEEN_BACKEND=0
 
@@ -53,9 +54,13 @@ if [[ "$BACKEND" != "cdylib" ]]; then
     exit 1
 fi
 
-START_ARGS=("${ORIGINAL_ARGS[@]}")
+if [[ $HAS_ARGS -eq 1 ]]; then
+    START_ARGS=("${ORIGINAL_ARGS[@]}")
+else
+    START_ARGS=()
+fi
 if [[ $SEEN_BACKEND -eq 0 ]]; then
-    START_ARGS=(--backend cdylib "${START_ARGS[@]}")
+    START_ARGS=(--backend cdylib ${START_ARGS[@]+"${START_ARGS[@]}"})
 fi
 
 random_suffix() {
@@ -185,4 +190,4 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 CARGO_TARGET_DIR="$WORKSPACE_TARGET_DIR" \
 ECHO_ACTR_DIR="$TMP_ECHO_ACTR_DIR" \
 SERVER_ACTR_CONFIG="$SCRIPT_DIR/tmp_server-actr.toml" \
-    "$SCRIPT_DIR/start.sh" "${START_ARGS[@]}"
+    "$SCRIPT_DIR/start.sh" ${START_ARGS[@]+"${START_ARGS[@]}"}
