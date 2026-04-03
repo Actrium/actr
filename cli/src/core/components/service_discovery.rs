@@ -53,6 +53,12 @@ pub struct DiscoveryContext {
 
     /// Optional realm secret for authentication
     pub realm_secret: Option<String>,
+
+    /// Raw manifest.toml bytes for AIS MFR identity verification (Path 2)
+    pub manifest_raw: Option<Vec<u8>>,
+
+    /// Ed25519 signature over manifest_raw bytes
+    pub mfr_signature: Option<Vec<u8>>,
 }
 
 pub struct NetworkServiceDiscovery {
@@ -157,6 +163,8 @@ impl NetworkServiceDiscovery {
             service: None,
             acl: None,
             ws_address: None,
+            manifest_raw: self.context.manifest_raw.clone().map(Into::into),
+            mfr_signature: self.context.mfr_signature.clone().map(Into::into),
             ..Default::default()
         };
 

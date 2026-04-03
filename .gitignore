@@ -61,3 +61,6 @@ env/
 
 # Release train reports
 release/reports/
+
+# Git worktrees
+.worktrees/
