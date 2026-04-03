@@ -294,9 +294,8 @@ async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer>
                 };
 
                 // Resolve keychain path: only use configured path from config.toml ([mfr].keychain)
-                let configured_key_path = key_override
-                    .map(std::path::PathBuf::from)
-                    .or_else(|| {
+                let configured_key_path =
+                    key_override.map(std::path::PathBuf::from).or_else(|| {
                         effective_cli.mfr.keychain.as_deref().map(|kc_path| {
                             if let Some(stripped) = kc_path.strip_prefix("~/") {
                                 dirs::home_dir()
@@ -308,9 +307,7 @@ async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer>
                         })
                     });
 
-                let signing_key = configured_key_path
-                    .as_deref()
-                    .and_then(try_load_key);
+                let signing_key = configured_key_path.as_deref().and_then(try_load_key);
 
                 match signing_key {
                     Some(signing_key) => {
@@ -338,10 +335,7 @@ async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer>
                     // the caller opted into AIS Path 2 signing.
                     None => {
                         if let Some(path) = configured_key_path {
-                            anyhow::bail!(
-                                "Failed to load signing key from {}",
-                                path.display()
-                            );
+                            anyhow::bail!("Failed to load signing key from {}", path.display());
                         }
                         (None, None)
                     }
