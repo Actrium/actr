@@ -294,18 +294,23 @@ async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer>
                 };
 
                 // Resolve keychain path: only use configured path from config.toml ([mfr].keychain)
-                let signing_key = key_override
-                    .and_then(|p| try_load_key(std::path::Path::new(p)))
+                let configured_key_path = key_override
+                    .map(std::path::PathBuf::from)
                     .or_else(|| {
-                        effective_cli.mfr.keychain.as_deref().and_then(|kc_path| {
-                            let path = if let Some(stripped) = kc_path.strip_prefix("~/") {
-                                dirs::home_dir().map(|h| h.join(stripped))
+                        effective_cli.mfr.keychain.as_deref().map(|kc_path| {
+                            if let Some(stripped) = kc_path.strip_prefix("~/") {
+                                dirs::home_dir()
+                                    .map(|h| h.join(stripped))
+                                    .unwrap_or_else(|| std::path::PathBuf::from(kc_path))
                             } else {
-                                Some(std::path::PathBuf::from(kc_path))
-                            };
-                            path.and_then(|p| try_load_key(&p))
+                                std::path::PathBuf::from(kc_path)
+                            }
                         })
                     });
+
+                let signing_key = configured_key_path
+                    .as_deref()
+                    .and_then(try_load_key);
 
                 match signing_key {
                     Some(signing_key) => {
@@ -327,12 +332,18 @@ async fn build_container(key_override: Option<&str>) -> Result<ServiceContainer>
                         let signature = signing_key.sign(&manifest_bytes).to_bytes().to_vec();
                         (Some(manifest_bytes), Some(signature))
                     }
-                    // No signing key found — error out instead of silently skipping.
-                    // AIS Path 2 requires a valid signature.
+                    // Keep local-only commands like `actr gen` and `actr install`
+                    // usable without a configured signing key. When a keychain is
+                    // configured explicitly but cannot be read, fail fast because
+                    // the caller opted into AIS Path 2 signing.
                     None => {
-                        anyhow::bail!(
-                            "Signing key not found. Set [mfr].keychain in ~/.actr/config.toml or .actr/config.toml"
-                        );
+                        if let Some(path) = configured_key_path {
+                            anyhow::bail!(
+                                "Failed to load signing key from {}",
+                                path.display()
+                            );
+                        }
+                        (None, None)
                     }
                 }
             } else {
