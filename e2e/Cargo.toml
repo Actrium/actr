@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "package-runtime-echo/client",
+    "package-runtime-echo/client-guest",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+actr-framework = { version = "0.2.0" }
+actr-protocol = { version = "0.2.0" }
+actr-runtime = { version = "0.2.0" }
+actr-hyper = { version = "0.1.0", features = ["opentelemetry"] }
+actr-config = { version = "0.2.0" }
+actr-platform-native = { version = "0.2.0" }
+actr-pack = { version = "0.2.0" }
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+prost = "0.14"
+bytes = "1.11"
+async-trait = "0.1"
+
+[patch.crates-io]
+actr-framework = { path = "../core/framework" }
+actr-protocol = { path = "../core/protocol" }
+actr-runtime = { path = "../core/runtime" }
+actr-hyper = { path = "../core/hyper" }
+actr-config = { path = "../core/config" }
+actr-platform-native = { path = "../core/platform-native" }
+actr-pack = { path = "../core/pack" }

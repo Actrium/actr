@@ -1,0 +1,22 @@
+[package]
+name = "package-runtime-echo-client-guest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["cdylib"]
+cdylib = ["actr-framework/cdylib"]
+
+[dependencies]
+actr-framework = { workspace = true }
+actr-protocol = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.14"
