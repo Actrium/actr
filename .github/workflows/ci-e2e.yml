@@ -26,6 +26,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  package-runtime-echo-e2e:
+    name: Package Runtime Echo E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure git for private Actrix checkout
+        shell: bash
+        env:
+          ACTRIX_READ_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq sqlite3 lsof perl
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run package runtime echo e2e
+        run: bash e2e/package-runtime-echo/run.sh
+
   rust-e2e:
     name: Rust E2E
     runs-on: ubuntu-latest
