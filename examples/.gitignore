@@ -37,3 +37,4 @@ rust/wasm-echo/dev-key.json
 
 # Actrix config file (use actrix-config.example.toml as template)
 actrix-config.toml
+**/.actr/

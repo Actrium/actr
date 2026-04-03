@@ -86,6 +86,19 @@ actr-runtime-mailbox = { path = "$ACTR_REPO_DIR/core/runtime-mailbox" }
 EOF
 }
 
+ensure_project_keychain_config() {
+    local project_dir="$1"
+    local signing_key="$2"
+    local config_dir="$project_dir/.actr"
+    local config_path="$config_dir/config.toml"
+
+    mkdir -p "$config_dir"
+    cat > "$config_path" <<EOF
+[mfr]
+keychain = "$signing_key"
+EOF
+}
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/echo-actr-verify.XXXXXX")"
 TMP_ECHO_ACTR_DIR="$TMP_ROOT/echo-actr-$(random_suffix)"
 
@@ -147,6 +160,9 @@ cp "$DEFAULT_SIGNING_KEY" "$TMP_ECHO_ACTR_DIR/packaging/keys/dev-signing-key.jso
 jq '{public_key: .public_key}' \
     "$TMP_ECHO_ACTR_DIR/packaging/keys/dev-signing-key.json" \
     > "$TMP_ECHO_ACTR_DIR/public-key.json"
+ensure_project_keychain_config \
+    "$TMP_ECHO_ACTR_DIR" \
+    "$TMP_ECHO_ACTR_DIR/packaging/keys/dev-signing-key.json"
 
 echo ""
 echo -e "${BLUE}⚙️  Step 1: Installing and generating workload code...${NC}"

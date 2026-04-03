@@ -33,6 +33,7 @@ Thumbs.db
 
 # Actrix integration files
 actrix-*.toml
+!**/actrix-config.example.toml
 actrix-*.db*
 ACTRIX*.md
 

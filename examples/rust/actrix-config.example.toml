@@ -1,0 +1,45 @@
+name = "actrix-example-local"
+enable = 31
+env = "dev"
+sqlite_path = "database"
+actrix_shared_key = "0123456789abcdef0123456789abcdef"
+location_tag = "local,dev,examples"
+
+[bind]
+[bind.http]
+domain_name = "localhost"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = 8081
+
+[bind.ice]
+advertised_ip = "127.0.0.1"
+advertised_port = 3478
+ip = "127.0.0.1"
+port = 3478
+
+[turn]
+relay_port_range = "49152-65535"
+realm = "actrix.local"
+
+[services.signer]
+[services.signer.storage]
+backend = "sqlite"
+key_ttl_seconds = 3600
+[services.signer.storage.sqlite]
+path = "ks.db"
+
+[services.ais]
+[services.ais.server]
+token_ttl_secs = 3600
+
+[services.mfr]
+
+[services.signaling]
+[services.signaling.server]
+ws_path = "/signaling"
+
+[control.admin_ui]
+password = "testpassword123"
+
+[recording]

@@ -53,9 +53,35 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 WORKSPACE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Repo root is 2 levels up from WORKSPACE_ROOT (examples/rust)
 ACTR_REPO_DIR="$(cd "$WORKSPACE_ROOT/../.." && pwd)"
-# Actrium root is one level above the repo root
-ACTRIUM_DIR="$(cd "$ACTR_REPO_DIR/.." && pwd)"
-ACTRIX_DIR="$ACTRIUM_DIR/actrix"
+
+resolve_actrix_dir() {
+    local repo_dir="$1"
+    local candidate=""
+
+    if [ -n "${ACTRIX_DIR:-}" ] && [ -d "${ACTRIX_DIR}" ]; then
+        printf '%s\n' "${ACTRIX_DIR}"
+        return 0
+    fi
+
+    candidate="$(cd "$repo_dir/.." && pwd)/actrix"
+    if [ -d "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    while IFS= read -r candidate; do
+        if [ -n "$candidate" ] && [ "$candidate" != "$repo_dir" ] && [ -d "$(cd "$candidate/.." && pwd)/actrix" ]; then
+            printf '%s\n' "$(cd "$candidate/.." && pwd)/actrix"
+            return 0
+        fi
+    done <<EOF
+$(git -C "$repo_dir" worktree list --porcelain 2>/dev/null | awk '/^worktree / { print substr($0, 10) }')
+EOF
+
+    return 1
+}
+
+ACTRIX_DIR="$(resolve_actrix_dir "$ACTR_REPO_DIR" || true)"
 ACTR_CLI_MANIFEST="$ACTR_REPO_DIR/cli/Cargo.toml"
 ACTRIX_CONFIG="$WORKSPACE_ROOT/actrix-config.toml"
 PACKAGE_ECHO_DIR="$WORKSPACE_ROOT/package-echo"
@@ -122,6 +148,35 @@ mkdir -p "$LOG_DIR"
 # Ensure required helper scripts
 source "$WORKSPACE_ROOT/scripts/ensure-tools.sh"
 source "$WORKSPACE_ROOT/scripts/ensure-config-toml.sh"
+
+ensure_project_keychain_config() {
+    local project_dir="$1"
+    local signing_key="$2"
+    local config_dir="$project_dir/.actr"
+    local config_path="$config_dir/config.toml"
+
+    mkdir -p "$config_dir"
+    cat > "$config_path" << TOML
+[mfr]
+keychain = "$signing_key"
+TOML
+}
+
+resolve_codegen_input_dir() {
+    local project_dir="$1"
+
+    if [ -d "$project_dir/proto" ]; then
+        printf '%s\n' "proto"
+        return 0
+    fi
+
+    if [ -d "$project_dir/protos" ]; then
+        printf '%s\n' "protos"
+        return 0
+    fi
+
+    return 1
+}
 
 # ── Clean stale database and config files ────────────────────────────────
 # Remove DB files from previous runs so actrix starts with fresh keys.
@@ -222,6 +277,27 @@ if [ ! -f "$PUBLIC_KEY_PATH" ]; then
     mkdir -p "$(dirname "$PUBLIC_KEY_PATH")"
     jq '{public_key: .public_key}' "$SIGNING_KEY" > "$PUBLIC_KEY_PATH"
 fi
+
+echo ""
+echo -e "${BLUE}🧬 Step 0a: Installing manifest lock and generating echo-actr sources...${NC}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ensure_project_keychain_config "$ECHO_ACTR_DIR" "$SIGNING_KEY"
+CODEGEN_INPUT_DIR="$(resolve_codegen_input_dir "$ECHO_ACTR_DIR" || true)"
+if [ -z "$CODEGEN_INPUT_DIR" ]; then
+    echo -e "${RED}❌ Unable to detect codegen input dir under $ECHO_ACTR_DIR (expected proto/ or protos/)${NC}"
+    exit 1
+fi
+(
+    cd "$ECHO_ACTR_DIR"
+    cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- install >/dev/null
+    cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- gen \
+        -l rust \
+        --input "$CODEGEN_INPUT_DIR" \
+        --output src/generated \
+        --clean \
+        --no-scaffold >/dev/null
+)
+echo -e "${GREEN}✅ echo-actr manifest.lock.toml and generated sources ready${NC}"
 
 echo "echo-actr dir: $ECHO_ACTR_DIR"
 echo "Version:       $ECHO_ACTR_VERSION"
@@ -392,18 +468,18 @@ echo "📦 Checking actrix availability..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ACTRIX_CMD=""
-if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
+if command -v actrix > /dev/null 2>&1; then
+    ACTRIX_CMD="actrix"
+    echo -e "${GREEN}✅ Using actrix from PATH: $(which actrix)${NC}"
+elif [ -n "$ACTRIX_DIR" ] && [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
     ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
     echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
-elif [ -x "$ACTRIX_DIR/target/release/actrix" ]; then
+elif [ -n "$ACTRIX_DIR" ] && [ -x "$ACTRIX_DIR/target/release/actrix" ]; then
     ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
     echo -e "${GREEN}✅ Actrix found: $ACTRIX_CMD${NC}"
-elif command -v actrix > /dev/null 2>&1; then
-    ACTRIX_CMD="actrix"
-    echo -e "${YELLOW}⚠️  Falling back to actrix from PATH: $(which actrix)${NC}"
 else
     echo -e "${YELLOW}⚠️  Actrix not found in PATH or build directory. Attempting build...${NC}"
-    if [ -d "$ACTRIX_DIR" ]; then
+    if [ -n "$ACTRIX_DIR" ] && [ -d "$ACTRIX_DIR" ]; then
         cd "$ACTRIX_DIR"
         cargo build 2>&1 | tail -5
         if [ -x "$ACTRIX_DIR/target/debug/actrix" ]; then
@@ -413,7 +489,7 @@ else
     fi
 
     if [ -z "$ACTRIX_CMD" ]; then
-        echo -e "${RED}❌ Actrix not available. Install it first or build from $ACTRIX_DIR${NC}"
+        echo -e "${RED}❌ Actrix not available. Install it first or set ACTRIX_DIR to a local actrix repository${NC}"
         exit 1
     fi
 fi
