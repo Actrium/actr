@@ -1,6 +1,6 @@
 [package]
 name = "pkg-runtime-echo-client-guest"
-manufacturer = "acme"
+manufacturer = "actrium"
 version = "0.1.0"
 description = "Package Runtime Echo Client Guest"
 authors = ["Actr Dev Team"]

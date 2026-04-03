@@ -4,7 +4,7 @@ This scenario validates the local package runtime flow end-to-end:
 
 1. Start a local `actrix` node from the scenario config.
 2. Use the Admin API to create a dedicated realm and capture its `realm_secret`.
-3. Use the Admin API to create and approve the `actrium` manufacturer.
+3. Use the Admin API to create and approve the `actrium` manufacturer used by both packages.
 4. Generate a temporary Rust echo service with `actr init/install/gen`.
 5. Build and publish the signed server package.
 6. Build a local client guest package and run the client host.
@@ -24,7 +24,7 @@ This scenario validates the local package runtime flow end-to-end:
 1. `ACTRIX_BIN`
 2. `actrix` from `PATH`
 3. Source code from `../actrix`
-4. Clone `https://github.com/actor-rtc/actrix.git` into `../actrix`, then install with `cargo install`
+4. Clone `https://github.com/Actrium/actrix.git` into `../actrix`, then install with `cargo install`
 
 The auto-install target is the default cargo user bin directory:
 

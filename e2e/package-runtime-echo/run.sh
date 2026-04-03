@@ -12,10 +12,8 @@ ICE_PORT=3478
 REALM_ID=""
 ADMIN_PASSWORD="e2e-test-password"
 MANUFACTURER="actrium"
-CLIENT_MANUFACTURER="acme"
-CLIENT_APP_NAME="package-runtime-echo-client-app"
+CLIENT_MANUFACTURER="$MANUFACTURER"
 CLIENT_GUEST_VERSION="0.1.0"
-CLIENT_GUEST_TYPE="${CLIENT_MANUFACTURER}:pkg-runtime-echo-client-guest:${CLIENT_GUEST_VERSION}"
 ACTRIX_BIN="${ACTRIX_BIN:-}"
 ACTR_CLI_MANIFEST="$REPO_ROOT/cli/Cargo.toml"
 E2E_TARGET_ROOT="$REPO_ROOT/target/e2e-cache/package-runtime-echo"
@@ -73,7 +71,7 @@ SERVICE_KEYCHAIN="$TMP_SERVICE_DIR/packaging/keys/mfr.keychain.json"
 SERVICE_PUBLIC_KEY="$TMP_SERVICE_DIR/public-key.json"
 PROVISIONED_KEYCHAIN="$RUN_DIR/mfr.keychain.json"
 PROVISIONED_PUBLIC_KEY="$RUN_DIR/mfr-public-key.json"
-CLIENT_GUEST_PACKAGE="$DIST_DIR/acme-pkg-runtime-echo-client-guest-${CLIENT_GUEST_VERSION}-cdylib.actr"
+CLIENT_GUEST_PACKAGE="$DIST_DIR/${CLIENT_MANUFACTURER}-pkg-runtime-echo-client-guest-${CLIENT_GUEST_VERSION}-cdylib.actr"
 CLIENT_GUEST_PUBLIC_KEY="$DIST_DIR/public-key.json"
 
 mkdir -p "$SQLITE_DIR" "$LOG_DIR" "$DIST_DIR" "$TMP_SERVICE_ROOT" "$E2E_TARGET_ROOT"
@@ -375,34 +373,19 @@ build_client_guest_package() {
     run_actr pkg build \
         --binary "$client_guest_binary" \
         --config "$SCRIPT_DIR/client-guest/manifest.toml" \
-        --key "$SCRIPT_DIR/dev-key.json" \
+        --key "$PROVISIONED_KEYCHAIN" \
         --target "$HOST_TARGET" \
         --output "$CLIENT_GUEST_PACKAGE"
 
     [ -f "$CLIENT_GUEST_PACKAGE" ] || fail "Client guest package missing: $CLIENT_GUEST_PACKAGE"
 
-    jq '{public_key: .public_key}' "$SCRIPT_DIR/dev-key.json" >"$CLIENT_GUEST_PUBLIC_KEY"
+    cp "$PROVISIONED_PUBLIC_KEY" "$CLIENT_GUEST_PUBLIC_KEY"
     run_actr pkg verify --pubkey "$CLIENT_GUEST_PUBLIC_KEY" --package "$CLIENT_GUEST_PACKAGE" >/dev/null
     success "Client guest package ready"
 }
 
 seed_client_registry_state() {
     section "🗂️  Seeding client registry metadata"
-    local now
-    now="$(date +%s)"
-
-    sqlite3 "$ACTRIX_DB" <<SQL
-INSERT OR IGNORE INTO mfr
-    (name, public_key, key_id, contact, status, created_at, updated_at, verified_at)
-VALUES ('${CLIENT_MANUFACTURER}', '', '', 'e2e@local.actr', 'active', ${now}, ${now}, ${now});
-
-INSERT OR REPLACE INTO mfr_package
-    (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at, revoked_at)
-SELECT id, '${CLIENT_MANUFACTURER}', '${CLIENT_APP_NAME}', '${CLIENT_GUEST_VERSION}', '${CLIENT_MANUFACTURER}:${CLIENT_APP_NAME}:${CLIENT_GUEST_VERSION}', 'native', '', '', 'active', ${now}, NULL
-  FROM mfr
- WHERE name = '${CLIENT_MANUFACTURER}';
-SQL
-
     python3 - "$ACTRIX_DB" "$CLIENT_GUEST_PACKAGE" "$CLIENT_GUEST_PUBLIC_KEY" <<'PY'
 import base64
 import json

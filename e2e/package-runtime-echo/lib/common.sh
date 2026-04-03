@@ -128,7 +128,7 @@ ensure_actrix_available() {
     else
         require_cmd git
         section "📥 Cloning actrix into ../actrix"
-        git clone https://github.com/actor-rtc/actrix.git "$actrix_repo_dir"
+        git clone https://github.com/Actrium/actrix.git "$actrix_repo_dir"
     fi
 
     section "🔨 Installing actrix into cargo user bin"

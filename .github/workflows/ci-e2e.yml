@@ -14,7 +14,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  GH_TOKEN: ${{ github.token }}
+  GH_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
+  ACTR_E2E_ACTRIX_REPO: https://github.com/Actrium/actrix.git
+  ACTR_E2E_ACTRIX_ARTIFACT_REPO: Actrium/actrix
+  ACTR_E2E_ACTRIX_ARTIFACT_WORKFLOW: "243491296"
+  ACTR_E2E_ACTRIX_ARTIFACT_BRANCH: main
   PROTOC_VERSION: "29.3"
 
 concurrency:
@@ -31,6 +35,12 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+      - name: Configure git for private Actrix checkout
+        shell: bash
+        env:
+          ACTRIX_READ_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Setup Node.js
@@ -54,6 +64,12 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+      - name: Configure git for private Actrix checkout
+        shell: bash
+        env:
+          ACTRIX_READ_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Setup Node.js
@@ -77,6 +93,12 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v5
+      - name: Configure git for private Actrix checkout
+        shell: bash
+        env:
+          ACTRIX_READ_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Install protoc

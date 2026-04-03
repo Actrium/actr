@@ -37,7 +37,7 @@ fn package_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../client-guest/dist/acme-pkg-runtime-echo-client-guest-0.1.0-cdylib.actr")
+                .join("../client-guest/dist/actrium-pkg-runtime-echo-client-guest-0.1.0-cdylib.actr")
         })
 }
 
