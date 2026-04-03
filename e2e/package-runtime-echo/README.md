@@ -24,7 +24,7 @@ This scenario validates the local package runtime flow end-to-end:
 1. `ACTRIX_BIN`
 2. `actrix` from `PATH`
 3. Source code from `../actrix`
-4. Clone `https://github.com/Actrium/actrix.git` into `../actrix`, then install with `cargo install`
+4. Clone `https://github.com/Actrium/actrix.git` into `../actrix`, then install from `crates/actrixd`
 
 The auto-install target is the default cargo user bin directory:
 
