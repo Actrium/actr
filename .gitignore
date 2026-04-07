@@ -39,3 +39,4 @@ ACTRIX*.md
 # Demo logs
 .demo_logs/
 docs/
+.worktrees/
