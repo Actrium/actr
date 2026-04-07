@@ -679,8 +679,15 @@ impl Hyper {
                 "node does not carry a verified package manifest".to_string(),
             )
         })?;
-        self.bootstrap_credential(manifest, ais_endpoint, realm_id, service_spec, acl)
-            .await
+        self.bootstrap_credential_inner(
+            manifest,
+            ais_endpoint,
+            realm_id,
+            service_spec,
+            acl,
+            node.config.realm_secret.as_deref(),
+        )
+        .await
     }
 
     fn load_wasm_workload(
@@ -815,6 +822,19 @@ impl Hyper {
         service_spec: Option<ServiceSpec>,
         acl: Option<Acl>,
     ) -> HyperResult<register_response::RegisterOk> {
+        self.bootstrap_credential_inner(manifest, ais_endpoint, realm_id, service_spec, acl, None)
+            .await
+    }
+
+    async fn bootstrap_credential_inner(
+        &self,
+        manifest: &PackageManifest,
+        ais_endpoint: &str,
+        realm_id: u32,
+        service_spec: Option<ServiceSpec>,
+        acl: Option<Acl>,
+        realm_secret: Option<&str>,
+    ) -> HyperResult<register_response::RegisterOk> {
         info!(
             actr_type = manifest.actr_type_str(),
             ais_endpoint, realm_id, "starting credential bootstrap with AIS"
@@ -836,7 +856,10 @@ impl Hyper {
         let valid_psk = load_valid_psk_dyn(&*store).await?;
 
         // 3. Build RegisterRequest and send to AIS
-        let ais = AisClient::new(ais_endpoint);
+        let mut ais = AisClient::new(ais_endpoint);
+        if let Some(secret) = realm_secret {
+            ais = ais.with_realm_secret(secret);
+        }
 
         let actr_type = ActrType {
             manufacturer: manifest.manufacturer.clone(),

@@ -1,0 +1,42 @@
+enable = 25
+name = "package-runtime-echo-e2e"
+env = "dev"
+sqlite_path = "__SQLITE_DIR__"
+location_tag = "local,e2e,package-runtime-echo"
+actrix_shared_key = "actrix-e2e-shared-key-0123456789abcdef"
+
+[control]
+head = "admin_ui"
+
+[control.admin_ui]
+password = "e2e-test-password"
+
+[bind.http]
+domain_name = "127.0.0.1"
+advertised_ip = "127.0.0.1"
+ip = "127.0.0.1"
+port = __HTTP_PORT__
+
+[bind.ice]
+domain_name = "127.0.0.1"
+ip = "127.0.0.1"
+port = __ICE_PORT__
+advertised_ip = "127.0.0.1"
+advertised_port = __ICE_PORT__
+
+[turn]
+advertised_ip = "127.0.0.1"
+advertised_port = __ICE_PORT__
+relay_port_range = "49152-49200"
+realm = "local.actrix"
+
+[services.ks]
+
+[services.signer]
+
+[services.ais]
+
+[services.signaling]
+
+[services.signaling.server]
+ws_path = "/signaling"

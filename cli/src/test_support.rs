@@ -12,9 +12,9 @@ use rusqlite::Connection;
 use serde_json::Value;
 use tempfile::TempDir;
 
-pub const DEFAULT_ACTRIX_REPO: &str = "https://github.com/actor-rtc/actrix.git";
-pub const DEFAULT_ACTRIX_ARTIFACT_REPO: &str = "actor-rtc/actrix";
-pub const DEFAULT_ACTRIX_ARTIFACT_WORKFLOW: &str = "205176739";
+pub const DEFAULT_ACTRIX_REPO: &str = "https://github.com/Actrium/actrix.git";
+pub const DEFAULT_ACTRIX_ARTIFACT_REPO: &str = "Actrium/actrix";
+pub const DEFAULT_ACTRIX_ARTIFACT_WORKFLOW: &str = "243491296";
 pub const DEFAULT_ACTRIX_ARTIFACT_BRANCH: &str = "main";
 pub const LOCAL_E2E_REALM_ID: u32 = 1001;
 const KS_GRPC_PORT: u16 = 50052;
