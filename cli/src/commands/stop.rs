@@ -37,56 +37,48 @@ impl Command for StopCommand {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
+        let wid = entry.record.wid.clone();
+        let wid_short = entry.wid_short();
+        let pid = entry.record.pid;
+
+        // Mark the runtime as stopped in the state store, then print `message`.
+        let finish = |msg: String| {
+            let store = &store;
+            let wid = wid.clone();
+            async move {
+                store.mark_stopped_by_wid(&wid, Utc::now()).await?;
+                println!("{msg}");
+                Result::Ok(())
+            }
+        };
 
         if entry.status != RuntimeStatus::Running {
-            store
-                .mark_stopped_by_wid(&entry.record.wid, Utc::now())
-                .await?;
-            println!("Runtime already stopped: {}", entry.wid_short());
-            return Ok(());
+            return finish(format!("Runtime already stopped: {wid_short}")).await;
         }
 
-        if !terminate_process(entry.record.pid)? {
-            store
-                .mark_stopped_by_wid(&entry.record.wid, Utc::now())
-                .await?;
-            println!("Runtime already stopped: {}", entry.wid_short());
-            return Ok(());
+        if !terminate_process(pid)? {
+            return finish(format!("Runtime already stopped: {wid_short}")).await;
         }
-        if wait_for_exit(entry.record.pid, Duration::from_secs(self.timeout)).await {
-            store
-                .mark_stopped_by_wid(&entry.record.wid, Utc::now())
-                .await?;
-            println!("Stopped runtime: {}", entry.wid_short());
-            return Ok(());
+        if wait_for_exit(pid, Duration::from_secs(self.timeout)).await {
+            return finish(format!("Stopped runtime: {wid_short}")).await;
         }
 
         if !self.force {
             return Err(ActrCliError::command_error(format!(
                 "Timed out after {}s while stopping {}. Retry with --force.",
-                self.timeout,
-                entry.wid_short()
+                self.timeout, wid_short
             )));
         }
 
-        if !kill_process(entry.record.pid)? {
-            store
-                .mark_stopped_by_wid(&entry.record.wid, Utc::now())
-                .await?;
-            println!("Runtime already stopped: {}", entry.wid_short());
-            return Ok(());
+        if !kill_process(pid)? {
+            return finish(format!("Runtime already stopped: {wid_short}")).await;
         }
-        if wait_for_exit(entry.record.pid, Duration::from_secs(1)).await {
-            store
-                .mark_stopped_by_wid(&entry.record.wid, Utc::now())
-                .await?;
-            println!("Force stopped runtime: {}", entry.wid_short());
-            return Ok(());
+        if wait_for_exit(pid, Duration::from_secs(1)).await {
+            return finish(format!("Force stopped runtime: {wid_short}")).await;
         }
 
         Err(ActrCliError::command_error(format!(
-            "Process {} did not exit after SIGKILL",
-            entry.record.pid
+            "Process {pid} did not exit after SIGKILL"
         )))
     }
 }

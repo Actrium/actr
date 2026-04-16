@@ -547,7 +547,7 @@ impl WebRtcConnection {
         &self,
         payload_type: PayloadType,
     ) -> NetworkResult<Arc<dyn DataLane>> {
-        // Checkwhetheras MediaTrack Type
+        // Media tracks use a different code path
         if payload_type == PayloadType::MediaRtp {
             return Err(NetworkError::NotImplemented(
                 "MediaTrack Lane not implemented in this method".to_string(),

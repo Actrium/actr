@@ -215,16 +215,6 @@ impl WebCodegenRequest {
 }
 
 fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            result.push('_');
-        }
-        if ch == '-' {
-            result.push('_');
-        } else {
-            result.push(ch.to_ascii_lowercase());
-        }
-    }
-    result
+    use heck::ToSnakeCase;
+    name.to_snake_case()
 }

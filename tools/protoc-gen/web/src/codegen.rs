@@ -9,6 +9,7 @@
 //! - `build.sh`                      — Root build script
 
 use crate::request::{FileInfo, ServiceInfo, WebCodegenRequest, WebCodegenResponse};
+use heck::{ToKebabCase, ToLowerCamelCase, ToSnakeCase};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -1083,47 +1084,15 @@ fn make_executable(path: &Path) -> Result<(), String> {
 }
 
 fn to_kebab_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            result.push('-');
-        }
-        result.push(ch.to_ascii_lowercase());
-    }
-    result
+    name.to_kebab_case()
 }
 
 fn to_snake_case(name: &str) -> String {
-    let mut result = String::new();
-    for (i, ch) in name.chars().enumerate() {
-        if ch.is_uppercase() && i > 0 {
-            result.push('_');
-        }
-        if ch == '-' {
-            result.push('_');
-        } else {
-            result.push(ch.to_ascii_lowercase());
-        }
-    }
-    result
+    name.to_snake_case()
 }
 
 fn to_camel_case(name: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = false;
-    for (i, ch) in name.chars().enumerate() {
-        if ch == '_' || ch == '-' {
-            capitalize_next = true;
-        } else if i == 0 {
-            result.push(ch.to_ascii_lowercase());
-        } else if capitalize_next {
-            result.push(ch.to_ascii_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
+    name.to_lower_camel_case()
 }
 
 fn extract_message_fields(proto_content: &str, message_name: &str) -> Vec<(String, String)> {

@@ -138,10 +138,6 @@ pub enum NetworkError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
-    /// Timeout error
-    #[error("Timeout error: {0}")]
-    Timeout(String),
-
     /// Other error
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
@@ -164,7 +160,7 @@ impl Classify for NetworkError {
             | NetworkError::IceError(_) => ErrorKind::Transient,
 
             // Transient: timeout (framework-internal; caller-set deadlines should be Client)
-            NetworkError::TimeoutError(_) | NetworkError::Timeout(_) => ErrorKind::Transient,
+            NetworkError::TimeoutError(_) => ErrorKind::Transient,
 
             // Client: caller or config errors that won't fix themselves
             NetworkError::ConnectionNotFound(_)
@@ -236,7 +232,6 @@ impl NetworkError {
             NetworkError::UrlParseError(_) => "url_parse",
             NetworkError::JsonError(_) => "json",
             NetworkError::BroadcastError(_) => "broadcast",
-            NetworkError::Timeout(_) => "timeout",
             NetworkError::CredentialExpired(_) => "credential_expired",
             NetworkError::Other(_) => "other",
         }
@@ -283,8 +278,7 @@ impl NetworkError {
 
             NetworkError::IoError(_)
             | NetworkError::UrlParseError(_)
-            | NetworkError::JsonError(_)
-            | NetworkError::Timeout(_) => 2,
+            | NetworkError::JsonError(_) => 2,
 
             NetworkError::Other(_) => 1,
         }
@@ -370,7 +364,6 @@ mod tests {
             NetworkError::NatTraversalError("x".into()),
             NetworkError::IceError("x".into()),
             NetworkError::TimeoutError("x".into()),
-            NetworkError::Timeout("x".into()),
         ];
         for e in &cases {
             assert_eq!(e.kind(), ErrorKind::Transient, "{e} should be Transient");

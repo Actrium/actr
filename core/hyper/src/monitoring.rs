@@ -1,4 +1,4 @@
-//! monitoringandalert
+//! Monitoring and alerting
 
 use actr_protocol::{ActorResult, ActrError};
 use chrono::{DateTime, Utc};
@@ -9,23 +9,23 @@ use uuid::Uuid;
 /// Alert severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AlertSeverity {
-    /// info
+    /// Informational
     Info = 1,
     /// Warning
     Warning = 2,
     /// Error
     Error = 3,
-    /// critical
+    /// Critical
     Critical = 4,
 }
 
 impl AlertSeverity {
-    /// Getseverity description
+    /// Human-readable severity label
     pub fn description(&self) -> &'static str {
         match self {
             AlertSeverity::Info => "info",
-            AlertSeverity::Warning => "Warning",
-            AlertSeverity::Error => "Error",
+            AlertSeverity::Warning => "warning",
+            AlertSeverity::Error => "error",
             AlertSeverity::Critical => "critical",
         }
     }
@@ -34,42 +34,42 @@ impl AlertSeverity {
 /// Alert information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Alert {
-    /// alert ID
+    /// Alert ID
     pub id: Uuid,
 
-    /// alert title
+    /// Alert title
     pub title: String,
 
-    /// alert description
+    /// Alert description
     pub description: String,
 
-    /// severity
+    /// Severity level
     pub severity: AlertSeverity,
 
-    /// alert source
+    /// Alert source
     pub source: String,
 
-    /// occurrence time
+    /// Occurrence time
     pub timestamp: DateTime<Utc>,
 
-    /// whetheracknowledged
+    /// Whether the alert has been acknowledged
     pub acknowledged: bool,
 
-    /// whetherresolved
+    /// Whether the alert has been resolved
     pub resolved: bool,
 
-    /// tags
+    /// Labels/tags
     pub labels: HashMap<String, String>,
 
-    /// metric value
+    /// Metric value that triggered the alert
     pub metric_value: Option<f64>,
 
-    /// threshold
+    /// Threshold that was crossed
     pub threshold: Option<f64>,
 }
 
 impl Alert {
-    /// Createnew alert
+    /// Create a new alert
     pub fn new(
         title: String,
         description: String,
@@ -91,49 +91,49 @@ impl Alert {
         }
     }
 
-    /// add tags
+    /// Add a label/tag
     pub fn with_label(mut self, key: String, value: String) -> Self {
         self.labels.insert(key, value);
         self
     }
 
-    /// Setmetric valueandthreshold
+    /// Set metric value and threshold
     pub fn with_metric(mut self, value: f64, threshold: f64) -> Self {
         self.metric_value = Some(value);
         self.threshold = Some(threshold);
         self
     }
 
-    /// acknowledge alert
+    /// Acknowledge the alert
     pub fn acknowledge(&mut self) {
         self.acknowledged = true;
     }
 
-    /// resolve alert
+    /// Resolve the alert
     pub fn resolve(&mut self) {
         self.resolved = true;
     }
 }
 
-/// alertconfiguration
+/// Alert configuration
 #[derive(Debug, Clone)]
 pub struct AlertConfig {
-    /// whetherenable alerts
+    /// Whether alerts are enabled
     pub enabled: bool,
 
-    /// CPU usage ratealertthreshold
+    /// CPU usage alert thresholds
     pub cpu_warning_threshold: f64,
     pub cpu_critical_threshold: f64,
 
-    /// memoryusage ratealertthreshold
+    /// Memory usage alert thresholds
     pub memory_warning_threshold: f64,
     pub memory_critical_threshold: f64,
 
-    /// Errorrate alertthreshold
+    /// Error rate alert thresholds
     pub error_rate_warning_threshold: f64,
     pub error_rate_critical_threshold: f64,
 
-    /// response respond temporal duration alertthreshold（milliseconds）
+    /// Response-time alert thresholds (milliseconds)
     pub response_time_warning_threshold_ms: f64,
     pub response_time_critical_threshold_ms: f64,
 }
@@ -154,19 +154,19 @@ impl Default for AlertConfig {
     }
 }
 
-/// monitoringconfiguration
+/// Monitoring configuration
 #[derive(Debug, Clone)]
 pub struct MonitoringConfig {
-    /// whetherenable monitoring
+    /// Whether monitoring is enabled
     pub enabled: bool,
 
-    /// monitoringinterval（seconds）
+    /// Monitoring interval (seconds)
     pub monitoring_interval_seconds: u64,
 
-    /// metrics keep retain temporal duration （seconds）
+    /// Metrics retention duration (seconds)
     pub metrics_retention_seconds: u64,
 
-    /// alertconfiguration
+    /// Alert configuration
     pub alert_config: AlertConfig,
 }
 
@@ -181,43 +181,43 @@ impl Default for MonitoringConfig {
     }
 }
 
-/// Monitoring metrics
+/// Monitoring metric
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
-    /// metric name
+    /// Metric name
     pub name: String,
 
-    /// metric value
+    /// Metric value
     pub value: f64,
 
-    /// timestamp
+    /// Timestamp
     pub timestamp: DateTime<Utc>,
 
-    /// tags
+    /// Labels/tags
     pub labels: HashMap<String, String>,
 
-    /// unit
+    /// Unit
     pub unit: Option<String>,
 }
 
 /// Monitor interface
 pub trait Monitor: Send + Sync {
-    /// record metrics
+    /// Record a metric sample
     fn record_metric(&mut self, metric: Metric) -> ActorResult<()>;
 
-    /// Getmetrics
+    /// Get recent metrics
     fn get_metrics(&self, name: &str, duration_seconds: u64) -> ActorResult<Vec<Metric>>;
 
-    /// Checkalert conditions
+    /// Evaluate alert conditions and emit new alerts
     fn check_alerts(&mut self) -> ActorResult<Vec<Alert>>;
 
-    /// Getactive alerts
+    /// Get currently active (unresolved) alerts
     fn get_active_alerts(&self) -> Vec<&Alert>;
 
-    /// acknowledge alert
+    /// Acknowledge an alert
     fn acknowledge_alert(&mut self, alert_id: Uuid) -> ActorResult<()>;
 
-    /// resolve alert
+    /// Resolve an alert
     fn resolve_alert(&mut self, alert_id: Uuid) -> ActorResult<()>;
 }
 
@@ -229,7 +229,7 @@ pub struct BasicMonitor {
 }
 
 impl BasicMonitor {
-    /// Create newmonitor
+    /// Create a new monitor
     pub fn new(config: MonitoringConfig) -> Self {
         Self {
             config,
@@ -238,7 +238,7 @@ impl BasicMonitor {
         }
     }
 
-    /// Check CPU usage ratealert
+    /// Check CPU usage against warning/critical thresholds
     fn check_cpu_alerts(&mut self, cpu_usage: f64) -> ActorResult<Option<Alert>> {
         if !self.config.alert_config.enabled {
             return Ok(None);
@@ -246,8 +246,8 @@ impl BasicMonitor {
 
         if cpu_usage >= self.config.alert_config.cpu_critical_threshold {
             let alert = Alert::new(
-                "CPU usage ratecritical".to_string(),
-                format!("CPU usage ratereachedto {:.1}%", cpu_usage * 100.0),
+                "CPU usage critical".to_string(),
+                format!("CPU usage reached {:.1}%", cpu_usage * 100.0),
                 AlertSeverity::Critical,
                 "system".to_string(),
             )
@@ -256,8 +256,8 @@ impl BasicMonitor {
             Ok(Some(alert))
         } else if cpu_usage >= self.config.alert_config.cpu_warning_threshold {
             let alert = Alert::new(
-                "CPU usage rateWarning".to_string(),
-                format!("CPU usage ratereachedto {:.1}%", cpu_usage * 100.0),
+                "CPU usage warning".to_string(),
+                format!("CPU usage reached {:.1}%", cpu_usage * 100.0),
                 AlertSeverity::Warning,
                 "system".to_string(),
             )
@@ -306,7 +306,7 @@ impl Monitor for BasicMonitor {
 
         let mut new_alerts = Vec::new();
 
-        // Check CPU usage rate
+        // Check CPU usage
         if let Ok(cpu_metrics) = self.get_metrics("cpu_usage", 300) {
             if let Some(latest) = cpu_metrics.last() {
                 if let Some(alert) = self.check_cpu_alerts(latest.value)? {
@@ -315,7 +315,7 @@ impl Monitor for BasicMonitor {
             }
         }
 
-        // Add new alerttolist
+        // Push newly emitted alerts onto the active list
         for alert in &new_alerts {
             self.alerts.push(alert.clone());
         }

@@ -1,7 +1,8 @@
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
+use crate::util::read_zip_entry;
 
 /// Read the manifest from an .actr package without full verification.
 pub fn read_manifest(actr_bytes: &[u8]) -> Result<PackageManifest, PackError> {
@@ -40,16 +41,6 @@ pub fn load_binary(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
 
     read_zip_entry(&mut archive, &manifest.binary.path)
         .map_err(|_| PackError::BinaryNotFound(manifest.binary.path.clone()))
-}
-
-fn read_zip_entry<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<Vec<u8>, PackError> {
-    let mut entry = archive.by_name(name)?;
-    let mut buf = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut buf)?;
-    Ok(buf)
 }
 
 /// Read the raw 64-byte Ed25519 signature from an .actr package.

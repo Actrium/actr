@@ -104,7 +104,7 @@ impl Context for DynclibContext {
             dest: dest_to_v1(target),
             payload: request.encode_to_vec(),
         };
-        let frame = payload.into_frame().map_err(abi_error_to_actr)?;
+        let frame = payload.to_frame().map_err(abi_error_to_actr)?;
         let reply = self.invoke_frame(frame)?;
 
         if reply.status != abi::code::SUCCESS {
@@ -125,7 +125,7 @@ impl Context for DynclibContext {
             dest: dest_to_v1(target),
             payload: message.encode_to_vec(),
         };
-        let frame = payload.into_frame().map_err(abi_error_to_actr)?;
+        let frame = payload.to_frame().map_err(abi_error_to_actr)?;
         let reply = self.invoke_frame(frame)?;
 
         if reply.status != abi::code::SUCCESS {
@@ -165,7 +165,7 @@ impl Context for DynclibContext {
         let payload = HostDiscoverV1 {
             target_type: target_type.clone(),
         };
-        let frame = payload.into_frame().map_err(abi_error_to_actr)?;
+        let frame = payload.to_frame().map_err(abi_error_to_actr)?;
         let reply = self.invoke_frame(frame)?;
 
         if reply.status != abi::code::SUCCESS {
@@ -187,7 +187,7 @@ impl Context for DynclibContext {
             target: target.clone(),
             payload: payload.to_vec(),
         };
-        let frame = request.into_frame().map_err(abi_error_to_actr)?;
+        let frame = request.to_frame().map_err(abi_error_to_actr)?;
         let reply = self.invoke_frame(frame)?;
 
         if reply.status != abi::code::SUCCESS {

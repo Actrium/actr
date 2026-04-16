@@ -22,13 +22,17 @@ pub fn local_config_path() -> PathBuf {
 /// Returns `None` if the file does not exist.
 /// Returns an error if the file exists but cannot be parsed or fails validation.
 pub fn load_cli_config(path: &Path) -> Result<Option<CliConfig>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = std::fs::read_to_string(path).map_err(|error| {
-        ConfigError::InvalidConfig(format!("Failed to read {}: {}", path.display(), error))
-    })?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(ConfigError::InvalidConfig(format!(
+                "Failed to read {}: {}",
+                path.display(),
+                error
+            )));
+        }
+    };
     let config: CliConfig = toml::from_str(&content).map_err(|error| {
         ConfigError::InvalidConfig(format!("Failed to parse {}: {}", path.display(), error))
     })?;

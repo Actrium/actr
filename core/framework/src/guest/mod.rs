@@ -331,18 +331,8 @@ macro_rules! entry {
                 // All host callbacks (vtable function pointers) are synchronous, Future completes in one poll.
                 let resp_result = {
                     let fut = Dispatcher::dispatch(workload, envelope, &ctx);
-                    // Construct noop waker to synchronously drive the future
-                    let waker = {
-                        use std::task::{RawWaker, RawWakerVTable, Waker};
-                        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-                            |p| RawWaker::new(p, &VTABLE),
-                            |_| {},
-                            |_| {},
-                            |_| {},
-                        );
-                        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
-                    };
-                    let mut cx = std::task::Context::from_waker(&waker);
+                    let waker = std::task::Waker::noop();
+                    let mut cx = std::task::Context::from_waker(waker);
                     let mut pinned = std::pin::pin!(fut);
                     match pinned.as_mut().poll(&mut cx) {
                         std::task::Poll::Ready(v) => v,

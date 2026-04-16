@@ -16,6 +16,12 @@
 set -e
 set -o pipefail
 
+# ── Shared ports & defaults (single source of truth for this example) ────
+ACTRIX_HTTP_PORT=${ACTRIX_HTTP_PORT:-8081}
+ACTRIX_ICE_PORT=${ACTRIX_ICE_PORT:-3478}
+ACTRIX_HTTP_URL="http://localhost:${ACTRIX_HTTP_PORT}"
+ACTRIX_WS_URL="ws://localhost:${ACTRIX_HTTP_PORT}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -494,14 +500,14 @@ echo "🚀 Starting actrix (signaling server)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Ensure we do not talk to a stale actrix from another working directory.
-if lsof -tiTCP:8081 -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "Removing stale listener on 8081..."
-    kill $(lsof -tiTCP:8081 -sTCP:LISTEN) 2>/dev/null || true
+if lsof -tiTCP:${ACTRIX_HTTP_PORT} -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Removing stale listener on ${ACTRIX_HTTP_PORT}..."
+    kill $(lsof -tiTCP:${ACTRIX_HTTP_PORT} -sTCP:LISTEN) 2>/dev/null || true
     sleep 1
 fi
-if lsof -tiUDP:3478 >/dev/null 2>&1; then
-    echo "Removing stale listener on 3478/udp..."
-    kill $(lsof -tiUDP:3478) 2>/dev/null || true
+if lsof -tiUDP:${ACTRIX_ICE_PORT} >/dev/null 2>&1; then
+    echo "Removing stale listener on ${ACTRIX_ICE_PORT}/udp..."
+    kill $(lsof -tiUDP:${ACTRIX_ICE_PORT}) 2>/dev/null || true
     sleep 1
 fi
 
@@ -512,11 +518,12 @@ echo "Actrix started (PID: $ACTRIX_PID)"
 echo "Waiting for actrix to be ready..."
 
 actrix_http_ready() {
-    lsof -nP -iTCP:8081 -sTCP:LISTEN > /dev/null 2>&1 || nc -z localhost 8081 2>/dev/null
+    lsof -nP -iTCP:${ACTRIX_HTTP_PORT} -sTCP:LISTEN > /dev/null 2>&1 \
+        || nc -z localhost ${ACTRIX_HTTP_PORT} 2>/dev/null
 }
 
 actrix_ice_ready() {
-    lsof -nP -iUDP:3478 > /dev/null 2>&1
+    lsof -nP -iUDP:${ACTRIX_ICE_PORT} > /dev/null 2>&1
 }
 
 # Wait for HTTP first (hard requirement)
@@ -530,7 +537,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
     fi
 
     if actrix_http_ready; then
-        echo -e "${GREEN}✅ Actrix HTTP is ready on port 8081/tcp${NC}"
+        echo -e "${GREEN}✅ Actrix HTTP is ready on port ${ACTRIX_HTTP_PORT}/tcp${NC}"
         break
     fi
 
@@ -539,7 +546,7 @@ while [ $COUNTER -lt $MAX_WAIT ]; do
 done
 
 if [ $COUNTER -eq $MAX_WAIT ]; then
-    echo -e "${RED}❌ Actrix not listening on 8081/tcp after ${MAX_WAIT} seconds${NC}"
+    echo -e "${RED}❌ Actrix not listening on ${ACTRIX_HTTP_PORT}/tcp after ${MAX_WAIT} seconds${NC}"
     cat "$LOG_DIR/actrix.log"
     exit 1
 fi
@@ -548,14 +555,14 @@ fi
 ICE_COUNTER=0
 while [ $ICE_COUNTER -lt 5 ]; do
     if actrix_ice_ready 2>/dev/null; then
-        echo -e "${GREEN}✅ Actrix ICE/TURN ready on 3478/udp${NC}"
+        echo -e "${GREEN}✅ Actrix ICE/TURN ready on ${ACTRIX_ICE_PORT}/udp${NC}"
         break
     fi
     sleep 1 || true
     ICE_COUNTER=$((ICE_COUNTER + 1))
 done
 if [ $ICE_COUNTER -eq 5 ]; then
-    echo -e "${YELLOW}⚠️  3478/udp not detected (may be using host ICE); continuing...${NC}" || true
+    echo -e "${YELLOW}⚠️  ${ACTRIX_ICE_PORT}/udp not detected (may be using host ICE); continuing...${NC}" || true
 fi
 
 # ── Step 2.5: Setup realms ──────────────────────────────────────────────
@@ -580,7 +587,7 @@ jq_status() {
 
 while [ $KEY_COUNTER -lt $MAX_KEY_WAIT ]; do
     # Check if /ais/current-key already has a valid key
-    CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+    CURRENT_KEY_JSON=$(curl -sf "${ACTRIX_HTTP_URL}/ais/current-key" 2>/dev/null || true)
     if [ "$(jq_status "$CURRENT_KEY_JSON")" = "success" ]; then
         echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
         break
@@ -588,10 +595,10 @@ while [ $KEY_COUNTER -lt $MAX_KEY_WAIT ]; do
 
     # Nonce storage ready? Trigger rotation to accelerate key initialization.
     if [ -f "$NONCE_DB" ] && sqlite3 "$NONCE_DB" ".tables" 2>/dev/null | grep -q "nonce_entries"; then
-        ROTATE_RESP=$(curl -sf -X POST "http://localhost:8081/ais/rotate-key" 2>/dev/null || true)
+        ROTATE_RESP=$(curl -sf -X POST "${ACTRIX_HTTP_URL}/ais/rotate-key" 2>/dev/null || true)
         if [ "$(jq_status "$ROTATE_RESP")" = "success" ]; then
             # Re-check immediately after successful rotation
-            CURRENT_KEY_JSON=$(curl -sf "http://localhost:8081/ais/current-key" 2>/dev/null || true)
+            CURRENT_KEY_JSON=$(curl -sf "${ACTRIX_HTTP_URL}/ais/current-key" 2>/dev/null || true)
             if [ "$(jq_status "$CURRENT_KEY_JSON")" = "success" ]; then
                 echo -e "${GREEN}✅ Actrix AIS signing key ready${NC}"
                 break
@@ -679,7 +686,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 cargo run --manifest-path "$ACTR_CLI_MANIFEST" --bin actr -- pkg publish \
     --package "$ACTR_PACKAGE" \
     --keychain "$SIGNING_KEY" \
-    --endpoint "http://localhost:8081"
+    --endpoint "${ACTRIX_HTTP_URL}"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ actr pkg publish failed${NC}"
@@ -832,10 +839,10 @@ edition = 1
 path = "$ACTR_PACKAGE"
 
 [signaling]
-url = "ws://localhost:8081/signaling/ws"
+url = "${ACTRIX_WS_URL}/signaling/ws"
 
 [ais_endpoint]
-url = "http://localhost:8081/ais"
+url = "${ACTRIX_HTTP_URL}/ais"
 
 [deployment]
 realm_id = 1001
@@ -852,8 +859,8 @@ tracing_service_name = "package-echo-server"
 
 [webrtc]
 force_relay = false
-stun_urls = ["stun:localhost:3478"]
-turn_urls = ["turn:localhost:3478"]
+stun_urls = ["stun:localhost:${ACTRIX_ICE_PORT}"]
+turn_urls = ["turn:localhost:${ACTRIX_ICE_PORT}"]
 
 [acl]
 

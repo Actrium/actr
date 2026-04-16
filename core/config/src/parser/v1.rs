@@ -158,14 +158,10 @@ impl ParserV1 {
             None
         };
 
-        // Parse package path (resolve relative paths against config_dir)
-        let package_path = raw.package.and_then(|pkg| pkg.path).map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                self.base_dir.join(path)
-            }
-        });
+        let package_path = raw
+            .package
+            .and_then(|pkg| pkg.path)
+            .map(|path| self.resolve_manifest_path(&path));
 
         Ok(RuntimeConfig {
             package,
@@ -585,7 +581,7 @@ impl ParserV1 {
     }
 }
 
-/// (ActrMode removed)】previous execution mode parsing no longer needed.
+// (ActrMode removed) previous execution mode parsing no longer needed.
 
 #[cfg(test)]
 mod tests {

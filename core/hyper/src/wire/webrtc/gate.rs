@@ -306,7 +306,7 @@ impl WebRtcGate {
         {
             let local_id = self.local_id.read().await;
             if let Some(ref id) = *local_id {
-                tracing::Span::current().record("actr_id", &tracing::field::display(id));
+                tracing::Span::current().record("actr_id", tracing::field::display(id));
             }
         }
         // Serialize RpcEnvelope (Protobuf)
