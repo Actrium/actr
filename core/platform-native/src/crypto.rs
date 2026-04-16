@@ -1,7 +1,7 @@
 //! Native cryptography provider (ed25519-dalek + sha2)
 
 use async_trait::async_trait;
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use actr_platform_traits::{CryptoProvider, PlatformError};
@@ -17,16 +17,20 @@ impl CryptoProvider for NativeCryptoProvider {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), PlatformError> {
-        let pubkey_bytes: [u8; 32] = public_key.try_into().map_err(|_| {
-            PlatformError::Crypto("Ed25519 public key must be 32 bytes".to_string())
+        let pubkey_bytes: [u8; PUBLIC_KEY_LENGTH] = public_key.try_into().map_err(|_| {
+            PlatformError::Crypto(format!(
+                "Ed25519 public key must be {PUBLIC_KEY_LENGTH} bytes"
+            ))
         })?;
 
         let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
             .map_err(|e| PlatformError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
 
-        let sig_bytes: [u8; 64] = signature
-            .try_into()
-            .map_err(|_| PlatformError::Crypto("Ed25519 signature must be 64 bytes".to_string()))?;
+        let sig_bytes: [u8; SIGNATURE_LENGTH] = signature.try_into().map_err(|_| {
+            PlatformError::Crypto(format!(
+                "Ed25519 signature must be {SIGNATURE_LENGTH} bytes"
+            ))
+        })?;
         let sig = Signature::from_bytes(&sig_bytes);
 
         verifying_key

@@ -36,29 +36,29 @@ pub struct ResourceUsage {
     /// CPU usage rate (0.0-1.0)
     pub cpu_usage: f64,
 
-    /// memoryusingusage（bytes）
+    /// Memory used (bytes)
     pub memory_used_bytes: u64,
 
-    /// network carry widthusingusage（bytes/sec）
+    /// Network bandwidth used (bytes/sec)
     pub network_usage_bps: u64,
 
-    /// disk IO usingusage（bytes/sec）
+    /// Disk IO used (bytes/sec)
     pub disk_io_bps: u64,
 }
 
 /// Resource configuration
 #[derive(Debug, Clone)]
 pub struct ResourceConfig {
-    /// whetherenable resourcelimit
+    /// Whether to enforce resource limits
     pub enable_limits: bool,
 
-    /// resourcemonitoringinterval（seconds）
+    /// Resource monitoring interval (seconds)
     pub monitoring_interval_seconds: u64,
 
-    /// resourceusingWarningthreshold (0.0-1.0)
+    /// Resource usage warning threshold (0.0-1.0)
     pub warning_threshold: f64,
 
-    /// resourceusinglimitthreshold (0.0-1.0)
+    /// Resource usage hard-limit threshold (0.0-1.0)
     pub limit_threshold: f64,
 }
 
@@ -81,7 +81,7 @@ pub struct ResourceManager {
 }
 
 impl ResourceManager {
-    /// Create newResource manager
+    /// Create a new resource manager
     pub fn new(config: ResourceConfig, quota: ResourceQuota) -> Self {
         Self {
             config,
@@ -90,7 +90,7 @@ impl ResourceManager {
         }
     }
 
-    /// Checkresourcewhetheravailable
+    /// Check whether the required resources are available
     pub fn check_resource_availability(&self, required: &ResourceUsage) -> ActorResult<bool> {
         if !self.config.enable_limits {
             return Ok(true);
@@ -103,7 +103,7 @@ impl ResourceManager {
             return Ok(false);
         }
 
-        // Checkmemory
+        // Check memory
         let memory_available = self.quota.memory_bytes - self.current_usage.memory_used_bytes;
         if required.memory_used_bytes > memory_available {
             return Ok(false);
@@ -112,7 +112,7 @@ impl ResourceManager {
         Ok(true)
     }
 
-    /// Allocateresource
+    /// Allocate resources
     pub fn allocate_resources(&mut self, usage: &ResourceUsage) -> ActorResult<()> {
         if !self.check_resource_availability(usage)? {
             return Err(ActrError::Unavailable(
@@ -128,7 +128,7 @@ impl ResourceManager {
         Ok(())
     }
 
-    /// Releaseresource
+    /// Release resources
     pub fn release_resources(&mut self, usage: &ResourceUsage) -> ActorResult<()> {
         self.current_usage.cpu_usage = (self.current_usage.cpu_usage - usage.cpu_usage).max(0.0);
         self.current_usage.memory_used_bytes = self
@@ -147,17 +147,17 @@ impl ResourceManager {
         Ok(())
     }
 
-    /// GetcurrentResource usage
+    /// Get current resource usage
     pub fn get_usage(&self) -> &ResourceUsage {
         &self.current_usage
     }
 
-    /// GetResource quota
+    /// Get the resource quota
     pub fn get_quota(&self) -> &ResourceQuota {
         &self.quota
     }
 
-    /// compute resourcesusage rate
+    /// Compute the resource usage ratio
     pub fn calculate_usage_ratio(&self) -> ResourceUsageRatio {
         ResourceUsageRatio {
             cpu_ratio: self.current_usage.cpu_usage,
@@ -170,18 +170,18 @@ impl ResourceManager {
     }
 }
 
-/// resourceusage rate
+/// Resource usage ratio
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceUsageRatio {
-    /// CPU usage rate (0.0-1.0)
+    /// CPU usage ratio (0.0-1.0)
     pub cpu_ratio: f64,
 
-    /// memoryusage rate (0.0-1.0)
+    /// Memory usage ratio (0.0-1.0)
     pub memory_ratio: f64,
 
-    /// networkusage rate (0.0-1.0)
+    /// Network usage ratio (0.0-1.0)
     pub network_ratio: f64,
 
-    /// diskusage rate (0.0-1.0)
+    /// Disk usage ratio (0.0-1.0)
     pub disk_ratio: f64,
 }

@@ -1,10 +1,10 @@
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use ed25519_dalek::{Signature, VerifyingKey};
-use sha2::{Digest, Sha256};
 
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
+use crate::util::{read_zip_entry, sha256_hex};
 
 /// Result of a successful package verification.
 ///
@@ -145,22 +145,6 @@ pub fn verify(actr_bytes: &[u8], pubkey: &VerifyingKey) -> Result<VerifiedPackag
         manifest_raw: manifest_bytes,
         sig_raw,
     })
-}
-
-fn read_zip_entry<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<Vec<u8>, PackError> {
-    let mut entry = archive.by_name(name)?;
-    let mut buf = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

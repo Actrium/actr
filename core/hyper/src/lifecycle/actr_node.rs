@@ -489,7 +489,7 @@ impl ActrNode {
                 caller_id
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string()),
-                actor_id.to_string()
+                actor_id
             )));
         }
 
@@ -797,7 +797,7 @@ impl ActrNode {
 
         let register_request = RegisterRequest {
             actr_type: actr_type.clone(),
-            realm: self.config.realm.clone(),
+            realm: self.config.realm,
             service_spec,
             acl: self.config.acl.clone(),
             service: None,

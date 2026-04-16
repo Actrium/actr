@@ -42,15 +42,20 @@ impl PlatformProvider for NativePlatformProvider {
     async fn load_or_create_instance_id(&self, data_dir: &str) -> Result<String, PlatformError> {
         let id_file = std::path::Path::new(data_dir).join(".hyper-instance-id");
 
-        if id_file.exists() {
-            let id = tokio::fs::read_to_string(&id_file)
-                .await
-                .map_err(|e| PlatformError::Io(format!("failed to read instance_id: {e}")))?;
-            let id = id.trim().to_string();
-            if !id.is_empty() {
-                return Ok(id);
+        match tokio::fs::read_to_string(&id_file).await {
+            Ok(raw) => {
+                let id = raw.trim();
+                if !id.is_empty() {
+                    return Ok(id.to_string());
+                }
+                warn!("instance_id file is empty; generating a new one");
             }
-            warn!("instance_id file is empty; generating a new one");
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(PlatformError::Io(format!(
+                    "failed to read instance_id: {e}"
+                )));
+            }
         }
 
         let new_id = uuid::Uuid::new_v4().to_string();

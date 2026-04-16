@@ -17,6 +17,18 @@ use tracing::info;
 const DETACHED_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const DETACHED_READY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Default filename for the runtime config file (`actr.toml`).
+const DEFAULT_RUNTIME_CONFIG: &str = "actr.toml";
+
+/// Resolve `path` against `base`: returns `path` if absolute, otherwise `base.join(path)`.
+fn resolve_against(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
 #[derive(Args)]
 pub struct RunCommand {
     /// Runtime configuration file (defaults to ./actr.toml if not specified)
@@ -69,7 +81,7 @@ impl RunCommand {
         let config_path = self
             .config
             .clone()
-            .unwrap_or_else(|| PathBuf::from("actr.toml"));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_RUNTIME_CONFIG));
 
         // Check if the runtime config file exists.
         if !config_path.exists() {
@@ -192,12 +204,8 @@ impl RunCommand {
 
         if let Some(package_config) = raw_config.package {
             if let Some(path) = package_config.path {
-                let resolved_path = if path.is_absolute() {
-                    path
-                } else {
-                    config_path.parent().unwrap_or(Path::new(".")).join(path)
-                };
-                return Ok(resolved_path);
+                let base = config_path.parent().unwrap_or(Path::new("."));
+                return Ok(resolve_against(base, &path));
             }
         }
 
@@ -529,7 +537,7 @@ impl RunCommand {
                     );
                 }
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(unix))]
@@ -561,7 +569,7 @@ impl RunCommand {
         let config_path = self
             .config
             .clone()
-            .unwrap_or_else(|| PathBuf::from("actr.toml"));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_RUNTIME_CONFIG));
 
         if !config_path.exists() {
             return Err(ActrCliError::command_error(format!(
@@ -598,13 +606,7 @@ impl RunCommand {
             .package
             .as_ref()
             .and_then(|p| p.path.as_ref())
-            .map(|p| {
-                if p.is_absolute() {
-                    p.clone()
-                } else {
-                    config_dir.join(p)
-                }
-            });
+            .map(|p| resolve_against(&config_dir, p));
 
         // Read the package bytes for serving
         let package_bytes = if let Some(ref pkg_path) = package_path {
@@ -734,13 +736,11 @@ impl RunCommand {
 
         // Read package path to extract package info
         let config_dir = config_path.parent().unwrap_or(Path::new("."));
-        let package_path = raw.package.as_ref().and_then(|p| p.path.as_ref()).map(|p| {
-            if p.is_absolute() {
-                p.clone()
-            } else {
-                config_dir.join(p)
-            }
-        });
+        let package_path = raw
+            .package
+            .as_ref()
+            .and_then(|p| p.path.as_ref())
+            .map(|p| resolve_against(config_dir, p));
 
         // Try to read package manifest for metadata
         let mut package_name = String::new();

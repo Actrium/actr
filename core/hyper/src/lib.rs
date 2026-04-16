@@ -343,8 +343,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(all(not(target_arch = "wasm32"), test))]
-use base64::Engine as _;
 #[cfg(not(target_arch = "wasm32"))]
 use prost::Message;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1076,24 +1074,6 @@ fn check_psk_expiry(
             Ok(None)
         }
     }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), test))]
-/// Serialize a verified package manifest into the JSON payload expected by tests
-/// and downstream manifest forwarding helpers.
-fn build_manifest_json(manifest: &PackageManifest) -> HyperResult<Vec<u8>> {
-    serde_json::to_vec(&serde_json::json!({
-        "manufacturer": manifest.manufacturer,
-        "actr_name": manifest.actr_name,
-        "version": manifest.version,
-        "binary_path": manifest.binary_path,
-        "binary_target": manifest.binary_target,
-        "binary_hash": hex::encode(manifest.binary_hash),
-        "capabilities": manifest.capabilities,
-        "signature": base64::engine::general_purpose::STANDARD.encode(&manifest.signature),
-        "target": manifest.target,
-    }))
-    .map_err(|e| HyperError::Runtime(format!("failed to serialize manifest JSON: {e}")))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

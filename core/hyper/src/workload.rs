@@ -199,7 +199,7 @@ pub fn encode_guest_handle_request(
         ctx,
         rpc_envelope: request_bytes.to_vec(),
     };
-    let frame = request.into_frame()?;
+    let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }
 

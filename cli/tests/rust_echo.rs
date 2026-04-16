@@ -31,8 +31,13 @@ fn workspace_root() -> PathBuf {
 fn append_workspace_patch(project_dir: &std::path::Path) {
     let workspace = workspace_root();
     let cargo_toml = project_dir.join("Cargo.toml");
+    // Adding an explicit `[workspace]` marker pins this project as its own
+    // workspace root and stops cargo from walking up into unrelated parent
+    // `Cargo.toml` files (e.g. a stray `/tmp/Cargo.toml`).
     let patch = format!(
         r#"
+
+[workspace]
 
 [patch.crates-io]
 actr = {{ path = "{}" }}
@@ -59,8 +64,14 @@ actr-runtime-mailbox = {{ path = "{}" }}
 }
 
 fn cargo_check(project_dir: &std::path::Path) -> Output {
+    // Use an explicit `--manifest-path` so cargo does not walk up the directory
+    // tree and accidentally pick up an unrelated Cargo.toml (for example when
+    // tempdirs live under `/tmp` and the user has a stray `/tmp/Cargo.toml`).
+    let manifest_path = project_dir.join("Cargo.toml");
     Command::new("cargo")
-        .args(["check"])
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
         .current_dir(project_dir)
         .output()
         .expect("failed to run cargo check")

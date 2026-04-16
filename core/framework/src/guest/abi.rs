@@ -206,7 +206,7 @@ pub trait AbiPayload: ProstMessage + Default + Sized {
     const ABI_VERSION: u32;
     const OP: u32;
 
-    fn into_frame(&self) -> Result<AbiFrame, i32> {
+    fn to_frame(&self) -> Result<AbiFrame, i32> {
         let mut payload = Vec::new();
         self.encode(&mut payload)
             .map_err(|_| code::PROTOCOL_ERROR)?;

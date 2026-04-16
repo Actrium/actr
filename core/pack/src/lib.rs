@@ -27,6 +27,8 @@ pub mod manifest;
 pub mod pack;
 pub mod verify;
 
+mod util;
+
 pub use error::PackError;
 pub use load::{
     load_binary, read_lock_file, read_manifest, read_manifest_raw, read_proto_files, read_signature,
@@ -43,9 +45,7 @@ pub use verify::{VerifiedPackage, verify};
 ///
 /// This MUST match the server-side implementation in `actrix-mfr::crypto::compute_key_id`.
 pub fn compute_key_id(public_key_bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(public_key_bytes);
-    let hex_str: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    let hex_str = util::sha256_hex(public_key_bytes);
     format!("mfr-{}", &hex_str[..16])
 }
 

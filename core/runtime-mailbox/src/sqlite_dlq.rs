@@ -14,6 +14,54 @@ use std::{
 };
 use uuid::Uuid;
 
+fn parse_uuid_col(row: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<Uuid> {
+    let s: String = row.get(col)?;
+    Uuid::parse_str(&s).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+fn parse_datetime_col(row: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<DateTime<Utc>> {
+    let s: String = row.get(col)?;
+    parse_rfc3339(col, &s)
+}
+
+fn parse_datetime_opt_col(
+    row: &rusqlite::Row<'_>,
+    col: usize,
+) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    match row.get::<_, Option<String>>(col)? {
+        Some(s) => Ok(Some(parse_rfc3339(col, &s)?)),
+        None => Ok(None),
+    }
+}
+
+fn parse_rfc3339(col: usize, s: &str) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(col, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+
+fn row_to_dlq_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<DlqRecord> {
+    Ok(DlqRecord {
+        id: parse_uuid_col(row, 0)?,
+        original_message_id: row.get(1)?,
+        from: row.get(2)?,
+        to: row.get(3)?,
+        raw_bytes: row.get(4)?,
+        error_message: row.get(5)?,
+        error_category: row.get(6)?,
+        trace_id: row.get(7)?,
+        request_id: row.get(8)?,
+        created_at: parse_datetime_col(row, 9)?,
+        redrive_attempts: row.get(10)?,
+        last_redrive_at: parse_datetime_opt_col(row, 11)?,
+        context: row.get(12)?,
+    })
+}
+
 /// SQLite connection wrapper for DLQ
 struct SqliteDlqConnection {
     conn: Mutex<Connection>,
@@ -161,29 +209,7 @@ impl DeadLetterQueue for SqliteDeadLetterQueue {
             params_vec.iter().map(|b| b.as_ref()).collect();
 
         let records = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                Ok(DlqRecord {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
-                    original_message_id: row.get(1)?,
-                    from: row.get(2)?,
-                    to: row.get(3)?,
-                    raw_bytes: row.get(4)?,
-                    error_message: row.get(5)?,
-                    error_category: row.get(6)?,
-                    trace_id: row.get(7)?,
-                    request_id: row.get(8)?,
-                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    redrive_attempts: row.get(10)?,
-                    last_redrive_at: row.get::<_, Option<String>>(11)?.map(|s| {
-                        DateTime::parse_from_rfc3339(&s)
-                            .unwrap()
-                            .with_timezone(&Utc)
-                    }),
-                    context: row.get(12)?,
-                })
-            })?
+            .query_map(params_refs.as_slice(), row_to_dlq_record)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(records)
@@ -201,29 +227,7 @@ impl DeadLetterQueue for SqliteDeadLetterQueue {
             WHERE id = ?1
             "#,
             params![id.to_string()],
-            |row| {
-                Ok(DlqRecord {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
-                    original_message_id: row.get(1)?,
-                    from: row.get(2)?,
-                    to: row.get(3)?,
-                    raw_bytes: row.get(4)?,
-                    error_message: row.get(5)?,
-                    error_category: row.get(6)?,
-                    trace_id: row.get(7)?,
-                    request_id: row.get(8)?,
-                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    redrive_attempts: row.get(10)?,
-                    last_redrive_at: row.get::<_, Option<String>>(11)?.map(|s| {
-                        DateTime::parse_from_rfc3339(&s)
-                            .unwrap()
-                            .with_timezone(&Utc)
-                    }),
-                    context: row.get(12)?,
-                })
-            },
+            row_to_dlq_record,
         );
 
         match result {

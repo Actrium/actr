@@ -42,7 +42,6 @@
 //! - The runtime layer implements the routing logic based on `Dest`
 
 use actr_protocol::ActrId;
-use std::hash::{Hash, Hasher};
 
 /// Destination identifier
 ///
@@ -64,7 +63,7 @@ use std::hash::{Hash, Hasher};
 ///   - Used for cross-process Actor communication
 ///   - Routed through `PeerGate` (WebRTC/WebSocket)
 ///   - Example: ClientWorkload calling RemoteServer
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Dest {
     /// Local Shell - Workload calls App side (inproc reverse channel)
     Shell,
@@ -74,24 +73,6 @@ pub enum Dest {
 
     /// Remote Actor - cross-process communication (WebRTC/WebSocket)
     Actor(ActrId),
-}
-
-impl Hash for Dest {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Dest::Shell => {
-                0u8.hash(state);
-            }
-            Dest::Local => {
-                1u8.hash(state);
-            }
-            Dest::Actor(id) => {
-                2u8.hash(state);
-                id.hash(state);
-            }
-        }
-    }
 }
 
 impl Dest {

@@ -136,8 +136,26 @@ impl Mailbox for SqliteMailbox {
                 let from: Vec<u8> = row.get(1)?;
 
                 let priority_val: i64 = row.get(3)?;
+                let id_str: String = row.get(0)?;
+                let id = Uuid::parse_str(&id_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+                let created_at_str: String = row.get(4)?;
+                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
+                    .with_timezone(&Utc);
                 Ok(MessageRecord {
-                    id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                    id,
                     from,
                     payload: row.get(2)?,
                     priority: if priority_val == 1 {
@@ -145,9 +163,7 @@ impl Mailbox for SqliteMailbox {
                     } else {
                         MessagePriority::Normal
                     },
-                    created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
+                    created_at,
                     status: if row.get::<_, i64>(5)? == 1 {
                         MessageStatus::Inflight
                     } else {

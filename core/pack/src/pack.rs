@@ -1,12 +1,12 @@
 use std::io::{Cursor, Write};
 
 use ed25519_dalek::{Signer, SigningKey};
-use sha2::{Digest, Sha256};
 use zip::CompressionMethod;
 use zip::write::SimpleFileOptions;
 
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
+use crate::util::sha256_hex;
 
 /// Options for creating an .actr package.
 pub struct PackOptions {
@@ -126,12 +126,6 @@ pub fn pack(opts: &PackOptions) -> Result<Vec<u8>, PackError> {
 
     let cursor = zip.finish()?;
     Ok(cursor.into_inner())
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

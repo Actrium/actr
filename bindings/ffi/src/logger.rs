@@ -26,9 +26,16 @@ pub fn init_observability(config: ObservabilityConfig) {
     let guard: Option<ObservabilityGuard> = {
         #[cfg(target_os = "android")]
         {
-            let layer =
-                tracing_android::layer("actr").expect("Failed to create Android tracing layer");
-            init_observability_with_layer(&config, Some(layer)).ok()
+            // If the Android Logcat layer cannot be built, fall back to the default
+            // fmt layer so the host process keeps running without structured logging.
+            match tracing_android::layer("actr") {
+                Ok(layer) => init_observability_with_layer(&config, Some(layer)).ok(),
+                Err(_) => init_observability_with_layer(
+                    &config,
+                    None::<tracing_subscriber::layer::Identity>,
+                )
+                .ok(),
+            }
         }
 
         #[cfg(target_os = "macos")]

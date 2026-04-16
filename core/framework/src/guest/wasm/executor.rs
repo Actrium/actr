@@ -15,7 +15,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::task::{Context, Poll, Waker};
 
 /// Synchronously drive a Future to completion in WASM single-threaded environment
 ///
@@ -25,8 +25,8 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 /// All `.await` points in business code are transparently handled by asyncify and will not produce real Pending.
 pub fn block_on<F: Future>(f: F) -> F::Output {
     let mut f = std::pin::pin!(f);
-    let waker = noop_waker();
-    let mut cx = Context::from_waker(&waker);
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
 
     match f.as_mut().poll(&mut cx) {
         Poll::Ready(v) => v,
@@ -37,21 +37,6 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
             )
         }
     }
-}
-
-// -- Noop Waker -------------------------------------------------------------------
-
-/// Construct a no-op Waker
-///
-/// The WASM executor does not need wake notifications -- the Future always completes on first poll.
-fn noop_waker() -> Waker {
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |p| RawWaker::new(p, &VTABLE), // clone
-        |_| {},                        // wake
-        |_| {},                        // wake_by_ref
-        |_| {},                        // drop
-    );
-    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
 /// Synchronously execute `Pin<Box<dyn Future<Output = T> + Send>>`
