@@ -95,7 +95,7 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     let package = make_signed_package("acme", "Sensor", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let manifest = hyper
         .verify_package(&WorkloadPackage::new(package))
@@ -132,7 +132,7 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
     let package = make_signed_package("cached-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     // First: miss -> HTTP
     hyper
@@ -168,7 +168,7 @@ async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let package = make_signed_package("unknown-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
@@ -203,7 +203,7 @@ async fn production_mode_rejects_wrong_cached_key() {
     let package = make_signed_package("mfr-x", "X", "1.0.0", &real_signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
@@ -248,7 +248,7 @@ async fn production_mode_independent_caches_per_manufacturer() {
     let pkg_b = make_signed_package("mfr-b", "ActorB", "1.0.0", &key_b);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let manifest_a = hyper
         .verify_package(&WorkloadPackage::new(pkg_a))
@@ -311,7 +311,7 @@ async fn production_mode_no_http_for_unknown_format() {
     // No mock endpoints set; if HTTP is triggered, the test fails
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper
         .verify_package(&WorkloadPackage::new(b"this is not a package".to_vec()))

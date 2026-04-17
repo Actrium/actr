@@ -5,7 +5,7 @@ use crate::types::{ActrId, ActrType, PayloadType};
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::Dest;
 use actr_hyper::{
-    ActrNode as RuntimeActrNode, ActrRef as RuntimeActrRef, Hyper, HyperConfig, TrustMode,
+    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Registered, TrustMode,
 };
 
 fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig, actr_config::ConfigError> {
@@ -17,7 +17,7 @@ fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig
 
 #[napi]
 pub struct ActrNode {
-    inner: Option<RuntimeActrNode>,
+    inner: Option<Hyper<Registered>>,
 }
 
 #[napi]
@@ -31,23 +31,24 @@ impl ActrNode {
 
         let hyper_data_dir =
             actr_config::user_config::resolve_hyper_data_dir().map_err(crate::error::config_error_to_napi)?;
-        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
             TrustMode::Development {
                 self_signed_pubkey: vec![0u8; 32],
             },
         ))
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
-        let node = hyper
-            .attach_package(
-                &actr_hyper::WorkloadPackage::new(vec![]),
-                config,
-            )
+        let ais_endpoint = config.ais_endpoint.clone();
+        let registered = hyper
+            .attach(&actr_hyper::WorkloadPackage::new(vec![]), config)
+            .await
+            .map_err(crate::error::hyper_error_to_napi)?
+            .register(&ais_endpoint)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
 
         Ok(ActrNode {
-            inner: Some(node),
+            inner: Some(registered),
         })
     }
     /// Start the node and return ActrRef.
@@ -58,12 +59,12 @@ impl ActrNode {
     /// starts the actor runtime. It must only be called once.
     #[napi]
     pub async unsafe fn start(&mut self) -> Result<ActrRef> {
-        let node = self
+        let hyper = self
             .inner
             .take()
             .ok_or_else(|| Error::from_reason("Node already started"))?;
 
-        let actr_ref = node
+        let actr_ref = hyper
             .start()
             .await
             .map_err(crate::error::protocol_error_to_napi)?;

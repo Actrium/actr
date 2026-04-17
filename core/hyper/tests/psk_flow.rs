@@ -149,7 +149,7 @@ async fn first_registration_uses_manifest_auth_and_stores_psk() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
     let credential = hyper
@@ -192,7 +192,7 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
     // Pre-populate valid PSK
@@ -239,7 +239,7 @@ async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
     // Pre-populate expired PSK (10 seconds ago)
@@ -293,7 +293,7 @@ async fn sequential_registrations_switch_from_manifest_to_psk() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
     // First registration (manifest auth)
@@ -336,7 +336,7 @@ async fn ais_error_propagates_as_bootstrap_failed() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
 
     let result = hyper
         .bootstrap_credential(
@@ -358,7 +358,7 @@ async fn ais_error_propagates_as_bootstrap_failed() {
 #[tokio::test]
 async fn ais_unreachable_propagates_error() {
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
 
     // Use invalid port
     let result = hyper
@@ -392,7 +392,7 @@ async fn first_registration_persists_signing_pubkey() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+    let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
     let manifest = fake_manifest();
 
     hyper

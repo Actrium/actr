@@ -153,22 +153,28 @@ impl RunCommand {
         let hyper = self.init_hyper(&config, &package_path, &hyper_dir).await?;
         info!("✅ Hyper initialized");
 
-        // 8. Attach package
-        let mut node = hyper
-            .attach_package(&package, config.clone())
+        // 8. Attach → register → start (Hyper typestate chain)
+        let ais_endpoint = config.ais_endpoint.clone();
+        let attached = hyper
+            .attach(&package, config.clone())
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to attach package: {}", e)))?;
         info!("✅ Package attached");
 
-        // 9. Bootstrap credential via AIS
-        let register_ok = self
-            .bootstrap_credential(&hyper, &node, &config, &package_bytes, &manifest)
-            .await?;
-        node.inject_credential(register_ok);
+        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to register with AIS at {}.\n\n\
+                 Possible causes:\n\
+                 - AIS server is not running\n\
+                 - Incorrect [ais_endpoint] url in the runtime config\n\
+                 - Network connectivity issues\n\n\
+                 Error: {}",
+                ais_endpoint, e
+            ))
+        })?;
         info!("✅ AIS registration successful");
 
-        // 10. Start ActrNode
-        let actr_ref = node
+        let actr_ref = registered
             .start()
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to start ActrNode: {}", e)))?;
@@ -286,7 +292,7 @@ impl RunCommand {
 
         let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
 
-        Hyper::init_with_platform(hyper_config, platform_provider)
+        Hyper::with_platform(hyper_config, platform_provider)
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e)))
     }
@@ -334,56 +340,6 @@ impl RunCommand {
         }
 
         Ok(key_bytes)
-    }
-
-    async fn bootstrap_credential(
-        &self,
-        hyper: &actr_hyper::Hyper,
-        node: &actr_hyper::ActrNode,
-        config: &actr_config::RuntimeConfig,
-        package_bytes: &[u8],
-        manifest: &actr_pack::PackageManifest,
-    ) -> Result<actr_protocol::register_response::RegisterOk> {
-        let ais_endpoint = &config.ais_endpoint;
-        let realm = &config.realm;
-
-        // Calculate ServiceSpec from package manifest and proto files
-        let service_spec = actr_pack::calculate_service_spec_from_package(package_bytes, manifest)
-            .map_err(|e| {
-                ActrCliError::command_error(format!(
-                    "Failed to calculate ServiceSpec from package: {}",
-                    e
-                ))
-            })?;
-
-        // Log ServiceSpec info if present
-        if let Some(ref spec) = service_spec {
-            info!(
-                "📋 ServiceSpec: name={}, fingerprint={}, {} proto files",
-                spec.name,
-                spec.fingerprint,
-                spec.protobufs.len()
-            );
-        } else {
-            info!("📋 No ServiceSpec (package contains no proto files)");
-        }
-
-        let acl = config.acl.clone();
-
-        hyper
-            .bootstrap_node_credential(node, ais_endpoint, realm.realm_id, service_spec, acl)
-            .await
-            .map_err(|e| {
-                ActrCliError::command_error(format!(
-                    "Failed to register with AIS at {}.\n\n\
-             Possible causes:\n\
-             - AIS server is not running\n\
-             - Incorrect [ais_endpoint] url in the runtime config\n\
-             - Network connectivity issues\n\n\
-             Error: {}",
-                    ais_endpoint, e
-                ))
-            })
     }
 
     #[cfg(unix)]

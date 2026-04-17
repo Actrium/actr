@@ -1,9 +1,7 @@
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::{Bytes, Context};
 use actr_hyper::context::RuntimeContext;
-use actr_hyper::{
-    ActrNode as RuntimeActrNode, ActrRef, Hyper, HyperConfig, TrustMode,
-};
+use actr_hyper::{ActrRef, Hyper, HyperConfig, Registered, TrustMode};
 use actr_protocol::{ActrError, PayloadType as RpPayloadType};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -14,7 +12,7 @@ use crate::observability::ensure_observability_initialized;
 use crate::types::{DataStreamPy, DestPy, PayloadType};
 use crate::{ActrIdPy, ActrTypePy};
 
-type WrappedNode = RuntimeActrNode;
+type WrappedNode = Hyper<Registered>;
 type WrappedRef = ActrRef;
 
 fn load_runtime_config(manifest_path: &str) -> Result<RuntimeConfig, actr_config::ConfigError> {
@@ -39,21 +37,30 @@ impl ActrNodePy {
             ensure_observability_initialized(Some(config.observability.clone()));
             let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+            let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
                 TrustMode::Development {
                     self_signed_pubkey: vec![0u8; 32],
                 },
             ))
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let node = hyper
-                .attach_package(
-                    &actr_hyper::WorkloadPackage::new(vec![]),
-                    config,
-                )
+            let ais_endpoint = config.ais_endpoint.clone();
+            let registered = hyper
+                .attach(&actr_hyper::WorkloadPackage::new(vec![]), config)
                 .await
-                .map_err(|e| PyRuntimeError::new_err(format!("attach_package failed: {e}")))?;
-            Python::attach(|py| Py::new(py, ActrNodePy { inner: Some(node) }).map(Py::into_any))
+                .map_err(|e| PyRuntimeError::new_err(format!("attach failed: {e}")))?
+                .register(&ais_endpoint)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("AIS register failed: {e}")))?;
+            Python::attach(|py| {
+                Py::new(
+                    py,
+                    ActrNodePy {
+                        inner: Some(registered),
+                    },
+                )
+                .map(Py::into_any)
+            })
         })
     }
 

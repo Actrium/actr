@@ -112,7 +112,7 @@ async fn actr_package_roundtrip() {
     let package = build_actr_package(&wasm, "test-mfr", "MyActor", "1.2.3", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
@@ -139,7 +139,7 @@ async fn actr_package_tampered_binary() {
     }
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
     let result = hyper.verify_package(&WorkloadPackage::new(tampered)).await;
@@ -158,7 +158,7 @@ async fn actr_package_wrong_key() {
     let package = build_actr_package(b"wasm", "mfr", "A", "1.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &wrong_verifying))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &wrong_verifying))
         .await
         .unwrap();
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
@@ -172,7 +172,7 @@ async fn actr_package_wrong_key() {
 async fn verify_rejects_unknown_format() {
     let dir = TempDir::new().unwrap();
     let signing_key = SigningKey::generate(&mut OsRng);
-    let hyper = Hyper::init(dev_config_with_key(&dir, &signing_key.verifying_key()))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &signing_key.verifying_key()))
         .await
         .unwrap();
 
@@ -196,7 +196,7 @@ async fn load_workload_package_selects_wasm_backend() {
     );
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
@@ -223,7 +223,7 @@ async fn load_workload_package_rejects_second_load_for_same_hyper() {
     );
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
@@ -274,7 +274,7 @@ async fn load_workload_package_rejects_invalid_target() {
     .unwrap();
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 

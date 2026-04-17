@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let hyper = Hyper::init_with_platform(
+    let hyper = Hyper::with_platform(
         HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
         std::sync::Arc::new(NativePlatformProvider::new()),
     )
@@ -159,13 +159,10 @@ async fn main() -> Result<()> {
     // 3. Attach package workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching client-guest package workload...");
-    let realm_id = config.realm.realm_id;
-    let service_spec = None; // RuntimeConfig doesn't have exports, so no ServiceSpec
-    let acl = config.acl.clone();
-    let mut node = hyper
-        .attach_package(&package, config)
+    let attached = hyper
+        .attach(&package, config)
         .await
-        .inspect_err(|e| error!("❌ hyper.attach_package failed: {:?}", e))?;
+        .inspect_err(|e| error!("❌ hyper.attach failed: {:?}", e))?;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 4. Register with AIS
@@ -174,22 +171,17 @@ async fn main() -> Result<()> {
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
     info!("🔐 Registering with AIS at {}", ais_endpoint);
 
-    let register_ok = hyper
-        .bootstrap_node_credential(&node, &ais_endpoint, realm_id, service_spec, acl)
+    let registered = attached
+        .register(&ais_endpoint)
         .await
         .inspect_err(|e| error!("❌ AIS registration failed: {:?}", e))?;
-    info!(
-        "✅ AIS registration successful, ActrId: {}",
-        actr_protocol::ActrIdExt::to_string_repr(&register_ok.actr_id)
-    );
-
-    node.inject_credential(register_ok);
+    info!("✅ AIS registration successful");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 5. Start ActrNode
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🚀 Starting ActrNode...");
-    let actr_ref = node.start().await.inspect_err(|e| {
+    let actr_ref = registered.start().await.inspect_err(|e| {
         error!("❌ ActrNode start failed: {:?}", e);
     })?;
     info!(

@@ -126,25 +126,22 @@ async fn main() -> Result<()> {
         }
     };
 
-    let hyper = Hyper::init_with_platform(
+    let hyper = Hyper::with_platform(
         HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
         std::sync::Arc::new(NativePlatformProvider::new()),
     )
     .await?;
 
-    let realm_id = config.realm.realm_id;
-    let service_spec = None;
-    let acl = config.acl.clone();
-    let mut node = hyper.attach_package(&package, config).await?;
-
     let ais_endpoint =
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());
-    let register_ok = hyper
-        .bootstrap_node_credential(&node, &ais_endpoint, realm_id, service_spec, acl)
-        .await?;
-    node.inject_credential(register_ok);
 
-    let actr_ref = node.start().await?;
+    let actr_ref = hyper
+        .attach(&package, config)
+        .await?
+        .register(&ais_endpoint)
+        .await?
+        .start()
+        .await?;
 
     println!("===== Package Runtime Echo Client =====");
     println!("Type messages to send to the echo server (type 'quit' to exit):");

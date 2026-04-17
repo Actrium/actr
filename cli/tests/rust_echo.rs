@@ -234,8 +234,12 @@ fn rust_echo_app_scaffold() {
         "main.rs should build the local guest package on demand"
     );
     assert!(
-        main.contains("attach_package(&package, runtime.clone())"),
+        main.contains(".attach(&package, runtime.clone())"),
         "main.rs should attach the local guest package"
+    );
+    assert!(
+        main.contains(".register(&ais_endpoint)"),
+        "main.rs should register with AIS"
     );
     assert!(
         main.contains("let response = actr_ref"),

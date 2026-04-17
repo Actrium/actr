@@ -46,7 +46,7 @@ pub async fn load_package(package_path: &Path, pubkey_path: &Path) -> Result<Str
 
     if verified.manifest.binary.target.starts_with("wasm32-") {
         let temp_dir = tempfile::TempDir::new().context("failed to create tempdir")?;
-        let hyper = Hyper::init_with_platform(
+        let hyper = Hyper::with_platform(
             HyperConfig::new(temp_dir.path()).with_trust_mode(TrustMode::Development {
                 self_signed_pubkey: verifying_key.to_bytes().to_vec(),
             }),

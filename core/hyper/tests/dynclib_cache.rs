@@ -106,7 +106,7 @@ async fn dynclib_cache_is_created_on_first_load() {
     let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
@@ -124,7 +124,7 @@ async fn dynclib_second_load_is_rejected_for_same_hyper() {
     let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
@@ -146,7 +146,7 @@ async fn dynclib_cache_rebuilds_after_corruption() {
     let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
     let manifest = hyper.verify_package(&package).await.unwrap();

@@ -4,7 +4,7 @@ use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{
-    ActrNode, ActrRef, Hyper, HyperConfig, NetworkEventHandle, TrustMode, WorkloadPackage,
+    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Registered, TrustMode, WorkloadPackage,
 };
 use actr_protocol::{ActrIdExt, ActrTypeExt};
 use parking_lot::Mutex;
@@ -14,7 +14,7 @@ use tracing::{debug, error, info};
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
 pub struct ActrSystemWrapper {
-    inner: Mutex<Option<ActrNode>>,
+    inner: Mutex<Option<Hyper<Registered>>>,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
 }
 
@@ -75,7 +75,7 @@ impl ActrSystemWrapper {
 
         let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
             .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?;
-        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
+        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
             TrustMode::Development {
                 self_signed_pubkey: vec![0u8; 32],
             },
@@ -95,16 +95,23 @@ impl ActrSystemWrapper {
             }
         })?;
         let package = WorkloadPackage::new(package_bytes);
+        let ais_endpoint = config.ais_endpoint.clone();
 
-        let node = hyper.attach_package(&package, config).await.map_err(|e| {
+        let attached = hyper.attach(&package, config).await.map_err(|e| {
             error!("Failed to attach package-backed node: {}", e);
             ActrError::InternalError {
                 msg: format!("Failed to attach package-backed node: {e}"),
             }
         })?;
+        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+            error!("AIS registration failed: {}", e);
+            ActrError::InternalError {
+                msg: format!("AIS registration failed: {e}"),
+            }
+        })?;
 
         Ok(Arc::new(Self {
-            inner: Mutex::new(Some(node)),
+            inner: Mutex::new(Some(registered)),
             network_event_handle: Mutex::new(None),
         }))
     }
@@ -136,7 +143,7 @@ impl ActrSystemWrapper {
 impl ActrSystemWrapper {
     /// Start the package-backed node and return a running actor reference.
     pub async fn start(self: Arc<Self>) -> ActrResult<Arc<ActrRefWrapper>> {
-        let node = self
+        let hyper = self
             .inner
             .lock()
             .take()
@@ -144,7 +151,7 @@ impl ActrSystemWrapper {
                 msg: "ActrSystem already started".to_string(),
             })?;
 
-        let actr_ref = node.start().await.map_err(|e| {
+        let actr_ref = hyper.start().await.map_err(|e| {
             error!("Failed to start package-backed actor: {}", e);
             ActrError::ConnectionError {
                 msg: format!("Failed to start actor: {e}"),

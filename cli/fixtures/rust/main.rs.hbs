@@ -40,31 +40,24 @@ async fn main() -> Result<()> {
     let trust_mode = load_trust_mode(&runtime.trust_mode, &runtime.ais_endpoint, &package_dir)?;
 
     let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
-    let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode))
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode))
         .await
         .context("failed to initialize Hyper")?;
 
-    let package_bytes = std::fs::read(&package_path)
+    let package = WorkloadPackage::from_path(&package_path)
         .with_context(|| format!("failed to read {}", package_path.display()))?;
-    let package = WorkloadPackage::new(package_bytes);
 
-    let mut node = hyper
-        .attach_package(&package, runtime.clone())
+    let ais_endpoint = runtime.ais_endpoint.clone();
+    let actr_ref = hyper
+        .attach(&package, runtime.clone())
         .await
-        .context("failed to attach local guest package")?;
-    let credential = hyper
-        .bootstrap_node_credential(
-            &node,
-            &runtime.ais_endpoint,
-            runtime.realm.realm_id,
-            None,
-            runtime.acl.clone(),
-        )
+        .context("failed to attach local guest package")?
+        .register(&ais_endpoint)
         .await
-        .context("failed to bootstrap node credential")?;
-    node.inject_credential(credential);
-
-    let actr_ref = node.start().await.context("failed to start app node")?;
+        .context("failed to register with AIS")?
+        .start()
+        .await
+        .context("failed to start app node")?;
     info!("Calling {{MANUFACTURER}}:EchoService:1.0.0");
 
     let response = actr_ref

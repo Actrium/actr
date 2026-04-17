@@ -9,8 +9,14 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let node = Hyper::init(hyper_config).await?.attach_package(&package, config).await?;
-//! let actr = node.start().await?;
+//! let actr = Hyper::new(hyper_config)
+//!     .await?
+//!     .attach(&package, config)
+//!     .await?
+//!     .register(&ais_endpoint)
+//!     .await?
+//!     .start()
+//!     .await?;
 //!
 //! println!("actor id = {:?}", actr.actor_id());
 //!
@@ -18,8 +24,9 @@
 //! actr.wait_for_ctrl_c_and_shutdown().await?;
 //! ```
 //!
-//! `Hyper::attach_package()` is a one-shot operation. Create a new `Hyper`
-//! instance when hosting another package.
+//! `Hyper::attach` consumes the `Hyper<Uninit>` and returns `Hyper<Attached>`
+//! — each `Hyper` is single-package and progresses through the typestate chain
+//! `Uninit → Attached → Registered → ActrRef`.
 
 use crate::context::RuntimeContext;
 use crate::context_factory::ContextFactory;

@@ -86,12 +86,12 @@ pub struct ActrNode {
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 
     /// Verified package manifest for package-backed nodes.
+    #[allow(dead_code)]
     pub(crate) package_manifest: Option<crate::verify::PackageManifest>,
 
-    /// Pre-injected registration result from the Hyper layer
-    ///
-    /// When Hyper calls `inject_credential()` before `start()`, `start()` skips
-    /// signaling registration and uses the injected credential directly.
+    /// Pre-issued registration credential injected by the Hyper layer during
+    /// the `Attached → Registered` state transition. `start()` uses it directly
+    /// instead of re-registering with the signaling server.
     pub(crate) injected_registration: Option<actr_protocol::register_response::RegisterOk>,
 
     /// Shared WebSocket direct-connect address map populated by discovery
@@ -291,6 +291,7 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 }
 
 impl ActrNode {
+    #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&crate::verify::PackageManifest> {
         self.package_manifest.as_ref()
     }

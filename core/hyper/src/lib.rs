@@ -339,7 +339,7 @@ use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::str::FromStr;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -356,13 +356,59 @@ use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Hyper runtime instance
+/// Compile-time state marker: the Hyper has been created but nothing is attached.
+pub struct Uninit;
+#[cfg(not(target_arch = "wasm32"))]
+/// Compile-time state marker: a package has been verified and attached; AIS credential still pending.
+pub struct Attached;
+#[cfg(not(target_arch = "wasm32"))]
+/// Compile-time state marker: AIS credential has been obtained and injected; ready to start.
+pub struct Registered;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod hyper_state_sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Uninit {}
+    impl Sealed for super::Attached {}
+    impl Sealed for super::Registered {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Sealed trait describing valid [`Hyper`] lifecycle states.
+pub trait HyperState: hyper_state_sealed::Sealed {}
+#[cfg(not(target_arch = "wasm32"))]
+impl HyperState for Uninit {}
+#[cfg(not(target_arch = "wasm32"))]
+impl HyperState for Attached {}
+#[cfg(not(target_arch = "wasm32"))]
+impl HyperState for Registered {}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Carries state-dependent data from `Attached` onwards.
+struct Attachment {
+    node: crate::lifecycle::ActrNode,
+    manifest: PackageManifest,
+    package_bytes: bytes::Bytes,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Hyper runtime instance — a typestate pipeline from construction to start.
 ///
-/// Process-level runtime container, initialized via `Hyper::init()`.
-/// Holds resolved configuration, instance_id, namespace resolver, and exactly one workload slot.
-#[derive(Clone)]
-pub struct Hyper {
+/// State transitions:
+/// ```text
+/// Hyper::new(cfg)          -> Hyper<Uninit>
+///     .attach(pkg, cfg)    -> Hyper<Attached>
+///     .register(ais)       -> Hyper<Registered>
+///     .start()             -> ActrRef
+/// ```
+///
+/// The default type parameter `Uninit` means `Hyper` (no generics) always refers
+/// to the freshly-constructed state. Intermediate states are impossible to skip:
+/// `start()` only exists on `Hyper<Registered>` and so on.
+pub struct Hyper<S: HyperState = Uninit> {
     inner: Arc<HyperInner>,
+    attachment: Option<Attachment>,
+    _state: std::marker::PhantomData<S>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -374,16 +420,6 @@ struct HyperInner {
     verifier: verify::PackageVerifier,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
-    /// Hyper is a single-workload container. Loading is a one-shot operation.
-    workload_state: Mutex<WorkloadLoadState>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkloadLoadState {
-    Unloaded,
-    Loading,
-    Loaded,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -405,14 +441,34 @@ pub struct WorkloadPackage {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl WorkloadPackage {
+    /// Wrap already-loaded package bytes.
     pub fn new(bytes: impl Into<bytes::Bytes>) -> Self {
         Self {
             bytes: bytes.into(),
         }
     }
 
+    /// Load a `.actr` package from the filesystem in one call.
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        Ok(Self {
+            bytes: bytes.into(),
+        })
+    }
+
+    /// Raw `.actr` bytes.
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Parse and return the package manifest (unverified).
+    ///
+    /// This reads the manifest TOML embedded in the `.actr` ZIP without checking
+    /// the signature. Use [`Hyper::verify_package`] to obtain a verified manifest.
+    /// Re-parses on every call — cache externally if you need it hot.
+    pub fn manifest(&self) -> HyperResult<actr_pack::PackageManifest> {
+        actr_pack::read_manifest(&self.bytes)
+            .map_err(|e| HyperError::InvalidManifest(e.to_string()))
     }
 }
 
@@ -452,24 +508,24 @@ impl std::fmt::Debug for LoadedWorkload {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Hyper {
-    /// Initialize Hyper (process-level, call once)
+impl Hyper<Uninit> {
+    /// Construct a Hyper with native defaults (uses `tokio::fs` / `ActorStore`).
     ///
     /// - Parse configuration
     /// - Load or generate instance_id (persisted to data_dir)
     /// - Initialize package verifier
-    pub async fn init(config: HyperConfig) -> HyperResult<Self> {
+    pub async fn new(config: HyperConfig) -> HyperResult<Self> {
         Self::init_inner(config, None).await
     }
 
-    /// Initialize Hyper with a platform provider for cross-platform support.
+    /// Construct a Hyper with an injected platform provider (cross-platform / embedded).
     ///
     /// When a `PlatformProvider` is injected:
     /// - `ensure_dir` delegates to `platform.ensure_dir()` instead of `tokio::fs`
     /// - `load_or_create_instance_id` delegates to `platform.load_or_create_instance_id()`
     /// - `bootstrap_credential` uses `platform.open_kv_store()` instead of `ActorStore::open()`
     /// - `PackageVerifier` receives `platform.crypto()` for signature verification
-    pub async fn init_with_platform(
+    pub async fn with_platform(
         config: HyperConfig,
         platform: Arc<dyn PlatformProvider>,
     ) -> HyperResult<Self> {
@@ -530,8 +586,9 @@ impl Hyper {
                 instance_id,
                 verifier,
                 platform,
-                workload_state: Mutex::new(WorkloadLoadState::Unloaded),
             }),
+            attachment: None,
+            _state: std::marker::PhantomData,
         })
     }
 
@@ -541,11 +598,11 @@ impl Hyper {
     /// - binary_hash matches the recomputed result (package not tampered with)
     /// - MFR signature is valid (from a trusted manufacturer)
     ///
-    /// In production mode, the MFR public key is fetched asynchronously first (requires AIS reachability);
-    /// in development mode, there are no network calls and verification is fully synchronous.
+    /// In production mode, the MFR public key is fetched asynchronously first
+    /// (requires AIS reachability); in development mode, there are no network
+    /// calls and verification is fully synchronous.
     pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<PackageManifest> {
         let bytes = package.bytes();
-        // production mode: prefetch MFR public key (write to cert_cache), then verify synchronously
         if matches!(&self.inner.config.trust_mode, TrustMode::Production { .. }) {
             if let Some((manufacturer, signing_key_id)) = quick_extract_manifest_info(bytes) {
                 debug!(
@@ -563,52 +620,38 @@ impl Hyper {
     }
 
     /// Verify a package, select the execution backend from `binary.target`,
-    /// and prepare the single runtime workload owned by this Hyper instance.
+    /// and prepare a runtime workload from it.
     ///
-    /// Hyper is a one-shot workload container. After the first successful load,
-    /// subsequent calls return an error instead of creating another workload.
-    ///
-    /// For WASM packages, Hyper initialises the guest with an empty credential payload so
-    /// the caller can bootstrap AIS credentials afterwards and inject them before start.
-    /// For dynclib packages, Hyper initialises the guest with an empty JSON object.
+    /// This is an explicit helper for test / diagnostic code that wants the
+    /// [`LoadedWorkload`] parts without building an [`ActrNode`]. Host code
+    /// should call [`Hyper::attach`] instead.
     pub async fn load_workload_package(
         &self,
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {
-        self.begin_workload_load()?;
-
         let bytes = package.bytes();
-        let result = async {
-            let manifest = self.verify_package(package).await?;
-            let backend = select_package_execution_backend(&manifest)?;
-            let workload = match backend {
-                PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
-                PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
-            }?;
-
-            Ok(LoadedWorkload {
-                manifest,
-                backend,
-                workload,
-            })
-        }
-        .await;
-
-        self.finish_workload_load(result.is_ok());
-        result
+        let manifest = self.verify_package(package).await?;
+        let backend = select_package_execution_backend(&manifest)?;
+        let workload = match backend {
+            PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
+            PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
+        }?;
+        Ok(LoadedWorkload {
+            manifest,
+            backend,
+            workload,
+        })
     }
 
-    /// Verify and load the single [`WorkloadPackage`] owned by this Hyper instance,
-    /// then build a fully initialized [`ActrNode`].
+    /// Verify a [`WorkloadPackage`], load its binary, and attach it to this Hyper.
     ///
-    /// This is the primary entry point for package-driven actors.
-    /// Like [`Hyper::load_workload_package`], this is a one-shot operation per Hyper.
-    /// Reuse the resulting node or create a new Hyper instance for another package.
-    pub async fn attach_package(
-        &self,
+    /// Consumes the `Hyper<Uninit>` and returns a `Hyper<Attached>` — you can no
+    /// longer re-attach, but you must `register().start()` before serving.
+    pub async fn attach(
+        self,
         package: &WorkloadPackage,
         config: actr_config::RuntimeConfig,
-    ) -> HyperResult<crate::lifecycle::ActrNode> {
+    ) -> HyperResult<Hyper<Attached>> {
         let loaded = self.load_workload_package(package).await?;
         let packaged_lock = actr_pack::read_lock_file(package.bytes())
             .map_err(|e| HyperError::Runtime(e.to_string()))?
@@ -624,68 +667,20 @@ impl Hyper {
         let node = crate::lifecycle::ActrNode::build(
             config,
             loaded.workload,
-            Some(loaded.manifest),
+            Some(loaded.manifest.clone()),
             packaged_lock,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
-        Ok(node)
-    }
-
-    fn begin_workload_load(&self) -> HyperResult<()> {
-        let mut state =
-            self.inner.workload_state.lock().map_err(|_| {
-                HyperError::Runtime("failed to lock Hyper workload state".to_string())
-            })?;
-
-        match *state {
-            WorkloadLoadState::Unloaded => {
-                *state = WorkloadLoadState::Loading;
-                Ok(())
-            }
-            WorkloadLoadState::Loading => Err(HyperError::Runtime(
-                "Hyper is already loading its workload".to_string(),
-            )),
-            WorkloadLoadState::Loaded => Err(HyperError::Runtime(
-                "Hyper already loaded a workload; create a new Hyper instance for another package"
-                    .to_string(),
-            )),
-        }
-    }
-
-    fn finish_workload_load(&self, success: bool) {
-        if let Ok(mut state) = self.inner.workload_state.lock() {
-            *state = if success {
-                WorkloadLoadState::Loaded
-            } else {
-                WorkloadLoadState::Unloaded
-            };
-        }
-    }
-
-    /// Bootstrap credential registration with AIS using the package manifest stored in `node`.
-    pub async fn bootstrap_node_credential(
-        &self,
-        node: &crate::lifecycle::ActrNode,
-        ais_endpoint: &str,
-        realm_id: u32,
-        service_spec: Option<ServiceSpec>,
-        acl: Option<Acl>,
-    ) -> HyperResult<register_response::RegisterOk> {
-        let manifest = node.package_manifest().ok_or_else(|| {
-            HyperError::InvalidManifest(
-                "node does not carry a verified package manifest".to_string(),
-            )
-        })?;
-        self.bootstrap_credential_inner(
-            manifest,
-            ais_endpoint,
-            realm_id,
-            service_spec,
-            acl,
-            node.config.realm_secret.as_deref(),
-        )
-        .await
+        Ok(Hyper {
+            inner: self.inner,
+            attachment: Some(Attachment {
+                node,
+                manifest: loaded.manifest,
+                package_bytes: package.bytes.clone(),
+            }),
+            _state: std::marker::PhantomData,
+        })
     }
 
     fn load_wasm_workload(
@@ -779,7 +774,136 @@ impl Hyper {
             ))
         }
     }
+}
 
+// ── State transition: Attached → Registered ──────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Hyper<Attached> {
+    /// Register with AIS, obtain an AId credential, and inject it into the attached
+    /// node. Consumes `Hyper<Attached>` and returns `Hyper<Registered>`.
+    ///
+    /// `realm_id`, `acl`, and `realm_secret` come from the attached
+    /// [`RuntimeConfig`]; `service_spec` is derived from the package's proto
+    /// exports. Use [`Hyper::register_with`] to override `service_spec` manually.
+    pub async fn register(self, ais_endpoint: &str) -> HyperResult<Hyper<Registered>> {
+        let service_spec = {
+            let attachment = self
+                .attachment
+                .as_ref()
+                .expect("Hyper<Attached> invariant: attachment populated");
+            let pack_manifest =
+                actr_pack::read_manifest(&attachment.package_bytes).map_err(|e| {
+                    HyperError::Runtime(format!(
+                        "failed to re-parse package manifest for service_spec: {e}"
+                    ))
+                })?;
+            actr_pack::calculate_service_spec_from_package(
+                &attachment.package_bytes,
+                &pack_manifest,
+            )
+            .map_err(|e| {
+                HyperError::Runtime(format!("failed to derive service_spec from package: {e}"))
+            })?
+        };
+        self.register_with(ais_endpoint, service_spec).await
+    }
+
+    /// Register with AIS using an explicit `service_spec` (skips package-based derivation).
+    pub async fn register_with(
+        mut self,
+        ais_endpoint: &str,
+        service_spec: Option<ServiceSpec>,
+    ) -> HyperResult<Hyper<Registered>> {
+        let (manifest, realm_id, acl, realm_secret) = {
+            let attachment = self
+                .attachment
+                .as_ref()
+                .expect("Hyper<Attached> invariant: attachment populated");
+            (
+                attachment.manifest.clone(),
+                attachment.node.config.realm.realm_id,
+                attachment.node.config.acl.clone(),
+                attachment.node.config.realm_secret.clone(),
+            )
+        };
+
+        let register_ok = self
+            .bootstrap_credential_inner(
+                &manifest,
+                ais_endpoint,
+                realm_id,
+                service_spec,
+                acl,
+                realm_secret.as_deref(),
+            )
+            .await?;
+
+        self.attachment
+            .as_mut()
+            .expect("invariant")
+            .node
+            .inject_credential(register_ok);
+
+        Ok(Hyper {
+            inner: self.inner,
+            attachment: self.attachment,
+            _state: std::marker::PhantomData,
+        })
+    }
+}
+
+// ── State transition: Registered → ActrRef ───────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Hyper<Registered> {
+    /// Start the attached, registered node and return the live [`ActrRef`].
+    pub async fn start(self) -> actr_protocol::ActorResult<crate::actr_ref::ActrRef> {
+        let Attachment { node, .. } = self
+            .attachment
+            .expect("Hyper<Registered> invariant: attachment populated");
+        node.start().await
+    }
+}
+
+// ── Node-level hooks available once an Attachment exists ─────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Hyper<Attached> {
+    /// Create a network event handle for platform callbacks. Must be called
+    /// before [`Hyper::start`].
+    pub fn create_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.attachment
+            .as_mut()
+            .expect("Hyper<Attached> invariant: attachment populated")
+            .node
+            .create_network_event_handle(debounce_ms)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Hyper<Registered> {
+    /// Create a network event handle for platform callbacks. Must be called
+    /// before [`Hyper::start`].
+    pub fn create_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.attachment
+            .as_mut()
+            .expect("Hyper<Registered> invariant: attachment populated")
+            .node
+            .create_network_event_handle(debounce_ms)
+    }
+}
+
+// ── Helpers available in all states ──────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<S: HyperState> Hyper<S> {
     /// Resolve the storage namespace path for a verified manifest
     ///
     /// The path is fixed here; all subsequent storage operations are isolated based on this path.
@@ -1366,7 +1490,7 @@ mod tests {
         let config = dev_config(&TempDir::new().unwrap());
         let config = HyperConfig::new(&sub).with_trust_mode(config.trust_mode);
 
-        let hyper = Hyper::init(config).await.unwrap();
+        let hyper = Hyper::new(config).await.unwrap();
         assert!(sub.exists());
         assert!(!hyper.instance_id().is_empty());
     }
@@ -1375,11 +1499,11 @@ mod tests {
     async fn instance_id_is_stable_across_reinit() {
         let dir = TempDir::new().unwrap();
         let config1 = dev_config(&dir);
-        let hyper1 = Hyper::init(config1).await.unwrap();
+        let hyper1 = Hyper::new(config1).await.unwrap();
         let id1 = hyper1.instance_id().to_string();
 
         let config2 = dev_config(&dir);
-        let hyper2 = Hyper::init(config2).await.unwrap();
+        let hyper2 = Hyper::new(config2).await.unwrap();
         let id2 = hyper2.instance_id().to_string();
 
         assert_eq!(id1, id2, "instance_id should remain stable across restarts");
@@ -1388,7 +1512,7 @@ mod tests {
     #[tokio::test]
     async fn verify_package_rejects_non_wasm() {
         let dir = TempDir::new().unwrap();
-        let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+        let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
         let result = hyper
             .verify_package(&WorkloadPackage::new(b"not a wasm file".to_vec()))
             .await;
@@ -1398,7 +1522,7 @@ mod tests {
     #[tokio::test]
     async fn verify_package_rejects_non_actr_format() {
         let dir = TempDir::new().unwrap();
-        let hyper = Hyper::init(dev_config(&dir)).await.unwrap();
+        let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
 
         // Non-.actr bytes should return InvalidManifest
         let result = hyper
@@ -1771,7 +1895,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let config = dev_config(&dir);
-        let hyper = Hyper::init(config).await.unwrap();
+        let hyper = Hyper::new(config).await.unwrap();
 
         let manifest = fake_manifest();
         let result = hyper
@@ -1813,7 +1937,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let config = dev_config(&dir);
-        let hyper = Hyper::init(config).await.unwrap();
+        let hyper = Hyper::new(config).await.unwrap();
 
         // Seed ActorStore with a valid PSK.
         let manifest = fake_manifest();
@@ -1863,7 +1987,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let config = dev_config(&dir);
-        let hyper = Hyper::init(config).await.unwrap();
+        let hyper = Hyper::new(config).await.unwrap();
 
         // Seed ActorStore with an expired PSK.
         let manifest = fake_manifest();
@@ -1920,7 +2044,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let config = dev_config(&dir);
-        let hyper = Hyper::init(config).await.unwrap();
+        let hyper = Hyper::new(config).await.unwrap();
 
         let manifest = fake_manifest();
         let result = hyper
