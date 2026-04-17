@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::{
-    Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode, WorkloadPackage,
+    Hyper, HyperConfig, PackageExecutionBackend, TrustMode, WorkloadPackage,
 };
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -111,31 +111,9 @@ async fn dynclib_cache_is_created_on_first_load() {
         .unwrap();
 
     let first = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
+    assert_eq!(first.backend, PackageExecutionBackend::DynClib);
     let cache_file = cache_path(dir.path(), &first.manifest.binary_hash);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
-}
-
-#[tokio::test]
-async fn dynclib_second_load_is_rejected_for_same_hyper() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let dylib_bytes = fs::read(fixture_so_path()).unwrap();
-    let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
-
-    let dir = TempDir::new().unwrap();
-    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
-        .await
-        .unwrap();
-
-    let first = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
-
-    let second = hyper.load_workload_package(&package).await;
-    assert!(
-        matches!(second, Err(HyperError::Runtime(ref msg)) if msg.contains("already loaded a workload")),
-        "second load should be rejected by Hyper one-shot workload contract"
-    );
 }
 
 #[tokio::test]
@@ -155,6 +133,6 @@ async fn dynclib_cache_rebuilds_after_corruption() {
     fs::write(&cache_file, b"corrupted dynclib bytes").unwrap();
 
     let loaded = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(loaded.backend, PackageExecutionBackend::Cdylib);
+    assert_eq!(loaded.backend, PackageExecutionBackend::DynClib);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
 }

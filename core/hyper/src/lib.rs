@@ -428,8 +428,8 @@ struct HyperInner {
 pub enum PackageExecutionBackend {
     /// Execute the package binary with the WASM runtime.
     Wasm,
-    /// Execute the package binary as a native shared library.
-    Cdylib,
+    /// Execute the package binary as a C-ABI dynamic library (`cdylib`).
+    DynClib,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -624,7 +624,7 @@ impl Hyper<Uninit> {
         let backend = select_package_execution_backend(&manifest)?;
         let workload = match backend {
             PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
-            PackageExecutionBackend::Cdylib => self.load_dynclib_workload(bytes, &manifest),
+            PackageExecutionBackend::DynClib => self.load_dynclib_workload(bytes, &manifest),
         }?;
         Ok(LoadedWorkload {
             manifest,
@@ -1214,7 +1214,7 @@ fn select_package_execution_backend(
     }
 
     if is_compatible_native_target(&manifest.binary_target) {
-        return Ok(PackageExecutionBackend::Cdylib);
+        return Ok(PackageExecutionBackend::DynClib);
     }
 
     Err(HyperError::InvalidManifest(format!(
