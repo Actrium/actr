@@ -261,7 +261,6 @@ impl RunCommand {
         hyper_dir: &Path,
     ) -> Result<actr_hyper::Hyper> {
         use actr_hyper::{Hyper, HyperConfig, TrustMode};
-        use actr_platform_native::NativePlatformProvider;
 
         let trust_mode = match config.trust_mode.as_str() {
             "development" => {
@@ -290,9 +289,7 @@ impl RunCommand {
 
         let hyper_config = HyperConfig::new(hyper_dir).with_trust_mode(trust_mode);
 
-        let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
-
-        Hyper::with_platform(hyper_config, platform_provider)
+        Hyper::new(hyper_config)
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e)))
     }

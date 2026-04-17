@@ -11,7 +11,6 @@ use std::env;
 use std::path::PathBuf;
 
 use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
-use actr_platform_native::NativePlatformProvider;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
@@ -126,11 +125,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let hyper = Hyper::with_platform(
-        HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
-        std::sync::Arc::new(NativePlatformProvider::new()),
-    )
-    .await?;
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode)).await?;
 
     let ais_endpoint =
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());

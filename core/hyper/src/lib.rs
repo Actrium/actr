@@ -521,9 +521,8 @@ impl Hyper<Uninit> {
     /// Construct a Hyper with an injected platform provider (cross-platform / embedded).
     ///
     /// When a `PlatformProvider` is injected:
-    /// - `ensure_dir` delegates to `platform.ensure_dir()` instead of `tokio::fs`
-    /// - `load_or_create_instance_id` delegates to `platform.load_or_create_instance_id()`
-    /// - `bootstrap_credential` uses `platform.open_kv_store()` instead of `ActorStore::open()`
+    /// - instance UID comes from `platform.instance_uid()` (and its backing store)
+    /// - `bootstrap_credential` uses `platform.secret_store()` instead of `ActorStore::open()`
     /// - `PackageVerifier` receives `platform.crypto()` for signature verification
     pub async fn with_platform(
         config: HyperConfig,
@@ -545,15 +544,14 @@ impl Hyper<Uninit> {
             "Hyper initializing"
         );
 
-        // ensure data_dir exists
-        let data_dir_str = config.data_dir.to_string_lossy().to_string();
-        if let Some(ref p) = platform {
-            p.ensure_dir(&data_dir_str).await.map_err(|e| {
-                HyperError::Config(format!(
-                    "failed to create data_dir `{}`: {e}",
-                    config.data_dir.display()
-                ))
-            })?;
+        // Resolve an instance UID + ensure data_dir exists. When a platform
+        // provider is injected, delegate to it; otherwise fall back to direct
+        // tokio::fs calls so this crate stays free of an actr-platform-native
+        // dependency (which would be circular).
+        let instance_id = if let Some(ref p) = platform {
+            p.instance_uid()
+                .await
+                .map_err(|e| HyperError::Storage(format!("failed to load instance_uid: {e}")))?
         } else {
             tokio::fs::create_dir_all(&config.data_dir)
                 .await
@@ -563,17 +561,9 @@ impl Hyper<Uninit> {
                         config.data_dir.display()
                     ))
                 })?;
-        }
-
-        // load or generate instance_id
-        let instance_id = if let Some(ref p) = platform {
-            p.load_or_create_instance_id(&data_dir_str)
-                .await
-                .map_err(|e| HyperError::Storage(format!("failed to load instance_id: {e}")))?
-        } else {
-            load_or_create_instance_id(&config.data_dir).await?
+            load_or_create_instance_uid_local(&config.data_dir).await?
         };
-        debug!(instance_id, "Hyper instance_id ready");
+        debug!(instance_id, "Hyper instance_uid ready");
 
         let mut verifier = verify::PackageVerifier::new(config.trust_mode.clone());
         if let Some(ref p) = platform {
@@ -962,14 +952,14 @@ impl<S: HyperState> Hyper<S> {
             ais_endpoint, realm_id, "starting credential bootstrap with AIS"
         );
 
-        // 1. Open the Actor's storage (platform-agnostic KV store or ActorStore)
+        // 1. Open the Actor's secret store (via platform provider or direct ActorStore)
         let storage_path = self.resolve_storage_path(manifest)?;
         let store: Arc<dyn KvStore> = if let Some(ref platform) = self.inner.platform {
             let ns = storage_path.to_string_lossy().to_string();
             platform
-                .open_kv_store(&ns)
+                .secret_store(&ns)
                 .await
-                .map_err(|e| HyperError::Storage(format!("failed to open KV store: {e}")))?
+                .map_err(|e| HyperError::Storage(format!("failed to open secret store: {e}")))?
         } else {
             Arc::new(ActorStore::open(&storage_path).await?)
         };
@@ -1443,26 +1433,29 @@ fn load_dynclib_host_with_rebuild(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Load an existing `instance_id` or generate and persist a new one.
-async fn load_or_create_instance_id(data_dir: &std::path::Path) -> HyperResult<String> {
-    let id_file = data_dir.join(".hyper-instance-id");
+/// Load an existing `instance_uid` or generate and persist a new one.
+///
+/// Used only when no `PlatformProvider` is injected; otherwise the provider's
+/// `instance_uid()` is the source of truth.
+async fn load_or_create_instance_uid_local(data_dir: &std::path::Path) -> HyperResult<String> {
+    let id_file = data_dir.join(".hyper-instance-uid");
 
     if id_file.exists() {
         let id = tokio::fs::read_to_string(&id_file)
             .await
-            .map_err(|e| HyperError::Storage(format!("failed to read instance_id file: {e}")))?;
+            .map_err(|e| HyperError::Storage(format!("failed to read instance_uid file: {e}")))?;
         let id = id.trim().to_string();
         if !id.is_empty() {
             return Ok(id);
         }
-        warn!("instance_id file is empty; generating a new one");
+        warn!("instance_uid file is empty; generating a new one");
     }
 
     let new_id = Uuid::new_v4().to_string();
     tokio::fs::write(&id_file, &new_id)
         .await
-        .map_err(|e| HyperError::Storage(format!("failed to write instance_id file: {e}")))?;
-    info!(instance_id = %new_id, "generated a new Hyper instance_id");
+        .map_err(|e| HyperError::Storage(format!("failed to write instance_uid file: {e}")))?;
+    info!(instance_uid = %new_id, "generated a new Hyper instance_uid");
     Ok(new_id)
 }
 

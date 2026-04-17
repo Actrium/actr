@@ -16,7 +16,6 @@ use std::env;
 use std::path::PathBuf;
 
 use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
-use actr_platform_native::NativePlatformProvider;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
@@ -142,14 +141,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    let hyper = Hyper::with_platform(
-        HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
-        std::sync::Arc::new(NativePlatformProvider::new()),
-    )
-    .await
-    .inspect_err(|e| {
-        error!("❌ Hyper initialization failed: {:?}", e);
-    })?;
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode))
+        .await
+        .inspect_err(|e| {
+            error!("❌ Hyper initialization failed: {:?}", e);
+        })?;
     info!(
         "✅ Hyper initialized, data_dir={}",
         hyper_data_dir.display()

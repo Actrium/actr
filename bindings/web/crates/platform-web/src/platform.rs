@@ -1,11 +1,11 @@
-//! WebPlatformProvider — composite provider for browser environments
+//! WebPlatformProvider — composite provider for browser environments.
 //!
 //! Wires `WebCryptoProvider` + `IndexedDbKvStore` into a single `PlatformProvider`.
 //!
-//! ## Instance ID persistence
+//! ## Instance UID persistence
 //!
-//! `load_or_create_instance_id` first attempts `localStorage` (available in Window
-//! and some Worker contexts), falling back to an IndexedDB-backed store when
+//! `instance_uid` first attempts `localStorage` (available in Window and some
+//! Worker contexts), falling back to an IndexedDB-backed store when
 //! `localStorage` is not accessible (e.g. Service Workers).
 
 use std::sync::Arc;
@@ -18,25 +18,31 @@ use uuid::Uuid;
 use crate::crypto::WebCryptoProvider;
 use crate::storage::IndexedDbKvStore;
 
-/// Key prefix for instance IDs stored in localStorage.
-const INSTANCE_ID_LS_PREFIX: &str = "actr_instance_id_";
+/// Key prefix for instance UIDs stored in localStorage.
+const INSTANCE_UID_LS_PREFIX: &str = "actr_instance_uid_";
 
 /// Namespace for the IndexedDB fallback store used when localStorage is unavailable.
-const INSTANCE_ID_IDB_NAMESPACE: &str = "__actr_instance";
+const INSTANCE_UID_IDB_NAMESPACE: &str = "__actr_instance";
 
 /// Composite platform provider for browser environments.
 ///
 /// Composes [`WebCryptoProvider`] for cryptographic operations and
 /// [`IndexedDbKvStore`] for per-Actor key-value storage.
+///
+/// `root_namespace` acts as the web equivalent of `data_dir` on native —
+/// it disambiguates multiple Actr hosts living in the same browser origin.
 pub struct WebPlatformProvider {
+    root_namespace: String,
     crypto: Arc<WebCryptoProvider>,
 }
 
 impl WebPlatformProvider {
-    /// Create a new web platform provider.
-    pub fn new() -> Self {
-        debug!("WebPlatformProvider initialized");
+    /// Create a new web platform provider rooted at the given namespace.
+    pub fn new(root_namespace: impl Into<String>) -> Self {
+        let root_namespace = root_namespace.into();
+        debug!(root = %root_namespace, "WebPlatformProvider initialized");
         Self {
+            root_namespace,
             crypto: Arc::new(WebCryptoProvider),
         }
     }
@@ -44,29 +50,23 @@ impl WebPlatformProvider {
 
 impl Default for WebPlatformProvider {
     fn default() -> Self {
-        Self::new()
+        Self::new("default")
     }
 }
 
 #[async_trait(?Send)]
 impl PlatformProvider for WebPlatformProvider {
-    async fn open_kv_store(&self, namespace: &str) -> Result<Arc<dyn KvStore>, PlatformError> {
-        let store = IndexedDbKvStore::new(namespace);
-        debug!(namespace = %namespace, "opened IndexedDB KV store");
-        Ok(Arc::new(store))
-    }
-
-    async fn load_or_create_instance_id(&self, data_dir: &str) -> Result<String, PlatformError> {
-        let ls_key = format!("{INSTANCE_ID_LS_PREFIX}{data_dir}");
+    async fn instance_uid(&self) -> Result<String, PlatformError> {
+        let ls_key = format!("{INSTANCE_UID_LS_PREFIX}{}", self.root_namespace);
 
         // Attempt 1: try localStorage (fast, synchronous)
         match try_local_storage_get(&ls_key) {
             Ok(Some(id)) if !id.is_empty() => {
-                debug!(instance_id = %id, "loaded instance_id from localStorage");
+                debug!(instance_uid = %id, "loaded instance_uid from localStorage");
                 return Ok(id);
             }
             Ok(Some(_)) => {
-                warn!("instance_id in localStorage is empty; will regenerate");
+                warn!("instance_uid in localStorage is empty; will regenerate");
             }
             Ok(None) => {
                 // Not stored yet, fall through to creation
@@ -74,33 +74,34 @@ impl PlatformProvider for WebPlatformProvider {
             Err(e) => {
                 // localStorage unavailable (likely Service Worker context)
                 debug!(error = %e, "localStorage unavailable, falling back to IndexedDB");
-                return self.load_or_create_instance_id_idb(data_dir).await;
+                return self.instance_uid_idb().await;
             }
         }
 
-        // Generate a new instance ID
+        // Generate a new instance UID
         let new_id = Uuid::new_v4().to_string();
 
         // Store in localStorage
         match try_local_storage_set(&ls_key, &new_id) {
             Ok(()) => {
-                info!(instance_id = %new_id, "generated and stored new instance_id in localStorage");
+                info!(instance_uid = %new_id, "generated and stored new instance_uid in localStorage");
             }
             Err(e) => {
                 warn!(
                     error = %e,
-                    "failed to write instance_id to localStorage, falling back to IndexedDB"
+                    "failed to write instance_uid to localStorage, falling back to IndexedDB"
                 );
-                return self.store_instance_id_idb(data_dir, &new_id).await;
+                return self.store_instance_uid_idb(&new_id).await;
             }
         }
 
         Ok(new_id)
     }
 
-    async fn ensure_dir(&self, _path: &str) -> Result<(), PlatformError> {
-        // No-op on web — there is no filesystem directory concept
-        Ok(())
+    async fn secret_store(&self, namespace: &str) -> Result<Arc<dyn KvStore>, PlatformError> {
+        let store = IndexedDbKvStore::new(namespace);
+        debug!(namespace = %namespace, "opened IndexedDB secret store");
+        Ok(Arc::new(store))
     }
 
     fn crypto(&self) -> Arc<dyn CryptoProvider> {
@@ -109,50 +110,43 @@ impl PlatformProvider for WebPlatformProvider {
 }
 
 // ---------------------------------------------------------------------------
-// IndexedDB fallback for instance ID (Service Worker support)
+// IndexedDB fallback for instance UID (Service Worker support)
 // ---------------------------------------------------------------------------
 
 impl WebPlatformProvider {
-    /// Load or create instance ID using IndexedDB as fallback storage.
-    async fn load_or_create_instance_id_idb(
-        &self,
-        data_dir: &str,
-    ) -> Result<String, PlatformError> {
-        let store = IndexedDbKvStore::new(INSTANCE_ID_IDB_NAMESPACE);
-        let idb_key = format!("instance_id_{data_dir}");
+    /// Load or create instance UID using IndexedDB as fallback storage.
+    async fn instance_uid_idb(&self) -> Result<String, PlatformError> {
+        let store = IndexedDbKvStore::new(INSTANCE_UID_IDB_NAMESPACE);
+        let idb_key = format!("instance_uid_{}", self.root_namespace);
 
         // Check if already stored
         if let Some(bytes) = store.get(&idb_key).await? {
             let id = String::from_utf8(bytes).map_err(|e| {
-                PlatformError::Storage(format!("instance_id is not valid UTF-8: {e}"))
+                PlatformError::Storage(format!("instance_uid is not valid UTF-8: {e}"))
             })?;
             if !id.is_empty() {
-                debug!(instance_id = %id, "loaded instance_id from IndexedDB fallback");
+                debug!(instance_uid = %id, "loaded instance_uid from IndexedDB fallback");
                 return Ok(id);
             }
-            warn!("instance_id in IndexedDB fallback is empty; will regenerate");
+            warn!("instance_uid in IndexedDB fallback is empty; will regenerate");
         }
 
         let new_id = Uuid::new_v4().to_string();
-        self.store_instance_id_idb(data_dir, &new_id).await?;
+        self.store_instance_uid_idb(&new_id).await?;
         Ok(new_id)
     }
 
-    /// Persist an instance ID to the IndexedDB fallback store.
-    async fn store_instance_id_idb(
-        &self,
-        data_dir: &str,
-        instance_id: &str,
-    ) -> Result<String, PlatformError> {
-        let store = IndexedDbKvStore::new(INSTANCE_ID_IDB_NAMESPACE);
-        let idb_key = format!("instance_id_{data_dir}");
+    /// Persist an instance UID to the IndexedDB fallback store.
+    async fn store_instance_uid_idb(&self, instance_uid: &str) -> Result<String, PlatformError> {
+        let store = IndexedDbKvStore::new(INSTANCE_UID_IDB_NAMESPACE);
+        let idb_key = format!("instance_uid_{}", self.root_namespace);
 
-        store.set(&idb_key, instance_id.as_bytes()).await?;
+        store.set(&idb_key, instance_uid.as_bytes()).await?;
         info!(
-            instance_id = %instance_id,
-            "generated and stored new instance_id in IndexedDB fallback"
+            instance_uid = %instance_uid,
+            "generated and stored new instance_uid in IndexedDB fallback"
         );
-        Ok(instance_id.to_string())
+        Ok(instance_uid.to_string())
     }
 }
 

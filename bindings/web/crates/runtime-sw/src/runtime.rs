@@ -551,7 +551,7 @@ impl SwRuntime {
 
         let client_actr_type = ActrType::from_string_repr(&config.client_actr_type)
             .map_err(|e| JsValue::from_str(&format!("Invalid client actr_type: {e}")))?;
-        let platform = WebPlatformProvider::new();
+        let platform = WebPlatformProvider::new(client_actr_type.to_string_repr());
 
         // Step 1: Obtain credential via AIS HTTP registration
         //   Try to restore persisted credentials first; if expired or missing,
@@ -760,7 +760,7 @@ impl SwRuntime {
         cred_kv_ns: &str,
     ) -> Result<Option<Vec<u8>>, JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -813,7 +813,7 @@ impl SwRuntime {
         psk_expires_at: u64,
     ) -> Result<(), JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -838,7 +838,7 @@ impl SwRuntime {
         credential: &AIdCredential,
     ) -> Result<(), JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -863,7 +863,7 @@ impl SwRuntime {
         turn_credential: &actr_protocol::TurnCredential,
     ) -> Result<(), JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -882,7 +882,7 @@ impl SwRuntime {
         cred_kv_ns: &str,
     ) -> Result<Option<actr_protocol::TurnCredential>, JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
@@ -953,7 +953,7 @@ impl SwRuntime {
         cred_kv_ns: &str,
     ) -> Result<Option<(ActrId, AIdCredential)>, JsValue> {
         let kv = platform
-            .open_kv_store(cred_kv_ns)
+            .secret_store(cred_kv_ns)
             .await
             .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
 
