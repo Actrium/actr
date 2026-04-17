@@ -45,12 +45,14 @@ impl ProjectInitializer for TypeScriptInitializer {
             info!("  cd {}", context.project_dir.display());
         }
         if context.echo_role == Some(EchoRole::Service) {
-            info!("  actr install      # Create manifest.lock.toml and install npm dependencies");
+            info!(
+                "  actr deps install      # Create manifest.lock.toml and install npm dependencies"
+            );
             info!("  actr gen -l typescript  # Generate Actor framework code from local proto");
             info!("  npm run dev       # Start the EchoService (Ctrl+C to stop)");
         } else {
             info!(
-                "  actr install      # Download remote proto dependencies and install npm packages"
+                "  actr deps install      # Download remote proto dependencies and install npm packages"
             );
             info!("  actr gen -l typescript  # Generate Actor framework code");
             info!("  npm run dev       # Run the echo app");

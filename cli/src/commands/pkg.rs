@@ -1,27 +1,28 @@
-//! `actr pkg` — Package management commands
+//! `actr pkg` — local package operations (sign, verify, keygen).
 //!
 //! ## Subcommands
 //!
 //! ```text
-//! actr pkg build    --binary FILE [--config manifest.toml] [--key FILE] [--output FILE]
-//! actr pkg sign     --keychain FILE [--package FILE]
+//! actr pkg sign     [--manifest-path FILE] [--key FILE] [--binary FILE]
 //! actr pkg verify   --package FILE [--pubkey FILE]
 //! actr pkg keygen   [--output FILE] [--force]
-//! actr pkg publish  --package FILE --keychain FILE --endpoint URL
 //! ```
+//!
+//! Remote registry operations (`publish`) live under `actr registry`.
+//! End-to-end build + package is a single top-level command: `actr build`.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use base64::Engine;
 use clap::{Args, Subcommand};
 use ed25519_dalek::SigningKey;
-use serde::Serialize;
 
 use crate::commands::package_build::{
-    PackageBuildInput, build_package, default_pkg_output_path, load_signing_key,
-    load_verifying_key, load_verifying_key_from_dev_key, print_build_summary, resolve_key_path,
+    load_signing_key, load_verifying_key, load_verifying_key_from_dev_key, resolve_key_path,
 };
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 
 #[derive(Args, Debug)]
 pub struct PkgArgs {
@@ -31,61 +32,24 @@ pub struct PkgArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PkgCommand {
-    /// Build an .actr package from binary and config
-    Build(PkgBuildArgs),
-    /// Sign a manifest.toml package manifest with MFR private key (offline signing)
+    /// Sign a manifest.toml manifest with an MFR private key (offline signing).
     Sign(PkgSignArgs),
-    /// Verify an .actr package
+    /// Verify a signed .actr package.
     Verify(PkgVerifyArgs),
-    /// Generate an Ed25519 signing key pair
+    /// Generate an Ed25519 MFR signing key pair.
     Keygen(PkgKeygenArgs),
-    /// Publish an .actr package to the Actrix MFR registry
-    Publish(PkgPublishArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct PkgBuildArgs {
-    /// Target actor binary (WASM / native)
-    #[arg(long, short = 'b', value_name = "FILE")]
-    pub binary: PathBuf,
-
-    /// manifest.toml config path
-    #[arg(
-        long,
-        short = 'c',
-        default_value = "manifest.toml",
-        value_name = "FILE"
-    )]
-    pub config: PathBuf,
-
-    /// Signing key file (overrides config mfr.keychain)
-    #[arg(long, short = 'k', value_name = "FILE")]
-    pub key: Option<PathBuf>,
-
-    /// Output .actr file path
-    #[arg(long, short = 'o', value_name = "FILE")]
-    pub output: Option<PathBuf>,
-
-    /// Target platform (e.g., wasm32-wasip1, x86_64-unknown-linux-gnu)
-    #[arg(long, short = 't', default_value = "wasm32-wasip1")]
-    pub target: String,
-
-    /// Add a resource file to the package: --resource zip_path=local_path
-    /// Can be specified multiple times.
-    #[arg(long, value_parser = parse_resource_arg)]
-    pub resource: Vec<(String, PathBuf)>,
 }
 
 #[derive(Args, Debug)]
 pub struct PkgSignArgs {
-    /// Path to manifest.toml config file
+    /// Path to manifest.toml
     #[arg(
-        long,
-        short = 'c',
+        long = "manifest-path",
+        short = 'm',
         default_value = "manifest.toml",
         value_name = "FILE"
     )]
-    pub config: PathBuf,
+    pub manifest_path: PathBuf,
 
     /// Path to MFR signing key file (overrides config mfr.keychain)
     #[arg(long, short = 'k', value_name = "FILE")]
@@ -95,7 +59,7 @@ pub struct PkgSignArgs {
     #[arg(long, short = 'b', value_name = "FILE")]
     pub binary: Option<PathBuf>,
 
-    /// Target platform (e.g., wasm32-wasip1, x86_64-unknown-linux-gnu)
+    /// Target platform (e.g. wasm32-wasip1, x86_64-unknown-linux-gnu)
     #[arg(long, short = 't', default_value = "wasm32-wasip1")]
     pub target: String,
 
@@ -125,64 +89,36 @@ pub struct PkgKeygenArgs {
     pub force: bool,
 }
 
-#[derive(Args, Debug)]
-pub struct PkgPublishArgs {
-    /// .actr package file to publish
-    #[arg(long, short = 'p', value_name = "FILE")]
-    pub package: PathBuf,
+#[async_trait]
+impl Command for PkgArgs {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
+        let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
+        let keychain_ref = cli_config.mfr.keychain.as_deref();
 
-    /// Path to MFR keychain JSON file (used to verify publisher identity)
-    #[arg(long, short = 'k', value_name = "FILE")]
-    pub keychain: PathBuf,
+        match &self.command {
+            PkgCommand::Sign(a) => execute_sign(a, keychain_ref).await?,
+            PkgCommand::Verify(a) => execute_verify(a, keychain_ref).await?,
+            PkgCommand::Keygen(a) => execute_keygen(a)?,
+        }
+        Ok(CommandResult::Success(String::new()))
+    }
 
-    /// Actrix MFR endpoint URL (e.g., http://localhost:8081)
-    #[arg(long, short = 'e', value_name = "URL")]
-    pub endpoint: String,
-}
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
 
-#[derive(Serialize)]
-struct SignablePublishBody<'a> {
-    manufacturer: &'a str,
-    name: &'a str,
-    version: &'a str,
-    target: &'a str,
-    manifest: &'a str,
-    signature: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proto_files: Option<&'a serde_json::Value>,
-    nonce: &'a str,
-}
+    fn name(&self) -> &str {
+        "pkg"
+    }
 
-#[derive(Serialize)]
-struct FinalPublishBody<'a> {
-    manufacturer: &'a str,
-    name: &'a str,
-    version: &'a str,
-    target: &'a str,
-    manifest: &'a str,
-    signature: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proto_files: Option<&'a serde_json::Value>,
-    nonce: &'a str,
-    nonce_sig: &'a str,
-}
-
-pub async fn execute(args: PkgArgs) -> Result<()> {
-    let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
-    let keychain_ref = cli_config.mfr.keychain.as_deref();
-
-    match args.command {
-        PkgCommand::Build(a) => execute_build(a, keychain_ref).await,
-        PkgCommand::Sign(a) => execute_sign(a, keychain_ref).await,
-        PkgCommand::Verify(a) => execute_verify(a, keychain_ref).await,
-        PkgCommand::Keygen(a) => execute_keygen(a),
-        PkgCommand::Publish(a) => execute_publish(a).await,
+    fn description(&self) -> &str {
+        "Local package operations (sign, verify, keygen)"
     }
 }
 
-// --- keygen (moved from dev.rs, identical logic) ---
+// ── keygen ───────────────────────────────────────────────────────────────────
 
-fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
+fn execute_keygen(args: &PkgKeygenArgs) -> Result<()> {
     let key_path = match args.output {
         Some(ref path) => path.clone(),
         None => {
@@ -260,62 +196,31 @@ fn execute_keygen(args: PkgKeygenArgs) -> Result<()> {
     Ok(())
 }
 
-/// Parse a `zip_path=local_path` resource argument.
-fn parse_resource_arg(s: &str) -> Result<(String, PathBuf), String> {
-    let (zip_path, local_path) = s
-        .split_once('=')
-        .ok_or_else(|| "resource must be in format 'zip_path=local_path'".to_string())?;
-    Ok((zip_path.to_string(), PathBuf::from(local_path)))
-}
-
-// --- build (.actr package creation) ---
-
-async fn execute_build(args: PkgBuildArgs, config_keychain: Option<&str>) -> Result<()> {
-    let output_path = match args.output {
-        Some(path) => path,
-        None => default_pkg_output_path(&args.config, &args.target)?,
-    };
-
-    let summary = build_package(PackageBuildInput {
-        binary_path: args.binary,
-        config_path: args.config,
-        key_path: resolve_key_path(args.key.as_deref(), config_keychain)?,
-        output_path,
-        target: args.target,
-        resources: args.resource,
-    })?;
-
-    print_build_summary(&summary);
-
-    Ok(())
-}
-
-// --- sign (offline signing of manifest.toml → manifest.toml + manifest.sig) ---
+// ── sign ─────────────────────────────────────────────────────────────────────
 //
-// Parses manifest.toml (same config format as `build`), reads binary + proto files,
-// builds a PackageManifest, serializes via to_toml(), and signs.
+// Parses manifest.toml, reads binary + proto files, builds a PackageManifest,
+// serializes via to_toml(), and signs with Ed25519.
+//
 // Output:
-//   1. Manifest TOML file (manifest.toml) — the exact bytes that were signed
-//   2. A .sig file (manifest.sig) — 64 bytes raw Ed25519 signature
+//   1. Canonical manifest.toml — the exact bytes that were signed
+//   2. manifest.sig — 64 bytes raw Ed25519 signature
 //
-// The signed content is byte-level identical to what `actr pkg build` produces.
+// The signed content is byte-level identical to what `actr build` produces.
 
-async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Result<()> {
+async fn execute_sign(args: &PkgSignArgs, config_keychain: Option<&str>) -> Result<()> {
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
-    // 1. Load signing key
     let key_path = resolve_key_path(args.key.as_deref(), config_keychain)?;
     let signing_key = load_signing_key(&key_path)?;
     let verifying_key = signing_key.verifying_key();
     let key_id = actr_pack::compute_key_id(&verifying_key.to_bytes());
 
-    // 2. Read manifest.toml as config (same parsing as build)
-    let config_path = &args.config;
+    let config_path = &args.manifest_path;
     if !config_path.exists() {
         return Err(anyhow::anyhow!(
-            "config file not found: {}",
+            "manifest.toml not found: {}",
             config_path.display()
         ));
     }
@@ -337,7 +242,6 @@ async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Resul
     let name = get_str("name")?;
     let version = get_str("version")?;
 
-    // 3. Compute binary hash if binary provided
     let (binary_hash, binary_size) = if let Some(binary_path) = &args.binary {
         let binary_data = std::fs::read(binary_path)
             .with_context(|| format!("Failed to read binary: {}", binary_path.display()))?;
@@ -352,10 +256,8 @@ async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Resul
         (String::new(), None)
     };
 
-    // 4. Read proto files from `exports` array (same as build)
-    //    Prefer [package].exports, fallback to top-level exports (backward compat)
     let config_dir = args
-        .config
+        .manifest_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut proto_entries = vec![];
@@ -390,7 +292,6 @@ async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Resul
         }
     }
 
-    // 5. Build PackageManifest (same structure as build)
     let manifest = actr_pack::PackageManifest {
         manufacturer: manufacturer.clone(),
         name: name.clone(),
@@ -418,28 +319,24 @@ async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Resul
         },
     };
 
-    // 6. Serialize via to_toml() (byte-level consistent with build)
     let manifest_toml = manifest
         .to_toml()
         .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {e}"))?;
     let manifest_bytes = manifest_toml.as_bytes();
 
-    // 7. Sign (raw 64-byte Ed25519, same as actr_pack::pack)
     let signature = signing_key.sign(manifest_bytes);
     let sig_bytes = signature.to_bytes();
 
-    // 8. Write manifest TOML (the exact bytes that were signed)
     let manifest_path = {
-        let mut p = args.config.clone();
+        let mut p = args.manifest_path.clone();
         p.set_file_name("manifest.toml");
         p
     };
     std::fs::write(&manifest_path, manifest_bytes)
         .with_context(|| format!("Failed to write manifest: {}", manifest_path.display()))?;
 
-    // 9. Write manifest.sig (64 bytes raw Ed25519 signature)
-    let sig_path = args.output.unwrap_or_else(|| {
-        let mut p = args.config.clone();
+    let sig_path = args.output.clone().unwrap_or_else(|| {
+        let mut p = args.manifest_path.clone();
         p.set_file_name("manifest.sig");
         p
     });
@@ -458,33 +355,28 @@ async fn execute_sign(args: PkgSignArgs, config_keychain: Option<&str>) -> Resul
     Ok(())
 }
 
-// --- verify ---
+// ── verify ───────────────────────────────────────────────────────────────────
 
-async fn execute_verify(args: PkgVerifyArgs, config_keychain: Option<&str>) -> Result<()> {
-    // 1. Read package
+async fn execute_verify(args: &PkgVerifyArgs, config_keychain: Option<&str>) -> Result<()> {
     let package_bytes = std::fs::read(&args.package)
         .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
 
-    // 2. Read public key
     let pubkey = if let Some(pubkey_path) = &args.pubkey {
         load_verifying_key(pubkey_path)?
     } else {
-        // Try default dev-key location
         let key_path = resolve_key_path(None, config_keychain)?;
         load_verifying_key_from_dev_key(&key_path)?
     };
 
-    // 3. Verify
     let verified = actr_pack::verify(&package_bytes, &pubkey)?;
 
-    // 4. Check signing_key_id consistency with the provided public key
     if let Some(ref manifest_key_id) = verified.manifest.signing_key_id {
         let expected_key_id = actr_pack::compute_key_id(&pubkey.to_bytes());
         if manifest_key_id != &expected_key_id {
             anyhow::bail!(
                 "signing_key_id mismatch: manifest says '{}' but the provided public key fingerprint is '{}'. \
                  This package will fail verification in Production mode. \
-                 Rebuild with 'actr pkg build' using the correct signing key.",
+                 Rebuild with 'actr build' using the correct signing key.",
                 manifest_key_id,
                 expected_key_id,
             );
@@ -493,7 +385,7 @@ async fn execute_verify(args: PkgVerifyArgs, config_keychain: Option<&str>) -> R
         anyhow::bail!(
             "Package manifest has no 'signing_key_id'. \
              This package will be rejected in Production mode. \
-             Rebuild with the latest 'actr pkg build' to embed a signing_key_id."
+             Rebuild with the latest 'actr build' to embed a signing_key_id."
         );
     }
 
@@ -512,230 +404,6 @@ async fn execute_verify(args: PkgVerifyArgs, config_keychain: Option<&str>) -> R
     }
     if !verified.manifest.resources.is_empty() {
         println!("  resources:    {}", verified.manifest.resources.len());
-    }
-
-    Ok(())
-}
-
-// --- publish (register package to MFR registry) ---
-//
-// Extracts the manifest (manifest.toml) and signature (manifest.sig) that were
-// already created during `actr pkg build`, then forwards them to the
-// MFR registry as-is.  No re-signing is performed.
-//
-// This guarantees that the signature MFR validates is the exact same
-// signature the Hyper runtime will verify at load time.
-
-async fn execute_publish(args: PkgPublishArgs) -> Result<()> {
-    // 1. Read .actr package
-    tracing::debug!("reading .actr package: {:?}", args.package);
-    let package_bytes = std::fs::read(&args.package)
-        .with_context(|| format!("Failed to read package: {}", args.package.display()))?;
-
-    // 2. Extract manifest TOML and signature from the .actr ZIP
-    let manifest_str = actr_pack::read_manifest_raw(&package_bytes)
-        .with_context(|| "Failed to read manifest from .actr package")?;
-    let manifest = actr_pack::PackageManifest::from_toml(&manifest_str)
-        .with_context(|| "Failed to parse manifest TOML")?;
-    let sig_raw = actr_pack::read_signature(&package_bytes)
-        .with_context(|| "Failed to read manifest.sig from .actr package")?;
-
-    // 3. Identity verification: keychain private key proves publisher is MFR owner.
-    //    We only check that the package's signing_key_id matches the keychain,
-    //    ensuring the package was built with the same key.
-    //    The MFR server performs the real signature verification.
-    tracing::debug!(
-        "loading keychain for identity verification: {:?}",
-        args.keychain
-    );
-    let keychain_content = std::fs::read_to_string(&args.keychain)
-        .with_context(|| format!("Failed to read keychain: {}", args.keychain.display()))?;
-    let keychain: serde_json::Value =
-        serde_json::from_str(&keychain_content).with_context(|| "Invalid keychain JSON")?;
-
-    // Derive signing key and key_id from keychain private key
-    let kc_privkey_b64 = keychain["private_key"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Keychain missing 'private_key' field"))?;
-    let kc_privkey_bytes = base64::engine::general_purpose::STANDARD
-        .decode(kc_privkey_b64)
-        .with_context(|| "Invalid private key in keychain")?;
-    let kc_arr: [u8; 32] = kc_privkey_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Private key must be 32 bytes"))?;
-    let kc_signing_key = ed25519_dalek::SigningKey::from_bytes(&kc_arr);
-    let kc_key_id = actr_pack::compute_key_id(&kc_signing_key.verifying_key().to_bytes());
-
-    // Check signing_key_id consistency: package must be built with the same key
-    match manifest.signing_key_id {
-        Some(ref manifest_key_id) if manifest_key_id == &kc_key_id => {
-            // OK — build key matches publish key
-        }
-        Some(ref manifest_key_id) => {
-            anyhow::bail!(
-                "Key mismatch: package was built with '{}' but keychain key is '{}'. \
-                 Rebuild with the correct MFR key, or use the matching keychain.",
-                manifest_key_id,
-                kc_key_id
-            );
-        }
-        None => {
-            anyhow::bail!(
-                "Package manifest has no 'signing_key_id'. \
-                 Rebuild with the latest 'actr pkg build' to embed a signing_key_id."
-            );
-        }
-    }
-
-    // Encode raw 64-byte signature as base64 for the MFR API
-    let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig_raw);
-
-    println!("📦 Publishing package: {}", manifest.actr_type_str());
-    println!("   manufacturer: {}", manifest.manufacturer);
-    println!("   name:         {}", manifest.name);
-    println!("   version:      {}", manifest.version);
-    println!("   target:       {}", manifest.binary.target);
-    println!("   signing_key:  {}", kc_key_id);
-    println!("✅ Identity verified (keychain matches package)");
-    println!("🔐 Forwarding original signature (no re-signing)");
-
-    // 3. Extract proto files from .actr package for MFR filing
-    let proto_files = actr_pack::read_proto_files(&package_bytes).unwrap_or_default();
-    let proto_filing = if !proto_files.is_empty() {
-        let proto_entries: Vec<serde_json::Value> = proto_files
-            .iter()
-            .map(|(name, content)| {
-                serde_json::json!({
-                    "name": name,
-                    "content": String::from_utf8_lossy(content),
-                })
-            })
-            .collect();
-        println!("📋 Proto files for filing: {} file(s)", proto_entries.len());
-        Some(serde_json::json!({
-            "protobufs": proto_entries,
-        }))
-    } else {
-        None
-    };
-
-    // 4. Resolve endpoint (strip trailing /ais if present)
-    let endpoint = args
-        .endpoint
-        .trim_end_matches("/ais")
-        .trim_end_matches('/')
-        .to_string();
-
-    // 5. Request Challenge-Response nonce from MFR server
-    let base_url = endpoint.trim_end_matches('/');
-    let nonce_url = format!("{}/mfr/pkg/nonce", base_url);
-    let client = reqwest::Client::new();
-
-    println!("🔑 Requesting publish nonce...");
-    let nonce_resp = client
-        .post(&nonce_url)
-        .json(&serde_json::json!({ "manufacturer": manifest.manufacturer }))
-        .send()
-        .await
-        .with_context(|| format!("Failed to request nonce from: {}", nonce_url))?;
-
-    if !nonce_resp.status().is_success() {
-        let status = nonce_resp.status();
-        let body = nonce_resp.text().await.unwrap_or_default();
-        anyhow::bail!("Nonce request failed (HTTP {}): {}", status, body);
-    }
-
-    let nonce_json: serde_json::Value = nonce_resp
-        .json()
-        .await
-        .with_context(|| "Failed to parse nonce response")?;
-    let nonce_b64 = nonce_json["nonce"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Nonce response missing 'nonce' field"))?
-        .to_string();
-
-    // Build the signable publish body (everything except nonce_sig) and authorize it
-    // with the one-time nonce.
-    let nonce_bytes = base64::engine::general_purpose::STANDARD
-        .decode(&nonce_b64)
-        .with_context(|| "Invalid nonce base64 from server")?;
-
-    let signable_body = SignablePublishBody {
-        manufacturer: &manifest.manufacturer,
-        name: &manifest.name,
-        version: &manifest.version,
-        target: &manifest.binary.target,
-        manifest: &manifest_str,
-        signature: &sig_b64,
-        proto_files: proto_filing.as_ref(),
-        nonce: &nonce_b64,
-    };
-    let signable_body_bytes = serde_json::to_vec(&signable_body)
-        .with_context(|| "Failed to serialize signable publish body")?;
-
-    let nonce_sig_b64 = {
-        use ed25519_dalek::Signer;
-        use sha2::{Digest, Sha256};
-
-        let body_hash = hex::encode(Sha256::digest(&signable_body_bytes));
-        let nonce_hex = hex::encode(&nonce_bytes);
-        let payload = format!(
-            "ACTR-PUBLISH-V1\nmanufacturer={}\nmethod=POST\npath=/mfr/pkg/publish\nnonce={}\nbody_sha256={}",
-            manifest.manufacturer, nonce_hex, body_hash
-        );
-        let sig = kc_signing_key.sign(payload.as_bytes());
-        base64::engine::general_purpose::STANDARD.encode(sig.to_bytes())
-    };
-    println!("✅ Nonce signed (challenge-response)");
-
-    // 6. POST /mfr/pkg/publish
-    let publish_url = format!("{}/mfr/pkg/publish", base_url);
-    println!("📡 Publishing to: {}", publish_url);
-
-    let publish_body_bytes = serde_json::to_vec(&FinalPublishBody {
-        manufacturer: &manifest.manufacturer,
-        name: &manifest.name,
-        version: &manifest.version,
-        target: &manifest.binary.target,
-        manifest: &manifest_str,
-        signature: &sig_b64,
-        proto_files: proto_filing.as_ref(),
-        nonce: &nonce_b64,
-        nonce_sig: &nonce_sig_b64,
-    })
-    .with_context(|| "Failed to serialize publish request body")?;
-
-    let resp = client
-        .post(&publish_url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(publish_body_bytes)
-        .send()
-        .await
-        .with_context(|| format!("Failed to connect to MFR endpoint: {}", publish_url))?;
-
-    // 6. Handle response
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        eprintln!("❌ Publish failed (HTTP {})", status);
-        eprintln!("   Response: {}", body);
-        anyhow::bail!("MFR publish failed with status {}: {}", status, body);
-    }
-
-    // Parse response to show type_str
-    if let Ok(result) = serde_json::from_str::<serde_json::Value>(&body) {
-        let type_str = result["type_str"].as_str().unwrap_or("unknown");
-        let pkg_id = result["id"].as_i64().unwrap_or(0);
-        println!();
-        println!("✅ Package published successfully!");
-        println!("   type_str:  {}", type_str);
-        println!("   pkg_id:    {}", pkg_id);
-        println!("   status:    active");
-    } else {
-        println!();
-        println!("✅ Package published successfully!");
-        println!("   Response: {}", body);
     }
 
     Ok(())

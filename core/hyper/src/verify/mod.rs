@@ -87,7 +87,7 @@ impl PackageVerifier {
             if pack_manifest.signing_key_id.is_none() {
                 return Err(HyperError::InvalidManifest(
                     "Package missing 'signing_key_id' in manifest. \
-                     Rebuild with the latest 'actr pkg build' command."
+                     Rebuild with the latest 'actr build' command."
                         .to_string(),
                 ));
             }

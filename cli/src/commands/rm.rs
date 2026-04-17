@@ -1,7 +1,8 @@
-use crate::commands::Command;
 use crate::commands::process::{kill_process, wait_for_exit};
 use crate::commands::runtime_state::{RuntimeStateStore, RuntimeStatus, resolve_hyper_dir};
-use crate::error::{ActrCliError, Result};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::error::ActrCliError;
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
 use std::path::PathBuf;
@@ -28,7 +29,7 @@ pub struct RmCommand {
 
 #[async_trait]
 impl Command for RmCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
@@ -38,7 +39,8 @@ impl Command for RmCommand {
                 return Err(ActrCliError::command_error(format!(
                     "Workload {} is running. Stop it first or use -f to force remove.",
                     entry.wid_short()
-                )));
+                ))
+                .into());
             }
 
             if kill_process(entry.record.pid)?
@@ -47,12 +49,25 @@ impl Command for RmCommand {
                 return Err(ActrCliError::command_error(format!(
                     "Process {} did not exit after SIGKILL",
                     entry.record.pid
-                )));
+                ))
+                .into());
             }
         }
 
         store.delete_record_by_wid(&entry.record.wid).await?;
         println!("Removed {}", entry.wid_short());
-        Ok(())
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "rm"
+    }
+
+    fn description(&self) -> &str {
+        "Remove a detached runtime instance record"
     }
 }

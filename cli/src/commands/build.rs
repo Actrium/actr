@@ -1,10 +1,11 @@
 //! `actr build` - build source artifacts and package signed `.actr` workloads.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command as StdCommand, Stdio};
 
 use actr_config::{BuildArtifact, BuildConfig, BuildProfile, ConfigParser, ManifestConfig};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use cargo_metadata::MetadataCommand;
 use clap::Args;
 
@@ -13,6 +14,7 @@ use crate::commands::package_build::{
     PackageBuildInput, build_package, default_dist_output_path, print_build_summary,
     resolve_key_path,
 };
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::project_language::DetectedProjectLanguage;
 
 #[derive(Args, Debug)]
@@ -23,12 +25,12 @@ use crate::project_language::DetectedProjectLanguage;
 pub struct BuildCommand {
     /// manifest.toml path
     #[arg(
-        long,
-        short = 'f',
+        long = "manifest-path",
+        short = 'm',
         default_value = "manifest.toml",
         value_name = "FILE"
     )]
-    pub file: PathBuf,
+    pub manifest_path: PathBuf,
 
     /// Override target triple
     #[arg(long, short = 't', value_name = "TARGET")]
@@ -47,8 +49,28 @@ pub struct BuildCommand {
     pub no_compile: bool,
 }
 
-pub async fn execute(args: BuildCommand) -> Result<()> {
-    let manifest_path = resolve_manifest_path(&args.file)?;
+#[async_trait]
+impl Command for BuildCommand {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
+        execute_build(self).await?;
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "build"
+    }
+
+    fn description(&self) -> &str {
+        "Build source artifact and package a signed .actr workload"
+    }
+}
+
+async fn execute_build(args: &BuildCommand) -> Result<()> {
+    let manifest_path = resolve_manifest_path(&args.manifest_path)?;
     let config = ConfigParser::from_manifest_file(&manifest_path).with_context(|| {
         format!(
             "Failed to load manifest configuration from {}",
@@ -62,7 +84,7 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
         )
     })?;
 
-    let effective_target = resolve_effective_target(&args, &config)?;
+    let effective_target = resolve_effective_target(args, &config)?;
     let output_path = resolve_output_path(&manifest_path, &effective_target, args.output.as_ref())?;
 
     if !args.no_compile {
@@ -221,7 +243,7 @@ fn ensure_target_installed(target: &str) -> Result<()> {
         return Ok(());
     }
 
-    let status = Command::new("rustup")
+    let status = StdCommand::new("rustup")
         .arg("target")
         .arg("add")
         .arg(target)
@@ -239,7 +261,7 @@ fn ensure_target_installed(target: &str) -> Result<()> {
 }
 
 fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
-    let mut command = Command::new("cargo");
+    let mut command = StdCommand::new("cargo");
     command.arg("build");
     command.arg("--manifest-path").arg(&build.manifest_path);
 
@@ -304,7 +326,7 @@ fn run_post_build_steps(
         .to_path_buf();
 
     for command_text in &build.post_build {
-        let output = Command::new("sh")
+        let output = StdCommand::new("sh")
             .arg("-c")
             .arg(command_text)
             .current_dir(&manifest_dir)
@@ -374,7 +396,7 @@ fn resolve_cargo_bin_name(manifest_path: &Path) -> Result<String> {
 }
 
 fn resolve_host_target() -> Result<String> {
-    let output = Command::new("rustc")
+    let output = StdCommand::new("rustc")
         .arg("-vV")
         .output()
         .context("Failed to run `rustc -vV` to resolve host target")?;

@@ -1,4 +1,4 @@
-//! Integration test: `actr pkg sign` and `actr pkg build` signature consistency.
+//! Integration test: `actr pkg sign` and `actr build` signature consistency.
 //!
 //! Verifies that the offline `sign` workflow produces output that is
 //! byte-level identical and verification-compatible with the `build` workflow.
@@ -77,7 +77,7 @@ fn simulate_sign(
     (manifest_toml, sig_bytes, manifest)
 }
 
-/// Simulate the `actr pkg build` workflow using actr_pack::pack.
+/// Simulate the `actr build` workflow using actr_pack::pack.
 /// Returns the .actr package bytes.
 fn simulate_build(
     manufacturer: &str,

@@ -7,7 +7,7 @@ End-to-end test for the Actr package-driven execution flow, demonstrating how to
 This example demonstrates:
 
 1. **Build**: Compile echo-actr package (WASM or native cdylib) and package it as a signed `.actr` archive
-2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr pkg build` (wasm)
+2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr build` (wasm)
 3. **Verify**: Validate package signature with `actr pkg verify`
 4. **Publish**: Register package with MFR (Manufacturer Registry) via `actr pkg publish`
 5. **Run**: Host server loads the package and exposes the echo service
@@ -242,14 +242,14 @@ Two backends are supported via the `--backend` flag:
 **wasm (default)**
 - Compiles `echo-actr` to WASM (`wasm32-unknown-unknown`)
 - Optimizes with `wasm-opt --asyncify`
-- Packages with `actr pkg build`
+- Packages with `actr build`
 
 **cdylib**
 - Compiles `echo-actr` as a native shared library using `manifest-cdylib.toml`
 - Packages with `actr build` (no wasm-opt step)
 
 ### Step 0.5: Sign and Verify Package
-- Creates signed `.actr` archive using `actr pkg build`
+- Creates signed `.actr` archive using `actr build`
 - Verifies signature with `actr pkg verify`
 - Builds client-guest cdylib package
 

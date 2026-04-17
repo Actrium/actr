@@ -98,13 +98,6 @@ pub fn default_dist_output_path(config_path: &Path, target: &str) -> Result<Path
     Ok(manifest_dir.join("dist").join(file_name))
 }
 
-pub fn default_pkg_output_path(config_path: &Path, target: &str) -> Result<PathBuf> {
-    Ok(PathBuf::from(default_package_file_name(
-        config_path,
-        target,
-    )?))
-}
-
 fn default_package_file_name(config_path: &Path, target: &str) -> Result<String> {
     let config = ConfigParser::from_manifest_file(config_path).with_context(|| {
         format!(

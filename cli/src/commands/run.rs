@@ -1,9 +1,9 @@
 //! Run command implementation - Execute .actr packages
 
-use crate::commands::Command;
 use crate::commands::runtime_state::{
     RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_wid, resolve_hyper_dir,
 };
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -61,13 +61,26 @@ pub struct RunCommand {
 
 #[async_trait]
 impl Command for RunCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> anyhow::Result<CommandResult> {
         // The run command only supports packaged workloads via runtime config.
         if self.web {
-            self.execute_web_mode().await
+            self.execute_web_mode().await?;
         } else {
-            self.execute_package_mode().await
+            self.execute_package_mode().await?;
         }
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "run"
+    }
+
+    fn description(&self) -> &str {
+        "Run a packaged workload"
     }
 }
 

@@ -342,7 +342,7 @@ impl KotlinGenerator {
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(format!(
                 "manifest.lock.toml not found at {:?}.\n\
-                 Please run 'actr install' first to generate the lock file.",
+                 Please run 'actr deps install' first to generate the lock file.",
                 lock_file_path
             )));
         }
@@ -350,7 +350,7 @@ impl KotlinGenerator {
         let lock_file = LockFile::from_file(&lock_file_path).map_err(|e| {
             ActrCliError::config_error(format!(
                 "Failed to parse manifest.lock.toml: {}\n\
-                 Please run 'actr install' to regenerate the lock file.",
+                 Please run 'actr deps install' to regenerate the lock file.",
                 e
             ))
         })?;

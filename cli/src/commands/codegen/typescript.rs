@@ -295,7 +295,7 @@ impl LanguageGenerator for TypeScriptGenerator {
             "1. 📖 Review generated files in {}",
             context.output.display()
         );
-        println!("2. 📦 Ensure `actr install` has been executed in project root");
+        println!("2. 📦 Ensure `actr deps install` has been executed in project root");
         println!("3. ▶️  Run your app with `npm run dev`");
     }
 }
@@ -1264,7 +1264,7 @@ impl TypeScriptGenerator {
         let lock_path = config_dir.join("manifest.lock.toml");
         if !lock_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "manifest.lock.toml not found at {}. Please run `actr install` first.",
+                "manifest.lock.toml not found at {}. Please run `actr deps install` first.",
                 lock_path.display()
             )));
         }
@@ -1286,7 +1286,7 @@ impl TypeScriptGenerator {
             let actr_type = lock_mapping.get(&lock_key).ok_or_else(|| {
                 ActrCliError::config_error(format!(
                     "Remote proto '{}' missing in manifest.lock.toml.\n\
-                     Please run `actr install` and retry.",
+                     Please run `actr deps install` and retry.",
                     lock_key
                 ))
             })?;

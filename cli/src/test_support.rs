@@ -632,7 +632,7 @@ impl LocalRustEchoService {
         align_project_with_local_actrix(&service_dir)?;
         align_rust_project_with_workspace(&service_dir)?;
         let install_out = run_actr(&["install"], &service_dir);
-        ensure_success(&install_out, "actr install rust service")?;
+        ensure_success(&install_out, "actr deps install rust service")?;
         let gen_out = run_actr(&["gen", "-l", "rust"], &service_dir);
         ensure_success(&gen_out, "actr gen rust service")?;
         cargo_build(&service_dir);

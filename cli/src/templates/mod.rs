@@ -354,7 +354,7 @@ mod tests {
         assert!(temp_dir.path().join("manifest.toml").exists());
         // Verify .gitignore exists
         assert!(temp_dir.path().join(".gitignore").exists());
-        // Note: proto files are no longer created during init, they will be pulled via actr install
+        // Note: proto files are no longer created during init, they will be pulled via actr deps install
         // Verify app directory exists
         assert!(
             temp_dir

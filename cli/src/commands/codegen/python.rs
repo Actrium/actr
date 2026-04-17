@@ -70,7 +70,7 @@ impl LanguageGenerator for PythonGenerator {
         // Check if lock file exists - required for code generation
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "manifest.lock.toml not found at {}. Please run 'actr install' first.",
+                "manifest.lock.toml not found at {}. Please run 'actr deps install' first.",
                 lock_file_path.display()
             )));
         }
@@ -166,7 +166,7 @@ impl LanguageGenerator for PythonGenerator {
                          Available remote files in lock:\n  {}\n\n\
                          This usually means:\n\
                          1. The dependency is not listed in manifest.toml\n\
-                         2. You need to run 'actr install' to update manifest.lock.toml\n\
+                         2. You need to run 'actr deps install' to update manifest.lock.toml\n\
                          3. The proto file path in the dependency doesn't match",
                         remote_relative_path,
                         remote_services_map

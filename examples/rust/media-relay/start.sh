@@ -285,13 +285,13 @@ sleep 2
 
 # Step 3.5: Install actr-a dependencies (resolve from actrix registry after actr-b registered)
 echo ""
-echo "📦 Installing actr-a dependencies (actr install)..."
+echo "📦 Installing actr-a dependencies (actr deps install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$WORKSPACE_ROOT/media-relay/actr-a"
 INSTALL_LOG="$LOG_DIR/actr-install-actr-a.log"
 $ACTR_GEN_CMD deps install > "$INSTALL_LOG" 2>&1 || {
-    echo -e "${YELLOW}⚠️  actr install returned non-zero, check log${NC}"
+    echo -e "${YELLOW}⚠️  actr deps install returned non-zero, check log${NC}"
 }
 echo -e "${GREEN}✅ actr-a dependencies resolved${NC}"
 

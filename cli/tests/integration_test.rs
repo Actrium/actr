@@ -5,6 +5,22 @@
 use std::fs;
 use tempfile::TempDir;
 
+fn dummy_ctx() -> actr_cli::core::CommandContext {
+    use actr_cli::core::{CommandArgs, CommandContext, ContainerBuilder};
+    use std::sync::{Arc, Mutex};
+    let container = ContainerBuilder::new().build().expect("build container");
+    CommandContext {
+        container: Arc::new(Mutex::new(container)),
+        args: CommandArgs {
+            command: String::new(),
+            subcommand: None,
+            flags: Default::default(),
+            positional: Vec::new(),
+        },
+        working_dir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    }
+}
+
 #[test]
 fn test_config_parser_loads_valid_config() {
     use actr::config::ConfigParser;
@@ -119,7 +135,8 @@ fn test_project_template_basic_generation() {
 
 #[tokio::test]
 async fn test_start_no_record_returns_error() {
-    use actr_cli::commands::{Command, start::StartCommand};
+    use actr_cli::commands::start::StartCommand;
+    use actr_cli::core::Command;
     use tempfile::TempDir;
 
     let hyper_dir = TempDir::new().unwrap();
@@ -128,7 +145,7 @@ async fn test_start_no_record_returns_error() {
         config: None,
         hyper_dir: Some(hyper_dir.path().to_path_buf()),
     };
-    let result = cmd.execute().await;
+    let result = cmd.execute(&dummy_ctx()).await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -139,7 +156,8 @@ async fn test_start_no_record_returns_error() {
 
 #[tokio::test]
 async fn test_restart_no_record_returns_error() {
-    use actr_cli::commands::{Command, restart::RestartCommand};
+    use actr_cli::commands::restart::RestartCommand;
+    use actr_cli::core::Command;
     use tempfile::TempDir;
 
     let hyper_dir = TempDir::new().unwrap();
@@ -150,7 +168,7 @@ async fn test_restart_no_record_returns_error() {
         timeout: 5,
         force: false,
     };
-    let result = cmd.execute().await;
+    let result = cmd.execute(&dummy_ctx()).await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -161,7 +179,8 @@ async fn test_restart_no_record_returns_error() {
 
 #[tokio::test]
 async fn test_start_reads_config_from_runtime_record() {
-    use actr_cli::commands::{Command, start::StartCommand};
+    use actr_cli::commands::start::StartCommand;
+    use actr_cli::core::Command;
     use tempfile::TempDir;
 
     let hyper_dir = TempDir::new().unwrap();
@@ -173,7 +192,7 @@ async fn test_start_reads_config_from_runtime_record() {
         config: Some(fake_config),
         hyper_dir: Some(hyper_dir.path().to_path_buf()),
     };
-    let result = cmd.execute().await;
+    let result = cmd.execute(&dummy_ctx()).await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -404,8 +423,9 @@ async fn test_schema_v1_record_returns_error() {
 
 #[tokio::test]
 async fn test_rm_removes_stopped_record() {
+    use actr_cli::commands::rm::RmCommand;
     use actr_cli::commands::runtime_state::{RuntimeRecord, RuntimeStateStore};
-    use actr_cli::commands::{Command, rm::RmCommand};
+    use actr_cli::core::Command;
     use chrono::Utc;
     use tempfile::TempDir;
 
@@ -431,15 +451,16 @@ async fn test_rm_removes_stopped_record() {
         hyper_dir: Some(hyper_dir.path().to_path_buf()),
         force: false,
     };
-    cmd.execute().await.unwrap();
+    cmd.execute(&dummy_ctx()).await.unwrap();
 
     assert!(store.read_record_by_wid(&wid).await.unwrap().is_none());
 }
 
 #[tokio::test]
 async fn test_rm_rejects_running_record_without_force() {
+    use actr_cli::commands::rm::RmCommand;
     use actr_cli::commands::runtime_state::{RuntimeRecord, RuntimeStateStore};
-    use actr_cli::commands::{Command, rm::RmCommand};
+    use actr_cli::core::Command;
     use chrono::Utc;
     use tempfile::TempDir;
 
@@ -464,7 +485,7 @@ async fn test_rm_rejects_running_record_without_force() {
         hyper_dir: Some(hyper_dir.path().to_path_buf()),
         force: false,
     };
-    let result = cmd.execute().await;
+    let result = cmd.execute(&dummy_ctx()).await;
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(

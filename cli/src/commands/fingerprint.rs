@@ -32,9 +32,9 @@ enum VerificationStatus {
     long_about = "Compute and display semantic fingerprints for proto files and services"
 )]
 pub struct FingerprintCommand {
-    /// Configuration file path
-    #[arg(short, long, default_value = "manifest.toml")]
-    pub config: String,
+    /// Path to manifest.toml
+    #[arg(short = 'm', long = "manifest-path", default_value = "manifest.toml")]
+    pub manifest_path: String,
 
     /// Output format (text, json, yaml)
     #[arg(long, default_value = "text")]
@@ -117,9 +117,9 @@ async fn execute_proto_fingerprint(args: &FingerprintCommand, proto_path: &str) 
 /// Execute service-level fingerprint calculation
 async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
     // Load configuration
-    let config_path = Path::new(&args.config);
+    let config_path = Path::new(&args.manifest_path);
     let config = ConfigParser::from_manifest_file(config_path)
-        .with_context(|| format!("Failed to load manifest from {}", args.config))?;
+        .with_context(|| format!("Failed to load manifest from {}", args.manifest_path))?;
 
     // Convert actr_config::ProtoFile to actr_service_compat::ProtoFile
     let mut proto_files: Vec<ProtoFile> = config
@@ -250,14 +250,14 @@ async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
                     println!("ℹ️  No proto files found in exports");
                     println!(
                         "   Add proto files to the 'exports' array in {} to calculate fingerprints",
-                        args.config
+                        args.manifest_path
                     );
                 }
                 "json" => {
                     let output = serde_json::json!({
                         "status": "no_exports",
                         "message": "No proto files found in exports",
-                        "config_file": args.config
+                        "config_file": args.manifest_path
                     });
                     println!("{}", serde_json::to_string_pretty(&output).unwrap());
                 }
@@ -276,7 +276,7 @@ async fn execute_service_fingerprint(args: &FingerprintCommand) -> Result<()> {
                         );
                         map.insert(
                             serde_yaml::Value::String("config_file".to_string()),
-                            serde_yaml::Value::String(args.config.clone()),
+                            serde_yaml::Value::String(args.manifest_path.clone()),
                         );
                         map
                     });

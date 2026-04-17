@@ -364,10 +364,10 @@ else
     "$WASM_OPT_CMD" --asyncify -O "$RAW_WASM" -o "$OPTIMIZED_WASM"
     echo -e "${GREEN}✅ wasm-opt done: $(du -h "$OPTIMIZED_WASM" | cut -f1)${NC}"
 
-    # ── Step 0.5: Pack .actr with actr pkg build ──────────────────────────
+    # ── Step 0.5: Pack .actr with actr build ──────────────────────────
 
     echo ""
-    echo -e "${BLUE}📦 Step 0.5: Packing signed .actr package via actr pkg build...${NC}"
+    echo -e "${BLUE}📦 Step 0.5: Packing signed .actr package via actr build...${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     ACTR_PACKAGE="$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-${ECHO_ACTR_TARGET}.actr"
@@ -392,7 +392,7 @@ TOML
         --output "$ACTR_PACKAGE"
 
     if [ ! -f "$ACTR_PACKAGE" ]; then
-        echo -e "${RED}❌ actr pkg build failed: $ACTR_PACKAGE not found${NC}"
+        echo -e "${RED}❌ actr build failed: $ACTR_PACKAGE not found${NC}"
         exit 1
     fi
     echo -e "${GREEN}✅ .actr package built: $(du -h "$ACTR_PACKAGE" | cut -f1)${NC}"

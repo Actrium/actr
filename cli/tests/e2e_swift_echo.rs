@@ -221,7 +221,10 @@ fn swift_echo_e2e_service_and_app() {
     pin_echo_service_dependency_version(&app_dir, "swift-e2e")
         .expect("failed to pin app echo dependency version");
 
-    assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
+    assert_success(
+        &run_actr(&["deps", "install"], &svc_dir),
+        "actr deps install (svc)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &svc_dir),
         "actr gen -l swift (svc)",
@@ -249,7 +252,10 @@ fn swift_echo_e2e_service_and_app() {
         svc.logs()
     );
 
-    assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
+    assert_success(
+        &run_actr(&["deps", "install"], &app_dir),
+        "actr deps install (app)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &app_dir),
         "actr gen -l swift (app)",

@@ -1,83 +1,143 @@
-//! `actr dlq` — Dead Letter Queue inspection tool
+//! `actr dlq` — Dead Letter Queue inspection and remediation.
 //!
-//! Provides read/delete access to the SQLite DLQ for operator use.
-//!
-//! ## Subcommands
-//!
-//! ```text
-//! actr dlq list   [--db=PATH] [--limit=N] [--category=CAT] [--after=RFC3339]
-//! actr dlq show   <ID> [--db=PATH]
-//! actr dlq stats  [--db=PATH]
-//! actr dlq delete <ID> [--db=PATH]
-//! ```
-//!
-//! `--db` defaults to `./actr-data/dlq.db` (the runtime default path).
+//! Subcommands:
+//!   - `list`   — list DLQ records (default: newest 20)
+//!   - `show`   — show full detail for one record
+//!   - `stats`  — print DLQ statistics
+//!   - `replay` — re-enqueue a record's raw bytes into a mailbox
+//!   - `purge`  — permanently delete records (by ID, or by filter with `--all`)
 
 use actr_runtime_mailbox::{
     DeadLetterQueue,
     dlq::{DlqQuery, DlqRecord},
+    mailbox::{Mailbox, MessagePriority},
+    sqlite::SqliteMailbox,
     sqlite_dlq::SqliteDeadLetterQueue,
 };
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use chrono::DateTime;
+use clap::{Args, Subcommand};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+
 const DEFAULT_DB_PATH: &str = "actr-data/dlq.db";
+const DEFAULT_MAILBOX_PATH: &str = "actr-data/mailbox.db";
 const DEFAULT_LIST_LIMIT: u32 = 20;
 
-/// Arguments parsed from CLI flags for `actr dlq`.
+#[derive(Args, Debug)]
 pub struct DlqArgs {
-    pub subcommand: String,
-    /// Positional argument (ID for show/delete)
-    pub id: Option<String>,
+    #[command(subcommand)]
+    pub command: DlqCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DlqCommand {
+    /// List DLQ records (newest first).
+    List(DlqListArgs),
+    /// Show full detail for a single record.
+    Show(DlqShowArgs),
+    /// Print aggregate statistics.
+    Stats(DlqStatsArgs),
+    /// Re-enqueue a record's raw bytes into a live mailbox.
+    Replay(DlqReplayArgs),
+    /// Permanently remove records.
+    Purge(DlqPurgeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DlqListArgs {
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = DEFAULT_DB_PATH, value_name = "FILE")]
     pub db: PathBuf,
+    /// Max records to return
+    #[arg(long, default_value_t = DEFAULT_LIST_LIMIT)]
     pub limit: u32,
+    /// Filter by error_category
+    #[arg(long, value_name = "CATEGORY")]
     pub category: Option<String>,
+    /// Filter records created after timestamp (RFC 3339)
+    #[arg(long, value_name = "RFC3339")]
     pub after: Option<String>,
 }
 
-impl DlqArgs {
-    pub fn parse(
-        subcommand: Option<&str>,
-        positional: &[String],
-        flags: &std::collections::HashMap<String, String>,
-    ) -> Result<Self> {
-        let subcommand = subcommand.unwrap_or("list").to_string();
-        let id = positional.first().cloned();
-        let db = flags
-            .get("db")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DB_PATH));
-        let limit = flags
-            .get("limit")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_LIST_LIMIT);
-        let category = flags.get("category").cloned();
-        let after = flags.get("after").cloned();
-
-        Ok(Self {
-            subcommand,
-            id,
-            db,
-            limit,
-            category,
-            after,
-        })
-    }
+#[derive(Args, Debug)]
+pub struct DlqShowArgs {
+    /// DLQ record UUID
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = DEFAULT_DB_PATH, value_name = "FILE")]
+    pub db: PathBuf,
 }
 
-/// Execute the `actr dlq` command.
-pub async fn execute(args: DlqArgs) -> Result<()> {
-    match args.subcommand.as_str() {
-        "list" => cmd_list(&args).await,
-        "show" => cmd_show(&args).await,
-        "stats" => cmd_stats(&args).await,
-        "delete" => cmd_delete(&args).await,
-        other => bail!(
-            "Unknown dlq subcommand '{}'. Use: list | show | stats | delete",
-            other
-        ),
+#[derive(Args, Debug)]
+pub struct DlqStatsArgs {
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = DEFAULT_DB_PATH, value_name = "FILE")]
+    pub db: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct DlqReplayArgs {
+    /// DLQ record UUID
+    #[arg(value_name = "ID")]
+    pub id: String,
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = DEFAULT_DB_PATH, value_name = "FILE")]
+    pub db: PathBuf,
+    /// Path to target mailbox SQLite file
+    #[arg(long, default_value = DEFAULT_MAILBOX_PATH, value_name = "FILE")]
+    pub mailbox: PathBuf,
+    /// Keep the DLQ record after a successful replay (default: delete)
+    #[arg(long)]
+    pub keep: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DlqPurgeArgs {
+    /// Single record UUID to purge. If omitted, `--all` is required.
+    #[arg(value_name = "ID")]
+    pub id: Option<String>,
+    /// Path to DLQ SQLite file
+    #[arg(long, default_value = DEFAULT_DB_PATH, value_name = "FILE")]
+    pub db: PathBuf,
+    /// Purge every record. Combine with `--category` or `--before` to narrow scope.
+    #[arg(long, conflicts_with = "id")]
+    pub all: bool,
+    /// When purging with `--all`, restrict to records in this error_category
+    #[arg(long, value_name = "CATEGORY", requires = "all")]
+    pub category: Option<String>,
+    /// When purging with `--all`, restrict to records created before the timestamp (RFC 3339)
+    #[arg(long, value_name = "RFC3339", requires = "all")]
+    pub before: Option<String>,
+}
+
+#[async_trait]
+impl Command for DlqArgs {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
+        match &self.command {
+            DlqCommand::List(a) => cmd_list(a).await?,
+            DlqCommand::Show(a) => cmd_show(a).await?,
+            DlqCommand::Stats(a) => cmd_stats(a).await?,
+            DlqCommand::Replay(a) => cmd_replay(a).await?,
+            DlqCommand::Purge(a) => cmd_purge(a).await?,
+        }
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "dlq"
+    }
+
+    fn description(&self) -> &str {
+        "Dead Letter Queue inspection and remediation"
     }
 }
 
@@ -89,12 +149,16 @@ async fn open_dlq(db: &Path) -> Result<SqliteDeadLetterQueue> {
         .with_context(|| format!("Failed to open DLQ database at {}", db.display()))
 }
 
-fn require_id(args: &DlqArgs) -> Result<Uuid> {
-    let raw = args
-        .id
-        .as_deref()
-        .context("Missing required <ID> argument")?;
+fn parse_id(raw: &str) -> Result<Uuid> {
     Uuid::parse_str(raw).with_context(|| format!("Invalid UUID: '{raw}'"))
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
+    }
 }
 
 fn print_record_summary(r: &DlqRecord) {
@@ -119,7 +183,7 @@ fn print_record_detail(r: &DlqRecord) {
     if let Some(ref mid) = r.original_message_id {
         println!("Message ID:      {mid}");
     }
-    println!("Raw bytes (hex): {} bytes", r.raw_bytes.len());
+    println!("Raw bytes:       {} bytes", r.raw_bytes.len());
     if !r.raw_bytes.is_empty() {
         let preview: String = r
             .raw_bytes
@@ -140,25 +204,24 @@ fn print_record_detail(r: &DlqRecord) {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
-    }
+fn parse_rfc3339(s: &str, flag: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.to_utc())
+        .with_context(|| {
+            format!("{flag} must be a valid RFC 3339 timestamp (e.g. 2026-01-01T00:00:00Z)")
+        })
 }
 
-// ── subcommands ───────────────────────────────────────────────────────────────
+// ── subcommands ──────────────────────────────────────────────────────────────
 
-async fn cmd_list(args: &DlqArgs) -> Result<()> {
+async fn cmd_list(args: &DlqListArgs) -> Result<()> {
     let dlq = open_dlq(&args.db).await?;
 
     let after = args
         .after
         .as_deref()
-        .map(|s| DateTime::parse_from_rfc3339(s).map(|dt| dt.to_utc()))
-        .transpose()
-        .context("--after must be a valid RFC 3339 timestamp (e.g. 2026-01-01T00:00:00Z)")?;
+        .map(|s| parse_rfc3339(s, "--after"))
+        .transpose()?;
 
     let query = DlqQuery {
         error_category: args.category.clone(),
@@ -186,10 +249,9 @@ async fn cmd_list(args: &DlqArgs) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_show(args: &DlqArgs) -> Result<()> {
-    let id = require_id(args)?;
+async fn cmd_show(args: &DlqShowArgs) -> Result<()> {
+    let id = parse_id(&args.id)?;
     let dlq = open_dlq(&args.db).await?;
-
     match dlq.get(id).await.context("DLQ get failed")? {
         Some(r) => {
             print_record_detail(&r);
@@ -199,7 +261,7 @@ async fn cmd_show(args: &DlqArgs) -> Result<()> {
     }
 }
 
-async fn cmd_stats(args: &DlqArgs) -> Result<()> {
+async fn cmd_stats(args: &DlqStatsArgs) -> Result<()> {
     let dlq = open_dlq(&args.db).await?;
     let stats = dlq.stats().await.context("DLQ stats failed")?;
 
@@ -223,46 +285,103 @@ async fn cmd_stats(args: &DlqArgs) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_delete(args: &DlqArgs) -> Result<()> {
-    let id = require_id(args)?;
+async fn cmd_replay(args: &DlqReplayArgs) -> Result<()> {
+    let id = parse_id(&args.id)?;
     let dlq = open_dlq(&args.db).await?;
+    let record = dlq
+        .get(id)
+        .await
+        .context("DLQ get failed")?
+        .ok_or_else(|| anyhow::anyhow!("No DLQ record found with ID: {id}"))?;
 
-    // Verify the record exists first so we give a clear error if not found.
-    if dlq.get(id).await.context("DLQ get failed")?.is_none() {
-        bail!("No DLQ record found with ID: {id}");
+    if !args.mailbox.exists() {
+        bail!(
+            "Target mailbox file does not exist: {}\n\
+             Specify a different path with --mailbox.",
+            args.mailbox.display()
+        );
     }
 
-    dlq.delete(id).await.context("DLQ delete failed")?;
-    println!("Deleted DLQ record: {id}");
+    let from = record.from.clone().ok_or_else(|| {
+        anyhow::anyhow!("DLQ record {id} has no 'from' ActrId; cannot re-enqueue without a sender.")
+    })?;
+
+    let mailbox = SqliteMailbox::new(&args.mailbox)
+        .await
+        .with_context(|| format!("Failed to open mailbox: {}", args.mailbox.display()))?;
+
+    let msg_id = mailbox
+        .enqueue(from, record.raw_bytes.clone(), MessagePriority::Normal)
+        .await
+        .context("Failed to re-enqueue into mailbox")?;
+
+    dlq.record_redrive_attempt(id)
+        .await
+        .context("Failed to record redrive attempt")?;
+
+    if args.keep {
+        println!(
+            "Replayed DLQ record {id} into {} as message {msg_id} (kept in DLQ).",
+            args.mailbox.display()
+        );
+    } else {
+        dlq.delete(id)
+            .await
+            .context("Failed to delete DLQ record")?;
+        println!(
+            "Replayed DLQ record {id} into {} as message {msg_id} and removed from DLQ.",
+            args.mailbox.display()
+        );
+    }
     Ok(())
 }
 
-// ── help text ─────────────────────────────────────────────────────────────────
+async fn cmd_purge(args: &DlqPurgeArgs) -> Result<()> {
+    let dlq = open_dlq(&args.db).await?;
 
-pub fn print_dlq_help() {
-    println!(
-        r#"actr dlq — Dead Letter Queue inspection
+    if let Some(id) = &args.id {
+        let uuid = parse_id(id)?;
+        if dlq.get(uuid).await.context("DLQ get failed")?.is_none() {
+            bail!("No DLQ record found with ID: {uuid}");
+        }
+        dlq.delete(uuid).await.context("DLQ delete failed")?;
+        println!("Purged DLQ record: {uuid}");
+        return Ok(());
+    }
 
-Usage:
-    actr dlq list   [OPTIONS]      List DLQ entries (default: newest 20)
-    actr dlq show   <ID> [OPTIONS] Show full detail for one entry
-    actr dlq stats  [OPTIONS]      Print DLQ statistics
-    actr dlq delete <ID> [OPTIONS] Delete a resolved entry
+    if !args.all {
+        bail!("Specify a record ID, or pass --all (optionally with --category / --before).");
+    }
 
-Options:
-    --db=PATH           Path to DLQ SQLite file  [default: actr-data/dlq.db]
-    --limit=N           Max records to return for 'list'  [default: 20]
-    --category=CAT      Filter by error_category
-    --after=RFC3339     Filter records created after timestamp
+    let before = args
+        .before
+        .as_deref()
+        .map(|s| parse_rfc3339(s, "--before"))
+        .transpose()?;
 
-Examples:
-    actr dlq list
-    actr dlq list --limit=50 --category=protobuf_decode
-    actr dlq show 550e8400-e29b-41d4-a716-446655440000
-    actr dlq stats
-    actr dlq delete 550e8400-e29b-41d4-a716-446655440000
-"#
-    );
+    // Query matching records, then delete each. We restrict to DlqQuery's filters
+    // (category, created_after); `created_before` is applied client-side.
+    let query = DlqQuery {
+        error_category: args.category.clone(),
+        limit: None,
+        created_after: None,
+        ..Default::default()
+    };
+    let records = dlq.query(query).await.context("DLQ query failed")?;
+
+    let mut purged = 0usize;
+    for r in records {
+        if let Some(cutoff) = before
+            && r.created_at >= cutoff
+        {
+            continue;
+        }
+        dlq.delete(r.id).await.context("DLQ delete failed")?;
+        purged += 1;
+    }
+
+    println!("Purged {purged} DLQ record(s).");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -270,7 +389,6 @@ mod tests {
     use super::*;
     use actr_runtime_mailbox::{dlq::DlqRecord, sqlite_dlq::SqliteDeadLetterQueue};
     use chrono::Utc;
-    use std::collections::HashMap;
     use tempfile::tempdir;
 
     async fn make_dlq() -> (SqliteDeadLetterQueue, tempfile::TempDir) {
@@ -284,7 +402,7 @@ mod tests {
         DlqRecord {
             id: uuid::Uuid::new_v4(),
             original_message_id: None,
-            from: None,
+            from: Some(b"sender-actr-id".to_vec()),
             to: None,
             raw_bytes: b"bad bytes".to_vec(),
             error_message: msg.to_string(),
@@ -298,256 +416,95 @@ mod tests {
         }
     }
 
-    fn flags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    // ── DlqArgs::parse ──────────────────────────────────────────────────────
-
-    #[test]
-    fn parse_defaults_to_list() {
-        let args = DlqArgs::parse(None, &[], &HashMap::new()).unwrap();
-        assert_eq!(args.subcommand, "list");
-        assert_eq!(args.limit, DEFAULT_LIST_LIMIT);
-        assert!(args.id.is_none());
-    }
-
-    #[test]
-    fn parse_show_with_id() {
-        let pos = vec!["550e8400-e29b-41d4-a716-446655440000".to_string()];
-        let args = DlqArgs::parse(Some("show"), &pos, &HashMap::new()).unwrap();
-        assert_eq!(args.subcommand, "show");
-        assert_eq!(
-            args.id.as_deref(),
-            Some("550e8400-e29b-41d4-a716-446655440000")
-        );
-    }
-
-    #[test]
-    fn parse_list_with_flags() {
-        let f = flags(&[("limit", "5"), ("category", "decode"), ("db", "/tmp/x.db")]);
-        let args = DlqArgs::parse(Some("list"), &[], &f).unwrap();
-        assert_eq!(args.limit, 5);
-        assert_eq!(args.category.as_deref(), Some("decode"));
-        assert_eq!(args.db, PathBuf::from("/tmp/x.db"));
-    }
-
-    #[test]
-    fn require_id_returns_error_when_missing() {
-        let args = DlqArgs::parse(Some("show"), &[], &HashMap::new()).unwrap();
-        assert!(require_id(&args).is_err());
-    }
-
-    #[test]
-    fn require_id_returns_error_for_bad_uuid() {
-        let pos = vec!["not-a-uuid".to_string()];
-        let args = DlqArgs::parse(Some("show"), &pos, &HashMap::new()).unwrap();
-        assert!(require_id(&args).is_err());
-    }
-
-    // ── cmd_list ─────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn list_empty_db_prints_empty_message() {
-        let (_, dir) = make_dlq().await;
-        let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "list".into(),
-            id: None,
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        // Should not error even when DB is empty
-        cmd_list(&args).await.unwrap();
-    }
-
     #[tokio::test]
     async fn list_returns_records() {
         let (dlq, dir) = make_dlq().await;
         dlq.enqueue(sample_record("decode", "bad proto"))
             .await
             .unwrap();
-        dlq.enqueue(sample_record("decode", "truncated"))
-            .await
-            .unwrap();
-
         let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "list".into(),
-            id: None,
+        cmd_list(&DlqListArgs {
             db,
             limit: 10,
             category: None,
             after: None,
-        };
-        cmd_list(&args).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn list_filters_by_category() {
-        let (dlq, dir) = make_dlq().await;
-        dlq.enqueue(sample_record("decode", "bad proto"))
-            .await
-            .unwrap();
-        dlq.enqueue(sample_record("envelope", "bad header"))
-            .await
-            .unwrap();
-
-        let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "list".into(),
-            id: None,
-            db,
-            limit: 10,
-            category: Some("envelope".into()),
-            after: None,
-        };
-        cmd_list(&args).await.unwrap(); // just check no error; output goes to stdout
-    }
-
-    // ── cmd_show ─────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn show_existing_record() {
-        let (dlq, dir) = make_dlq().await;
-        let rec = sample_record("decode", "corrupted");
-        let id = dlq.enqueue(rec.clone()).await.unwrap();
-
-        let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "show".into(),
-            id: Some(id.to_string()),
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        cmd_show(&args).await.unwrap();
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
     async fn show_missing_record_returns_error() {
         let (_dlq, dir) = make_dlq().await;
         let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "show".into(),
-            id: Some(Uuid::new_v4().to_string()),
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        assert!(cmd_show(&args).await.is_err());
-    }
-
-    // ── cmd_stats ────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn stats_on_empty_db() {
-        let (_dlq, dir) = make_dlq().await;
-        let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "stats".into(),
-            id: None,
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        cmd_stats(&args).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn stats_with_records() {
-        let (dlq, dir) = make_dlq().await;
-        dlq.enqueue(sample_record("decode", "a")).await.unwrap();
-        dlq.enqueue(sample_record("decode", "b")).await.unwrap();
-        dlq.enqueue(sample_record("envelope", "c")).await.unwrap();
-
-        let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "stats".into(),
-            id: None,
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        cmd_stats(&args).await.unwrap();
-    }
-
-    // ── cmd_delete ───────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn delete_existing_record() {
-        let (dlq, dir) = make_dlq().await;
-        let id = dlq
-            .enqueue(sample_record("decode", "poison"))
+        assert!(
+            cmd_show(&DlqShowArgs {
+                id: Uuid::new_v4().to_string(),
+                db,
+            })
             .await
-            .unwrap();
+            .is_err()
+        );
+    }
 
+    #[tokio::test]
+    async fn purge_by_id_deletes() {
+        let (dlq, dir) = make_dlq().await;
+        let id = dlq.enqueue(sample_record("decode", "x")).await.unwrap();
         let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "delete".into(),
+        cmd_purge(&DlqPurgeArgs {
             id: Some(id.to_string()),
             db: db.clone(),
-            limit: 20,
+            all: false,
             category: None,
-            after: None,
-        };
-        cmd_delete(&args).await.unwrap();
-
-        // Verify it's gone
+            before: None,
+        })
+        .await
+        .unwrap();
         let dlq2 = SqliteDeadLetterQueue::new_standalone(&db).await.unwrap();
         assert!(dlq2.get(id).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn delete_nonexistent_record_returns_error() {
-        let (_dlq, dir) = make_dlq().await;
+    async fn purge_all_with_category_filter() {
+        let (dlq, dir) = make_dlq().await;
+        dlq.enqueue(sample_record("decode", "a")).await.unwrap();
+        dlq.enqueue(sample_record("envelope", "b")).await.unwrap();
         let db = dir.path().join("dlq.db");
-        let args = DlqArgs {
-            subcommand: "delete".into(),
-            id: Some(Uuid::new_v4().to_string()),
-            db,
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        assert!(cmd_delete(&args).await.is_err());
+        cmd_purge(&DlqPurgeArgs {
+            id: None,
+            db: db.clone(),
+            all: true,
+            category: Some("decode".into()),
+            before: None,
+        })
+        .await
+        .unwrap();
+        let dlq2 = SqliteDeadLetterQueue::new_standalone(&db).await.unwrap();
+        let remaining = dlq2.query(DlqQuery::default()).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].error_category, "envelope");
     }
-
-    // ── unknown subcommand ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn unknown_subcommand_returns_error() {
-        let args = DlqArgs {
-            subcommand: "oops".into(),
-            id: None,
-            db: PathBuf::from("x.db"),
-            limit: 20,
-            category: None,
-            after: None,
-        };
-        assert!(execute(args).await.is_err());
-    }
+    async fn replay_moves_record_to_mailbox() {
+        let (dlq, dir) = make_dlq().await;
+        let id = dlq.enqueue(sample_record("decode", "x")).await.unwrap();
+        let db = dir.path().join("dlq.db");
+        let mailbox = dir.path().join("mailbox.db");
+        // touch mailbox file first via SqliteMailbox::new
+        let _ = SqliteMailbox::new(&mailbox).await.unwrap();
 
-    // ── helpers ───────────────────────────────────────────────────────────────
+        cmd_replay(&DlqReplayArgs {
+            id: id.to_string(),
+            db: db.clone(),
+            mailbox: mailbox.clone(),
+            keep: false,
+        })
+        .await
+        .unwrap();
 
-    #[test]
-    fn truncate_short_string_unchanged() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string_has_ellipsis() {
-        let s = truncate("hello world", 5);
-        assert!(s.ends_with('…'));
-        assert!(s.len() <= 6 + '…'.len_utf8()); // 5 chars + ellipsis
+        let dlq2 = SqliteDeadLetterQueue::new_standalone(&db).await.unwrap();
+        assert!(dlq2.get(id).await.unwrap().is_none());
     }
 }

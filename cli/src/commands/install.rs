@@ -20,7 +20,7 @@ use std::process::Command as StdCommand;
 #[derive(Args, Debug)]
 #[command(
     about = "Install service dependencies",
-    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in manifest.toml.\n\nExamples:\n  actr install                          # Install all dependencies from manifest.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
+    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in manifest.toml.\n\nExamples:\n  actr deps install                          # Install all dependencies from manifest.toml\n  actr deps install user-service             # Install a service by name\n  actr deps install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
 )]
 pub struct InstallCommand {
     /// Package name or alias (when used with --actr-type, this becomes the alias)
@@ -58,7 +58,7 @@ pub enum InstallMode {
     /// - Update manifest.lock.toml
     AddNewPackage { packages: Vec<String> },
 
-    /// Mode 1b: Add dependency with explicit alias and actr_type (actr install <alias> --actr-type <type>)
+    /// Mode 1b: Add dependency with explicit alias and actr_type (actr deps install <alias> --actr-type <type>)
     /// - Discover service by actr_type
     /// - Use first argument as alias
     /// - Modify manifest.toml (add dependency with alias)
@@ -116,7 +116,7 @@ impl Command for InstallCommand {
             if self.fingerprint.is_some() {
                 return Err(ActrCliError::InvalidArgument {
                     message: "Using --fingerprint requires specifying --actr-type explicitly.
-Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
+Use: actr deps install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
                         .to_string(),
                 }
                 .into());
@@ -129,7 +129,7 @@ Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
             if self.fingerprint.is_some() {
                 return Err(ActrCliError::InvalidArgument {
                     message: "Using --fingerprint requires specifying an alias and --actr-type.
-Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
+Use: actr deps install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
                         .to_string(),
                 }
                 .into());
@@ -225,7 +225,7 @@ impl InstallCommand {
             .unwrap_or_else(|| spec.name.clone())
     }
 
-    /// Execute Mode 1: Add new package (actr install <package>)
+    /// Execute Mode 1: Add new package (actr deps install <package>)
     /// - Pull remote proto to protos/ folder
     /// - Modify manifest.toml (add dependency)
     /// - Update manifest.lock.toml
@@ -234,7 +234,7 @@ impl InstallCommand {
         context: &CommandContext,
         packages: &[String],
     ) -> Result<CommandResult> {
-        println!("actr install {}", packages.join(" "));
+        println!("actr deps install {}", packages.join(" "));
 
         let install_pipeline = {
             let mut container = context.container.lock().unwrap();
@@ -279,7 +279,7 @@ impl InstallCommand {
                             "💡 Tip: If you want to specify a fingerprint, use the full command:"
                         );
                         println!(
-                            "      actr install {} --actr-type <TYPE> --fingerprint <FINGERPRINT>",
+                            "      actr deps install {} --actr-type <TYPE> --fingerprint <FINGERPRINT>",
                             package
                         );
                         println!();
@@ -398,7 +398,7 @@ impl InstallCommand {
         use actr_protocol::ActrTypeExt;
 
         println!(
-            "actr install {} --actr-type {}",
+            "actr deps install {} --actr-type {}",
             alias,
             actr_type.to_string_repr()
         );
@@ -514,7 +514,7 @@ impl InstallCommand {
         }
     }
 
-    /// Execute Mode 2: Install from config (actr install)
+    /// Execute Mode 2: Install from config (actr deps install)
     /// - Do NOT modify manifest.toml
     /// - Use lock file versions if available
     /// - Check for compatibility conflicts when lock file exists

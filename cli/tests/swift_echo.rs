@@ -162,11 +162,11 @@ fn swift_echo_full_workflow_init_install_gen() {
     // Step 1: actr init
     let project_dir = init_swift_echo(tmp.path(), project_name);
 
-    // Step 2: actr install (downloads remote proto files)
-    let out = run_actr(&["install"], &project_dir);
+    // Step 2: actr deps install (downloads remote proto files)
+    let out = run_actr(&["deps", "install"], &project_dir);
     assert!(
         out.status.success(),
-        "actr install failed:\nstdout: {}\nstderr: {}",
+        "actr deps install failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -176,7 +176,7 @@ fn swift_echo_full_workflow_init_install_gen() {
         project_dir
             .join("protos/remote/echo-echo-server/echo.proto")
             .exists(),
-        "echo.proto should be downloaded by actr install"
+        "echo.proto should be downloaded by actr deps install"
     );
 
     // Step 3: actr gen -l swift

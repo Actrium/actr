@@ -50,7 +50,10 @@ fn rust_echo_e2e_service_and_app() {
     align_rust_project_with_workspace(&svc_dir).expect("failed to patch svc Cargo.toml");
     align_rust_project_with_workspace(&app_dir).expect("failed to patch app Cargo.toml");
 
-    assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
+    assert_success(
+        &run_actr(&["deps", "install"], &svc_dir),
+        "actr deps install (svc)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "rust"], &svc_dir),
         "actr gen (svc)",
@@ -69,7 +72,10 @@ fn rust_echo_e2e_service_and_app() {
         svc.logs()
     );
 
-    assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
+    assert_success(
+        &run_actr(&["deps", "install"], &app_dir),
+        "actr deps install (app)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "rust"], &app_dir),
         "actr gen (app)",

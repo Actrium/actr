@@ -21,7 +21,7 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
     // This is REQUIRED for Swift projects because:
     // 1. project.yml references it as a resource file
     // 2. xcodegen requires all referenced files to exist during project generation
-    // 3. The lock file will be populated later by `actr install`
+    // 3. The lock file will be populated later by `actr deps install`
     // See: fixtures/swift/project.yml.hbs:30-32 for the resource reference
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/manifest.lock.toml.hbs"),
@@ -59,7 +59,7 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         "{{PROJECT_NAME_PASCAL}}/ActrService.swift",
     )?;
     // Load fixture files (no placeholders, fixed paths)
-    // Note: proto files are no longer created during init, they will be pulled via actr install
+    // Note: proto files are no longer created during init, they will be pulled via actr deps install
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/Assets.xcassets/Contents.json"),
         files,

@@ -132,9 +132,9 @@ echo "🛠️ Generating server code..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$ECHO_SERVER_DIR"
-echo "Running actr install (server)..."
+echo "Running actr deps install (server)..."
 $ACTR_GEN_CMD deps install || {
-    echo -e "${RED}❌ actr install failed (server)${NC}"
+    echo -e "${RED}❌ actr deps install failed (server)${NC}"
     exit 1
 }
 OUTPUT_FILE="$LOG_DIR/actr-gen-echo-server.log"
@@ -320,13 +320,13 @@ sleep 2
 
 # Step 3.5: Install client dependencies (resolve from actrix registry)
 echo ""
-echo "📦 Installing client dependencies (actr install)..."
+echo "📦 Installing client dependencies (actr deps install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$ECHO_CLIENT_DIR"
 INSTALL_LOG="$LOG_DIR/actr-install-client.log"
 $ACTR_GEN_CMD deps install > "$INSTALL_LOG" 2>&1 || {
-    echo -e "${YELLOW}⚠️  actr install returned non-zero, check log${NC}"
+    echo -e "${YELLOW}⚠️  actr deps install returned non-zero, check log${NC}"
 }
 echo -e "${GREEN}✅ Client dependencies resolved${NC}"
 

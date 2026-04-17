@@ -122,7 +122,7 @@ impl CompatLockFile {
         Self {
             _comment: Some(
                 "This file indicates the system is in SUB-HEALTHY state.\n\
-                 Consider running 'actr install --force-update' to update dependencies."
+                 Consider running 'actr deps install --force-update' to update dependencies."
                     .to_string(),
             ),
             negotiation: Vec::new(),
@@ -179,7 +179,7 @@ impl CompatLockFile {
         let full_content = format!(
             "# compat.lock.toml - Compatibility negotiation cache\n\
              # This file indicates the system is in SUB-HEALTHY state.\n\
-             # Consider running 'actr install --force-update' to update dependencies.\n\
+             # Consider running 'actr deps install --force-update' to update dependencies.\n\
              # Location: {}\n\n\
              {content}",
             file_path.display()
@@ -402,7 +402,7 @@ impl CompatLockManager {
 
             warn!(
                 "🟡 SYSTEM SUB-HEALTHY: Service '{}' using compatible fingerprint ({}) instead of exact match ({}). \
-                 Run 'actr install --force-update' to restore health.",
+                 Run 'actr deps install --force-update' to restore health.",
                 service_name,
                 &resolved_fingerprint[..20.min(resolved_fingerprint.len())],
                 &requested_fingerprint[..20.min(requested_fingerprint.len())],

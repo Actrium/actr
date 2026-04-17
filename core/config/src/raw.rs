@@ -161,7 +161,7 @@ pub enum RawDependency {
         realm: Option<u32>,
     },
 
-    /// Empty dependency declaration: {} (populated by actr install)
+    /// Empty dependency declaration: {} (populated by actr deps install)
     Empty {},
 }
 

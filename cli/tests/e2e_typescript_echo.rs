@@ -149,7 +149,10 @@ fn typescript_echo_e2e_service_and_app() {
     assert_generated_actr_dependency(&svc_dir);
     assert_generated_actr_dependency(&app_dir);
 
-    assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
+    assert_success(
+        &run_actr(&["deps", "install"], &svc_dir),
+        "actr deps install (svc)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "typescript"], &svc_dir),
         "actr gen -l typescript (svc)",
@@ -168,7 +171,10 @@ fn typescript_echo_e2e_service_and_app() {
         svc.logs()
     );
 
-    assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
+    assert_success(
+        &run_actr(&["deps", "install"], &app_dir),
+        "actr deps install (app)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "typescript"], &app_dir),
         "actr gen -l typescript (app)",

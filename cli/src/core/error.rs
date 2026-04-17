@@ -181,7 +181,7 @@ impl ActrCliError {
             ],
             ActrCliError::Dependency { .. } => vec![
                 "Run 'actr check' to check dependency status".to_string(),
-                "Run 'actr install' to install missing dependencies".to_string(),
+                "Run 'actr deps install' to install missing dependencies".to_string(),
                 "Run 'actr discovery' to find available services".to_string(),
             ],
             ActrCliError::ValidationFailed { .. } => vec![

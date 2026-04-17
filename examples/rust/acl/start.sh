@@ -191,9 +191,9 @@ fi
 
 # Generate code for server only (with scaffold)
 cd "$SERVER_DIR"
-echo "Running actr install (server)..."
+echo "Running actr deps install (server)..."
 if ! $ACTR_GEN_CMD deps install > "$LOG_DIR/actr-deps-server.log" 2>&1; then
-    echo -e "${RED}❌ actr install failed (server)${NC}"
+    echo -e "${RED}❌ actr deps install failed (server)${NC}"
     cat "$LOG_DIR/actr-deps-server.log"
     exit 1
 fi
@@ -246,14 +246,14 @@ sleep 2
 
 # Step 4.5: Install client dependencies (resolve from actrix registry)
 echo ""
-echo "📦 Installing client dependencies (actr install)..."
+echo "📦 Installing client dependencies (actr deps install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 for client_dir in "$ALLOWED_CLIENT_DIR" "$BLOCKED_CLIENT_DIR"; do
     cd "$client_dir"
     INSTALL_LOG="$LOG_DIR/actr-install-$(basename $client_dir).log"
     $ACTR_GEN_CMD deps install > "$INSTALL_LOG" 2>&1 || {
-        echo -e "${YELLOW}⚠️  actr install returned non-zero for $(basename $client_dir), check log${NC}"
+        echo -e "${YELLOW}⚠️  actr deps install returned non-zero for $(basename $client_dir), check log${NC}"
     }
 done
 echo -e "${GREEN}✅ Client dependencies resolved${NC}"

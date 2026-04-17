@@ -52,6 +52,7 @@ actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "
 
 # Command line interface
 clap = { version = "4.5", features = ["derive", "cargo"] }
+clap_complete = "4.5"
 dialoguer = "0.12.0"
 
 # Error handling

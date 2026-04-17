@@ -501,13 +501,13 @@ impl Context for RuntimeContext {
                         severity = 10,
                         error_category = "dependency_missing",
                         "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in manifest.lock.toml.\n\
-                         Please run 'actr install' to generate the lock file with all dependencies.",
+                         Please run 'actr deps install' to generate the lock file with all dependencies.",
                         service_name
                     );
                     return Err(ActrError::DependencyNotFound {
                         service_name: service_name.clone(),
                         message: format!(
-                            "Dependency '{}' not found in manifest.lock.toml. Run 'actr install' to resolve dependencies.",
+                            "Dependency '{}' not found in manifest.lock.toml. Run 'actr deps install' to resolve dependencies.",
                             service_name
                         ),
                     });

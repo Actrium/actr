@@ -3,7 +3,7 @@
 #
 # Demonstrates the complete signing/verification/AIS registration flow for Web:
 #   1. Build guest WASMs (cargo build, standard entry! FFI)
-#   2. actr pkg build - pack guest WASMs into signed .actr packages (MFR key)
+#   2. actr build - pack guest WASMs into signed .actr packages (MFR key)
 #   3. Start actrix (signaling + AIS + MFR)
 #   4. Seed realm + MFR manufacturer + publish packages (register.sh)
 #   5. actr run --web -c server-actr.toml - start server (embedded runtime + host page)
@@ -399,7 +399,7 @@ echo "Web Echo - actr run --web"
 echo ""
 echo "Validated flow:"
 echo "  1. Guest WASMs built (server-guest + client-guest)"
-echo "  2. actr pkg build -> signed .actr packages (MFR key)"
+echo "  2. actr build -> signed .actr packages (MFR key)"
 echo "  3. actr pkg publish -> packages registered with AIS"
 echo "  4. actr run --web -> self-contained web server with:"
 echo "     - Embedded runtime WASM (no wasm-pack step needed)"

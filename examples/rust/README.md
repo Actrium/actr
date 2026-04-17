@@ -93,4 +93,4 @@ Both `--bin` and `-p` work identically in a workspace context.
   - Start: `bash package-echo/start.sh`
   - Behavior: boots actrix (root config) → builds and signs the local `echo-actr` package → regenerates `server-actr.toml` → runs `actr run -c server-actr.toml` → launches the client example; asserts echo reply contains the packaged service response.
   - Temp scaffold variant: `bash package-echo/start_tmp_echo_actr.sh`
-  - Temp behavior: creates a temporary `echo-actr-xx` Rust service project via `actr init`, runs `actr install` + `actr gen -l rust`, then reuses `package-echo/start.sh` with that generated workload and the isolated `tmp_server-actr.toml`.
+  - Temp behavior: creates a temporary `echo-actr-xx` Rust service project via `actr init`, runs `actr deps install` + `actr gen -l rust`, then reuses `package-echo/start.sh` with that generated workload and the isolated `tmp_server-actr.toml`.
