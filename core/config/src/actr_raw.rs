@@ -168,9 +168,6 @@ pub struct RawWebConfig {
     #[serde(default = "default_web_static_dir")]
     pub static_dir: String,
 
-    /// Whether this instance acts as a server (`true`) or client (`false`)
-    pub is_server: Option<bool>,
-
     /// URL path to the .actr package (served from static dir, e.g. "/packages/echo-server.actr")
     pub package_url: Option<String>,
 

@@ -350,9 +350,6 @@ pub struct WebConfig {
     /// Absolute path to the directory to serve static files from
     pub static_dir: PathBuf,
 
-    /// Whether this instance acts as a server (`true`) or client (`false`)
-    pub is_server: Option<bool>,
-
     /// URL path to the .actr package (served from static dir)
     pub package_url: Option<String>,
 

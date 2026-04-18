@@ -8,7 +8,6 @@ export const runtimeConfig: SwRuntimeConfig = {
     target_actr_type: 'acme:DataStreamPeerConcurrentClient:0.1.0',
     service_fingerprint: '',
     acl_allow_types: ['acme:DataStreamPeerConcurrentClient:0.1.0'],
-    is_server: true,
 };
 
 export const actrConfig: ActorConfig = {

@@ -189,7 +189,6 @@ impl ParserV1 {
                 port: w.port,
                 host: w.host,
                 static_dir: self.base_dir.join(&w.static_dir),
-                is_server: w.is_server,
                 package_url: w.package_url,
                 runtime_wasm_url: w.runtime_wasm_url,
             }),

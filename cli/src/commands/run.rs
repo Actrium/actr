@@ -833,7 +833,6 @@ impl RunCommand {
 
         // Extract web-specific fields
         let web = raw.web.as_ref();
-        let is_server = web.and_then(|w| w.is_server).unwrap_or(false);
         // Auto-generate package_url and runtime_wasm_url from embedded assets.
         // Config-level overrides are still respected if present (backward compat).
         let package_url = web
@@ -874,7 +873,6 @@ impl RunCommand {
                 "full_type": full_type,
             },
             "acl_allow_types": acl_allow_types,
-            "is_server": is_server,
             "package_url": package_url,
             "runtime_wasm_url": runtime_wasm_url,
             "trust": trust_json,

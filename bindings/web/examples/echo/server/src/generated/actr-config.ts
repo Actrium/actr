@@ -28,7 +28,6 @@ export interface RuntimeConfigJson {
         full_type: string;
     };
     acl_allow_types: string[];
-    is_server: boolean;
     package_url: string;
     runtime_wasm_url: string;
     trust: TrustAnchor[];
@@ -134,9 +133,7 @@ export function buildRuntimeConfig(): SwRuntimeConfig {
         target_actr_type: c.acl_allow_types[0] || '',
         service_fingerprint: '',
         acl_allow_types: c.acl_allow_types,
-        is_server: c.is_server,
         package_url: c.package_url,
-        register_fn: '',
         runtime_wasm_url: c.runtime_wasm_url,
         trust: c.trust,
     };

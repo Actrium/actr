@@ -34,7 +34,6 @@ type = "acme:echo-client-app:0.1.0"
 [web]
 port = 5174
 host = "0.0.0.0"
-is_server = true
 
 [[trust]]
 kind = "static"

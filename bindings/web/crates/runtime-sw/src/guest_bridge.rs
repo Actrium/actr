@@ -38,7 +38,7 @@ use crate::workload::{ServiceHandlerFn, WasmWorkload};
 // Thread-local storage for the current RuntimeContext during guest dispatch.
 // Set before calling the JS dispatch function, cleared after.
 thread_local! {
-    static GUEST_CTX: RefCell<Option<Rc<RuntimeContext>>> = RefCell::new(None);
+    static GUEST_CTX: RefCell<Option<Rc<RuntimeContext>>> = const { RefCell::new(None) };
 }
 
 /// Encode an `InitPayloadV1` for guest WASM initialization.

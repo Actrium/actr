@@ -384,10 +384,6 @@ struct SwConfig {
     /// to discover and communicate with this actor. Sent in RegisterRequest.
     #[serde(default)]
     acl_allow_types: Vec<String>,
-    /// If true, this actor is a server and will NOT call discover_target
-    /// after registration. It passively waits for incoming connections.
-    #[serde(default)]
-    is_server: bool,
     /// Reconnection configuration for the initial signaling WebSocket connection.
     /// If omitted, defaults are used (enabled, 10 attempts, 1s–60s exponential backoff).
     #[serde(default)]
@@ -499,7 +495,6 @@ struct SwRuntime {
     target_actr_type: ActrType,
     service_fingerprint: String,
     acl: Option<Acl>,
-    is_server: bool,
     signaling: SignalingClient,
     actor_id: Option<ActrId>,
     credential: Option<AIdCredential>,
@@ -507,7 +502,10 @@ struct SwRuntime {
     turn_credential: Option<actr_protocol::TurnCredential>,
     /// Platform provider for crypto and KV storage
     platform: WebPlatformProvider,
-    target_id: Option<ActrId>,
+    /// Per-target-type cache of the most recently discovered `ActrId`.
+    /// Avoids running AIS discovery on every legacy raw RPC call.
+    /// Entries are invalidated when the corresponding peer connection fails or closes.
+    discovered_targets: HashMap<String, ActrId>,
     dom_port: Option<MessagePort>,
     pending_rpcs: HashMap<String, PendingRpcTarget>,
     known_peers: HashSet<String>,
@@ -592,13 +590,12 @@ impl SwRuntime {
                 .map_err(|e| JsValue::from_str(&format!("Invalid target actr_type: {e}")))?,
             service_fingerprint: config.service_fingerprint,
             acl,
-            is_server: config.is_server,
             signaling,
             actor_id: Some(actor_id),
             credential: Some(credential),
             turn_credential,
             platform,
-            target_id: None,
+            discovered_targets: HashMap::new(),
             dom_port: None,
             pending_rpcs: HashMap::new(),
             known_peers: HashSet::new(),
@@ -1023,7 +1020,7 @@ impl SwRuntime {
 
         // 2. Clear stale peer / target state so the next RPC forces
         //    a fresh discovery & WebRTC handshake.
-        self.target_id = None;
+        self.discovered_targets.clear();
         self.known_peers.clear();
         self.open_channels.clear();
         self.pending_channel_data.clear();
@@ -1110,14 +1107,18 @@ impl SwRuntime {
         Ok(())
     }
 
+    /// Discover a peer of `self.target_actr_type` via the AIS route-candidates API.
+    ///
+    /// Returns a cached `ActrId` if a previous discovery for the same target type
+    /// succeeded and the associated peer has not been torn down. Otherwise issues
+    /// a fresh `RouteCandidatesRequest`.
+    ///
+    /// Intended for the active / initiator role: callers that need to open an
+    /// outbound connection. Passive actors never call this path; they learn the
+    /// remote peer identity from inbound signaling envelopes (`relay.source`).
     async fn discover_target(&mut self) -> Result<ActrId, JsValue> {
-        if self.is_server {
-            log::info!(
-                "[SW] discover_target: skipped (server mode, waiting for incoming connections)"
-            );
-            return Err(JsValue::from_str("Server mode: no target discovery needed"));
-        }
-        if let Some(target) = self.target_id.clone() {
+        let target_type_key = self.target_actr_type.to_string_repr();
+        if let Some(target) = self.discovered_targets.get(&target_type_key).cloned() {
             return Ok(target);
         }
         let actor_id = self
@@ -1190,7 +1191,8 @@ impl SwRuntime {
                     .cloned()
                     .ok_or_else(|| JsValue::from_str("No candidates"))?;
                 log::info!("[SW] route_candidates: selected {}", target);
-                self.target_id = Some(target.clone());
+                self.discovered_targets
+                    .insert(target_type_key, target.clone());
                 Ok(target)
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
@@ -1201,6 +1203,22 @@ impl SwRuntime {
                 )))
             }
             None => Err(JsValue::from_str("Route candidates missing result")),
+        }
+    }
+
+    /// Drop any `discovered_targets` entry whose resolved `ActrId` matches
+    /// the given peer identifier. Used when a peer connection fails/closes,
+    /// so the next outbound RPC issues a fresh AIS discovery rather than
+    /// re-using the dead `ActrId`.
+    fn invalidate_discovered_target(&mut self, peer_id: &str) {
+        let before = self.discovered_targets.len();
+        self.discovered_targets
+            .retain(|_, actr_id| actr_id.to_string_repr() != peer_id);
+        if self.discovered_targets.len() != before {
+            log::info!(
+                "[SW] discovered_targets: invalidated entry for peer={}",
+                peer_id
+            );
         }
     }
 
@@ -1712,14 +1730,12 @@ impl SwRuntime {
             .clone()
             .ok_or_else(|| JsValue::from_str("Missing credential"))?;
 
-        log::info!(
-            "[SW] webrtc_event: {} (is_server={})",
-            event.event_type,
-            self.is_server
-        );
+        log::info!("[SW] webrtc_event: {}", event.event_type);
 
-        // Determine target: for server mode, extract peerId from event data;
-        // for client mode, use discover_target().
+        // Resolve the signaling target from the `peerId` embedded in every DOM
+        // webrtc event. This identity is always known by the time a local SDP
+        // or ICE candidate fires because the SW drove the `create_peer` command
+        // (for initiators) or learned it from an inbound relay (for acceptors).
         let resolve_target = |event_data: &serde_json::Value| -> Result<ActrId, JsValue> {
             if let Some(peer_id_str) = event_data.get("peerId").and_then(|v| v.as_str()) {
                 ActrId::from_string_repr(peer_id_str).map_err(|e| {
@@ -1735,12 +1751,7 @@ impl SwRuntime {
                 let data: LocalDescriptionEvent = serde_json::from_value(event.data.clone())
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-                // Resolve target: server uses peerId from event, client uses discover_target
-                let target = if self.is_server {
-                    resolve_target(&event.data)?
-                } else {
-                    self.discover_target().await?
-                };
+                let target = resolve_target(&event.data)?;
 
                 let sd_type = match data.sdp.sdp_type.as_str() {
                     "offer" => session_description::Type::Offer as i32,
@@ -1772,12 +1783,7 @@ impl SwRuntime {
                 let data: IceCandidateEvent = serde_json::from_value(event.data.clone())
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-                // Resolve target: server uses peerId from event, client uses discover_target
-                let target = if self.is_server {
-                    resolve_target(&event.data)?
-                } else {
-                    self.discover_target().await?
-                };
+                let target = resolve_target(&event.data)?;
 
                 let ice = IceCandidate {
                     candidate: data.candidate.candidate,
@@ -1891,12 +1897,10 @@ impl SwRuntime {
                         self.role_negotiated.remove(&data.peer_id);
                         self.role_assignments.remove(&data.peer_id);
                         self.peer_connection_states.remove(&data.peer_id);
-                        if !self.is_server {
-                            self.target_id = None;
-                            log::info!(
-                                "[SW] connection failed: cleared target_id for re-discovery"
-                            );
-                        }
+                        // Invalidate any discovered-target cache entry that resolved
+                        // to this peer, so the next outbound RPC runs a fresh AIS
+                        // discovery instead of re-using a broken ActrId.
+                        self.invalidate_discovered_target(&data.peer_id);
                         // Notify DOM about connection failure so pending RPCs can fail fast
                         self.notify_connection_failure(&data.peer_id)?;
                     }
@@ -1922,13 +1926,8 @@ impl SwRuntime {
                         self.role_negotiated.remove(&data.peer_id);
                         self.role_assignments.remove(&data.peer_id);
                         self.peer_connection_states.remove(&data.peer_id);
-                        // Clear cached target_id to force re-discovery on next RPC
-                        if !self.is_server {
-                            self.target_id = None;
-                            log::info!(
-                                "[SW] connection closed: cleared target_id for re-discovery"
-                            );
-                        }
+                        // Force re-discovery on next outbound RPC targeting this peer.
+                        self.invalidate_discovered_target(&data.peer_id);
                     }
                     _ => {}
                 }
@@ -1938,11 +1937,7 @@ impl SwRuntime {
                 let data: LocalDescriptionEvent = serde_json::from_value(event.data.clone())
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-                let target = if self.is_server {
-                    resolve_target(&event.data)?
-                } else {
-                    self.discover_target().await?
-                };
+                let target = resolve_target(&event.data)?;
 
                 log::info!("[SW] Sending ICE restart offer to peer={}", target);
 
@@ -2241,11 +2236,8 @@ impl SwRuntime {
             self.peer_connection_states.remove(peer_id);
             self.role_negotiated.remove(peer_id);
             self.role_assignments.remove(peer_id);
-            // Clear cached target_id to force re-discovery on next RPC
-            if !self.is_server {
-                self.target_id = None;
-                log::info!("[SW] ICE restart: cleared target_id cache for re-discovery");
-            }
+            // Force re-discovery on next outbound RPC targeting this peer.
+            self.invalidate_discovered_target(peer_id);
             // Fail-fast: reject all pending RPCs immediately
             self.notify_connection_failure(peer_id)?;
             return Ok(());
@@ -2551,10 +2543,9 @@ pub async fn register_client(
 
     let config: SwConfig = serde_wasm_bindgen::from_value(config)?;
     log::info!(
-        "[SW] SwConfig parsed: client_id={} acl_allow_types={:?}, is_server={}",
+        "[SW] SwConfig parsed: client_id={} acl_allow_types={:?}",
         client_id,
         config.acl_allow_types,
-        config.is_server
     );
     let mut runtime = SwRuntime::new(client_id.clone(), config).await?;
 
@@ -3117,22 +3108,16 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             request_id
         );
 
-        // Get the target `ActrId` from the runtime's `target_id`.
+        // Discover the target for this RPC. `discover_target_with_retry`
+        // consults the per-type cache first and only hits AIS on miss, so
+        // steady-state calls remain cheap while transparently re-discovering
+        // after a peer tear-down invalidates the cache.
         let target_id = {
-            let rt = runtime.lock().await;
-            rt.target_id.clone()
-        };
-
-        // If `target_id` is still missing, discover the target first.
-        let target_id = match target_id {
-            Some(id) => id,
-            None => {
-                let mut rt = runtime.lock().await;
-                rt.discover_target_with_retry().await.map_err(|e| {
-                    log::error!("[SW] Failed to discover target: {:?}", e);
-                    e
-                })?
-            }
+            let mut rt = runtime.lock().await;
+            rt.discover_target_with_retry().await.map_err(|e| {
+                log::error!("[SW] Failed to discover target: {:?}", e);
+                e
+            })?
         };
 
         // Ensure the P2P connection exists and register the `ActrId -> Dest` mapping.

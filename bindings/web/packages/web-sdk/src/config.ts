@@ -35,9 +35,6 @@ export interface SwRuntimeConfig {
   /** ACL allow-list of actor types */
   acl_allow_types: string[];
 
-  /** Whether this actor is a server (registers and waits) or client (discovers) */
-  is_server: boolean;
-
   // ── Package loading (Web load_package_executor) ──
 
   /** URL of the .actr package to load (e.g. "/packages/echo-server.actr").

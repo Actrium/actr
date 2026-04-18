@@ -34,7 +34,6 @@ type = "acme:EchoService:0.1.0"
 [web]
 port = 5173
 host = "0.0.0.0"
-is_server = false
 
 [[trust]]
 kind = "static"
