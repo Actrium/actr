@@ -76,19 +76,6 @@ class ActrNode:
         """
         rust_ref = await self._rust.start()
         return ActrRef(rust_ref)
-    
-    async def try_start(self):
-        """
-        Try to start the node
-        
-        Returns:
-            ActrRef instance
-        
-        Raises:
-            ActrRuntimeError: If node start fails
-        """
-        rust_ref = await self._rust.try_start()
-        return ActrRef(rust_ref)
 
 
 class ActrRef:

@@ -165,16 +165,7 @@ class ActrNode:
     async def start(self) -> "ActrRef":
         """
         Start the node.
-        
-        Returns:
-            ActrRef instance for interacting with the running actor
-        """
-        ...
-    
-    async def try_start(self) -> "ActrRef":
-        """
-        Try to start the node.
-        
+
         Returns:
             ActrRef instance for interacting with the running actor
         """

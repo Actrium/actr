@@ -82,24 +82,6 @@ impl ActrNodePy {
             })
         })
     }
-
-    fn try_start<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let node = self.inner.take().ok_or_else(|| {
-            PyRuntimeError::new_err("ActrNode already consumed (try_start called twice)")
-        })?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let actr_ref = node.start().await.map_err(map_protocol_error)?;
-            Python::attach(|py| {
-                Py::new(
-                    py,
-                    ActrRefPy {
-                        inner: Some(actr_ref),
-                    },
-                )
-                .map(Py::into_any)
-            })
-        })
-    }
 }
 
 #[pyclass(name = "ActrRef")]
