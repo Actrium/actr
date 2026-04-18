@@ -18,7 +18,7 @@ use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 use crate::signaling;
-use crate::state::{MfrEntry, MockState, PackageEntry};
+use crate::state::{MfrEntry, MockState, PackageEntry, RegisteredActor};
 
 // ---------------------------------------------------------------------------
 // Health
@@ -50,6 +50,18 @@ pub async fn register_handler(
         .await;
 
     let register_ok = signaling::build_register_ok(&req, &state).await;
+
+    // Track the HTTP-registered actor in the WS registry so route discovery
+    // works once the actor opens its WebSocket with `?actor_id=...`. We
+    // record an empty `client_id` placeholder that the WS upgrade handler
+    // fills in when the peer connects.
+    state.registry.write().await.push(RegisteredActor {
+        actr_id: register_ok.actr_id.clone(),
+        actr_type: req.actr_type.clone(),
+        client_id: String::new(),
+        ws_address: req.ws_address.clone(),
+        service_spec: req.service_spec.clone(),
+    });
 
     let response = RegisterResponse {
         result: Some(register_response::Result::Success(register_ok.clone())),

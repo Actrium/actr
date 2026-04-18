@@ -14,10 +14,10 @@ use std::sync::atomic::Ordering;
 
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrRelay, RegisterRequest, RegisterResponse, RouteCandidatesResponse,
-    SignalingEnvelope, SignalingToActr, TurnCredential, actr_relay, actr_to_signaling,
-    peer_to_signaling, register_response, route_candidates_response, signaling_envelope,
-    signaling_to_actr,
+    AIdCredential, ActrId, ActrIdExt, ActrRelay, RegisterRequest, RegisterResponse,
+    RouteCandidatesResponse, SignalingEnvelope, SignalingToActr, TurnCredential, actr_relay,
+    actr_to_signaling, peer_to_signaling, register_response, route_candidates_response,
+    signaling_envelope, signaling_to_actr,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -31,8 +31,9 @@ use tokio::sync::mpsc;
 use crate::state::{MockState, RegisteredActor};
 
 /// Query parameters the real actrix gate accepts (actor_id, key_id, claims,
-/// signature). We ignore them for now but capture them so we don't 400 on
-/// unknown query keys.
+/// signature). The mock uses `actor_id` to tie incoming WebSocket connections
+/// back to a previously HTTP-registered actor so that route discovery works
+/// even when the actor never sends a `PeerToSignaling::RegisterRequest`.
 #[derive(Debug, Default, Deserialize)]
 #[allow(dead_code)]
 pub struct WsQuery {
@@ -46,13 +47,18 @@ pub struct WsQuery {
 /// signaling loop.
 pub async fn ws_upgrade_handler(
     ws: WebSocketUpgrade,
-    Query(_params): Query<WsQuery>,
+    Query(params): Query<WsQuery>,
     State(state): State<Arc<MockState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_connection(socket, state))
+    let actor_id_param = params.actor_id.clone();
+    ws.on_upgrade(move |socket| handle_connection(socket, state, actor_id_param))
 }
 
-async fn handle_connection(socket: WebSocket, state: Arc<MockState>) {
+async fn handle_connection(
+    socket: WebSocket,
+    state: Arc<MockState>,
+    actor_id_param: Option<String>,
+) {
     state.connection_count.fetch_add(1, Ordering::SeqCst);
 
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -65,6 +71,40 @@ async fn handle_connection(socket: WebSocket, state: Arc<MockState>) {
         .write()
         .await
         .insert(client_id.clone(), client_tx);
+
+    // If the peer connected with `?actor_id=...` (web/service-worker path
+    // after HTTP register), bind its existing registry entry to this WS
+    // client_id so route discovery can see it.
+    if let Some(actor_id_str) = actor_id_param.as_deref() {
+        if let Some(actr_id) = parse_actor_id(actor_id_str) {
+            let mut registry = state.registry.write().await;
+            let mut found = false;
+            for entry in registry.iter_mut() {
+                if entry.actr_id == actr_id {
+                    entry.client_id = client_id.clone();
+                    found = true;
+                    break;
+                }
+            }
+            drop(registry);
+            if found {
+                state
+                    .client_to_actr_id
+                    .write()
+                    .await
+                    .insert(client_id.clone(), actr_id);
+                tracing::info!(
+                    actor_id = %actor_id_str,
+                    "mock-actrix: WS bound to HTTP-registered actor"
+                );
+            } else {
+                tracing::warn!(
+                    actor_id = %actor_id_str,
+                    "mock-actrix: WS actor_id has no prior HTTP registration"
+                );
+            }
+        }
+    }
 
     loop {
         tokio::select! {
@@ -105,11 +145,18 @@ async fn handle_connection(socket: WebSocket, state: Arc<MockState>) {
         }
     }
 
-    // Cleanup
+    // Cleanup: drop the WS sender and clear this client's binding on every
+    // registry entry it owned. We keep the registry rows themselves so that
+    // HTTP-registered actors remain discoverable across reconnects (their
+    // `client_id` is simply reset to the empty string).
     state.clients.write().await.remove(&client_id);
     {
         let mut registry = state.registry.write().await;
-        registry.retain(|a| a.client_id != client_id);
+        for entry in registry.iter_mut() {
+            if entry.client_id == client_id {
+                entry.client_id.clear();
+            }
+        }
     }
     state.client_to_actr_id.write().await.remove(&client_id);
     state.disconnection_count.fetch_add(1, Ordering::SeqCst);
@@ -610,4 +657,10 @@ fn now_timestamp() -> prost_types::Timestamp {
         seconds: chrono::Utc::now().timestamp(),
         nanos: 0,
     }
+}
+
+/// Parse an `ActrId` from the `actor_id` query parameter sent by clients
+/// after HTTP registration.
+fn parse_actor_id(s: &str) -> Option<ActrId> {
+    ActrId::from_string_repr(s).ok()
 }

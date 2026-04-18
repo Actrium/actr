@@ -72,10 +72,23 @@ This is a complete, production-ready example demonstrating Actor-RTC Web communi
 
 ### Automated Setup (Recommended)
 
+There are two entry points depending on whether you want to run against a real
+`actrix` instance or the in-repo `mock-actrix` test server:
+
 ```bash
-cd examples/echo
+# Option A — run against a real actrix binary (requires ../../../actrix checkout).
+cd bindings/web/examples/echo
 ./start.sh
+
+# Option B — self-contained: use the actr-mock-actrix crate as signaling/AIS/MFR.
+#           No actrix checkout or SQLite seeding required.
+./start-mock.sh [PORT]
 ```
+
+`start-mock.sh` launches the `mock-actrix` binary (`cargo run -p
+actr-mock-actrix --bin mock-actrix`), seeds the realm/MFR/packages via
+`register-mock.sh` (HTTP `/admin/*`, no `sqlite3`), and then runs the same
+puppeteer `test-auto.js BasicFunction` against the web client and server.
 
 The script will:
 1. ✅ Check dependencies (Rust, Node.js, protoc)
