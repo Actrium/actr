@@ -8,9 +8,10 @@
 
 #[cfg(feature = "wasm-engine")]
 use actr_hyper::PackageExecutionBackend;
-use actr_hyper::{Hyper, HyperConfig, HyperError, TrustMode, WorkloadPackage};
+use actr_hyper::{Hyper, HyperConfig, HyperError, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ─── Utility functions ───────────────────────────────────────────────────────
@@ -96,9 +97,10 @@ fn build_actr_package(
 }
 
 fn dev_config_with_key(dir: &TempDir, verifying_key: &ed25519_dalek::VerifyingKey) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-        self_signed_pubkey: verifying_key.to_bytes().to_vec(),
-    })
+    HyperConfig::new(
+        dir.path(),
+        Arc::new(StaticTrust::new(verifying_key.to_bytes()).unwrap()),
+    )
 }
 
 // ─── .actr package tests ─────────────────────────────────────────────────────

@@ -5,8 +5,9 @@ use crate::types::{ActrId, ActrType, PayloadType};
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::Dest;
 use actr_hyper::{
-    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Registered, TrustMode,
+    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Registered, StaticTrust,
 };
+use std::sync::Arc;
 
 fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig, actr_config::ConfigError> {
     let manifest = ConfigParser::from_manifest_file(manifest_path)?;
@@ -31,11 +32,10 @@ impl ActrNode {
 
         let hyper_data_dir =
             actr_config::user_config::resolve_hyper_data_dir().map_err(crate::error::config_error_to_napi)?;
-        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-            TrustMode::Development {
-                self_signed_pubkey: vec![0u8; 32],
-            },
-        ))
+        let trust = Arc::new(
+            StaticTrust::new([0u8; 32]).map_err(crate::error::hyper_error_to_napi)?,
+        );
+        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
         let ais_endpoint = config.ais_endpoint.clone();

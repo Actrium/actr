@@ -24,6 +24,11 @@ actr-platform-web = { path = "../platform-web" }
 # Mailbox
 actr-mailbox-web = { path = "../mailbox-web" }
 
+# Package verification (replaces the old JS verifyActrPackage)
+actr-pack = { path = "../../../../core/pack", version = "0.2.0" }
+ed25519-dalek = "2"
+base64 = "0.22"
+
 # WASM bindings
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true

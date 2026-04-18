@@ -310,8 +310,8 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     out.push_str(&format!("  package_url: '{package_url}',\n"));
     out.push_str(&format!("  register_fn: '{register_fn}',\n"));
     out.push_str(&format!("  runtime_wasm_url: '{runtime_wasm_url}',\n"));
-    out.push_str("  // MFR public key for package verification (injected by deploy tooling)\n");
-    out.push_str("  mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',\n");
+    out.push_str("  // Trust anchors — pubkey_b64 is substituted by deploy tooling.\n");
+    out.push_str("  trust: [{ kind: 'static', pubkey_b64: '__MFR_PUBKEY_PLACEHOLDER__' }],\n");
     out.push_str("};\n\n");
 
     // ActorClientConfig

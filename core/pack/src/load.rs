@@ -70,6 +70,44 @@ pub fn read_lock_file(actr_bytes: &[u8]) -> Result<Option<Vec<u8>>, PackError> {
     }
 }
 
+/// Read a single JS glue file from the `resources/` directory in an .actr package.
+///
+/// Returns the first `.js` file under `resources/` that is NOT named
+/// `actor.sw.js` (which is the Service Worker runtime itself, not guest
+/// wasm-bindgen glue). Returns `Ok(None)` when the package has no eligible
+/// glue script.
+///
+/// Used by the Web runtime to extract wasm-bindgen glue after signature
+/// verification.
+pub fn read_glue_js(actr_bytes: &[u8]) -> Result<Option<String>, PackError> {
+    use std::io::Read;
+
+    let cursor = Cursor::new(actr_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)?;
+
+    let target = archive
+        .file_names()
+        .find(|name| {
+            name.starts_with("resources/")
+                && name.ends_with(".js")
+                && !name.ends_with("actor.sw.js")
+        })
+        .map(|s| s.to_string());
+
+    let Some(name) = target else {
+        return Ok(None);
+    };
+
+    let mut file = archive
+        .by_name(&name)
+        .map_err(|e| PackError::InvalidPackage(format!("open {}: {}", name, e)))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).map_err(|e| {
+        PackError::InvalidPackage(format!("read {}: {}", name, e))
+    })?;
+    Ok(Some(content))
+}
+
 /// Read all proto files from the `proto/` directory in an .actr package.
 ///
 /// Returns a list of (filename, content) pairs.

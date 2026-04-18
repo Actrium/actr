@@ -69,12 +69,35 @@ export interface SwRuntimeConfig {
 
   // ── Package verification (Web verify_package) ──
 
-  /** Base64-encoded Ed25519 MFR public key for package signature verification.
-   *  When provided, the Service Worker verifies the .actr package signature
-   *  and binary hash before loading — the Web equivalent of Rust Hyper's verify_package.
-   *  When omitted, verification is skipped (backward-compatible). */
-  mfr_pubkey?: string;
+  /** Trust anchors for verifying the .actr package signature. Array form
+   *  mirrors the server-side `[[trust]]` config in `actr.toml`.
+   *
+   *  The browser Service Worker currently honours only `kind = "static"`
+   *  anchors (using `pubkey_b64`); `kind = "registry"` anchors cause the SW
+   *  to skip verification with a warning, pending an async AIS lookup
+   *  implementation.
+   *
+   *  When the array is empty or missing, verification is skipped. */
+  trust?: TrustAnchor[];
 }
+
+/** Trust anchor config, matching `actr_config::TrustAnchor` on the server. */
+export type TrustAnchor =
+  | {
+      /** Pre-shared Ed25519 public key; accepts any manufacturer. */
+      kind: 'static';
+      /** Base64 (standard) of the 32-byte Ed25519 public key. */
+      pubkey_b64?: string;
+      /** Path to a JSON file with a `public_key` field (resolved by the host
+       *  before the config reaches the SW). */
+      pubkey_file?: string;
+    }
+  | {
+      /** Look up MFR public keys via AIS HTTP registry. Not yet implemented
+       *  in the browser SW. */
+      kind: 'registry';
+      endpoint: string;
+    };
 
 /**
  * Actor System configuration

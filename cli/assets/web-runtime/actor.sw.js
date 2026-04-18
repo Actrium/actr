@@ -1,25 +1,19 @@
 /* Actor-RTC Generic Service Worker entry.
  *
- * This SW loads a WASM package from a signed .actr ZIP package.
- * The .actr package is fetched from the URL specified in runtimeConfig.package_url.
+ * Loads the SW runtime WASM from `runtime_wasm_url`, then fetches the
+ * signed `.actr` workload package from `package_url`, verifies it via the
+ * Rust runtime's `verify_and_extract_actr_package`, and instantiates the
+ * extracted guest WASM with host import stubs (guest-bridge).
  *
- * Package loading fields in runtimeConfig:
- *   package_url    - URL of the .actr package (e.g. "/packages/echo-server.actr")
- *   register_fn    - name of the wasm_bindgen function to call after init
- *                    (e.g. "register_echo_service")
+ * Runtime and workload are always separate artifacts — the SW never loads
+ * an unverified monolithic bundle, and verification is mandatory (no
+ * skip-verify path).
  *
- * Legacy fallback (when package_url is not set):
- *   package_js     - filename of the wasm-bindgen JS glue (e.g. "echo_server.js")
- *   package_wasm   - filename of the WASM binary (e.g. "echo_server_bg.wasm")
- *
- * .actr ZIP format (all entries use STORE / no compression):
- *   manifest.toml                  - package manifest
- *   manifest.sig                   - Ed25519 signature (64 bytes)
- *   bin/actor.wasm             - WASM binary
- *   resources/glue.js          - wasm-bindgen JS glue
- *
- * This is the Web equivalent of Rust Hyper's load_package_executor:
- * it loads a WASM workload package into the SW runtime on demand.
+ * Required `runtimeConfig` fields:
+ *   package_url       - URL of the `.actr` workload package
+ *   runtime_wasm_url  - URL of the SW runtime WASM (wasm-pack output)
+ *   trust             - array of `TrustAnchor` entries; must include a
+ *                       `kind="static"` anchor with `pubkey_b64`
  */
 
 /* global wasm_bindgen */
@@ -143,300 +137,26 @@ function emitSwLog(level, message, detail) {
     }
 }
 
-// ── .actr ZIP parser (STORE-only, no compression) ──
-
 /**
- * Parse a ZIP file that uses STORE method (no compression).
- * .actr packages always use CompressionMethod::Stored.
+ * Load runtime WASM, verify + extract the `.actr` workload in Rust, then
+ * instantiate the guest WASM behind host import stubs.
  *
- * Iterates Local File Headers sequentially. Each header:
- *   4 bytes  signature  (0x04034b50 = PK\x03\x04)
- *   2 bytes  version needed
- *   2 bytes  flags
- *   2 bytes  compression method (0 = STORE)
- *   2 bytes  mod time
- *   2 bytes  mod date
- *   4 bytes  CRC-32
- *   4 bytes  compressed size
- *   4 bytes  uncompressed size
- *   2 bytes  filename length
- *   2 bytes  extra field length
- *   N bytes  filename
- *   M bytes  extra field
- *   S bytes  data (compressed size == uncompressed size for STORE)
+ * Hyper (SW runtime) and workload (guest) are separate artifacts. The
+ * runtime is loaded from `runtime_wasm_url`; the workload from the signed
+ * `.actr` at `package_url`. The runtime's `verify_and_extract_actr_package`
+ * is the sole verifier — it hard-fails if no static trust anchor is
+ * configured, mirroring native Hyper's mandatory-verify contract.
  *
- * @param {ArrayBuffer} buffer - The ZIP file bytes
- * @returns {Map<string, Uint8Array>} filename → file contents
- */
-function parseActrZip(buffer) {
-    const view = new DataView(buffer);
-    const bytes = new Uint8Array(buffer);
-    const entries = new Map();
-    let offset = 0;
-
-    while (offset + 30 <= buffer.byteLength) {
-        const sig = view.getUint32(offset, true);
-        // Local File Header signature
-        if (sig !== 0x04034b50) break;
-
-        const compressedSize = view.getUint32(offset + 18, true);
-        const uncompressedSize = view.getUint32(offset + 22, true);
-        const filenameLen = view.getUint16(offset + 26, true);
-        const extraLen = view.getUint16(offset + 28, true);
-
-        const filenameBytes = bytes.subarray(offset + 30, offset + 30 + filenameLen);
-        const filename = new TextDecoder().decode(filenameBytes);
-
-        const dataStart = offset + 30 + filenameLen + extraLen;
-        const dataEnd = dataStart + compressedSize;
-
-        if (dataEnd > buffer.byteLength) {
-            console.warn('[SW] ZIP entry truncated:', filename);
-            break;
-        }
-
-        // Store a copy of the data (not a view, so the buffer can be GC'd)
-        entries.set(filename, bytes.slice(dataStart, dataEnd));
-
-        offset = dataEnd;
-    }
-
-    return entries;
-}
-
-/**
- * Verify an .actr package signature and binary hash.
- *
- * This is the Web equivalent of Rust Hyper's verify_package:
- *   1. Read manifest.sig (64 bytes Ed25519 signature)
- *   2. Read manifest.toml (signed manifest)
- *   3. Verify Ed25519 signature: crypto.subtle.verify('Ed25519', pubkey, sig, manifest)
- *   4. Read binary, compute SHA-256, compare with manifest binary.hash
- *
- * @param {Map<string, Uint8Array>} entries - ZIP entries from parseActrZip
- * @param {string} mfrPubkeyB64 - Base64-encoded Ed25519 MFR public key (32 bytes)
- * @returns {Promise<void>} Resolves if verification passes, throws on failure
- */
-async function verifyActrPackage(entries, mfrPubkeyB64) {
-    // 1. Read manifest.sig
-    const sigBytes = entries.get('manifest.sig');
-    if (!sigBytes || sigBytes.byteLength !== 64) {
-        throw new Error('[SW] Package verification failed: manifest.sig missing or invalid (expected 64 bytes)');
-    }
-
-    // 2. Read manifest.toml
-    const manifestBytes = entries.get('manifest.toml');
-    if (!manifestBytes) {
-        throw new Error('[SW] Package verification failed: manifest.toml missing');
-    }
-
-    // 3. Import MFR public key and verify Ed25519 signature
-    const pubkeyRaw = Uint8Array.from(atob(mfrPubkeyB64), c => c.charCodeAt(0));
-    if (pubkeyRaw.byteLength !== 32) {
-        throw new Error('[SW] Package verification failed: MFR public key must be 32 bytes');
-    }
-
-    const cryptoKey = await crypto.subtle.importKey(
-        'raw',
-        pubkeyRaw,
-        { name: 'Ed25519' },
-        false,
-        ['verify']
-    );
-
-    const sigValid = await crypto.subtle.verify(
-        { name: 'Ed25519' },
-        cryptoKey,
-        sigBytes,
-        manifestBytes
-    );
-
-    if (!sigValid) {
-        throw new Error('[SW] Package verification failed: Ed25519 signature invalid');
-    }
-
-    // 4. Parse manifest to get binary hash
-    const manifestText = new TextDecoder().decode(manifestBytes);
-    const hashMatch = manifestText.match(/hash\s*=\s*"([0-9a-fA-F]+)"/);
-    if (!hashMatch) {
-        throw new Error('[SW] Package verification failed: binary hash not found in manifest');
-    }
-    const expectedHash = hashMatch[1].toLowerCase();
-
-    // 5. Find binary and compute SHA-256
-    let binaryBytes = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            binaryBytes = data;
-            break;
-        }
-    }
-    if (!binaryBytes) {
-        throw new Error('[SW] Package verification failed: no WASM binary in package');
-    }
-
-    const hashBuffer = await crypto.subtle.digest('SHA-256', binaryBytes);
-    const hashArray = new Uint8Array(hashBuffer);
-    const actualHash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    if (actualHash !== expectedHash) {
-        throw new Error(
-            '[SW] Package verification failed: binary hash mismatch\n' +
-            '  expected: ' + expectedHash + '\n' +
-            '  actual:   ' + actualHash
-        );
-    }
-}
-
-/**
- * Load WASM package from a .actr ZIP package.
- *
- * 1. Fetch the .actr package from package_url
- * 2. Parse the ZIP (STORE entries)
- * 3. Verify package signature and binary hash (if mfr_pubkey provided)
- * 4. Find bin/*.wasm and resources/*.js (glue, not actor.sw.js)
- * 5. Eval the JS glue to register wasm_bindgen in global scope
- * 6. Initialize WASM with the binary bytes
- * 7. Call the register function
- */
-async function loadFromActrPackage(packageUrl, registerFn) {
-    emitSwLog('info', 'actr_package_fetch', packageUrl);
-
-    const resp = await fetch(packageUrl, { cache: 'no-store' });
-    if (!resp.ok) {
-        throw new Error('[SW] Failed to fetch .actr package: ' + resp.status + ' ' + resp.statusText);
-    }
-
-    const buffer = await resp.arrayBuffer();
-    emitSwLog('info', 'actr_package_size', buffer.byteLength);
-
-    const entries = parseActrZip(buffer);
-    emitSwLog('info', 'actr_zip_entries', Array.from(entries.keys()));
-
-    // ── Package verification (Web verify_package) ──
-    // If mfr_pubkey is provided in RUNTIME_CONFIG, verify the .actr package
-    // signature and binary hash before loading — equivalent to Rust Hyper's verify_package.
-    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
-    if (mfrPubkey) {
-        emitSwLog('info', 'actr_verify_start', 'verifying package signature and binary hash');
-        try {
-            await verifyActrPackage(entries, mfrPubkey);
-            emitSwLog('info', 'actr_verify_ok', 'package signature and binary hash verified');
-        } catch (verifyError) {
-            emitSwLog('error', 'actr_verify_failed', String(verifyError));
-            throw verifyError;
-        }
-    } else {
-        emitSwLog('info', 'actr_verify_skip', 'no mfr_pubkey in config, skipping verification');
-    }
-
-    // Find the WASM binary (bin/*.wasm or bin/actor.wasm)
-    let wasmBytes = null;
-    let wasmName = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            wasmBytes = data;
-            wasmName = name;
-            break;
-        }
-    }
-    if (!wasmBytes) {
-        throw new Error('[SW] No WASM binary found in .actr package');
-    }
-    emitSwLog('info', 'actr_wasm_found', { name: wasmName, size: wasmBytes.byteLength });
-
-    // Find the JS glue (resources/*.js but NOT actor.sw.js)
-    let glueText = null;
-    let glueName = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('resources/') && name.endsWith('.js') && !name.endsWith('actor.sw.js')) {
-            glueText = new TextDecoder().decode(data);
-            glueName = name;
-            break;
-        }
-    }
-    if (!glueText) {
-        throw new Error('[SW] No JS glue found in .actr package');
-    }
-    emitSwLog('info', 'actr_glue_found', { name: glueName, size: glueText.length });
-
-    // Eval the JS glue — patch 'let wasm_bindgen =' to 'self.wasm_bindgen ='
-    try {
-        const patchedText = glueText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
-        (0, eval)(patchedText);
-        emitSwLog('info', 'actr_eval_loaded', patchedText.length);
-    } catch (error) {
-        emitSwLog('error', 'actr_eval_failed', String(error));
-        throw error;
-    }
-
-    // Initialize WASM from raw bytes
-    // wasm_bindgen accepts { module_or_path: ArrayBuffer|Uint8Array }
-    emitSwLog('info', 'actr_wasm_init', wasmBytes.byteLength);
-    await wasm_bindgen({ module_or_path: wasmBytes });
-    emitSwLog('info', 'actr_wasm_ready', null);
-
-    wasm_bindgen.init_global();
-
-    // Call the workload registration function
-    if (registerFn && typeof wasm_bindgen[registerFn] === 'function') {
-        wasm_bindgen[registerFn]();
-        emitSwLog('info', 'workload_registered', registerFn);
-    } else if (registerFn) {
-        console.warn('[SW] register function not found:', registerFn);
-    }
-}
-
-/**
- * Legacy: Load WASM from direct JS/WASM URLs (development fallback).
- */
-async function loadFromDirectUrls(jsFile, wasmFile, registerFn) {
-    const runtimeUrl = new URL(jsFile, self.location).toString();
-    const wasmUrl = new URL(wasmFile, self.location).toString();
-
-    emitSwLog('info', 'legacy_runtime_url', runtimeUrl);
-
-    const runtimeRes = await fetch(runtimeUrl, { cache: 'no-store' });
-    emitSwLog('info', 'legacy_runtime_fetch', {
-        url: runtimeUrl,
-        status: runtimeRes.status,
-    });
-
-    const wasmRes = await fetch(wasmUrl, { cache: 'no-store' });
-    emitSwLog('info', 'legacy_wasm_fetch', {
-        url: wasmUrl,
-        status: wasmRes.status,
-    });
-
-    const runtimeText = await runtimeRes.text();
-    const patchedText = runtimeText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
-    (0, eval)(patchedText);
-
-    await wasm_bindgen({ module_or_path: wasmUrl });
-    wasm_bindgen.init_global();
-
-    if (registerFn && typeof wasm_bindgen[registerFn] === 'function') {
-        wasm_bindgen[registerFn]();
-        emitSwLog('info', 'workload_registered', registerFn);
-    } else if (registerFn) {
-        console.warn('[SW] register function not found:', registerFn);
-    }
-}
-
-/**
- * Guest Bridge Mode: load runtime WASM and guest WASM separately.
- *
- * When `runtime_wasm_url` is set in RUNTIME_CONFIG, the .actr package
- * contains only the standard guest WASM (built with entry! macro FFI),
- * and the runtime WASM + JS glue are loaded from separate URLs.
- *
- * Protocol:
- *   1. Load runtime WASM + JS glue from runtime_wasm_url
- *   2. Parse .actr package, verify signature, extract guest WASM binary
- *   3. Instantiate guest WASM with host import stubs
- *   4. Call actr_init on the guest
- *   5. Register a JS dispatch callback that bridges AbiFrame → actr_handle → AbiReply
- *   6. Call register_guest_workload(callback) on the runtime
+ * Flow:
+ *   1. Load runtime WASM + wasm-bindgen JS glue from `runtime_wasm_url`.
+ *   2. Fetch the `.actr` bytes.
+ *   3. Call `verify_and_extract_actr_package(bytes, trust_json)` in Rust
+ *      to verify Ed25519 + binary hash and extract the guest WASM binary.
+ *   4. Instantiate the guest with host import stubs (JSPI path if
+ *      available, sync fallback otherwise).
+ *   5. Run `actr_init` on the guest.
+ *   6. Register a JS dispatch callback bridging AbiFrame → actr_handle →
+ *      AbiReply with the runtime via `register_guest_workload`.
  */
 async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     emitSwLog('info', 'guest_bridge_start', { packageUrl, runtimeWasmUrl });
@@ -460,35 +180,30 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     wasm_bindgen.init_global();
     emitSwLog('info', 'guest_bridge_runtime_ready', null);
 
-    // ── 2. Load guest WASM from .actr package ──
+    // ── 2. Fetch + Rust-side verify + extract guest WASM ──
     const resp = await fetch(packageUrl, { cache: 'no-store' });
     if (!resp.ok) {
         throw new Error('[SW] Failed to fetch .actr package: ' + resp.status);
     }
     const buffer = await resp.arrayBuffer();
-    const entries = parseActrZip(buffer);
-    emitSwLog('info', 'guest_bridge_actr_entries', Array.from(entries.keys()));
+    emitSwLog('info', 'guest_bridge_actr_size', buffer.byteLength);
 
-    // Verify package signature
-    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
-    if (mfrPubkey && mfrPubkey !== '__MFR_PUBKEY_PLACEHOLDER__') {
-        await verifyActrPackage(entries, mfrPubkey);
+    const trustJson = JSON.stringify(
+        (RUNTIME_CONFIG && Array.isArray(RUNTIME_CONFIG.trust)) ? RUNTIME_CONFIG.trust : []
+    );
+    let extracted;
+    try {
+        extracted = wasm_bindgen.verify_and_extract_actr_package(
+            new Uint8Array(buffer),
+            trustJson,
+        );
         emitSwLog('info', 'guest_bridge_verify_ok', null);
-    } else {
-        emitSwLog('warn', 'guest_bridge_verify_skip', 'No valid MFR pubkey');
+    } catch (verifyError) {
+        emitSwLog('error', 'guest_bridge_verify_failed', String(verifyError));
+        throw verifyError;
     }
 
-    // Extract guest WASM binary
-    let guestWasmBytes = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            guestWasmBytes = data;
-            break;
-        }
-    }
-    if (!guestWasmBytes) {
-        throw new Error('[SW] No guest WASM binary found in .actr package');
-    }
+    const guestWasmBytes = extracted.binary;
     emitSwLog('info', 'guest_bridge_guest_wasm', guestWasmBytes.byteLength);
 
     // ── 3. Detect JSPI support ──
@@ -762,14 +477,11 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
 }
 
 /**
- * Load the WASM package into the Service Worker.
+ * Bring up the Service Worker's WASM runtime and workload.
  *
- * This is the Web equivalent of Rust Hyper's load_package_executor:
- *   - Guest bridge: Runtime WASM loaded separately, guest WASM from .actr package
- *   - Primary: Fetch a .actr package (signed ZIP), extract and load WASM + JS glue
- *   - Legacy fallback: Fetch separate JS glue + WASM files
- *
- * The package info comes from RUNTIME_CONFIG (set via DOM_PORT_INIT).
+ * Always runs via `loadWithGuestBridge`: hyper (runtime) and workload
+ * (guest) are separate artifacts. `runtime_wasm_url` and `package_url` are
+ * both required — the SW never loads an unverified monolithic bundle.
  */
 async function ensureWasmReady() {
     if (wasmReady) return;
@@ -779,7 +491,6 @@ async function ensureWasmReady() {
     }
 
     const packageUrl = RUNTIME_CONFIG.package_url;
-    const registerFn = RUNTIME_CONFIG.register_fn;
     const runtimeWasmUrl = RUNTIME_CONFIG.runtime_wasm_url;
 
     try {
@@ -809,21 +520,12 @@ async function ensureWasmReady() {
             }
         }
 
-        if (runtimeWasmUrl && packageUrl) {
-            // Guest bridge mode: load runtime separately, guest from .actr package
-            await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
-        } else if (packageUrl) {
-            // Primary path: load from .actr package (monolithic WASM + JS glue)
-            await loadFromActrPackage(packageUrl, registerFn);
-        } else {
-            // Legacy fallback: load from separate URLs
-            const jsFile = RUNTIME_CONFIG.package_js;
-            const wasmFile = RUNTIME_CONFIG.package_wasm;
-            if (!jsFile || !wasmFile) {
-                throw new Error('[SW] Missing package_url (or package_js/package_wasm) in runtimeConfig');
-            }
-            await loadFromDirectUrls(jsFile, wasmFile, registerFn);
+        if (!runtimeWasmUrl || !packageUrl) {
+            throw new Error(
+                '[SW] RUNTIME_CONFIG requires both `runtime_wasm_url` and `package_url`'
+            );
         }
+        await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
 
         wasmReady = true;
         emitSwLog('info', 'wasm_ready', null);

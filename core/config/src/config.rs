@@ -107,14 +107,45 @@ pub struct RuntimeConfig {
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
-    /// Trust mode: "development" or "production"
-    pub trust_mode: String,
+    /// Trust anchors for verifying `.actr` package signatures.
+    ///
+    /// One entry means a single trust provider; multiple entries means an
+    /// automatic fallback chain (first match wins). Consumed by the CLI /
+    /// host layer to construct an `actr_hyper::TrustProvider`.
+    pub trust: Vec<TrustAnchor>,
 
     /// Path to the workload package (.actr file)
     pub package_path: Option<PathBuf>,
 
     /// Web server configuration for `actr run --web`
     pub web: Option<WebConfig>,
+}
+
+/// Trust anchor config — a single `[[trust]]` table in `actr.toml`.
+///
+/// Pure configuration data; the concrete `TrustProvider` instantiation
+/// (resolving `pubkey_file` to bytes, wiring up `StaticTrust` / `RegistryTrust`
+/// / `ChainTrust`) lives in the host crate so `actr-config` stays free of an
+/// `actr-hyper` dependency.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrustAnchor {
+    /// Pre-shared Ed25519 public key. Accepts any manufacturer.
+    Static {
+        /// Path to a JSON file containing `public_key` (base64-encoded 32-byte key).
+        /// Resolved relative to the `actr.toml` directory during parsing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey_file: Option<PathBuf>,
+        /// Inline base64 Ed25519 public key (32 bytes). Overrides
+        /// `pubkey_file` when both are present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey_b64: Option<String>,
+    },
+    /// Look up MFR public keys from an AIS HTTP endpoint.
+    Registry {
+        /// AIS HTTP endpoint, e.g. `"http://localhost:8081/ais"`.
+        endpoint: String,
+    },
 }
 
 /// Package info
@@ -327,9 +358,6 @@ pub struct WebConfig {
 
     /// URL path to the shared runtime WASM
     pub runtime_wasm_url: Option<String>,
-
-    /// MFR public key for package verification (Base64-encoded Ed25519)
-    pub mfr_pubkey: Option<String>,
 }
 
 // ============================================================================
@@ -632,7 +660,7 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
-            trust_mode: "development".to_string(),
+            trust: vec![],
             package_path: None,
             web: None,
         };

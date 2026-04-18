@@ -287,49 +287,6 @@ unsafe impl Send for DynclibHost {}
 unsafe impl Sync for DynclibHost {}
 
 impl DynclibHost {
-    /// Verify package signature, then load the shared library.
-    ///
-    /// Supports both `.actr` ZIP packages and legacy binaries with embedded manifests.
-    /// For `.actr` packages, the native binary is extracted to a temporary file and loaded from there.
-    pub fn load_verified(
-        path: impl AsRef<Path>,
-        verifier: &crate::verify::PackageVerifier,
-    ) -> DynclibResult<Self> {
-        let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|e| {
-            DynclibError::LoadFailed(format!(
-                "failed to read binary for verification: {}: {e}",
-                path.display()
-            ))
-        })?;
-        let manifest = verifier.verify(&bytes)?;
-        tracing::info!(
-            manufacturer = %manifest.manufacturer,
-            actr_name = %manifest.actr_name,
-            version = %manifest.version,
-            "dynclib package signature verified, proceeding to load"
-        );
-
-        // .actr ZIP package: extract binary to temp file and load
-        if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
-            let binary_bytes = actr_pack::load_binary(&bytes).map_err(|e| {
-                DynclibError::LoadFailed(format!(
-                    "failed to extract binary from .actr package: {e}"
-                ))
-            })?;
-            let tmp_dir = path.parent().unwrap_or(Path::new("."));
-            let tmp_path = tmp_dir.join(format!(".actr-tmp-{}", manifest.actr_name));
-            std::fs::write(&tmp_path, &binary_bytes).map_err(|e| {
-                DynclibError::LoadFailed(format!("failed to write extracted binary: {e}"))
-            })?;
-            let result = Self::load(&tmp_path);
-            let _ = std::fs::remove_file(&tmp_path);
-            result
-        } else {
-            Self::load(path)
-        }
-    }
-
     /// Load a shared library from the given filesystem path.
     ///
     /// Resolves the required ABI symbols (`actr_init`, `actr_handle`,

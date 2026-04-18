@@ -64,8 +64,8 @@ for PORT in 8081 5173 5174; do
 done
 
 # Reset MFR pubkey placeholder (handles both single and double quotes)
-sed -i '' "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
-sed -i '' "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
+sed -i '' "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
+sed -i '' "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
 
 echo -e "${GREEN}Stale data cleaned${NC}"
 
@@ -91,8 +91,8 @@ cleanup() {
         kill $ACTRIX_PID 2>/dev/null || true
     fi
     # Restore placeholder (handles both single and double quotes)
-    sed -i '' "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
-    sed -i '' "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
+    sed -i '' "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$SERVER_ACTR_TOML" 2>/dev/null || true
+    sed -i '' "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" "$CLIENT_ACTR_TOML" 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cleanup complete"
 }

@@ -1,7 +1,8 @@
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::{Bytes, Context};
 use actr_hyper::context::RuntimeContext;
-use actr_hyper::{ActrRef, Hyper, HyperConfig, Registered, TrustMode};
+use actr_hyper::{ActrRef, Hyper, HyperConfig, Registered, StaticTrust};
+use std::sync::Arc;
 use actr_protocol::{ActrError, PayloadType as RpPayloadType};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -37,11 +38,10 @@ impl ActrNodePy {
             ensure_observability_initialized(Some(config.observability.clone()));
             let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-                TrustMode::Development {
-                    self_signed_pubkey: vec![0u8; 32],
-                },
-            ))
+            let trust = Arc::new(
+                StaticTrust::new([0u8; 32]).map_err(|e| PyValueError::new_err(e.to_string()))?,
+            );
+            let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
             let ais_endpoint = config.ais_endpoint.clone();

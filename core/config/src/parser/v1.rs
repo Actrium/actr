@@ -4,7 +4,7 @@ use crate::config::ObservabilityConfig;
 use crate::config::{
     BinaryConfig, BuildArtifact, BuildConfig, BuildProfile, BuildTool, Dependency, IceServer,
     IceTransportPolicy, ManifestConfig, PackageInfo, ProtoFile, RuntimeConfig, ServiceRef,
-    WebRtcAdvancedConfig, WebRtcConfig,
+    TrustAnchor, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::actr_raw::RuntimeRawConfig;
@@ -179,10 +179,11 @@ impl ParserV1 {
             websocket_advertised_host: raw.websocket.advertised_host,
             observability,
             config_dir: self.base_dir.clone(),
-            trust_mode: raw
-                .deployment
-                .trust_mode
-                .unwrap_or_else(|| "development".to_string()),
+            trust: raw
+                .trust
+                .into_iter()
+                .map(|anchor| resolve_trust_paths(anchor, &self.base_dir))
+                .collect(),
             package_path,
             web: raw.web.map(|w| WebConfig {
                 port: w.port,
@@ -191,7 +192,6 @@ impl ParserV1 {
                 is_server: w.is_server,
                 package_url: w.package_url,
                 runtime_wasm_url: w.runtime_wasm_url,
-                mfr_pubkey: w.mfr_pubkey,
             }),
         })
     }
@@ -582,6 +582,20 @@ impl ParserV1 {
 }
 
 // (ActrMode removed) previous execution mode parsing no longer needed.
+
+/// Resolve a trust anchor's relative paths against the config dir.
+fn resolve_trust_paths(anchor: TrustAnchor, base_dir: &Path) -> TrustAnchor {
+    match anchor {
+        TrustAnchor::Static {
+            pubkey_file,
+            pubkey_b64,
+        } => TrustAnchor::Static {
+            pubkey_file: pubkey_file.map(|p| if p.is_absolute() { p } else { base_dir.join(p) }),
+            pubkey_b64,
+        },
+        other => other,
+    }
+}
 
 #[cfg(test)]
 mod tests {

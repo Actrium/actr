@@ -80,6 +80,7 @@ actr-config = { workspace = true }
 actr-runtime-mailbox.workspace = true
 actr-service-compat.workspace = true
 actr-pack.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Storage
 rusqlite = { workspace = true }

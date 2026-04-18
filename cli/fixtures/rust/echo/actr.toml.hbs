@@ -8,7 +8,10 @@ url = "{{{AIS_ENDPOINT_URL}}}"
 
 [deployment]
 realm_id = {{REALM_ID}}
-trust_mode = "development"
+
+[[trust]]
+kind = "static"
+pubkey_file = "public-key.json"
 
 [discovery]
 visible = false

@@ -9,22 +9,21 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use actr_hyper::{ActorStore, Hyper, HyperConfig, HyperError, PackageManifest, TrustMode};
+use actr_hyper::{ActorStore, Hyper, HyperConfig, HyperError, PackageManifest, StaticTrust};
 use actr_protocol::{Acl, ServiceSpec};
 use actr_protocol::{ErrorResponse, RegisterResponse, register_response};
 use ed25519_dalek::SigningKey;
 use prost::Message;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn dev_config(dir: &TempDir) -> HyperConfig {
     let signing_key = SigningKey::generate(&mut OsRng);
-    let pubkey = signing_key.verifying_key().to_bytes().to_vec();
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-        self_signed_pubkey: pubkey,
-    })
+    let pubkey = signing_key.verifying_key().to_bytes();
+    HyperConfig::new(dir.path(), Arc::new(StaticTrust::new(pubkey).unwrap()))
 }
 
 fn fake_manifest() -> PackageManifest {

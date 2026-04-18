@@ -91,6 +91,23 @@ pub struct RuntimeRawConfig {
     #[serde(default)]
     pub package: Option<RawPackagePathConfig>,
 
+    /// Trust anchors for verifying `.actr` package signatures. One entry =
+    /// a single provider; multiple entries = auto-chained (first match wins).
+    ///
+    /// Example:
+    /// ```toml
+    /// [[trust]]
+    /// kind = "static"
+    /// pubkey_file = "public-key.json"
+    ///
+    /// # or
+    /// [[trust]]
+    /// kind = "registry"
+    /// endpoint = "http://ais.example.com/ais"
+    /// ```
+    #[serde(default)]
+    pub trust: Vec<crate::config::TrustAnchor>,
+
     /// Web server configuration for `actr run --web`
     ///
     /// When specified, enables serving the actor as a web application.
@@ -159,9 +176,6 @@ pub struct RawWebConfig {
 
     /// URL path to the shared runtime WASM (e.g. "/packages/actr_runtime_sw_bg.wasm")
     pub runtime_wasm_url: Option<String>,
-
-    /// MFR public key for package verification (Base64-encoded Ed25519 public key)
-    pub mfr_pubkey: Option<String>,
 }
 
 fn default_web_port() -> u16 {

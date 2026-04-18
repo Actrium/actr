@@ -13,6 +13,7 @@ pub mod guest_bridge;
 pub mod inbound;
 pub mod lifecycle;
 pub mod outbound;
+pub mod package;
 pub mod runtime;
 pub mod system;
 pub mod trace;

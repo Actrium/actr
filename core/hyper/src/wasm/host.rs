@@ -94,34 +94,6 @@ impl WasmHost {
         Ok(Self { engine, module })
     }
 
-    /// Verify package signature, then compile the WASM module.
-    ///
-    /// Supports both `.actr` ZIP packages and legacy WASM binaries with embedded manifests.
-    /// For `.actr` packages, the binary is extracted after verification.
-    pub fn compile_verified(
-        package_bytes: &[u8],
-        verifier: &crate::verify::PackageVerifier,
-    ) -> WasmResult<Self> {
-        let manifest = verifier.verify(package_bytes)?;
-        tracing::info!(
-            manufacturer = %manifest.manufacturer,
-            actr_name = %manifest.actr_name,
-            version = %manifest.version,
-            "package signature verified, proceeding to compile"
-        );
-
-        // .actr ZIP package: extract binary from the archive
-        if package_bytes.len() >= 4 && &package_bytes[0..4] == b"PK\x03\x04" {
-            let wasm_bytes = actr_pack::load_binary(package_bytes).map_err(|e| {
-                WasmError::LoadFailed(format!("failed to extract binary from .actr package: {e}"))
-            })?;
-            Self::compile(&wasm_bytes)
-        } else {
-            // Legacy: WASM bytes with embedded manifest
-            Self::compile(package_bytes)
-        }
-    }
-
     /// Instantiate the WASM module, register all host imports, return an executable `WasmWorkload`
     pub fn instantiate(&self) -> WasmResult<WasmWorkload> {
         let mut linker = Linker::<HostData>::new(&self.engine);

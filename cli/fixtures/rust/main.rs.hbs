@@ -7,10 +7,11 @@ use base64::Engine;
 use generated::echo::EchoRequest;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use tracing::info;
 
 use actr_config::{ConfigParser, PackageInfo};
-use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
+use actr_hyper::{Hyper, HyperConfig, StaticTrust, WorkloadPackage, init_observability};
 
 const PACKAGE_PATH: &str = "dist/app.actr";
 
@@ -37,10 +38,14 @@ async fn main() -> Result<()> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let trust_mode = load_trust_mode(&runtime.trust_mode, &runtime.ais_endpoint, &package_dir)?;
+    // For the scaffold we use a simple StaticTrust anchor loaded from
+    // `public-key.json` next to the .actr package. Swap in RegistryTrust or a
+    // ChainTrust composition if your deployment fetches keys from AIS.
+    let pubkey = load_public_key(&package_dir)?;
+    let trust = Arc::new(StaticTrust::new(pubkey).context("invalid public key")?);
 
     let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
-    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode))
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
         .await
         .context("failed to initialize Hyper")?;
 
@@ -101,18 +106,6 @@ fn ensure_package_built(package_path: &Path) -> Result<()> {
             PACKAGE_PATH,
             status
         ))
-    }
-}
-
-fn load_trust_mode(trust_mode: &str, ais_endpoint: &str, package_dir: &Path) -> Result<TrustMode> {
-    match trust_mode {
-        "development" => Ok(TrustMode::Development {
-            self_signed_pubkey: load_public_key(package_dir)?,
-        }),
-        "production" => Ok(TrustMode::Production {
-            ais_endpoint: ais_endpoint.trim_end_matches("/ais").to_string(),
-        }),
-        other => Err(anyhow!("unsupported trust mode: {other}")),
     }
 }
 

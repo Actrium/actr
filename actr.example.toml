@@ -8,10 +8,19 @@ url = "http://localhost:8081/ais"
 
 [deployment]
 realm_id = 1001
-# Trust mode: "development" or "production"
-# - development: uses self-signed public key from package directory
-# - production: fetches manufacturer public key from AIS/MFR
-trust_mode = "production"
+
+# Package signature trust anchors. One entry = a single provider;
+# multiple entries are tried in order (first match wins).
+#
+# Static anchor — pre-shared Ed25519 public key:
+#   [[trust]]
+#   kind = "static"
+#   pubkey_file = "public-key.json"
+#
+# Registry anchor — look up MFR keys from AIS:
+[[trust]]
+kind = "registry"
+endpoint = "http://localhost:8081/ais"
 
 [discovery]
 visible = true

@@ -4,11 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_hyper::{
-    Hyper, HyperConfig, PackageExecutionBackend, TrustMode, WorkloadPackage,
-};
+use actr_hyper::{Hyper, HyperConfig, PackageExecutionBackend, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn fixture_so_path() -> PathBuf {
@@ -87,9 +86,10 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
 }
 
 fn dev_config_with_key(dir: &TempDir, verifying_key: &ed25519_dalek::VerifyingKey) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-        self_signed_pubkey: verifying_key.to_bytes().to_vec(),
-    })
+    HyperConfig::new(
+        dir.path(),
+        Arc::new(StaticTrust::new(verifying_key.to_bytes()).unwrap()),
+    )
 }
 
 fn cache_path(data_dir: &Path, binary_hash: &[u8; 32]) -> PathBuf {

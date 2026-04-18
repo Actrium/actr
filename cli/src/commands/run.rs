@@ -142,7 +142,7 @@ impl RunCommand {
         )?;
 
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
-        info!("🔐 Trust mode: {}", config.trust_mode);
+        info!("🔐 Trust anchors: {} configured", config.trust.len());
 
         // 6. Initialize observability
         let _obs_guard = init_observability(&config.observability).map_err(|e| {
@@ -260,55 +260,131 @@ impl RunCommand {
         package_path: &Path,
         hyper_dir: &Path,
     ) -> Result<actr_hyper::Hyper> {
-        use actr_hyper::{Hyper, HyperConfig, TrustMode};
+        use actr_hyper::{
+            ChainTrust, Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider,
+        };
+        use std::sync::Arc;
 
-        let trust_mode = match config.trust_mode.as_str() {
-            "development" => {
-                // Load public key from package directory
-                let public_key = self.load_public_key(package_path).await?;
-                TrustMode::Development {
-                    self_signed_pubkey: public_key,
+        if config.trust.is_empty() {
+            // Fallback: when no `[[trust]]` anchors are configured, auto-load
+            // the package's sidecar `public-key.json` as a StaticTrust anchor.
+            // Lets `actr init` scaffolds "just work" without boilerplate.
+            let public_key = self.load_public_key(package_path).await?;
+            let trust: Arc<dyn TrustProvider> =
+                Arc::new(StaticTrust::new(public_key).map_err(|e| {
+                    ActrCliError::command_error(format!("Invalid public key: {}", e))
+                })?);
+            return Hyper::new(HyperConfig::new(hyper_dir, trust))
+                .await
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e))
+                });
+        }
+
+        let mut providers: Vec<Arc<dyn TrustProvider>> = Vec::with_capacity(config.trust.len());
+        for anchor in &config.trust {
+            let p: Arc<dyn TrustProvider> = match anchor {
+                actr_config::TrustAnchor::Static {
+                    pubkey_file,
+                    pubkey_b64,
+                } => {
+                    let key_bytes = self.load_static_pubkey(pubkey_file, pubkey_b64).await?;
+                    Arc::new(StaticTrust::new(key_bytes).map_err(|e| {
+                        ActrCliError::command_error(format!("Invalid static pubkey: {}", e))
+                    })?)
                 }
-            }
-            "production" => {
-                // Use AIS-based MFR certificate cache.
-                // TrustMode::Production expects the base endpoint without /ais suffix.
-                let base_endpoint = config.ais_endpoint.trim_end_matches("/ais").to_string();
-                TrustMode::Production {
-                    ais_endpoint: base_endpoint,
+                actr_config::TrustAnchor::Registry { endpoint } => {
+                    let base = endpoint.trim_end_matches("/ais").to_string();
+                    Arc::new(RegistryTrust::new(base))
                 }
-            }
-            other => {
-                return Err(ActrCliError::command_error(format!(
-                    "Invalid trust mode in runtime config: {}.\n\n\
-                     Set [deployment] trust_mode to \"development\" or \"production\".",
-                    other
-                )));
-            }
+            };
+            providers.push(p);
+        }
+
+        let trust: Arc<dyn TrustProvider> = if providers.len() == 1 {
+            providers.into_iter().next().unwrap()
+        } else {
+            Arc::new(ChainTrust::new(providers))
         };
 
-        let hyper_config = HyperConfig::new(hyper_dir).with_trust_mode(trust_mode);
-
-        Hyper::new(hyper_config)
+        Hyper::new(HyperConfig::new(hyper_dir, trust))
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e)))
     }
 
+    async fn load_static_pubkey(
+        &self,
+        pubkey_file: &Option<PathBuf>,
+        pubkey_b64: &Option<String>,
+    ) -> Result<Vec<u8>> {
+        use base64::Engine;
+        if let Some(b64) = pubkey_b64 {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Invalid base64 pubkey: {}", e))
+                })?;
+            if bytes.len() != 32 {
+                return Err(ActrCliError::command_error(format!(
+                    "pubkey_b64 must decode to 32 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            return Ok(bytes);
+        }
+        let path = pubkey_file.as_deref().ok_or_else(|| {
+            ActrCliError::command_error(
+                "Static trust anchor requires either `pubkey_file` or `pubkey_b64`".to_string(),
+            )
+        })?;
+        parse_pubkey_json(path).await
+    }
+}
+
+async fn parse_pubkey_json(path: &Path) -> Result<Vec<u8>> {
+    if !path.exists() {
+        return Err(ActrCliError::command_error(format!(
+            "pubkey_file not found: {}",
+            path.display()
+        )));
+    }
+    let content = tokio::fs::read_to_string(path).await?;
+    let json: serde_json::Value = serde_json::from_str(&content)?;
+    let b64 = json["public_key"].as_str().ok_or_else(|| {
+        ActrCliError::command_error(format!("{}: missing `public_key` field", path.display()))
+    })?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| ActrCliError::command_error(format!("Invalid base64 pubkey: {}", e)))?;
+    if bytes.len() != 32 {
+        return Err(ActrCliError::command_error(format!(
+            "{}: public_key must decode to 32 bytes, got {}",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+impl RunCommand {
     async fn load_public_key(&self, package_path: &Path) -> Result<Vec<u8>> {
         let package_dir = package_path.parent().unwrap_or(Path::new("."));
         let key_path = package_dir.join("public-key.json");
 
         if !key_path.exists() {
             return Err(ActrCliError::command_error(format!(
-                "Public key not found for development trust mode.\n\n\
+                "Public key not found for static trust anchor.\n\n\
                  Expected location: {}\n\n\
-                 Update your runtime config or package directory:\n\
-                 1. Keep [deployment] trust_mode = \"development\" and place public-key.json next to the .actr package\n\
-                 2. Or switch to production mode in config:\n\
-                    [deployment]\n\
-                    trust_mode = \"production\"\n\
-                    [ais_endpoint]\n\
-                    url = \"http://localhost:8081/ais\"",
+                 Either place public-key.json next to the .actr package, or\n\
+                 configure explicit trust anchors in actr.toml:\n\n\
+                 [[trust]]\n\
+                 kind = \"static\"\n\
+                 pubkey_file = \"public-key.json\"\n\n\
+                 # or\n\
+                 [[trust]]\n\
+                 kind = \"registry\"\n\
+                 endpoint = \"http://localhost:8081/ais\"",
                 key_path.display()
             )));
         }
@@ -690,11 +766,6 @@ impl RunCommand {
             .clone()
             .unwrap_or_else(|| "http://localhost:8081/ais".to_string());
         let realm_id = raw.deployment.realm_id.unwrap_or(0);
-        let trust_mode = raw
-            .deployment
-            .trust_mode
-            .clone()
-            .unwrap_or_else(|| "production".to_string());
         let visible = raw.discovery.visible.unwrap_or(true);
         let force_relay = raw.webrtc.force_relay;
         let stun_urls = &raw.webrtc.stun_urls;
@@ -771,13 +842,26 @@ impl RunCommand {
         let runtime_wasm_url = web
             .and_then(|w| w.runtime_wasm_url.clone())
             .unwrap_or_else(|| "/packages/actr_runtime_sw_bg.wasm".to_string());
-        let mfr_pubkey = web.and_then(|w| w.mfr_pubkey.clone()).unwrap_or_default();
+
+        // Serialise `[[trust]]` anchors to the web runtime in the same shape
+        // the Rust side uses (see `actr_config::TrustAnchor`). Browser-side
+        // code walks the array; today only `kind = "static"` is honoured for
+        // verification — a `kind = "registry"` anchor is surfaced but causes
+        // the SW to log a warning and skip verify until the web runtime learns
+        // to do async AIS key lookup.
+        let trust_json: Vec<serde_json::Value> = raw
+            .trust
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| {
+                ActrCliError::command_error(format!("Failed to serialize [[trust]]: {}", e))
+            })?;
 
         let config_json = serde_json::json!({
             "signaling_url": signaling_url,
             "ais_endpoint": ais_endpoint,
             "realm_id": realm_id,
-            "trust_mode": trust_mode,
             "visible": visible,
             "force_relay": force_relay,
             "stun_urls": stun_urls,
@@ -793,7 +877,7 @@ impl RunCommand {
             "is_server": is_server,
             "package_url": package_url,
             "runtime_wasm_url": runtime_wasm_url,
-            "mfr_pubkey": mfr_pubkey,
+            "trust": trust_json,
         });
 
         serde_json::to_string_pretty(&config_json).map_err(|e| {

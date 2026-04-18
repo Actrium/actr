@@ -11,7 +11,7 @@ url = "http://localhost:8081/ais"
 
 [deployment]
 realm_id = 2368266035
-trust_mode = "production"
+
 
 [discovery]
 visible = true
@@ -35,4 +35,7 @@ type = "acme:EchoService:0.1.0"
 port = 5173
 host = "0.0.0.0"
 is_server = false
-mfr_pubkey = "__MFR_PUBKEY_PLACEHOLDER__"
+
+[[trust]]
+kind = "static"
+pubkey_b64 = "__MFR_PUBKEY_PLACEHOLDER__"

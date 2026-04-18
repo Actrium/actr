@@ -151,7 +151,7 @@ fn execute_keygen(args: &PkgKeygenArgs) -> Result<()> {
         "private_key": private_b64,
         "public_key": public_b64,
         "created_at": now,
-        "note": "Development signing key, for TrustMode::Development only, not for production use"
+        "note": "Development signing key, for StaticTrust use only, not for production use"
     });
 
     let json_str = serde_json::to_string_pretty(&key_json)?;
@@ -167,13 +167,18 @@ fn execute_keygen(args: &PkgKeygenArgs) -> Result<()> {
 
     println!("Key pair generated: {}", key_path.display());
     println!();
-    println!("Public key (for Hyper TrustMode::Development):");
+    println!("Public key (base64, Ed25519 verifying key — 32 bytes):");
     println!("  {}", public_b64);
     println!();
-    println!("Hyper configuration example (TOML):");
-    println!("  [hyper]");
-    println!("  trust_mode = \"development\"");
-    println!("  self_signed_pubkey = \"{}\"", public_b64);
+    println!("Use it as a StaticTrust anchor in your actr.toml:");
+    println!("  [[trust]]");
+    println!("  kind = \"static\"");
+    println!("  pubkey_b64 = \"{}\"", public_b64);
+    println!();
+    println!("Or reference a public-key.json next to the .actr package:");
+    println!("  [[trust]]");
+    println!("  kind = \"static\"");
+    println!("  pubkey_file = \"public-key.json\"");
 
     let global_path = crate::config::loader::global_config_path()?;
     let mut global_config =

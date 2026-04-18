@@ -116,6 +116,11 @@ pub mod context_factory;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workload;
 
+// ServiceSpec derivation from a verified package (native-only; pulls
+// actr-service-compat/proto-fingerprint).
+#[cfg(not(target_arch = "wasm32"))]
+mod service_spec;
+
 // WASM actor execution engine (optional, native-only)
 #[cfg(all(not(target_arch = "wasm32"), feature = "wasm-engine"))]
 pub mod wasm;
@@ -136,7 +141,7 @@ pub mod resource;
 // Re-exports: Cross-platform
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub use config::{HyperConfig, TrustMode};
+pub use config::HyperConfig;
 pub use error::{HyperError, HyperResult};
 pub use verify::PackageManifest;
 
@@ -163,7 +168,9 @@ pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]
-pub use verify::MfrCertCache;
+pub use verify::{
+    ChainTrust, MfrCertCache, RegistryTrust, StaticTrust, TrustProvider, verify_ed25519_manifest,
+};
 
 // Observability
 #[cfg(not(target_arch = "wasm32"))]
@@ -247,9 +254,10 @@ pub mod prelude {
 
     // ── Platform types (cross-platform) ─────────────────────────────────────
     pub use crate::verify::PackageManifest;
+    pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{Hyper, storage::ActorStore};
-    pub use crate::{HyperConfig, HyperError, HyperResult, TrustMode};
+    pub use crate::{HyperConfig, HyperError, HyperResult};
 
     // ── Core structures (native-only) ───────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -416,8 +424,6 @@ struct HyperInner {
     config: HyperConfig,
     /// Locally unique ID generated and persisted on first startup
     instance_id: String,
-    /// Package signature verifier
-    verifier: verify::PackageVerifier,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
 }
@@ -523,7 +529,8 @@ impl Hyper<Uninit> {
     /// When a `PlatformProvider` is injected:
     /// - instance UID comes from `platform.instance_uid()` (and its backing store)
     /// - `bootstrap_credential` uses `platform.secret_store()` instead of `ActorStore::open()`
-    /// - `PackageVerifier` receives `platform.crypto()` for signature verification
+    /// - `TrustProvider` verifies `.actr` package signatures using whatever
+    ///   mechanism the injected provider implements
     pub async fn with_platform(
         config: HyperConfig,
         platform: Arc<dyn PlatformProvider>,
@@ -537,10 +544,6 @@ impl Hyper<Uninit> {
     ) -> HyperResult<Self> {
         info!(
             data_dir = %config.data_dir.display(),
-            trust_mode = match &config.trust_mode {
-                TrustMode::Production { .. } => "production",
-                TrustMode::Development { .. } => "development",
-            },
             "Hyper initializing"
         );
 
@@ -565,16 +568,10 @@ impl Hyper<Uninit> {
         };
         debug!(instance_id, "Hyper instance_uid ready");
 
-        let mut verifier = verify::PackageVerifier::new(config.trust_mode.clone());
-        if let Some(ref p) = platform {
-            verifier = verifier.with_crypto(p.crypto());
-        }
-
         Ok(Self {
             inner: Arc::new(HyperInner {
                 config,
                 instance_id,
-                verifier,
                 platform,
             }),
             attachment: None,
@@ -584,29 +581,15 @@ impl Hyper<Uninit> {
 
     /// Verify a [`WorkloadPackage`] and return the verified manifest.
     ///
-    /// Successful verification means:
-    /// - binary_hash matches the recomputed result (package not tampered with)
-    /// - MFR signature is valid (from a trusted manufacturer)
-    ///
-    /// In production mode, the MFR public key is fetched asynchronously first
-    /// (requires AIS reachability); in development mode, there are no network
-    /// calls and verification is fully synchronous.
+    /// Delegates entirely to the configured [`crate::verify::TrustProvider`];
+    /// the provider decides how to authenticate the package (static key,
+    /// registry lookup, keyless transparency log, etc).
     pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<PackageManifest> {
-        let bytes = package.bytes();
-        if matches!(&self.inner.config.trust_mode, TrustMode::Production { .. }) {
-            if let Some((manufacturer, signing_key_id)) = quick_extract_manifest_info(bytes) {
-                debug!(
-                    manufacturer,
-                    ?signing_key_id,
-                    "production mode: prefetching MFR public key"
-                );
-                self.inner
-                    .verifier
-                    .prefetch_mfr_cert(&manufacturer, signing_key_id.as_deref())
-                    .await?;
-            }
-        }
-        self.inner.verifier.verify(bytes)
+        self.inner
+            .config
+            .trust_provider
+            .verify_package(package.bytes())
+            .await
     }
 
     /// Verify a package, select the execution backend from `binary.target`,
@@ -788,13 +771,10 @@ impl Hyper<Attached> {
                         "failed to re-parse package manifest for service_spec: {e}"
                     ))
                 })?;
-            actr_pack::calculate_service_spec_from_package(
+            crate::service_spec::calculate_service_spec_from_package(
                 &attachment.package_bytes,
                 &pack_manifest,
-            )
-            .map_err(|e| {
-                HyperError::Runtime(format!("failed to derive service_spec from package: {e}"))
-            })?
+            )?
         };
         self.register_with(ais_endpoint, service_spec).await
     }
@@ -1191,20 +1171,6 @@ fn check_psk_expiry(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Quickly extract the `manufacturer` and `signing_key_id` fields from an `.actr` package,
-/// used only to prefetch the MFR public key without full verification.
-///
-/// Returns `None` when parsing fails or the format is not recognized.
-/// The caller then skips prefetch and lets verification report the error.
-fn quick_extract_manifest_info(bytes: &[u8]) -> Option<(String, Option<String>)> {
-    if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
-        return actr_pack::read_manifest(bytes)
-            .ok()
-            .map(|m| (m.manufacturer, m.signing_key_id));
-    }
-    None
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn select_package_execution_backend(
     manifest: &PackageManifest,
@@ -1470,18 +1436,24 @@ mod tests {
 
     fn dev_config(dir: &TempDir) -> HyperConfig {
         let signing_key = SigningKey::generate(&mut OsRng);
-        let pubkey = signing_key.verifying_key().to_bytes().to_vec();
-        HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-            self_signed_pubkey: pubkey,
-        })
+        let pubkey = signing_key.verifying_key().to_bytes();
+        HyperConfig::new(
+            dir.path(),
+            Arc::new(crate::verify::StaticTrust::new(pubkey).unwrap()),
+        )
     }
 
     #[tokio::test]
     async fn init_creates_data_dir_and_instance_id() {
         let dir = TempDir::new().unwrap();
         let sub = dir.path().join("subdir/nested");
-        let config = dev_config(&TempDir::new().unwrap());
-        let config = HyperConfig::new(&sub).with_trust_mode(config.trust_mode);
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let config = HyperConfig::new(
+            &sub,
+            Arc::new(
+                crate::verify::StaticTrust::new(signing_key.verifying_key().to_bytes()).unwrap(),
+            ),
+        );
 
         let hyper = Hyper::new(config).await.unwrap();
         assert!(sub.exists());

@@ -242,11 +242,6 @@ pub struct RawDeploymentConfig {
     /// AIS (Actor Identity Service) HTTP endpoint, e.g. `"http://ais.example.com:8080"`.
     #[serde(default)]
     pub ais_endpoint: Option<String>,
-
-    /// Trust mode: "development" (default) | "production"
-    /// Used for determining security level and certificate cache logic
-    #[serde(default)]
-    pub trust_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

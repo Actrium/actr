@@ -10,7 +10,11 @@ pub mod echo {
 use std::env;
 use std::path::PathBuf;
 
-use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
+use actr_hyper::{
+    Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider, WorkloadPackage,
+    init_observability,
+};
+use std::sync::Arc;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
@@ -109,23 +113,19 @@ async fn main() -> Result<()> {
     info!("Signaling server: {:?}", config.signaling_url);
 
     let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
-    let trust_mode = if env::var("TRUST_MODE")
+    let trust: Arc<dyn TrustProvider> = if env::var("TRUST_MODE")
         .map(|v| v == "production")
         .unwrap_or(false)
     {
         let ais_endpoint =
             env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());
         let base_endpoint = ais_endpoint.trim_end_matches("/ais").to_string();
-        TrustMode::Production {
-            ais_endpoint: base_endpoint,
-        }
+        Arc::new(RegistryTrust::new(base_endpoint))
     } else {
-        TrustMode::Development {
-            self_signed_pubkey: load_package_public_key()?,
-        }
+        Arc::new(StaticTrust::new(load_package_public_key()?).context("invalid pubkey")?)
     };
 
-    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode)).await?;
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust)).await?;
 
     let ais_endpoint =
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());

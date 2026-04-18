@@ -4,7 +4,7 @@ use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{
-    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Registered, TrustMode, WorkloadPackage,
+    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Registered, StaticTrust, WorkloadPackage,
 };
 use actr_protocol::{ActrIdExt, ActrTypeExt};
 use parking_lot::Mutex;
@@ -75,18 +75,18 @@ impl ActrSystemWrapper {
 
         let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
             .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?;
-        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-            TrustMode::Development {
-                self_signed_pubkey: vec![0u8; 32],
-            },
-        ))
-        .await
-        .map_err(|e| {
-            error!("Failed to initialize Hyper shell: {}", e);
-            ActrError::InternalError {
-                msg: format!("Failed to initialize Hyper shell: {e}"),
-            }
-        })?;
+        let trust = Arc::new(
+            StaticTrust::new([0u8; 32])
+                .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?,
+        );
+        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
+            .await
+            .map_err(|e| {
+                error!("Failed to initialize Hyper shell: {}", e);
+                ActrError::InternalError {
+                    msg: format!("Failed to initialize Hyper shell: {e}"),
+                }
+            })?;
 
         let package_bytes = std::fs::read(&package_path).map_err(|e| {
             error!("Failed to read package at {}: {}", package_path, e);

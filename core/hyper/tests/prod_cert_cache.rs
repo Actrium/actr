@@ -7,10 +7,11 @@
 //! 4. Different MFRs -> independent caches
 //! 5. HTTP request body and response format validation
 
-use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, TrustMode, WorkloadPackage};
+use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, RegistryTrust, WorkloadPackage};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -21,9 +22,7 @@ fn minimal_wasm() -> Vec<u8> {
 
 /// Production mode HyperConfig pointing to a mock AIS endpoint
 fn prod_config(dir: &TempDir, ais_endpoint: &str) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Production {
-        ais_endpoint: ais_endpoint.to_string(),
-    })
+    HyperConfig::new(dir.path(), Arc::new(RegistryTrust::new(ais_endpoint)))
 }
 
 /// Build a signed .actr package for the given manufacturer
