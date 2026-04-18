@@ -55,40 +55,6 @@ pub enum Workload {
 }
 
 impl Workload {
-    /// Run the workload start hook.
-    pub fn on_start<'a>(
-        &'a self,
-        _ctx: &'a crate::context::RuntimeContext,
-    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
-        Box::pin(async move {
-            match self {
-                #[cfg(feature = "wasm-engine")]
-                Workload::Wasm(_) => Ok(()),
-                #[cfg(feature = "dynclib-engine")]
-                Workload::DynClib(_) => Ok(()),
-                #[allow(unreachable_patterns)]
-                _ => Ok(()),
-            }
-        })
-    }
-
-    /// Run the workload stop hook.
-    pub fn on_stop<'a>(
-        &'a self,
-        _ctx: &'a crate::context::RuntimeContext,
-    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
-        Box::pin(async move {
-            match self {
-                #[cfg(feature = "wasm-engine")]
-                Workload::Wasm(_) => Ok(()),
-                #[cfg(feature = "dynclib-engine")]
-                Workload::DynClib(_) => Ok(()),
-                #[allow(unreachable_patterns)]
-                _ => Ok(()),
-            }
-        })
-    }
-
     /// Dispatch one inbound RPC envelope.
     pub fn dispatch_envelope<'a>(
         &'a mut self,

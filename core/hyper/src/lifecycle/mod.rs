@@ -7,6 +7,7 @@ pub(crate) mod node;
 pub mod compat_lock;
 pub mod dedup;
 mod heartbeat;
+pub(crate) mod hooks;
 mod network_event;
 
 pub use compat_lock::{CompatLockFile, CompatLockManager, CompatibilityCheck, NegotiationEntry};

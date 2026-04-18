@@ -116,8 +116,25 @@ pub(crate) struct Inner {
     ///
     /// `handle_incoming` dispatches through this workload.
     ///
-    /// The `Mutex` serializes dispatch into a single guest actor instance.
-    pub(crate) workload: Mutex<crate::workload::Workload>,
+    /// The `Mutex` serializes dispatch into a single guest actor instance:
+    /// `WasmWorkload::handle` and `DynClibWorkload::handle` both take
+    /// `&mut self` because the underlying Wasmtime `Store` / native guest
+    /// ABI is single-threaded, so concurrent dispatch through the same
+    /// instance would be unsound. Only the dispatch path takes this lock —
+    /// observation hooks reach the node through `hook_observer` without
+    /// holding any lock (see `lifecycle::hooks`).
+    pub(crate) workload_dispatch: Mutex<crate::workload::Workload>,
+
+    /// Optional shell-side observer that receives workload lifecycle /
+    /// transport / credential / mailbox hook invocations.
+    ///
+    /// `None` means "no observer installed"; the built-in tracing defaults
+    /// still fire from the event-source wiring sites. When `Some`, hook
+    /// invocations are dispatched through `lifecycle::hooks::spawn_hook`
+    /// so panics in observer code cannot unwind into the event source.
+    #[allow(dead_code)]
+    pub(crate) hook_observer:
+        Option<crate::lifecycle::hooks::WorkloadHookObserverRef>,
 }
 
 /// Credential state for shared access between tasks
@@ -530,7 +547,7 @@ impl Inner {
             Box::pin(async move { host_operation_handler(ctx, pending).await })
         });
 
-        let mut guard = self.workload.lock().await;
+        let mut guard = self.workload_dispatch.lock().await;
         let result = guard
             .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
             .await
@@ -686,7 +703,8 @@ impl Inner {
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            workload: Mutex::new(workload),
+            workload_dispatch: Mutex::new(workload),
+            hook_observer: None,
         })
     }
 
@@ -1268,11 +1286,25 @@ impl Inner {
         let shutdown_token = self.shutdown_token.clone();
         let node_ref = Arc::new(self);
 
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 3.2. Fire workload-level lifecycle hooks via the hook observer.
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        //
+        // These are pure observation points — the dispatch Mutex is NOT
+        // held here. If no observer is installed we still get the built-in
+        // framework tracing default by emitting it directly.
         {
             let startup_ctx =
                 context_factory.create_bootstrap(&actor_id, &credential_state.credential().await);
-            let workload = node_ref.workload.lock().await;
-            workload.on_start(&startup_ctx).await?;
+            if let Some(observer) = node_ref.hook_observer.clone() {
+                let ctx_for_hook = startup_ctx.clone();
+                crate::lifecycle::hooks::spawn_hook("on_start", async move {
+                    observer.on_start(&ctx_for_hook).await;
+                });
+            } else {
+                tracing::info!("workload on_start");
+            }
+            let _ = startup_ctx; // drop
         }
 
         {
@@ -1287,9 +1319,13 @@ impl Inner {
                     .as_ref()
                     .expect("ContextFactory must be initialized in start()")
                     .create_bootstrap(&actor_id, &credential_state.credential().await);
-                let workload = node.workload.lock().await;
-                if let Err(err) = workload.on_stop(&stop_ctx).await {
-                    tracing::warn!("workload on_stop hook failed: {err:?}");
+                if let Some(observer) = node.hook_observer.clone() {
+                    let ctx_for_hook = stop_ctx.clone();
+                    crate::lifecycle::hooks::spawn_hook("on_stop", async move {
+                        observer.on_stop(&ctx_for_hook).await;
+                    });
+                } else {
+                    tracing::info!("workload on_stop");
                 }
             });
             task_handles.push(on_stop_handle);
