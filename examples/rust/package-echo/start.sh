@@ -846,7 +846,10 @@ url = "${ACTRIX_HTTP_URL}/ais"
 
 [deployment]
 realm_id = 1001
-trust_mode = "production"
+
+[[trust]]
+kind = "registry"
+endpoint = "${ACTRIX_HTTP_URL}/ais"
 
 [discovery]
 visible = true

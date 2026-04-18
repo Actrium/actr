@@ -35,33 +35,14 @@ export interface SwRuntimeConfig {
   /** ACL allow-list of actor types */
   acl_allow_types: string[];
 
-  // ── Package loading (Web load_package_executor) ──
+  // ── Package loading (guest-bridge) ──
 
-  /** URL of the .actr package to load (e.g. "/packages/echo-server.actr").
-   *  The .actr package is a signed ZIP containing WASM binary, JS glue, and actor.sw.js.
-   *  This is the Web equivalent of Rust Hyper's load_package_executor. */
+  /** URL of the signed .actr workload package (e.g. "/packages/echo.actr"). */
   package_url?: string;
 
-  /** Name of the wasm_bindgen register function to call after init (e.g. "register_echo_service") */
-  register_fn?: string;
-
-  // ── Legacy: direct file loading (development fallback) ──
-
-  /** Filename or URL of the wasm-bindgen JS glue file (e.g. "echo_server.js").
-   *  Used when package_url is not set. */
-  package_js?: string;
-
-  /** Filename or URL of the WASM binary (e.g. "echo_server_bg.wasm").
-   *  Used when package_url is not set. */
-  package_wasm?: string;
-
-  // ── Guest Bridge: split runtime + guest loading ──
-
-  /** URL of the runtime WASM + JS glue (e.g. "/packages/echo_server_bg.wasm").
-   *  When set together with package_url, the guest bridge mode is activated:
-   *  - Runtime WASM is loaded from this URL (+ derived JS glue URL)
-   *  - The .actr package contains only the standard guest WASM (entry! FFI)
-   *  - This enables sharing guest WASMs between web and native platforms. */
+  /** URL of the SW runtime WASM (wasm-pack output, e.g. "/packages/actr_runtime_sw_bg.wasm").
+   *  Loaded independently of the workload: Hyper (runtime) and workload (guest) are
+   *  always separate artifacts. The SW derives the JS glue URL from this (`_bg.wasm` → `.js`). */
   runtime_wasm_url?: string;
 
   // ── Package verification (Web verify_package) ──

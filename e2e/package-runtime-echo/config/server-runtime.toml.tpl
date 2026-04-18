@@ -12,7 +12,10 @@ url = "http://127.0.0.1:8081/ais"
 [deployment]
 realm_id = __REALM_ID__
 realm_secret = "__REALM_SECRET__"
-trust_mode = "production"
+
+[[trust]]
+kind = "registry"
+endpoint = "http://127.0.0.1:8081/ais"
 
 [discovery]
 visible = true
