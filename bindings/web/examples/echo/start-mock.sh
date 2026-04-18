@@ -7,7 +7,7 @@
 #
 # Steps:
 #   1. Build guest WASMs (cargo build)
-#   2. actr pkg build — pack into signed .actr packages
+#   2. actr build --no-compile — pack into signed .actr packages
 #   3. Start mock-actrix (signaling WS + HTTP AIS + MFR at :8081)
 #   4. Seed realm + MFR + packages via HTTP /admin/* (see register-mock.sh)
 #   5. actr run --web for server + client
@@ -168,20 +168,18 @@ MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['pu
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
-"$ACTR_CMD" pkg build \
-    --binary "$SERVER_GUEST_WASM" \
-    --config "$SERVER_GUEST_DIR/manifest.toml" \
+(cd "$SERVER_GUEST_DIR" && "$ACTR_CMD" build \
+    --no-compile \
+    --target "wasm32-unknown-unknown" \
     --key "$MFR_KEY_FILE" \
-    --output "$SERVER_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown"
+    --output "$SERVER_ACTR_PACKAGE")
 
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
-"$ACTR_CMD" pkg build \
-    --binary "$CLIENT_GUEST_WASM" \
-    --config "$CLIENT_GUEST_DIR/manifest.toml" \
+(cd "$CLIENT_GUEST_DIR" && "$ACTR_CMD" build \
+    --no-compile \
+    --target "wasm32-unknown-unknown" \
     --key "$MFR_KEY_FILE" \
-    --output "$CLIENT_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown"
+    --output "$CLIENT_ACTR_PACKAGE")
 
 echo -e "${GREEN}.actr packages built${NC}"
 

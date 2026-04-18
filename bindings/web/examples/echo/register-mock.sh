@@ -105,7 +105,7 @@ curl -fsS -X POST "$ENDPOINT/admin/mfr" \
 
 echo -e "${GREEN}MFR '$MFR_NAME' registered${NC}"
 
-# --- Step 3: Publish packages via `actr pkg publish` (hits /mfr/pkg/* routes) ---
+# --- Step 3: Publish packages via `actr registry publish` (hits /mfr/pkg/* routes) ---
 
 echo ""
 echo "Step 3: Publishing packages..."
@@ -117,7 +117,7 @@ for PKG_LABEL in server client; do
         PKG_FILE="$CLIENT_ACTR_PACKAGE"
     fi
 
-    if "$ACTR_CMD" pkg publish \
+    if "$ACTR_CMD" registry publish \
         --package "$PKG_FILE" \
         --keychain "$MFR_KEY_FILE" \
         --endpoint "$ENDPOINT"; then
