@@ -6,10 +6,8 @@ export declare class ActrNode {
   /**
    * Start the node and return ActrRef.
    *
-   * # Safety
-   *
-   * This function is unsafe because it takes ownership of the internal node and
-   * starts the actor runtime. It must only be called once.
+   * One-shot: consumes the internal Hyper handle. A second call resolves
+   * with `Node already started`.
    */
   start(): Promise<ActrRef>
 }

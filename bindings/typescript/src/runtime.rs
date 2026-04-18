@@ -53,10 +53,11 @@ impl ActrNode {
     }
     /// Start the node and return ActrRef.
     ///
-    /// # Safety
+    /// One-shot: consumes the internal Hyper handle. A second call resolves
+    /// with `Node already started`.
     ///
-    /// This function is unsafe because it takes ownership of the internal node and
-    /// starts the actor runtime. It must only be called once.
+    /// The `unsafe` marker is required by napi-rs for async methods taking
+    /// `&mut self` — it is not surfaced to JavaScript callers.
     #[napi]
     pub async unsafe fn start(&mut self) -> Result<ActrRef> {
         let hyper = self
