@@ -7,7 +7,7 @@
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
 #[cfg(feature = "wasm-engine")]
-use actr_hyper::PackageExecutionBackend;
+use actr_hyper::BinaryKind;
 use actr_hyper::{Hyper, HyperConfig, HyperError, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -207,7 +207,7 @@ async fn load_workload_package_selects_wasm_backend() {
         .await
         .unwrap();
 
-    assert_eq!(loaded.backend, PackageExecutionBackend::Wasm);
+    assert_eq!(loaded.binary_kind, BinaryKind::Wasm);
     assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
 }
 

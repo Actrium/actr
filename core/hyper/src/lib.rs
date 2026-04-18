@@ -431,7 +431,7 @@ struct HyperInner {
 #[cfg(not(target_arch = "wasm32"))]
 /// Execution backend selected from a verified `.actr` package target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackageExecutionBackend {
+pub enum BinaryKind {
     /// Execute the package binary with the WASM runtime.
     Wasm,
     /// Execute the package binary as a C-ABI dynamic library (`cdylib`).
@@ -483,8 +483,8 @@ impl WorkloadPackage {
 pub struct LoadedWorkload {
     /// Verified package manifest retained for downstream bootstrap and storage operations.
     pub manifest: PackageManifest,
-    /// Backend selected from `manifest.binary_target`.
-    pub backend: PackageExecutionBackend,
+    /// Binary kind detected from `manifest.binary_target`.
+    pub binary_kind: BinaryKind,
     /// Ready-to-attach runtime workload.
     pub workload: crate::workload::Workload,
 }
@@ -496,10 +496,10 @@ impl LoadedWorkload {
         self,
     ) -> (
         PackageManifest,
-        PackageExecutionBackend,
+        BinaryKind,
         crate::workload::Workload,
     ) {
-        (self.manifest, self.backend, self.workload)
+        (self.manifest, self.binary_kind, self.workload)
     }
 }
 
@@ -508,7 +508,7 @@ impl std::fmt::Debug for LoadedWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedWorkload")
             .field("manifest", &self.manifest)
-            .field("backend", &self.backend)
+            .field("backend", &self.binary_kind)
             .finish_non_exhaustive()
     }
 }
@@ -604,14 +604,14 @@ impl Hyper<Uninit> {
     ) -> HyperResult<LoadedWorkload> {
         let bytes = package.bytes();
         let manifest = self.verify_package(package).await?;
-        let backend = select_package_execution_backend(&manifest)?;
-        let workload = match backend {
-            PackageExecutionBackend::Wasm => self.load_wasm_workload(bytes, &manifest),
-            PackageExecutionBackend::DynClib => self.load_dynclib_workload(bytes, &manifest),
+        let binary_kind = detect_binary_kind(&manifest)?;
+        let workload = match binary_kind {
+            BinaryKind::Wasm => self.load_wasm_workload(bytes, &manifest),
+            BinaryKind::DynClib => self.load_dynclib_workload(bytes, &manifest),
         }?;
         Ok(LoadedWorkload {
             manifest,
-            backend,
+            binary_kind,
             workload,
         })
     }
@@ -1172,15 +1172,15 @@ fn check_psk_expiry(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
-fn select_package_execution_backend(
+fn detect_binary_kind(
     manifest: &PackageManifest,
-) -> HyperResult<PackageExecutionBackend> {
+) -> HyperResult<BinaryKind> {
     if manifest.is_wasm_target() {
-        return Ok(PackageExecutionBackend::Wasm);
+        return Ok(BinaryKind::Wasm);
     }
 
     if is_compatible_native_target(&manifest.binary_target) {
-        return Ok(PackageExecutionBackend::DynClib);
+        return Ok(BinaryKind::DynClib);
     }
 
     Err(HyperError::InvalidManifest(format!(
