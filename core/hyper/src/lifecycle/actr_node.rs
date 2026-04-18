@@ -55,15 +55,15 @@ pub struct ActrNode {
     /// WebSocket Gate (direct-connect mode inbound, optional)
     pub(crate) websocket_gate: Option<Arc<crate::wire::websocket::WebSocketGate>>,
 
-    /// Shell → Guest Transport Manager
+    /// Shell → Workload transport (REQUEST direction)
     ///
-    /// Guest receives REQUEST from Shell (zero serialization, direct RpcEnvelope passing)
-    pub(crate) inproc_mgr: Option<Arc<HostTransport>>,
+    /// Workload receives REQUEST from Shell (zero serialization, direct RpcEnvelope passing)
+    pub(crate) shell_to_workload: Option<Arc<HostTransport>>,
 
-    /// Guest → Shell Transport Manager
+    /// Workload → Shell transport (RESPONSE direction)
     ///
-    /// Guest sends RESPONSE to Shell (separate pending_requests from Shell's)
-    pub(crate) guest_to_shell_mgr: Option<Arc<HostTransport>>,
+    /// Workload sends RESPONSE to Shell (separate pending_requests from Shell's)
+    pub(crate) workload_to_shell: Option<Arc<HostTransport>>,
 
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
@@ -294,19 +294,6 @@ impl ActrNode {
     #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&crate::verify::PackageManifest> {
         self.package_manifest.as_ref()
-    }
-
-    /// Get Inproc Transport Manager
-    ///
-    /// # Returns
-    /// - `Some(Arc<HostTransport>)`: Initialized manager
-    /// - `None`: Not yet started (need to call start() first)
-    ///
-    /// # Use Cases
-    /// - Guest internals need to communicate with Shell
-    /// - Create custom LatencyFirst/MediaTrack channels
-    pub fn inproc_mgr(&self) -> Option<Arc<HostTransport>> {
-        self.inproc_mgr.clone()
     }
 
     /// Get ActorId (if registration has completed)
@@ -696,8 +683,8 @@ impl ActrNode {
             webrtc_coordinator: None,
             webrtc_gate: None,
             websocket_gate: None,
-            inproc_mgr: None,
-            guest_to_shell_mgr: None,
+            shell_to_workload: None,
+            workload_to_shell: None,
             shutdown_token: CancellationToken::new(),
             actr_lock,
             network_event_rx: None,
@@ -939,18 +926,18 @@ impl ActrNode {
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.3. Store references to both inproc managers (created in ActrNode::build())
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            let shell_to_guest = self
+            let shell_to_workload = self
                 .context_factory
                 .as_ref()
                 .expect("ContextFactory must exist")
                 .shell_to_workload();
-            let guest_to_shell = self
+            let workload_to_shell = self
                 .context_factory
                 .as_ref()
                 .expect("ContextFactory must exist")
                 .workload_to_shell();
-            self.inproc_mgr = Some(shell_to_guest);
-            self.guest_to_shell_mgr = Some(guest_to_shell);
+            self.shell_to_workload = Some(shell_to_workload);
+            self.workload_to_shell = Some(workload_to_shell);
             tracing::info!("✅ Inproc infrastructure already ready (created in ActrNode::build())");
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1358,18 +1345,18 @@ impl ActrNode {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 4.6. Start Inproc receive loop (Shell → Guest)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if let Some(shell_to_guest) = &node_ref.inproc_mgr {
+        if let Some(shell_to_workload) = &node_ref.shell_to_workload {
             tracing::info!("🔄 Starting Inproc receive loop (Shell → Guest)");
             // Start Guest receive loop (Shell → Guest REQUEST)
-            if let Some(guest_to_shell) = &node_ref.guest_to_shell_mgr {
+            if let Some(workload_to_shell) = &node_ref.workload_to_shell {
                 let node = node_ref.clone();
-                let request_rx_lane = shell_to_guest
+                let request_rx_lane = shell_to_workload
                     .get_lane(PayloadType::RpcReliable, None)
                     .await
                     .map_err(|e| {
                         ActrError::Unavailable(format!("Failed to get guest receive lane: {e}"))
                     })?;
-                let response_tx = guest_to_shell.clone();
+                let response_tx = workload_to_shell.clone();
                 let shutdown = shutdown_token.clone();
 
                 let inproc_handle = tokio::spawn(async move {
@@ -1400,7 +1387,7 @@ impl ActrNode {
 
                                         match handle_incoming_fut.await {
                                             Ok(response_bytes) => {
-                                                // Send RESPONSE back via guest_to_shell
+                                                // Send RESPONSE back via workload_to_shell
                                                 // Keep same route_key (no prefix needed - separate channels!)
                                                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
                                                 let mut response_envelope = RpcEnvelope {
@@ -1500,16 +1487,16 @@ impl ActrNode {
         // 4.7. Start Shell receive loop (Guest → Shell RESPONSE)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         tracing::info!("🔄 Starting Shell receive loop (Guest → Shell RESPONSE)");
-        if let Some(guest_to_shell) = &node_ref.guest_to_shell_mgr {
+        if let Some(workload_to_shell) = &node_ref.workload_to_shell {
             // Start Shell receive loop (Guest → Shell RESPONSE)
-            if let Some(shell_to_guest) = &node_ref.inproc_mgr {
-                let response_rx_lane = guest_to_shell
+            if let Some(shell_to_workload) = &node_ref.shell_to_workload {
+                let response_rx_lane = workload_to_shell
                     .get_lane(PayloadType::RpcReliable, None)
                     .await
                     .map_err(|e| {
                         ActrError::Unavailable(format!("Failed to get shell receive lane: {e}"))
                     })?;
-                let request_mgr = shell_to_guest.clone();
+                let request_mgr = shell_to_workload.clone();
                 let shutdown = shutdown_token.clone();
 
                 let shell_receive_handle = tokio::spawn(async move {
