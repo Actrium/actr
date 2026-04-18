@@ -140,7 +140,9 @@ pub mod test_support;
 pub use context::{Context, MediaSample, MediaType};
 pub use dest::Dest;
 pub use dispatcher::MessageDispatcher;
-pub use workload::Workload;
+pub use workload::{
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, Workload,
+};
 
 // Re-export commonly used types for user convenience
 pub use bytes::Bytes;

@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use actr_framework::{Context, MessageDispatcher, Workload};
+use actr_framework::{Context, ErrorCategory, ErrorEvent, MessageDispatcher, Workload};
 use actr_protocol::{Acl, ActorResult, ActrError, ActrId, ActrIdExt as _, RpcEnvelope};
 use bytes::Bytes;
 use futures_util::FutureExt as _;
@@ -124,10 +124,12 @@ impl<W: Workload> ActrDispatch<W> {
                     "handler panicked: {}", info,
                 );
                 // Notify workload's on_error hook
-                let _ = self
-                    .workload
-                    .on_error(ctx, format!("handler panicked: {info}"))
-                    .await;
+                let event = ErrorEvent::now(
+                    ActrError::Internal(format!("handler panicked: {info}")),
+                    ErrorCategory::HandlerPanic,
+                    format!("route_key={route_key} request_id={request_id}"),
+                );
+                let _ = self.workload.on_error(ctx, &event).await;
                 Err(ActrError::DecodeFailure(format!(
                     "handler panicked: {info}"
                 )))
