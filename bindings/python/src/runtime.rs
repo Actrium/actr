@@ -1,7 +1,7 @@
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::{Bytes, Context as RtContext};
 use actr_hyper::context::RuntimeContext;
-use actr_hyper::{ActrRef as RtActrRef, Hyper, HyperConfig, Registered, StaticTrust};
+use actr_hyper::{ActrRef as RtActrRef, Hyper, HyperConfig, Node, Registered, StaticTrust};
 use std::sync::Arc;
 use actr_protocol::{ActrError, PayloadType as RpPayloadType};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -13,7 +13,7 @@ use crate::observability::ensure_observability_initialized;
 use crate::types::{DataStream, Dest, PayloadType};
 use crate::{ActrId, ActrType};
 
-type WrappedNode = Hyper<Registered>;
+type WrappedNode = Node<Registered>;
 type WrappedRef = RtActrRef;
 
 fn load_runtime_config(manifest_path: &str) -> Result<RuntimeConfig, actr_config::ConfigError> {

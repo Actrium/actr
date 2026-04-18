@@ -5,7 +5,7 @@ use crate::types::{ActrId, ActrType, PayloadType};
 use actr_config::{ConfigParser, RuntimeConfig};
 use actr_framework::Dest;
 use actr_hyper::{
-    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Registered, StaticTrust,
+    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Node, Registered, StaticTrust,
 };
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig
 
 #[napi]
 pub struct ActrNode {
-    inner: Option<Hyper<Registered>>,
+    inner: Option<Node<Registered>>,
 }
 
 #[napi]

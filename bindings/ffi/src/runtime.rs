@@ -4,7 +4,7 @@ use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{
-    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Registered, StaticTrust, WorkloadPackage,
+    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Node, Registered, StaticTrust, WorkloadPackage,
 };
 use actr_protocol::{ActrIdExt, ActrTypeExt};
 use parking_lot::Mutex;
@@ -14,7 +14,7 @@ use tracing::{debug, error, info};
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
 pub struct ActrNode {
-    inner: Mutex<Option<Hyper<Registered>>>,
+    inner: Mutex<Option<Node<Registered>>>,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
 }
 

@@ -3,7 +3,7 @@
 //! Moved out of `actr-pack` because it pulls in `actr-service-compat` (and
 //! therefore `proto-fingerprint`), which is not wasm-friendly. `actr-pack`
 //! stays wasm-compatible for the SW runtime; the spec derivation lives here
-//! alongside the only caller (`Hyper<Attached>::register`).
+//! alongside the only caller (`Node<Attached>::register`).
 //!
 //! The actual spec assembly (fingerprint computation, `Protobuf` packing)
 //! lives in [`actr_service_compat::build_service_spec`]; this module is just

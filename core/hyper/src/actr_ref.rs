@@ -24,9 +24,9 @@
 //! actr.wait_for_ctrl_c_and_shutdown().await?;
 //! ```
 //!
-//! `Hyper::attach` consumes the `Hyper<Uninit>` and returns `Hyper<Attached>`
-//! — each `Hyper` is single-package and progresses through the typestate chain
-//! `Uninit → Attached → Registered → ActrRef`.
+//! `Hyper::attach` consumes the `Hyper` and returns a `Node<Attached>`
+//! — each attachment produces a single-package node that progresses through
+//! the typestate chain `Hyper → Node<Attached> → Node<Registered> → ActrRef`.
 
 use crate::context::RuntimeContext;
 use crate::context_factory::ContextFactory;

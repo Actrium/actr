@@ -253,7 +253,7 @@ pub mod prelude {
     pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
     pub use actr_pack::{PackageManifest, VerifiedPackage};
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::{Hyper, storage::ActorStore};
+    pub use crate::{Attached, Hyper, Node, Registered, storage::ActorStore};
     pub use crate::{HyperConfig, HyperError, HyperResult};
 
     // ── Core structures (native-only) ───────────────────────────────────────
@@ -361,9 +361,6 @@ use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Compile-time state marker: the Hyper has been created but nothing is attached.
-pub struct Uninit;
-#[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a package has been verified and attached; AIS credential still pending.
 pub struct Attached;
 #[cfg(not(target_arch = "wasm32"))]
@@ -371,51 +368,41 @@ pub struct Attached;
 pub struct Registered;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod hyper_state_sealed {
+mod node_state_sealed {
     pub trait Sealed {}
-    impl Sealed for super::Uninit {}
     impl Sealed for super::Attached {}
     impl Sealed for super::Registered {}
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Sealed trait describing valid [`Hyper`] lifecycle states.
-pub trait HyperState: hyper_state_sealed::Sealed {}
+/// Sealed trait describing valid [`Node`] lifecycle states.
+pub trait NodeState: node_state_sealed::Sealed {}
 #[cfg(not(target_arch = "wasm32"))]
-impl HyperState for Uninit {}
+impl NodeState for Attached {}
 #[cfg(not(target_arch = "wasm32"))]
-impl HyperState for Attached {}
-#[cfg(not(target_arch = "wasm32"))]
-impl HyperState for Registered {}
+impl NodeState for Registered {}
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Carries state-dependent data from `Attached` onwards.
-struct Attachment {
-    node: crate::lifecycle::node::Inner,
-    /// Verified package retained for AIS bootstrap: the manifest plus the raw
-    /// manifest bytes and signature that AIS may need to re-verify upstream.
-    verified: VerifiedPackage,
-    package_bytes: bytes::Bytes,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Hyper runtime instance — a typestate pipeline from construction to start.
+/// Hyper — pre-workload framework infrastructure.
 ///
-/// State transitions:
+/// `Hyper` is the operating system that runs an Actor: it owns configuration,
+/// instance identity, trust material, and the package verifier. It is
+/// deliberately generic-free and has no knowledge of a specific workload.
+///
+/// The construction chain is:
+///
 /// ```text
-/// Hyper::new(cfg)          -> Hyper<Uninit>
-///     .attach(pkg, cfg)    -> Hyper<Attached>
-///     .register(ais)       -> Hyper<Registered>
-///     .start()             -> ActrRef
+/// Hyper::new(cfg)                 -> Hyper                   (framework only)
+///     .attach(package, runtime)   -> Node<Attached>          (Hyper + workload)
+///     .register(ais_endpoint)     -> Node<Registered>        (credential obtained)
+///     .start()                    -> ActrRef                 (running node)
 /// ```
 ///
-/// The default type parameter `Uninit` means `Hyper` (no generics) always refers
-/// to the freshly-constructed state. Intermediate states are impossible to skip:
-/// `start()` only exists on `Hyper<Registered>` and so on.
-pub struct Hyper<S: HyperState = Uninit> {
+/// Once you call `attach`, you no longer have a `Hyper`: you have a `Node`,
+/// which is "Hyper wired to a workload". `register` and `start` live on
+/// `Node`, not on `Hyper`.
+pub struct Hyper {
     inner: Arc<HyperInner>,
-    attachment: Option<Attachment>,
-    _state: std::marker::PhantomData<S>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -425,6 +412,37 @@ struct HyperInner {
     instance_id: String,
     /// Optional platform provider for cross-platform abstraction
     platform: Option<Arc<dyn PlatformProvider>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Carries state-dependent data for an attached [`Node`].
+struct Attachment {
+    node: crate::lifecycle::node::Inner,
+    /// Verified package retained for AIS bootstrap: the manifest plus the raw
+    /// manifest bytes and signature that AIS may need to re-verify upstream.
+    verified: VerifiedPackage,
+    package_bytes: bytes::Bytes,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Node — Hyper wired to a workload.
+///
+/// A `Node` is born when [`Hyper::attach`] binds a verified package to
+/// framework infrastructure. The typestate parameter encodes lifecycle
+/// progress:
+///
+/// ```text
+/// Node<Attached>.register(ais) -> Node<Registered>
+/// Node<Registered>.start()     -> ActrRef
+/// ```
+///
+/// The default type parameter `Attached` means writing `Node` unqualified
+/// refers to the freshly-attached state. Intermediate steps are impossible
+/// to skip: `start()` only exists on `Node<Registered>`.
+pub struct Node<S: NodeState = Attached> {
+    hyper: Arc<HyperInner>,
+    attachment: Attachment,
+    _state: std::marker::PhantomData<S>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -514,7 +532,7 @@ impl std::fmt::Debug for LoadedWorkload {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Hyper<Uninit> {
+impl Hyper {
     /// Construct a Hyper with native defaults (uses `tokio::fs` / `ActorStore`).
     ///
     /// - Parse configuration
@@ -574,8 +592,6 @@ impl Hyper<Uninit> {
                 instance_id,
                 platform,
             }),
-            attachment: None,
-            _state: std::marker::PhantomData,
         })
     }
 
@@ -620,15 +636,17 @@ impl Hyper<Uninit> {
         })
     }
 
-    /// Verify a [`WorkloadPackage`], load its binary, and attach it to this Hyper.
+    /// Verify a [`WorkloadPackage`], load its binary, and bind it to this Hyper
+    /// as a new [`Node`].
     ///
-    /// Consumes the `Hyper<Uninit>` and returns a `Hyper<Attached>` — you can no
-    /// longer re-attach, but you must `register().start()` before serving.
+    /// Consumes the `Hyper` and returns a `Node<Attached>` — the framework
+    /// handle is gone, replaced by a node that must be `register().start()`ed
+    /// before serving traffic.
     pub async fn attach(
         self,
         package: &WorkloadPackage,
         config: actr_config::RuntimeConfig,
-    ) -> HyperResult<Hyper<Attached>> {
+    ) -> HyperResult<Node<Attached>> {
         let loaded = self.load_workload_package(package).await?;
         let packaged_lock = actr_pack::read_lock_file(package.bytes())
             .map_err(|e| HyperError::Runtime(e.to_string()))?
@@ -641,7 +659,7 @@ impl Hyper<Uninit> {
                 })
             })
             .transpose()?;
-        let node = crate::lifecycle::node::Inner::build(
+        let node_inner = crate::lifecycle::node::Inner::build(
             config,
             loaded.workload,
             Some(loaded.verified.manifest.clone()),
@@ -649,13 +667,13 @@ impl Hyper<Uninit> {
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
-        Ok(Hyper {
-            inner: self.inner,
-            attachment: Some(Attachment {
-                node,
+        Ok(Node {
+            hyper: self.inner,
+            attachment: Attachment {
+                node: node_inner,
                 verified: loaded.verified,
                 package_bytes: package.bytes.clone(),
-            }),
+            },
             _state: std::marker::PhantomData,
         })
     }
@@ -756,24 +774,18 @@ impl Hyper<Uninit> {
 // ── State transition: Attached → Registered ──────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Hyper<Attached> {
-    /// Register with AIS, obtain an AId credential, and inject it into the attached
-    /// node. Consumes `Hyper<Attached>` and returns `Hyper<Registered>`.
+impl Node<Attached> {
+    /// Register with AIS, obtain an AId credential, and inject it into this
+    /// attached node. Consumes `Node<Attached>` and returns `Node<Registered>`.
     ///
     /// `realm_id`, `acl`, and `realm_secret` come from the attached
     /// [`RuntimeConfig`]; `service_spec` is derived from the package's proto
-    /// exports. Use [`Hyper::register_with`] to override `service_spec` manually.
-    pub async fn register(self, ais_endpoint: &str) -> HyperResult<Hyper<Registered>> {
-        let service_spec = {
-            let attachment = self
-                .attachment
-                .as_ref()
-                .expect("Hyper<Attached> invariant: attachment populated");
-            crate::service_spec::calculate_service_spec_from_package(
-                &attachment.package_bytes,
-                &attachment.verified.manifest,
-            )?
-        };
+    /// exports. Use [`Node::register_with`] to override `service_spec` manually.
+    pub async fn register(self, ais_endpoint: &str) -> HyperResult<Node<Registered>> {
+        let service_spec = crate::service_spec::calculate_service_spec_from_package(
+            &self.attachment.package_bytes,
+            &self.attachment.verified.manifest,
+        )?;
         self.register_with(ais_endpoint, service_spec).await
     }
 
@@ -782,106 +794,78 @@ impl Hyper<Attached> {
         mut self,
         ais_endpoint: &str,
         service_spec: Option<ServiceSpec>,
-    ) -> HyperResult<Hyper<Registered>> {
-        let (verified, realm_id, acl, realm_secret) = {
-            let attachment = self
-                .attachment
-                .as_ref()
-                .expect("Hyper<Attached> invariant: attachment populated");
-            (
-                attachment.verified.clone(),
-                attachment.node.config.realm.realm_id,
-                attachment.node.config.acl.clone(),
-                attachment.node.config.realm_secret.clone(),
-            )
-        };
+    ) -> HyperResult<Node<Registered>> {
+        let verified = self.attachment.verified.clone();
+        let realm_id = self.attachment.node.config.realm.realm_id;
+        let acl = self.attachment.node.config.acl.clone();
+        let realm_secret = self.attachment.node.config.realm_secret.clone();
 
-        let register_ok = self
-            .bootstrap_credential_inner(
-                &verified,
-                ais_endpoint,
-                realm_id,
-                service_spec,
-                acl,
-                realm_secret.as_deref(),
-            )
-            .await?;
+        let register_ok = bootstrap_credential_inner(
+            &self.hyper,
+            &verified,
+            ais_endpoint,
+            realm_id,
+            service_spec,
+            acl,
+            realm_secret.as_deref(),
+        )
+        .await?;
 
         self.attachment
-            .as_mut()
-            .expect("invariant")
             .node
             .set_preregistered_credential(register_ok);
 
-        Ok(Hyper {
-            inner: self.inner,
+        Ok(Node {
+            hyper: self.hyper,
             attachment: self.attachment,
             _state: std::marker::PhantomData,
         })
+    }
+
+    /// Create a network event handle for platform callbacks. Must be called
+    /// before [`Node::start`].
+    pub fn create_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.attachment.node.create_network_event_handle(debounce_ms)
     }
 }
 
 // ── State transition: Registered → ActrRef ───────────────────────────────────
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Hyper<Registered> {
+impl Node<Registered> {
     /// Start the attached, registered node and return the live [`ActrRef`].
     pub async fn start(self) -> actr_protocol::ActorResult<crate::actr_ref::ActrRef> {
-        let Attachment { node, .. } = self
-            .attachment
-            .expect("Hyper<Registered> invariant: attachment populated");
+        let Attachment { node, .. } = self.attachment;
         node.start().await
     }
-}
 
-// ── Node-level hooks available once an Attachment exists ─────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Hyper<Attached> {
     /// Create a network event handle for platform callbacks. Must be called
-    /// before [`Hyper::start`].
+    /// before [`Node::start`].
     pub fn create_network_event_handle(
         &mut self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
-        self.attachment
-            .as_mut()
-            .expect("Hyper<Attached> invariant: attachment populated")
-            .node
-            .create_network_event_handle(debounce_ms)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Hyper<Registered> {
-    /// Create a network event handle for platform callbacks. Must be called
-    /// before [`Hyper::start`].
-    pub fn create_network_event_handle(
-        &mut self,
-        debounce_ms: u64,
-    ) -> crate::lifecycle::NetworkEventHandle {
-        self.attachment
-            .as_mut()
-            .expect("Hyper<Registered> invariant: attachment populated")
-            .node
-            .create_network_event_handle(debounce_ms)
+        self.attachment.node.create_network_event_handle(debounce_ms)
     }
 }
 
 // ── Helpers available in all states ──────────────────────────────────────────
 
+// ── Hyper common helpers (framework operations that don't require attachment) ─
+
 #[cfg(not(target_arch = "wasm32"))]
-impl<S: HyperState> Hyper<S> {
-    /// Resolve the storage namespace path for a verified manifest
+impl Hyper {
+    /// Resolve the storage namespace path for a verified manifest.
     ///
     /// The path is fixed here; all subsequent storage operations are isolated based on this path.
     pub fn resolve_storage_path(&self, manifest: &PackageManifest) -> HyperResult<PathBuf> {
-        let resolver = config::NamespaceResolver::new(&self.inner.config, &self.inner.instance_id)?
-            .with_actor_type(&manifest.manufacturer, &manifest.name, &manifest.version);
-        resolver.resolve(&self.inner.config.storage_path_template)
+        resolve_storage_path_for(&self.inner, manifest)
     }
 
-    /// Bootstrap credential registration with AIS (two-phase flow)
+    /// Bootstrap credential registration with AIS (two-phase flow).
     ///
     /// Hyper completes registration bootstrap on behalf of the Actor and returns the full AIS
     /// registration payload.
@@ -910,175 +894,16 @@ impl<S: HyperState> Hyper<S> {
         service_spec: Option<ServiceSpec>,
         acl: Option<Acl>,
     ) -> HyperResult<register_response::RegisterOk> {
-        self.bootstrap_credential_inner(verified, ais_endpoint, realm_id, service_spec, acl, None)
-            .await
-    }
-
-    async fn bootstrap_credential_inner(
-        &self,
-        verified: &VerifiedPackage,
-        ais_endpoint: &str,
-        realm_id: u32,
-        service_spec: Option<ServiceSpec>,
-        acl: Option<Acl>,
-        realm_secret: Option<&str>,
-    ) -> HyperResult<register_response::RegisterOk> {
-        let manifest = &verified.manifest;
-        info!(
-            actr_type = manifest.actr_type_str(),
-            ais_endpoint, realm_id, "starting credential bootstrap with AIS"
-        );
-
-        // 1. Open the Actor's secret store (via platform provider or direct ActorStore)
-        let storage_path = self.resolve_storage_path(manifest)?;
-        let store: Arc<dyn KvStore> = if let Some(ref platform) = self.inner.platform {
-            let ns = storage_path.to_string_lossy().to_string();
-            platform
-                .secret_store(&ns)
-                .await
-                .map_err(|e| HyperError::Storage(format!("failed to open secret store: {e}")))?
-        } else {
-            Arc::new(ActorStore::open(&storage_path).await?)
-        };
-
-        // 2. Check if there is a valid PSK in ActorStore
-        let valid_psk = load_valid_psk_dyn(&*store).await?;
-
-        // 3. Build RegisterRequest and send to AIS
-        let mut ais = AisClient::new(ais_endpoint);
-        if let Some(secret) = realm_secret {
-            ais = ais.with_realm_secret(secret);
-        }
-
-        let actr_type = ActrType {
-            manufacturer: manifest.manufacturer.clone(),
-            name: manifest.name.clone(),
-            version: manifest.version.clone(),
-        };
-        let realm = Realm { realm_id };
-
-        let response = if let Some(psk_token) = valid_psk {
-            // Phase 2: PSK renewal
-            debug!(
-                actr_type = manifest.actr_type_str(),
-                "renewing credential using PSK"
-            );
-            let req = RegisterRequest {
-                actr_type,
-                realm,
-                service_spec,
-                acl,
-                service: None,
-                ws_address: None,
-                manifest_raw: None,
-                mfr_signature: None,
-                psk_token: Some(psk_token.into()),
-                target: Some(manifest.binary.target.clone()),
-            };
-            ais.register_with_psk(req).await?
-        } else {
-            // Phase 1: first registration, carrying MFR manifest
-            info!(
-                actr_type = manifest.actr_type_str(),
-                "first registration: registering with AIS using MFR manifest"
-            );
-
-            let req = RegisterRequest {
-                actr_type,
-                realm,
-                service_spec,
-                acl,
-                service: None,
-                ws_address: None,
-                manifest_raw: Some(verified.manifest_raw.clone().into()),
-                mfr_signature: Some(verified.sig_raw.clone().into()),
-                psk_token: None,
-                target: Some(manifest.binary.target.clone()),
-            };
-            ais.register_with_manifest(req).await?
-        };
-
-        // 4. Process AIS response
-        let ok = match response.result {
-            Some(register_response::Result::Success(ok)) => ok,
-            Some(register_response::Result::Error(e)) => {
-                error!(
-                    actr_type = manifest.actr_type_str(),
-                    error_code = e.code,
-                    error_message = %e.message,
-                    "AIS registration returned error"
-                );
-                return Err(HyperError::AisBootstrapFailed(format!(
-                    "AIS rejected registration (code={}): {}",
-                    e.code, e.message
-                )));
-            }
-            None => {
-                error!(
-                    actr_type = manifest.actr_type_str(),
-                    "AIS response missing result field"
-                );
-                return Err(HyperError::AisBootstrapFailed(
-                    "AIS response missing result field".to_string(),
-                ));
-            }
-        };
-
-        // 5a. If the response contains a PSK (first registration scenario), store it in ActorStore
-        if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
-            info!(
-                actr_type = manifest.actr_type_str(),
-                psk_expires_at, "received PSK from AIS, storing in ActorStore"
-            );
-            let expires_at_bytes = (psk_expires_at as u64).to_le_bytes().to_vec();
-            store
-                .batch(vec![
-                    KvOp::Set {
-                        key: "hyper:psk:token".to_string(),
-                        value: psk.to_vec(),
-                    },
-                    KvOp::Set {
-                        key: "hyper:psk:expires_at".to_string(),
-                        value: expires_at_bytes,
-                    },
-                ])
-                .await
-                .map_err(|e| HyperError::Storage(format!("failed to store PSK: {e}")))?;
-            debug!(
-                actr_type = manifest.actr_type_str(),
-                "PSK successfully persisted to ActorStore"
-            );
-        }
-
-        // 5b. Store signing_pubkey + signing_key_id (for AisKeyCache use)
-        let pubkey_bytes = ok.signing_pubkey.to_vec();
-        let key_id_bytes = ok.signing_key_id.to_le_bytes().to_vec();
-        store
-            .batch(vec![
-                KvOp::Set {
-                    key: "hyper:ais:signing_pubkey".to_string(),
-                    value: pubkey_bytes,
-                },
-                KvOp::Set {
-                    key: "hyper:ais:signing_key_id".to_string(),
-                    value: key_id_bytes,
-                },
-            ])
-            .await
-            .map_err(|e| HyperError::Storage(format!("failed to store signing key: {e}")))?;
-        debug!(
-            actr_type = manifest.actr_type_str(),
-            signing_key_id = ok.signing_key_id,
-            "AIS signing public key persisted to ActorStore"
-        );
-
-        info!(
-            actr_type = manifest.actr_type_str(),
-            credential_len = ok.credential.encode_to_vec().len(),
-            "AIS credential bootstrap succeeded"
-        );
-
-        Ok(ok)
+        bootstrap_credential_inner(
+            &self.inner,
+            verified,
+            ais_endpoint,
+            realm_id,
+            service_spec,
+            acl,
+            None,
+        )
+        .await
     }
 
     /// Current instance_id
@@ -1090,6 +915,184 @@ impl<S: HyperState> Hyper<S> {
     pub fn config(&self) -> &HyperConfig {
         &self.inner.config
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_storage_path_for(
+    inner: &HyperInner,
+    manifest: &PackageManifest,
+) -> HyperResult<PathBuf> {
+    let resolver = config::NamespaceResolver::new(&inner.config, &inner.instance_id)?
+        .with_actor_type(&manifest.manufacturer, &manifest.name, &manifest.version);
+    resolver.resolve(&inner.config.storage_path_template)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn bootstrap_credential_inner(
+    inner: &HyperInner,
+    verified: &VerifiedPackage,
+    ais_endpoint: &str,
+    realm_id: u32,
+    service_spec: Option<ServiceSpec>,
+    acl: Option<Acl>,
+    realm_secret: Option<&str>,
+) -> HyperResult<register_response::RegisterOk> {
+    let manifest = &verified.manifest;
+    info!(
+        actr_type = manifest.actr_type_str(),
+        ais_endpoint, realm_id, "starting credential bootstrap with AIS"
+    );
+
+    // 1. Open the Actor's secret store (via platform provider or direct ActorStore)
+    let storage_path = resolve_storage_path_for(inner, manifest)?;
+    let store: Arc<dyn KvStore> = if let Some(ref platform) = inner.platform {
+        let ns = storage_path.to_string_lossy().to_string();
+        platform
+            .secret_store(&ns)
+            .await
+            .map_err(|e| HyperError::Storage(format!("failed to open secret store: {e}")))?
+    } else {
+        Arc::new(ActorStore::open(&storage_path).await?)
+    };
+
+    // 2. Check if there is a valid PSK in ActorStore
+    let valid_psk = load_valid_psk_dyn(&*store).await?;
+
+    // 3. Build RegisterRequest and send to AIS
+    let mut ais = AisClient::new(ais_endpoint);
+    if let Some(secret) = realm_secret {
+        ais = ais.with_realm_secret(secret);
+    }
+
+    let actr_type = ActrType {
+        manufacturer: manifest.manufacturer.clone(),
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+    };
+    let realm = Realm { realm_id };
+
+    let response = if let Some(psk_token) = valid_psk {
+        // Phase 2: PSK renewal
+        debug!(
+            actr_type = manifest.actr_type_str(),
+            "renewing credential using PSK"
+        );
+        let req = RegisterRequest {
+            actr_type,
+            realm,
+            service_spec,
+            acl,
+            service: None,
+            ws_address: None,
+            manifest_raw: None,
+            mfr_signature: None,
+            psk_token: Some(psk_token.into()),
+            target: Some(manifest.binary.target.clone()),
+        };
+        ais.register_with_psk(req).await?
+    } else {
+        // Phase 1: first registration, carrying MFR manifest
+        info!(
+            actr_type = manifest.actr_type_str(),
+            "first registration: registering with AIS using MFR manifest"
+        );
+
+        let req = RegisterRequest {
+            actr_type,
+            realm,
+            service_spec,
+            acl,
+            service: None,
+            ws_address: None,
+            manifest_raw: Some(verified.manifest_raw.clone().into()),
+            mfr_signature: Some(verified.sig_raw.clone().into()),
+            psk_token: None,
+            target: Some(manifest.binary.target.clone()),
+        };
+        ais.register_with_manifest(req).await?
+    };
+
+    // 4. Process AIS response
+    let ok = match response.result {
+        Some(register_response::Result::Success(ok)) => ok,
+        Some(register_response::Result::Error(e)) => {
+            error!(
+                actr_type = manifest.actr_type_str(),
+                error_code = e.code,
+                error_message = %e.message,
+                "AIS registration returned error"
+            );
+            return Err(HyperError::AisBootstrapFailed(format!(
+                "AIS rejected registration (code={}): {}",
+                e.code, e.message
+            )));
+        }
+        None => {
+            error!(
+                actr_type = manifest.actr_type_str(),
+                "AIS response missing result field"
+            );
+            return Err(HyperError::AisBootstrapFailed(
+                "AIS response missing result field".to_string(),
+            ));
+        }
+    };
+
+    // 5a. If the response contains a PSK (first registration scenario), store it in ActorStore
+    if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
+        info!(
+            actr_type = manifest.actr_type_str(),
+            psk_expires_at, "received PSK from AIS, storing in ActorStore"
+        );
+        let expires_at_bytes = (psk_expires_at as u64).to_le_bytes().to_vec();
+        store
+            .batch(vec![
+                KvOp::Set {
+                    key: "hyper:psk:token".to_string(),
+                    value: psk.to_vec(),
+                },
+                KvOp::Set {
+                    key: "hyper:psk:expires_at".to_string(),
+                    value: expires_at_bytes,
+                },
+            ])
+            .await
+            .map_err(|e| HyperError::Storage(format!("failed to store PSK: {e}")))?;
+        debug!(
+            actr_type = manifest.actr_type_str(),
+            "PSK successfully persisted to ActorStore"
+        );
+    }
+
+    // 5b. Store signing_pubkey + signing_key_id (for AisKeyCache use)
+    let pubkey_bytes = ok.signing_pubkey.to_vec();
+    let key_id_bytes = ok.signing_key_id.to_le_bytes().to_vec();
+    store
+        .batch(vec![
+            KvOp::Set {
+                key: "hyper:ais:signing_pubkey".to_string(),
+                value: pubkey_bytes,
+            },
+            KvOp::Set {
+                key: "hyper:ais:signing_key_id".to_string(),
+                value: key_id_bytes,
+            },
+        ])
+        .await
+        .map_err(|e| HyperError::Storage(format!("failed to store signing key: {e}")))?;
+    debug!(
+        actr_type = manifest.actr_type_str(),
+        signing_key_id = ok.signing_key_id,
+        "AIS signing public key persisted to ActorStore"
+    );
+
+    info!(
+        actr_type = manifest.actr_type_str(),
+        credential_len = ok.credential.encode_to_vec().len(),
+        "AIS credential bootstrap succeeded"
+    );
+
+    Ok(ok)
 }
 
 // ─── Helper functions (native-only) ──────────────────────────────────────────
