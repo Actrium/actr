@@ -177,7 +177,7 @@ pub use observability::{ObservabilityGuard, init_observability};
 pub use actr_ref::ActrRef;
 // Runtime core structures
 #[cfg(not(target_arch = "wasm32"))]
-pub use lifecycle::{ActrNode, CredentialState, NetworkEventHandle};
+pub use lifecycle::{CredentialState, NetworkEventHandle};
 
 // Layer 3: Inbound dispatch layer
 #[cfg(not(target_arch = "wasm32"))]
@@ -260,7 +260,7 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::actr_ref::ActrRef;
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::lifecycle::{ActrNode, CompatLockFile, CompatLockManager, CompatibilityCheck};
+    pub use crate::lifecycle::{CompatLockFile, CompatLockManager, CompatibilityCheck};
 
     // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -391,7 +391,7 @@ impl HyperState for Registered {}
 #[cfg(not(target_arch = "wasm32"))]
 /// Carries state-dependent data from `Attached` onwards.
 struct Attachment {
-    node: crate::lifecycle::ActrNode,
+    node: crate::lifecycle::node::Inner,
     /// Verified package retained for AIS bootstrap: the manifest plus the raw
     /// manifest bytes and signature that AIS may need to re-verify upstream.
     verified: VerifiedPackage,
@@ -600,7 +600,7 @@ impl Hyper<Uninit> {
     /// and prepare a runtime workload from it.
     ///
     /// This is an explicit helper for test / diagnostic code that wants the
-    /// [`LoadedWorkload`] parts without building an [`ActrNode`]. Host code
+    /// [`LoadedWorkload`] parts without building a running node. Host code
     /// should call [`Hyper::attach`] instead.
     pub async fn load_workload_package(
         &self,
@@ -641,7 +641,7 @@ impl Hyper<Uninit> {
                 })
             })
             .transpose()?;
-        let node = crate::lifecycle::ActrNode::build(
+        let node = crate::lifecycle::node::Inner::build(
             config,
             loaded.workload,
             Some(loaded.verified.manifest.clone()),

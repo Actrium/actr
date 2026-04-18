@@ -1,4 +1,9 @@
-//! ActrNode - runtime node with optional workload
+//! Node runtime inner — holds all running-state fields for an attached node.
+//!
+//! This module is the internal implementation backing the public
+//! `Node<Attached>` / `Node<Registered>` typestate chain defined in
+//! `crate::lib`. The struct itself is crate-private; consumers interact with
+//! it indirectly through `Node<S>` → `ActrRef` transitions.
 
 use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
@@ -23,8 +28,13 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 
-/// ActrNode - runtime node with optional workload
-pub struct ActrNode {
+/// Internal running-state of an attached node.
+///
+/// Holds every field required to run a workload after `Hyper::attach` has
+/// bound a package. Kept private to the crate: external callers use the
+/// public `Node<S>` wrappers in `crate::lib` and the `ActrRef` handle
+/// returned by `Node::start`.
+pub(crate) struct Inner {
     /// Runtime configuration
     pub(crate) config: actr_config::RuntimeConfig,
 
@@ -290,30 +300,10 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
     }
 }
 
-impl ActrNode {
+impl Inner {
     #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&actr_pack::PackageManifest> {
         self.package_manifest.as_ref()
-    }
-
-    /// Get ActorId (if registration has completed)
-    pub fn actor_id(&self) -> Option<&ActrId> {
-        self.actor_id.as_ref()
-    }
-
-    /// Get credential state (if registration has completed)
-    pub fn credential_state(&self) -> Option<CredentialState> {
-        self.credential_state.clone()
-    }
-
-    /// Get signaling client (for manual control such as UnregisterRequest)
-    pub fn signaling_client(&self) -> Arc<dyn SignalingClient> {
-        self.signaling_client.clone()
-    }
-
-    /// Get shutdown token for this node
-    pub fn shutdown_token(&self) -> CancellationToken {
-        self.shutdown_token.clone()
     }
 
     /// Network event processing loop (background task)
@@ -570,7 +560,7 @@ impl ActrNode {
         result
     }
 
-    /// Build a new ActrNode from config and runtime workload.
+    /// Build a new `Inner` from config and runtime workload.
     ///
     /// This is the internal constructor behind the public node builders and
     /// Hyper package attach helpers.
