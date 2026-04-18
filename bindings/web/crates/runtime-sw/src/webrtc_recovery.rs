@@ -155,6 +155,7 @@ impl RecoveryStatus {
 }
 
 #[cfg(test)]
+#[allow(clippy::arc_with_non_send_sync)]
 mod tests {
     use super::*;
 
@@ -245,7 +246,7 @@ mod tests {
             needs_recovery: true,
         };
 
-        assert_eq!(status.needs_recovery, true);
+        assert!(status.needs_recovery);
 
         // No recovery is needed when both are connected.
         let status2 = RecoveryStatus {
@@ -254,7 +255,7 @@ mod tests {
             needs_recovery: false,
         };
 
-        assert_eq!(status2.needs_recovery, false);
+        assert!(!status2.needs_recovery);
     }
 
     #[test]

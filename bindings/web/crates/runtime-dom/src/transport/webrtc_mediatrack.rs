@@ -280,8 +280,7 @@ mod tests {
         processor.process_frame(frame_data.clone()).unwrap();
 
         // Verify the data was sent to the channel.
-        use futures::stream::StreamExt;
-        let received = rx.try_next().unwrap();
-        assert_eq!(received, Some(frame_data));
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received, frame_data);
     }
 }

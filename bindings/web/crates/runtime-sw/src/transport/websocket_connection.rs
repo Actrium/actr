@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_connection_state_all_variants() {
-        let states = vec![
+        let states = [
             ConnectionState::Disconnected,
             ConnectionState::Connecting,
             ConnectionState::Connected,

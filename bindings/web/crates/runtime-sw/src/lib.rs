@@ -59,38 +59,9 @@ pub use workload::{ServiceHandlerFn, WasmWorkload}; // Re-export WebContext trai
 pub use actr_protocol;
 pub use webrtc_recovery::{RecoveryStatus, WebRtcRecoveryManager};
 
-/// Initialize the Service Worker runtime.
-///
-/// Should be called once when the Service Worker is activated.
-///
-/// Note: the error handler needs a WirePool instance and should be initialized
-/// separately by calling `init_global_error_handler(wire_pool)` after WirePool exists.
-// #[wasm_bindgen]
-// pub fn init_sw_runtime() {
-//     // Install the panic hook.
-//     console_error_panic_hook::set_once();
-
-//     // Initialize logging.
-//     wasm_logger::init(wasm_logger::Config::default());
-
-//     // Initialize lifecycle management.
-//     let lifecycle = SwLifecycleManager::new();
-//     if let Err(e) = lifecycle.init() {
-//         log::error!("Failed to initialize lifecycle manager: {:?}", e);
-//     }
-
-//     console::log_1(&"Actor-RTC Service Worker Runtime initialized".into());
-// }
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
-
-    // #[wasm_bindgen_test]
-    // fn test_init() {
-    //     init_sw_runtime();
-    // }
 }

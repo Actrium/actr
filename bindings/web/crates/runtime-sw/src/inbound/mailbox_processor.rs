@@ -201,7 +201,6 @@ impl MailboxProcessor {
 mod tests {
     use super::*;
     use actr_mailbox_web::{IndexedDbMailbox, MessagePriority};
-    use std::sync::Arc;
     use wasm_bindgen_test::*;
 
     wasm_bindgen_test_configure!(run_in_browser);
@@ -365,7 +364,7 @@ mod tests {
         let mailbox = Rc::new(MockMailbox) as Rc<dyn Mailbox>;
 
         // Test different `batch_size` values.
-        for batch_size in vec![1, 5, 10, 20, 50, 100] {
+        for batch_size in [1, 5, 10, 20, 50, 100] {
             let (processor, _notifier) = MailboxProcessor::new(mailbox.clone(), batch_size);
             assert_eq!(processor.batch_size, batch_size);
         }

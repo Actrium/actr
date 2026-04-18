@@ -261,7 +261,6 @@ impl Default for Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
 
     #[test]
     fn test_scheduler_creation() {
