@@ -87,8 +87,6 @@ pub mod ais_client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod key_cache;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod runtime;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 
 // Runtime infrastructure modules (native-only)
@@ -164,8 +162,6 @@ pub use actr_platform_traits::{CryptoProvider, KvStore, PlatformError, PlatformP
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use ais_client::AisClient;
-#[cfg(not(target_arch = "wasm32"))]
-pub use runtime::{ActorRuntime, ActrSystemHandle, WasmInstanceHandle};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]
