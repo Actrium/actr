@@ -261,8 +261,8 @@
             <dd id="serviceName">—</dd>
         </dl>
 
-        <!-- Server stats (hidden for client) -->
-        <div id="serverStats" style="display:none">
+        <!-- Inbound stats (populated whenever this actor handles a request) -->
+        <div id="inboundStats">
             <div class="stats">
                 <div class="stat"><span class="stat-label">Requests:</span><span class="stat-value"
                         id="requestCount">0</span></div>
@@ -273,8 +273,9 @@
             </div>
         </div>
 
-        <!-- Client send area (hidden for server) -->
-        <div id="clientArea" style="display:none">
+        <!-- Outbound send area: every actor can call peers, regardless of
+             whether it also accepts incoming calls. -->
+        <div id="sendArea">
             <div class="send-area">
                 <input id="msgInput" type="text" placeholder="Enter message to echo…" />
                 <button id="sendBtn" disabled>Send</button>
@@ -283,7 +284,7 @@
             <div id="result" class="log-panel"></div>
         </div>
 
-        <!-- Server / generic log -->
+        <!-- Runtime / SW log -->
         <div class="section-label">Runtime Log</div>
         <div id="log" class="log-panel"></div>
     </div>
@@ -509,7 +510,10 @@
 
         /* ═══════════════════════════════════════════════════════════════════
            Actor Host Logic — fetch config, start SW, create DOM bridge,
-           then render server or client UI based on is_server flag.
+           then render the unified actor view (send controls + runtime log).
+           Connection role is negotiated per-peer at runtime, so the host
+           page does not care whether this actor typically initiates or
+           accepts calls.
            ═══════════════════════════════════════════════════════════════════ */
 
         const statusEl = document.getElementById('status');
@@ -518,7 +522,7 @@
         const sendBtn = document.getElementById('sendBtn');
         const msgInput = document.getElementById('msgInput');
 
-        // Server stats
+        // Inbound-request stats (incremented whenever this actor handles a peer call)
         let requestCount = 0, successCount = 0, errorCount = 0;
 
         // Global bridge ref (used by callRaw)
@@ -529,8 +533,8 @@
         function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
         function timeStr() { return new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 
-        /** Server log panel (adds .log-entry elements to #log) */
-        function serverLog(level, msg) {
+        /** Inbound-side log panel (adds .log-entry elements to #log) */
+        function inboundLog(level, msg) {
             const d = document.createElement('div');
             d.className = 'log-entry ' + level;
             d.innerHTML = '<span class="time">' + timeStr() + '</span>' + escapeHtml(msg);
@@ -538,8 +542,8 @@
             while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
         }
 
-        /** Client result panel (adds .entry elements to #result) */
-        function clientLog(level, msg) {
+        /** Outbound-side result panel (adds .entry elements to #result) */
+        function outboundLog(level, msg) {
             const d = document.createElement('div');
             d.className = 'entry';
             d.innerHTML = '<span class="time">' + timeStr() + '</span><span class="' + level + '">' + escapeHtml(msg) + '</span>';
@@ -556,7 +560,7 @@
             while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
         }
 
-        function updateServerStats() {
+        function updateInboundStats() {
             document.getElementById('requestCount').textContent = String(requestCount);
             document.getElementById('successCount').textContent = String(successCount);
             document.getElementById('errorCount').textContent = String(errorCount);
@@ -583,21 +587,21 @@
             });
         }
 
-        /** Send echo (client mode) */
+        /** Send an outbound echo RPC (available on every actor). */
         async function doSendEcho() {
-            if (!_bridge) { clientLog('err', '❌ Client is not initialized'); return; }
+            if (!_bridge) { outboundLog('err', '❌ Actor is not initialized'); return; }
             const message = msgInput.value.trim() || ('Hello! (' + new Date().toLocaleTimeString() + ')');
             try {
                 sendBtn.disabled = true;
-                clientLog('info', '📤 Sending: "' + message + '"');
+                outboundLog('info', '📤 Sending: "' + message + '"');
                 const payload = encodeEchoRequest(message);
                 const responseData = await callRaw('echo.EchoService.Echo', payload);
                 const response = decodeEchoResponse(new Uint8Array(responseData));
-                clientLog('ok', '📥 Reply: "' + response.reply + '"');
-                if (response.timestamp) clientLog('info', '⏱️ Timestamp: ' + new Date(response.timestamp * 1000).toLocaleString());
+                outboundLog('ok', '📥 Reply: "' + response.reply + '"');
+                if (response.timestamp) outboundLog('info', '⏱️ Timestamp: ' + new Date(response.timestamp * 1000).toLocaleString());
             } catch (e) {
                 console.error('Echo failed:', e);
-                clientLog('err', '❌ Request failed: ' + e.message);
+                outboundLog('err', '❌ Request failed: ' + e.message);
             } finally {
                 sendBtn.disabled = false;
             }
@@ -610,21 +614,14 @@
                 const resp = await fetch('/actr-runtime-config.json');
                 if (!resp.ok) throw new Error('Config fetch failed: ' + resp.status);
                 const cfg = await resp.json();
-                const isServer = !!cfg.is_server;
 
-                // Update info grid
+                // Update info grid. Role is a per-peer concept at connect
+                // time, so the host page just shows the actor identity.
                 document.getElementById('actorType').textContent = cfg.package.full_type || '—';
-                document.getElementById('role').textContent = isServer ? 'Server' : 'Client';
+                document.getElementById('role').textContent = 'Actor (symmetric)';
                 document.getElementById('sigUrl').textContent = cfg.signaling_url || '—';
                 document.getElementById('realmId').textContent = cfg.realm_id || '—';
                 document.getElementById('serviceName').textContent = cfg.package.full_type ? ('echo.' + cfg.package.actr_name || cfg.package.name || cfg.package.full_type) : '—';
-
-                // Show/hide role-specific UI
-                if (isServer) {
-                    document.getElementById('serverStats').style.display = '';
-                } else {
-                    document.getElementById('clientArea').style.display = '';
-                }
 
                 const swRuntimeConfig = {
                     ais_endpoint: cfg.ais_endpoint,
@@ -634,9 +631,7 @@
                     target_actr_type: (cfg.acl_allow_types && cfg.acl_allow_types[0]) || '',
                     service_fingerprint: '',
                     acl_allow_types: cfg.acl_allow_types || [],
-                    is_server: cfg.is_server,
                     package_url: cfg.package_url,
-                    register_fn: '',
                     runtime_wasm_url: cfg.runtime_wasm_url,
                     trust: cfg.trust || [],
                 };
@@ -678,7 +673,9 @@
                     }
                 });
 
-                // Listen for broadcast events from SW (echo_event, sw_log)
+                // Listen for broadcast events from SW (echo_event, sw_log).
+                // echo_event is fired whenever this actor handles an inbound
+                // request, independent of whether it also initiates calls.
                 navigator.serviceWorker.addEventListener('message', e => {
                     if (!e.data || !e.data.type) return;
                     if (e.data.type === 'sw_log') {
@@ -687,53 +684,38 @@
                         msg = msg.replace(/^\s*WARN\s+/, '⚠️ ');
                         msg = msg.replace(/^\s*ERROR\s+/, '❌ ');
                         runtimeLog(e.data.level || 'info', msg);
-                    } else if (e.data.type === 'echo_event' && isServer) {
-                        // Server: update stats from echo_event broadcasts
+                    } else if (e.data.type === 'echo_event') {
                         switch (e.data.event) {
                             case 'request':
                                 requestCount++;
-                                serverLog('info', '📨 Received Echo request: "' + (e.data.detail || '') + '"');
+                                inboundLog('info', '📨 Received Echo request: "' + (e.data.detail || '') + '"');
                                 break;
                             case 'response':
                                 successCount++;
-                                serverLog('success', '✅ Sent Echo response: "' + (e.data.detail || '') + '"');
+                                inboundLog('success', '✅ Sent Echo response: "' + (e.data.detail || '') + '"');
                                 break;
                             case 'error':
                                 errorCount++;
-                                serverLog('error', '❌ Handling error: ' + (e.data.detail || ''));
+                                inboundLog('error', '❌ Handling error: ' + (e.data.detail || ''));
                                 break;
                         }
-                        updateServerStats();
+                        updateInboundStats();
                     }
                 });
 
-                // Set status based on role
-                if (isServer) {
-                    statusEl.innerHTML = '<span>✅</span><span>Server is running</span>';
-                    statusEl.className = 'status ready';
-                    serverLog('success', '✅ Echo Server started successfully!');
-                    serverLog('info', '📡 Registered service: echo.EchoService');
-                    serverLog('info', '⏳ Waiting for clients to connect…');
-                } else {
-                    statusEl.textContent = '✅ Connected';
-                    statusEl.className = 'status connected';
-                    sendBtn.disabled = false;
-                    clientLog('ok', '✅ Client initialized successfully');
-                    clientLog('info', '⏳ Will automatically send an Echo test message in 5s…');
-                    // Auto-echo after 5 seconds
-                    setTimeout(async () => {
-                        clientLog('info', '🚀 Automatically sending Echo test message…');
-                        await doSendEcho();
-                    }, 5000);
-                }
+                // Unified actor status: every actor is ready both to accept
+                // inbound calls and to initiate outbound ones.
+                statusEl.innerHTML = '<span>✅</span><span>Actor ready</span>';
+                statusEl.className = 'status ready';
+                sendBtn.disabled = false;
+                inboundLog('success', '✅ Actor started — inbound handlers registered');
+                outboundLog('ok', '✅ Actor initialized — outbound send available');
 
-                runtimeLog('success', 'Actor initialized as ' + (isServer ? 'SERVER' : 'CLIENT') + ' (' + (cfg.package.full_type || 'unknown') + ')');
+                runtimeLog('success', 'Actor initialized (' + (cfg.package.full_type || 'unknown') + ')');
 
-                // Wire up client send button
-                if (!isServer) {
-                    sendBtn.addEventListener('click', doSendEcho);
-                    msgInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) doSendEcho(); });
-                }
+                // Wire up the outbound send button (always available).
+                sendBtn.addEventListener('click', doSendEcho);
+                msgInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) doSendEcho(); });
 
                 // Keep-alive
                 setInterval(() => { if (navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'PING' }); }, 20000);
