@@ -65,7 +65,7 @@ members = [
     # === Language Bindings (Rust FFI) ===
     "bindings/ffi",
     # === Testing Utilities ===
-    "testing/mock-signaling",
+    "testing/mock-actrix",
 ]
 
 # === Excluded from Cargo workspace ===
@@ -112,7 +112,7 @@ actr-hyper = { path = "core/hyper", version = "0.1.0" }
 actr-platform-traits = { path = "core/platform-traits", version = "0.2.0" }
 actr-platform-native = { path = "core/platform-native", version = "0.2.0" }
 actr-pack = { path = "core/pack", version = "0.2.0" }
-actr-mock-signaling = { path = "testing/mock-signaling", version = "0.2.0" }
+actr-mock-actrix = { path = "testing/mock-actrix", version = "0.2.0" }
 
 # === Async Runtime ===
 tokio = { version = "1.48", features = ["full"] }

@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = ["wasm-engine", "dynclib-engine"]
-test-utils = ["dep:actr-mock-signaling", "dep:rusqlite"]
+test-utils = ["dep:actr-mock-actrix", "dep:rusqlite"]
 wasm-engine = ["actr-hyper/wasm-engine"]
 dynclib-engine = ["actr-hyper/dynclib-engine"]
 
@@ -124,7 +124,7 @@ tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
 futures-util = "0.3"
 uuid = { version = "1.19.0", features = ["v4"] }
 rust-embed = "8.11.0"
-actr-mock-signaling = { workspace = true, optional = true }
+actr-mock-actrix = { workspace = true, optional = true }
 
 # Web server for `actr run --web`
 axum = "0.8"

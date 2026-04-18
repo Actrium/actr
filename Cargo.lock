@@ -23,7 +23,7 @@ dependencies = [
  "actr-config",
  "actr-framework-protoc-codegen",
  "actr-hyper",
- "actr-mock-signaling",
+ "actr-mock-actrix",
  "actr-pack",
  "actr-platform-native",
  "actr-protocol",
@@ -141,7 +141,7 @@ dependencies = [
  "actr-config",
  "actr-framework",
  "actr-hyper",
- "actr-mock-signaling",
+ "actr-mock-actrix",
  "actr-pack",
  "actr-platform-traits",
  "actr-protocol",
@@ -199,21 +199,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-mock-signaling"
+name = "actr-mock-actrix"
 version = "0.2.0"
 dependencies = [
+ "actr-hyper",
+ "actr-pack",
  "actr-protocol",
  "anyhow",
+ "axum",
+ "base64",
+ "bytes",
  "chrono",
+ "clap",
  "ed25519-dalek",
  "futures-util",
+ "hex",
  "prost 0.14.3",
  "prost-types",
  "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokio",
- "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -678,6 +689,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
  "axum-core",
+ "base64",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -696,8 +708,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",

@@ -479,7 +479,7 @@ impl Drop for LoggedProcess {
 pub struct MockSignaling {
     pub signaling_ws_url: String,
     _runtime: tokio::runtime::Runtime,
-    _server: std::sync::Arc<tokio::sync::Mutex<actr_mock_signaling::MockSignalingServer>>,
+    _server: std::sync::Arc<tokio::sync::Mutex<actr_mock_actrix::MockActrixServer>>,
 }
 
 impl MockSignaling {
@@ -490,7 +490,7 @@ impl MockSignaling {
             .context("failed to build tokio runtime for mock signaling")?;
 
         let server = rt
-            .block_on(actr_mock_signaling::MockSignalingServer::start())
+            .block_on(actr_mock_actrix::MockActrixServer::start())
             .context("failed to start mock signaling server")?;
 
         let ws_url = server.url();

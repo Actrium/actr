@@ -25,7 +25,7 @@ opentelemetry = [
   "dep:tracing-opentelemetry",
 ]
 # Enable test utilities for integration tests (e.g., force ICE restart on all connections)
-test-utils = ["dep:actr-mock-signaling", "dep:webrtc-util"]
+test-utils = ["dep:actr-mock-actrix", "dep:webrtc-util"]
 
 [dependencies]
 # === Internal ===
@@ -110,7 +110,7 @@ dashmap.workspace = true
 dotenvy = "0.15"
 either = "1.15"
 num_cpus = "1.17"
-actr-mock-signaling = { workspace = true, optional = true }
+actr-mock-actrix = { workspace = true, optional = true }
 webrtc-util = { version = "0.12", optional = true }
 
 # WASM Runtime (optional, native-only)
