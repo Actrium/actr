@@ -77,14 +77,13 @@ dependencies = [
  "url",
  "uuid",
  "webrtc",
+ "zip",
 ]
 
 [[package]]
 name = "actr-pack"
 version = "0.2.0"
 dependencies = [
- "actr-protocol",
- "actr-service-compat",
  "base64",
  "ed25519-dalek",
  "hex",
