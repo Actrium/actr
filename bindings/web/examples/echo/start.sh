@@ -159,12 +159,11 @@ MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['pu
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
-$ACTR_CMD pkg build \
-    --binary "$SERVER_GUEST_WASM" \
-    --config "$SERVER_GUEST_DIR/manifest.toml" \
+(cd "$SERVER_GUEST_DIR" && $ACTR_CMD build \
+    --no-compile \
+    --target "wasm32-unknown-unknown" \
     --key "$MFR_KEY_FILE" \
-    --output "$SERVER_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown"
+    --output "$SERVER_ACTR_PACKAGE")
 if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
     echo -e "${RED}Server package build failed${NC}"
     exit 1
@@ -172,12 +171,11 @@ fi
 echo -e "${GREEN}Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1)${NC}"
 
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
-$ACTR_CMD pkg build \
-    --binary "$CLIENT_GUEST_WASM" \
-    --config "$CLIENT_GUEST_DIR/manifest.toml" \
+(cd "$CLIENT_GUEST_DIR" && $ACTR_CMD build \
+    --no-compile \
+    --target "wasm32-unknown-unknown" \
     --key "$MFR_KEY_FILE" \
-    --output "$CLIENT_ACTR_PACKAGE" \
-    --target "wasm32-unknown-unknown"
+    --output "$CLIENT_ACTR_PACKAGE")
 if [ ! -f "$CLIENT_ACTR_PACKAGE" ]; then
     echo -e "${RED}Client package build failed${NC}"
     exit 1

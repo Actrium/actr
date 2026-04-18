@@ -1,3 +1,6 @@
+edition = 1
+exports = ["../proto/echo.proto"]
+
 [package]
 name = "EchoService"
 manufacturer = "acme"
@@ -6,4 +9,7 @@ description = "Echo Server - Browser-side Actor Service"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "server"]
-exports = ["../proto/echo.proto"]
+
+[binary]
+path = "target/wasm32-unknown-unknown/release/echo_guest.wasm"
+target = "wasm32-unknown-unknown"
