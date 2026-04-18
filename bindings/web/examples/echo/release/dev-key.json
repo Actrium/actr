@@ -1,6 +1,6 @@
 {
   "created_at": "2026-04-02T12:06:54.696128+00:00",
-  "note": "Development signing key, for TrustMode::Development only, not for production use",
+  "note": "Development signing key, for pinning via `[[trust]] kind = \"static\"` only, not for production use",
   "private_key": "7fB1uafmMUAHH++TQ+TLPvg6isnJEuA6DVubcB62uNY=",
   "public_key": "2Oz7CHdxSqg0xOfTi9D9ObZEItdO1yDyXQ5oWhkYpr0="
 }

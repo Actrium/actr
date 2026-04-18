@@ -126,7 +126,7 @@ import io.actorrtc.actr.*
 // 1. Create configuration
 val config = ActrConfig(
     signalingUrl = "ws://10.0.2.2:8081/signaling/ws", // For Android emulator
-    actorType = ActrType("acme", "my.android.app"),
+    actrType = ActrType("acme", "my.android.app"),
     realmId = 2281844430u
 )
 
@@ -264,7 +264,7 @@ Unique actor identifier.
 
 ```kotlin
 data class ActrId(
-    val actorType: ActrType,
+    val actrType: ActrType,
     val serialNumber: Long,
     val realmId: UInt
 ) {

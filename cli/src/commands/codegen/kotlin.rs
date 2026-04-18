@@ -619,12 +619,12 @@ object RemoteServiceRegistry {
             // Check if this is a remote service call
             RemoteServiceRegistry.isRemoteRoute(routeKey) -> {
                 // Get target actor type and discover it
-                val actorType = RemoteServiceRegistry.getActorType(routeKey)
+                val actrType = RemoteServiceRegistry.getActorType(routeKey)
                     ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
 
                 // Discover remote actor
-                val targetId = discoveredActors[actorType]
-                    ?: throw IllegalStateException("Remote actor not discovered: ${actorType.name}. Call discoverRemoteServices() first.")
+                val targetId = discoveredActors[actrType]
+                    ?: throw IllegalStateException("Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first.")
 
                 // Forward to remote actor
                 ctx.callRaw(
@@ -651,10 +651,10 @@ object RemoteServiceRegistry {
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
     suspend fun discoverRemoteServices(ctx: ContextBridge) {
-        for ((_, actorType) in RemoteServiceRegistry.remoteRoutes) {
-            if (!discoveredActors.containsKey(actorType)) {
-                val actorId = ctx.discover(actorType)
-                discoveredActors[actorType] = actorId
+        for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
+            if (!discoveredActors.containsKey(actrType)) {
+                val actorId = ctx.discover(actrType)
+                discoveredActors[actrType] = actorId
             }
         }
     }

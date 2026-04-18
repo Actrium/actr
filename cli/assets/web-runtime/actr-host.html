@@ -250,7 +250,7 @@
         <!-- Info grid (always shown) -->
         <dl class="info-grid">
             <dt>Actor Type</dt>
-            <dd id="actorType">—</dd>
+            <dd id="actrType">—</dd>
             <dt>Role</dt>
             <dd id="role">—</dd>
             <dt>Signaling</dt>
@@ -617,7 +617,7 @@
 
                 // Update info grid. Role is a per-peer concept at connect
                 // time, so the host page just shows the actor identity.
-                document.getElementById('actorType').textContent = cfg.package.full_type || '—';
+                document.getElementById('actrType').textContent = cfg.package.full_type || '—';
                 document.getElementById('role').textContent = 'Actor (symmetric)';
                 document.getElementById('sigUrl').textContent = cfg.signaling_url || '—';
                 document.getElementById('realmId').textContent = cfg.realm_id || '—';

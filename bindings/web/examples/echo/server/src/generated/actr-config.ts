@@ -62,7 +62,7 @@ function requireConfig(): RuntimeConfigJson {
 // ── Backward-compatible exports ──
 
 /** ActrType info (available after initConfig) */
-export const actorType = {
+export const actrType = {
     get manufacturer() {
         return requireConfig().package.manufacturer;
     },
