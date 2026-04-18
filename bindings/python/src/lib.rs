@@ -11,8 +11,8 @@ pub use errors::{
     ActrDecodeError, ActrGateNotInitialized, ActrRuntimeError, ActrTransportError, ActrUnknownRoute,
 };
 
-use runtime::{ActrNodePy, ActrRefPy, ContextPy};
-pub use types::{ActrIdPy, ActrTypePy, DataStreamPy, DestPy, PayloadType};
+use runtime::{ActrNode, ActrRef, Context};
+pub use types::{ActrId, ActrType, DataStream, Dest, PayloadType};
 
 #[pymodule]
 fn actr_raw(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -25,13 +25,13 @@ fn actr_raw(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         _py.get_type::<ActrGateNotInitialized>(),
     )?;
     m.add_class::<PayloadType>()?;
-    m.add_class::<DestPy>()?;
-    m.add_class::<ActrIdPy>()?;
-    m.add_class::<ActrTypePy>()?;
-    m.add_class::<DataStreamPy>()?;
-    m.add_class::<ActrNodePy>()?;
-    m.add_class::<ActrRefPy>()?;
-    m.add_class::<ContextPy>()?;
+    m.add_class::<Dest>()?;
+    m.add_class::<ActrId>()?;
+    m.add_class::<ActrType>()?;
+    m.add_class::<DataStream>()?;
+    m.add_class::<ActrNode>()?;
+    m.add_class::<ActrRef>()?;
+    m.add_class::<Context>()?;
 
     Ok(())
 }
