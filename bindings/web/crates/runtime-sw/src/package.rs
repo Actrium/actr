@@ -163,6 +163,5 @@ fn parse_pubkey(b64: &str) -> Result<VerifyingKey, JsError> {
 }
 
 fn manifest_to_json(manifest: &PackageManifest) -> Result<String, JsError> {
-    serde_json::to_string(manifest)
-        .map_err(|e| JsError::new(&format!("serialize manifest: {e}")))
+    serde_json::to_string(manifest).map_err(|e| JsError::new(&format!("serialize manifest: {e}")))
 }

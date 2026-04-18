@@ -102,9 +102,8 @@ pub fn read_glue_js(actr_bytes: &[u8]) -> Result<Option<String>, PackError> {
         .by_name(&name)
         .map_err(|e| PackError::InvalidPackage(format!("open {}: {}", name, e)))?;
     let mut content = String::new();
-    file.read_to_string(&mut content).map_err(|e| {
-        PackError::InvalidPackage(format!("read {}: {}", name, e))
-    })?;
+    file.read_to_string(&mut content)
+        .map_err(|e| PackError::InvalidPackage(format!("read {}: {}", name, e)))?;
     Ok(Some(content))
 }
 

@@ -31,8 +31,8 @@ mod util;
 
 pub use error::PackError;
 pub use load::{
-    load_binary, read_glue_js, read_lock_file, read_manifest, read_manifest_raw,
-    read_proto_files, read_signature,
+    load_binary, read_glue_js, read_lock_file, read_manifest, read_manifest_raw, read_proto_files,
+    read_signature,
 };
 pub use manifest::{
     BinaryEntry, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry, ResourceEntry,
@@ -49,4 +49,3 @@ pub fn compute_key_id(public_key_bytes: &[u8]) -> String {
     let hex_str = util::sha256_hex(public_key_bytes);
     format!("mfr-{}", &hex_str[..16])
 }
-

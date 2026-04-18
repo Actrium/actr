@@ -51,9 +51,7 @@ pub(crate) fn calculate_service_spec_from_package(
 
     let fingerprint =
         actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-            .map_err(|e| {
-                HyperError::Runtime(format!("calculate service fingerprint: {e}"))
-            })?;
+            .map_err(|e| HyperError::Runtime(format!("calculate service fingerprint: {e}")))?;
 
     let protobufs = proto_contents
         .iter()
