@@ -96,15 +96,15 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     let dir = TempDir::new().unwrap();
     let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest = hyper
+    let verified = hyper
         .verify_package(&WorkloadPackage::new(package))
         .await
         .unwrap();
 
     mock.assert_async().await;
-    assert_eq!(manifest.manufacturer, "acme");
-    assert_eq!(manifest.actr_name, "Sensor");
-    assert_eq!(manifest.version, "1.0.0");
+    assert_eq!(verified.manifest.manufacturer, "acme");
+    assert_eq!(verified.manifest.name, "Sensor");
+    assert_eq!(verified.manifest.version, "1.0.0");
 }
 
 /// Scenario 2: two consecutive verifications for the same manufacturer -> second uses cache, no HTTP
@@ -258,8 +258,8 @@ async fn production_mode_independent_caches_per_manufacturer() {
         .await
         .unwrap();
 
-    assert_eq!(manifest_a.manufacturer, "mfr-a");
-    assert_eq!(manifest_b.manufacturer, "mfr-b");
+    assert_eq!(manifest_a.manifest.manufacturer, "mfr-a");
+    assert_eq!(manifest_b.manifest.manufacturer, "mfr-b");
 }
 
 /// Standalone MfrCertCache test: get_from_cache is synchronously readable after prefetch

@@ -87,7 +87,7 @@ pub struct ActrNode {
 
     /// Verified package manifest for package-backed nodes.
     #[allow(dead_code)]
-    pub(crate) package_manifest: Option<crate::verify::PackageManifest>,
+    pub(crate) package_manifest: Option<actr_pack::PackageManifest>,
 
     /// Pre-issued registration credential injected by the Hyper layer during
     /// the `Attached → Registered` state transition. `start()` uses it directly
@@ -292,7 +292,7 @@ fn protocol_error_to_code(err: &ActrError) -> u32 {
 
 impl ActrNode {
     #[allow(dead_code)]
-    pub(crate) fn package_manifest(&self) -> Option<&crate::verify::PackageManifest> {
+    pub(crate) fn package_manifest(&self) -> Option<&actr_pack::PackageManifest> {
         self.package_manifest.as_ref()
     }
 
@@ -577,7 +577,7 @@ impl ActrNode {
     pub(crate) async fn build(
         config: actr_config::RuntimeConfig,
         workload: crate::workload::Workload,
-        package_manifest: Option<crate::verify::PackageManifest>,
+        package_manifest: Option<actr_pack::PackageManifest>,
         packaged_lock: Option<actr_config::lock::LockFile>,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};

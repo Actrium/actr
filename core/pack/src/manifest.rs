@@ -37,6 +37,41 @@ pub struct BinaryEntry {
     pub size: Option<u64>,
 }
 
+impl BinaryEntry {
+    /// Decode the hex-encoded SHA-256 hash string into a 32-byte array.
+    ///
+    /// Returns [`PackError::ManifestParseError`] if the stored `hash` is not a
+    /// 64-character hex string.
+    pub fn hash_bytes(&self) -> Result<[u8; 32], crate::error::PackError> {
+        let hex = &self.hash;
+        if hex.len() != 64 {
+            return Err(crate::error::PackError::ManifestParseError(
+                "binary.hash must be a 64-character hex string (32 bytes)".to_string(),
+            ));
+        }
+        let mut out = [0u8; 32];
+        for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+            let s = std::str::from_utf8(chunk).map_err(|_| {
+                crate::error::PackError::ManifestParseError(
+                    "binary.hash contains non-UTF-8 characters".to_string(),
+                )
+            })?;
+            out[i] = u8::from_str_radix(s, 16).map_err(|_| {
+                crate::error::PackError::ManifestParseError(
+                    "binary.hash contains invalid hex characters".to_string(),
+                )
+            })?;
+        }
+        Ok(out)
+    }
+
+    /// Returns `true` when this binary targets a WASM runtime (e.g.
+    /// `wasm32-wasip1`, `wasm32-unknown-unknown`).
+    pub fn is_wasm_target(&self) -> bool {
+        self.target.starts_with("wasm32-")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceEntry {
     pub path: String,

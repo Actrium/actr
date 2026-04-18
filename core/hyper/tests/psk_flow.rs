@@ -9,7 +9,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use actr_hyper::{ActorStore, Hyper, HyperConfig, HyperError, PackageManifest, StaticTrust};
+use actr_hyper::{
+    ActorStore, Hyper, HyperConfig, HyperError, StaticTrust, VerifiedPackage,
+};
 use actr_protocol::{Acl, ServiceSpec};
 use actr_protocol::{ErrorResponse, RegisterResponse, register_response};
 use ed25519_dalek::SigningKey;
@@ -26,18 +28,27 @@ fn dev_config(dir: &TempDir) -> HyperConfig {
     HyperConfig::new(dir.path(), Arc::new(StaticTrust::new(pubkey).unwrap()))
 }
 
-fn fake_manifest() -> PackageManifest {
-    PackageManifest {
-        manufacturer: "test-mfr".to_string(),
-        actr_name: "TestActor".to_string(),
-        version: "0.1.0".to_string(),
-        binary_path: "bin/actor.wasm".to_string(),
-        binary_target: "wasm32-wasip1".to_string(),
-        binary_hash: [0u8; 32],
-        capabilities: vec![],
-        signature: vec![0u8; 64],
+fn fake_manifest() -> VerifiedPackage {
+    VerifiedPackage {
+        manifest: actr_pack::PackageManifest {
+            manufacturer: "test-mfr".to_string(),
+            name: "TestActor".to_string(),
+            version: "0.1.0".to_string(),
+            binary: actr_pack::BinaryEntry {
+                path: "bin/actor.wasm".to_string(),
+                target: "wasm32-wasip1".to_string(),
+                hash: "0".repeat(64),
+                size: None,
+            },
+            signature_algorithm: "ed25519".to_string(),
+            signing_key_id: None,
+            resources: vec![],
+            proto_files: vec![],
+            lock_file: None,
+            metadata: actr_pack::ManifestMetadata::default(),
+        },
         manifest_raw: vec![],
-        target: "wasm32-wasip1".to_string(),
+        sig_raw: vec![0u8; 64],
     }
 }
 
@@ -163,7 +174,7 @@ async fn first_registration_uses_manifest_auth_and_stores_psk() {
     );
 
     // PSK should be written to ActorStore
-    let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+    let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     let stored_psk = store.kv_get("hyper:psk:token").await.unwrap();
     assert_eq!(stored_psk, Some(psk.to_vec()), "PSK should be persisted");
@@ -195,7 +206,7 @@ async fn valid_psk_uses_psk_auth_without_new_psk() {
     let manifest = fake_manifest();
 
     // Pre-populate valid PSK
-    let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+    let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     let valid_psk = b"existing-valid-psk";
     store.kv_set("hyper:psk:token", valid_psk).await.unwrap();
@@ -242,7 +253,7 @@ async fn expired_psk_falls_back_to_manifest_and_receives_new_psk() {
     let manifest = fake_manifest();
 
     // Pre-populate expired PSK (10 seconds ago)
-    let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+    let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
     store
         .kv_set("hyper:psk:token", b"old-expired-psk")
@@ -399,7 +410,7 @@ async fn first_registration_persists_signing_pubkey() {
         .await
         .unwrap();
 
-    let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+    let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
     let store = ActorStore::open(&storage_path).await.unwrap();
 
     let pubkey = store.kv_get("hyper:ais:signing_pubkey").await.unwrap();

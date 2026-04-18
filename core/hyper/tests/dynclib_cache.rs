@@ -112,7 +112,8 @@ async fn dynclib_cache_is_created_on_first_load() {
 
     let first = hyper.load_workload_package(&package).await.unwrap();
     assert_eq!(first.binary_kind, BinaryKind::DynClib);
-    let cache_file = cache_path(dir.path(), &first.manifest.binary_hash);
+    let binary_hash = first.manifest().binary.hash_bytes().unwrap();
+    let cache_file = cache_path(dir.path(), &binary_hash);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
 }
 
@@ -127,8 +128,9 @@ async fn dynclib_cache_rebuilds_after_corruption() {
     let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
-    let manifest = hyper.verify_package(&package).await.unwrap();
-    let cache_file = cache_path(dir.path(), &manifest.binary_hash);
+    let verified = hyper.verify_package(&package).await.unwrap();
+    let binary_hash = verified.manifest.binary.hash_bytes().unwrap();
+    let cache_file = cache_path(dir.path(), &binary_hash);
     fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
     fs::write(&cache_file, b"corrupted dynclib bytes").unwrap();
 

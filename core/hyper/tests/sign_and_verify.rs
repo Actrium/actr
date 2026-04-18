@@ -118,13 +118,13 @@ async fn actr_package_roundtrip() {
         .await
         .unwrap();
 
-    let manifest = hyper
+    let verified = hyper
         .verify_package(&WorkloadPackage::new(package))
         .await
         .unwrap();
-    assert_eq!(manifest.manufacturer, "test-mfr");
-    assert_eq!(manifest.actr_name, "MyActor");
-    assert_eq!(manifest.version, "1.2.3");
+    assert_eq!(verified.manifest.manufacturer, "test-mfr");
+    assert_eq!(verified.manifest.name, "MyActor");
+    assert_eq!(verified.manifest.version, "1.2.3");
 }
 
 #[tokio::test]
@@ -208,7 +208,7 @@ async fn load_workload_package_selects_wasm_backend() {
         .unwrap();
 
     assert_eq!(loaded.binary_kind, BinaryKind::Wasm);
-    assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
+    assert_eq!(loaded.manifest().binary.target, "wasm32-wasip1");
 }
 
 #[tokio::test]

@@ -18,21 +18,21 @@
 
 use std::sync::Arc;
 
+use actr_pack::VerifiedPackage;
 use async_trait::async_trait;
 use ed25519_dalek::VerifyingKey;
 
 use crate::error::{HyperError, HyperResult};
 use crate::verify::cert_cache::MfrCertCache;
-use crate::verify::manifest::PackageManifest;
 
 /// Verifier for `.actr` package signatures.
 ///
 /// An implementation fully takes raw package bytes and returns the parsed,
-/// trusted manifest — or errors. Callers must not use any field of the
-/// returned [`PackageManifest`] before calling this.
+/// trusted package — or errors. Callers must not use any field of the
+/// returned [`VerifiedPackage`] before calling this.
 #[async_trait]
 pub trait TrustProvider: Send + Sync + std::fmt::Debug {
-    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest>;
+    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage>;
 }
 
 // ── shared helper for the Ed25519 + pubkey path ──────────────────────────────
@@ -44,8 +44,19 @@ pub trait TrustProvider: Send + Sync + std::fmt::Debug {
 pub fn verify_ed25519_manifest(
     bytes: &[u8],
     pubkey: &VerifyingKey,
-) -> HyperResult<PackageManifest> {
-    let verified = actr_pack::verify(bytes, pubkey).map_err(|e| match e {
+) -> HyperResult<VerifiedPackage> {
+    let verified = actr_pack::verify(bytes, pubkey).map_err(pack_err_to_hyper)?;
+
+    tracing::info!(
+        actr_type = %verified.manifest.actr_type_str(),
+        ".actr package verified"
+    );
+
+    Ok(verified)
+}
+
+fn pack_err_to_hyper(e: actr_pack::PackError) -> HyperError {
+    match e {
         actr_pack::PackError::SignatureVerificationFailed(msg) => {
             HyperError::SignatureVerificationFailed(msg)
         }
@@ -59,43 +70,7 @@ pub fn verify_ed25519_manifest(
         actr_pack::PackError::ManifestNotFound => HyperError::ManifestNotFound,
         actr_pack::PackError::ManifestParseError(msg) => HyperError::InvalidManifest(msg),
         other => HyperError::InvalidManifest(other.to_string()),
-    })?;
-
-    tracing::info!(
-        actr_type = %verified.manifest.actr_type_str(),
-        ".actr package verified"
-    );
-
-    Ok(PackageManifest {
-        manufacturer: verified.manifest.manufacturer,
-        actr_name: verified.manifest.name,
-        version: verified.manifest.version,
-        binary_path: verified.manifest.binary.path,
-        binary_target: verified.manifest.binary.target.clone(),
-        binary_hash: hex_to_32_bytes(&verified.manifest.binary.hash).unwrap_or_default(),
-        capabilities: vec![],
-        signature: verified.sig_raw,
-        manifest_raw: verified.manifest_raw,
-        target: verified.manifest.binary.target,
-    })
-}
-
-fn hex_to_32_bytes(hex: &str) -> HyperResult<[u8; 32]> {
-    if hex.len() != 64 {
-        return Err(HyperError::InvalidManifest(
-            "binary_hash must be a 64-character hex string (32 bytes)".to_string(),
-        ));
     }
-    let mut out = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk).map_err(|_| {
-            HyperError::InvalidManifest("binary_hash contains non-UTF-8 characters".to_string())
-        })?;
-        out[i] = u8::from_str_radix(s, 16).map_err(|_| {
-            HyperError::InvalidManifest("binary_hash contains invalid hex characters".to_string())
-        })?;
-    }
-    Ok(out)
 }
 
 fn parse_pubkey(bytes: &[u8]) -> HyperResult<VerifyingKey> {
@@ -130,7 +105,7 @@ impl StaticTrust {
 
 #[async_trait]
 impl TrustProvider for StaticTrust {
-    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
         verify_ed25519_manifest(bytes, &self.pubkey)
     }
 }
@@ -158,7 +133,7 @@ impl RegistryTrust {
 
 #[async_trait]
 impl TrustProvider for RegistryTrust {
-    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
         let pack_manifest = actr_pack::read_manifest(bytes).map_err(|e| match e {
             actr_pack::PackError::ManifestNotFound => HyperError::ManifestNotFound,
             actr_pack::PackError::ManifestParseError(msg) => HyperError::InvalidManifest(msg),
@@ -206,7 +181,7 @@ impl ChainTrust {
 
 #[async_trait]
 impl TrustProvider for ChainTrust {
-    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<PackageManifest> {
+    async fn verify_package(&self, bytes: &[u8]) -> HyperResult<VerifiedPackage> {
         let mut last_err: Option<HyperError> = None;
         for p in &self.providers {
             match p.verify_package(bytes).await {
@@ -264,8 +239,8 @@ mod tests {
         let pkg = make_minimal_package(&key);
 
         let trust = StaticTrust::new(vk.to_bytes()).unwrap();
-        let m = trust.verify_package(&pkg).await.unwrap();
-        assert_eq!(m.manufacturer, "test-mfr");
+        let verified = trust.verify_package(&pkg).await.unwrap();
+        assert_eq!(verified.manifest.manufacturer, "test-mfr");
     }
 
     #[tokio::test]
@@ -293,8 +268,8 @@ mod tests {
             Arc::new(StaticTrust::new(key.verifying_key().to_bytes()).unwrap());
 
         let chain = ChainTrust::of(wrong, right);
-        let m = chain.verify_package(&pkg).await.unwrap();
-        assert_eq!(m.manufacturer, "test-mfr");
+        let verified = chain.verify_package(&pkg).await.unwrap();
+        assert_eq!(verified.manifest.manufacturer, "test-mfr");
     }
 
     #[tokio::test]

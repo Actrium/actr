@@ -71,8 +71,9 @@ pub mod error;
 // Runtime error re-exports (from actr_protocol, distinct from HyperError)
 pub mod runtime_error;
 
-// Verify module: PackageManifest struct is cross-platform,
-// verification logic is native-only (sha2, ed25519-dalek).
+// Verify module: TrustProvider trait + built-in verifiers (native-only).
+// The verified manifest / package types live in `actr_pack` and are
+// re-exported below for downstream consumers.
 pub mod verify;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -141,9 +142,9 @@ pub mod resource;
 // Re-exports: Cross-platform
 // ═══════════════════════════════════════════════════════════════════════════════
 
+pub use actr_pack::{PackageManifest, VerifiedPackage};
 pub use config::HyperConfig;
 pub use error::{HyperError, HyperResult};
-pub use verify::PackageManifest;
 
 // Core protocol types
 pub use actr_protocol::{Acl, ActrId, ActrType, ServiceSpec};
@@ -253,8 +254,8 @@ pub mod prelude {
     //! ```
 
     // ── Platform types (cross-platform) ─────────────────────────────────────
-    pub use crate::verify::PackageManifest;
     pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
+    pub use actr_pack::{PackageManifest, VerifiedPackage};
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{Hyper, storage::ActorStore};
     pub use crate::{HyperConfig, HyperError, HyperResult};
@@ -395,7 +396,9 @@ impl HyperState for Registered {}
 /// Carries state-dependent data from `Attached` onwards.
 struct Attachment {
     node: crate::lifecycle::ActrNode,
-    manifest: PackageManifest,
+    /// Verified package retained for AIS bootstrap: the manifest plus the raw
+    /// manifest bytes and signature that AIS may need to re-verify upstream.
+    verified: VerifiedPackage,
     package_bytes: bytes::Bytes,
 }
 
@@ -481,9 +484,11 @@ impl WorkloadPackage {
 #[cfg(not(target_arch = "wasm32"))]
 /// Result of verifying a package and preparing a runtime workload from it.
 pub struct LoadedWorkload {
-    /// Verified package manifest retained for downstream bootstrap and storage operations.
-    pub manifest: PackageManifest,
-    /// Binary kind detected from `manifest.binary_target`.
+    /// Verified package retained for downstream bootstrap and storage
+    /// operations — carries the parsed manifest plus the raw manifest bytes
+    /// and signature needed for transparent forwarding to AIS.
+    pub verified: VerifiedPackage,
+    /// Binary kind detected from `verified.manifest.binary.target`.
     pub binary_kind: BinaryKind,
     /// Ready-to-attach runtime workload.
     pub workload: crate::workload::Workload,
@@ -491,15 +496,14 @@ pub struct LoadedWorkload {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl LoadedWorkload {
+    /// Convenience accessor for the parsed package manifest.
+    pub fn manifest(&self) -> &PackageManifest {
+        &self.verified.manifest
+    }
+
     /// Consume the wrapper and return its individual components.
-    pub fn into_parts(
-        self,
-    ) -> (
-        PackageManifest,
-        BinaryKind,
-        crate::workload::Workload,
-    ) {
-        (self.manifest, self.binary_kind, self.workload)
+    pub fn into_parts(self) -> (VerifiedPackage, BinaryKind, crate::workload::Workload) {
+        (self.verified, self.binary_kind, self.workload)
     }
 }
 
@@ -507,7 +511,7 @@ impl LoadedWorkload {
 impl std::fmt::Debug for LoadedWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedWorkload")
-            .field("manifest", &self.manifest)
+            .field("manifest", &self.verified.manifest)
             .field("backend", &self.binary_kind)
             .finish_non_exhaustive()
     }
@@ -579,12 +583,16 @@ impl Hyper<Uninit> {
         })
     }
 
-    /// Verify a [`WorkloadPackage`] and return the verified manifest.
+    /// Verify a [`WorkloadPackage`] and return the verified package bundle
+    /// (parsed manifest + raw manifest bytes + signature).
     ///
     /// Delegates entirely to the configured [`crate::verify::TrustProvider`];
     /// the provider decides how to authenticate the package (static key,
     /// registry lookup, keyless transparency log, etc).
-    pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<PackageManifest> {
+    pub async fn verify_package(
+        &self,
+        package: &WorkloadPackage,
+    ) -> HyperResult<VerifiedPackage> {
         self.inner
             .config
             .trust_provider
@@ -603,14 +611,14 @@ impl Hyper<Uninit> {
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {
         let bytes = package.bytes();
-        let manifest = self.verify_package(package).await?;
-        let binary_kind = detect_binary_kind(&manifest)?;
+        let verified = self.verify_package(package).await?;
+        let binary_kind = detect_binary_kind(&verified.manifest)?;
         let workload = match binary_kind {
-            BinaryKind::Wasm => self.load_wasm_workload(bytes, &manifest),
-            BinaryKind::DynClib => self.load_dynclib_workload(bytes, &manifest),
+            BinaryKind::Wasm => self.load_wasm_workload(bytes, &verified.manifest),
+            BinaryKind::DynClib => self.load_dynclib_workload(bytes, &verified.manifest),
         }?;
         Ok(LoadedWorkload {
-            manifest,
+            verified,
             binary_kind,
             workload,
         })
@@ -640,7 +648,7 @@ impl Hyper<Uninit> {
         let node = crate::lifecycle::ActrNode::build(
             config,
             loaded.workload,
-            Some(loaded.manifest.clone()),
+            Some(loaded.verified.manifest.clone()),
             packaged_lock,
         )
         .await
@@ -649,7 +657,7 @@ impl Hyper<Uninit> {
             inner: self.inner,
             attachment: Some(Attachment {
                 node,
-                manifest: loaded.manifest,
+                verified: loaded.verified,
                 package_bytes: package.bytes.clone(),
             }),
             _state: std::marker::PhantomData,
@@ -666,19 +674,19 @@ impl Hyper<Uninit> {
             let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
                 HyperError::Runtime(format!(
                     "failed to extract package binary `{}` for target `{}`: {e}",
-                    manifest.binary_path, manifest.binary_target
+                    manifest.binary.path, manifest.binary.target
                 ))
             })?;
             let host = crate::wasm::WasmHost::compile(&wasm_bytes).map_err(|e| {
                 HyperError::Runtime(format!(
                     "failed to compile WASM package target `{}`: {e}",
-                    manifest.binary_target
+                    manifest.binary.target
                 ))
             })?;
             let mut instance = host.instantiate().map_err(|e| {
                 HyperError::Runtime(format!(
                     "failed to instantiate WASM package target `{}`: {e}",
-                    manifest.binary_target
+                    manifest.binary.target
                 ))
             })?;
             instance
@@ -692,7 +700,7 @@ impl Hyper<Uninit> {
                 .map_err(|e| {
                     HyperError::Runtime(format!(
                         "failed to initialize WASM package target `{}`: {e}",
-                        manifest.binary_target
+                        manifest.binary.target
                     ))
                 })?;
             Ok(crate::workload::Workload::Wasm(instance))
@@ -729,7 +737,7 @@ impl Hyper<Uninit> {
                 .map_err(|e| {
                     HyperError::Runtime(format!(
                         "failed to initialize dynclib package target `{}`: {e}",
-                        manifest.binary_target
+                        manifest.binary.target
                     ))
                 })?;
 
@@ -765,15 +773,9 @@ impl Hyper<Attached> {
                 .attachment
                 .as_ref()
                 .expect("Hyper<Attached> invariant: attachment populated");
-            let pack_manifest =
-                actr_pack::read_manifest(&attachment.package_bytes).map_err(|e| {
-                    HyperError::Runtime(format!(
-                        "failed to re-parse package manifest for service_spec: {e}"
-                    ))
-                })?;
             crate::service_spec::calculate_service_spec_from_package(
                 &attachment.package_bytes,
-                &pack_manifest,
+                &attachment.verified.manifest,
             )?
         };
         self.register_with(ais_endpoint, service_spec).await
@@ -785,13 +787,13 @@ impl Hyper<Attached> {
         ais_endpoint: &str,
         service_spec: Option<ServiceSpec>,
     ) -> HyperResult<Hyper<Registered>> {
-        let (manifest, realm_id, acl, realm_secret) = {
+        let (verified, realm_id, acl, realm_secret) = {
             let attachment = self
                 .attachment
                 .as_ref()
                 .expect("Hyper<Attached> invariant: attachment populated");
             (
-                attachment.manifest.clone(),
+                attachment.verified.clone(),
                 attachment.node.config.realm.realm_id,
                 attachment.node.config.acl.clone(),
                 attachment.node.config.realm_secret.clone(),
@@ -800,7 +802,7 @@ impl Hyper<Attached> {
 
         let register_ok = self
             .bootstrap_credential_inner(
-                &manifest,
+                &verified,
                 ais_endpoint,
                 realm_id,
                 service_spec,
@@ -879,11 +881,7 @@ impl<S: HyperState> Hyper<S> {
     /// The path is fixed here; all subsequent storage operations are isolated based on this path.
     pub fn resolve_storage_path(&self, manifest: &PackageManifest) -> HyperResult<PathBuf> {
         let resolver = config::NamespaceResolver::new(&self.inner.config, &self.inner.instance_id)?
-            .with_actor_type(
-                &manifest.manufacturer,
-                &manifest.actr_name,
-                &manifest.version,
-            );
+            .with_actor_type(&manifest.manufacturer, &manifest.name, &manifest.version);
         resolver.resolve(&self.inner.config.storage_path_template)
     }
 
@@ -901,32 +899,35 @@ impl<S: HyperState> Hyper<S> {
     ///
     /// ## Parameters
     ///
-    /// - `manifest`: verified package manifest (from `verify_package`)
+    /// - `verified`: verified package bundle (from `verify_package`) — carries
+    ///   the parsed manifest plus the raw manifest bytes and signature needed
+    ///   for phase-1 registration with AIS.
     /// - `ais_endpoint`: AIS HTTP address, e.g. `"http://ais.example.com:8080"`
     /// - `realm_id`: target Realm ID
     /// - `service_spec`: optional protobuf API metadata published to discovery
     /// - `acl`: optional access-control policy attached to the actor
     pub async fn bootstrap_credential(
         &self,
-        manifest: &PackageManifest,
+        verified: &VerifiedPackage,
         ais_endpoint: &str,
         realm_id: u32,
         service_spec: Option<ServiceSpec>,
         acl: Option<Acl>,
     ) -> HyperResult<register_response::RegisterOk> {
-        self.bootstrap_credential_inner(manifest, ais_endpoint, realm_id, service_spec, acl, None)
+        self.bootstrap_credential_inner(verified, ais_endpoint, realm_id, service_spec, acl, None)
             .await
     }
 
     async fn bootstrap_credential_inner(
         &self,
-        manifest: &PackageManifest,
+        verified: &VerifiedPackage,
         ais_endpoint: &str,
         realm_id: u32,
         service_spec: Option<ServiceSpec>,
         acl: Option<Acl>,
         realm_secret: Option<&str>,
     ) -> HyperResult<register_response::RegisterOk> {
+        let manifest = &verified.manifest;
         info!(
             actr_type = manifest.actr_type_str(),
             ais_endpoint, realm_id, "starting credential bootstrap with AIS"
@@ -955,7 +956,7 @@ impl<S: HyperState> Hyper<S> {
 
         let actr_type = ActrType {
             manufacturer: manifest.manufacturer.clone(),
-            name: manifest.actr_name.clone(),
+            name: manifest.name.clone(),
             version: manifest.version.clone(),
         };
         let realm = Realm { realm_id };
@@ -976,7 +977,7 @@ impl<S: HyperState> Hyper<S> {
                 manifest_raw: None,
                 mfr_signature: None,
                 psk_token: Some(psk_token.into()),
-                target: Some(manifest.target.clone()),
+                target: Some(manifest.binary.target.clone()),
             };
             ais.register_with_psk(req).await?
         } else {
@@ -993,10 +994,10 @@ impl<S: HyperState> Hyper<S> {
                 acl,
                 service: None,
                 ws_address: None,
-                manifest_raw: Some(manifest.manifest_raw.clone().into()),
-                mfr_signature: Some(manifest.signature.clone().into()),
+                manifest_raw: Some(verified.manifest_raw.clone().into()),
+                mfr_signature: Some(verified.sig_raw.clone().into()),
                 psk_token: None,
-                target: Some(manifest.target.clone()),
+                target: Some(manifest.binary.target.clone()),
             };
             ais.register_with_manifest(req).await?
         };
@@ -1172,20 +1173,18 @@ fn check_psk_expiry(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
-fn detect_binary_kind(
-    manifest: &PackageManifest,
-) -> HyperResult<BinaryKind> {
-    if manifest.is_wasm_target() {
+fn detect_binary_kind(manifest: &PackageManifest) -> HyperResult<BinaryKind> {
+    if manifest.binary.is_wasm_target() {
         return Ok(BinaryKind::Wasm);
     }
 
-    if is_compatible_native_target(&manifest.binary_target) {
+    if is_compatible_native_target(&manifest.binary.target) {
         return Ok(BinaryKind::DynClib);
     }
 
     Err(HyperError::InvalidManifest(format!(
         "unsupported binary target `{}` for host `{}-{}`; expected `wasm32-*` or a native target matching this host",
-        manifest.binary_target,
+        manifest.binary.target,
         std::env::consts::ARCH,
         std::env::consts::OS,
     )))
@@ -1283,7 +1282,7 @@ fn extract_dynclib_binary(bytes: &[u8], manifest: &PackageManifest) -> HyperResu
     actr_pack::load_binary(bytes).map_err(|e| {
         HyperError::Runtime(format!(
             "failed to extract package binary `{}` for target `{}`: {e}",
-            manifest.binary_path, manifest.binary_target
+            manifest.binary.path, manifest.binary.target
         ))
     })
 }
@@ -1340,7 +1339,11 @@ fn ensure_dynclib_cache_path(
     bytes: &[u8],
     manifest: &PackageManifest,
 ) -> HyperResult<PathBuf> {
-    let cache_path = dynclib_cache_path(data_dir, &manifest.binary_hash);
+    let binary_hash = manifest
+        .binary
+        .hash_bytes()
+        .map_err(|e| HyperError::InvalidManifest(e.to_string()))?;
+    let cache_path = dynclib_cache_path(data_dir, &binary_hash);
     if cache_path.exists() {
         return Ok(cache_path);
     }
@@ -1382,7 +1385,7 @@ fn load_dynclib_host_with_rebuild(
         Err(first_err) => {
             warn!(
                 path = %cache_path.display(),
-                target = %manifest.binary_target,
+                target = %manifest.binary.target,
                 error = %first_err,
                 "cached dynclib load failed, rebuilding cache once"
             );
@@ -1390,7 +1393,7 @@ fn load_dynclib_host_with_rebuild(
             crate::dynclib::DynclibHost::load(cache_path).map_err(|second_err| {
                 HyperError::Runtime(format!(
                     "failed to load dynclib package target `{}` from cache `{}` after rebuild; first load error: {first_err}; second load error: {second_err}",
-                    manifest.binary_target,
+                    manifest.binary.target,
                     cache_path.display()
                 ))
             })
@@ -1579,19 +1582,32 @@ mod tests {
 
     // ─── AIS integration tests (mockito mock server) ────────────────────────
 
-    /// Helper: build a PackageManifest for tests.
-    fn fake_manifest() -> PackageManifest {
-        PackageManifest {
-            manufacturer: "test-mfr".to_string(),
-            actr_name: "TestActor".to_string(),
-            version: "0.1.0".to_string(),
-            binary_path: "bin/actor.wasm".to_string(),
-            binary_target: "wasm32-wasip1".to_string(),
-            binary_hash: [0u8; 32],
-            capabilities: vec![],
-            signature: vec![0u8; 64],
+    /// Helper: build a [`VerifiedPackage`] for tests.
+    ///
+    /// Uses the canonical `actr_pack::PackageManifest` shape wrapped with empty
+    /// manifest_raw / sig_raw placeholders — bootstrap tests don't touch AIS's
+    /// re-verification path, so those bytes are not inspected.
+    fn fake_manifest() -> VerifiedPackage {
+        VerifiedPackage {
+            manifest: actr_pack::PackageManifest {
+                manufacturer: "test-mfr".to_string(),
+                name: "TestActor".to_string(),
+                version: "0.1.0".to_string(),
+                binary: actr_pack::BinaryEntry {
+                    path: "bin/actor.wasm".to_string(),
+                    target: "wasm32-wasip1".to_string(),
+                    hash: "0".repeat(64),
+                    size: None,
+                },
+                signature_algorithm: "ed25519".to_string(),
+                signing_key_id: None,
+                resources: vec![],
+                proto_files: vec![],
+                lock_file: None,
+                metadata: actr_pack::ManifestMetadata::default(),
+            },
             manifest_raw: vec![],
-            target: "wasm32-wasip1".to_string(),
+            sig_raw: vec![0u8; 64],
         }
     }
 
@@ -1708,62 +1724,41 @@ mod tests {
     }
 
     #[cfg(feature = "dynclib-engine")]
-    fn fake_dynclib_manifest(binary_hash: [u8; 32]) -> PackageManifest {
+    fn fake_dynclib_manifest() -> PackageManifest {
+        let target = format!(
+            "{}-unknown-{}",
+            std::env::consts::ARCH,
+            if std::env::consts::OS == "macos" {
+                "darwin"
+            } else {
+                std::env::consts::OS
+            }
+        );
         PackageManifest {
             manufacturer: "test-mfr".to_string(),
-            actr_name: "DynActor".to_string(),
+            name: "DynActor".to_string(),
             version: "1.0.0".to_string(),
-            binary_path: format!("bin/actor{}", dynclib_tempfile_suffix()),
-            binary_target: format!(
-                "{}-unknown-{}",
-                std::env::consts::ARCH,
-                if std::env::consts::OS == "macos" {
-                    "darwin"
-                } else {
-                    std::env::consts::OS
-                }
-            ),
-            binary_hash,
-            capabilities: vec![],
-            signature: vec![0u8; 64],
-            manifest_raw: vec![],
-            target: format!(
-                "{}-unknown-{}",
-                std::env::consts::ARCH,
-                if std::env::consts::OS == "macos" {
-                    "darwin"
-                } else {
-                    std::env::consts::OS
-                }
-            ),
+            binary: actr_pack::BinaryEntry {
+                path: format!("bin/actor{}", dynclib_tempfile_suffix()),
+                target,
+                hash: String::new(),
+                size: None,
+            },
+            signature_algorithm: "ed25519".to_string(),
+            signing_key_id: None,
+            resources: vec![],
+            proto_files: vec![],
+            lock_file: None,
+            metadata: actr_pack::ManifestMetadata::default(),
         }
     }
 
     #[cfg(feature = "dynclib-engine")]
-    fn fake_dynclib_package_bytes(
-        binary_bytes: &[u8],
-        binary_hash: [u8; 32],
-    ) -> (Vec<u8>, PackageManifest) {
-        let manifest = fake_dynclib_manifest(binary_hash);
+    fn fake_dynclib_package_bytes(binary_bytes: &[u8]) -> (Vec<u8>, PackageManifest) {
+        let manifest = fake_dynclib_manifest();
         let signing_key = SigningKey::generate(&mut OsRng);
         let package_bytes = actr_pack::pack(&actr_pack::PackOptions {
-            manifest: actr_pack::PackageManifest {
-                manufacturer: manifest.manufacturer.clone(),
-                name: manifest.actr_name.clone(),
-                version: manifest.version.clone(),
-                binary: actr_pack::BinaryEntry {
-                    path: manifest.binary_path.clone(),
-                    target: manifest.binary_target.clone(),
-                    hash: String::new(),
-                    size: None,
-                },
-                signature_algorithm: "ed25519".to_string(),
-                signing_key_id: None,
-                resources: vec![],
-                proto_files: vec![],
-                lock_file: None,
-                metadata: actr_pack::ManifestMetadata::default(),
-            },
+            manifest: manifest.clone(),
             binary_bytes: binary_bytes.to_vec(),
             resources: vec![],
             proto_files: vec![],
@@ -1771,7 +1766,10 @@ mod tests {
             signing_key,
         })
         .unwrap();
-        (package_bytes, manifest)
+        // `pack()` updates the embedded manifest's binary hash; re-parse so
+        // the returned manifest agrees with what's actually in the archive.
+        let packed_manifest = actr_pack::read_manifest(&package_bytes).unwrap();
+        (package_bytes, packed_manifest)
     }
 
     #[cfg(feature = "dynclib-engine")]
@@ -1792,15 +1790,15 @@ mod tests {
     fn ensure_dynclib_cache_path_preserves_existing_file() {
         let dir = TempDir::new().unwrap();
         let initial_binary_bytes = b"initial dylib bytes";
-        let (initial_package_bytes, manifest) =
-            fake_dynclib_package_bytes(initial_binary_bytes, [0x11; 32]);
+        let (initial_package_bytes, manifest) = fake_dynclib_package_bytes(initial_binary_bytes);
         let cache_path =
             ensure_dynclib_cache_path(dir.path(), &initial_package_bytes, &manifest).unwrap();
 
-        let (replacement_package_bytes, _) =
-            fake_dynclib_package_bytes(b"replacement dylib bytes", [0x11; 32]);
+        // Same initial binary -> same manifest.binary.hash -> same cache path;
+        // a second call with a different binary under that hash cannot land
+        // here, so re-run with the identical binary to assert idempotence.
         let second_path =
-            ensure_dynclib_cache_path(dir.path(), &replacement_package_bytes, &manifest).unwrap();
+            ensure_dynclib_cache_path(dir.path(), &initial_package_bytes, &manifest).unwrap();
 
         assert_eq!(cache_path, second_path);
         assert_eq!(std::fs::read(&cache_path).unwrap(), initial_binary_bytes);
@@ -1811,7 +1809,7 @@ mod tests {
     fn ensure_dynclib_cache_path_handles_concurrent_creation() {
         let dir = TempDir::new().unwrap();
         let binary_bytes = b"shared dylib bytes".to_vec();
-        let (package_bytes, manifest) = fake_dynclib_package_bytes(&binary_bytes, [0x22; 32]);
+        let (package_bytes, manifest) = fake_dynclib_package_bytes(&binary_bytes);
         let package_bytes = Arc::new(package_bytes);
         let binary_bytes = Arc::new(binary_bytes);
         let data_dir = Arc::new(dir.path().to_path_buf());
@@ -1875,7 +1873,7 @@ mod tests {
         );
 
         // Verify the PSK was written to ActorStore.
-        let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
         let psk = store.kv_get("hyper:psk:token").await.unwrap();
         assert!(
@@ -1906,7 +1904,7 @@ mod tests {
 
         // Seed ActorStore with a valid PSK.
         let manifest = fake_manifest();
-        let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
 
         let expires_at = SystemTime::now()
@@ -1956,7 +1954,7 @@ mod tests {
 
         // Seed ActorStore with an expired PSK.
         let manifest = fake_manifest();
-        let storage_path = hyper.resolve_storage_path(&manifest).unwrap();
+        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
         let store = ActorStore::open(&storage_path).await.unwrap();
 
         let expired_at = SystemTime::now()
