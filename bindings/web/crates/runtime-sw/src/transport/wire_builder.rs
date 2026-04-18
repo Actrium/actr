@@ -218,22 +218,18 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn test_create_connections_peer() {
+        // Dest::Peer no longer returns a WireHandle synchronously — the DOM side
+        // injects the WebRTC DataChannel asynchronously. Here we only verify
+        // that create_connections recorded the P2P creation request.
         let builder = WebWireBuilder::new();
         let dest = Dest::Peer("peer-123".to_string());
 
         let result = builder.create_connections(&dest).await;
         assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
 
-        let connections = result.unwrap();
-        assert_eq!(connections.len(), 1);
-
-        // Verify the expected fallback connection was created.
-        match &connections[0] {
-            WireHandle::WebSocket(ws) => {
-                assert_eq!(ws.url(), "wss://relay.example.com/peer/peer-123");
-            }
-            _ => panic!("Expected WebSocket connection"),
-        }
+        // Request counter should increment, indicating the DOM was dispatched to.
+        assert_eq!(*builder.request_counter.lock(), 1);
     }
 
     #[wasm_bindgen_test]
@@ -245,10 +241,11 @@ mod tests {
         assert!(result1.is_ok());
         assert_eq!(result1.unwrap().len(), 1);
 
+        // Dest::Peer returns no synchronous connections (see test_create_connections_peer).
         let dest2 = Dest::Peer("peer-456".to_string());
         let result2 = builder.create_connections(&dest2).await;
         assert!(result2.is_ok());
-        assert_eq!(result2.unwrap().len(), 1);
+        assert!(result2.unwrap().is_empty());
     }
 
     #[test]
