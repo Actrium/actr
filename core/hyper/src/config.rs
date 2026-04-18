@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::{HyperError, HyperResult};
@@ -39,7 +41,38 @@ pub struct HyperConfig {
     /// Construct via [`crate::verify::StaticTrust`], [`crate::verify::RegistryTrust`],
     /// or [`crate::verify::ChainTrust`] (or bring your own).
     pub trust_provider: Arc<dyn TrustProvider>,
+
+    /// How far in advance of expiry the framework should fire the
+    /// `on_credential_expiring` hook.
+    ///
+    /// Default: 5 minutes.
+    pub credential_expiry_warning: Duration,
+
+    /// Queue-length trip point for the `on_mailbox_backpressure` hook.
+    ///
+    /// When `Some(threshold)`, the hook fires once per incident as soon as
+    /// the mailbox queued-message count crosses `threshold`, and re-arms
+    /// once the queue falls back below. When `None`, a built-in default of
+    /// [`DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD`] messages is used. The
+    /// mailbox trait currently exposes `status()` which reports
+    /// queued_messages, so the polling-based implementation in
+    /// `lifecycle::node` works against any mailbox backend that supports
+    /// the base trait.
+    pub mailbox_backpressure_threshold: Option<usize>,
 }
+
+/// Default mailbox backpressure threshold (queued-message count).
+///
+/// Chosen conservatively — most actor-rtc workloads are below this in
+/// steady state, so a warning at this level means queue growth needs
+/// attention. Tune per-actor via
+/// [`HyperConfig::mailbox_backpressure_threshold`].
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD: usize = 1024;
+
+/// Default credential-expiry warning lead time.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_CREDENTIAL_EXPIRY_WARNING: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for HyperConfig {
@@ -48,6 +81,11 @@ impl std::fmt::Debug for HyperConfig {
             .field("data_dir", &self.data_dir)
             .field("storage_path_template", &self.storage_path_template)
             .field("trust_provider", &self.trust_provider)
+            .field("credential_expiry_warning", &self.credential_expiry_warning)
+            .field(
+                "mailbox_backpressure_threshold",
+                &self.mailbox_backpressure_threshold,
+            )
             .finish()
     }
 }
@@ -64,6 +102,8 @@ impl HyperConfig {
             data_dir: data_dir.as_ref().to_path_buf(),
             storage_path_template: DEFAULT_STORAGE_TEMPLATE.to_string(),
             trust_provider,
+            credential_expiry_warning: DEFAULT_CREDENTIAL_EXPIRY_WARNING,
+            mailbox_backpressure_threshold: None,
         }
     }
 
@@ -75,6 +115,27 @@ impl HyperConfig {
     pub fn with_trust_provider(mut self, trust_provider: Arc<dyn TrustProvider>) -> Self {
         self.trust_provider = trust_provider;
         self
+    }
+
+    /// Override the credential-expiry warning lead time.
+    pub fn with_credential_expiry_warning(mut self, window: Duration) -> Self {
+        self.credential_expiry_warning = window;
+        self
+    }
+
+    /// Set the mailbox backpressure threshold.
+    ///
+    /// See [`HyperConfig::mailbox_backpressure_threshold`] for semantics.
+    pub fn with_mailbox_backpressure_threshold(mut self, threshold: Option<usize>) -> Self {
+        self.mailbox_backpressure_threshold = threshold;
+        self
+    }
+
+    /// Resolve the active mailbox backpressure threshold — explicit
+    /// override or the built-in [`DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD`].
+    pub fn resolved_mailbox_backpressure_threshold(&self) -> usize {
+        self.mailbox_backpressure_threshold
+            .unwrap_or(DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD)
     }
 }
 

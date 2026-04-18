@@ -659,11 +659,19 @@ impl Hyper {
                 })
             })
             .transpose()?;
+        let mailbox_backpressure_threshold = self
+            .inner
+            .config
+            .resolved_mailbox_backpressure_threshold();
+        let credential_expiry_warning =
+            self.inner.config.credential_expiry_warning;
         let node_inner = crate::lifecycle::node::Inner::build(
             config,
             loaded.workload,
             Some(loaded.verified.manifest.clone()),
             packaged_lock,
+            mailbox_backpressure_threshold,
+            credential_expiry_warning,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;

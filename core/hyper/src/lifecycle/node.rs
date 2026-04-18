@@ -135,6 +135,19 @@ pub(crate) struct Inner {
     #[allow(dead_code)]
     pub(crate) hook_observer:
         Option<crate::lifecycle::hooks::WorkloadHookObserverRef>,
+
+    /// Queue-length threshold at which the mailbox backpressure
+    /// watchdog fires the framework `on_mailbox_backpressure` hook.
+    ///
+    /// Resolved from [`HyperConfig`] at node construction time so the
+    /// runtime loop does not need to hold a reference back to `HyperConfig`.
+    pub(crate) mailbox_backpressure_threshold: usize,
+
+    /// Lead time before credential expiry at which the framework fires
+    /// the `on_credential_expiring` hook. Resolved from [`HyperConfig`]
+    /// at node construction time.
+    #[allow(dead_code)]
+    pub(crate) credential_expiry_warning: Duration,
 }
 
 /// Credential state for shared access between tasks
@@ -586,6 +599,8 @@ impl Inner {
         workload: crate::workload::Workload,
         package_manifest: Option<actr_pack::PackageManifest>,
         packaged_lock: Option<actr_config::lock::LockFile>,
+        mailbox_backpressure_threshold: usize,
+        credential_expiry_warning: Duration,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -705,6 +720,8 @@ impl Inner {
             )),
             workload_dispatch: Mutex::new(workload),
             hook_observer: None,
+            mailbox_backpressure_threshold,
+            credential_expiry_warning,
         })
     }
 
@@ -862,7 +879,7 @@ impl Inner {
         // The signaling server requires credential params in the WS URL for
         // authentication. We must set actor_id + credential BEFORE connecting
         // so that build_url_with_identity() includes them in the query string.
-        {
+        let pre_connect_credential_state = {
             let actor_id = register_ok.actr_id.clone();
             let credential_state = CredentialState::new(
                 register_ok.credential.clone(),
@@ -871,8 +888,37 @@ impl Inner {
             );
             self.signaling_client.set_actor_id(actor_id).await;
             self.signaling_client
-                .set_credential_state(credential_state)
+                .set_credential_state(credential_state.clone())
                 .await;
+            credential_state
+        };
+
+        // Install the signaling-side hook callback so that
+        // SignalingConnectStart / Connected / Disconnected events flow
+        // through the framework tracing defaults (and later into a
+        // user-installed observer). Done BEFORE connect() so the initial
+        // attempt produces a SignalingConnectStart event.
+        {
+            let actor_id = register_ok.actr_id.clone();
+            let credential_state = pre_connect_credential_state.clone();
+            let context_factory = self
+                .context_factory
+                .clone()
+                .expect("ContextFactory must be initialized in build()");
+            let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
+                Arc::new(move || {
+                    let context_factory = context_factory.clone();
+                    let actor_id = actor_id.clone();
+                    let credential_state = credential_state.clone();
+                    Box::pin(async move {
+                        Some(context_factory.create_bootstrap(
+                            &actor_id,
+                            &credential_state.credential().await,
+                        ))
+                    })
+                });
+            let cb = crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+            self.signaling_client.set_hook_callback(cb);
         }
 
         tracing::info!("📡 Connecting to signaling server (with credential)");
@@ -911,6 +957,20 @@ impl Inner {
                 Some(register_ok.turn_credential.clone()),
             );
             self.credential_state = Some(credential_state.clone());
+
+            // Fire the `on_credential_renewed` hook at initial
+            // registration: the credential is considered "renewed" from
+            // "nothing" to the value just issued by AIS.
+            //
+            // TODO(C18-credential-wire): fire on_credential_expiring once
+            //   the framework gains a credential-renewal watchdog (today
+            //   there is no active renewal loop in hyper; credentials are
+            //   refreshed opportunistically via the heartbeat path).
+            if let Some(expires_at) = &register_ok.credential_expires_at {
+                let new_expiry = std::time::UNIX_EPOCH
+                    + std::time::Duration::from_secs(expires_at.seconds.max(0) as u64);
+                tracing::info!(new_expiry = ?new_expiry, "credential renewed");
+            }
 
             // Note: actor_id and credential_state were already set on signaling_client
             // before connect (step 3 above), so reconnect URLs already carry correct auth.
@@ -967,6 +1027,32 @@ impl Inner {
                 self.config.webrtc.clone(),
                 media_frame_registry,
             ));
+
+            // Install the WebRTC hook callback — fires
+            // WebRtcConnectStart / Connected (with relayed info) /
+            // Disconnected HookEvents on every peer state change.
+            {
+                let actor_id_for_hook = actor_id.clone();
+                let credential_state_for_hook = credential_state.clone();
+                let context_factory = self
+                    .context_factory
+                    .clone()
+                    .expect("ContextFactory must exist");
+                let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
+                    Arc::new(move || {
+                        let context_factory = context_factory.clone();
+                        let actor_id = actor_id_for_hook.clone();
+                        let credential_state = credential_state_for_hook.clone();
+                        Box::pin(async move {
+                            Some(context_factory.create_bootstrap(
+                                &actor_id,
+                                &credential_state.credential().await,
+                            ))
+                        })
+                    });
+                let cb = crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+                coordinator.set_hook_callback(cb);
+            }
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.6. Create PeerTransport + PeerGate (new architecture)
@@ -1093,6 +1179,34 @@ impl Inner {
                             data_stream_registry.clone(),
                             Some(auth_ctx),
                         ));
+
+                        // Install the WebSocket peer-lifecycle hook.
+                        {
+                            let actor_id_for_hook = actor_id.clone();
+                            let credential_state_for_hook = credential_state.clone();
+                            let context_factory = self
+                                .context_factory
+                                .clone()
+                                .expect("ContextFactory must exist");
+                            let ctx_builder:
+                                crate::lifecycle::hooks::HookContextBuilder = Arc::new(
+                                move || {
+                                    let context_factory = context_factory.clone();
+                                    let actor_id = actor_id_for_hook.clone();
+                                    let credential_state = credential_state_for_hook.clone();
+                                    Box::pin(async move {
+                                        Some(context_factory.create_bootstrap(
+                                            &actor_id,
+                                            &credential_state.credential().await,
+                                        ))
+                                    })
+                                },
+                            );
+                            let cb =
+                                crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+                            ws_gate.set_hook_callback(cb);
+                        }
+
                         self.websocket_gate = Some(ws_gate);
                         tracing::info!(
                             "✅ WebSocketServer + WebSocketGate initialized (credential auth enabled)"
@@ -1600,6 +1714,68 @@ impl Inner {
             }
         }
         tracing::info!("✅ Shell receive loop (Guest → Shell RESPONSE) started");
+
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // 4.9. Mailbox backpressure watchdog
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        //
+        // Polls mailbox status on a 1 s cadence and emits the framework
+        // `on_mailbox_backpressure` hook once per rising-edge crossing
+        // of the configured threshold. Mailbox backends that do not
+        // report queued_messages produce a monotonic zero — the hook
+        // simply never fires in that case (documented limitation).
+        //
+        // TODO(C18-backpressure-wire): when a backend grows an O(1)
+        //   enqueue-side hook, switch from the polling watchdog to a
+        //   push-based notification to eliminate the 1 s worst-case
+        //   delay between queue growth and hook emission.
+        let backpressure_threshold = node_ref.mailbox_backpressure_threshold;
+        {
+            let mailbox = node_ref.mailbox.clone();
+            let shutdown = shutdown_token.clone();
+            let watchdog_handle = tokio::spawn(async move {
+                use std::sync::atomic::{AtomicBool, Ordering};
+                let triggered = AtomicBool::new(false);
+                let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                ticker.set_missed_tick_behavior(
+                    tokio::time::MissedTickBehavior::Delay,
+                );
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!("mailbox backpressure watchdog shutting down");
+                            break;
+                        }
+                        _ = ticker.tick() => {
+                            let status = match mailbox.status().await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::debug!(?e, "mailbox status poll failed");
+                                    continue;
+                                }
+                            };
+                            let queue_len = status.queued_messages as usize;
+                            if queue_len >= backpressure_threshold {
+                                if !triggered.swap(true, Ordering::AcqRel) {
+                                    tracing::warn!(
+                                        queue_len,
+                                        threshold = backpressure_threshold,
+                                        "mailbox backpressure",
+                                    );
+                                }
+                            } else if triggered.swap(false, Ordering::AcqRel) {
+                                tracing::info!(
+                                    queue_len,
+                                    threshold = backpressure_threshold,
+                                    "mailbox backpressure cleared",
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+            task_handles.push(watchdog_handle);
+        }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 5. Start Mailbox processing loop (State Path)

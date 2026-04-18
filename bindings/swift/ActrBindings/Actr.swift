@@ -1469,13 +1469,21 @@ public func FfiConverterTypeContextBridge_lower(_ value: ContextBridge) -> UInt6
 
 
 /**
- * Dynamic workload that wraps a callback interface
+ * Dynamic workload composed of one mandatory [`WorkloadLifecycleBridge`]
+ * and up to five optional category observers.
+ *
+ * Categories left as `None` fall back to the framework's built-in tracing
+ * defaults when the hook fires.
  */
 public protocol DynamicWorkloadProtocol: AnyObject, Sendable {
     
 }
 /**
- * Dynamic workload that wraps a callback interface
+ * Dynamic workload composed of one mandatory [`WorkloadLifecycleBridge`]
+ * and up to five optional category observers.
+ *
+ * Categories left as `None` fall back to the framework's built-in tracing
+ * defaults when the hook fires.
  */
 open class DynamicWorkload: DynamicWorkloadProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1516,7 +1524,24 @@ open class DynamicWorkload: DynamicWorkloadProtocol, @unchecked Sendable {
     public func uniffiCloneHandle() -> UInt64 {
         return try! rustCall { uniffi_actr_fn_clone_dynamicworkload(self.handle, $0) }
     }
-    // No primary constructor declared for this class.
+    /**
+     * Construct a `DynamicWorkload` from a mandatory lifecycle bridge and
+     * a variadic set of optional per-category observers.
+     */
+public convenience init(lifecycle: WorkloadLifecycleBridge, signaling: SignalingObserverBridge?, websocket: WebSocketObserverBridge?, webrtc: WebRtcObserverBridge?, credential: CredentialObserverBridge?, mailbox: MailboxObserverBridge?) {
+    let handle =
+        try! rustCall() {
+    uniffi_actr_fn_constructor_dynamicworkload_new(
+        FfiConverterCallbackInterfaceWorkloadLifecycleBridge_lower(lifecycle),
+        FfiConverterOptionCallbackInterfaceSignalingObserverBridge.lower(signaling),
+        FfiConverterOptionCallbackInterfaceWebSocketObserverBridge.lower(websocket),
+        FfiConverterOptionCallbackInterfaceWebRtcObserverBridge.lower(webrtc),
+        FfiConverterOptionCallbackInterfaceCredentialObserverBridge.lower(credential),
+        FfiConverterOptionCallbackInterfaceMailboxObserverBridge.lower(mailbox),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
 
     deinit {
         try! rustCall { uniffi_actr_fn_free_dynamicworkload(handle, $0) }
@@ -2046,6 +2071,118 @@ public func FfiConverterTypeActrType_lower(_ value: ActrType) -> RustBuffer {
 
 
 /**
+ * Mailbox backpressure event.
+ */
+public struct BackpressureEventBridge: Equatable, Hashable {
+    public var queueLen: UInt64
+    public var threshold: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(queueLen: UInt64, threshold: UInt64) {
+        self.queueLen = queueLen
+        self.threshold = threshold
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension BackpressureEventBridge: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBackpressureEventBridge: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BackpressureEventBridge {
+        return
+            try BackpressureEventBridge(
+                queueLen: FfiConverterUInt64.read(from: &buf), 
+                threshold: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BackpressureEventBridge, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.queueLen, into: &buf)
+        FfiConverterUInt64.write(value.threshold, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackpressureEventBridge_lift(_ buf: RustBuffer) throws -> BackpressureEventBridge {
+    return try FfiConverterTypeBackpressureEventBridge.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBackpressureEventBridge_lower(_ value: BackpressureEventBridge) -> RustBuffer {
+    return FfiConverterTypeBackpressureEventBridge.lower(value)
+}
+
+
+/**
+ * Credential renewal / warning event.
+ */
+public struct CredentialEventBridge: Equatable, Hashable {
+    /**
+     * New credential expiry as milliseconds since UNIX epoch.
+     */
+    public var newExpiryMs: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * New credential expiry as milliseconds since UNIX epoch.
+         */newExpiryMs: Int64) {
+        self.newExpiryMs = newExpiryMs
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension CredentialEventBridge: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCredentialEventBridge: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CredentialEventBridge {
+        return
+            try CredentialEventBridge(
+                newExpiryMs: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CredentialEventBridge, into buf: inout [UInt8]) {
+        FfiConverterInt64.write(value.newExpiryMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialEventBridge_lift(_ buf: RustBuffer) throws -> CredentialEventBridge {
+    return try FfiConverterTypeCredentialEventBridge.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCredentialEventBridge_lower(_ value: CredentialEventBridge) -> RustBuffer {
+    return FfiConverterTypeCredentialEventBridge.lower(value)
+}
+
+
+/**
  * DataStream for fast-path data transmission
  *
  * Used for streaming application data (non-media):
@@ -2144,6 +2281,97 @@ public func FfiConverterTypeDataStream_lift(_ buf: RustBuffer) throws -> DataStr
 #endif
 public func FfiConverterTypeDataStream_lower(_ value: DataStream) -> RustBuffer {
     return FfiConverterTypeDataStream.lower(value)
+}
+
+
+/**
+ * FFI-shaped error event.
+ *
+ * `source` is the `Display` of the underlying [`actr_protocol::ActrError`]
+ * (the enum itself cannot cross UniFFI unchanged), and `timestamp_ms` is
+ * the wall-clock time encoded as milliseconds since the UNIX epoch.
+ */
+public struct ErrorEventBridge: Equatable, Hashable {
+    /**
+     * Stringified underlying error (see [`actr_protocol::ActrError`]).
+     */
+    public var source: String
+    /**
+     * Error-domain classification.
+     */
+    public var category: ErrorCategoryBridge
+    /**
+     * Free-form context (route key, handler name, stage).
+     */
+    public var context: String
+    /**
+     * Wall-clock timestamp (milliseconds since UNIX epoch).
+     */
+    public var timestampMs: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Stringified underlying error (see [`actr_protocol::ActrError`]).
+         */source: String, 
+        /**
+         * Error-domain classification.
+         */category: ErrorCategoryBridge, 
+        /**
+         * Free-form context (route key, handler name, stage).
+         */context: String, 
+        /**
+         * Wall-clock timestamp (milliseconds since UNIX epoch).
+         */timestampMs: Int64) {
+        self.source = source
+        self.category = category
+        self.context = context
+        self.timestampMs = timestampMs
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension ErrorEventBridge: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeErrorEventBridge: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorEventBridge {
+        return
+            try ErrorEventBridge(
+                source: FfiConverterString.read(from: &buf), 
+                category: FfiConverterTypeErrorCategoryBridge.read(from: &buf), 
+                context: FfiConverterString.read(from: &buf), 
+                timestampMs: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ErrorEventBridge, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterTypeErrorCategoryBridge.write(value.category, into: &buf)
+        FfiConverterString.write(value.context, into: &buf)
+        FfiConverterInt64.write(value.timestampMs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorEventBridge_lift(_ buf: RustBuffer) throws -> ErrorEventBridge {
+    return try FfiConverterTypeErrorEventBridge.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorEventBridge_lower(_ value: ErrorEventBridge) -> RustBuffer {
+    return FfiConverterTypeErrorEventBridge.lower(value)
 }
 
 
@@ -2325,6 +2553,75 @@ public func FfiConverterTypeNetworkEventResult_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeNetworkEventResult_lower(_ value: NetworkEventResult) -> RustBuffer {
     return FfiConverterTypeNetworkEventResult.lower(value)
+}
+
+
+/**
+ * Peer-scoped event payload (WebSocket / WebRTC).
+ */
+public struct PeerEventBridge: Equatable, Hashable {
+    /**
+     * Remote peer identity.
+     */
+    public var peer: ActrId
+    /**
+     * `Some(true)` for WebRTC TURN-relayed, `Some(false)` for direct P2P,
+     * `None` for WebSocket (not applicable).
+     */
+    public var relayed: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Remote peer identity.
+         */peer: ActrId, 
+        /**
+         * `Some(true)` for WebRTC TURN-relayed, `Some(false)` for direct P2P,
+         * `None` for WebSocket (not applicable).
+         */relayed: Bool?) {
+        self.peer = peer
+        self.relayed = relayed
+    }
+
+    
+}
+
+#if compiler(>=6)
+extension PeerEventBridge: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePeerEventBridge: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PeerEventBridge {
+        return
+            try PeerEventBridge(
+                peer: FfiConverterTypeActrId.read(from: &buf), 
+                relayed: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PeerEventBridge, into buf: inout [UInt8]) {
+        FfiConverterTypeActrId.write(value.peer, into: &buf)
+        FfiConverterOptionBool.write(value.relayed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePeerEventBridge_lift(_ buf: RustBuffer) throws -> PeerEventBridge {
+    return try FfiConverterTypePeerEventBridge.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePeerEventBridge_lower(_ value: PeerEventBridge) -> RustBuffer {
+    return FfiConverterTypePeerEventBridge.lower(value)
 }
 
 
@@ -2595,6 +2892,89 @@ public func FfiConverterTypeActrError_lower(_ value: ActrError) -> RustBuffer {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Coarse error-event classification mirror of
+ * [`actr_framework::ErrorCategory`].
+ */
+
+public enum ErrorCategoryBridge: Equatable, Hashable {
+    
+    case handlerPanic
+    case handlerError
+    case signalingFailure
+    case transportFailure
+
+
+
+}
+
+#if compiler(>=6)
+extension ErrorCategoryBridge: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
+    typealias SwiftType = ErrorCategoryBridge
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorCategoryBridge {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .handlerPanic
+        
+        case 2: return .handlerError
+        
+        case 3: return .signalingFailure
+        
+        case 4: return .transportFailure
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ErrorCategoryBridge, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .handlerPanic:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .handlerError:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .signalingFailure:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .transportFailure:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorCategoryBridge_lift(_ buf: RustBuffer) throws -> ErrorCategoryBridge {
+    return try FfiConverterTypeErrorCategoryBridge.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorCategoryBridge_lower(_ value: ErrorCategoryBridge) -> RustBuffer {
+    return FfiConverterTypeErrorCategoryBridge.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Media type for MediaTrack
  */
 
@@ -2846,6 +3226,195 @@ public func FfiConverterTypePayloadType_lower(_ value: PayloadType) -> RustBuffe
 
 
 /**
+ * Optional observer for credential lifecycle events.
+ */
+public protocol CredentialObserverBridge: AnyObject, Sendable {
+    
+    func onRenewed(ctx: ContextBridge, event: CredentialEventBridge) async 
+    
+    func onExpiring(ctx: ContextBridge, event: CredentialEventBridge) async 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceCredentialObserverBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceCredentialObserverBridge] = [UniffiVTableCallbackInterfaceCredentialObserverBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceCredentialObserverBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface CredentialObserverBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceCredentialObserverBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface CredentialObserverBridge: handle missing in uniffiClone")
+            }
+        },
+        onRenewed: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceCredentialObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onRenewed(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypeCredentialEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onExpiring: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceCredentialObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onExpiring(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypeCredentialEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitCredentialObserverBridge() {
+    uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(UniffiCallbackInterfaceCredentialObserverBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceCredentialObserverBridge {
+    fileprivate static let handleMap = UniffiHandleMap<CredentialObserverBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceCredentialObserverBridge : FfiConverter {
+    typealias SwiftType = CredentialObserverBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceCredentialObserverBridge_lift(_ handle: UInt64) throws -> CredentialObserverBridge {
+    return try FfiConverterCallbackInterfaceCredentialObserverBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceCredentialObserverBridge_lower(_ v: CredentialObserverBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceCredentialObserverBridge.lower(v)
+}
+
+
+
+
+/**
  * Callback interface for DataStream events.
  */
 public protocol DataStreamCallback: AnyObject, Sendable {
@@ -2989,6 +3558,151 @@ public func FfiConverterCallbackInterfaceDataStreamCallback_lift(_ handle: UInt6
 #endif
 public func FfiConverterCallbackInterfaceDataStreamCallback_lower(_ v: DataStreamCallback) -> UInt64 {
     return FfiConverterCallbackInterfaceDataStreamCallback.lower(v)
+}
+
+
+
+
+/**
+ * Optional observer for mailbox-backpressure events.
+ */
+public protocol MailboxObserverBridge: AnyObject, Sendable {
+    
+    func onBackpressure(ctx: ContextBridge, event: BackpressureEventBridge) async 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceMailboxObserverBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceMailboxObserverBridge] = [UniffiVTableCallbackInterfaceMailboxObserverBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceMailboxObserverBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface MailboxObserverBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceMailboxObserverBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface MailboxObserverBridge: handle missing in uniffiClone")
+            }
+        },
+        onBackpressure: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceMailboxObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onBackpressure(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypeBackpressureEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitMailboxObserverBridge() {
+    uniffi_actr_fn_init_callback_vtable_mailboxobserverbridge(UniffiCallbackInterfaceMailboxObserverBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceMailboxObserverBridge {
+    fileprivate static let handleMap = UniffiHandleMap<MailboxObserverBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceMailboxObserverBridge : FfiConverter {
+    typealias SwiftType = MailboxObserverBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMailboxObserverBridge_lift(_ handle: UInt64) throws -> MailboxObserverBridge {
+    return try FfiConverterCallbackInterfaceMailboxObserverBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceMailboxObserverBridge_lower(_ v: MailboxObserverBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceMailboxObserverBridge.lower(v)
 }
 
 
@@ -3143,36 +3857,730 @@ public func FfiConverterCallbackInterfaceMediaTrackCallback_lower(_ v: MediaTrac
 
 
 
-public protocol WorkloadBridge: AnyObject, Sendable {
+/**
+ * Optional observer for signaling-layer events.
+ */
+public protocol SignalingObserverBridge: AnyObject, Sendable {
+    
+    func onConnecting(ctx: ContextBridge?) async 
+    
+    func onConnected(ctx: ContextBridge?) async 
+    
+    func onDisconnected(ctx: ContextBridge) async 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceSignalingObserverBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceSignalingObserverBridge] = [UniffiVTableCallbackInterfaceSignalingObserverBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface SignalingObserverBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface SignalingObserverBridge: handle missing in uniffiClone")
+            }
+        },
+        onConnecting: { (
+            uniffiHandle: UInt64,
+            ctx: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnecting(
+                     ctx: try FfiConverterOptionTypeContextBridge.lift(ctx)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onConnected: { (
+            uniffiHandle: UInt64,
+            ctx: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnected(
+                     ctx: try FfiConverterOptionTypeContextBridge.lift(ctx)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onDisconnected: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onDisconnected(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitSignalingObserverBridge() {
+    uniffi_actr_fn_init_callback_vtable_signalingobserverbridge(UniffiCallbackInterfaceSignalingObserverBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceSignalingObserverBridge {
+    fileprivate static let handleMap = UniffiHandleMap<SignalingObserverBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceSignalingObserverBridge : FfiConverter {
+    typealias SwiftType = SignalingObserverBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceSignalingObserverBridge_lift(_ handle: UInt64) throws -> SignalingObserverBridge {
+    return try FfiConverterCallbackInterfaceSignalingObserverBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceSignalingObserverBridge_lower(_ v: SignalingObserverBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceSignalingObserverBridge.lower(v)
+}
+
+
+
+
+/**
+ * Optional observer for WebRTC P2P peer events.
+ */
+public protocol WebRtcObserverBridge: AnyObject, Sendable {
+    
+    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceWebRtcObserverBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceWebRtcObserverBridge] = [UniffiVTableCallbackInterfaceWebRtcObserverBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface WebRtcObserverBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface WebRtcObserverBridge: handle missing in uniffiClone")
+            }
+        },
+        onConnecting: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnecting(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onConnected: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnected(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onDisconnected: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onDisconnected(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitWebRtcObserverBridge() {
+    uniffi_actr_fn_init_callback_vtable_webrtcobserverbridge(UniffiCallbackInterfaceWebRtcObserverBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceWebRtcObserverBridge {
+    fileprivate static let handleMap = UniffiHandleMap<WebRtcObserverBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceWebRtcObserverBridge : FfiConverter {
+    typealias SwiftType = WebRtcObserverBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceWebRtcObserverBridge_lift(_ handle: UInt64) throws -> WebRtcObserverBridge {
+    return try FfiConverterCallbackInterfaceWebRtcObserverBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceWebRtcObserverBridge_lower(_ v: WebRtcObserverBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceWebRtcObserverBridge.lower(v)
+}
+
+
+
+
+/**
+ * Optional observer for WebSocket C/S peer events.
+ */
+public protocol WebSocketObserverBridge: AnyObject, Sendable {
+    
+    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async 
+    
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceWebSocketObserverBridge {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceWebSocketObserverBridge] = [UniffiVTableCallbackInterfaceWebSocketObserverBridge(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface WebSocketObserverBridge: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface WebSocketObserverBridge: handle missing in uniffiClone")
+            }
+        },
+        onConnecting: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnecting(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onConnected: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onConnected(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onDisconnected: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.onDisconnected(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypePeerEventBridge_lift(event)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )]
+}
+
+private func uniffiCallbackInitWebSocketObserverBridge() {
+    uniffi_actr_fn_init_callback_vtable_websocketobserverbridge(UniffiCallbackInterfaceWebSocketObserverBridge.vtable)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceWebSocketObserverBridge {
+    fileprivate static let handleMap = UniffiHandleMap<WebSocketObserverBridge>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceWebSocketObserverBridge : FfiConverter {
+    typealias SwiftType = WebSocketObserverBridge
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceWebSocketObserverBridge_lift(_ handle: UInt64) throws -> WebSocketObserverBridge {
+    return try FfiConverterCallbackInterfaceWebSocketObserverBridge.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceWebSocketObserverBridge_lower(_ v: WebSocketObserverBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceWebSocketObserverBridge.lower(v)
+}
+
+
+
+
+/**
+ * Required lifecycle + dispatch bridge.
+ *
+ * The foreign-language code supplies exactly one implementation of this
+ * interface. It handles the four fallible lifecycle hooks and the core
+ * `dispatch` entry point.
+ */
+public protocol WorkloadLifecycleBridge: AnyObject, Sendable {
     
     /**
-     * Lifecycle hook called when the workload starts
+     * Called when the node has started.
      */
     func onStart(ctx: ContextBridge) async throws 
     
     /**
-     * Lifecycle hook called when the workload stops
+     * Called when the node is ready to accept requests.
+     */
+    func onReady(ctx: ContextBridge) async throws 
+    
+    /**
+     * Called when the node receives a shutdown signal.
      */
     func onStop(ctx: ContextBridge) async throws 
     
     /**
-     * Dispatch an incoming RPC message
-     *
-     * This method is called when the workload receives an RPC message from
-     * the Shell (local application) side. The user **must** implement the
-     * message handling logic here and return the response bytes.
-     *
-     * This is similar to `MessageDispatcher::dispatch` in Rust - you receive
-     * the request, process it (e.g., forward to a remote server), and return
-     * the response.
-     *
-     * # Arguments
-     * - `ctx`: Context for making RPC calls to remote actors
-     * - `envelope`: The incoming RPC envelope containing route_key, payload, and request_id
-     *
-     * # Returns
-     * - Response bytes (protobuf encoded)
-
+     * Called when the framework catches a runtime error.
+     */
+    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws 
+    
+    /**
+     * Dispatch an incoming RPC message and return the response bytes.
      */
     func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws  -> Data
     
@@ -3180,26 +4588,26 @@ public protocol WorkloadBridge: AnyObject, Sendable {
 
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
-fileprivate struct UniffiCallbackInterfaceWorkloadBridge {
+fileprivate struct UniffiCallbackInterfaceWorkloadLifecycleBridge {
 
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
     // This creates 1-element array, since this seems to be the only way to construct a const
     // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWorkloadBridge] = [UniffiVTableCallbackInterfaceWorkloadBridge(
+    static let vtable: [UniffiVTableCallbackInterfaceWorkloadLifecycleBridge] = [UniffiVTableCallbackInterfaceWorkloadLifecycleBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
-                try FfiConverterCallbackInterfaceWorkloadBridge.handleMap.remove(handle: uniffiHandle)
+                try FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.remove(handle: uniffiHandle)
             } catch {
-                print("Uniffi callback interface WorkloadBridge: handle missing in uniffiFree")
+                print("Uniffi callback interface WorkloadLifecycleBridge: handle missing in uniffiFree")
             }
         },
         uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
             do {
-                return try FfiConverterCallbackInterfaceWorkloadBridge.handleMap.clone(handle: uniffiHandle)
+                return try FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.clone(handle: uniffiHandle)
             } catch {
-                fatalError("Uniffi callback interface WorkloadBridge: handle missing in uniffiClone")
+                fatalError("Uniffi callback interface WorkloadLifecycleBridge: handle missing in uniffiClone")
             }
         },
         onStart: { (
@@ -3211,10 +4619,51 @@ fileprivate struct UniffiCallbackInterfaceWorkloadBridge {
         ) in
             let makeCall = {
                 () async throws -> () in
-                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadBridge.handleMap.get(handle: uniffiHandle) else {
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.onStart(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeActrError_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onReady: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.onReady(
                      ctx: try FfiConverterTypeContextBridge_lift(ctx)
                 )
             }
@@ -3252,11 +4701,54 @@ fileprivate struct UniffiCallbackInterfaceWorkloadBridge {
         ) in
             let makeCall = {
                 () async throws -> () in
-                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadBridge.handleMap.get(handle: uniffiHandle) else {
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.onStop(
                      ctx: try FfiConverterTypeContextBridge_lift(ctx)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: ()) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultVoid(
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeActrError_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            ctx: UInt64,
+            event: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.onError(
+                     ctx: try FfiConverterTypeContextBridge_lift(ctx),
+                     event: try FfiConverterTypeErrorEventBridge_lift(event)
                 )
             }
 
@@ -3294,7 +4786,7 @@ fileprivate struct UniffiCallbackInterfaceWorkloadBridge {
         ) in
             let makeCall = {
                 () async throws -> Data in
-                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadBridge.handleMap.get(handle: uniffiHandle) else {
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.dispatch(
@@ -3332,23 +4824,23 @@ fileprivate struct UniffiCallbackInterfaceWorkloadBridge {
     )]
 }
 
-private func uniffiCallbackInitWorkloadBridge() {
-    uniffi_actr_fn_init_callback_vtable_workloadbridge(UniffiCallbackInterfaceWorkloadBridge.vtable)
+private func uniffiCallbackInitWorkloadLifecycleBridge() {
+    uniffi_actr_fn_init_callback_vtable_workloadlifecyclebridge(UniffiCallbackInterfaceWorkloadLifecycleBridge.vtable)
 }
 
 // FfiConverter protocol for callback interfaces
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterCallbackInterfaceWorkloadBridge {
-    fileprivate static let handleMap = UniffiHandleMap<WorkloadBridge>()
+fileprivate struct FfiConverterCallbackInterfaceWorkloadLifecycleBridge {
+    fileprivate static let handleMap = UniffiHandleMap<WorkloadLifecycleBridge>()
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-extension FfiConverterCallbackInterfaceWorkloadBridge : FfiConverter {
-    typealias SwiftType = WorkloadBridge
+extension FfiConverterCallbackInterfaceWorkloadLifecycleBridge : FfiConverter {
+    typealias SwiftType = WorkloadLifecycleBridge
     typealias FfiType = UInt64
 
 #if swift(>=5.8)
@@ -3385,15 +4877,15 @@ extension FfiConverterCallbackInterfaceWorkloadBridge : FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterCallbackInterfaceWorkloadBridge_lift(_ handle: UInt64) throws -> WorkloadBridge {
-    return try FfiConverterCallbackInterfaceWorkloadBridge.lift(handle)
+public func FfiConverterCallbackInterfaceWorkloadLifecycleBridge_lift(_ handle: UInt64) throws -> WorkloadLifecycleBridge {
+    return try FfiConverterCallbackInterfaceWorkloadLifecycleBridge.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterCallbackInterfaceWorkloadBridge_lower(_ v: WorkloadBridge) -> UInt64 {
-    return FfiConverterCallbackInterfaceWorkloadBridge.lower(v)
+public func FfiConverterCallbackInterfaceWorkloadLifecycleBridge_lower(_ v: WorkloadLifecycleBridge) -> UInt64 {
+    return FfiConverterCallbackInterfaceWorkloadLifecycleBridge.lower(v)
 }
 
 #if swift(>=5.8)
@@ -3423,6 +4915,30 @@ fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -3439,6 +4955,150 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeContextBridge: FfiConverterRustBuffer {
+    typealias SwiftType = ContextBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeContextBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeContextBridge.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceCredentialObserverBridge: FfiConverterRustBuffer {
+    typealias SwiftType = CredentialObserverBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceCredentialObserverBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceCredentialObserverBridge.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceMailboxObserverBridge: FfiConverterRustBuffer {
+    typealias SwiftType = MailboxObserverBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceMailboxObserverBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceMailboxObserverBridge.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceSignalingObserverBridge: FfiConverterRustBuffer {
+    typealias SwiftType = SignalingObserverBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceSignalingObserverBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceSignalingObserverBridge.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceWebRtcObserverBridge: FfiConverterRustBuffer {
+    typealias SwiftType = WebRtcObserverBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceWebRtcObserverBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceWebRtcObserverBridge.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionCallbackInterfaceWebSocketObserverBridge: FfiConverterRustBuffer {
+    typealias SwiftType = WebSocketObserverBridge?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterCallbackInterfaceWebSocketObserverBridge.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterCallbackInterfaceWebSocketObserverBridge.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -3759,28 +5419,78 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_constructor_opusencoder_new() != 55174) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_credentialobserverbridge_on_renewed() != 61692) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_credentialobserverbridge_on_expiring() != 27892) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_datastreamcallback_on_stream() != 55109) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure() != 10936) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 21659) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadbridge_on_start() != 1270) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connecting() != 34166) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadbridge_on_stop() != 37751) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connected() != 28379) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadbridge_dispatch() != 59525) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected() != 51944) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting() != 22166) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connected() != 48349) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected() != 30516) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connecting() != 42497) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connected() != 55245) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected() != 32252) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_start() != 1932) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready() != 16230) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop() != 46214) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_error() != 48035) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch() != 17123) {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitCredentialObserverBridge()
     uniffiCallbackInitDataStreamCallback()
+    uniffiCallbackInitMailboxObserverBridge()
     uniffiCallbackInitMediaTrackCallback()
-    uniffiCallbackInitWorkloadBridge()
+    uniffiCallbackInitSignalingObserverBridge()
+    uniffiCallbackInitWebRtcObserverBridge()
+    uniffiCallbackInitWebSocketObserverBridge()
+    uniffiCallbackInitWorkloadLifecycleBridge()
     return InitializationResult.ok
 }()
 

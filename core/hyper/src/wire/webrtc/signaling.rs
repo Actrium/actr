@@ -301,6 +301,15 @@ pub enum HookEvent {
     WebRtcConnectStart { peer_id: ActrId },
     WebRtcConnected { peer_id: ActrId, relayed: bool },
     WebRtcDisconnected { peer_id: ActrId },
+    // ── WebSocket C/S ──
+    WebSocketConnectStart { peer_id: ActrId },
+    WebSocketConnected { peer_id: ActrId },
+    WebSocketDisconnected { peer_id: ActrId },
+    // ── Credential ──
+    CredentialRenewed { new_expiry: std::time::SystemTime },
+    CredentialExpiring { new_expiry: std::time::SystemTime },
+    // ── Mailbox ──
+    MailboxBackpressure { queue_len: usize, threshold: usize },
 }
 
 /// Callback closure that is awaited when a hook event occurs.

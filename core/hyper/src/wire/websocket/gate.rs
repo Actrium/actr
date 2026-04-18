@@ -19,6 +19,7 @@ use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
+use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
@@ -28,7 +29,7 @@ use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 /// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
@@ -65,6 +66,10 @@ pub struct WebSocketGate {
 
     /// Inbound connection authentication context
     auth_ctx: Option<Arc<WsAuthContext>>,
+
+    /// Hook callback for WebSocket peer lifecycle events
+    /// (`WebSocketConnectStart` / `Connected` / `Disconnected`).
+    hook_callback: OnceLock<HookCallback>,
 }
 
 impl WebSocketGate {
@@ -86,7 +91,16 @@ impl WebSocketGate {
             pending_requests,
             data_stream_registry,
             auth_ctx: auth_ctx.map(Arc::new),
+            hook_callback: OnceLock::new(),
         }
+    }
+
+    /// Install the WebSocket peer-lifecycle hook callback.
+    ///
+    /// Idempotent: subsequent calls are silently ignored. Invoked once
+    /// during node startup.
+    pub fn set_hook_callback(&self, cb: HookCallback) {
+        let _ = self.hook_callback.set(cb);
     }
 
     /// Handle RpcEnvelope: Response wakes the waiting party, Request enqueues into Mailbox
@@ -258,7 +272,24 @@ impl WebSocketGate {
         pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
         mailbox: Arc<dyn Mailbox>,
+        hook_callback: Option<HookCallback>,
     ) {
+        // Fire `WebSocketConnected` for the peer once the connection is
+        // accepted. Decoding the peer `ActrId` may fail if the source-id
+        // header is malformed — in that case we skip hooks but still run
+        // the lane readers so that the connection can fail-fast on its
+        // own terms.
+        let peer_id = ActrId::decode(&source_id[..]).ok();
+        if let (Some(peer), Some(cb)) = (peer_id.clone(), hook_callback.clone()) {
+            let cb_for_connected = cb.clone();
+            tokio::spawn(async move {
+                cb_for_connected(HookEvent::WebSocketConnected { peer_id: peer }).await;
+            });
+        }
+
+        // Count active per-lane reader tasks. When the last one exits
+        // we fire `WebSocketDisconnected` exactly once.
+        let active_lanes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         // Spawn per-PayloadType receive tasks
         for pt in [
             PayloadType::RpcReliable,
@@ -271,6 +302,10 @@ impl WebSocketGate {
             let pending = pending_requests.clone();
             let registry = data_stream_registry.clone();
             let mb = mailbox.clone();
+            let active_lanes = active_lanes.clone();
+            let peer_id_for_lane = peer_id.clone();
+            let hook_cb_for_lane = hook_callback.clone();
+            active_lanes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
             tokio::spawn(async move {
                 // get_lane lazily creates the mpsc channel and registers in router
@@ -354,6 +389,16 @@ impl WebSocketGate {
                 }
 
                 tracing::debug!("📡 WS lane reader exited for {:?}", pt);
+
+                // Last lane out fires the disconnected hook exactly once.
+                let remaining = active_lanes
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+                    .saturating_sub(1);
+                if remaining == 0 {
+                    if let (Some(peer), Some(cb)) = (peer_id_for_lane, hook_cb_for_lane) {
+                        cb(HookEvent::WebSocketDisconnected { peer_id: peer }).await;
+                    }
+                }
             });
         }
     }
@@ -371,6 +416,7 @@ impl WebSocketGate {
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
         let auth_ctx = self.auth_ctx.clone();
+        let hook_cb = self.hook_callback.get().cloned();
 
         tokio::spawn(async move {
             tracing::info!("🚀 WebSocketGate receive loop started");
@@ -382,6 +428,22 @@ impl WebSocketGate {
                     source_id.len(),
                     credential_opt.is_some()
                 );
+
+                // Fire `WebSocketConnectStart` as soon as we observe an
+                // inbound connection, before verification — this mirrors
+                // how the WebRTC path emits `WebRtcConnectStart` before
+                // the selected ICE candidate pair is known.
+                if let (Some(cb), Ok(peer)) =
+                    (hook_cb.clone(), ActrId::decode(&source_id[..]))
+                {
+                    let peer_clone = peer.clone();
+                    tokio::spawn(async move {
+                        cb(HookEvent::WebSocketConnectStart {
+                            peer_id: peer_clone,
+                        })
+                        .await;
+                    });
+                }
 
                 // Credential verification (if auth_ctx is configured)
                 if let Some(ref ctx) = auth_ctx {
@@ -411,6 +473,7 @@ impl WebSocketGate {
                         pending_requests.clone(),
                         data_stream_registry.clone(),
                         mailbox.clone(),
+                        hook_cb.clone(),
                     );
                 } else {
                     tracing::error!(

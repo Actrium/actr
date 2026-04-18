@@ -21,6 +21,7 @@
 
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use actr_framework::{BackpressureEvent, CredentialEvent, ErrorEvent, PeerEvent};
@@ -28,6 +29,7 @@ use async_trait::async_trait;
 use futures_util::FutureExt as _;
 
 use crate::context::RuntimeContext;
+use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 
 /// Object-safe observer that mirrors the observation hooks defined on
 /// [`actr_framework::Workload`] but uses the concrete [`RuntimeContext`]
@@ -78,6 +80,16 @@ pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
 /// Shared observer handle held by the running node.
 pub(crate) type WorkloadHookObserverRef = Arc<dyn WorkloadHookObserver>;
 
+/// Future type produced by a [`HookContextBuilder`].
+pub(crate) type HookContextFut =
+    Pin<Box<dyn Future<Output = Option<RuntimeContext>> + Send>>;
+
+/// Lazy builder that produces a `RuntimeContext` (or `None`, when the node
+/// does not yet have an identity) used by hook callbacks to invoke the
+/// observer trait methods.
+pub(crate) type HookContextBuilder =
+    Arc<dyn Fn() -> HookContextFut + Send + Sync + 'static>;
+
 /// Run a workload-hook invocation in a detached task with panic isolation.
 ///
 /// Any panic raised by the observer is caught and logged at
@@ -111,6 +123,207 @@ fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
         s.clone()
     } else {
         "<non-string panic>".to_string()
+    }
+}
+
+/// Build a [`HookCallback`] that logs framework tracing defaults for every
+/// emitted [`HookEvent`] and, when an observer is installed, forwards the
+/// event into the observer with panic isolation (via `spawn_hook`).
+///
+/// The event-source wiring (`WebSocketSignalingClient`,
+/// `WebRtcCoordinator`, `WebSocketGate`, mailbox loop, credential flow)
+/// installs the returned closure via `set_hook_callback` so that every
+/// state change produces a structured tracing record at the appropriate
+/// level regardless of whether a user observer is plugged in.
+///
+/// `ctx_builder` lazily constructs the `RuntimeContext` needed by
+/// observer callbacks; for initial-connection signaling events (where the
+/// node has not yet acquired an identity) callers should return `None`.
+pub(crate) fn build_hook_callback(
+    observer: Option<WorkloadHookObserverRef>,
+    ctx_builder: HookContextBuilder,
+) -> HookCallback {
+    Arc::new(move |event: HookEvent| {
+        let observer = observer.clone();
+        let ctx_builder = ctx_builder.clone();
+        Box::pin(async move {
+            // Always log the framework tracing default for the event.
+            log_hook_event(&event);
+
+            // If an observer is installed, forward with panic isolation.
+            let Some(observer) = observer else {
+                return;
+            };
+
+            let ctx_opt = ctx_builder().await;
+
+            match event {
+                HookEvent::SignalingConnectStart { .. } => {
+                    let label = "on_signaling_connecting";
+                    let observer = observer.clone();
+                    spawn_hook(label, async move {
+                        observer.on_signaling_connecting(ctx_opt.as_ref()).await;
+                    });
+                }
+                HookEvent::SignalingConnected => {
+                    let label = "on_signaling_connected";
+                    let observer = observer.clone();
+                    spawn_hook(label, async move {
+                        observer.on_signaling_connected(ctx_opt.as_ref()).await;
+                    });
+                }
+                HookEvent::SignalingDisconnected => {
+                    let label = "on_signaling_disconnected";
+                    if let Some(ctx) = ctx_opt {
+                        let observer = observer.clone();
+                        spawn_hook(label, async move {
+                            observer.on_signaling_disconnected(&ctx).await;
+                        });
+                    }
+                }
+                HookEvent::WebRtcConnectStart { peer_id } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: None,
+                        };
+                        spawn_hook("on_webrtc_connecting", async move {
+                            observer.on_webrtc_connecting(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::WebRtcConnected { peer_id, relayed } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: Some(relayed),
+                        };
+                        spawn_hook("on_webrtc_connected", async move {
+                            observer.on_webrtc_connected(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::WebRtcDisconnected { peer_id } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: None,
+                        };
+                        spawn_hook("on_webrtc_disconnected", async move {
+                            observer.on_webrtc_disconnected(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::WebSocketConnectStart { peer_id } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: None,
+                        };
+                        spawn_hook("on_websocket_connecting", async move {
+                            observer.on_websocket_connecting(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::WebSocketConnected { peer_id } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: None,
+                        };
+                        spawn_hook("on_websocket_connected", async move {
+                            observer.on_websocket_connected(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::WebSocketDisconnected { peer_id } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = PeerEvent {
+                            peer: peer_id,
+                            relayed: None,
+                        };
+                        spawn_hook("on_websocket_disconnected", async move {
+                            observer.on_websocket_disconnected(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::CredentialRenewed { new_expiry } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = CredentialEvent { new_expiry };
+                        spawn_hook("on_credential_renewed", async move {
+                            observer.on_credential_renewed(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::CredentialExpiring { new_expiry } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = CredentialEvent { new_expiry };
+                        spawn_hook("on_credential_expiring", async move {
+                            observer.on_credential_expiring(&ctx, &event).await;
+                        });
+                    }
+                }
+                HookEvent::MailboxBackpressure {
+                    queue_len,
+                    threshold,
+                } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = BackpressureEvent {
+                            queue_len,
+                            threshold,
+                        };
+                        spawn_hook("on_mailbox_backpressure", async move {
+                            observer.on_mailbox_backpressure(&ctx, &event).await;
+                        });
+                    }
+                }
+            }
+        }) as Pin<Box<dyn Future<Output = ()> + Send>>
+    })
+}
+
+/// Emit the framework-default tracing record for a hook event.
+fn log_hook_event(event: &HookEvent) {
+    match event {
+        HookEvent::SignalingConnectStart { attempt } => {
+            tracing::debug!(attempt = *attempt, "signaling connecting");
+        }
+        HookEvent::SignalingConnected => tracing::info!("signaling connected"),
+        HookEvent::SignalingDisconnected => tracing::warn!("signaling disconnected"),
+        HookEvent::WebRtcConnectStart { peer_id } => {
+            tracing::debug!(peer = %peer_id, "webrtc connecting");
+        }
+        HookEvent::WebRtcConnected { peer_id, relayed } => {
+            tracing::info!(peer = %peer_id, relayed = *relayed, "webrtc connected");
+        }
+        HookEvent::WebRtcDisconnected { peer_id } => {
+            tracing::warn!(peer = %peer_id, "webrtc disconnected");
+        }
+        HookEvent::WebSocketConnectStart { peer_id } => {
+            tracing::debug!(peer = %peer_id, "websocket connecting");
+        }
+        HookEvent::WebSocketConnected { peer_id } => {
+            tracing::info!(peer = %peer_id, "websocket connected");
+        }
+        HookEvent::WebSocketDisconnected { peer_id } => {
+            tracing::warn!(peer = %peer_id, "websocket disconnected");
+        }
+        HookEvent::CredentialRenewed { new_expiry } => {
+            tracing::info!(new_expiry = ?new_expiry, "credential renewed");
+        }
+        HookEvent::CredentialExpiring { new_expiry } => {
+            tracing::warn!(new_expiry = ?new_expiry, "credential expiring soon");
+        }
+        HookEvent::MailboxBackpressure {
+            queue_len,
+            threshold,
+        } => {
+            tracing::warn!(
+                queue_len = *queue_len,
+                threshold = *threshold,
+                "mailbox backpressure",
+            );
+        }
     }
 }
 
