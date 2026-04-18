@@ -25,8 +25,8 @@ import kotlinx.coroutines.launch
  *     realm = 2281844430u,
  *     type = "acme:my-client"
  * )
- * val system = createActrSystem("actr.toml", "dist/app.actr")
- * val actrRef = system.start()
+ * val node = createActrNode("actr.toml", "dist/app.actr")
+ * val actrRef = node.start()
  *
  * // Discover and set target server before calling
  * val serverId = actrRef.discoverOne("acme:EchoService")

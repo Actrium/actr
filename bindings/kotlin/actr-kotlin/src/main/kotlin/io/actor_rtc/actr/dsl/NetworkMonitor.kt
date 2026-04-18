@@ -40,7 +40,7 @@ import kotlinx.coroutines.launch
  * 4. Manual check: triggerNetworkCheck()
  * 5. Get status: getCurrentNetworkStatus()
  *
- * Integration with ActrSystem:
+ * Integration with ActrNode:
  * ```kotlin
  * val networkMonitor = NetworkMonitor.create(context, lifecycleScope) { system }
  * networkMonitor.startMonitoring()
@@ -61,33 +61,33 @@ class NetworkMonitor(
         private const val TAG = "NetworkMonitor"
 
         /**
-         * Create a NetworkMonitor integrated with ActrSystem
+         * Create a NetworkMonitor integrated with ActrNode
          *
-         * This factory method automatically forwards network events to ActrSystem's NetworkEventHandle,
+         * This factory method automatically forwards network events to ActrNode's NetworkEventHandle,
          * so users don't need to handle network events manually.
          *
          * @param context Android Context
          * @param scope CoroutineScope, typically use lifecycleScope
-         * @param getSystem Function to get ActrSystem instance (may return null, e.g. before initialization)
+         * @param getSystem Function to get ActrNode instance (may return null, e.g. before initialization)
          * @param onNetworkStatusLog Optional log callback to display network status changes
          * @return NetworkMonitor instance
          *
          * Example:
          * ```kotlin
-         * var system: ActrSystem? = null
+         * var system: ActrNode? = null
          * val monitor = NetworkMonitor.create(this, lifecycleScope, { system }) { msg ->
          *     Log.d("App", msg)
          * }
          * monitor.startMonitoring()
          *
          * // Initialize system later
-         * system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
+         * system = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
          * ```
          */
         fun create(
                 context: Context,
                 scope: CoroutineScope,
-                getSystem: () -> ActrSystem?,
+                getSystem: () -> ActrNode?,
                 onNetworkStatusLog: ((String) -> Unit)? = null
         ): NetworkMonitor {
             return NetworkMonitor(
@@ -145,7 +145,7 @@ class NetworkMonitor(
         }
 
         private suspend fun handleNetworkTypeChangedInternal(
-                getSystem: () -> ActrSystem?,
+                getSystem: () -> ActrNode?,
                 isWifi: Boolean,
                 isCellular: Boolean,
                 @Suppress("UNUSED_PARAMETER") isVpn: Boolean,
@@ -153,7 +153,7 @@ class NetworkMonitor(
         ) {
             val system = getSystem()
             if (system == null) {
-                Log.d(TAG, "ActrSystem not available, skipping network type changed event")
+                Log.d(TAG, "ActrNode not available, skipping network type changed event")
                 return
             }
 
@@ -181,12 +181,12 @@ class NetworkMonitor(
         }
 
         private suspend fun handleNetworkAvailableInternal(
-                getSystem: () -> ActrSystem?,
+                getSystem: () -> ActrNode?,
                 onLog: ((String) -> Unit)?
         ) {
             val system = getSystem()
             if (system == null) {
-                Log.d(TAG, "ActrSystem not available, skipping network available event")
+                Log.d(TAG, "ActrNode not available, skipping network available event")
                 return
             }
 
@@ -209,12 +209,12 @@ class NetworkMonitor(
         }
 
         private suspend fun handleNetworkLostInternal(
-                getSystem: () -> ActrSystem?,
+                getSystem: () -> ActrNode?,
                 onLog: ((String) -> Unit)?
         ) {
             val system = getSystem()
             if (system == null) {
-                Log.d(TAG, "ActrSystem not available, skipping network lost event")
+                Log.d(TAG, "ActrNode not available, skipping network lost event")
                 return
             }
 

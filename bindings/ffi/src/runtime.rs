@@ -13,13 +13,13 @@ use tracing::{debug, error, info};
 
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
-pub struct ActrSystemWrapper {
+pub struct ActrNode {
     inner: Mutex<Option<Hyper<Registered>>>,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
 }
 
 #[uniffi::export]
-impl ActrSystemWrapper {
+impl ActrNode {
     /// Create a new runtime wrapper from config and a verified `.actr` package file.
     #[uniffi::constructor(async_runtime = "tokio")]
     pub async fn new_from_package_file(
@@ -140,7 +140,7 @@ impl ActrSystemWrapper {
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl ActrSystemWrapper {
+impl ActrNode {
     /// Start the package-backed node and return a running actor reference.
     pub async fn start(self: Arc<Self>) -> ActrResult<Arc<ActrRefWrapper>> {
         let hyper = self
@@ -148,7 +148,7 @@ impl ActrSystemWrapper {
             .lock()
             .take()
             .ok_or_else(|| ActrError::StateError {
-                msg: "ActrSystem already started".to_string(),
+                msg: "ActrNode already started".to_string(),
             })?;
 
         let actr_ref = hyper.start().await.map_err(|e| {

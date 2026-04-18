@@ -390,7 +390,7 @@ if grep -q "Received frame" "$LOG_DIR/actr-b.log"; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   • Real ActrSystem lifecycle"
+    echo "   • Real ActrNode lifecycle"
     echo "   • Real WebRTC P2P connection establishment"
     echo "   • Real RPC message routing and dispatch"
     echo "   • Real protobuf encode/decode"

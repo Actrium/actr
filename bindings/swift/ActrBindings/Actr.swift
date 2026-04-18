@@ -608,6 +608,176 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * Wrapper for a package-backed runtime before startup.
+ */
+public protocol ActrNodeProtocol: AnyObject, Sendable {
+    
+    /**
+     * Create a network event handle for platform callbacks.
+     *
+     * This must be called before `start()`.
+     */
+    func createNetworkEventHandle() throws  -> NetworkEventHandleWrapper
+    
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+    func start() async throws  -> ActrRefWrapper
+    
+}
+/**
+ * Wrapper for a package-backed runtime before startup.
+ */
+open class ActrNode: ActrNodeProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_actr_fn_clone_actrnode(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        try! rustCall { uniffi_actr_fn_free_actrnode(handle, $0) }
+    }
+
+    
+    /**
+     * Create a new runtime wrapper from config and a verified `.actr` package file.
+     */
+public static func newFromPackageFile(configPath: String, packagePath: String)async throws  -> ActrNode  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_constructor_actrnode_new_from_package_file(FfiConverterString.lower(configPath),FfiConverterString.lower(packagePath)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_u64,
+            completeFunc: ffi_actr_rust_future_complete_u64,
+            freeFunc: ffi_actr_rust_future_free_u64,
+            liftFunc: FfiConverterTypeActrNode_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+
+    
+    /**
+     * Create a network event handle for platform callbacks.
+     *
+     * This must be called before `start()`.
+     */
+open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
+    return try  FfiConverterTypeNetworkEventHandleWrapper_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_method_actrnode_create_network_event_handle(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Start the package-backed node and return a running actor reference.
+     */
+open func start()async throws  -> ActrRefWrapper  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_actrnode_start(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_u64,
+            completeFunc: ffi_actr_rust_future_complete_u64,
+            freeFunc: ffi_actr_rust_future_free_u64,
+            liftFunc: FfiConverterTypeActrRefWrapper_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeActrNode: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = ActrNode
+
+    public static func lift(_ handle: UInt64) throws -> ActrNode {
+        return ActrNode(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: ActrNode) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActrNode {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: ActrNode, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActrNode_lift(_ handle: UInt64) throws -> ActrNode {
+    return try FfiConverterTypeActrNode.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActrNode_lower(_ value: ActrNode) -> UInt64 {
+    return FfiConverterTypeActrNode.lower(value)
+}
+
+
+
+
+
+
+/**
  * Wrapper for a running actor reference.
  */
 public protocol ActrRefWrapperProtocol: AnyObject, Sendable {
@@ -855,176 +1025,6 @@ public func FfiConverterTypeActrRefWrapper_lift(_ handle: UInt64) throws -> Actr
 #endif
 public func FfiConverterTypeActrRefWrapper_lower(_ value: ActrRefWrapper) -> UInt64 {
     return FfiConverterTypeActrRefWrapper.lower(value)
-}
-
-
-
-
-
-
-/**
- * Wrapper for a package-backed runtime before startup.
- */
-public protocol ActrSystemWrapperProtocol: AnyObject, Sendable {
-    
-    /**
-     * Create a network event handle for platform callbacks.
-     *
-     * This must be called before `start()`.
-     */
-    func createNetworkEventHandle() throws  -> NetworkEventHandleWrapper
-    
-    /**
-     * Start the package-backed node and return a running actor reference.
-     */
-    func start() async throws  -> ActrRefWrapper
-    
-}
-/**
- * Wrapper for a package-backed runtime before startup.
- */
-open class ActrSystemWrapper: ActrSystemWrapperProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_actr_fn_clone_actrsystemwrapper(self.handle, $0) }
-    }
-    // No primary constructor declared for this class.
-
-    deinit {
-        try! rustCall { uniffi_actr_fn_free_actrsystemwrapper(handle, $0) }
-    }
-
-    
-    /**
-     * Create a new runtime wrapper from config and a verified `.actr` package file.
-     */
-public static func newFromPackageFile(configPath: String, packagePath: String)async throws  -> ActrSystemWrapper  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_constructor_actrsystemwrapper_new_from_package_file(FfiConverterString.lower(configPath),FfiConverterString.lower(packagePath)
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_u64,
-            completeFunc: ffi_actr_rust_future_complete_u64,
-            freeFunc: ffi_actr_rust_future_free_u64,
-            liftFunc: FfiConverterTypeActrSystemWrapper_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-
-    
-    /**
-     * Create a network event handle for platform callbacks.
-     *
-     * This must be called before `start()`.
-     */
-open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
-    return try  FfiConverterTypeNetworkEventHandleWrapper_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
-    uniffi_actr_fn_method_actrsystemwrapper_create_network_event_handle(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-    
-    /**
-     * Start the package-backed node and return a running actor reference.
-     */
-open func start()async throws  -> ActrRefWrapper  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_actrsystemwrapper_start(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_u64,
-            completeFunc: ffi_actr_rust_future_complete_u64,
-            freeFunc: ffi_actr_rust_future_free_u64,
-            liftFunc: FfiConverterTypeActrRefWrapper_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeActrSystemWrapper: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = ActrSystemWrapper
-
-    public static func lift(_ handle: UInt64) throws -> ActrSystemWrapper {
-        return ActrSystemWrapper(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: ActrSystemWrapper) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ActrSystemWrapper {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: ActrSystemWrapper, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeActrSystemWrapper_lift(_ handle: UInt64) throws -> ActrSystemWrapper {
-    return try FfiConverterTypeActrSystemWrapper.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeActrSystemWrapper_lower(_ value: ActrSystemWrapper) -> UInt64 {
-    return FfiConverterTypeActrSystemWrapper.lower(value)
 }
 
 
@@ -3678,6 +3678,12 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 48586) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_actrnode_start() != 52376) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 17890) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3697,12 +3703,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 46357) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle() != 55879) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_actr_checksum_method_actrsystemwrapper_start() != 10490) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
@@ -3756,7 +3756,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_opusencoder_frame_size() != 61591) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_package_file() != 20734) {
+    if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_constructor_opusencoder_new() != 55174) {

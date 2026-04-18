@@ -8,26 +8,26 @@ import UIKit
 import AppKit
 #endif
 
-/// A high-level entry point for creating and starting a package-backed ACTR system.
-public final class ActrSystem: Sendable {
-    private let inner: ActrSystemWrapper
+/// A high-level entry point for creating and starting a package-backed ACTR node.
+public final class ActrNode: Sendable {
+    private let inner: ActrBindings.ActrNode
     private let networkEventMonitor: NetworkEventMonitor
     private let appLifecycleMonitor: AppLifecycleMonitor
 
-    /// Creates a package-backed system from config and package file paths.
-    public static func from(packageConfig configPath: String, packagePath: String) async throws -> ActrSystem {
-        let wrapper = try await ActrSystemWrapper.newFromPackageFile(
+    /// Creates a package-backed node from config and package file paths.
+    public static func from(packageConfig configPath: String, packagePath: String) async throws -> ActrNode {
+        let wrapper = try await ActrBindings.ActrNode.newFromPackageFile(
             configPath: configPath,
             packagePath: packagePath
         )
         let handle = try wrapper.createNetworkEventHandle()
         let monitor = NetworkEventMonitor(handle: handle)
         let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
-        return ActrSystem(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
+        return ActrNode(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
     }
 
-    /// Creates a package-backed system from config and package file URLs.
-    public static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrSystem {
+    /// Creates a package-backed node from config and package file URLs.
+    public static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrNode {
         guard configURL.isFileURL else {
             throw ActrError.ConfigError(msg: "packageConfig URL must be a file URL")
         }
@@ -43,7 +43,7 @@ public final class ActrSystem: Sendable {
         return ActrRef(inner: refWrapper)
     }
 
-    fileprivate init(inner: ActrSystemWrapper, networkEventMonitor: NetworkEventMonitor, appLifecycleMonitor: AppLifecycleMonitor) {
+    fileprivate init(inner: ActrBindings.ActrNode, networkEventMonitor: NetworkEventMonitor, appLifecycleMonitor: AppLifecycleMonitor) {
         self.inner = inner
         self.networkEventMonitor = networkEventMonitor
         self.appLifecycleMonitor = appLifecycleMonitor

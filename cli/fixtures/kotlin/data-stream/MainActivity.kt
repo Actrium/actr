@@ -96,8 +96,8 @@ class MainActivity : AppCompatActivity() {
 
                 val packagePath = copyFirstPackageAssetToInternalStorage()
 
-                // Create ActrSystem with config + package and start it
-                val system = createActrSystem(configPath, packagePath)
+                // Create ActrNode with config + package and start it
+                val system = createActrNode(configPath, packagePath)
                 val ref = system.start()
                 clientRef = ref
 

@@ -986,8 +986,8 @@ import io.actor_rtc.actr.WorkloadBridge
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val system = createActrSystem(configPath, packagePath)
- * val actrRef = system.start()
+ * val node = createActrNode(configPath, packagePath)
+ * val actrRef = node.start()
  *
  * // Wait for remote service discovery
  * delay(2000)

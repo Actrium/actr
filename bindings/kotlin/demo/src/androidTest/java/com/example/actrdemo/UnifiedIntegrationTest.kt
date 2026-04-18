@@ -126,7 +126,7 @@ class UnifiedIntegrationTest {
         var clientRef: ActrRef? = null
 
         try {
-            val clientSystem = createActrSystem(clientConfigPath, packagePath)
+            val clientSystem = createActrNode(clientConfigPath, packagePath)
             clientRef = clientSystem.start()
             Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
 

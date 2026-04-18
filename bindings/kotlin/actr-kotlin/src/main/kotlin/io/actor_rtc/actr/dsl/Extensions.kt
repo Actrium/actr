@@ -249,14 +249,14 @@ suspend fun <T> withRetry(
  *
  * Example:
  * ```kotlin
- * system.withStartedActor { ref ->
+ * node.withStartedActor { ref ->
  *     val target = ref.discoverOne("acme:EchoService")
  *     ref.call("echo.EchoService.Echo", payload)
  * }
  * // Actor is automatically shut down after the block
  * ```
  */
-suspend fun <T> ActrSystem.withStartedActor(block: suspend (ActrRef) -> T): T {
+suspend fun <T> ActrNode.withStartedActor(block: suspend (ActrRef) -> T): T {
     val ref = start()
     return try {
         block(ref)

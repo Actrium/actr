@@ -15,18 +15,18 @@ The Low Level API is located in the `Actr` module and consists of UniFFI-generat
 
 ### Core Wrapper Types
 
-#### `ActrSystemWrapper`
+#### `ActrNode` (low-level, from `ActrBindings`)
 
-System-level wrapper for creating and starting package-backed ACTR systems.
+Node-level wrapper for creating and starting package-backed ACTR nodes.
 
 **Methods:**
 
-- `static func newFromPackageFile(configPath: String, packagePath: String) async throws -> ActrSystemWrapper`
-  - Creates a new ACTR system from a TOML configuration file and a `.actr` package file
+- `static func newFromPackageFile(configPath: String, packagePath: String) async throws -> ActrNode`
+  - Creates a new ACTR node from a TOML configuration file and a `.actr` package file
   - **Parameters:**
     - `configPath`: Path to the TOML configuration file
     - `packagePath`: Path to the `.actr` package file
-  - **Returns:** An `ActrSystemWrapper` instance
+  - **Returns:** An `ActrNode` instance (low-level `ActrBindings.ActrNode`)
   - **Throws:** `ActrError.ConfigError` if the configuration is invalid
 
 - `func createNetworkEventHandle() throws -> NetworkEventHandleWrapper`
@@ -245,26 +245,26 @@ The High Level API is located in the `Actr` module and provides Swift-friendly w
 
 ### Core Types
 
-#### `ActrSystem`
+#### `ActrNode`
 
-High-level entry point for creating and starting a package-backed ACTR system. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
+High-level entry point for creating and starting a package-backed ACTR node. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
 
 **Methods:**
 
-- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrSystem`
-  - Creates a system from a TOML config file path and `.actr` package path
+- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrNode`
+  - Creates a node from a TOML config file path and `.actr` package path
   - **Parameters:**
     - `path`: Path to the TOML configuration file
     - `packagePath`: Path to the `.actr` package file
-  - **Returns:** An `ActrSystem` instance
+  - **Returns:** An `ActrNode` instance
   - **Throws:** `ActrError.ConfigError` if the configuration is invalid
 
-- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrSystem`
-  - Creates a system from TOML config and `.actr` package URLs
+- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrNode`
+  - Creates a node from TOML config and `.actr` package URLs
   - **Parameters:**
     - `configURL`: File URL to the TOML configuration file
     - `packageURL`: File URL to the `.actr` package file
-  - **Returns:** An `ActrSystem` instance
+  - **Returns:** An `ActrNode` instance
   - **Throws:** `ActrError.ConfigError` if the URL is not a file URL or configuration is invalid
 
 - `func start() async throws -> ActrRef`
@@ -362,14 +362,14 @@ The following types are available in the `Actr` module:
 import Actr
 import SwiftProtobuf
 
-// Create system from config + package
-let system = try await ActrSystem.from(
+// Create node from config + package
+let node = try await ActrNode.from(
     packageConfig: "/path/to/config.toml",
     packagePath: "/path/to/app.actr"
 )
 
 // Start the package-backed actor
-let actrRef = try await system.start()
+let actrRef = try await node.start()
 
 // Type-safe RPC call with Protobuf
 let request = EchoRequest.with { $0.message = "Hello" }
@@ -387,15 +387,16 @@ await actrRef.stop()
 
 ```swift
 import Actr
+import ActrBindings
 
-// Create system
-let systemWrapper = try await ActrSystemWrapper.newFromPackageFile(
+// Create node (low-level wrapper)
+let node = try await ActrBindings.ActrNode.newFromPackageFile(
     configPath: "/path/to/config.toml",
     packagePath: "/path/to/app.actr"
 )
 
 // Start actor
-let refWrapper = try await systemWrapper.start()
+let refWrapper = try await node.start()
 
 // Raw RPC call with Data
 let requestData = try request.serializedData()

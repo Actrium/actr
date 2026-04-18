@@ -9,11 +9,10 @@ import Foundation
 import SwiftProtobuf
 
 // Re-export core wrapper types used by the high-level API
-public typealias ActrSystemWrapper = ActrBindings.ActrSystemWrapper
 public typealias ActrRefWrapper = ActrBindings.ActrRefWrapper
 public typealias NetworkEventHandleWrapper = ActrBindings.NetworkEventHandleWrapper
 
-// Observability is automatically initialized when creating ActrSystem from a config file.
+// Observability is automatically initialized when creating ActrNode from a config file.
 
 // Re-export error types
 public typealias ActrError = ActrBindings.ActrError

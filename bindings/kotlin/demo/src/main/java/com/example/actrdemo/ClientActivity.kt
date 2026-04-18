@@ -40,9 +40,9 @@ class ClientActivity : AppCompatActivity() {
 
     // Actor-RTC components
     private var clientRef: ActrRef? = null
-    private var clientSystem: ActrSystem? = null
+    private var clientSystem: ActrNode? = null
 
-    // Network monitoring - uses library's NetworkMonitor with automatic ActrSystem integration
+    // Network monitoring - uses library's NetworkMonitor with automatic ActrNode integration
     private lateinit var networkMonitor: NetworkMonitor
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,12 +58,12 @@ class ClientActivity : AppCompatActivity() {
 
     private fun initNetworkMonitoring() {
         // Use the library's NetworkMonitor.create() factory method
-        // It automatically integrates with ActrSystem and handles network events
+        // It automatically integrates with ActrNode and handles network events
         networkMonitor =
                 NetworkMonitor.create(
                         context = this,
                         scope = lifecycleScope,
-                        getSystem = { clientSystem }, // Lazy reference to ActrSystem
+                        getSystem = { clientSystem }, // Lazy reference to ActrNode
                         onNetworkStatusLog = { message ->
                             // Update UI with network status changes (runs on IO thread)
                             lifecycleScope.launch(Dispatchers.Main) { log(message) }
@@ -135,10 +135,10 @@ class ClientActivity : AppCompatActivity() {
                 val packagePath = copyFirstPackageAssetToInternalStorage()
                 Log.i(TAG, "Config path: $configPath")
 
-                // Create ActrSystem
-                val clientSystem = createActrSystem(configPath, packagePath)
+                // Create ActrNode
+                val clientSystem = createActrNode(configPath, packagePath)
                 this@ClientActivity.clientSystem = clientSystem
-                Log.i(TAG, "✅ ActrSystem created - NetworkMonitor will auto-handle network events")
+                Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
 
                 Log.i(TAG, "🚀 Starting package-backed actor...")
                 clientRef = clientSystem.start()
@@ -175,7 +175,7 @@ class ClientActivity : AppCompatActivity() {
             networkMonitor.stopMonitoring()
         }
 
-        // Clean up ActrSystem
+        // Clean up ActrNode
         lifecycleScope.launch {
             try {
                 clientSystem?.close()

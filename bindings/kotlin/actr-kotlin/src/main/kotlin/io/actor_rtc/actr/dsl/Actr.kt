@@ -6,8 +6,8 @@
  * Example usage:
  * ```kotlin
  * // Create and start a package-backed actor
- * val system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
- * val ref = system.start()
+ * val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
+ * val ref = node.start()
  *
  * // Discover and call remote services
  * val echoService = ref.discover("acme:EchoService").firstOrNull()
@@ -32,18 +32,24 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
+import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
 import io.actor_rtc.actr.ActrRefWrapper
-import io.actor_rtc.actr.ActrSystemWrapper
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.NetworkEventHandleWrapper
 import io.actor_rtc.actr.WorkloadBridge
 
 // ============================================================================
-// Type Aliases - Provide cleaner names without "Wrapper" suffix
+// Type Aliases - Provide DSL-friendly names
 // ============================================================================
 
-/** Entry point for creating actors. Use [ActrSystem.fromPackageFile] to create an instance. */
-typealias ActrSystem = ActrSystemWrapper
+/**
+ * Entry point for creating actors. Use [ActrNode.fromPackageFile] to create an instance.
+ *
+ * This aliases the UniFFI-generated `io.actor_rtc.actr.ActrNode` class into the DSL
+ * package so callers can write `import io.actor_rtc.actr.dsl.ActrNode` alongside the
+ * other DSL helpers.
+ */
+typealias ActrNode = ActrNodeGenerated
 
 /**
  * Reference to a running actor. Provides methods for:
@@ -65,60 +71,60 @@ typealias NetworkEventHandle = NetworkEventHandleWrapper
 typealias Workload = WorkloadBridge
 
 // ============================================================================
-// ActrSystem Factory Functions
+// ActrNode Factory Functions
 // ============================================================================
 
 /**
- * Create an ActrSystem from a config file and package file.
+ * Create an ActrNode from a config file and package file.
  *
  * Example:
  * ```kotlin
- * val system = ActrSystem.fromPackageFile("config.toml", "dist/app.actr")
+ * val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
  * ```
  *
  * @param configPath Path to the TOML configuration file
  * @param packagePath Path to the `.actr` package file
- * @return A new ActrSystem instance
+ * @return A new ActrNode instance
  * @throws ActrException.ConfigException if the config file is invalid
  */
-suspend fun ActrSystemWrapper.Companion.fromPackageFile(
+suspend fun ActrNodeGenerated.Companion.fromPackageFile(
     configPath: String,
     packagePath: String
-): ActrSystem {
-    return ActrSystemWrapper.newFromPackageFile(configPath, packagePath)
+): ActrNode {
+    return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
 }
 
 /**
- * Create an ActrSystem from a config file and package file (top-level function).
+ * Create an ActrNode from a config file and package file (top-level function).
  *
  * Example:
  * ```kotlin
- * val system = createActrSystem("config.toml", "dist/app.actr")
+ * val node = createActrNode("config.toml", "dist/app.actr")
  * ```
  *
  * @param configPath Path to the TOML configuration file
  * @param packagePath Path to the `.actr` package file
- * @return A new ActrSystem instance
+ * @return A new ActrNode instance
  * @throws ActrException.ConfigException if the config file is invalid
  */
-suspend fun createActrSystem(configPath: String, packagePath: String): ActrSystem {
-    return ActrSystemWrapper.newFromPackageFile(configPath, packagePath)
+suspend fun createActrNode(configPath: String, packagePath: String): ActrNode {
+    return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
 }
 
 // ============================================================================
-// ActrSystem Extensions
+// ActrNode Extensions
 // ============================================================================
 
 /**
  * Create a network event handle for platform callbacks.
  *
- * This handle is used to notify the actor system about network state changes,
+ * This handle is used to notify the actor runtime about network state changes,
  * which is important for WebRTC connection management on mobile platforms.
  *
  * Example:
  * ```kotlin
- * val system = createActrSystem("config.toml", "dist/app.actr")
- * val networkHandle = system.createNetworkEventHandle()
+ * val node = createActrNode("config.toml", "dist/app.actr")
+ * val networkHandle = node.createNetworkEventHandle()
  *
  * // Notify when network becomes available
  * networkHandle.handleNetworkAvailable()
@@ -127,7 +133,7 @@ suspend fun createActrSystem(configPath: String, packagePath: String): ActrSyste
  * @return A new NetworkEventHandle instance
  * @throws ActrException if the handle cannot be created
  */
-suspend fun ActrSystem.createNetworkEventHandle(): NetworkEventHandle {
+suspend fun ActrNode.createNetworkEventHandle(): NetworkEventHandle {
     return createNetworkEventHandle()
 }
 

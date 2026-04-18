@@ -302,6 +302,31 @@ typedef struct UniffiVTableCallbackInterfaceWorkloadBridge {
 } UniffiVTableCallbackInterfaceWorkloadBridge;
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRNODE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRNODE
+uint64_t uniffi_actr_fn_clone_actrnode(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_ACTRNODE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_ACTRNODE
+void uniffi_actr_fn_free_actrnode(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
+uint64_t uniffi_actr_fn_constructor_actrnode_new_from_package_file(RustBuffer config_path, RustBuffer package_path
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
+uint64_t uniffi_actr_fn_method_actrnode_create_network_event_handle(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRNODE_START
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRNODE_START
+uint64_t uniffi_actr_fn_method_actrnode_start(uint64_t ptr
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRREFWRAPPER
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRREFWRAPPER
 uint64_t uniffi_actr_fn_clone_actrrefwrapper(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -345,31 +370,6 @@ uint64_t uniffi_actr_fn_method_actrrefwrapper_tell(uint64_t ptr, RustBuffer rout
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 uint64_t uniffi_actr_fn_method_actrrefwrapper_wait_for_shutdown(uint64_t ptr
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRSYSTEMWRAPPER
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_ACTRSYSTEMWRAPPER
-uint64_t uniffi_actr_fn_clone_actrsystemwrapper(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_ACTRSYSTEMWRAPPER
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FREE_ACTRSYSTEMWRAPPER
-void uniffi_actr_fn_free_actrsystemwrapper(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_PACKAGE_FILE
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_PACKAGE_FILE
-uint64_t uniffi_actr_fn_constructor_actrsystemwrapper_new_from_package_file(RustBuffer config_path, RustBuffer package_path
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRSYSTEMWRAPPER_CREATE_NETWORK_EVENT_HANDLE
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRSYSTEMWRAPPER_CREATE_NETWORK_EVENT_HANDLE
-uint64_t uniffi_actr_fn_method_actrsystemwrapper_create_network_event_handle(uint64_t ptr, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRSYSTEMWRAPPER_START
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRSYSTEMWRAPPER_START
-uint64_t uniffi_actr_fn_method_actrsystemwrapper_start(uint64_t ptr
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CLONE_CONTEXTBRIDGE
@@ -777,6 +777,18 @@ void ffi_actr_rust_future_free_void(uint64_t handle
 void ffi_actr_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
+uint16_t uniffi_actr_checksum_method_actrnode_create_network_event_handle(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_START
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_START
+uint16_t uniffi_actr_checksum_method_actrnode_start(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_ACTOR_ID
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_ACTOR_ID
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_actor_id(void
@@ -816,18 +828,6 @@ uint16_t uniffi_actr_checksum_method_actrrefwrapper_tell(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_WAIT_FOR_SHUTDOWN
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown(void
-    
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRSYSTEMWRAPPER_CREATE_NETWORK_EVENT_HANDLE
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRSYSTEMWRAPPER_CREATE_NETWORK_EVENT_HANDLE
-uint16_t uniffi_actr_checksum_method_actrsystemwrapper_create_network_event_handle(void
-    
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRSYSTEMWRAPPER_START
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRSYSTEMWRAPPER_START
-uint16_t uniffi_actr_checksum_method_actrsystemwrapper_start(void
     
 );
 #endif
@@ -933,9 +933,9 @@ uint16_t uniffi_actr_checksum_method_opusencoder_frame_size(void
     
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_PACKAGE_FILE
-#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRSYSTEMWRAPPER_NEW_FROM_PACKAGE_FILE
-uint16_t uniffi_actr_checksum_constructor_actrsystemwrapper_new_from_package_file(void
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
+uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_package_file(void
     
 );
 #endif

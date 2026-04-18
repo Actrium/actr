@@ -143,11 +143,11 @@ val localActorId = client.connect()
 ### Package-backed Runtime Example
 
 ```kotlin
-import io.actor_rtc.actr.dsl.createActrSystem
+import io.actor_rtc.actr.dsl.createActrNode
 import local_file.File.*
 
-val system = createActrSystem("actr.toml", "dist/app.actr")
-val actorRef = system.start()
+val node = createActrNode("actr.toml", "dist/app.actr")
+val actorRef = node.start()
 
 val request = SendFileRequest.newBuilder()
     .setFilename("example.txt")

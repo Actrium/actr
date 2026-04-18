@@ -79,7 +79,7 @@ struct EchoServiceCLI {
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
         let _ = try await system.start()
         print("EchoService registered")
 
@@ -124,7 +124,7 @@ struct EchoAppCLI {
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
         let actr = try await system.start()
 
         var request = Echo_EchoRequest()

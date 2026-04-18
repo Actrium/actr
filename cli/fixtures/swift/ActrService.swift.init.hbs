@@ -9,7 +9,7 @@ final class ActrService: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .disconnected
     @Published var errorMessage: String?
 
-    internal var system: ActrSystem?
+    internal var system: ActrNode?
     internal var actr: ActrRef?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "io.actr.App",
@@ -32,8 +32,8 @@ final class ActrService: ObservableObject {
             }
 
             let result = try await Task.detached(priority: .userInitiated) { () throws
-                -> (ActrSystem, ActrRef) in
-                let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+                -> (ActrNode, ActrRef) in
+                let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
                 let actr = try await system.start()
                 return (system, actr)
             }.value
