@@ -158,7 +158,7 @@ Service Worker (WASM)         DOM 侧 (框架固定 JS)
 │  └────────────────────────────────────────┘ │
 │                                              │
 │  ┌────────────────────────────────────────┐ │
-│  │  ActorRuntime (框架 Rust 代码)         │ │
+│  │  ActrNode (框架 Rust 代码)         │ │
 │  │  - Mailbox + Scheduler                 │ │
 │  │  - Fast Path Registry                  │ │
 │  │  - Transport Manager                   │ │
@@ -331,14 +331,14 @@ async function VideoCallApp() {
 ```rust
 #[wasm_bindgen]
 pub struct VideoCallActor {
-    runtime: ActorRuntime,
+    runtime: ActrNode,
     event_emitter: EventEmitter,
 }
 
 #[wasm_bindgen]
 impl VideoCallActor {
     pub async fn new() -> Self {
-        let runtime = ActorRuntime::new();
+        let runtime = ActrNode::new();
         let event_emitter = EventEmitter::new();
 
         // 注册 Fast Path 回调（在 WASM 中处理）

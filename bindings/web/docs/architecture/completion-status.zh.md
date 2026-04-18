@@ -138,7 +138,7 @@
 
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
-| **ActrSystem** | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + Gate) | **50%** |
+| **Hyper** (pre-runtime) | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + Gate) | **50%** |
 | - new() | ✅ | ✅ | 90% |
 | - attach() | ✅ | ❌ | 0% |
 | **ActrNode** | ✅ 完整 (~400 行) | ❌ 未实现 | **0%** |
@@ -147,7 +147,7 @@
 | **ActrRef 生命周期** | ✅ | ✅ 完整实现 (shutdown/wait_for_shutdown) | **85%** |
 
 **关键差异**:
-- **actr**: 三阶段生命周期 (ActrSystem → ActrNode → Running)
+- **actr**: 三阶段生命周期 (Hyper → ActrNode → ActrRef)
 - **actr-web**:
   - **客户端模式**: 使用 `register_client` 创建独立运行时
   - **Service Worker**: System 作为消息中枢已实现 (MessageHandler + Gate 路由)
@@ -480,7 +480,7 @@
 - Fast Path 支持 (50%)
 - Service Worker 集成 (75%)
 - Runtime 核心 (75%)
-- ActrSystem 生命周期 (50%)
+- Hyper 生命周期 (50%)
 
 **❌ 关键缺失功能** (0-30%):
 - 代码生成工具 (0%)
