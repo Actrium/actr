@@ -391,71 +391,6 @@ impl ManifestConfig {
     pub fn list_scripts(&self) -> Vec<&str> {
         self.scripts.keys().map(|s| s.as_str()).collect()
     }
-
-    /// Calculate ServiceSpec from manifest
-    ///
-    /// Returns None if no proto files are exported
-    pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
-        if self.exports.is_empty() {
-            return None;
-        }
-
-        let proto_files: Vec<actr_service_compat::ProtoFile> = self
-            .exports
-            .iter()
-            .map(|export| actr_service_compat::ProtoFile {
-                name: export
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown.proto")
-                    .to_string(),
-                content: export.content.clone(),
-                path: export.path.to_str().map(|s| s.to_string()),
-            })
-            .collect();
-
-        let fingerprint =
-            actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-                .ok()?;
-
-        let protobufs = self
-            .exports
-            .iter()
-            .map(|export| {
-                let file_fingerprint =
-                    actr_service_compat::Fingerprint::calculate_proto_semantic_fingerprint(
-                        &export.content,
-                    )
-                    .unwrap_or_else(|_| "error".to_string());
-
-                actr_protocol::service_spec::Protobuf {
-                    package: export
-                        .path
-                        .file_stem()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    content: export.content.clone(),
-                    fingerprint: file_fingerprint,
-                }
-            })
-            .collect();
-
-        let published_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs() as i64;
-
-        Some(actr_protocol::ServiceSpec {
-            name: self.package.name.clone(),
-            description: self.package.description.clone(),
-            fingerprint,
-            protobufs,
-            published_at: Some(published_at),
-            tags: self.tags.clone(),
-        })
-    }
 }
 
 // ============================================================================
@@ -479,14 +414,6 @@ impl RuntimeConfig {
     /// Get a script command
     pub fn get_script(&self, name: &str) -> Option<&str> {
         self.scripts.get(name).map(|s| s.as_str())
-    }
-
-    /// Calculate ServiceSpec from runtime config.
-    ///
-    /// Returns None — runtime config does not carry proto exports.
-    /// Use `ManifestConfig::calculate_service_spec()` instead.
-    pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
-        None
     }
 }
 
@@ -664,6 +591,5 @@ mod tests {
 
         assert_eq!(config.actr_type().name, "test-service");
         assert!(config.cross_realm_dependencies().is_empty());
-        assert!(config.calculate_service_spec().is_none());
     }
 }

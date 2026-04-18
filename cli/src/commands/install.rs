@@ -9,7 +9,10 @@ use crate::core::{
 use crate::utils::command_exists;
 use actr_config::LockFile;
 use actr_protocol::{ActrType, ActrTypeExt};
-use actr_service_compat::{CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility};
+use actr_service_compat::{
+    CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility, ServiceSpecInput,
+    build_service_spec,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
@@ -1006,7 +1009,13 @@ impl InstallCommand {
 
             if current_semantic_fp != locked_semantic {
                 // Semantic fingerprints differ - this indicates breaking changes
-                // Build ServiceSpec structures for detailed comparison
+                // Build ServiceSpec structures for detailed comparison.
+                //
+                // The "locked" side cannot go through `build_service_spec`:
+                // the lock file stores per-file fingerprints but not proto
+                // contents, so we preserve the recorded fingerprints and
+                // leave `content: String::new()`. Deep compatibility analysis
+                // relies on the current side for actual proto content.
                 let locked_spec = ServiceSpec {
                     name: spec.name.clone(),
                     description: locked_dep.description.clone(),
@@ -1024,20 +1033,34 @@ impl InstallCommand {
                     tags: locked_dep.tags.clone(),
                 };
 
-                let current_spec = ServiceSpec {
-                    name: spec.name.clone(),
-                    description: Some(current_service.info.description.clone().unwrap_or_default()),
-                    fingerprint: format!("service_semantic:{}", current_semantic_fp),
-                    protobufs: current_proto_files
-                        .iter()
-                        .map(|pf| actr_protocol::service_spec::Protobuf {
-                            package: pf.name.clone(),
-                            content: pf.content.clone(),
-                            fingerprint: String::new(),
-                        })
-                        .collect(),
-                    published_at: current_service.info.published_at,
+                // "Current" side: we do have proto contents, so use the
+                // shared builder — it computes both the service-level and
+                // per-file semantic fingerprints consistently with hyper's
+                // package-based derivation.
+                let current_spec = match build_service_spec(ServiceSpecInput {
+                    name: &spec.name,
+                    description: Some(
+                        current_service.info.description.clone().unwrap_or_default(),
+                    ),
                     tags: current_service.info.tags.clone(),
+                    proto_files: current_proto_files.clone(),
+                }) {
+                    Ok(mut built) => {
+                        built.published_at = current_service.info.published_at;
+                        built
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to build current ServiceSpec for '{}': {}",
+                            spec.name,
+                            e
+                        );
+                        conflicts.push(format!(
+                            "{}: Service definition changed (locked: {}, current: {})",
+                            spec.name, locked_fingerprint, current_fingerprint
+                        ));
+                        continue;
+                    }
                 };
 
                 // Attempt to analyze compatibility

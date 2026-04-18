@@ -757,14 +757,12 @@ impl ActrNode {
         let actr_type = self.config.actr_type().clone();
         tracing::info!("📋 Actor type: {}", actr_type);
 
-        // Calculate ServiceSpec from config exports
-        let service_spec = self.config.calculate_service_spec();
-        if let Some(ref spec) = service_spec {
-            tracing::info!("📦 Service fingerprint: {}", spec.fingerprint);
-            tracing::info!("📦 Service tags: {:?}", spec.tags);
-        } else {
-            tracing::info!("📦 No proto exports, ServiceSpec is None");
-        }
+        // ServiceSpec is derived by the Hyper layer from the verified package
+        // (see `service_spec::calculate_service_spec_from_package`). The raw
+        // ActrNode::start() path has no package context and always sends None
+        // on its own RegisterRequest; callers that need a spec must go
+        // through `Hyper::register()`.
+        let service_spec = None;
 
         // If a WebSocket listen port is configured, build the advertised ws:// address
         // to register with the signaling server so clients can discover it.

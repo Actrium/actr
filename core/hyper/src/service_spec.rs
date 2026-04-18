@@ -4,9 +4,14 @@
 //! therefore `proto-fingerprint`), which is not wasm-friendly. `actr-pack`
 //! stays wasm-compatible for the SW runtime; the spec derivation lives here
 //! alongside the only caller (`Hyper<Attached>::register`).
+//!
+//! The actual spec assembly (fingerprint computation, `Protobuf` packing)
+//! lives in [`actr_service_compat::build_service_spec`]; this module is just
+//! the ZIP-extraction adapter.
 
 use actr_pack::PackageManifest;
 use actr_protocol::ServiceSpec;
+use actr_service_compat::{ProtoFile, ServiceSpecInput, build_service_spec};
 use std::io::Read;
 
 use crate::error::{HyperError, HyperResult};
@@ -26,7 +31,7 @@ pub(crate) fn calculate_service_spec_from_package(
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package_bytes))
         .map_err(|e| HyperError::Runtime(format!("open package ZIP: {e}")))?;
 
-    let mut proto_contents = Vec::with_capacity(manifest.proto_files.len());
+    let mut proto_files = Vec::with_capacity(manifest.proto_files.len());
     for proto_entry in &manifest.proto_files {
         let mut file = archive.by_name(&proto_entry.path).map_err(|e| {
             HyperError::Runtime(format!(
@@ -37,47 +42,20 @@ pub(crate) fn calculate_service_spec_from_package(
         let mut content = String::new();
         file.read_to_string(&mut content)
             .map_err(|e| HyperError::Runtime(format!("read proto {}: {e}", proto_entry.path)))?;
-        proto_contents.push((proto_entry.name.clone(), content));
+        proto_files.push(ProtoFile {
+            name: proto_entry.name.clone(),
+            content,
+            path: None,
+        });
     }
 
-    let proto_files: Vec<actr_service_compat::ProtoFile> = proto_contents
-        .iter()
-        .map(|(name, content)| actr_service_compat::ProtoFile {
-            name: name.clone(),
-            content: content.clone(),
-            path: None,
-        })
-        .collect();
-
-    let fingerprint =
-        actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-            .map_err(|e| HyperError::Runtime(format!("calculate service fingerprint: {e}")))?;
-
-    let protobufs = proto_contents
-        .iter()
-        .map(|(name, content)| {
-            let file_fingerprint =
-                actr_service_compat::Fingerprint::calculate_proto_semantic_fingerprint(content)
-                    .unwrap_or_else(|_| "error".to_string());
-            actr_protocol::service_spec::Protobuf {
-                package: name.trim_end_matches(".proto").to_string(),
-                content: content.clone(),
-                fingerprint: file_fingerprint,
-            }
-        })
-        .collect();
-
-    let published_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs() as i64);
-
-    Ok(Some(ServiceSpec {
-        name: manifest.name.clone(),
+    let spec = build_service_spec(ServiceSpecInput {
+        name: &manifest.name,
         description: manifest.metadata.description.clone(),
-        fingerprint,
-        protobufs,
-        published_at,
         tags: vec![],
-    }))
+        proto_files,
+    })
+    .map_err(|e| HyperError::Runtime(format!("build service spec: {e}")))?;
+
+    Ok(Some(spec))
 }
