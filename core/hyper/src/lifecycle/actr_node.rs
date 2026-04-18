@@ -92,7 +92,7 @@ pub struct ActrNode {
     /// Pre-issued registration credential injected by the Hyper layer during
     /// the `Attached → Registered` state transition. `start()` uses it directly
     /// instead of re-registering with the signaling server.
-    pub(crate) injected_registration: Option<actr_protocol::register_response::RegisterOk>,
+    pub(crate) preregistered_credential: Option<actr_protocol::register_response::RegisterOk>,
 
     /// Shared WebSocket direct-connect address map populated by discovery
     ///
@@ -705,7 +705,7 @@ impl ActrNode {
             network_event_debounce_config: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
-            injected_registration: None,
+            preregistered_credential: None,
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -746,13 +746,16 @@ impl ActrNode {
         crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
     }
 
-    /// Inject a pre-issued registration credential
+    /// Attach a credential already issued by AIS so that `start()` can skip
+    /// the signaling registration step.
     ///
-    /// Called by the Hyper layer before `start()`, writing the already-issued `RegisterOk`
-    /// into ActrNode so that `start()` skips the signaling registration step.
-    pub fn inject_credential(&mut self, register_ok: register_response::RegisterOk) {
-        tracing::debug!("Injected pre-registration credential; start() will skip AIS registration");
-        self.injected_registration = Some(register_ok);
+    /// Called by the Hyper layer between `Hyper::register()` and `Hyper::start()`.
+    pub fn set_preregistered_credential(
+        &mut self,
+        register_ok: register_response::RegisterOk,
+    ) {
+        tracing::debug!("Pre-registered credential attached; start() will skip AIS registration");
+        self.preregistered_credential = Some(register_ok);
     }
 
     /// Start the system
@@ -809,7 +812,7 @@ impl ActrNode {
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 1. Obtain registration info (Hyper pre-injected or AIS HTTP)
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        let register_ok = if let Some(injected) = self.injected_registration.take() {
+        let register_ok = if let Some(injected) = self.preregistered_credential.take() {
             tracing::info!(
                 "Using Hyper pre-injected registration credential; skipping AIS registration"
             );

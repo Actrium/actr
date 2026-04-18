@@ -813,7 +813,7 @@ impl Hyper<Attached> {
             .as_mut()
             .expect("invariant")
             .node
-            .inject_credential(register_ok);
+            .set_preregistered_credential(register_ok);
 
         Ok(Hyper {
             inner: self.inner,
