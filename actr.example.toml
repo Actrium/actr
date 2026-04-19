@@ -22,6 +22,28 @@ realm_id = 1001
 kind = "registry"
 endpoint = "http://localhost:8081/ais"
 
+# Hyper-layer configuration (host runtime infrastructure). All fields
+# are optional; defaults resolve to ~/.actr/hyper for `data_dir` and
+# `{data_dir}/{actr_type}` for `storage_path_template`.
+#
+# `[hyper.trust]` is an alternative, singular form of the top-level
+# `[[trust]]` array. `Node::from_config_file` prefers `[hyper.trust]`
+# when present, otherwise chains the top-level `[[trust]]` anchors.
+#
+# A trust anchor **must** be configured for every runtime. For tests
+# and local development, opt in explicitly:
+#
+#   [hyper.trust]
+#   kind = "dev_only"
+#
+# `dev_only` accepts no real package signature (its internal pubkey is
+# all-zero) but lets `Node::from_config_file` distinguish an explicit
+# dev opt-in from a missing trust policy — the latter is a hard error.
+#
+# [hyper]
+# data_dir = "~/.actr/hyper"
+# storage_path_template = "{data_dir}/{actr_type}"
+
 [discovery]
 visible = true
 

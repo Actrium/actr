@@ -530,7 +530,7 @@ mod tests {
     use crate::verify::StaticTrust;
 
     fn stub_config(data_dir: &str) -> HyperConfig {
-        HyperConfig::new(data_dir, Arc::new(StaticTrust::new([0u8; 32]).unwrap()))
+        HyperConfig::new(data_dir, Arc::new(StaticTrust::dev_only()))
     }
 
     #[test]
@@ -563,5 +563,77 @@ mod tests {
             .resolve("{data_dir}/{actr_type}/{realm_id}")
             .unwrap();
         assert_eq!(path, PathBuf::from("/tmp/acme/Worker/2.0/42"));
+    }
+
+    /// Minimal actr.toml body shared across tests. Callers append a
+    /// `[hyper]` section (with an escaped `data_dir` pointing into the
+    /// test's tempdir) so `node_from_config_file` never writes into the
+    /// user's real `~/.actr`.
+    const BASE_CONFIG_TOML: &str = r#"
+edition = 1
+[signaling]
+url = "ws://localhost:8081/signaling/ws"
+[ais_endpoint]
+url = "http://localhost:8081/ais"
+[deployment]
+realm_id = 1
+"#;
+
+    #[tokio::test]
+    async fn node_from_config_file_dev_only_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("actr.toml");
+        let data_dir = dir.path().display().to_string().replace('\\', "/");
+        std::fs::write(
+            &path,
+            format!(
+                "{BASE_CONFIG_TOML}[hyper]\ndata_dir = \"{data_dir}\"\n\
+                 [hyper.trust]\nkind = \"dev_only\"\n"
+            ),
+        )
+        .unwrap();
+        let _node = node_from_config_file(&path)
+            .await
+            .expect("dev_only trust should be accepted");
+    }
+
+    #[tokio::test]
+    async fn node_from_config_file_missing_trust_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("actr.toml");
+        let data_dir = dir.path().display().to_string().replace('\\', "/");
+        std::fs::write(
+            &path,
+            format!("{BASE_CONFIG_TOML}[hyper]\ndata_dir = \"{data_dir}\"\n"),
+        )
+        .unwrap();
+        let result = node_from_config_file(&path).await;
+        let err = match result {
+            Ok(_) => panic!("missing trust must fail"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no `[hyper.trust]`") && msg.contains("dev_only"),
+            "error should direct user to the dev_only opt-in, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_from_config_file_accepts_top_level_registry_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("actr.toml");
+        let data_dir = dir.path().display().to_string().replace('\\', "/");
+        std::fs::write(
+            &path,
+            format!(
+                "{BASE_CONFIG_TOML}[hyper]\ndata_dir = \"{data_dir}\"\n\
+                 [[trust]]\nkind = \"registry\"\nendpoint = \"http://localhost:8081/ais\"\n"
+            ),
+        )
+        .unwrap();
+        let _node = node_from_config_file(&path)
+            .await
+            .expect("top-level [[trust]] registry anchor should be accepted");
     }
 }
