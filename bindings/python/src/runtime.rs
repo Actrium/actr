@@ -1,8 +1,7 @@
-use actr_config::{ConfigParser, RuntimeConfig};
+use actr_config::ConfigParser;
 use actr_framework::{Bytes, Context as RtContext};
 use actr_hyper::context::RuntimeContext;
-use actr_hyper::{ActrRef as RtActrRef, Hyper, HyperConfig, Node, Registered, StaticTrust};
-use std::sync::Arc;
+use actr_hyper::{ActrRef as RtActrRef, Node, Registered};
 use actr_protocol::{ActrError, PayloadType as RpPayloadType};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -16,13 +15,6 @@ use crate::{ActrId, ActrType};
 type WrappedNode = Node<Registered>;
 type WrappedRef = RtActrRef;
 
-fn load_runtime_config(manifest_path: &str) -> Result<RuntimeConfig, actr_config::ConfigError> {
-    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
-    let runtime_path = manifest.config_dir.join("actr.toml");
-
-    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
-}
-
 #[pyclass(name = "ActrNode")]
 pub struct ActrNode {
     pub(crate) inner: Option<WrappedNode>,
@@ -33,22 +25,27 @@ impl ActrNode {
     #[staticmethod]
     fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let config = load_runtime_config(&path)
+            // Accept the manifest.toml path (historical contract), resolve
+            // the sibling actr.toml, and hand off to Node::from_config_file
+            // for config + trust + Hyper construction. Python bindings are
+            // client-only so we finish with attach_none.
+            let manifest = ConfigParser::from_manifest_file(&path)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            ensure_observability_initialized(Some(config.observability.clone()));
-            let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let trust = Arc::new(
-                StaticTrust::new([0u8; 32]).map_err(|e| PyValueError::new_err(e.to_string()))?,
-            );
-            let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
+            let runtime_path = manifest.config_dir.join("actr.toml");
+
+            let init = Node::from_config_file(&runtime_path)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let ais_endpoint = config.ais_endpoint.clone();
-            let registered = hyper
-                .attach(&actr_hyper::WorkloadPackage::new(vec![]), config)
+            ensure_observability_initialized(Some(
+                init.runtime_config().observability.clone(),
+            ));
+
+            let attached = init
+                .attach_none()
                 .await
-                .map_err(|e| PyRuntimeError::new_err(format!("attach failed: {e}")))?
+                .map_err(|e| PyRuntimeError::new_err(format!("attach failed: {e}")))?;
+            let ais_endpoint = attached.ais_endpoint().to_string();
+            let registered = attached
                 .register(&ais_endpoint)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(format!("AIS register failed: {e}")))?;

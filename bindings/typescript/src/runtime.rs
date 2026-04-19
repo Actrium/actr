@@ -2,19 +2,9 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::types::{ActrId, ActrType, PayloadType};
-use actr_config::{ConfigParser, RuntimeConfig};
+use actr_config::ConfigParser;
 use actr_framework::Dest;
-use actr_hyper::{
-    ActrRef as RuntimeActrRef, Hyper, HyperConfig, Node, Registered, StaticTrust,
-};
-use std::sync::Arc;
-
-fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig, actr_config::ConfigError> {
-    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
-    let runtime_path = manifest.config_dir.join("actr.toml");
-
-    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
-}
+use actr_hyper::{ActrRef as RuntimeActrRef, Node, Registered};
 
 #[napi]
 pub struct ActrNode {
@@ -26,23 +16,24 @@ impl ActrNode {
     /// Create a client-only ActrNode from manifest.toml and the sibling actr.toml.
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
-        let config = load_runtime_config(&config_path).map_err(crate::error::config_error_to_napi)?;
+        // Accept the manifest.toml path, resolve its sibling actr.toml,
+        // and let Node::from_config_file own config + trust + Hyper
+        // construction. TypeScript bindings are client-only so we finish
+        // with attach_none.
+        let manifest =
+            ConfigParser::from_manifest_file(&config_path).map_err(crate::error::config_error_to_napi)?;
+        let runtime_path = manifest.config_dir.join("actr.toml");
 
-        crate::logger::init_observability(config.observability.clone());
-
-        let hyper_data_dir =
-            actr_config::user_config::resolve_hyper_data_dir().map_err(crate::error::config_error_to_napi)?;
-        let trust = Arc::new(
-            StaticTrust::new([0u8; 32]).map_err(crate::error::hyper_error_to_napi)?,
-        );
-        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
+        let init = Node::from_config_file(&runtime_path)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
-        let ais_endpoint = config.ais_endpoint.clone();
-        let registered = hyper
-            .attach(&actr_hyper::WorkloadPackage::new(vec![]), config)
+        crate::logger::init_observability(init.runtime_config().observability.clone());
+        let attached = init
+            .attach_none()
             .await
-            .map_err(crate::error::hyper_error_to_napi)?
+            .map_err(crate::error::hyper_error_to_napi)?;
+        let ais_endpoint = attached.ais_endpoint().to_string();
+        let registered = attached
             .register(&ais_endpoint)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;

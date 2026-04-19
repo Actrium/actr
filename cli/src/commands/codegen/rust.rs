@@ -533,8 +533,8 @@ mod tests {{
        let hyper_data_dir = actr::config::user_config::resolve_hyper_data_dir()?;
        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir)).await?;
        let package = WorkloadPackage::new(std::fs::read("dist/service.actr")?);
-       let (node, _manifest) = hyper.attach(&package, config).await?;
-       node.start().await?;
+       let node = Node::from_hyper(hyper, config).attach(&package).await?;
+       node.register(&ais_endpoint).await?.start().await?;
        Ok(())
    }}
    ```

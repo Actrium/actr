@@ -294,10 +294,12 @@ pub(crate) async fn node_from_config_file(
         hyper_config = hyper_config.with_storage_template(template);
     }
 
-    // Build Hyper and return Node<Init>.
+    // Build Hyper and return Node<Init>. Observability bring-up is left
+    // to the caller — bindings and the CLI both want control over when
+    // the tracing subscriber gets installed (they may want to layer in
+    // their own filters first).
     let hyper = crate::Hyper::new(hyper_config).await?;
-    let _ = &base_dir; // keep lifetime tidy
-    let _ = &runtime_config.ais_endpoint; // acknowledge field use
+    let _ = &base_dir;
     Ok(crate::Node::from_hyper(hyper, runtime_config))
 }
 

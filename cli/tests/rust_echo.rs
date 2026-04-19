@@ -234,8 +234,12 @@ fn rust_echo_app_scaffold() {
         "main.rs should build the local guest package on demand"
     );
     assert!(
-        main.contains(".attach(&package, runtime.clone())"),
-        "main.rs should attach the local guest package"
+        main.contains("Node::from_hyper(hyper, runtime.clone())"),
+        "main.rs should build Node from the constructed Hyper handle"
+    );
+    assert!(
+        main.contains(".attach(&package)"),
+        "main.rs should attach the local guest package through Node"
     );
     assert!(
         main.contains(".register(&ais_endpoint)"),

@@ -152,10 +152,10 @@ async fn main() -> Result<()> {
     // 3. Attach package workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching client-guest package workload...");
-    let attached = hyper
-        .attach(&package, config)
+    let attached = actr_hyper::Node::from_hyper(hyper, config)
+        .attach(&package)
         .await
-        .inspect_err(|e| error!("❌ hyper.attach failed: {:?}", e))?;
+        .inspect_err(|e| error!("❌ Node attach failed: {:?}", e))?;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 4. Register with AIS

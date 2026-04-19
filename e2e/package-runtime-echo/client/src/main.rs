@@ -130,8 +130,8 @@ async fn main() -> Result<()> {
     let ais_endpoint =
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());
 
-    let actr_ref = hyper
-        .attach(&package, config)
+    let actr_ref = actr_hyper::Node::from_hyper(hyper, config)
+        .attach(&package)
         .await?
         .register(&ais_endpoint)
         .await?

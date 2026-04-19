@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use actr_config::{ConfigParser, PackageInfo};
-use actr_hyper::{Hyper, HyperConfig, StaticTrust, WorkloadPackage, init_observability};
+use actr_hyper::{Hyper, HyperConfig, Node, StaticTrust, WorkloadPackage, init_observability};
 
 const PACKAGE_PATH: &str = "dist/app.actr";
 
@@ -53,8 +53,8 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to read {}", package_path.display()))?;
 
     let ais_endpoint = runtime.ais_endpoint.clone();
-    let actr_ref = hyper
-        .attach(&package, runtime.clone())
+    let actr_ref = Node::from_hyper(hyper, runtime.clone())
+        .attach(&package)
         .await
         .context("failed to attach local guest package")?
         .register(&ais_endpoint)

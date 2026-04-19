@@ -398,11 +398,16 @@ impl NodeState for Registered {}
 /// instance identity, trust material, and the package verifier. It is
 /// deliberately generic-free and has no knowledge of a specific workload.
 ///
-/// The construction chain is:
+/// User code constructs Hyper only in the escape-hatch path
+/// ([`Node::from_hyper`]); prefer [`Node::from_config_file`] for the common
+/// case where config lives in `actr.toml`. The full typestate chain is:
 ///
 /// ```text
-/// Hyper::new(cfg)                 -> Hyper                   (framework only)
-///     .attach(package, runtime)   -> Node<Attached>          (Hyper + workload)
+/// Node::from_config_file(path)    -> Node<Init>              (framework only)
+/// Node::from_hyper(hyper, config) -> Node<Init>              (escape hatch)
+///     .attach(package)            -> Node<Attached>          (package-backed)
+///     .attach_linked_handle(h)    -> Node<Attached>          (embedded app)
+///     .attach_none()              -> Node<Attached>          (client-only)
 ///     .register(ais_endpoint)     -> Node<Registered>        (credential obtained)
 ///     .start()                    -> ActrRef                 (running node)
 /// ```
@@ -650,23 +655,6 @@ impl Hyper {
         load_workload_package_inner(&self.inner, package).await
     }
 
-    /// Verify a [`WorkloadPackage`], load its binary, and bind it to this Hyper
-    /// as a new [`Node`].
-    ///
-    /// Consumes the `Hyper` and returns a `Node<Attached>` — the framework
-    /// handle is gone, replaced by a node that must be `register().start()`ed
-    /// before serving traffic.
-    ///
-    /// Prefer [`Node::from_hyper`] + [`Node::attach`] in new code; this
-    /// method is a thin wrapper kept for one release to ease migration.
-    pub async fn attach(
-        self,
-        package: &WorkloadPackage,
-        config: actr_config::RuntimeConfig,
-    ) -> HyperResult<Node<Attached>> {
-        Node::from_hyper(self, config).attach(package).await
-    }
-
 }
 
 // ── Node entry methods (unparameterized) ─────────────────────────────────────
@@ -735,7 +723,19 @@ impl Node {
     }
 }
 
-// ── State transition: Init → Attached ────────────────────────────────────────
+// ── Node<Init> accessors + state transition: Init → Attached ─────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Node<Init> {
+    /// Read-only view of the runtime configuration pending attachment.
+    /// Useful for callers that need to configure observability /
+    /// tracing subscribers from the config before driving `attach`.
+    pub fn runtime_config(&self) -> &actr_config::RuntimeConfig {
+        self.pending_runtime_config
+            .as_ref()
+            .expect("Node<Init> without pending runtime config")
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Node<Init> {
@@ -949,6 +949,19 @@ impl Node<Attached> {
             .expect("Node<Attached> without attachment")
             .node
             .create_network_event_handle(debounce_ms)
+    }
+
+    /// AIS endpoint URL resolved from the attached [`RuntimeConfig`].
+    /// Convenience accessor for callers that just drove `from_config_file`
+    /// + `attach` and need the endpoint to pass into `register`.
+    pub fn ais_endpoint(&self) -> &str {
+        &self
+            .attachment
+            .as_ref()
+            .expect("Node<Attached> without attachment")
+            .node
+            .config
+            .ais_endpoint
     }
 }
 

@@ -153,10 +153,10 @@ impl RunCommand {
         let hyper = self.init_hyper(&config, &package_path, &hyper_dir).await?;
         info!("✅ Hyper initialized");
 
-        // 8. Attach → register → start (Hyper typestate chain)
+        // 8. Node typestate chain: from_hyper → attach → register → start
         let ais_endpoint = config.ais_endpoint.clone();
-        let attached = hyper
-            .attach(&package, config.clone())
+        let attached = actr_hyper::Node::from_hyper(hyper, config.clone())
+            .attach(&package)
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to attach package: {}", e)))?;
         info!("✅ Package attached");

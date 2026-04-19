@@ -9,9 +9,9 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let actr = Hyper::new(hyper_config)
+//! let actr = Node::from_config_file("actr.toml")
 //!     .await?
-//!     .attach(&package, config)
+//!     .attach(&package)
 //!     .await?
 //!     .register(&ais_endpoint)
 //!     .await?
@@ -24,9 +24,9 @@
 //! actr.wait_for_ctrl_c_and_shutdown().await?;
 //! ```
 //!
-//! `Hyper::attach` consumes the `Hyper` and returns a `Node<Attached>`
-//! — each attachment produces a single-package node that progresses through
-//! the typestate chain `Hyper → Node<Attached> → Node<Registered> → ActrRef`.
+//! The typestate chain is `Node<Init> → Node<Attached> → Node<Registered>
+//! → ActrRef`. `Node::from_hyper` is the escape hatch when you need to own
+//! `HyperConfig` construction yourself.
 
 use crate::context::RuntimeContext;
 use crate::context_factory::ContextFactory;

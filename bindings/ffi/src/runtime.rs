@@ -3,9 +3,7 @@
 use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
-use actr_hyper::{
-    ActrRef, Hyper, HyperConfig, NetworkEventHandle, Node, Registered, StaticTrust, WorkloadPackage,
-};
+use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use actr_protocol::{ActrIdExt, ActrTypeExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -26,83 +24,42 @@ impl ActrNode {
         config_path: String,
         package_path: String,
     ) -> ActrResult<Arc<Self>> {
-        let manifest_raw =
-            actr_pack::read_manifest_raw(&std::fs::read(&package_path).map_err(|e| {
-                ActrError::ConfigError {
-                    msg: format!("Failed to read package at {}: {}", package_path, e),
-                }
-            })?)
-            .map_err(|e| ActrError::ConfigError {
-                msg: format!("Failed to read manifest.toml from {}: {}", package_path, e),
-            })?;
-        let manifest: actr_config::ManifestRawConfig =
-            manifest_raw
-                .parse()
-                .map_err(|e: actr_config::ConfigError| ActrError::ConfigError {
-                    msg: format!(
-                        "Failed to parse package manifest from {}: {}",
-                        package_path, e
-                    ),
-                })?;
-        let package_info =
-            manifest
-                .package
-                .clone()
-                .into_package_info()
-                .map_err(|e| ActrError::ConfigError {
-                    msg: format!(
-                        "Failed to extract package info from {}: {}",
-                        package_path, e
-                    ),
-                })?;
-        let config = actr_config::ConfigParser::from_runtime_file(
-            &config_path,
-            package_info,
-            manifest.package.tags,
-        )
-        .map_err(|e| ActrError::ConfigError {
-            msg: format!("Failed to parse config file at {}: {}", config_path, e),
-        })?;
-
-        crate::logger::init_observability(config.observability.clone());
-
-        info!(
-            signaling_url = config.signaling_url.as_str(),
-            realm_id = config.realm.realm_id,
-            package_path = %package_path,
-            "Creating package-backed runtime wrapper",
-        );
-
-        let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
-            .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?;
-        let trust = Arc::new(
-            StaticTrust::new([0u8; 32])
-                .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?,
-        );
-        let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
-            .await
-            .map_err(|e| {
-                error!("Failed to initialize Hyper shell: {}", e);
-                ActrError::InternalError {
-                    msg: format!("Failed to initialize Hyper shell: {e}"),
-                }
-            })?;
-
         let package_bytes = std::fs::read(&package_path).map_err(|e| {
             error!("Failed to read package at {}: {}", package_path, e);
-            ActrError::InternalError {
+            ActrError::ConfigError {
                 msg: format!("Failed to read package at {}: {}", package_path, e),
             }
         })?;
         let package = WorkloadPackage::new(package_bytes);
-        let ais_endpoint = config.ais_endpoint.clone();
 
-        let attached = hyper.attach(&package, config).await.map_err(|e| {
+        // Node::from_config_file owns config parsing, [hyper] section
+        // parsing (data_dir / trust), and Hyper construction — the shell
+        // only composes observability + attach + register + start on top
+        // of the returned Node<Init>.
+        let init = Node::from_config_file(&config_path).await.map_err(|e| {
+            error!("Failed to load runtime config: {}", e);
+            ActrError::ConfigError {
+                msg: format!(
+                    "Failed to load runtime config `{}`: {}",
+                    config_path, e
+                ),
+            }
+        })?;
+        crate::logger::init_observability(init.runtime_config().observability.clone());
+
+        info!(
+            config_path = %config_path,
+            package_path = %package_path,
+            "Creating package-backed runtime wrapper",
+        );
+
+        let attached = init.attach(&package).await.map_err(|e| {
             error!("Failed to attach package-backed node: {}", e);
             ActrError::InternalError {
                 msg: format!("Failed to attach package-backed node: {e}"),
             }
         })?;
+        let ais_endpoint = attached.ais_endpoint().to_string();
         let registered = attached.register(&ais_endpoint).await.map_err(|e| {
             error!("AIS registration failed: {}", e);
             ActrError::InternalError {
