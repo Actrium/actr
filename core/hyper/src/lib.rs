@@ -222,8 +222,8 @@ pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage
 // Runtime workload abstraction
 #[cfg(not(target_arch = "wasm32"))]
 pub use workload::{
-    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, Workload,
-    WorkloadDispatchResult,
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
+    Workload, WorkloadDispatchResult,
 };
 
 // AIS key cache
@@ -253,7 +253,7 @@ pub mod prelude {
     pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
     pub use actr_pack::{PackageManifest, VerifiedPackage};
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::{Attached, Hyper, Node, Registered, storage::ActorStore};
+    pub use crate::{Attached, Hyper, Init, Node, Registered, storage::ActorStore};
     pub use crate::{HyperConfig, HyperError, HyperResult};
 
     // ── Core structures (native-only) ───────────────────────────────────────
@@ -361,6 +361,12 @@ use actr_platform_traits::KvOp;
 use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Compile-time state marker: a [`Node`] has been born from a [`Hyper`]
+/// plus a [`actr_config::RuntimeConfig`], but no workload has been bound
+/// yet. Transition to [`Attached`] via [`Node::attach`],
+/// [`Node::attach_linked_handle`], or [`Node::attach_none`].
+pub struct Init;
+#[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a package has been verified and attached; AIS credential still pending.
 pub struct Attached;
 #[cfg(not(target_arch = "wasm32"))]
@@ -370,6 +376,7 @@ pub struct Registered;
 #[cfg(not(target_arch = "wasm32"))]
 mod node_state_sealed {
     pub trait Sealed {}
+    impl Sealed for super::Init {}
     impl Sealed for super::Attached {}
     impl Sealed for super::Registered {}
 }
@@ -377,6 +384,8 @@ mod node_state_sealed {
 #[cfg(not(target_arch = "wasm32"))]
 /// Sealed trait describing valid [`Node`] lifecycle states.
 pub trait NodeState: node_state_sealed::Sealed {}
+#[cfg(not(target_arch = "wasm32"))]
+impl NodeState for Init {}
 #[cfg(not(target_arch = "wasm32"))]
 impl NodeState for Attached {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -420,28 +429,44 @@ struct Attachment {
     node: crate::lifecycle::node::Inner,
     /// Verified package retained for AIS bootstrap: the manifest plus the raw
     /// manifest bytes and signature that AIS may need to re-verify upstream.
-    verified: VerifiedPackage,
+    ///
+    /// `None` for linked / client-only attach variants
+    /// ([`Node::attach_linked_handle`], [`Node::attach_none`]) — those flows
+    /// register with AIS through [`Node::register_with`] with a
+    /// caller-supplied `service_spec`.
+    verified: Option<VerifiedPackage>,
     package_bytes: bytes::Bytes,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Node — Hyper wired to a workload.
+/// Node — Hyper wired to a runtime configuration (and optionally a workload).
 ///
-/// A `Node` is born when [`Hyper::attach`] binds a verified package to
-/// framework infrastructure. The typestate parameter encodes lifecycle
-/// progress:
+/// A `Node<Init>` is produced by [`Node::from_config_file`] or
+/// [`Node::from_hyper`]; it carries `Hyper` + [`actr_config::RuntimeConfig`]
+/// but has no workload bound. Call one of the attach methods to progress
+/// into `Node<Attached>`, then `register().start()` into a running
+/// [`ActrRef`]:
 ///
 /// ```text
+/// Node::from_config_file(path) -> Node<Init>
+///     .attach(package)         -> Node<Attached>   (package-backed)
+///     .attach_linked_handle(h) -> Node<Attached>   (embedded app)
+///     .attach_none()           -> Node<Attached>   (client-only)
+///
 /// Node<Attached>.register(ais) -> Node<Registered>
 /// Node<Registered>.start()     -> ActrRef
 /// ```
 ///
 /// The default type parameter `Attached` means writing `Node` unqualified
-/// refers to the freshly-attached state. Intermediate steps are impossible
-/// to skip: `start()` only exists on `Node<Registered>`.
+/// refers to the attached state; `start()` only exists on `Node<Registered>`.
 pub struct Node<S: NodeState = Attached> {
     hyper: Arc<HyperInner>,
-    attachment: Attachment,
+    /// Present on `Node<Attached>` and `Node<Registered>`; `None` on
+    /// `Node<Init>`, which holds `pending_runtime_config` instead.
+    attachment: Option<Attachment>,
+    /// Pending runtime configuration for `Node<Init>`; consumed by attach
+    /// methods. `None` on `Attached` / `Registered`.
+    pending_runtime_config: Option<actr_config::RuntimeConfig>,
     _state: std::marker::PhantomData<S>,
 }
 
@@ -617,23 +642,12 @@ impl Hyper {
     ///
     /// This is an explicit helper for test / diagnostic code that wants the
     /// [`LoadedWorkload`] parts without building a running node. Host code
-    /// should call [`Hyper::attach`] instead.
+    /// should call [`Node::from_hyper`] + [`Node::attach`] instead.
     pub async fn load_workload_package(
         &self,
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {
-        let bytes = package.bytes();
-        let verified = self.verify_package(package).await?;
-        let binary_kind = detect_binary_kind(&verified.manifest)?;
-        let workload = match binary_kind {
-            BinaryKind::Wasm => self.load_wasm_workload(bytes, &verified.manifest),
-            BinaryKind::DynClib => self.load_dynclib_workload(bytes, &verified.manifest),
-        }?;
-        Ok(LoadedWorkload {
-            verified,
-            binary_kind,
-            workload,
-        })
+        load_workload_package_inner(&self.inner, package).await
     }
 
     /// Verify a [`WorkloadPackage`], load its binary, and bind it to this Hyper
@@ -642,12 +656,101 @@ impl Hyper {
     /// Consumes the `Hyper` and returns a `Node<Attached>` — the framework
     /// handle is gone, replaced by a node that must be `register().start()`ed
     /// before serving traffic.
+    ///
+    /// Prefer [`Node::from_hyper`] + [`Node::attach`] in new code; this
+    /// method is a thin wrapper kept for one release to ease migration.
     pub async fn attach(
         self,
         package: &WorkloadPackage,
         config: actr_config::RuntimeConfig,
     ) -> HyperResult<Node<Attached>> {
-        let loaded = self.load_workload_package(package).await?;
+        Node::from_hyper(self, config).attach(package).await
+    }
+
+}
+
+// ── Node entry methods (unparameterized) ─────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Node {
+    /// Load `actr.toml` from disk, build the underlying [`Hyper`] from the
+    /// `[hyper]` section (or an explicit `[[trust]]` / `[hyper.trust]`
+    /// anchor set), and return a [`Node<Init>`] ready to attach a workload.
+    ///
+    /// The caller is expected to drive the typestate chain themselves:
+    ///
+    /// ```ignore
+    /// let actr_ref = Node::from_config_file("actr.toml").await?
+    ///     .attach(&package).await?
+    ///     .register(&ais_endpoint).await?
+    ///     .start().await?;
+    /// ```
+    ///
+    /// For a one-shot sugar covering the entire chain see
+    /// [`Node::run_from_config`].
+    pub async fn from_config_file(path: impl AsRef<std::path::Path>) -> HyperResult<Node<Init>> {
+        config::node_from_config_file(path.as_ref()).await
+    }
+
+    /// Escape-hatch constructor: wrap an already-built [`Hyper`] plus a
+    /// pre-loaded [`actr_config::RuntimeConfig`] into a [`Node<Init>`].
+    ///
+    /// Use this when you need direct control over `HyperConfig`
+    /// construction (custom trust chain, injected platform provider, etc.)
+    /// and cannot drive the whole flow through
+    /// [`Node::from_config_file`].
+    pub fn from_hyper(hyper: Hyper, runtime_config: actr_config::RuntimeConfig) -> Node<Init> {
+        Node {
+            hyper: hyper.inner,
+            attachment: None,
+            pending_runtime_config: Some(runtime_config),
+            _state: std::marker::PhantomData,
+        }
+    }
+
+    /// One-shot sugar: `from_config_file(path).attach(package).register().start()`.
+    ///
+    /// Loads the runtime configuration from `path`, attaches the given
+    /// workload package, registers with AIS at the `[ais_endpoint]` URL
+    /// from the config, and starts the node, returning a live
+    /// [`ActrRef`]. Use the typestate chain directly when you need to
+    /// interleave `create_network_event_handle` or swap in a custom
+    /// `service_spec` via `register_with`.
+    pub async fn run_from_config(
+        path: impl AsRef<std::path::Path>,
+        package: &WorkloadPackage,
+    ) -> HyperResult<ActrRef> {
+        let init = Self::from_config_file(path).await?;
+        let ais_endpoint = init
+            .pending_runtime_config
+            .as_ref()
+            .map(|c| c.ais_endpoint.clone())
+            .expect("Node<Init> without pending runtime config");
+        let attached = init.attach(package).await?;
+        let registered = attached.register(&ais_endpoint).await?;
+        registered
+            .start()
+            .await
+            .map_err(|e| HyperError::Runtime(format!("failed to start node: {e}")))
+    }
+}
+
+// ── State transition: Init → Attached ────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Node<Init> {
+    /// Bind a verified [`WorkloadPackage`] to this node.
+    ///
+    /// Equivalent to the former `Hyper::attach` — verifies the package
+    /// signature through the configured `TrustProvider`, loads its guest
+    /// binary (WASM or dynclib), and advances the node to
+    /// `Node<Attached>`.
+    pub async fn attach(self, package: &WorkloadPackage) -> HyperResult<Node<Attached>> {
+        let runtime_config = self
+            .pending_runtime_config
+            .expect("Node<Init> without pending runtime config");
+        let hyper_inner = self.hyper;
+        let loaded = load_workload_package_inner(&hyper_inner, package).await?;
         let packaged_lock = actr_pack::read_lock_file(package.bytes())
             .map_err(|e| HyperError::Runtime(e.to_string()))?
             .map(|bytes| {
@@ -659,14 +762,11 @@ impl Hyper {
                 })
             })
             .transpose()?;
-        let mailbox_backpressure_threshold = self
-            .inner
-            .config
-            .resolved_mailbox_backpressure_threshold();
-        let credential_expiry_warning =
-            self.inner.config.credential_expiry_warning;
+        let mailbox_backpressure_threshold =
+            hyper_inner.config.resolved_mailbox_backpressure_threshold();
+        let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let node_inner = crate::lifecycle::node::Inner::build(
-            config,
+            runtime_config,
             loaded.workload,
             Some(loaded.verified.manifest.clone()),
             packaged_lock,
@@ -676,106 +776,92 @@ impl Hyper {
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
         Ok(Node {
-            hyper: self.inner,
-            attachment: Attachment {
+            hyper: hyper_inner,
+            attachment: Some(Attachment {
                 node: node_inner,
-                verified: loaded.verified,
+                verified: Some(loaded.verified),
                 package_bytes: package.bytes.clone(),
-            },
+            }),
+            pending_runtime_config: None,
             _state: std::marker::PhantomData,
         })
     }
 
-    fn load_wasm_workload(
-        &self,
-        bytes: &[u8],
-        manifest: &PackageManifest,
-    ) -> HyperResult<crate::workload::Workload> {
-        #[cfg(feature = "wasm-engine")]
-        {
-            let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
-                HyperError::Runtime(format!(
-                    "failed to extract package binary `{}` for target `{}`: {e}",
-                    manifest.binary.path, manifest.binary.target
-                ))
-            })?;
-            let host = crate::wasm::WasmHost::compile(&wasm_bytes).map_err(|e| {
-                HyperError::Runtime(format!(
-                    "failed to compile WASM package target `{}`: {e}",
-                    manifest.binary.target
-                ))
-            })?;
-            let mut instance = host.instantiate().map_err(|e| {
-                HyperError::Runtime(format!(
-                    "failed to instantiate WASM package target `{}`: {e}",
-                    manifest.binary.target
-                ))
-            })?;
-            instance
-                .init(&actr_framework::guest::abi::InitPayloadV1 {
-                    version: actr_framework::guest::abi::version::V1,
-                    actr_type: manifest.actr_type_str(),
-                    credential: Vec::new(),
-                    actor_id: Vec::new(),
-                    realm_id: 0,
-                })
-                .map_err(|e| {
-                    HyperError::Runtime(format!(
-                        "failed to initialize WASM package target `{}`: {e}",
-                        manifest.binary.target
-                    ))
-                })?;
-            Ok(crate::workload::Workload::Wasm(instance))
-        }
-
-        #[cfg(not(feature = "wasm-engine"))]
-        {
-            let _ = (bytes, manifest);
-            Err(HyperError::Runtime(
-                "package target requires the `wasm-engine` feature, but it is not enabled"
-                    .to_string(),
-            ))
-        }
+    /// Bind a linked-workload handle (embedded app side) to this node.
+    ///
+    /// No package is loaded; the host process *is* the workload. Inbound
+    /// RPC dispatch is **not** wired for linked nodes in the current
+    /// implementation — they are client-only for outbound calls plus
+    /// lifecycle / transport hook observation through the
+    /// [`LinkedWorkloadHandle`] methods.
+    pub async fn attach_linked_handle(
+        self,
+        handle: Arc<dyn workload::LinkedWorkloadHandle>,
+    ) -> HyperResult<Node<Attached>> {
+        let runtime_config = self
+            .pending_runtime_config
+            .expect("Node<Init> without pending runtime config");
+        let hyper_inner = self.hyper;
+        let mailbox_backpressure_threshold =
+            hyper_inner.config.resolved_mailbox_backpressure_threshold();
+        let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
+        let mut node_inner = crate::lifecycle::node::Inner::build(
+            runtime_config,
+            crate::workload::Workload::None,
+            None,
+            None,
+            mailbox_backpressure_threshold,
+            credential_expiry_warning,
+        )
+        .await
+        .map_err(|e| HyperError::Runtime(e.to_string()))?;
+        let observer: Arc<dyn crate::lifecycle::hooks::WorkloadHookObserver> =
+            Arc::new(crate::workload::LinkedHandleObserver { handle });
+        node_inner.hook_observer = Some(observer);
+        Ok(Node {
+            hyper: hyper_inner,
+            attachment: Some(Attachment {
+                node: node_inner,
+                verified: None,
+                package_bytes: bytes::Bytes::new(),
+            }),
+            pending_runtime_config: None,
+            _state: std::marker::PhantomData,
+        })
     }
 
-    fn load_dynclib_workload(
-        &self,
-        bytes: &[u8],
-        manifest: &PackageManifest,
-    ) -> HyperResult<crate::workload::Workload> {
-        #[cfg(feature = "dynclib-engine")]
-        {
-            let cache_path =
-                ensure_dynclib_cache_path(&self.inner.config.data_dir, bytes, manifest)?;
-            let host = load_dynclib_host_with_rebuild(&cache_path, bytes, manifest)?;
-            let instance = host
-                .instantiate(&actr_framework::guest::abi::InitPayloadV1 {
-                    version: actr_framework::guest::abi::version::V1,
-                    actr_type: manifest.actr_type_str(),
-                    credential: Vec::new(),
-                    actor_id: Vec::new(),
-                    realm_id: 0,
-                })
-                .map_err(|e| {
-                    HyperError::Runtime(format!(
-                        "failed to initialize dynclib package target `{}`: {e}",
-                        manifest.binary.target
-                    ))
-                })?;
-
-            Ok(crate::workload::Workload::DynClib(
-                crate::dynclib::DynClibWorkload::new(host, instance),
-            ))
-        }
-
-        #[cfg(not(feature = "dynclib-engine"))]
-        {
-            let _ = (bytes, manifest);
-            Err(HyperError::Runtime(
-                "package target requires the `dynclib-engine` feature, but it is not enabled"
-                    .to_string(),
-            ))
-        }
+    /// Attach with no workload at all — produces a client-only node
+    /// suitable for outbound `call` / `tell` from bindings that never
+    /// host a local actor. Equivalent to [`Node::attach_linked_handle`]
+    /// with a no-op handle.
+    pub async fn attach_none(self) -> HyperResult<Node<Attached>> {
+        let runtime_config = self
+            .pending_runtime_config
+            .expect("Node<Init> without pending runtime config");
+        let hyper_inner = self.hyper;
+        let mailbox_backpressure_threshold =
+            hyper_inner.config.resolved_mailbox_backpressure_threshold();
+        let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
+        let node_inner = crate::lifecycle::node::Inner::build(
+            runtime_config,
+            crate::workload::Workload::None,
+            None,
+            None,
+            mailbox_backpressure_threshold,
+            credential_expiry_warning,
+        )
+        .await
+        .map_err(|e| HyperError::Runtime(e.to_string()))?;
+        Ok(Node {
+            hyper: hyper_inner,
+            attachment: Some(Attachment {
+                node: node_inner,
+                verified: None,
+                package_bytes: bytes::Bytes::new(),
+            }),
+            pending_runtime_config: None,
+            _state: std::marker::PhantomData,
+        })
     }
 }
 
@@ -788,12 +874,22 @@ impl Node<Attached> {
     ///
     /// `realm_id`, `acl`, and `realm_secret` come from the attached
     /// [`RuntimeConfig`]; `service_spec` is derived from the package's proto
-    /// exports. Use [`Node::register_with`] to override `service_spec` manually.
+    /// exports when a package-backed attach was used. For linked /
+    /// client-only attaches, use [`Node::register_with`] to pass a
+    /// caller-supplied `service_spec`.
     pub async fn register(self, ais_endpoint: &str) -> HyperResult<Node<Registered>> {
-        let service_spec = crate::service_spec::calculate_service_spec_from_package(
-            &self.attachment.package_bytes,
-            &self.attachment.verified.manifest,
-        )?;
+        let attachment = self
+            .attachment
+            .as_ref()
+            .expect("Node<Attached> without attachment");
+        let service_spec = if let Some(verified) = attachment.verified.as_ref() {
+            crate::service_spec::calculate_service_spec_from_package(
+                &attachment.package_bytes,
+                &verified.manifest,
+            )?
+        } else {
+            None
+        };
         self.register_with(ais_endpoint, service_spec).await
     }
 
@@ -803,29 +899,41 @@ impl Node<Attached> {
         ais_endpoint: &str,
         service_spec: Option<ServiceSpec>,
     ) -> HyperResult<Node<Registered>> {
-        let verified = self.attachment.verified.clone();
-        let realm_id = self.attachment.node.config.realm.realm_id;
-        let acl = self.attachment.node.config.acl.clone();
-        let realm_secret = self.attachment.node.config.realm_secret.clone();
+        let attachment = self
+            .attachment
+            .as_mut()
+            .expect("Node<Attached> without attachment");
+        let realm_id = attachment.node.config.realm.realm_id;
+        let acl = attachment.node.config.acl.clone();
+        let realm_secret = attachment.node.config.realm_secret.clone();
 
-        let register_ok = bootstrap_credential_inner(
-            &self.hyper,
-            &verified,
-            ais_endpoint,
-            realm_id,
-            service_spec,
-            acl,
-            realm_secret.as_deref(),
-        )
-        .await?;
+        let register_ok = if let Some(verified) = attachment.verified.as_ref() {
+            let verified = verified.clone();
+            bootstrap_credential_inner(
+                &self.hyper,
+                &verified,
+                ais_endpoint,
+                realm_id,
+                service_spec,
+                acl,
+                realm_secret.as_deref(),
+            )
+            .await?
+        } else {
+            return Err(HyperError::Runtime(
+                "linked / client-only attach cannot register with AIS via `Node::register`; \
+                 supply a preregistered credential through a platform-specific flow before \
+                 calling `start()`"
+                    .to_string(),
+            ));
+        };
 
-        self.attachment
-            .node
-            .set_preregistered_credential(register_ok);
+        attachment.node.set_preregistered_credential(register_ok);
 
         Ok(Node {
             hyper: self.hyper,
             attachment: self.attachment,
+            pending_runtime_config: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -836,7 +944,11 @@ impl Node<Attached> {
         &mut self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
-        self.attachment.node.create_network_event_handle(debounce_ms)
+        self.attachment
+            .as_mut()
+            .expect("Node<Attached> without attachment")
+            .node
+            .create_network_event_handle(debounce_ms)
     }
 }
 
@@ -846,7 +958,9 @@ impl Node<Attached> {
 impl Node<Registered> {
     /// Start the attached, registered node and return the live [`ActrRef`].
     pub async fn start(self) -> actr_protocol::ActorResult<crate::actr_ref::ActrRef> {
-        let Attachment { node, .. } = self.attachment;
+        let Attachment { node, .. } = self
+            .attachment
+            .expect("Node<Registered> without attachment");
         node.start().await
     }
 
@@ -856,7 +970,11 @@ impl Node<Registered> {
         &mut self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
-        self.attachment.node.create_network_event_handle(debounce_ms)
+        self.attachment
+            .as_mut()
+            .expect("Node<Registered> without attachment")
+            .node
+            .create_network_event_handle(debounce_ms)
     }
 }
 
@@ -933,6 +1051,126 @@ fn resolve_storage_path_for(
     let resolver = config::NamespaceResolver::new(&inner.config, &inner.instance_id)?
         .with_actor_type(&manifest.manufacturer, &manifest.name, &manifest.version);
     resolver.resolve(&inner.config.storage_path_template)
+}
+
+/// Free-function counterpart of [`Hyper::load_workload_package`] —
+/// shared by both [`Hyper::attach`] and `Node<Init>::attach` without
+/// needing a `Hyper` handle to own the call.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn load_workload_package_inner(
+    inner: &HyperInner,
+    package: &WorkloadPackage,
+) -> HyperResult<LoadedWorkload> {
+    let bytes = package.bytes();
+    let verified = inner
+        .config
+        .trust_provider
+        .verify_package(bytes)
+        .await?;
+    let binary_kind = detect_binary_kind(&verified.manifest)?;
+    let workload = match binary_kind {
+        BinaryKind::Wasm => load_wasm_workload_inner(inner, bytes, &verified.manifest),
+        BinaryKind::DynClib => load_dynclib_workload_inner(inner, bytes, &verified.manifest),
+    }?;
+    Ok(LoadedWorkload {
+        verified,
+        binary_kind,
+        workload,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_wasm_workload_inner(
+    _inner: &HyperInner,
+    bytes: &[u8],
+    manifest: &PackageManifest,
+) -> HyperResult<crate::workload::Workload> {
+    #[cfg(feature = "wasm-engine")]
+    {
+        let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
+            HyperError::Runtime(format!(
+                "failed to extract package binary `{}` for target `{}`: {e}",
+                manifest.binary.path, manifest.binary.target
+            ))
+        })?;
+        let host = crate::wasm::WasmHost::compile(&wasm_bytes).map_err(|e| {
+            HyperError::Runtime(format!(
+                "failed to compile WASM package target `{}`: {e}",
+                manifest.binary.target
+            ))
+        })?;
+        let mut instance = host.instantiate().map_err(|e| {
+            HyperError::Runtime(format!(
+                "failed to instantiate WASM package target `{}`: {e}",
+                manifest.binary.target
+            ))
+        })?;
+        instance
+            .init(&actr_framework::guest::abi::InitPayloadV1 {
+                version: actr_framework::guest::abi::version::V1,
+                actr_type: manifest.actr_type_str(),
+                credential: Vec::new(),
+                actor_id: Vec::new(),
+                realm_id: 0,
+            })
+            .map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to initialize WASM package target `{}`: {e}",
+                    manifest.binary.target
+                ))
+            })?;
+        Ok(crate::workload::Workload::Wasm(instance))
+    }
+
+    #[cfg(not(feature = "wasm-engine"))]
+    {
+        let _ = (bytes, manifest);
+        Err(HyperError::Runtime(
+            "package target requires the `wasm-engine` feature, but it is not enabled"
+                .to_string(),
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_dynclib_workload_inner(
+    _inner: &HyperInner,
+    bytes: &[u8],
+    manifest: &PackageManifest,
+) -> HyperResult<crate::workload::Workload> {
+    #[cfg(feature = "dynclib-engine")]
+    {
+        let cache_path =
+            ensure_dynclib_cache_path(&_inner.config.data_dir, bytes, manifest)?;
+        let host = load_dynclib_host_with_rebuild(&cache_path, bytes, manifest)?;
+        let instance = host
+            .instantiate(&actr_framework::guest::abi::InitPayloadV1 {
+                version: actr_framework::guest::abi::version::V1,
+                actr_type: manifest.actr_type_str(),
+                credential: Vec::new(),
+                actor_id: Vec::new(),
+                realm_id: 0,
+            })
+            .map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to initialize dynclib package target `{}`: {e}",
+                    manifest.binary.target
+                ))
+            })?;
+
+        Ok(crate::workload::Workload::DynClib(
+            crate::dynclib::DynClibWorkload::new(host, instance),
+        ))
+    }
+
+    #[cfg(not(feature = "dynclib-engine"))]
+    {
+        let _ = (bytes, manifest);
+        Err(HyperError::Runtime(
+            "package target requires the `dynclib-engine` feature, but it is not enabled"
+                .to_string(),
+        ))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

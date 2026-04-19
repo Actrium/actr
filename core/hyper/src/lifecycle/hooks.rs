@@ -38,6 +38,14 @@ use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 /// Hyper wires this observer up from an external adapter (e.g. the FFI
 /// `DynamicWorkload`). Each method has a no-op default so adopters can
 /// override only the hooks they care about.
+///
+/// This trait is the object-safe surface behind
+/// [`crate::LinkedWorkloadHandle`] — the linked-workload handle is a
+/// `WorkloadHookObserver` plus (at a future point) a dispatch method. The
+/// current `Node<Init>::attach_linked_handle` entry point stores the
+/// handle as this hook observer; inbound RPC dispatch into a
+/// linked-workload guest is not yet implemented (linked nodes are
+/// client-only).
 #[async_trait]
 #[allow(dead_code)]
 pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {

@@ -90,6 +90,291 @@ impl std::fmt::Debug for HyperConfig {
     }
 }
 
+/// Raw TOML shape for the optional `[hyper]` section of `actr.toml`.
+///
+/// All fields optional; each controls one knob of [`HyperConfig`]. The
+/// trust anchor lives inside `[hyper.trust]` (singular) and uses the
+/// same tag-dispatched schema as the top-level `[[trust]]` array so users
+/// can pick whichever style they prefer.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct HyperSection {
+    /// Root data directory (`{data_dir}` template variable).
+    #[serde(default)]
+    pub data_dir: Option<std::path::PathBuf>,
+
+    /// Override the default `{data_dir}/{actr_type}` storage template.
+    #[serde(default)]
+    pub storage_path_template: Option<String>,
+
+    /// Single trust anchor; for chain composition use the top-level
+    /// `[[trust]]` array instead.
+    #[serde(default)]
+    pub trust: Option<HyperTrustAnchor>,
+}
+
+/// Trust anchor config for `[hyper.trust]`. Superset of
+/// `actr_config::TrustAnchor` with an extra `dev_only` kind that lets
+/// tests and examples opt in to [`crate::verify::StaticTrust::dev_only`]
+/// explicitly.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HyperTrustAnchor {
+    /// Accept any package — for tests and local development **only**.
+    ///
+    /// When selected by `Node::from_config_file`, emits a prominent
+    /// `tracing::warn!` at load time.
+    DevOnly,
+    /// Pre-shared Ed25519 public key. See
+    /// [`actr_config::TrustAnchor::Static`] for field semantics.
+    Static {
+        #[serde(default)]
+        pubkey_file: Option<std::path::PathBuf>,
+        #[serde(default)]
+        pubkey_b64: Option<String>,
+    },
+    /// AIS HTTP registry endpoint. See
+    /// [`actr_config::TrustAnchor::Registry`].
+    Registry { endpoint: String },
+}
+
+/// Top-level wrapper used when parsing `actr.toml` for the `[hyper]`
+/// section in isolation. Ignores every other field.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct HyperSectionWrapper {
+    #[serde(default)]
+    pub hyper: HyperSection,
+}
+
+/// Load an `actr.toml`-style file and return a [`crate::Node`] in the
+/// `Init` state. This function handles the full pipeline:
+///
+/// 1. Parse the runtime section via [`actr_config::ConfigParser`].
+/// 2. Parse the optional `[hyper]` section for data-dir / template /
+///    trust overrides.
+/// 3. Resolve trust anchors (preferring `[hyper.trust]`, falling back to
+///    top-level `[[trust]]`, finally producing an `Err` unless the
+///    effective config explicitly opts into dev-only trust).
+/// 4. Build a [`crate::Hyper`] and wrap it in `Node<Init>`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn node_from_config_file(
+    path: &Path,
+) -> crate::error::HyperResult<crate::Node<crate::Init>> {
+    use crate::error::HyperError;
+    use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
+
+    // Load both the RuntimeConfig and the raw TOML so we can pick up
+    // [hyper.*] overrides that `ConfigParser` doesn't surface.
+    let raw_text = std::fs::read_to_string(path).map_err(|e| {
+        HyperError::Config(format!(
+            "failed to read runtime config `{}`: {e}",
+            path.display()
+        ))
+    })?;
+
+    // Derive a minimal PackageInfo from the raw toml when `[package]`
+    // is absent (client-only flow). Otherwise, let ConfigParser handle
+    // it from its embedded `[package]` section.
+    let raw_runtime: actr_config::RuntimeRawConfig = raw_text.parse().map_err(|e| {
+        HyperError::Config(format!(
+            "failed to parse runtime config `{}`: {e}",
+            path.display()
+        ))
+    })?;
+    // `RuntimeConfig` requires a PackageInfo; synthesise a placeholder
+    // one for client-only loads so `from_config_file` can work without a
+    // sibling manifest.
+    let package_info = actr_config::PackageInfo {
+        name: "client".to_string(),
+        actr_type: actr_protocol::ActrType {
+            manufacturer: "local".to_string(),
+            name: "Client".to_string(),
+            version: "0.0.0".to_string(),
+        },
+        description: None,
+        authors: vec![],
+        license: None,
+    };
+    let runtime_config = actr_config::ConfigParser::parse_runtime(
+        raw_runtime,
+        path,
+        package_info,
+        vec![],
+    )
+    .map_err(|e| HyperError::Config(format!("failed to parse runtime config: {e}")))?;
+
+    // Parse the optional [hyper] section.
+    let hyper_section: HyperSectionWrapper = toml::from_str(&raw_text).map_err(|e| {
+        HyperError::Config(format!(
+            "failed to parse [hyper] section of `{}`: {e}",
+            path.display()
+        ))
+    })?;
+    let hyper_section = hyper_section.hyper;
+
+    // Resolve the data_dir: [hyper].data_dir > CLI user-config default.
+    let data_dir = if let Some(dir) = hyper_section.data_dir.clone() {
+        dir
+    } else {
+        actr_config::user_config::resolve_hyper_data_dir().map_err(|e| {
+            HyperError::Config(format!(
+                "failed to resolve default hyper data_dir (set `[hyper].data_dir` explicitly): {e}"
+            ))
+        })?
+    };
+
+    // Resolve trust: prefer [hyper.trust], fall back to top-level [[trust]].
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let trust: Arc<dyn TrustProvider> = if let Some(anchor) = hyper_section.trust.clone() {
+        match anchor {
+            HyperTrustAnchor::DevOnly => {
+                tracing::warn!(
+                    "[hyper.trust] kind = \"dev_only\" selected; accepting any package — \
+                     NEVER use in production"
+                );
+                Arc::new(StaticTrust::dev_only())
+            }
+            HyperTrustAnchor::Static {
+                pubkey_file,
+                pubkey_b64,
+            } => {
+                let key_bytes = load_static_pubkey_bytes(
+                    pubkey_file.as_deref().map(|p| resolve_path(base_dir, p)),
+                    pubkey_b64,
+                )?;
+                Arc::new(StaticTrust::new(key_bytes)?)
+            }
+            HyperTrustAnchor::Registry { endpoint } => {
+                let base = endpoint.trim_end_matches("/ais").to_string();
+                Arc::new(RegistryTrust::new(base))
+            }
+        }
+    } else if !runtime_config.trust.is_empty() {
+        // Chain fallback from the top-level [[trust]] anchors.
+        let mut providers: Vec<Arc<dyn TrustProvider>> =
+            Vec::with_capacity(runtime_config.trust.len());
+        for anchor in &runtime_config.trust {
+            let provider: Arc<dyn TrustProvider> = match anchor {
+                actr_config::TrustAnchor::Static {
+                    pubkey_file,
+                    pubkey_b64,
+                } => {
+                    let key_bytes =
+                        load_static_pubkey_bytes(pubkey_file.clone(), pubkey_b64.clone())?;
+                    Arc::new(StaticTrust::new(key_bytes)?)
+                }
+                actr_config::TrustAnchor::Registry { endpoint } => {
+                    let base = endpoint.trim_end_matches("/ais").to_string();
+                    Arc::new(RegistryTrust::new(base))
+                }
+            };
+            providers.push(provider);
+        }
+        if providers.len() == 1 {
+            providers.into_iter().next().unwrap()
+        } else {
+            Arc::new(ChainTrust::new(providers))
+        }
+    } else {
+        return Err(HyperError::Config(
+            "no `[hyper.trust]` or `[[trust]]` anchor configured. \
+             Every runtime must declare a package-signature trust policy. \
+             For dev / tests set `[hyper.trust] kind = \"dev_only\"`; \
+             for production use `kind = \"static\"` with a `pubkey_file` \
+             or `kind = \"registry\"` with an AIS endpoint."
+                .to_string(),
+        ));
+    };
+
+    // Build HyperConfig with the resolved values.
+    let mut hyper_config = HyperConfig::new(&data_dir, trust);
+    if let Some(template) = hyper_section.storage_path_template {
+        hyper_config = hyper_config.with_storage_template(template);
+    }
+
+    // Build Hyper and return Node<Init>.
+    let hyper = crate::Hyper::new(hyper_config).await?;
+    let _ = &base_dir; // keep lifetime tidy
+    let _ = &runtime_config.ais_endpoint; // acknowledge field use
+    Ok(crate::Node::from_hyper(hyper, runtime_config))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_path(base_dir: &Path, path: impl AsRef<Path>) -> std::path::PathBuf {
+    let p = path.as_ref();
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base_dir.join(p)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_static_pubkey_bytes(
+    pubkey_file: Option<std::path::PathBuf>,
+    pubkey_b64: Option<String>,
+) -> crate::error::HyperResult<Vec<u8>> {
+    use crate::error::HyperError;
+    use base64::Engine;
+
+    if let Some(b64) = pubkey_b64 {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .map_err(|e| HyperError::Config(format!("invalid pubkey_b64: {e}")))?;
+        if bytes.len() != 32 {
+            return Err(HyperError::Config(format!(
+                "pubkey_b64 must decode to 32 bytes, got {}",
+                bytes.len()
+            )));
+        }
+        return Ok(bytes);
+    }
+    let path = pubkey_file.ok_or_else(|| {
+        HyperError::Config(
+            "static trust anchor requires `pubkey_file` or `pubkey_b64`".to_string(),
+        )
+    })?;
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        HyperError::Config(format!(
+            "failed to read pubkey_file `{}`: {e}",
+            path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        HyperError::Config(format!(
+            "pubkey_file `{}` is not valid JSON: {e}",
+            path.display()
+        ))
+    })?;
+    let b64 = value
+        .get("public_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            HyperError::Config(format!(
+                "pubkey_file `{}` is missing the `public_key` field",
+                path.display()
+            ))
+        })?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| {
+            HyperError::Config(format!(
+                "pubkey_file `{}` has invalid base64: {e}",
+                path.display()
+            ))
+        })?;
+    if bytes.len() != 32 {
+        return Err(HyperError::Config(format!(
+            "pubkey_file `{}` must contain a 32-byte key, got {}",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl HyperConfig {
     /// Build a new HyperConfig with the given `data_dir` and package trust provider.

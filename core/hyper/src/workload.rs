@@ -7,12 +7,17 @@ use actr_framework::guest::abi::{
     self as guest_abi, AbiPayload, GuestHandleV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
     HostTellV1,
 };
+use actr_framework::{BackpressureEvent, CredentialEvent, ErrorEvent, PeerEvent};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
+use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 use prost::Message;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+
+use crate::context::RuntimeContext;
 
 /// ABI-stable invocation context passed into guest runtime on each request.
 pub type InvocationContext = guest_abi::InvocationContextV1;
@@ -44,10 +49,135 @@ pub type HostAbiFn = Box<
 /// Result type for runtime workload handling.
 pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
+/// Object-safe handle to a workload linked directly into the host process
+/// (e.g. an embedded Swift / Kotlin app, or a Rust process that owns the
+/// actor's business code as a struct rather than a packaged binary).
+///
+/// Plugged into a [`crate::Node`] via
+/// [`crate::Node::attach_linked_handle`]. The current implementation
+/// registers the handle as a [`lifecycle::hooks::WorkloadHookObserver`] so
+/// that signaling / transport / credential / mailbox lifecycle hooks reach
+/// the embedding app. Inbound RPC dispatch into a linked handle is not
+/// yet wired — linked-workload nodes are client-only until a future change
+/// adds a dispatch path that cooperates with the generic
+/// [`actr_framework::Workload`] trait.
+#[async_trait]
+pub trait LinkedWorkloadHandle: Send + Sync + 'static {
+    // Lifecycle (fallible — hook-path errors are logged & swallowed)
+    async fn on_start(&self, _ctx: &RuntimeContext) {}
+    async fn on_ready(&self, _ctx: &RuntimeContext) {}
+    async fn on_stop(&self, _ctx: &RuntimeContext) {}
+    async fn on_error(&self, _ctx: &RuntimeContext, _event: &ErrorEvent) {}
+
+    // Signaling
+    async fn on_signaling_connecting(&self, _ctx: Option<&RuntimeContext>) {}
+    async fn on_signaling_connected(&self, _ctx: Option<&RuntimeContext>) {}
+    async fn on_signaling_disconnected(&self, _ctx: &RuntimeContext) {}
+
+    // WebSocket C/S
+    async fn on_websocket_connecting(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+    async fn on_websocket_connected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+    async fn on_websocket_disconnected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+
+    // WebRTC P2P
+    async fn on_webrtc_connecting(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+    async fn on_webrtc_connected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+    async fn on_webrtc_disconnected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
+
+    // Credential
+    async fn on_credential_renewed(&self, _ctx: &RuntimeContext, _event: &CredentialEvent) {}
+    async fn on_credential_expiring(&self, _ctx: &RuntimeContext, _event: &CredentialEvent) {}
+
+    // Mailbox
+    async fn on_mailbox_backpressure(
+        &self,
+        _ctx: &RuntimeContext,
+        _event: &BackpressureEvent,
+    ) {
+    }
+}
+
+/// Bridge adapter: forwards every [`LinkedWorkloadHandle`] method to the
+/// `pub(crate)` [`crate::lifecycle::hooks::WorkloadHookObserver`] expected by
+/// the hook dispatcher. Lets the public linked-handle trait live without
+/// exposing the internal hook plumbing.
+pub(crate) struct LinkedHandleObserver {
+    pub(crate) handle: Arc<dyn LinkedWorkloadHandle>,
+}
+
+#[async_trait]
+impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
+    async fn on_start(&self, ctx: &RuntimeContext) {
+        self.handle.on_start(ctx).await
+    }
+    async fn on_ready(&self, ctx: &RuntimeContext) {
+        self.handle.on_ready(ctx).await
+    }
+    async fn on_stop(&self, ctx: &RuntimeContext) {
+        self.handle.on_stop(ctx).await
+    }
+    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) {
+        self.handle.on_error(ctx, event).await
+    }
+    async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
+        self.handle.on_signaling_connecting(ctx).await
+    }
+    async fn on_signaling_connected(&self, ctx: Option<&RuntimeContext>) {
+        self.handle.on_signaling_connected(ctx).await
+    }
+    async fn on_signaling_disconnected(&self, ctx: &RuntimeContext) {
+        self.handle.on_signaling_disconnected(ctx).await
+    }
+    async fn on_websocket_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_websocket_connecting(ctx, event).await
+    }
+    async fn on_websocket_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_websocket_connected(ctx, event).await
+    }
+    async fn on_websocket_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_websocket_disconnected(ctx, event).await
+    }
+    async fn on_webrtc_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_webrtc_connecting(ctx, event).await
+    }
+    async fn on_webrtc_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_webrtc_connected(ctx, event).await
+    }
+    async fn on_webrtc_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.handle.on_webrtc_disconnected(ctx, event).await
+    }
+    async fn on_credential_renewed(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.handle.on_credential_renewed(ctx, event).await
+    }
+    async fn on_credential_expiring(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.handle.on_credential_expiring(ctx, event).await
+    }
+    async fn on_mailbox_backpressure(
+        &self,
+        ctx: &RuntimeContext,
+        event: &BackpressureEvent,
+    ) {
+        self.handle.on_mailbox_backpressure(ctx, event).await
+    }
+}
+
 /// Runtime workload enum.
-#[derive(Debug)]
+///
+/// Covers three attach flavours:
+///
+/// - `Wasm` / `DynClib` — a verified `.actr` package bound through
+///   [`crate::Node::attach`]. The package carries a guest binary that the
+///   host dispatches RPC envelopes into.
+/// - `None` — client-only attach via [`crate::Node::attach_none`] or a
+///   linked-workload attach without a dispatchable guest. Inbound RPC
+///   dispatch is not supported on this variant; the node is strictly for
+///   outbound calls / discovery.
+#[derive(Debug, Default)]
 #[allow(clippy::large_enum_variant)]
 pub enum Workload {
+    /// Client-only node: no local guest, no dispatch target.
+    #[default]
+    None,
     #[cfg(feature = "wasm-engine")]
     Wasm(crate::wasm::WasmWorkload),
     #[cfg(feature = "dynclib-engine")]
@@ -66,6 +196,9 @@ impl Workload {
         Box::pin(async move {
             let _ = (&envelope, &invocation);
             match self {
+                Workload::None => Err(ActrError::NotImplemented(
+                    "this node has no dispatchable workload (client-only attach)".to_string(),
+                )),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => {
                     let request_bytes = envelope.encode_to_vec();
@@ -84,10 +217,6 @@ impl Workload {
                         .map(Bytes::from)
                         .map_err(|e| ActrError::Internal(format!("workload dispatch failed: {e}")))
                 }
-                #[allow(unreachable_patterns)]
-                _ => Err(ActrError::Internal(
-                    "no workload backend is enabled in this build".to_string(),
-                )),
             }
         })
     }
@@ -102,8 +231,11 @@ impl Workload {
     ) -> Pin<Box<dyn Future<Output = WorkloadDispatchResult> + Send + 'a>> {
         let request_bytes = request_bytes.to_vec();
         Box::pin(async move {
-            #[allow(unreachable_patterns)]
             match self {
+                Workload::None => Err(Box::new(std::io::Error::other(
+                    "this node has no dispatchable workload (client-only attach)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => workload
                     .handle(&request_bytes, ctx, host_abi)
@@ -114,10 +246,6 @@ impl Workload {
                     .handle(&request_bytes, ctx, host_abi)
                     .await
                     .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                _ => Err(Box::new(std::io::Error::other(
-                    "no workload backend is enabled in this build",
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>),
             }
         })
     }

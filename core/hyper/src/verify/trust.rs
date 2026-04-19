@@ -101,6 +101,25 @@ impl StaticTrust {
             pubkey: parse_pubkey(pubkey.as_ref())?,
         })
     }
+
+    /// Development-only trust provider seeded with an all-zero Ed25519 public
+    /// key. Accepts **no real package** (signatures against a zero key always
+    /// fail), but lets test and example code wire a valid `TrustProvider`
+    /// without pulling a real key file.
+    ///
+    /// Never use in production — the only reason this exists is so
+    /// `Node::from_config_file` can distinguish an explicit opt-in to dev
+    /// mode from a missing trust configuration (which is a hard error).
+    /// Emits no warning of its own; callers should log at their discretion
+    /// (`Node::from_config_file` emits a `tracing::warn!` when it selects
+    /// this provider from a `kind = "dev_only"` config entry).
+    pub fn dev_only() -> Self {
+        // `from_bytes` accepts all-zero 32 bytes (it is a valid curve point,
+        // just a broken one for signing) so `.unwrap()` here is sound.
+        Self {
+            pubkey: VerifyingKey::from_bytes(&[0u8; 32]).expect("all-zero pubkey parses"),
+        }
+    }
 }
 
 #[async_trait]
