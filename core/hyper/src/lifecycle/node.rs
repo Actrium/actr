@@ -934,6 +934,11 @@ impl Inner {
         // Collect background task handles so they can be managed by ActrRefShared later.
         let mut task_handles = Vec::new();
 
+        // Node-level hook callback, built inside the registration
+        // setup block below and published back out into this wider
+        // scope so the mailbox backpressure watchdog can subscribe.
+        let node_hook_callback: Option<crate::wire::webrtc::signaling::HookCallback>;
+
         {
             let actor_id = register_ok.actr_id;
             let credential = register_ok.credential;
@@ -961,17 +966,17 @@ impl Inner {
             );
             self.credential_state = Some(credential_state.clone());
 
-            // Build the credential-lifecycle hook callback once: it is
-            // reused at initial registration (fires the initial
-            // `on_credential_renewed`), and handed to the heartbeat task
-            // so that subsequent refresh / re-register cycles also fire
-            // `on_credential_renewed` / `on_credential_expiring`.
+            // Build the node-level lifecycle hook callback once: it is
+            // reused for the initial `on_credential_renewed`, handed to
+            // the heartbeat task for subsequent credential events, and
+            // handed to the mailbox backpressure watchdog for
+            // `on_mailbox_backpressure` on rising-edge crossings.
             //
             // The signaling layer already has its own callback installed
             // above — this second callback only carries credential and
             // mailbox-backpressure events, so no overlap with the
             // signaling-event plumbing.
-            let credential_hook_callback: Option<crate::wire::webrtc::signaling::HookCallback> = {
+            node_hook_callback = {
                 let actor_id_for_hook = actor_id.clone();
                 let credential_state_for_hook = credential_state.clone();
                 let context_factory = self
@@ -1003,7 +1008,7 @@ impl Inner {
             if let Some(expires_at) = &register_ok.credential_expires_at {
                 let new_expiry = std::time::UNIX_EPOCH
                     + std::time::Duration::from_secs(expires_at.seconds.max(0) as u64);
-                if let Some(cb) = credential_hook_callback.as_ref() {
+                if let Some(cb) = node_hook_callback.as_ref() {
                     cb(crate::wire::webrtc::signaling::HookEvent::CredentialRenewed {
                         new_expiry,
                     })
@@ -1301,7 +1306,7 @@ impl Inner {
                     heartbeat_interval,
                     register_request_for_heartbeat,
                     ais_endpoint_for_heartbeat,
-                    credential_hook_callback.clone(),
+                    node_hook_callback.clone(),
                 ));
                 task_handles.push(heartbeat_handle);
             }
@@ -1766,62 +1771,118 @@ impl Inner {
         // 4.9. Mailbox backpressure watchdog
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         //
-        // Polls mailbox status on a 1 s cadence and emits the framework
-        // `on_mailbox_backpressure` hook once per rising-edge crossing
-        // of the configured threshold. Mailbox backends that do not
-        // report queued_messages produce a monotonic zero — the hook
-        // simply never fires in that case (documented limitation).
+        // Emits the framework `on_mailbox_backpressure` hook once per
+        // rising-edge crossing of the configured threshold.
         //
-        // TODO(C18-backpressure-wire): when a backend grows an O(1)
-        //   enqueue-side hook, switch from the polling watchdog to a
-        //   push-based notification to eliminate the 1 s worst-case
-        //   delay between queue growth and hook emission.
+        // Preferred path: a push-based notification from the mailbox
+        // backend via [`Mailbox::set_depth_observer`], which runs
+        // synchronously on every enqueue and has zero worst-case delay.
+        //
+        // Fallback path: mailbox backends without depth support (or
+        // which can't cheaply compute depth on every enqueue) keep
+        // using a 1 Hz poll of [`Mailbox::status`].
         let backpressure_threshold = node_ref.mailbox_backpressure_threshold;
         {
+            use std::sync::atomic::{AtomicBool, Ordering};
             let mailbox = node_ref.mailbox.clone();
             let shutdown = shutdown_token.clone();
-            let watchdog_handle = tokio::spawn(async move {
-                use std::sync::atomic::{AtomicBool, Ordering};
-                let triggered = AtomicBool::new(false);
-                let mut ticker = tokio::time::interval(Duration::from_secs(1));
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Delay,
-                );
-                loop {
-                    tokio::select! {
-                        _ = shutdown.cancelled() => {
-                            tracing::debug!("mailbox backpressure watchdog shutting down");
-                            break;
-                        }
-                        _ = ticker.tick() => {
-                            let status = match mailbox.status().await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    tracing::debug!(?e, "mailbox status poll failed");
-                                    continue;
-                                }
-                            };
-                            let queue_len = status.queued_messages as usize;
-                            if queue_len >= backpressure_threshold {
-                                if !triggered.swap(true, Ordering::AcqRel) {
-                                    tracing::warn!(
+            let hook_cb = node_hook_callback.clone();
+            let triggered = Arc::new(AtomicBool::new(false));
+
+            // Shared rising-edge state + hook-firing closure used by
+            // both the push and polling code paths.
+            let fire_if_rising = {
+                let triggered = triggered.clone();
+                let hook_cb = hook_cb.clone();
+                Arc::new(move |queue_len: usize| {
+                    if queue_len >= backpressure_threshold {
+                        if !triggered.swap(true, Ordering::AcqRel) {
+                            if let Some(cb) = hook_cb.as_ref() {
+                                let cb = cb.clone();
+                                tokio::spawn(async move {
+                                    cb(crate::wire::webrtc::signaling::HookEvent::MailboxBackpressure {
                                         queue_len,
-                                        threshold = backpressure_threshold,
-                                        "mailbox backpressure",
-                                    );
-                                }
-                            } else if triggered.swap(false, Ordering::AcqRel) {
-                                tracing::info!(
+                                        threshold: backpressure_threshold,
+                                    })
+                                    .await;
+                                });
+                            } else {
+                                tracing::warn!(
                                     queue_len,
                                     threshold = backpressure_threshold,
-                                    "mailbox backpressure cleared",
+                                    "mailbox backpressure",
                                 );
                             }
                         }
+                    } else if triggered.swap(false, Ordering::AcqRel) {
+                        tracing::info!(
+                            queue_len,
+                            threshold = backpressure_threshold,
+                            "mailbox backpressure cleared",
+                        );
                     }
+                })
+            };
+
+            // Try the push path first. The observer installs only if
+            // the backend supports it; otherwise `installed` is `false`
+            // and we fall through to polling.
+            struct EnqueueObserver {
+                fire: Arc<dyn Fn(usize) + Send + Sync + 'static>,
+            }
+            impl actr_runtime_mailbox::MailboxDepthObserver for EnqueueObserver {
+                fn on_depth_change(&self, queued_messages: usize) {
+                    (self.fire)(queued_messages);
                 }
-            });
-            task_handles.push(watchdog_handle);
+            }
+
+            let installed = {
+                let observer: Arc<dyn actr_runtime_mailbox::MailboxDepthObserver> =
+                    Arc::new(EnqueueObserver {
+                        fire: fire_if_rising.clone(),
+                    });
+                mailbox.set_depth_observer(observer)
+            };
+
+            if installed {
+                tracing::debug!(
+                    "mailbox backpressure watchdog: push notifications enabled"
+                );
+            } else {
+                tracing::debug!(
+                    "mailbox backpressure watchdog: backend does not support push, falling back to 1 Hz polling"
+                );
+                let mailbox_for_poll = mailbox.clone();
+                let shutdown_for_poll = shutdown.clone();
+                let fire_for_poll = fire_if_rising.clone();
+                let watchdog_handle = tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                    ticker.set_missed_tick_behavior(
+                        tokio::time::MissedTickBehavior::Delay,
+                    );
+                    loop {
+                        tokio::select! {
+                            _ = shutdown_for_poll.cancelled() => {
+                                tracing::debug!(
+                                    "mailbox backpressure watchdog shutting down"
+                                );
+                                break;
+                            }
+                            _ = ticker.tick() => {
+                                let status = match mailbox_for_poll.status().await {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::debug!(?e, "mailbox status poll failed");
+                                        continue;
+                                    }
+                                };
+                                fire_for_poll(status.queued_messages as usize);
+                            }
+                        }
+                    }
+                });
+                task_handles.push(watchdog_handle);
+            }
         }
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

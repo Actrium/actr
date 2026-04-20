@@ -2,7 +2,9 @@
 
 use crate::{
     error::StorageResult,
-    mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus},
+    mailbox::{
+        Mailbox, MailboxDepthObserver, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+    },
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -70,6 +72,11 @@ impl SqliteConnection {
 /// SQLite mailbox implementation
 pub struct SqliteMailbox {
     connection: Arc<SqliteConnection>,
+    /// Optional depth observer invoked after every successful
+    /// [`SqliteMailbox::enqueue`] with the post-enqueue queued-message
+    /// count. `None` means no observer is installed (the caller is
+    /// expected to poll via [`Mailbox::status`] instead).
+    depth_observer: Arc<Mutex<Option<Arc<dyn MailboxDepthObserver>>>>,
 }
 
 impl SqliteMailbox {
@@ -83,7 +90,19 @@ impl SqliteMailbox {
 
     pub async fn with_config(config: SqliteConfig) -> StorageResult<Self> {
         let connection = Arc::new(SqliteConnection::new(&config)?);
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            depth_observer: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Cheap read of the currently-installed depth observer, used from
+    /// the enqueue hot path. Returns `None` if no observer is installed.
+    fn current_depth_observer(&self) -> Option<Arc<dyn MailboxDepthObserver>> {
+        self.depth_observer
+            .lock()
+            .expect("depth_observer mutex poisoned")
+            .clone()
     }
 }
 
@@ -98,19 +117,42 @@ impl Mailbox for SqliteMailbox {
         priority: MessagePriority,
     ) -> StorageResult<Uuid> {
         let id = Uuid::new_v4();
+        let observer = self.current_depth_observer();
 
-        // `from` is already Protobuf bytes, store directly
-        let conn = self.connection.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO messages (id, from_actr_id, payload, priority, status, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-            params![
-                id.to_string(),
-                from,
-                payload,
-                priority as i64,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
+        // `from` is already Protobuf bytes, store directly.
+        //
+        // When a depth observer is installed, compute the post-enqueue
+        // `queued_messages` count while we still hold the connection
+        // Mutex — this keeps the observer notification monotonic with
+        // respect to concurrent `ack`s and avoids a second round-trip.
+        let depth = {
+            let conn = self.connection.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO messages (id, from_actr_id, payload, priority, status, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+                params![
+                    id.to_string(),
+                    from,
+                    payload,
+                    priority as i64,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            if observer.is_some() {
+                let queued: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE status = 0",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Some(queued.max(0) as usize)
+            } else {
+                None
+            }
+        };
+
+        if let (Some(observer), Some(queued)) = (observer, depth) {
+            observer.on_depth_change(queued);
+        }
+
         Ok(id)
     }
 
@@ -232,6 +274,15 @@ impl Mailbox for SqliteMailbox {
             queued_by_priority,
         })
     }
+
+    fn set_depth_observer(&self, observer: Arc<dyn MailboxDepthObserver>) -> bool {
+        let mut guard = self
+            .depth_observer
+            .lock()
+            .expect("depth_observer mutex poisoned");
+        *guard = Some(observer);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +365,56 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].id, high_id); // High priority first
         assert_eq!(messages[1].id, normal_id); // Normal priority second
+    }
+
+    #[tokio::test]
+    async fn test_depth_observer_fires_on_enqueue() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingObserver {
+            latest_depth: Arc<AtomicUsize>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl MailboxDepthObserver for CountingObserver {
+            fn on_depth_change(&self, queued_messages: usize) {
+                self.latest_depth.store(queued_messages, Ordering::SeqCst);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let mailbox = setup_mailbox().await;
+        let latest = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let installed = mailbox.set_depth_observer(Arc::new(CountingObserver {
+            latest_depth: latest.clone(),
+            calls: calls.clone(),
+        }));
+        assert!(installed, "SQLite backend must support push notifications");
+
+        let from = dummy_actr_id_bytes();
+        mailbox
+            .enqueue(from.clone(), b"a".to_vec(), MessagePriority::Normal)
+            .await
+            .unwrap();
+        mailbox
+            .enqueue(from.clone(), b"b".to_vec(), MessagePriority::Normal)
+            .await
+            .unwrap();
+        mailbox
+            .enqueue(from.clone(), b"c".to_vec(), MessagePriority::High)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "observer must fire once per enqueue"
+        );
+        assert_eq!(
+            latest.load(Ordering::SeqCst),
+            3,
+            "final depth must reflect all three queued messages"
+        );
     }
 
     #[tokio::test]
