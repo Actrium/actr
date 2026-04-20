@@ -895,8 +895,8 @@ impl Inner {
 
         // Install the signaling-side hook callback so that
         // SignalingConnectStart / Connected / Disconnected events flow
-        // through the framework tracing defaults (and later into a
-        // user-installed observer). Done BEFORE connect() so the initial
+        // through the framework tracing defaults and into a
+        // user-installed observer. Done BEFORE connect() so the initial
         // attempt produces a SignalingConnectStart event.
         {
             let actor_id = register_ok.actr_id.clone();
@@ -917,7 +917,10 @@ impl Inner {
                         ))
                     })
                 });
-            let cb = crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+            let cb = crate::lifecycle::hooks::build_hook_callback(
+                self.hook_observer.clone(),
+                ctx_builder,
+            );
             self.signaling_client.set_hook_callback(cb);
         }
 
@@ -958,18 +961,56 @@ impl Inner {
             );
             self.credential_state = Some(credential_state.clone());
 
-            // Fire the `on_credential_renewed` hook at initial
-            // registration: the credential is considered "renewed" from
-            // "nothing" to the value just issued by AIS.
+            // Build the credential-lifecycle hook callback once: it is
+            // reused at initial registration (fires the initial
+            // `on_credential_renewed`), and handed to the heartbeat task
+            // so that subsequent refresh / re-register cycles also fire
+            // `on_credential_renewed` / `on_credential_expiring`.
             //
-            // TODO(C18-credential-wire): fire on_credential_expiring once
-            //   the framework gains a credential-renewal watchdog (today
-            //   there is no active renewal loop in hyper; credentials are
-            //   refreshed opportunistically via the heartbeat path).
+            // The signaling layer already has its own callback installed
+            // above — this second callback only carries credential and
+            // mailbox-backpressure events, so no overlap with the
+            // signaling-event plumbing.
+            let credential_hook_callback: Option<crate::wire::webrtc::signaling::HookCallback> = {
+                let actor_id_for_hook = actor_id.clone();
+                let credential_state_for_hook = credential_state.clone();
+                let context_factory = self
+                    .context_factory
+                    .clone()
+                    .expect("ContextFactory must exist");
+                let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
+                    Arc::new(move || {
+                        let context_factory = context_factory.clone();
+                        let actor_id = actor_id_for_hook.clone();
+                        let credential_state = credential_state_for_hook.clone();
+                        Box::pin(async move {
+                            Some(context_factory.create_bootstrap(
+                                &actor_id,
+                                &credential_state.credential().await,
+                            ))
+                        })
+                    });
+                Some(crate::lifecycle::hooks::build_hook_callback(
+                    self.hook_observer.clone(),
+                    ctx_builder,
+                ))
+            };
+
+            // Fire `on_credential_renewed` at initial registration: the
+            // credential is considered "renewed" from "nothing" to the
+            // value just issued by AIS. Subsequent renewals fire the
+            // same hook from `lifecycle::heartbeat`.
             if let Some(expires_at) = &register_ok.credential_expires_at {
                 let new_expiry = std::time::UNIX_EPOCH
                     + std::time::Duration::from_secs(expires_at.seconds.max(0) as u64);
-                tracing::info!(new_expiry = ?new_expiry, "credential renewed");
+                if let Some(cb) = credential_hook_callback.as_ref() {
+                    cb(crate::wire::webrtc::signaling::HookEvent::CredentialRenewed {
+                        new_expiry,
+                    })
+                    .await;
+                } else {
+                    tracing::info!(new_expiry = ?new_expiry, "credential renewed");
+                }
             }
 
             // Note: actor_id and credential_state were already set on signaling_client
@@ -1050,7 +1091,10 @@ impl Inner {
                             ))
                         })
                     });
-                let cb = crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+                let cb = crate::lifecycle::hooks::build_hook_callback(
+                    self.hook_observer.clone(),
+                    ctx_builder,
+                );
                 coordinator.set_hook_callback(cb);
             }
 
@@ -1202,8 +1246,10 @@ impl Inner {
                                     })
                                 },
                             );
-                            let cb =
-                                crate::lifecycle::hooks::build_hook_callback(None, ctx_builder);
+                            let cb = crate::lifecycle::hooks::build_hook_callback(
+                                self.hook_observer.clone(),
+                                ctx_builder,
+                            );
                             ws_gate.set_hook_callback(cb);
                         }
 
@@ -1255,6 +1301,7 @@ impl Inner {
                     heartbeat_interval,
                     register_request_for_heartbeat,
                     ais_endpoint_for_heartbeat,
+                    credential_hook_callback.clone(),
                 ));
                 task_handles.push(heartbeat_handle);
             }

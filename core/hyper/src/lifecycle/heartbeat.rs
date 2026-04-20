@@ -7,11 +7,26 @@ use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::transport::error::NetworkError;
 use crate::wire::webrtc::SignalingClient;
+use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
 use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio_util::sync::CancellationToken;
+
+/// Convert a `prost_types::Timestamp` expiry to a wall-clock
+/// `SystemTime`. Clamps negative seconds to the Unix epoch so downstream
+/// `Duration` math stays safe.
+fn expiry_to_system_time(expires_at: &prost_types::Timestamp) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(expires_at.seconds.max(0) as u64)
+}
+
+/// Invoke a [`HookCallback`], if present, awaiting its completion.
+async fn fire_hook(cb: Option<&HookCallback>, event: HookEvent) {
+    if let Some(cb) = cb {
+        cb(event).await;
+    }
+}
 
 /// Typical mailbox capacity for backlog ratio calculation
 /// A typical_capacity of 1000 means 100 messages = 10% backlog
@@ -83,6 +98,7 @@ async fn get_power_reserve_and_availability(
 ///
 /// Returns `Some(new_actor_id)` when re-registration assigns a new ActrId,
 /// so the caller can update its loop variable for subsequent heartbeats.
+#[allow(clippy::too_many_arguments)]
 async fn send_heartbeat_and_handle_response(
     client: &Arc<dyn SignalingClient>,
     actor_id: &ActrId,
@@ -91,6 +107,7 @@ async fn send_heartbeat_and_handle_response(
     heartbeat_interval: Duration,
     register_request: &RegisterRequest,
     ais_endpoint: &str,
+    hook_callback: Option<&HookCallback>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -120,12 +137,29 @@ async fn send_heartbeat_and_handle_response(
                 "⚠️ Credential expired during heartbeat: {}. Attempting re-registration.",
                 msg
             );
+
+            // Fire `on_credential_expiring` with the last-known expiry
+            // timestamp (best-effort — the credential might already be
+            // past its advertised `expires_at`, but firing the event
+            // gives the workload one final chance to observe the
+            // transition before we attempt re-registration).
+            if let Some(expires_at) = credential_state.expires_at().await {
+                fire_hook(
+                    hook_callback,
+                    HookEvent::CredentialExpiring {
+                        new_expiry: expiry_to_system_time(&expires_at),
+                    },
+                )
+                .await;
+            }
+
             let new_actor_id = re_register_task(
                 client.clone(),
                 actor_id.clone(),
                 register_request.clone(),
                 credential_state.clone(),
                 ais_endpoint.to_string(),
+                hook_callback.cloned(),
             )
             .await;
 
@@ -161,11 +195,25 @@ async fn send_heartbeat_and_handle_response(
             warning.message
         );
 
+        // Fire `on_credential_expiring` hook once per warning so the
+        // workload can preload its credential-renewed handlers (e.g. to
+        // rotate derived secrets) before the refresh round-trip lands.
+        if let Some(expires_at) = credential_state.expires_at().await {
+            fire_hook(
+                hook_callback,
+                HookEvent::CredentialExpiring {
+                    new_expiry: expiry_to_system_time(&expires_at),
+                },
+            )
+            .await;
+        }
+
         // Trigger immediate credential refresh in a spawned task
         tokio::spawn(credential_refresh_task(
             client.clone(),
             actor_id.clone(),
             credential_state.clone(),
+            hook_callback.cloned(),
         ));
     }
     None
@@ -196,6 +244,7 @@ pub async fn heartbeat_task(
     heartbeat_interval: Duration,
     register_request: RegisterRequest,
     ais_endpoint: String,
+    hook_callback: Option<HookCallback>,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -215,6 +264,7 @@ pub async fn heartbeat_task(
                     heartbeat_interval,
                     &register_request,
                     &ais_endpoint,
+                    hook_callback.as_ref(),
                 )
                 .await {
                     tracing::info!(
@@ -243,6 +293,7 @@ async fn credential_refresh_task(
     client: Arc<dyn SignalingClient>,
     actor_id: ActrId,
     credential_state: CredentialState,
+    hook_callback: Option<HookCallback>,
 ) {
     tracing::info!("🔑 Refreshing credential for Actor {}", actor_id);
 
@@ -272,6 +323,16 @@ async fn credential_refresh_task(
 
                     if let Some(expires_at) = &new_expires_at {
                         tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
+                        // Fire `on_credential_renewed` so the workload
+                        // can rotate downstream state tied to the old
+                        // credential (e.g. AIS-derived tokens).
+                        fire_hook(
+                            hook_callback.as_ref(),
+                            HookEvent::CredentialRenewed {
+                                new_expiry: expiry_to_system_time(expires_at),
+                            },
+                        )
+                        .await;
                     }
                 }
                 Some(actr_protocol::register_response::Result::Error(err)) => {
@@ -309,6 +370,7 @@ async fn re_register_task(
     register_request: RegisterRequest,
     credential_state: CredentialState,
     ais_endpoint: String,
+    hook_callback: Option<HookCallback>,
 ) -> ActrId {
     tracing::info!(
         "🔄 Re-registering actor {} after credential expiry via AIS HTTP (type: {}/{})",
@@ -368,6 +430,15 @@ async fn re_register_task(
 
             if let Some(expires_at) = &new_expires_at {
                 tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
+                // Fire `on_credential_renewed` for the re-registration
+                // path as well — same semantics as the refresh path.
+                fire_hook(
+                    hook_callback.as_ref(),
+                    HookEvent::CredentialRenewed {
+                        new_expiry: expiry_to_system_time(expires_at),
+                    },
+                )
+                .await;
             }
 
             new_actor_id
