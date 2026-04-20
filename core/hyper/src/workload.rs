@@ -7,7 +7,10 @@ use actr_framework::guest::abi::{
     self as guest_abi, AbiPayload, GuestHandleV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
     HostTellV1,
 };
-use actr_framework::{BackpressureEvent, CredentialEvent, ErrorEvent, PeerEvent};
+use actr_framework::{
+    BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
+    Workload as FrameworkWorkload,
+};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -54,13 +57,23 @@ pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Se
 /// actor's business code as a struct rather than a packaged binary).
 ///
 /// Plugged into a [`crate::Node`] via
-/// [`crate::Node::attach_linked_handle`]. The current implementation
-/// registers the handle as a [`lifecycle::hooks::WorkloadHookObserver`] so
-/// that signaling / transport / credential / mailbox lifecycle hooks reach
-/// the embedding app. Inbound RPC dispatch into a linked handle is not
-/// yet wired — linked-workload nodes are client-only until a future change
-/// adds a dispatch path that cooperates with the generic
-/// [`actr_framework::Workload`] trait.
+/// [`crate::Node::attach_linked_handle`] (object-safe path used by FFI
+/// bindings) or [`crate::Node::attach_linked`] (generic convenience that
+/// wraps any [`FrameworkWorkload`] implementation in a
+/// [`WorkloadAdapter`]).
+///
+/// A linked handle carries two responsibilities:
+///
+/// 1. **Observation hooks** — every method from
+///    [`actr_framework::Workload`]'s hook surface has an object-safe
+///    counterpart here. The runtime bridges these via
+///    [`LinkedHandleObserver`] into the internal
+///    [`crate::lifecycle::hooks::WorkloadHookObserver`] plumbing.
+/// 2. **Inbound RPC dispatch** — the [`LinkedWorkloadHandle::dispatch`]
+///    method is invoked by the node's `handle_incoming` path when the
+///    node has been attached via `attach_linked*`. Package-backed
+///    attaches (`attach`) continue to dispatch through the WASM / dynclib
+///    guest ABI.
 #[async_trait]
 pub trait LinkedWorkloadHandle: Send + Sync + 'static {
     // Lifecycle (fallible — hook-path errors are logged & swallowed)
@@ -94,6 +107,154 @@ pub trait LinkedWorkloadHandle: Send + Sync + 'static {
         _ctx: &RuntimeContext,
         _event: &BackpressureEvent,
     ) {
+    }
+
+    /// Dispatch one inbound RPC envelope into the linked workload.
+    ///
+    /// The default implementation rejects the dispatch with
+    /// `ActrError::NotImplemented` so that handles concerned only with
+    /// observation hooks (e.g. pure client-side adapters) can be plugged
+    /// in without supplying a dispatcher. Generic linked attaches go
+    /// through [`WorkloadAdapter`], which overrides this method to call
+    /// into the framework's `MessageDispatcher`.
+    async fn dispatch(
+        &self,
+        _envelope: RpcEnvelope,
+        _ctx: Arc<RuntimeContext>,
+    ) -> ActorResult<Bytes> {
+        Err(ActrError::NotImplemented(
+            "linked workload handle has no dispatcher bound".to_string(),
+        ))
+    }
+}
+
+/// Generic bridge from a user-defined [`actr_framework::Workload`] (with
+/// its associated [`MessageDispatcher`]) to the object-safe
+/// [`LinkedWorkloadHandle`] stored on the node.
+///
+/// `WorkloadAdapter<W>` monomorphises the generic `<C: Context>` methods
+/// from the framework trait to the concrete [`RuntimeContext`] type the
+/// node carries, and forwards inbound RPC envelopes through
+/// `<W::Dispatcher as MessageDispatcher>::dispatch`.
+///
+/// Callers rarely construct this directly; prefer
+/// [`crate::Node::attach_linked`] which wraps the workload automatically.
+pub struct WorkloadAdapter<W: FrameworkWorkload> {
+    inner: Arc<W>,
+}
+
+impl<W: FrameworkWorkload> WorkloadAdapter<W> {
+    /// Wrap the workload in an adapter. Equivalent to
+    /// `Arc::new(WorkloadAdapter { inner: Arc::new(workload) })` but keeps
+    /// the field private so future refactors can change its shape.
+    pub fn new(workload: W) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::new(workload),
+        })
+    }
+
+    /// Wrap an already-shared workload (useful when the caller needs to
+    /// hold a second `Arc<W>` outside the adapter, e.g. for inspection in
+    /// tests).
+    pub fn from_arc(workload: Arc<W>) -> Arc<Self> {
+        Arc::new(Self { inner: workload })
+    }
+
+    /// Test-friendly dispatch entry point: forwards to the workload's
+    /// [`MessageDispatcher`] using any `Context` implementation.
+    ///
+    /// The production path goes through
+    /// [`LinkedWorkloadHandle::dispatch`] with a concrete
+    /// [`RuntimeContext`], but that requires the full node plumbing.
+    /// Tests and alternate hosts can call this method with a lightweight
+    /// `Context` (e.g. `actr_framework::test_support::DummyContext`)
+    /// without standing up a running node.
+    pub async fn dispatch_with_ctx<C: actr_framework::Context>(
+        &self,
+        envelope: RpcEnvelope,
+        ctx: &C,
+    ) -> ActorResult<Bytes> {
+        <W::Dispatcher as MessageDispatcher>::dispatch(self.inner.as_ref(), envelope, ctx).await
+    }
+}
+
+#[async_trait]
+impl<W: FrameworkWorkload> LinkedWorkloadHandle for WorkloadAdapter<W> {
+    // ── Lifecycle ────────────────────────────────────────────────────────
+    async fn on_start(&self, ctx: &RuntimeContext) {
+        if let Err(e) = self.inner.on_start(ctx).await {
+            tracing::warn!(error = %e, "linked workload on_start returned Err");
+        }
+    }
+    async fn on_ready(&self, ctx: &RuntimeContext) {
+        if let Err(e) = self.inner.on_ready(ctx).await {
+            tracing::warn!(error = %e, "linked workload on_ready returned Err");
+        }
+    }
+    async fn on_stop(&self, ctx: &RuntimeContext) {
+        if let Err(e) = self.inner.on_stop(ctx).await {
+            tracing::warn!(error = %e, "linked workload on_stop returned Err");
+        }
+    }
+    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) {
+        if let Err(e) = self.inner.on_error(ctx, event).await {
+            tracing::warn!(error = %e, "linked workload on_error returned Err");
+        }
+    }
+
+    // ── Signaling ────────────────────────────────────────────────────────
+    async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
+        self.inner.on_signaling_connecting(ctx).await
+    }
+    async fn on_signaling_connected(&self, ctx: Option<&RuntimeContext>) {
+        self.inner.on_signaling_connected(ctx).await
+    }
+    async fn on_signaling_disconnected(&self, ctx: &RuntimeContext) {
+        self.inner.on_signaling_disconnected(ctx).await
+    }
+
+    // ── WebSocket C/S ────────────────────────────────────────────────────
+    async fn on_websocket_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_websocket_connecting(ctx, event).await
+    }
+    async fn on_websocket_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_websocket_connected(ctx, event).await
+    }
+    async fn on_websocket_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_websocket_disconnected(ctx, event).await
+    }
+
+    // ── WebRTC P2P ───────────────────────────────────────────────────────
+    async fn on_webrtc_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_webrtc_connecting(ctx, event).await
+    }
+    async fn on_webrtc_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_webrtc_connected(ctx, event).await
+    }
+    async fn on_webrtc_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.inner.on_webrtc_disconnected(ctx, event).await
+    }
+
+    // ── Credential ───────────────────────────────────────────────────────
+    async fn on_credential_renewed(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.inner.on_credential_renewed(ctx, event).await
+    }
+    async fn on_credential_expiring(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.inner.on_credential_expiring(ctx, event).await
+    }
+
+    // ── Mailbox ──────────────────────────────────────────────────────────
+    async fn on_mailbox_backpressure(&self, ctx: &RuntimeContext, event: &BackpressureEvent) {
+        self.inner.on_mailbox_backpressure(ctx, event).await
+    }
+
+    // ── Dispatch ─────────────────────────────────────────────────────────
+    async fn dispatch(
+        &self,
+        envelope: RpcEnvelope,
+        ctx: Arc<RuntimeContext>,
+    ) -> ActorResult<Bytes> {
+        self.dispatch_with_ctx(envelope, ctx.as_ref()).await
     }
 }
 
@@ -163,25 +324,45 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
 
 /// Runtime workload enum.
 ///
-/// Covers three attach flavours:
+/// Covers four attach flavours:
 ///
 /// - `Wasm` / `DynClib` — a verified `.actr` package bound through
 ///   [`crate::Node::attach`]. The package carries a guest binary that the
 ///   host dispatches RPC envelopes into.
-/// - `None` — client-only attach via [`crate::Node::attach_none`] or a
-///   linked-workload attach without a dispatchable guest. Inbound RPC
-///   dispatch is not supported on this variant; the node is strictly for
-///   outbound calls / discovery.
-#[derive(Debug, Default)]
+/// - `Linked` — an in-process workload handle bound through
+///   [`crate::Node::attach_linked`] /
+///   [`crate::Node::attach_linked_handle`]. Inbound RPC envelopes are
+///   forwarded to the handle via [`LinkedWorkloadHandle::dispatch`].
+/// - `None` — strictly client-only attach via
+///   [`crate::Node::attach_none`]. Inbound RPC dispatch is rejected with
+///   [`ActrError::NotImplemented`]; the node is used only for outbound
+///   calls / discovery.
+#[derive(Default)]
 #[allow(clippy::large_enum_variant)]
 pub enum Workload {
     /// Client-only node: no local guest, no dispatch target.
     #[default]
     None,
+    /// Linked in-process workload handle — hosts dispatch and lifecycle
+    /// hooks inside the current process without a packaged guest binary.
+    Linked(Arc<dyn LinkedWorkloadHandle>),
     #[cfg(feature = "wasm-engine")]
     Wasm(crate::wasm::WasmWorkload),
     #[cfg(feature = "dynclib-engine")]
     DynClib(crate::dynclib::DynClibWorkload),
+}
+
+impl std::fmt::Debug for Workload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Workload::None => f.write_str("Workload::None"),
+            Workload::Linked(_) => f.write_str("Workload::Linked(<dyn LinkedWorkloadHandle>)"),
+            #[cfg(feature = "wasm-engine")]
+            Workload::Wasm(w) => f.debug_tuple("Workload::Wasm").field(w).finish(),
+            #[cfg(feature = "dynclib-engine")]
+            Workload::DynClib(w) => f.debug_tuple("Workload::DynClib").field(w).finish(),
+        }
+    }
 }
 
 impl Workload {
@@ -189,16 +370,17 @@ impl Workload {
     pub fn dispatch_envelope<'a>(
         &'a mut self,
         envelope: RpcEnvelope,
-        _ctx: crate::context::RuntimeContext,
+        ctx: crate::context::RuntimeContext,
         invocation: InvocationContext,
         _host_abi: &'a HostAbiFn,
     ) -> Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send + 'a>> {
         Box::pin(async move {
-            let _ = (&envelope, &invocation);
+            let _ = &invocation;
             match self {
                 Workload::None => Err(ActrError::NotImplemented(
                     "this node has no dispatchable workload (client-only attach)".to_string(),
                 )),
+                Workload::Linked(handle) => handle.dispatch(envelope, Arc::new(ctx)).await,
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => {
                     let request_bytes = envelope.encode_to_vec();
@@ -222,6 +404,11 @@ impl Workload {
     }
 
     /// Handle one incoming request through the selected backend.
+    ///
+    /// The `Linked` variant is not reachable through this path — linked
+    /// dispatch goes through [`Workload::dispatch_envelope`] with a
+    /// concrete [`RpcEnvelope`]; `handle` is the guest-ABI raw-bytes path
+    /// used exclusively by WASM / dynclib guests.
     #[allow(unused_variables)]
     pub fn handle<'a>(
         &'a mut self,
@@ -234,6 +421,10 @@ impl Workload {
             match self {
                 Workload::None => Err(Box::new(std::io::Error::other(
                     "this node has no dispatchable workload (client-only attach)",
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>),
+                Workload::Linked(_) => Err(Box::new(std::io::Error::other(
+                    "linked workloads dispatch through RpcEnvelope, not raw guest-ABI bytes",
                 ))
                     as Box<dyn std::error::Error + Send + Sync>),
                 #[cfg(feature = "wasm-engine")]
@@ -302,4 +493,130 @@ pub fn encode_guest_handle_request(
 /// Re-exported from `actr_framework::guest::abi` for host-side convenience.
 pub fn decode_dest(v1: &actr_framework::guest::abi::DestV1) -> Option<actr_framework::Dest> {
     actr_framework::guest::abi::dest_v1_to_dest(v1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actr_framework::test_support::DummyContext;
+    use actr_framework::Context as FrameworkContext;
+    use actr_protocol::{ActrId, ActrType, Realm};
+
+    fn make_id(serial: u64) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 1 },
+            serial_number: serial,
+            r#type: ActrType {
+                manufacturer: "test".to_string(),
+                name: "UnitTestActor".to_string(),
+                version: "0.0.1".to_string(),
+            },
+        }
+    }
+
+    // ── Minimal Workload + Dispatcher used for adapter tests ────────────────
+    struct EchoWorkload {
+        suffix: String,
+    }
+
+    #[async_trait]
+    impl FrameworkWorkload for EchoWorkload {
+        type Dispatcher = EchoDispatcher;
+    }
+
+    struct EchoDispatcher;
+
+    #[async_trait]
+    impl MessageDispatcher for EchoDispatcher {
+        type Workload = EchoWorkload;
+
+        async fn dispatch<C: FrameworkContext>(
+            workload: &Self::Workload,
+            envelope: RpcEnvelope,
+            _ctx: &C,
+        ) -> ActorResult<Bytes> {
+            match envelope.route_key.as_str() {
+                "echo" => {
+                    let payload = envelope
+                        .payload
+                        .as_ref()
+                        .map(|b| String::from_utf8_lossy(b).to_string())
+                        .unwrap_or_default();
+                    let reply = format!("{payload}{}", workload.suffix);
+                    Ok(Bytes::from(reply.into_bytes()))
+                }
+                other => Err(ActrError::InvalidArgument(format!(
+                    "unknown route: {other}"
+                ))),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_dispatch_routes_to_workload_dispatcher() {
+        let adapter = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
+        let ctx = DummyContext::new(make_id(42));
+        let envelope = RpcEnvelope {
+            request_id: "r1".to_string(),
+            route_key: "echo".to_string(),
+            payload: Some(Bytes::from_static(b"hello")),
+            ..Default::default()
+        };
+        let resp = adapter
+            .dispatch_with_ctx(envelope, &ctx)
+            .await
+            .expect("dispatch must succeed");
+        assert_eq!(&resp[..], b"hello-ok");
+    }
+
+    #[tokio::test]
+    async fn adapter_dispatch_propagates_unknown_route_error() {
+        let adapter = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
+        let ctx = DummyContext::new(make_id(1));
+        let envelope = RpcEnvelope {
+            request_id: "r2".to_string(),
+            route_key: "does/not/exist".to_string(),
+            payload: Some(Bytes::new()),
+            ..Default::default()
+        };
+        let err = adapter
+            .dispatch_with_ctx(envelope, &ctx)
+            .await
+            .expect_err("unknown route must error");
+        match err {
+            ActrError::InvalidArgument(msg) => {
+                assert!(msg.contains("unknown route"), "unexpected message: {msg}")
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    /// The object-safe bound is the whole point of `LinkedWorkloadHandle`;
+    /// this guard catches anyone accidentally adding a non-object-safe
+    /// method to the trait in the future.
+    #[test]
+    fn linked_workload_handle_is_object_safe() {
+        fn accepts(_: Arc<dyn LinkedWorkloadHandle>) {}
+        let adapter: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
+        accepts(adapter);
+    }
+
+    /// Verify the `Debug` surface keeps the Linked variant distinguishable
+    /// from None — important because the two arms take different paths in
+    /// `dispatch_envelope` / `handle`.
+    #[test]
+    fn workload_variants_debug_distinctly() {
+        assert_eq!(format!("{:?}", Workload::None), "Workload::None");
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
+        let linked = Workload::Linked(handle);
+        assert!(format!("{:?}", linked).starts_with("Workload::Linked"));
+    }
 }

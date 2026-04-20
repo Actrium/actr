@@ -131,3 +131,4 @@ tokio-test = "0.4"
 webrtc-ice = "0.14"
 actr-pack.workspace = true
 actr-hyper = { path = ".", features = ["test-utils"] }
+actr-framework = { workspace = true, features = ["test-utils"] }

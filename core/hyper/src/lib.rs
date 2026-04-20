@@ -223,7 +223,7 @@ pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage
 #[cfg(not(target_arch = "wasm32"))]
 pub use workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
-    Workload, WorkloadDispatchResult,
+    Workload, WorkloadAdapter, WorkloadDispatchResult,
 };
 
 // AIS key cache
@@ -406,7 +406,8 @@ impl NodeState for Registered {}
 /// Node::from_config_file(path)    -> Node<Init>              (framework only)
 /// Node::from_hyper(hyper, config) -> Node<Init>              (escape hatch)
 ///     .attach(package)            -> Node<Attached>          (package-backed)
-///     .attach_linked_handle(h)    -> Node<Attached>          (embedded app)
+///     .attach_linked(workload)    -> Node<Attached>          (generic Rust Workload)
+///     .attach_linked_handle(h)    -> Node<Attached>          (embedded app / FFI handle)
 ///     .attach_none()              -> Node<Attached>          (client-only)
 ///     .register(ais_endpoint)     -> Node<Registered>        (credential obtained)
 ///     .start()                    -> ActrRef                 (running node)
@@ -455,7 +456,8 @@ struct Attachment {
 /// ```text
 /// Node::from_config_file(path) -> Node<Init>
 ///     .attach(package)         -> Node<Attached>   (package-backed)
-///     .attach_linked_handle(h) -> Node<Attached>   (embedded app)
+///     .attach_linked(workload)  -> Node<Attached>   (generic Rust Workload)
+///     .attach_linked_handle(h) -> Node<Attached>   (embedded app / FFI handle)
 ///     .attach_none()           -> Node<Attached>   (client-only)
 ///
 /// Node<Attached>.register(ais) -> Node<Registered>
@@ -789,11 +791,13 @@ impl Node<Init> {
 
     /// Bind a linked-workload handle (embedded app side) to this node.
     ///
-    /// No package is loaded; the host process *is* the workload. Inbound
-    /// RPC dispatch is **not** wired for linked nodes in the current
-    /// implementation — they are client-only for outbound calls plus
-    /// lifecycle / transport hook observation through the
-    /// [`LinkedWorkloadHandle`] methods.
+    /// No package is loaded; the host process *is* the workload. The
+    /// handle provides both observation hooks and an inbound-dispatch
+    /// entry point (see [`workload::LinkedWorkloadHandle::dispatch`]).
+    ///
+    /// Prefer [`Node::attach_linked`] when you already have a generic
+    /// [`actr_framework::Workload`] implementation — it wraps the
+    /// workload in a [`workload::WorkloadAdapter`] automatically.
     pub async fn attach_linked_handle(
         self,
         handle: Arc<dyn workload::LinkedWorkloadHandle>,
@@ -807,7 +811,7 @@ impl Node<Init> {
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
-            crate::workload::Workload::None,
+            crate::workload::Workload::Linked(handle.clone()),
             None,
             None,
             mailbox_backpressure_threshold,
@@ -828,6 +832,23 @@ impl Node<Init> {
             pending_runtime_config: None,
             _state: std::marker::PhantomData,
         })
+    }
+
+    /// Bind a generic [`actr_framework::Workload`] implementation to this
+    /// node.
+    ///
+    /// This is the preferred linked-attach path for Rust hosts: the
+    /// workload is wrapped in a [`workload::WorkloadAdapter`] so that its
+    /// associated [`actr_framework::MessageDispatcher`] drives inbound
+    /// RPC dispatch and its hook methods are bridged into the node's
+    /// observer plumbing.
+    pub async fn attach_linked<W: actr_framework::Workload>(
+        self,
+        workload: W,
+    ) -> HyperResult<Node<Attached>> {
+        let handle: Arc<dyn workload::LinkedWorkloadHandle> =
+            workload::WorkloadAdapter::new(workload);
+        self.attach_linked_handle(handle).await
     }
 
     /// Attach with no workload at all — produces a client-only node
