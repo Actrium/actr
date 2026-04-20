@@ -53,7 +53,8 @@ examples/*/public/actr_runtime_*.js
 examples/echo/client/public/packages/
 examples/echo/server/public/packages/
 .idea/
-.cargo/
+.cargo/*
+!.cargo/config.toml
 .cursor/
 *.swp
 *.swo

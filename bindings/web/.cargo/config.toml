@@ -1,0 +1,6 @@
+# All crates in this workspace target WebAssembly.
+# Setting this avoids `cargo check` / rust-analyzer trying to compile the
+# wasm-only crates for the host target, which trips async_trait Send/?Send
+# mismatches and wasm-bindgen stub errors.
+[build]
+target = "wasm32-unknown-unknown"
