@@ -12,6 +12,26 @@
 - `cargo test` — executes the full test suite, including per-crate tests in `crates/*`.
 - `actr gen --input=../echo-service/proto --output=../echo-service/src/generated --clean` — regenerates protobuf + actor scaffolding for the `echo-service` sample (run from workspace root).
 
+### WASM Component Model toolchain (Phase 1+)
+
+The native `wasm-engine` feature loads guests as WASM Component Model
+components. Rebuilding the test fixture and shipping `.actr` packages
+targeted at `wasm32-wasip2` requires pinned versions of two out-of-tree
+tools:
+
+```
+rustup target add wasm32-wasip2
+cargo install wasm-component-ld --version 0.5.22 --locked
+cargo install wasm-tools        --version 1.247.0 --locked
+```
+
+`wasm-component-ld 0.5.22` is the first release that recognises the
+async-ABI custom sections wit-bindgen 0.57 emits; earlier linkers
+bundled with Rust 1.91 (0.5.17) reject the guest fixture. `wasm-tools`
+is pinned separately for component validation and diagnostics. CI
+installs both via `cargo install --version` so local and CI behaviour
+match exactly.
+
 ## Coding Style & Naming Conventions
 - Follow Rust 2024 idioms: four-space indentation, snake_case for modules/functions, CamelCase for types.
 - Run `rustfmt` (same options used by `actr gen`) before committing: `cargo fmt --all`.

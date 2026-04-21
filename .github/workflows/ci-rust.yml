@@ -36,10 +36,26 @@ jobs:
       - uses: actions/checkout@v5
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32-wasip2 is required for the Component Model guest
+          # fixture rebuilt by core/hyper/tests/wasm_actor_fixture/build.sh
+          # under --all-features (wasm-engine).
+          targets: wasm32-wasip2
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      # Phase 1 Component Model toolchain:
+      # - wasm-component-ld 0.5.22 is the first release that recognises
+      #   wit-bindgen 0.57's async-ABI custom sections; earlier versions
+      #   reject the guest fixture with "unknown custom section".
+      # - wasm-tools 1.247 is pinned via `cargo install --version` so a
+      #   compatible component validator is available for
+      #   diagnostics / local inspection.
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Build workspace
         run: cargo build --verbose --all-features
@@ -57,15 +73,16 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-wasip2
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-      - name: Install wasm-opt
+      # Phase 1 Component Model toolchain — see `build` job for rationale.
+      - name: Install wasm Component Model toolchain
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y binaryen
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace --verbose --all-features
