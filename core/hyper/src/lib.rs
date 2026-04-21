@@ -1121,6 +1121,22 @@ async fn load_wasm_workload_inner(
 ) -> HyperResult<crate::workload::Workload> {
     #[cfg(feature = "wasm-engine")]
     {
+        // Refuse legacy core-module packages before attempting to compile
+        // them — `Component::from_binary` already rejects them downstream
+        // with an opaque "unknown binary format" error, so catching the
+        // case here produces a migration-pointing message instead.
+        if matches!(
+            manifest.binary.resolved_kind(),
+            actr_pack::BinaryKind::CoreModule
+        ) {
+            return Err(HyperError::InvalidManifest(format!(
+                "package `{}` uses the legacy core wasm module format, which was retired in Phase 1. \
+                 Rebuild with actr 0.2+ (`actr build`, target wasm32-wasip2 + wasm-component-ld 0.5.22+) \
+                 to produce a Component Model binary, and set `binary.kind = \"component\"` in manifest.toml.",
+                manifest.actr_type_str()
+            )));
+        }
+
         let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
             HyperError::Runtime(format!(
                 "failed to extract package binary `{}` for target `{}`: {e}",
@@ -1877,6 +1893,7 @@ mod tests {
                     target: "wasm32-wasip1".to_string(),
                     hash: "0".repeat(64),
                     size: None,
+                    kind: None,
                 },
                 signature_algorithm: "ed25519".to_string(),
                 signing_key_id: None,
@@ -2022,6 +2039,7 @@ mod tests {
                 target,
                 hash: String::new(),
                 size: None,
+                kind: None,
             },
             signature_algorithm: "ed25519".to_string(),
             signing_key_id: None,

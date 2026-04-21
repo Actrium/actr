@@ -35,7 +35,8 @@ pub use load::{
     read_signature,
 };
 pub use manifest::{
-    BinaryEntry, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry, ResourceEntry,
+    BinaryEntry, BinaryKind, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry,
+    ResourceEntry,
 };
 pub use pack::{PackOptions, pack};
 pub use verify::{VerifiedPackage, verify};

@@ -65,6 +65,7 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
             target: current_native_target(),
             hash: String::new(),
             size: None,
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,

@@ -28,13 +28,57 @@ fn default_sig_algorithm() -> String {
     "ed25519".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Shape of the binary carried by an .actr package.
+///
+/// Phase 1 introduces the Component Model as the only supported wasm shape;
+/// older `core-module` packages were valid before the host rewrite in
+/// Phase 1 Commit 2 and fail to load against the new wasmtime
+/// `Component::from_binary` path. We keep the enum open to future variants
+/// (native cdylib, etc.) by encoding it as a lowercase kebab-case string
+/// rather than a closed numeric code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BinaryKind {
+    /// Legacy core wasm module (`wasm_core_module`). No longer loadable —
+    /// retained in the enum so the verifier can produce a helpful
+    /// migration error rather than a generic "unknown kind".
+    CoreModule,
+    /// Component Model component (wasip2 canonical ABI).
+    Component,
+    /// Native shared library (cdylib); loaded via the dynclib engine.
+    NativeCdylib,
+}
+
+impl BinaryKind {
+    /// Default binary kind for manifests that predate the Phase-1
+    /// `binary.kind` field. Old packages were always core-modules on the
+    /// wasm side; assuming that keeps the error path crisp ("this is a
+    /// pre-Phase-1 package") rather than silently upgrading.
+    pub fn legacy_default_for(target: &str) -> Self {
+        if target.starts_with("wasm32-") {
+            BinaryKind::CoreModule
+        } else {
+            BinaryKind::NativeCdylib
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BinaryEntry {
     pub path: String,
     pub target: String,
     /// SHA-256 hash hex string (64 chars)
     pub hash: String,
     pub size: Option<u64>,
+    /// Binary shape marker.
+    ///
+    /// Added in Phase 1 alongside the Component Model rewrite. Old
+    /// packages lack the field; [`BinaryEntry::resolved_kind`] applies
+    /// the legacy default so the verifier can produce a clear
+    /// migration-pointing error without introducing a second
+    /// pre-Phase-1 code path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<BinaryKind>,
 }
 
 impl BinaryEntry {
@@ -66,9 +110,16 @@ impl BinaryEntry {
     }
 
     /// Returns `true` when this binary targets a WASM runtime (e.g.
-    /// `wasm32-wasip1`, `wasm32-unknown-unknown`).
+    /// `wasm32-wasip2`, `wasm32-wasip1`, `wasm32-unknown-unknown`).
     pub fn is_wasm_target(&self) -> bool {
         self.target.starts_with("wasm32-")
+    }
+
+    /// Return the declared kind, falling back to the legacy default for
+    /// manifests packaged before Phase 1 introduced the `kind` field.
+    pub fn resolved_kind(&self) -> BinaryKind {
+        self.kind
+            .unwrap_or_else(|| BinaryKind::legacy_default_for(&self.target))
     }
 }
 

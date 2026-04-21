@@ -58,6 +58,7 @@ fn simulate_sign(
             target: target.to_string(),
             hash: binary_hash,
             size: Some(binary_bytes.len() as u64),
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id),
@@ -100,6 +101,7 @@ fn simulate_build(
             target: target.to_string(),
             hash: String::new(), // pack() computes this
             size: None,          // pack() computes this
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id),

@@ -230,6 +230,7 @@ mod tests {
                 target: "wasm32-wasip1".to_string(),
                 hash: String::new(),
                 size: None,
+                kind: None,
             },
             signature_algorithm: "ed25519".to_string(),
             signing_key_id: Some(actr_pack::compute_key_id(

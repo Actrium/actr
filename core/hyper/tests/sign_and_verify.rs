@@ -65,6 +65,14 @@ fn build_actr_package_with_target(
     target: &str,
     signing_key: &SigningKey,
 ) -> Vec<u8> {
+    // Tests that care about the kind opt in through the target triple:
+    // `wasm32-wasip2` implies a Component binary, everything else leaves
+    // the field unset so the resolver falls back to the legacy default.
+    let kind = if target == "wasm32-wasip2" {
+        Some(actr_pack::BinaryKind::Component)
+    } else {
+        None
+    };
     let manifest = actr_pack::PackageManifest {
         manufacturer: manufacturer.to_string(),
         name: name.to_string(),
@@ -74,6 +82,7 @@ fn build_actr_package_with_target(
             target: target.to_string(),
             hash: String::new(),
             size: None,
+            kind,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,
@@ -211,6 +220,50 @@ async fn load_workload_package_selects_wasm_backend() {
     assert_eq!(loaded.manifest().binary.target, "wasm32-wasip2");
 }
 
+#[cfg(feature = "wasm-engine")]
+#[tokio::test]
+async fn load_workload_package_rejects_legacy_core_module() {
+    // A pre-Phase-1 .actr package identifies itself by having a wasm
+    // target (wasm32-*) and either no `binary.kind` field (legacy
+    // default) or an explicit `core-module` marker. The loader should
+    // refuse with a migration-pointing error long before wasmtime's
+    // `Component::from_binary` gets its hands on the bytes.
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+
+    // Build a legacy-style package: wasm target, no kind marker.
+    let package = build_actr_package(
+        &minimal_wasm(),
+        "legacy-mfr",
+        "LegacyEcho",
+        "0.1.0",
+        &signing_key,
+    );
+
+    let dir = TempDir::new().unwrap();
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
+        .await
+        .unwrap();
+
+    let result = hyper
+        .load_workload_package(&WorkloadPackage::new(package))
+        .await;
+    let err = result.expect_err("legacy core-module package must be refused");
+    match err {
+        HyperError::InvalidManifest(msg) => {
+            assert!(
+                msg.contains("legacy core wasm module format"),
+                "error message must mention the format migration: {msg}"
+            );
+            assert!(
+                msg.contains("wasm32-wasip2"),
+                "error message must point at the new target: {msg}"
+            );
+        }
+        other => panic!("expected InvalidManifest, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn load_workload_package_rejects_invalid_target() {
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -225,6 +278,7 @@ async fn load_workload_package_rejects_invalid_target() {
             target: "invalid-target".to_string(),
             hash: String::new(),
             size: None,
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,

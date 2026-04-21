@@ -39,6 +39,7 @@ fn fake_manifest() -> VerifiedPackage {
                 target: "wasm32-wasip1".to_string(),
                 hash: "0".repeat(64),
                 size: None,
+                kind: None,
             },
             signature_algorithm: "ed25519".to_string(),
             signing_key_id: None,

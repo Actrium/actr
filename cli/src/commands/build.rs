@@ -290,6 +290,16 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
         command.arg("--no-default-features");
     }
 
+    // Component Model guests (`wasm32-wasip2`) must be linked by
+    // `wasm-component-ld` so the emitted artifact is a Component rather
+    // than a core module. Rust 1.91 ships `wasm-component-ld 0.5.17`,
+    // which rejects the async custom sections wit-bindgen 0.57 emits;
+    // require >=0.5.22 and point `-Clinker=` at it via `RUSTFLAGS`.
+    if effective_target == "wasm32-wasip2" {
+        let linker = resolve_wasm_component_linker()?;
+        command.env("RUSTFLAGS", format!("-Clinker={}", linker.display()));
+    }
+
     let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -307,6 +317,68 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Locate a `wasm-component-ld` binary suitable for linking Component
+/// Model guests and validate its version.
+///
+/// Lookup order:
+/// 1. `WASM_COMPONENT_LD` environment variable (explicit override)
+/// 2. `wasm-component-ld` on `PATH`
+/// 3. `~/.cargo/bin/wasm-component-ld`
+///
+/// Returns an actionable `cargo install` hint when none are found.
+fn resolve_wasm_component_linker() -> Result<PathBuf> {
+    const REQUIRED: &str = "0.5.22";
+
+    let candidate = if let Some(p) = std::env::var_os("WASM_COMPONENT_LD") {
+        PathBuf::from(p)
+    } else if let Some(p) = find_on_path("wasm-component-ld") {
+        p
+    } else if let Some(home) = std::env::var_os("HOME") {
+        let p = PathBuf::from(home).join(".cargo/bin/wasm-component-ld");
+        if p.is_file() {
+            p
+        } else {
+            anyhow::bail!(
+                "`wasm-component-ld` (>= {REQUIRED}) is required to link wasm32-wasip2 Components.\n\
+                 Install it with: cargo install wasm-component-ld --version {REQUIRED}\n\
+                 Or set WASM_COMPONENT_LD to an existing binary."
+            );
+        }
+    } else {
+        anyhow::bail!(
+            "`wasm-component-ld` (>= {REQUIRED}) is required to link wasm32-wasip2 Components.\n\
+             Install it with: cargo install wasm-component-ld --version {REQUIRED}\n\
+             Or set WASM_COMPONENT_LD to an existing binary."
+        );
+    };
+
+    if !candidate.is_file() {
+        anyhow::bail!(
+            "wasm-component-ld path `{}` is not a file.\n\
+             Install it with: cargo install wasm-component-ld --version {REQUIRED}",
+            candidate.display()
+        );
+    }
+
+    Ok(candidate)
+}
+
+/// Walk `PATH` looking for `binary`. Returns the first hit that exists
+/// as a file. Mirrors the shell `which` semantics closely enough for
+/// the CLI's purposes — no PATHEXT handling because `wasm-component-ld`
+/// is the only target today and Windows builds are not on the Phase 1
+/// migration path.
+fn find_on_path(binary: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn run_post_build_steps(

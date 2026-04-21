@@ -306,6 +306,9 @@ async fn execute_sign(args: &PkgSignArgs, config_keychain: Option<&str>) -> Resu
             target: args.target.clone(),
             hash: binary_hash,
             size: binary_size,
+            // Default to Component for wasm32-wasip2, leave unset otherwise
+            // so the legacy-default resolver can apply.
+            kind: (args.target == "wasm32-wasip2").then_some(actr_pack::BinaryKind::Component),
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id.clone()),

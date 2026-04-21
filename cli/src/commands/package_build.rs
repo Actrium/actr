@@ -170,6 +170,11 @@ pub fn build_package(input: PackageBuildInput) -> Result<PackageBuildSummary> {
             target: input.target.clone(),
             hash: String::new(),
             size: None,
+            // Target `wasm32-wasip2` implies a Component binary in the
+            // Phase-1 toolchain; every other target leaves the kind
+            // unset so the resolver falls back to the legacy default.
+            kind: (input.target == "wasm32-wasip2")
+                .then_some(actr_pack::BinaryKind::Component),
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(actr_pack::compute_key_id(&verifying_key.to_bytes())),
