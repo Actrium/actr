@@ -353,3 +353,34 @@ async fn component_model_per_call_overhead() {
         elapsed.as_secs_f64() * 1000.0
     );
 }
+
+// ─── Phase 1 follow-up — call_on_start no longer traps ──────────────────────
+//
+// Before this followup, every adapter lifecycle helper called
+// `WasmContext::from_host().await` which hit `get-self-id` /
+// `get-caller-id` / `get-request-id` host imports. Those imports trap
+// when no invocation context is installed (which is precisely the
+// lifecycle case). The fix replaces the per-dispatch host lookups with
+// a locally-synthesised `WasmContext::lifecycle_placeholder()` so
+// lifecycle hooks with no ambient invocation no longer trap.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn component_model_call_on_start_does_not_trap() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut wl = host.instantiate().await.expect("instantiate");
+
+    // Fixture uses the default no-op `on_start`. Before the followup this
+    // trapped at the first `get-self-id` import; after the followup it
+    // completes cleanly without requiring an installed invocation context.
+    wl.call_on_start()
+        .await
+        .expect("call_on_start should no longer trap without invocation context");
+
+    // Sanity: subsequent dispatch path still works normally.
+    let req = make_envelope("test/echo", b"after-on-start".to_vec());
+    let reply = wl
+        .handle(&req, test_ctx(), &unreachable_bridge())
+        .await
+        .expect("dispatch after on_start should succeed");
+    assert_eq!(reply, b"after-on-start");
+}

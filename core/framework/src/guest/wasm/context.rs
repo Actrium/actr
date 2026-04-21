@@ -100,6 +100,25 @@ impl WasmContext {
             request_id,
         }
     }
+
+    /// Build a placeholder context for lifecycle hooks (`on_start` /
+    /// `on_ready` / `on_stop` / `on_error` and the signaling / transport
+    /// / credential / mailbox observers).
+    ///
+    /// These hooks fire outside an active dispatch, so the host has not
+    /// installed an [`InvocationContext`] — consulting
+    /// `get-self-id` / `get-caller-id` / `get-request-id` would trap.
+    /// Returns a `WasmContext` with zero-valued identity fields. Outbound
+    /// `ctx.call` / `ctx.tell` / `ctx.discover` operations route through
+    /// the host's standalone `host-abi` bridge (when installed for the
+    /// lifecycle path) and do not require these identity fields.
+    pub fn lifecycle_placeholder() -> Self {
+        Self {
+            self_id: ActrId::default(),
+            caller_id: None,
+            request_id: String::new(),
+        }
+    }
 }
 
 #[async_trait]
