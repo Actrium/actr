@@ -1,15 +1,23 @@
-//! WasmHost + WasmWorkload ABI verification (Phase 1: pending port).
+//! WasmHost minimal failure-path coverage.
 //!
-//! These tests exercised the pre-Phase-1 core-wasm-module + handwritten
-//! ptr/len ABI. Phase 1 Commit 2 rewrote the host around the Component
-//! Model; the legacy fixtures no longer load. The test suite is
-//! rewritten in Phase 1 Commit 6 against Component Model guests. The
-//! stubs below keep the build green during the intervening commits.
+//! Phase 1 Commit 6 removed the five `#[ignore]` stubs that stood in for
+//! the pre-Phase-1 asyncify ABI's behavioural coverage. Each stub's
+//! intent is now served by a real test in
+//! `component_model_dispatch.rs`:
 //!
-//! One test (`wasm_host_invalid_binary`) stays live because it only
-//! exercises the failure path when invalid bytes are passed to
-//! `WasmHost::compile` — that code path is independent of the ABI
-//! generation and is worth keeping green through the migration.
+//! | Old stub                          | Replacement                                 |
+//! | --------------------------------- | ------------------------------------------- |
+//! | `wasm_host_compile_and_echo`      | `component_model_basic_echo_round_trip`     |
+//! | `wasm_host_multiple_dispatches`   | `component_model_per_call_overhead`         |
+//! | `wasm_host_missing_exports`       | covered by `WasmHost::compile`'s Component  |
+//! |                                   | validation (legacy core wasm now rejected)  |
+//! | `wasm_host_empty_dispatch`        | folded into the per-call-overhead loop      |
+//! | `wasm_host_large_dispatch`        | not Component-ABI-specific, dropped as      |
+//! |                                   | redundant with the 1000-dispatch benchmark  |
+//!
+//! Only the invalid-binary failure path is retained here because it
+//! exercises `WasmHost::compile`'s reporting independently of the guest
+//! contract.
 
 #![cfg(feature = "wasm-engine")]
 
@@ -29,23 +37,3 @@ fn wasm_host_invalid_binary() {
         "error type should be WasmLoadFailed, got: {err:?}"
     );
 }
-
-#[test]
-#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
-fn wasm_host_compile_and_echo() {}
-
-#[test]
-#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
-fn wasm_host_multiple_dispatches() {}
-
-#[test]
-#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
-fn wasm_host_missing_exports() {}
-
-#[test]
-#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
-fn wasm_host_empty_dispatch() {}
-
-#[test]
-#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
-fn wasm_host_large_dispatch() {}

@@ -1,20 +1,25 @@
 //! WASM actor end-to-end test fixture
 //!
-//! Verification target: a real wasm32 actor that implements the `Context` trait
-//! via `actr-framework` guest module, calls `ctx.call_raw()` inside the handler to trigger
-//! asyncify suspend/resume, and returns the host's response as its own response.
+//! Verification target: a real wasm32 actor that implements the `Context`
+//! trait via `actr-framework` guest module, plus a panic route used by
+//! Phase 1 Commit 6's regression suite to validate guest-trap behaviour
+//! after a host suspension point.
 //!
 //! # Test protocol
 //!
-//! - route `test/echo`: returns the inbound payload as-is without outbound IO
-//! - request: raw bytes containing a 4-byte little-endian i32 value `x`
-//! - actor calls `ctx.call_raw(self_id, "test/double", payload_bytes)`
-//! - host mock returns `x * 2` (4-byte little-endian i32)
-//! - actor response: bytes returned by host (i.e. `x * 2`)
+//! - route `test/echo`: returns the inbound payload as-is without
+//!   outbound IO.
+//! - route `test/double`: decodes the payload as a 4-byte little-endian
+//!   i32 value `x`, calls `ctx.call_raw(self_id, "test/double_impl", payload)`,
+//!   and returns whatever the host responds with. Used by the async
+//!   round-trip / tick-probe / dispatch tests.
+//! - route `test/boom-after-await`: same control flow as `test/double` up
+//!   to the `ctx.call_raw` await, then panics. Used to verify that a
+//!   guest panic after a real suspension surfaces as a wasmtime trap
+//!   rather than corrupting the dispatch result.
 //!
-//! # Expected
-//!
-//! host calls `actr_handle(request=5_i32_le)` and eventually gets response `10_i32_le`
+//! All other routes surface `ActrError::UnknownRoute(route_key)`,
+//! exercising guest→host structured error propagation.
 
 use actr_framework::{Context, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
@@ -49,13 +54,25 @@ impl MessageDispatcher for DoubleDispatcher {
                 }
                 let x = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
 
-                // Call ctx.call_raw() -> triggers asyncify!
+                // Call ctx.call_raw() -> triggers the host-import await path.
                 let target = ctx.self_id().clone();
                 let resp = ctx
                     .call_raw(&target, "test/double_impl", Bytes::from(x.to_le_bytes().to_vec()))
                     .await?;
 
                 Ok(resp)
+            }
+            "test/boom-after-await" => {
+                // Exercise Phase 0.5 spike Test 8: perform a host-side
+                // await, then panic once control returns to the guest.
+                // The test host routes "test/double_impl" back to a stub
+                // reply; the actual content is discarded.
+                let target = ctx.self_id().clone();
+                let payload = envelope.payload.unwrap_or_default();
+                let _ = ctx
+                    .call_raw(&target, "test/double_impl", payload)
+                    .await?;
+                panic!("fixture: intentional post-await panic for trap test");
             }
             _ => Err(ActrError::UnknownRoute(envelope.route_key)),
         }
