@@ -241,6 +241,39 @@ impl HostImports for HostState {
         }
         Ok(())
     }
+
+    /// Return the current dispatch's `self-id`.
+    ///
+    /// Traps when called outside of an active dispatch: the guest is
+    /// consulting per-call context that the host has not installed, which
+    /// almost certainly means the workload accessed `ctx` from a constructor
+    /// or a lifecycle hook that should not thread invocation context.
+    async fn get_self_id(&mut self) -> wasmtime::Result<WitActrId> {
+        let ctx = self.invocation.as_ref().ok_or_else(|| {
+            wasmtime::Error::msg(
+                "get_self_id called outside of an active dispatch (no invocation context installed)",
+            )
+        })?;
+        Ok(proto_actr_id_to_wit(&ctx.self_id))
+    }
+
+    async fn get_caller_id(&mut self) -> wasmtime::Result<Option<WitActrId>> {
+        let ctx = self.invocation.as_ref().ok_or_else(|| {
+            wasmtime::Error::msg(
+                "get_caller_id called outside of an active dispatch (no invocation context installed)",
+            )
+        })?;
+        Ok(ctx.caller_id.as_ref().map(proto_actr_id_to_wit))
+    }
+
+    async fn get_request_id(&mut self) -> wasmtime::Result<String> {
+        let ctx = self.invocation.as_ref().ok_or_else(|| {
+            wasmtime::Error::msg(
+                "get_request_id called outside of an active dispatch (no invocation context installed)",
+            )
+        })?;
+        Ok(ctx.request_id.clone())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

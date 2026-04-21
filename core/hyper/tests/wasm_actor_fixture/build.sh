@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# Rebuild wasm_actor_fixture, apply the asyncify transform, and update wasm_actor_fixture.rs.
+# Rebuild wasm_actor_fixture as a Component Model component and refresh
+# the embedded-bytes file the integration tests consume.
+#
+# Phase 1 replaces the pre-existing core-wasm + wasm-opt asyncify transform
+# with wasm-component-ld producing a real wasip2 Component. The linker
+# bundled with Rust 1.91 is 0.5.17 which rejects the async custom sections
+# wit-bindgen 0.57 emits; point RUSTFLAGS at 0.5.22+ (installable via
+# `cargo install wasm-component-ld --version 0.5.22`).
+
 set -euo pipefail
 
-WASM_OPT="${WASM_OPT:-$(command -v wasm-opt || true)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR/built"
 BYTES_FILE="$SCRIPT_DIR/../wasm_actor_fixture.rs"
 
-if [[ -z "$WASM_OPT" ]]; then
-  echo "wasm-opt not found; set WASM_OPT or install wasm-opt" >&2
-  exit 1
+LD="${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}"
+if [[ ! -x "$LD" ]]; then
+    echo "wasm-component-ld not found at $LD" >&2
+    echo "install with: cargo install wasm-component-ld --version 0.5.22" >&2
+    exit 1
 fi
 
 mkdir -p "$OUT_DIR"
 
-echo "→ Building wasm-actor-fixture (wasm32-unknown-unknown) ..."
+echo "-> Building wasm-actor-fixture (wasm32-wasip2) via wasm-component-ld $($LD --version)"
 cd "$SCRIPT_DIR"
-cargo build --release --target wasm32-unknown-unknown
+RUSTFLAGS="-Clinker=$LD" cargo build --release --target wasm32-wasip2
 
-RAW="$SCRIPT_DIR/target/wasm32-unknown-unknown/release/wasm_actor_fixture.wasm"
+RAW="$SCRIPT_DIR/target/wasm32-wasip2/release/wasm_actor_fixture.wasm"
+cp "$RAW" "$OUT_DIR/wasm_actor_fixture.wasm"
 
-echo "→ Applying wasm-opt --asyncify ..."
-"$WASM_OPT" --asyncify -O "$RAW" -o "$OUT_DIR/wasm_actor_fixture.wasm"
-
-echo "→ Generating Rust bytes file ..."
+echo "-> Generating Rust bytes file"
 python3 - <<PYEOF
 data = open('$OUT_DIR/wasm_actor_fixture.wasm', 'rb').read()
 lines = ['pub const WASM_ACTOR_FIXTURE: &[u8] = &[']
@@ -35,4 +42,4 @@ open('$BYTES_FILE', 'w').write('\n'.join(lines))
 print(f"Wrote {len(data)} bytes -> $BYTES_FILE")
 PYEOF
 
-echo "✅ wasm_actor_fixture.rs updated"
+echo "-> wasm_actor_fixture.rs updated"

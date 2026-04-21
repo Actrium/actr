@@ -21,51 +21,48 @@ fn minimal_wasm() -> Vec<u8> {
 }
 
 #[cfg(feature = "wasm-engine")]
+mod wasm_actor_fixture;
+
+/// Returns the Phase-1 Component Model fixture bytes embedded in
+/// `wasm_actor_fixture.rs`. Previously this was a hand-rolled core wasm
+/// module exposing `actr_alloc` / `actr_handle` — obsolete since
+/// Commit 2 switched the host to `Component::from_binary`. The fresh
+/// Component exposes the `actr:workload/workload@0.1.0` world and loads
+/// cleanly through `WasmHost::compile`.
+#[cfg(feature = "wasm-engine")]
 fn echo_guest_wasm() -> Vec<u8> {
-    wat::parse_str(
-        r#"
-(module
-  (memory (export "memory") 2)
-  (global $heap (mut i32) (i32.const 4096))
-  (func $bump (param $n i32) (result i32)
-    (local $p i32)
-    (local.set $p (global.get $heap))
-    (global.set $heap (i32.add (global.get $heap) (local.get $n)))
-    (local.get $p))
-  (func (export "actr_alloc") (param $n i32) (result i32)
-    (call $bump (local.get $n)))
-  (func (export "actr_free") (param $p i32) (param $n i32))
-  (func (export "asyncify_start_unwind") (param i32))
-  (func (export "asyncify_stop_unwind"))
-  (func (export "asyncify_start_rewind") (param i32))
-  (func (export "asyncify_stop_rewind"))
-  (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
-    (i32.const 0))
-  (func (export "actr_handle")
-    (param $req_ptr i32) (param $req_len i32)
-    (param $resp_ptr_out i32) (param $resp_len_out i32)
-    (result i32)
-    (local $resp_ptr i32)
-    (local.set $resp_ptr (call $bump (local.get $req_len)))
-    (memory.copy
-      (local.get $resp_ptr)
-      (local.get $req_ptr)
-      (local.get $req_len))
-    (i32.store (local.get $resp_ptr_out) (local.get $resp_ptr))
-    (i32.store (local.get $resp_len_out) (local.get $req_len))
-    (i32.const 0))
-)
-"#,
-    )
-    .expect("WAT parse failed")
+    wasm_actor_fixture::WASM_ACTOR_FIXTURE.to_vec()
 }
 
-/// Build an .actr ZIP package
+/// Build an .actr ZIP package.
+///
+/// Defaults to a legacy `wasm32-wasip1` target string so the simpler
+/// signing/verification tests keep their pre-Component manifests. Callers
+/// that want a Component-capable manifest (loading through the actual
+/// wasm backend) go through [`build_actr_package_with_target`].
 fn build_actr_package(
     binary: &[u8],
     manufacturer: &str,
     name: &str,
     version: &str,
+    signing_key: &SigningKey,
+) -> Vec<u8> {
+    build_actr_package_with_target(
+        binary,
+        manufacturer,
+        name,
+        version,
+        "wasm32-wasip1",
+        signing_key,
+    )
+}
+
+fn build_actr_package_with_target(
+    binary: &[u8],
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
     signing_key: &SigningKey,
 ) -> Vec<u8> {
     let manifest = actr_pack::PackageManifest {
@@ -74,7 +71,7 @@ fn build_actr_package(
         version: version.to_string(),
         binary: actr_pack::BinaryEntry {
             path: "bin/actor.wasm".to_string(),
-            target: "wasm32-wasip1".to_string(),
+            target: target.to_string(),
             hash: String::new(),
             size: None,
         },
@@ -186,16 +183,17 @@ async fn verify_rejects_unknown_format() {
 
 #[cfg(feature = "wasm-engine")]
 #[tokio::test]
-#[ignore = "Phase 1 Commit 3 rebuilds the .actr fixture as a Component; the \
- core-wasm-module fixture embedded in echo_guest_wasm() no longer loads"]
 async fn load_workload_package_selects_wasm_backend() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
-    let package = build_actr_package(
+    // The fixture is a real Component Model binary targeting
+    // `wasm32-wasip2` — the target actr settled on in Phase 1.
+    let package = build_actr_package_with_target(
         &echo_guest_wasm(),
         "test-mfr",
         "Echo",
         "1.0.0",
+        "wasm32-wasip2",
         &signing_key,
     );
 
@@ -210,7 +208,7 @@ async fn load_workload_package_selects_wasm_backend() {
         .unwrap();
 
     assert_eq!(loaded.binary_kind, BinaryKind::Wasm);
-    assert_eq!(loaded.manifest().binary.target, "wasm32-wasip1");
+    assert_eq!(loaded.manifest().binary.target, "wasm32-wasip2");
 }
 
 #[tokio::test]

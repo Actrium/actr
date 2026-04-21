@@ -5,6 +5,8 @@ name = "wasm-actor-fixture"
 version = "0.1.0"
 edition = "2021"
 
+# cdylib is the correct crate-type for wasm32-wasip2 Component Model builds
+# (wasm-component-ld links a cdylib into a Component).
 [lib]
 crate-type = ["cdylib"]
 
@@ -14,6 +16,10 @@ actr-protocol = { path = "../../../../core/protocol" }
 async-trait = "0.1"
 bytes = "1.10"
 
+# actr-framework's `entry!` macro references `#[cfg(feature = "cdylib")]`
+# to select the native shared-library ABI. That feature lives on the
+# framework crate, not the fixture; silencing the lint here keeps
+# user-crate consumers from tripping on a framework-internal gate.
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
 

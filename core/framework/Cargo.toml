@@ -39,5 +39,11 @@ geoip = [
     "tar",
 ] # GeoIP with auto-download support
 
+# wit-bindgen is only needed when compiling the guest for wasm32-wasip2.
+# The generated code is gated by `#[cfg(target_arch = "wasm32")]`, so hosts
+# never pull it in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = "=0.57.1"
+
 [dev-dependencies]
 tokio.workspace = true

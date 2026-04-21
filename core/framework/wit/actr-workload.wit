@@ -194,6 +194,20 @@ interface host {
 
     // Structured log sink. Host-side maps `level` to tracing log levels.
     log-message: func(level: string, message: string);
+
+    // ── Per-dispatch context accessors ───────────────────────────────────────
+    //
+    // Mirror the three fields previously carried in `InvocationContextV1`
+    // (self-id, caller-id, request-id). The host installs these values
+    // before calling an export and clears them on return; calling these
+    // imports outside of an active dispatch traps. Accessor shape (vs.
+    // embedding the values in each export's parameter list) keeps the 16
+    // observation hooks exact one-for-one with the framework `Workload`
+    // trait, and lets the host avoid paying the canonical-ABI cost for
+    // context data that user hooks typically do not consult.
+    get-self-id: func() -> actr-id;
+    get-caller-id: func() -> option<actr-id>;
+    get-request-id: func() -> string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
