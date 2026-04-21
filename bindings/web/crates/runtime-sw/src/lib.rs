@@ -10,6 +10,7 @@ pub mod actr_ref;
 pub mod context;
 pub mod error_handler;
 pub mod guest_bridge;
+pub mod guest_bridge_wit;
 pub mod inbound;
 pub mod lifecycle;
 pub mod outbound;

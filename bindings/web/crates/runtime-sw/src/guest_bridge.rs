@@ -1,23 +1,74 @@
 //! Guest WASM bridge for the Web runtime.
 //!
-//! Allows the SW runtime to dispatch RPC requests to a standard
-//! guest WASM (built with the `entry!` macro FFI protocol) loaded
-//! separately via `WebAssembly.instantiate`.
+//! # Phase 1 status — transitional, scheduled for follow-up
 //!
-//! ## Protocol
+//! This bridge still dispatches through the **legacy handwritten ABI**
+//! (`actr_framework::guest::abi`: `AbiFrame`, `GuestHandleV1`,
+//! `InvocationContextV1`, `HostCallV1` ...). That ABI has been replaced on
+//! the native hyper host side by the Component Model contract in
+//! `core/framework/wit/actr-workload.wit` (Phase 1 Commits 1–4), but
+//! browsers cannot yet host Component Model binaries natively — wasmtime's
+//! Component engine is a native dependency and cannot be embedded into a
+//! Service-Worker WASM without heavy vendoring.
 //!
-//! The bridge encodes each dispatch as an `AbiFrame(op=GUEST_HANDLE)` containing
-//! a `GuestHandleV1` with the `RpcEnvelope`. The JS callback is responsible for
-//! copying the frame bytes into the guest WASM linear memory, calling `actr_handle`,
-//! and returning the `AbiReply` bytes.
+//! ## Why the bridge still targets the legacy ABI
+//!
+//! A browser-side `WebAssembly.instantiate` only understands core wasm
+//! modules. Delivering a Component Model binary to the browser requires
+//! one of the following, all of which involve tooling outside this crate:
+//!
+//! 1. **jco transpile**: run `jco transpile <component>.wasm` in the
+//!    build pipeline to emit an ES module that wraps the component in a
+//!    canonical-ABI JS shim. The SW runtime would then call into that JS
+//!    shim through a thin wasm-bindgen surface rather than dispatching
+//!    protobuf `AbiFrame` bytes.
+//! 2. **Embedded Component Model runtime**: port/compile a minimal
+//!    Component Model canonical-ABI interpreter into runtime-sw itself.
+//!    Infeasible today — all existing runtimes (wasmtime, jco, wasmer)
+//!    depend on host-side features not available inside a browser WASM.
+//!
+//! Phase 0.5's REPORT.md picks option (1) as the direction of travel; the
+//! corresponding pipeline work (jco install, script wiring, user-guest
+//! build target flip from cdylib to wasm32-wasip2) is tracked separately
+//! and did not fit inside Phase 1. Commit 4's CLI already builds guests
+//! as Components for the native path, so the same artifact is reusable
+//! once the jco step lands in the Web build chain.
+//!
+//! ## What this file does today
+//!
+//! The bridge keeps the echo examples building and running against the
+//! legacy ABI. Actor developers targeting the Web runtime currently build
+//! their guest with `crate-type = ["cdylib"]` and the `cdylib` feature
+//! flag on `actr-framework`, which emits the `actr_init`/`actr_handle`/
+//! `actr_alloc`/`actr_free` exports this bridge drives.
+//!
+//! The Phase 1 follow-up will:
+//! - Switch `bindings/web/examples/*/client-guest`/`server-guest` Cargo
+//!   targets to `wasm32-wasip2` (matching `actr build`).
+//! - Add a `jco transpile` step to `scripts/build-wasm.sh` so the
+//!   produced `.wasm` is accompanied by a JS bindings module.
+//! - Rewrite [`register_guest_workload`] to accept the transpiled JS
+//!   module handle instead of a raw dispatch `Function`, dropping the
+//!   `AbiFrame` protobuf envelope entirely.
+//! - Remove `actr_framework::guest::abi::{AbiFrame, GuestHandleV1, op,
+//!   HostCallV1, HostTellV1, HostCallRawV1, HostDiscoverV1}` once both
+//!   the cdylib path and this bridge have migrated off them.
+//!
+//! ## Protocol (current, legacy)
+//!
+//! The bridge encodes each dispatch as an `AbiFrame(op=GUEST_HANDLE)`
+//! containing a `GuestHandleV1` with the `RpcEnvelope`. The JS callback
+//! is responsible for copying the frame bytes into the guest WASM linear
+//! memory, calling `actr_handle`, and returning the `AbiReply` bytes.
 //!
 //! ## Outbound host invocations (JSPI)
 //!
-//! When a guest WASM calls `actr_host_invoke` (e.g. for discover or call_raw),
-//! the JS host routes the ABI frame to [`guest_host_invoke_async`] which
-//! decodes the operation, performs it through the runtime context, and returns
-//! an `AbiReply`. The current `RuntimeContext` is stored in `GUEST_CTX` for
-//! the duration of each dispatch so `guest_host_invoke_async` can access it.
+//! When a guest WASM calls `actr_host_invoke` (e.g. for discover or
+//! call_raw), the JS host routes the ABI frame to
+//! [`guest_host_invoke_async`] which decodes the operation, performs it
+//! through the runtime context, and returns an `AbiReply`. The current
+//! `RuntimeContext` is stored in `GUEST_CTX` for the duration of each
+//! dispatch so `guest_host_invoke_async` can access it.
 
 use std::cell::RefCell;
 use std::pin::Pin;
@@ -43,7 +94,14 @@ thread_local! {
 
 /// Encode an `InitPayloadV1` for guest WASM initialization.
 ///
-/// Returns protobuf-encoded bytes that can be passed to the guest's `actr_init`.
+/// Returns protobuf-encoded bytes that can be passed to the guest's
+/// `actr_init`.
+///
+/// **Phase 1 deprecation note**: the legacy ABI's `actr_init` is replaced
+/// by the Component Model's implicit `instantiate_async` lifecycle. This
+/// helper is retained for the cdylib-guest path still serving the browser
+/// echo examples; once the jco-based Component pipeline lands this export
+/// disappears from the public surface.
 #[wasm_bindgen]
 pub fn encode_guest_init_payload(actr_type: &str, realm_id: u32) -> Vec<u8> {
     let init = abi::InitPayloadV1 {
@@ -65,8 +123,14 @@ pub fn encode_guest_init_payload(actr_type: &str, realm_id: u32) -> Vec<u8> {
 ///   - **Output**: protobuf-encoded `AbiReply` (sync or async via JSPI)
 ///
 /// This enables the SW runtime to dispatch RPC requests to a standard
-/// guest WASM (built with `entry!` macro) loaded separately via
-/// `WebAssembly.instantiate`.
+/// guest WASM (built with `entry!` macro, `cdylib` feature) loaded
+/// separately via `WebAssembly.instantiate`.
+///
+/// **Phase 1 deprecation note**: once the jco-based Component pipeline
+/// lands (see module docs), this function's signature changes to accept
+/// a JS wrapper module emitted by `jco transpile`, and the protobuf
+/// envelope is removed. Callers will need to rebuild their guests against
+/// `wasm32-wasip2` and rerun the Web build script.
 #[wasm_bindgen]
 pub fn register_guest_workload(dispatch_fn: js_sys::Function) {
     let handler: ServiceHandlerFn = Rc::new(
@@ -191,7 +255,9 @@ pub fn register_guest_workload(dispatch_fn: js_sys::Function) {
     );
 
     crate::register_workload(WasmWorkload::new(handler));
-    log::info!("[SW] Guest workload registered via JS bridge");
+    log::info!(
+        "[SW] Guest workload registered via JS bridge (legacy ABI; Phase 1 jco pipeline pending)"
+    );
 }
 
 /// Handle a guest's outbound host invocation asynchronously.
@@ -206,6 +272,10 @@ pub fn register_guest_workload(dispatch_fn: js_sys::Function) {
 /// - `HOST_CALL` (op=1): typed RPC call to a destination
 ///
 /// Returns protobuf-encoded `AbiReply` bytes.
+///
+/// **Phase 1 deprecation note**: this function will be replaced by direct
+/// jco-bridged calls into the WIT `host` interface once the browser build
+/// pipeline switches to Component Model guests.
 #[wasm_bindgen]
 pub async fn guest_host_invoke_async(frame_bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
     let ctx = GUEST_CTX
