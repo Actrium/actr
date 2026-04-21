@@ -1,80 +1,384 @@
-//! WasmHost — Wasmtime host engine
+//! WasmHost — Wasmtime Component Model host engine.
 //!
-//! Implements the full lifecycle from WASM byte loading, compilation, instantiation to
-//! message dispatch. A single `WasmHost` corresponds to one WASM module (compiled once),
-//! from which multiple `WasmWorkload`s can be derived.
+//! Drives wasm workloads packaged as Component Model components. A single
+//! [`WasmHost`] compiles a component once; multiple [`WasmWorkload`]
+//! instances can be derived from that compilation, each corresponding to
+//! one logical actor instance.
 //!
-//! Each `WasmWorkload` is one logical actor instance. If the host wants to run two
-//! actors of the same WASM type, it instantiates the module twice and keeps the
-//! resulting instances isolated.
+//! # Contract
 //!
-//! # Asyncify driver
+//! The guest component must implement the `actr:workload@0.1.0`
+//! `actr-workload-guest` world defined in
+//! `core/framework/wit/actr-workload.wit`. That contract carries one
+//! `dispatch(envelope)` export for inbound RPC plus sixteen observation
+//! hooks (lifecycle + signaling + transport + credential + mailbox),
+//! exactly mirroring [`actr_framework::Workload`].
 //!
-//! `dispatch()` uses the asyncify unwind/rewind protocol:
-//! 1. Call `actr_handle`
-//! 2. If WASM triggers a host import (e.g. `actr_host_call`), the import initiates unwind and suspends
-//! 3. Drive loop detects Unwinding, executes real async IO
-//! 4. Stores result in `HostData`, initiates rewind, re-calls `actr_handle`
-//! 5. Import returns real result in Rewinding mode, WASM continues execution
+//! Host imports (`call`, `tell`, `call-raw`, `discover`, `log-message`)
+//! are serviced via the caller-supplied [`HostAbiFn`] bridge threaded
+//! into the WASM [`Store`].
+//!
+//! # Async model
+//!
+//! Every host import is an `async fn` on the generated Rust trait
+//! (Component Model async binding mode). Chaining `Component::instantiate_async`
+//! with `call_dispatch(&mut store, env).await` lets the guest `.await`
+//! host imports without cooperative-suspend / asyncify unwind
+//! machinery — that entire mechanism is deleted with this commit.
+//!
+//! Same-instance single-threadedness is compile-time-enforced: each
+//! dispatch takes `&mut Store<HostState>`, so the Rust borrow checker
+//! forbids concurrent hooks on the same actor. Cross-instance
+//! parallelism still works because each [`WasmWorkload`] owns its own
+//! `Store`.
 
+use std::sync::Arc;
+
+use actr_framework::guest::abi::InitPayloadV1;
 use actr_protocol::prost::Message as ProstMessage;
-use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+use actr_protocol::{ActrError, ActrId, ActrType, Realm, RpcEnvelope};
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
+use wasmtime::{Config, Engine, Store};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::wasm::error::{WasmError, WasmResult};
-use crate::workload::{
-    HostOperation, HostOperationResult, InvocationContext, encode_guest_handle_request,
+use super::component_bindings::ActrWorkloadGuest;
+use super::component_bindings::actr::workload::host::Host as HostImports;
+use super::component_bindings::actr::workload::types::{
+    self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
+    Dest as WitDest, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
 };
-use actr_framework::guest::abi::{self as guest_abi, AbiReply, InitPayloadV1};
+use super::component_bindings::actr::workload::types::Host as TypesHost;
+use crate::wasm::error::{WasmError, WasmResult};
+use crate::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 
-use super::abi;
-
-/// Re-bind the canonical error code module for concise usage within this file.
-use actr_framework::guest::abi::code as abi_code;
+use actr_framework::guest::abi as guest_abi;
+use actr_framework::guest::abi::{HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HostData — runtime state stored in Store
+// Engine configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Asyncify state machine
-#[derive(Debug, Clone, PartialEq, Default)]
-enum AsyncifyMode {
-    #[default]
-    Normal,
-    Unwinding,
-    Rewinding,
+/// Build a wasmtime [`Config`] enabling the Component Model async path.
+///
+/// `wasm_component_model_async(true)` is load-bearing even when the WIT
+/// functions are declared sync — wit-bindgen 0.57 with `async: true` on
+/// the guest emits `context.get` (async-ABI primitive), and the host
+/// engine must recognise that opcode to validate the component. See the
+/// Phase 0.5 spike REPORT for details.
+fn build_engine() -> WasmResult<Engine> {
+    let mut config = Config::new();
+    // `async_support(true)` was required before wasmtime 43; since then
+    // the `async` Cargo feature alone enables async at the engine level.
+    // We pair it with explicit component-model flags to be self-documenting.
+    config.wasm_component_model(true);
+    config.wasm_component_model_async(true);
+    Engine::new(&config)
+        .map_err(|e| WasmError::LoadFailed(format!("wasmtime engine construction failed: {e}")))
 }
 
-/// Wasmtime Store internal data
-#[derive(Debug, Default)]
-struct HostData {
-    // ── asyncify protocol ─────────────────────────────────────────────────
-    asyncify_mode: AsyncifyMode,
-    asyncify_data_ptr: i32,
-    // ── current invocation context for legacy getter imports ──────────────
-    current_invocation: Option<InvocationContext>,
-    // ── pending IO saved when host import suspends ────────────────────────
-    pending_call: Option<HostOperation>,
-    // ── drive loop writes IO result here, host import reads during rewind ─
-    io_result: Option<HostOperationResult>,
+// ─────────────────────────────────────────────────────────────────────────────
+// HostState — per-Store runtime state
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Per-instance host state threaded through the wasmtime [`Store`].
+///
+/// Holds:
+/// - the WASI p2 context + resource table (required for any component
+///   that transitively imports WASI interfaces);
+/// - an optional [`InvocationContext`] carrying self_id / caller_id /
+///   request_id for the currently-active dispatch (set before
+///   `call_dispatch` and cleared after);
+/// - an optional [`HostAbiFn`] bridge servicing guest->host operations;
+///   forwards to the host runtime's outbound RPC executor (registered
+///   by the [`WasmWorkload::handle`] call path).
+pub struct HostState {
+    wasi: WasiCtx,
+    table: ResourceTable,
+    pub(crate) invocation: Option<InvocationContext>,
+    pub(crate) host_abi: Option<HostAbiFn>,
 }
 
-// asyncify data buffer layout (fixed address, WASM page 0)
-const ASYNCIFY_DATA_PTR: i32 = 0x8000; // 32 KB
-const ASYNCIFY_STACK_START: i32 = ASYNCIFY_DATA_PTR + 8;
-const ASYNCIFY_STACK_END: i32 = ASYNCIFY_DATA_PTR + 0x1000; // +4 KB
+impl std::fmt::Debug for HostState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostState")
+            .field("invocation", &self.invocation)
+            .field("host_abi", &self.host_abi.as_ref().map(|_| "<fn>"))
+            .finish_non_exhaustive()
+    }
+}
+
+impl HostState {
+    fn new() -> Self {
+        Self {
+            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            table: ResourceTable::new(),
+            invocation: None,
+            host_abi: None,
+        }
+    }
+}
+
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+// `types` is a types-only interface (no functions); bindgen still
+// generates a marker `Host` trait that must be implemented by the host
+// state. Empty impl satisfies the linker's expectations.
+impl TypesHost for HostState {}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generated `Host` trait implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Forward a guest-initiated [`HostOperation`] through the installed
+/// [`HostAbiFn`] bridge, translating the [`HostOperationResult`] into
+/// the generated WIT return shape.
+///
+/// Returns `Ok(Ok(...))` on success, `Ok(Err(WitActrError::...))` on
+/// guest-visible operation failure. The outer wasmtime::Result is
+/// reserved for trap-level faults (missing bridge, ABI-error codes the
+/// host cannot translate into `actr-error`).
+fn forward_host_operation(
+    state: &HostState,
+    op: HostOperation,
+) -> impl std::future::Future<Output = wasmtime::Result<Result<Vec<u8>, WitActrError>>> + Send + 'static
+{
+    let host_abi = state.host_abi.clone();
+    async move {
+        let Some(host_abi) = host_abi else {
+            return Err(wasmtime::Error::msg(
+                "host ABI bridge not installed for this dispatch",
+            ));
+        };
+        match (host_abi)(op).await {
+            HostOperationResult::Bytes(bytes) => Ok(Ok(bytes)),
+            HostOperationResult::Done => Ok(Ok(Vec::new())),
+            HostOperationResult::Error(code) => {
+                Ok(Err(actr_error_from_abi_code(code)))
+            }
+        }
+    }
+}
+
+impl HostImports for HostState {
+    async fn call(
+        &mut self,
+        target: WitDest,
+        route_key: String,
+        payload: Vec<u8>,
+    ) -> wasmtime::Result<Result<Vec<u8>, WitActrError>> {
+        let op = HostOperation::Call(HostCallV1 {
+            route_key,
+            dest: wit_dest_to_v1(&target),
+            payload,
+        });
+        forward_host_operation(self, op).await
+    }
+
+    async fn tell(
+        &mut self,
+        target: WitDest,
+        route_key: String,
+        payload: Vec<u8>,
+    ) -> wasmtime::Result<Result<(), WitActrError>> {
+        let op = HostOperation::Tell(HostTellV1 {
+            route_key,
+            dest: wit_dest_to_v1(&target),
+            payload,
+        });
+        match forward_host_operation(self, op).await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    async fn call_raw(
+        &mut self,
+        target: WitActrId,
+        route_key: String,
+        payload: Vec<u8>,
+    ) -> wasmtime::Result<Result<Vec<u8>, WitActrError>> {
+        let op = HostOperation::CallRaw(HostCallRawV1 {
+            route_key,
+            target: wit_actr_id_to_proto(&target),
+            payload,
+        });
+        forward_host_operation(self, op).await
+    }
+
+    async fn discover(
+        &mut self,
+        target_type: WitActrType,
+    ) -> wasmtime::Result<Result<WitActrId, WitActrError>> {
+        let op = HostOperation::Discover(HostDiscoverV1 {
+            target_type: wit_actr_type_to_proto(&target_type),
+        });
+        match forward_host_operation(self, op).await? {
+            Ok(bytes) => match ActrId::decode(bytes.as_slice()) {
+                Ok(id) => Ok(Ok(proto_actr_id_to_wit(&id))),
+                Err(e) => Ok(Err(WitActrError::DecodeFailure(format!(
+                    "host discover returned undecodable ActrId: {e}"
+                )))),
+            },
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    async fn log_message(&mut self, level: String, message: String) -> wasmtime::Result<()> {
+        match level.as_str() {
+            "error" => tracing::error!(target: "wasm-guest", "{message}"),
+            "warn" => tracing::warn!(target: "wasm-guest", "{message}"),
+            "info" => tracing::info!(target: "wasm-guest", "{message}"),
+            "debug" => tracing::debug!(target: "wasm-guest", "{message}"),
+            "trace" => tracing::trace!(target: "wasm-guest", "{message}"),
+            other => tracing::info!(target: "wasm-guest", level = %other, "{message}"),
+        }
+        Ok(())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WIT ↔ actr_protocol / actr_framework translation
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn wit_realm_to_proto(r: &WitRealm) -> Realm {
+    Realm { realm_id: r.realm_id }
+}
+
+fn proto_realm_to_wit(r: &Realm) -> WitRealm {
+    WitRealm { realm_id: r.realm_id }
+}
+
+fn wit_actr_type_to_proto(t: &WitActrType) -> ActrType {
+    ActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn proto_actr_type_to_wit(t: &ActrType) -> WitActrType {
+    WitActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn wit_actr_id_to_proto(id: &WitActrId) -> ActrId {
+    ActrId {
+        realm: wit_realm_to_proto(&id.realm),
+        serial_number: id.serial_number,
+        r#type: wit_actr_type_to_proto(&id.type_),
+    }
+}
+
+fn proto_actr_id_to_wit(id: &ActrId) -> WitActrId {
+    WitActrId {
+        realm: proto_realm_to_wit(&id.realm),
+        serial_number: id.serial_number,
+        type_: proto_actr_type_to_wit(&id.r#type),
+    }
+}
+
+fn wit_dest_to_v1(dest: &WitDest) -> guest_abi::DestV1 {
+    match dest {
+        WitDest::Shell => guest_abi::DestV1::shell(),
+        WitDest::Local => guest_abi::DestV1::local(),
+        WitDest::Actor(id) => guest_abi::DestV1::actor(wit_actr_id_to_proto(id)),
+    }
+}
+
+fn actr_error_from_abi_code(code: i32) -> WitActrError {
+    match code {
+        guest_abi::code::GENERIC_ERROR => WitActrError::Internal("generic ABI error".into()),
+        guest_abi::code::INIT_FAILED => WitActrError::Internal("init failed".into()),
+        guest_abi::code::HANDLE_FAILED => WitActrError::Internal("handle failed".into()),
+        guest_abi::code::ALLOC_FAILED => WitActrError::Internal("allocation failed".into()),
+        guest_abi::code::PROTOCOL_ERROR => WitActrError::DecodeFailure("protocol error".into()),
+        guest_abi::code::BUFFER_TOO_SMALL => {
+            WitActrError::Internal("reply buffer too small".into())
+        }
+        guest_abi::code::UNSUPPORTED_OP => {
+            WitActrError::NotImplemented("unsupported ABI operation".into())
+        }
+        other => WitActrError::Internal(format!("ABI status {other}")),
+    }
+}
+
+#[allow(dead_code)]
+fn actr_error_to_wit(e: &ActrError) -> WitActrError {
+    match e {
+        ActrError::Unavailable(msg) => WitActrError::Unavailable(msg.clone()),
+        ActrError::TimedOut => WitActrError::TimedOut,
+        ActrError::NotFound(msg) => WitActrError::NotFound(msg.clone()),
+        ActrError::PermissionDenied(msg) => WitActrError::PermissionDenied(msg.clone()),
+        ActrError::InvalidArgument(msg) => WitActrError::InvalidArgument(msg.clone()),
+        ActrError::UnknownRoute(msg) => WitActrError::UnknownRoute(msg.clone()),
+        ActrError::DependencyNotFound {
+            service_name,
+            message,
+        } => WitActrError::DependencyNotFound(
+            wit_types::DependencyNotFoundPayload {
+                service_name: service_name.clone(),
+                message: message.clone(),
+            },
+        ),
+        ActrError::DecodeFailure(msg) => WitActrError::DecodeFailure(msg.clone()),
+        ActrError::NotImplemented(msg) => WitActrError::NotImplemented(msg.clone()),
+        ActrError::Internal(msg) => WitActrError::Internal(msg.clone()),
+    }
+}
+
+fn wit_actr_error_to_proto(e: WitActrError) -> ActrError {
+    match e {
+        WitActrError::Unavailable(msg) => ActrError::Unavailable(msg),
+        WitActrError::TimedOut => ActrError::TimedOut,
+        WitActrError::NotFound(msg) => ActrError::NotFound(msg),
+        WitActrError::PermissionDenied(msg) => ActrError::PermissionDenied(msg),
+        WitActrError::InvalidArgument(msg) => ActrError::InvalidArgument(msg),
+        WitActrError::UnknownRoute(msg) => ActrError::UnknownRoute(msg),
+        WitActrError::DependencyNotFound(p) => ActrError::DependencyNotFound {
+            service_name: p.service_name,
+            message: p.message,
+        },
+        WitActrError::DecodeFailure(msg) => ActrError::DecodeFailure(msg),
+        WitActrError::NotImplemented(msg) => ActrError::NotImplemented(msg),
+        WitActrError::Internal(msg) => ActrError::Internal(msg),
+    }
+}
+
+fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
+    WitRpcEnvelope {
+        request_id: envelope.request_id.clone(),
+        route_key: envelope.route_key.clone(),
+        payload: envelope
+            .payload
+            .as_ref()
+            .map(|b| b.to_vec())
+            .unwrap_or_default(),
+    }
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WasmHost
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// WASM host engine
+/// Compiled wasm Component engine.
 ///
-/// Compiles and holds a WASM module; the same module can be instantiated multiple times
-/// (one instance per actor). Compilation is CPU-intensive and should be done once,
-/// then the `WasmHost` is reused.
+/// One `WasmHost` corresponds to one compiled component. Instantiation
+/// produces a fresh `WasmWorkload` per actor instance; each instance
+/// owns its own `Store<HostState>`.
 pub struct WasmHost {
     engine: Engine,
-    module: Module,
+    component: Component,
 }
 
 impl std::fmt::Debug for WasmHost {
@@ -84,281 +388,71 @@ impl std::fmt::Debug for WasmHost {
 }
 
 impl WasmHost {
-    /// Compile a WASM module from bytes (CPU-intensive, recommend calling in `spawn_blocking`)
+    /// Compile a Component from raw bytes.
+    ///
+    /// CPU-intensive; callers should run this on a blocking task.
+    /// Errors include non-Component inputs (e.g. a legacy core wasm
+    /// module saved in a pre-Phase-1 `.actr` package) — callers get a
+    /// clear `LoadFailed` in that case and should surface the migration
+    /// guidance up to the `.actr` loader.
     pub fn compile(wasm_bytes: &[u8]) -> WasmResult<Self> {
-        let engine = Engine::default();
-        let module = Module::new(&engine, wasm_bytes)
-            .map_err(|e| WasmError::LoadFailed(format!("module compilation failed: {e}")))?;
-
-        tracing::info!(wasm_bytes = wasm_bytes.len(), "WASM module compiled");
-        Ok(Self { engine, module })
+        let engine = build_engine()?;
+        let component = Component::from_binary(&engine, wasm_bytes).map_err(|e| {
+            WasmError::LoadFailed(format!(
+                "wasm bytes did not load as a Component (this host \
+                 requires Component Model binaries as of .actr format \
+                 bump; wasmtime reported: {e})"
+            ))
+        })?;
+        tracing::info!(wasm_bytes = wasm_bytes.len(), "wasm Component compiled");
+        Ok(Self { engine, component })
     }
 
-    /// Instantiate the WASM module, register all host imports, return an executable `WasmWorkload`
-    pub fn instantiate(&self) -> WasmResult<WasmWorkload> {
-        let mut linker = Linker::<HostData>::new(&self.engine);
-        register_host_imports(&mut linker)?;
-        let legacy_handle_payload = uses_legacy_handle_payload(&self.module);
+    /// Instantiate the component into a runnable [`WasmWorkload`].
+    ///
+    /// Builds a fresh [`Linker`] per instance (cheap), registers WASI
+    /// p2 as well as the generated `actr:workload/host` linker, and
+    /// runs `Component::instantiate_async` which drives any
+    /// component-model initialisation through the host reactor. The
+    /// resulting bindings are cached on the returned `WasmWorkload`
+    /// for subsequent `call_dispatch` and hook invocations.
+    pub async fn instantiate(&self) -> WasmResult<WasmWorkload> {
+        let mut linker: Linker<HostState> = Linker::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
+            WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
+        })?;
+        ActrWorkloadGuest::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| {
+            WasmError::LoadFailed(format!(
+                "failed to register actr:workload/host linker imports: {e}"
+            ))
+        })?;
 
-        let mut store = Store::new(&self.engine, HostData::default());
-
-        let instance = linker
-            .instantiate(&mut store, &self.module)
-            .map_err(|e| WasmError::LoadFailed(format!("module instantiation failed: {e}")))?;
-
-        // initialize asyncify data buffer
-        init_asyncify_data(&instance, &mut store);
-
-        let actr_init = resolve_func::<(i32, i32), i32>(&instance, &mut store, abi::EXPORT_INIT)?;
-        let actr_handle =
-            resolve_func::<(i32, i32, i32, i32), i32>(&instance, &mut store, abi::EXPORT_HANDLE)?;
-        let actr_alloc = resolve_func::<i32, i32>(&instance, &mut store, abi::EXPORT_ALLOC)?;
-        let actr_free = resolve_func::<(i32, i32), ()>(&instance, &mut store, abi::EXPORT_FREE)?;
-        let memory = instance
-            .get_memory(&mut store, abi::EXPORT_MEMORY)
-            .ok_or_else(|| {
-                WasmError::LoadFailed(
-                    "WASM module does not export linear memory 'memory'".to_string(),
-                )
+        let mut store = Store::new(&self.engine, HostState::new());
+        let bindings = ActrWorkloadGuest::instantiate_async(&mut store, &self.component, &linker)
+            .await
+            .map_err(|e| {
+                WasmError::LoadFailed(format!("Component instantiate_async failed: {e}"))
             })?;
 
-        // asyncify control functions (injected into WASM binary by wasm-opt --asyncify)
-        let asyncify_stop_unwind =
-            resolve_func::<(), ()>(&instance, &mut store, "asyncify_stop_unwind")?;
-        let asyncify_start_rewind =
-            resolve_func::<i32, ()>(&instance, &mut store, "asyncify_start_rewind")?;
-
-        tracing::info!("WASM instantiation succeeded, all ABI export functions verified");
-
-        Ok(WasmWorkload {
-            store,
-            _instance: instance,
-            actr_init,
-            actr_handle,
-            actr_alloc,
-            actr_free,
-            memory,
-            asyncify_stop_unwind,
-            asyncify_start_rewind,
-            legacy_handle_payload,
-        })
+        tracing::info!("wasm Component instantiated");
+        Ok(WasmWorkload { store, bindings })
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Host imports registration
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn register_host_imports(linker: &mut Linker<HostData>) -> WasmResult<()> {
-    // Register minimal WASI stubs for wasi_snapshot_preview1
-    // These are no-op implementations to satisfy WASM imports
-    linker
-        .func_wrap(
-            "wasi_snapshot_preview1",
-            "environ_get",
-            |_: i32, _: i32| -> i32 { 0 },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register environ_get: {e}")))?;
-
-    linker
-        .func_wrap(
-            "wasi_snapshot_preview1",
-            "environ_sizes_get",
-            |_: i32, _: i32| -> i32 { 0 },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register environ_sizes_get: {e}")))?;
-
-    linker
-        .func_wrap("wasi_snapshot_preview1", "proc_exit", |_: i32| {})
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register proc_exit: {e}")))?;
-
-    linker
-        .func_wrap(
-            "wasi_snapshot_preview1",
-            "fd_write",
-            |_: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_write: {e}")))?;
-
-    linker
-        .func_wrap("wasi_snapshot_preview1", "fd_close", |_: i32| -> i32 { 0 })
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_close: {e}")))?;
-
-    linker
-        .func_wrap(
-            "wasi_snapshot_preview1",
-            "fd_seek",
-            |_: i32, _: i64, _: i32, _: i32| -> i32 { 0 },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register fd_seek: {e}")))?;
-
-    // Register actr-specific imports
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_self_id",
-            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
-                let Some(ctx) = caller.data().current_invocation.as_ref() else {
-                    return abi_code::GENERIC_ERROR;
-                };
-                let bytes = ctx.self_id.encode_to_vec();
-                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
-            },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_self_id: {e}")))?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_caller_id",
-            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
-                let Some(ctx) = caller.data().current_invocation.as_ref() else {
-                    return abi_code::GENERIC_ERROR;
-                };
-                let bytes = ctx
-                    .caller_id
-                    .as_ref()
-                    .map(ProstMessage::encode_to_vec)
-                    .unwrap_or_default();
-                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
-            },
-        )
-        .map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register actr_host_caller_id: {e}"))
-        })?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_request_id",
-            |mut caller: Caller<HostData>, buf_ptr: i32, buf_cap: i32| -> i32 {
-                let Some(ctx) = caller.data().current_invocation.as_ref() else {
-                    return abi_code::GENERIC_ERROR;
-                };
-                let bytes = ctx.request_id.as_bytes().to_vec();
-                write_legacy_context_bytes(&mut caller, &bytes, buf_ptr, buf_cap)
-            },
-        )
-        .map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register actr_host_request_id: {e}"))
-        })?;
-
-    linker
-        .func_wrap(
-            "env",
-            "actr_host_invoke",
-            |mut caller: Caller<HostData>,
-             frame_ptr: i32,
-             frame_len: i32,
-             reply_buf_ptr: i32,
-             reply_buf_cap: i32,
-             reply_len_out: i32|
-             -> i32 {
-                match caller.data().asyncify_mode.clone() {
-                    AsyncifyMode::Normal => {
-                        let frame_bytes = read_bytes_from_wasm(&mut caller, frame_ptr, frame_len);
-                        let frame =
-                            match guest_abi::decode_message::<guest_abi::AbiFrame>(&frame_bytes) {
-                                Ok(frame) => frame,
-                                Err(code) => return code,
-                            };
-
-                        let pending = match decode_host_operation(frame) {
-                            Ok(pending) => pending,
-                            Err(code) => return code,
-                        };
-
-                        caller.data_mut().pending_call = Some(pending);
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Unwinding;
-                        trigger_unwind(&mut caller);
-                        abi_code::SUCCESS
-                    }
-                    AsyncifyMode::Rewinding => {
-                        let reply_bytes = match caller.data_mut().io_result.take() {
-                            Some(HostOperationResult::Bytes(bytes)) => {
-                                match guest_abi::encode_message(&AbiReply {
-                                    abi_version: guest_abi::version::V1,
-                                    status: guest_abi::code::SUCCESS,
-                                    payload: bytes,
-                                }) {
-                                    Ok(reply) => reply,
-                                    Err(code) => return code,
-                                }
-                            }
-                            Some(HostOperationResult::Done) => {
-                                match guest_abi::encode_message(&AbiReply {
-                                    abi_version: guest_abi::version::V1,
-                                    status: guest_abi::code::SUCCESS,
-                                    payload: Vec::new(),
-                                }) {
-                                    Ok(reply) => reply,
-                                    Err(code) => return code,
-                                }
-                            }
-                            Some(HostOperationResult::Error(code)) => {
-                                match guest_abi::encode_message(&AbiReply {
-                                    abi_version: guest_abi::version::V1,
-                                    status: code,
-                                    payload: Vec::new(),
-                                }) {
-                                    Ok(reply) => reply,
-                                    Err(code) => return code,
-                                }
-                            }
-                            None => return abi_code::GENERIC_ERROR,
-                        };
-
-                        let reply_len = reply_bytes.len();
-                        let reply_len_i32 = match i32::try_from(reply_len) {
-                            Ok(len) => len,
-                            Err(_) => return guest_abi::code::GENERIC_ERROR,
-                        };
-
-                        write_i32_to_wasm(&mut caller, reply_len_out, reply_len_i32);
-                        if reply_len > reply_buf_cap.max(0) as usize {
-                            caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
-                            trigger_stop_rewind(&mut caller);
-                            return guest_abi::code::BUFFER_TOO_SMALL;
-                        }
-
-                        let written =
-                            write_to_wasm(&mut caller, &reply_bytes, reply_buf_ptr, reply_buf_cap);
-                        write_i32_to_wasm(&mut caller, reply_len_out, written);
-                        caller.data_mut().asyncify_mode = AsyncifyMode::Normal;
-                        trigger_stop_rewind(&mut caller);
-                        abi_code::SUCCESS
-                    }
-                    AsyncifyMode::Unwinding => abi_code::SUCCESS,
-                }
-            },
-        )
-        .map_err(|e| WasmError::LoadFailed(format!("failed to register actr_host_invoke: {e}")))?;
-
-    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WasmWorkload
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Single WASM actor instance
+/// Single wasm actor instance driven through the Component Model.
 ///
-/// Wraps a Wasmtime `Store<HostData>` and cached export function handles.
-/// `actr_init` initializes exactly one logical actor state inside this instance.
-/// **Not `Sync`**: the caller is responsible for concurrency protection
-/// (typically `Mutex<WasmWorkload>`), and must not drive `handle()` concurrently
-/// on the same instance.
+/// Holds a [`Store<HostState>`] and cached generated bindings. `handle`
+/// takes `&mut self`; wasmtime's `Store<T>` is not `Sync`, so the Rust
+/// borrow checker rejects any caller attempting to drive two hooks on
+/// the same instance concurrently — the single-threaded-actor invariant
+/// is compile-time-enforced.
 pub struct WasmWorkload {
-    store: Store<HostData>,
-    _instance: Instance,
-    actr_init: TypedFunc<(i32, i32), i32>,
-    actr_handle: TypedFunc<(i32, i32, i32, i32), i32>,
-    actr_alloc: TypedFunc<i32, i32>,
-    actr_free: TypedFunc<(i32, i32), ()>,
-    memory: Memory,
-    asyncify_stop_unwind: TypedFunc<(), ()>,
-    asyncify_start_rewind: TypedFunc<i32, ()>,
-    legacy_handle_payload: bool,
+    store: Store<HostState>,
+    bindings: ActrWorkloadGuest,
 }
 
 impl std::fmt::Debug for WasmWorkload {
@@ -368,422 +462,108 @@ impl std::fmt::Debug for WasmWorkload {
 }
 
 impl WasmWorkload {
-    /// Initialize the WASM actor (calls `actr_init`)
+    /// Legacy init entry — carried over from the pre-Component path so
+    /// `core/hyper/src/lib.rs::load_wasm_workload_inner` still compiles
+    /// unchanged. In the Component model, explicit init is implicit
+    /// (the guest's static constructors run inside `instantiate_async`);
+    /// a later commit will rewire the lifecycle so on-start / init
+    /// payload flow through the WIT hooks directly.
+    ///
+    /// For now this simply logs the intent and returns Ok.
     pub fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
-        let init_bytes = guest_abi::encode_message(init_payload)
-            .map_err(|code| WasmError::InitFailed(format!("init payload encode failed: {code}")))?;
-
-        let ptr = self.wasm_write(&init_bytes)?;
-        let len = init_bytes.len() as i32;
-
-        let result = self
-            .actr_init
-            .call(&mut self.store, (ptr, len))
-            .map_err(|e| WasmError::InitFailed(format!("actr_init call failed: {e}")))?;
-
-        self.wasm_free(ptr, len)?;
-
-        if result != abi_code::SUCCESS {
-            return Err(WasmError::InitFailed(format!(
-                "actr_init returned error code {result} ({})",
-                abi::describe_error_code(result)
-            )));
-        }
-
-        tracing::info!("WASM actor initialized");
+        tracing::debug!(
+            actr_type = %init_payload.actr_type,
+            realm_id = init_payload.realm_id,
+            "wasm Component workload init (Component-model lifecycle handles this implicitly)"
+        );
         Ok(())
     }
 
-    /// Handle one RPC request, using the asyncify drive loop to service outbound IO.
+    /// Invoke the workload's `on-start` lifecycle hook.
     ///
-    /// `ctx`: context data for this call (self_id, caller_id, request_id)
-    /// `call_executor`: handles outbound calls initiated by the guest
+    /// Phase 1 exposes this as a distinct entry point so the host can
+    /// pump the lifecycle after instantiation. Returns `Err` on a host
+    /// trap or an `actr-error` variant from the guest.
+    pub async fn call_on_start(&mut self) -> WasmResult<()> {
+        let result = self
+            .bindings
+            .actr_workload_workload()
+            .call_on_start(&mut self.store)
+            .await
+            .map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
+        result
+            .map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
+        Ok(())
+    }
+
+    /// Handle one inbound RPC request.
     ///
-    /// Note: `call_executor` needs to perform real async IO, but Wasmtime host imports are synchronous.
-    /// The asyncify protocol exposes the "IO needed" moment to the drive loop (this function),
-    /// where `call_executor` (async) can be called.
-    pub async fn handle<F, Fut>(
+    /// `request_bytes` is a prost-encoded [`RpcEnvelope`] produced by
+    /// the hyper dispatcher. The envelope is decoded on the host side
+    /// and passed as a typed Component Model record to the guest; the
+    /// guest returns raw reply bytes or a structured `actr-error`.
+    ///
+    /// `ctx` + `host_abi` are threaded through the `Store<HostState>`
+    /// for the duration of this call. The `host_abi` bridge services
+    /// any guest-initiated `call` / `tell` / `call-raw` / `discover`
+    /// operations during `.await` points inside the guest.
+    pub async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,
-        call_executor: F,
-    ) -> WasmResult<Vec<u8>>
-    where
-        F: Fn(HostOperation) -> Fut,
-        Fut: std::future::Future<Output = HostOperationResult>,
-    {
-        // Reset asyncify data buffer before each dispatch
-        // (previous unwind may have written to the buffer; must reset the write pointer before a new handle call)
-        reset_asyncify_data(&mut self.store, &self.memory);
-
-        self.store.data_mut().asyncify_mode = AsyncifyMode::Normal;
-
-        self.store.data_mut().current_invocation = Some(ctx.clone());
-
-        let request_bytes = if self.legacy_handle_payload {
-            request_bytes.to_vec()
-        } else {
-            encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
-                WasmError::ExecutionFailed(format!(
-                    "guest handle frame serialization failed: {code}"
-                ))
-            })?
-        };
-
-        // Write request to WASM memory
-        let req_ptr = self.wasm_write(&request_bytes)?;
-        let req_len = request_bytes.len() as i32;
-
-        // Allocate output area for response pointer and length (2 x i32 = 8 bytes)
-        let out_area_ptr = self.alloc_raw(8)?;
-        let resp_ptr_out = out_area_ptr;
-        let resp_len_out = out_area_ptr + 4;
-
-        let response = loop {
-            // Call actr_handle
-            let result = self
-                .actr_handle
-                .call(
-                    &mut self.store,
-                    (req_ptr, req_len, resp_ptr_out, resp_len_out),
-                )
-                .map_err(|e| WasmError::ExecutionFailed(format!("actr_handle call failed: {e}")))?;
-
-            match self.store.data().asyncify_mode {
-                AsyncifyMode::Unwinding => {
-                    // WASM has saved state, stop unwind
-                    self.asyncify_stop_unwind
-                        .call(&mut self.store, ())
-                        .map_err(|e| {
-                            WasmError::ExecutionFailed(format!("asyncify_stop_unwind failed: {e}"))
-                        })?;
-
-                    // Take the pending IO request
-                    let pending = self.store.data_mut().pending_call.take().ok_or_else(|| {
-                        WasmError::ExecutionFailed("Unwinding but no pending_call".into())
-                    })?;
-
-                    tracing::debug!(call = ?std::mem::discriminant(&pending), "WASM initiated outbound call");
-
-                    // Execute actual IO (async)
-                    let io_result = call_executor(pending).await;
-
-                    // Write result back to HostData, prepare for rewind
-                    self.store.data_mut().io_result = Some(io_result);
-                    self.store.data_mut().asyncify_mode = AsyncifyMode::Rewinding;
-
-                    let data_ptr = self.store.data().asyncify_data_ptr;
-                    self.asyncify_start_rewind
-                        .call(&mut self.store, data_ptr)
-                        .map_err(|e| {
-                            WasmError::ExecutionFailed(format!("asyncify_start_rewind failed: {e}"))
-                        })?;
-                    // Continue loop, re-call actr_handle to trigger rewind
-                }
-                AsyncifyMode::Normal => {
-                    // Normal completion (including completion after rewind)
-                    if result != abi_code::SUCCESS {
-                        self.store.data_mut().current_invocation = None;
-                        self.free_raw(out_area_ptr, 8)?;
-                        self.wasm_free(req_ptr, req_len)?;
-                        return Err(WasmError::ExecutionFailed(format!(
-                            "actr_handle returned error code {result} ({})",
-                            abi::describe_error_code(result)
-                        )));
-                    }
-
-                    let resp_ptr = self.read_i32(resp_ptr_out)?;
-                    let resp_len = self.read_i32(resp_len_out)?;
-                    self.free_raw(out_area_ptr, 8)?;
-                    self.wasm_free(req_ptr, req_len)?;
-
-                    if resp_ptr == 0 || resp_len <= 0 {
-                        break Vec::new();
-                    }
-
-                    let data = self.wasm_read(resp_ptr, resp_len as usize)?;
-                    self.wasm_free(resp_ptr, resp_len)?;
-
-                    if self.legacy_handle_payload {
-                        tracing::debug!(
-                            req_bytes = request_bytes.len(),
-                            resp_bytes = data.len(),
-                            "legacy actr_handle completed"
-                        );
-                        break data;
-                    }
-
-                    let reply = guest_abi::decode_message::<AbiReply>(&data).map_err(|code| {
-                        WasmError::ExecutionFailed(format!(
-                            "guest returned malformed AbiReply with code {code}"
-                        ))
-                    })?;
-
-                    if reply.status != guest_abi::code::SUCCESS {
-                        self.store.data_mut().current_invocation = None;
-                        let message = String::from_utf8(reply.payload)
-                            .unwrap_or_else(|_| format!("guest returned status {}", reply.status));
-                        return Err(WasmError::ExecutionFailed(message));
-                    }
-
-                    tracing::debug!(
-                        req_bytes = request_bytes.len(),
-                        resp_bytes = reply.payload.len(),
-                        "actr_handle completed"
-                    );
-
-                    break reply.payload;
-                }
-                AsyncifyMode::Rewinding => {
-                    // Should not be in Rewinding state when actr_handle returns
-                    self.store.data_mut().current_invocation = None;
-                    return Err(WasmError::ExecutionFailed(
-                        "drive loop: actr_handle returned while still in Rewinding state".into(),
-                    ));
-                }
-            }
-        };
-
-        self.store.data_mut().current_invocation = None;
-        Ok(response)
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Memory operation helper methods
-// ─────────────────────────────────────────────────────────────────────────────
-
-impl WasmWorkload {
-    fn alloc_raw(&mut self, size: i32) -> WasmResult<i32> {
-        let ptr = self
-            .actr_alloc
-            .call(&mut self.store, size)
-            .map_err(|e| WasmError::ExecutionFailed(format!("actr_alloc failed: {e}")))?;
-        if ptr == 0 {
-            return Err(WasmError::ExecutionFailed(format!(
-                "actr_alloc({size}) returned null (OOM)"
-            )));
-        }
-        Ok(ptr)
-    }
-
-    fn free_raw(&mut self, ptr: i32, size: i32) -> WasmResult<()> {
-        self.actr_free
-            .call(&mut self.store, (ptr, size))
-            .map_err(|e| WasmError::ExecutionFailed(format!("actr_free failed: {e}")))
-    }
-
-    fn wasm_write(&mut self, bytes: &[u8]) -> WasmResult<i32> {
-        if bytes.is_empty() {
-            return Ok(0);
-        }
-        let ptr = self.alloc_raw(bytes.len() as i32)?;
-        let mem = self.memory.data_mut(&mut self.store);
-        let start = ptr as usize;
-        let end = start + bytes.len();
-        if end > mem.len() {
-            return Err(WasmError::ExecutionFailed(format!(
-                "write out of bounds: {start}..{end}, memory size {}",
-                mem.len()
-            )));
-        }
-        mem[start..end].copy_from_slice(bytes);
-        Ok(ptr)
-    }
-
-    fn wasm_read(&mut self, ptr: i32, len: usize) -> WasmResult<Vec<u8>> {
-        let mem = self.memory.data(&self.store);
-        let start = ptr as usize;
-        let end = start + len;
-        if end > mem.len() {
-            return Err(WasmError::ExecutionFailed(format!(
-                "read out of bounds: {start}..{end}, memory size {}",
-                mem.len()
-            )));
-        }
-        Ok(mem[start..end].to_vec())
-    }
-
-    fn wasm_free(&mut self, ptr: i32, len: i32) -> WasmResult<()> {
-        if ptr != 0 && len > 0 {
-            self.free_raw(ptr, len)?;
-        }
-        Ok(())
-    }
-
-    fn read_i32(&mut self, ptr: i32) -> WasmResult<i32> {
-        let bytes = self.wasm_read(ptr, 4)?;
-        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    /// Write bytes directly to WASM linear memory at the specified address (no alloc, address provided by guest)
-    pub fn write_to_addr(&mut self, ptr: i32, bytes: &[u8]) -> WasmResult<()> {
-        let mem = self.memory.data_mut(&mut self.store);
-        let start = ptr as usize;
-        let end = start + bytes.len();
-        if end > mem.len() {
-            return Err(WasmError::ExecutionFailed(format!(
-                "address write out of bounds: {start}..{end}"
-            )));
-        }
-        mem[start..end].copy_from_slice(bytes);
-        Ok(())
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Asyncify initialization helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn init_asyncify_data(instance: &Instance, store: &mut Store<HostData>) {
-    let memory = instance
-        .get_memory(&mut *store, "memory")
-        .expect("no memory export");
-    let mem = memory.data_mut(&mut *store);
-    let base = ASYNCIFY_DATA_PTR as usize;
-    mem[base..base + 4].copy_from_slice(&ASYNCIFY_STACK_START.to_le_bytes());
-    mem[base + 4..base + 8].copy_from_slice(&ASYNCIFY_STACK_END.to_le_bytes());
-    store.data_mut().asyncify_data_ptr = ASYNCIFY_DATA_PTR;
-}
-
-/// Reset the asyncify data buffer's write pointer before each dispatch
-///
-/// After unwind execution, the write pointer advances (local variable snapshot written).
-/// Before the next dispatch, the write pointer must be reset to avoid snapshot area overflow
-/// or overwriting old data.
-fn reset_asyncify_data(store: &mut Store<HostData>, memory: &Memory) {
-    let mem = memory.data_mut(&mut *store);
-    let base = ASYNCIFY_DATA_PTR as usize;
-    // Only reset the write pointer ([ptr+0]), stack end address ([ptr+4]) remains unchanged
-    mem[base..base + 4].copy_from_slice(&ASYNCIFY_STACK_START.to_le_bytes());
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Host import helper functions (called within Caller context)
-// ─────────────────────────────────────────────────────────────────────────────
-
-use crate::workload::decode_host_operation;
-
-/// Read bytes from the specified range in WASM linear memory
-fn read_bytes_from_wasm(caller: &mut Caller<HostData>, ptr: i32, len: i32) -> Vec<u8> {
-    if ptr == 0 || len <= 0 {
-        return Vec::new();
-    }
-    let mem = caller
-        .get_export("memory")
-        .and_then(|e| e.into_memory())
-        .expect("no memory export");
-    let data = mem.data(&*caller);
-    let start = ptr as usize;
-    let end = start + len as usize;
-    if end > data.len() {
-        tracing::warn!(
-            start,
-            end,
-            mem_len = data.len(),
-            "read_bytes_from_wasm out of bounds"
-        );
-        return Vec::new();
-    }
-    data[start..end].to_vec()
-}
-
-/// Write bytes to the specified address in WASM linear memory, return actual bytes written
-fn write_to_wasm(caller: &mut Caller<HostData>, bytes: &[u8], ptr: i32, max: i32) -> i32 {
-    if ptr == 0 || max <= 0 {
-        return 0;
-    }
-    let to_write = bytes.len().min(max as usize);
-    let mem = caller
-        .get_export("memory")
-        .and_then(|e| e.into_memory())
-        .expect("no memory export");
-    let data = mem.data_mut(caller);
-    let start = ptr as usize;
-    let end = start + to_write;
-    if end > data.len() {
-        tracing::warn!(start, end, "write_to_wasm out of bounds");
-        return 0;
-    }
-    data[start..end].copy_from_slice(&bytes[..to_write]);
-    to_write as i32
-}
-
-/// Write an i32 to WASM linear memory (little-endian)
-fn write_i32_to_wasm(caller: &mut Caller<HostData>, ptr: i32, value: i32) {
-    if ptr == 0 {
-        return;
-    }
-    write_to_wasm(caller, &value.to_le_bytes(), ptr, 4);
-}
-
-fn write_legacy_context_bytes(
-    caller: &mut Caller<HostData>,
-    bytes: &[u8],
-    buf_ptr: i32,
-    buf_cap: i32,
-) -> i32 {
-    if buf_cap < bytes.len() as i32 {
-        return bytes.len() as i32;
-    }
-    write_to_wasm(caller, bytes, buf_ptr, buf_cap)
-}
-
-/// Trigger asyncify unwind within a host import
-fn trigger_unwind(caller: &mut Caller<HostData>) {
-    let data_ptr = caller.data().asyncify_data_ptr;
-    let start_unwind = caller
-        .get_export("asyncify_start_unwind")
-        .and_then(|e| e.into_func())
-        .expect("asyncify_start_unwind not found");
-    start_unwind
-        .typed::<i32, ()>(&*caller)
-        .expect("asyncify_start_unwind signature mismatch")
-        .call(&mut *caller, data_ptr)
-        .expect("asyncify_start_unwind call failed");
-}
-
-/// Stop asyncify rewind within a host import
-fn trigger_stop_rewind(caller: &mut Caller<HostData>) {
-    let stop_rewind = caller
-        .get_export("asyncify_stop_rewind")
-        .and_then(|e| e.into_func())
-        .expect("asyncify_stop_rewind not found");
-    stop_rewind
-        .typed::<(), ()>(&*caller)
-        .expect("asyncify_stop_rewind signature mismatch")
-        .call(&mut *caller, ())
-        .expect("asyncify_stop_rewind call failed");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper functions
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn resolve_func<Args, Ret>(
-    instance: &Instance,
-    store: &mut Store<HostData>,
-    name: &str,
-) -> WasmResult<TypedFunc<Args, Ret>>
-where
-    Args: wasmtime::WasmParams,
-    Ret: wasmtime::WasmResults,
-{
-    instance
-        .get_typed_func::<Args, Ret>(store, name)
-        .map_err(|e| {
-            WasmError::LoadFailed(format!(
-                "export function '{name}' missing or signature mismatch: {e}"
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<Vec<u8>> {
+        // Decode the envelope. If the caller handed us malformed bytes
+        // we surface that as an ExecutionFailed; historically this case
+        // could never happen in practice because the caller encodes the
+        // envelope immediately before calling us, but defending against
+        // it keeps the host side self-documenting.
+        let envelope = RpcEnvelope::decode(request_bytes).map_err(|e| {
+            WasmError::ExecutionFailed(format!(
+                "host failed to decode RpcEnvelope before dispatch: {e}"
             ))
-        })
+        })?;
+
+        // Thread per-call context into the Store. `HostAbiFn` is an
+        // `Arc<...>` (Phase-1 type bump); cloning it is a refcount bump
+        // with `'static` lifetime, safe to carry across the async
+        // dispatch boundary. A fresh clone is installed per dispatch
+        // so the bridge is dropped when the dispatch completes or
+        // traps.
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        {
+            let state = self.store.data_mut();
+            state.invocation = Some(ctx);
+            state.host_abi = Some(host_abi_clone);
+        }
+
+        let wit_envelope = rpc_envelope_to_wit(&envelope);
+        let dispatch_result = self
+            .bindings
+            .actr_workload_workload()
+            .call_dispatch(&mut self.store, &wit_envelope)
+            .await;
+
+        // Always clear per-call state regardless of outcome — a trap
+        // poisons the Store (wasmtime drops further use anyway) but
+        // clearing keeps the state machine observable even when the
+        // caller decides to retain the store for a next dispatch.
+        {
+            let state = self.store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+
+        match dispatch_result {
+            Ok(Ok(bytes)) => Ok(bytes),
+            Ok(Err(wit_err)) => Err(WasmError::ExecutionFailed(format!(
+                "guest dispatch returned error: {:?}",
+                wit_actr_error_to_proto(wit_err)
+            ))),
+            Err(trap) => Err(WasmError::ExecutionFailed(format!(
+                "guest dispatch trapped: {trap}"
+            ))),
+        }
+    }
 }
 
-fn uses_legacy_handle_payload(module: &Module) -> bool {
-    module.imports().any(|import| {
-        import.module() == "env"
-            && matches!(
-                import.name(),
-                "actr_host_self_id" | "actr_host_caller_id" | "actr_host_request_id"
-            )
-    })
-}

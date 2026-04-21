@@ -113,7 +113,8 @@ async fn test_basic_echo_dispatch() {
     let payload = b"hello dynclib".to_vec();
     let req_bytes = make_envelope("test/echo", payload.clone());
 
-    let executor: HostAbiFn = Box::new(|_| Box::pin(async { HostOperationResult::Error(-1) }));
+    let executor: HostAbiFn =
+        std::sync::Arc::new(|_| Box::pin(async { HostOperationResult::Error(-1) }));
 
     let result = instance
         .handle(&req_bytes, test_ctx(), &executor)
@@ -134,7 +135,7 @@ async fn test_basic_double_dispatch() {
     let x: i32 = 21;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    let executor: HostAbiFn = Box::new(|pending| {
+    let executor: HostAbiFn = std::sync::Arc::new(|pending| {
         Box::pin(async move {
             match pending {
                 HostOperation::Call(req) => {

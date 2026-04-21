@@ -43,7 +43,13 @@ pub enum HostOperationResult {
 }
 
 /// Host-side async bridge used by guest runtimes.
-pub type HostAbiFn = Box<
+///
+/// Passed as `&HostAbiFn` through the dispatch path. Wrapped in an `Arc`
+/// (rather than the historical `Box`) so that the wasm Component Model
+/// host can clone the bridge into its `Store<HostState>` for the
+/// duration of a dispatch without forcing every call site to rebox —
+/// cloning an `Arc` is a refcount bump, safe to do per dispatch.
+pub type HostAbiFn = Arc<
     dyn Fn(HostOperation) -> Pin<Box<dyn Future<Output = HostOperationResult> + Send>>
         + Send
         + Sync,

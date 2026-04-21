@@ -85,7 +85,7 @@ fn test_config() -> InitPayloadV1 {
 }
 
 fn noop_executor() -> HostAbiFn {
-    Box::new(|_pending| Box::pin(async { HostOperationResult::Error(-1) }))
+    std::sync::Arc::new(|_pending| Box::pin(async { HostOperationResult::Error(-1) }))
 }
 
 // ---- tests -----------------------------------------------------------------
@@ -140,7 +140,7 @@ async fn dynclib_double_dispatch() {
     // host ABI: handle the vtable call from guest's ctx.call_raw()
     // DynclibContext::call_raw encodes Dest::Actor and routes through vtable.call,
     // which produces HostOperation::Call(HostCallV1 { route_key, dest, payload }).
-    let executor: HostAbiFn = Box::new(|pending| {
+    let executor: HostAbiFn = std::sync::Arc::new(|pending| {
         Box::pin(async move {
             match pending {
                 HostOperation::Call(req) => {
@@ -188,7 +188,7 @@ async fn dynclib_multiple_dispatches() {
     for x in [1i32, 5, 42, 100] {
         let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-        let executor: HostAbiFn = Box::new(|pending| {
+        let executor: HostAbiFn = std::sync::Arc::new(|pending| {
             Box::pin(async move {
                 match pending {
                     HostOperation::Call(req) => {

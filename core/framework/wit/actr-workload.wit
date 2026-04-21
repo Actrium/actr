@@ -81,37 +81,39 @@ interface types {
         payload: list<u8>,
     }
 
-    // Coarse error classification (actr_framework::ErrorCategory).
-    // Reserves an `other(string)` escape hatch so additional kinds can be
-    // added without breaking the wire contract — variants are closed in
-    // WIT otherwise.
+    // Coarse error classification — one-to-one with
+    // `actr_framework::ErrorCategory`.
     variant error-category {
         handler-panic,
         handler-error,
         signaling-failure,
         transport-failure,
-        other(string),
     }
 
-    // Structured error returned across the host/guest boundary.
+    // Structured error — one-to-one with `actr_protocol::ActrError`.
     //
-    // - `internal`: generic host-side or framework-side failure
-    // - `decode-failure`: payload could not be decoded
-    // - `invalid-argument`: caller supplied an invalid argument
-    // - `unknown-route`: route key did not match any handler
-    // - `not-implemented`: operation not supported in this runtime
-    // - `unauthorized`: caller lacks authority to invoke the operation
-    // - `unavailable`: transient resource unavailability
-    // - `other(string)`: escape hatch for unclassified errors
+    // Closed variant mirroring the Rust enum's shape; any future addition
+    // to `ActrError` needs a matched addition here (and a version bump
+    // on the WIT package). The `dependency-not-found` case carries the
+    // two-field record so hosts that translate back into
+    // `ActrError::DependencyNotFound` don't lose structure.
     variant actr-error {
-        internal(string),
-        decode-failure(string),
+        unavailable(string),
+        timed-out,
+        not-found(string),
+        permission-denied(string),
         invalid-argument(string),
         unknown-route(string),
+        dependency-not-found(dependency-not-found-payload),
+        decode-failure(string),
         not-implemented(string),
-        unauthorized(string),
-        unavailable(string),
-        other(string),
+        internal(string),
+    }
+
+    // Payload for the `dependency-not-found` arm.
+    record dependency-not-found-payload {
+        service-name: string,
+        message: string,
     }
 
     // Peer-scoped event (actr_framework::PeerEvent) carried by the

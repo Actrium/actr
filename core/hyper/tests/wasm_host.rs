@@ -1,90 +1,20 @@
-//! Integration tests: WasmHost + WasmWorkload ABI verification
+//! WasmHost + WasmWorkload ABI verification (Phase 1: pending port).
+//!
+//! These tests exercised the pre-Phase-1 core-wasm-module + handwritten
+//! ptr/len ABI. Phase 1 Commit 2 rewrote the host around the Component
+//! Model; the legacy fixtures no longer load. The test suite is
+//! rewritten in Phase 1 Commit 6 against Component Model guests. The
+//! stubs below keep the build green during the intervening commits.
+//!
+//! One test (`wasm_host_invalid_binary`) stays live because it only
+//! exercises the failure path when invalid bytes are passed to
+//! `WasmHost::compile` — that code path is independent of the ABI
+//! generation and is worth keeping green through the migration.
 
 #![cfg(feature = "wasm-engine")]
 
-use actr_framework::guest::abi::{InitPayloadV1, version};
 use actr_hyper::wasm::WasmHost;
-use actr_hyper::workload::{HostOperationResult, InvocationContext};
-use actr_protocol::{ActrId, RpcEnvelope, prost::Message as ProstMessage};
 
-mod wasm_fixture;
-use wasm_fixture::fixture_bytes;
-
-fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
-    let envelope = RpcEnvelope {
-        route_key: route_key.to_string(),
-        payload: Some(payload.into()),
-        ..Default::default()
-    };
-    envelope.encode_to_vec()
-}
-
-/// Minimal valid init payload
-fn test_config() -> InitPayloadV1 {
-    InitPayloadV1 {
-        version: version::V1,
-        actr_type: "test:fixture:0.1.0".to_string(),
-        credential: Vec::new(),
-        actor_id: Vec::new(),
-        realm_id: 1,
-    }
-}
-
-/// Echo dispatch does not call host imports; host ABI will not be triggered.
-fn noop_ctx() -> InvocationContext {
-    InvocationContext {
-        self_id: ActrId::default(),
-        caller_id: None,
-        request_id: "test".to_string(),
-    }
-}
-
-// ─── Test cases ─────────────────────────────────────────────────────────────────
-
-/// Scenario 1: normal flow -- compile, instantiate, init, dispatch (echo)
-#[tokio::test]
-async fn wasm_host_compile_and_echo() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile should succeed");
-    let mut instance = host.instantiate().expect("instantiate should succeed");
-
-    instance.init(&test_config()).expect("init should succeed");
-
-    let request = b"hello, wasm!".to_vec();
-    let req_bytes = make_envelope("test/echo", request.clone());
-    let response = instance
-        .handle(&req_bytes, noop_ctx(), |_| async {
-            HostOperationResult::Done
-        })
-        .await
-        .expect("dispatch should succeed");
-
-    assert_eq!(
-        response, request,
-        "echo guest should return request data as-is"
-    );
-}
-
-/// Scenario 2: multiple dispatches (verify bump allocator does not overflow)
-#[tokio::test]
-async fn wasm_host_multiple_dispatches() {
-    let host = WasmHost::compile(fixture_bytes()).unwrap();
-    let mut instance = host.instantiate().unwrap();
-    instance.init(&test_config()).unwrap();
-
-    for i in 0u8..10 {
-        let req = vec![i; 64];
-        let req_bytes = make_envelope("test/echo", req.clone());
-        let resp = instance
-            .handle(&req_bytes, noop_ctx(), |_| async {
-                HostOperationResult::Done
-            })
-            .await
-            .expect("each dispatch should succeed");
-        assert_eq!(resp, req, "dispatch #{i} should echo correctly");
-    }
-}
-
-/// Scenario 3: invalid WASM binary -> WasmLoadFailed
 #[test]
 fn wasm_host_invalid_binary() {
     let bad_bytes = b"not a wasm file";
@@ -100,67 +30,22 @@ fn wasm_host_invalid_binary() {
     );
 }
 
-/// Scenario 4: WASM missing required exports -> WasmLoadFailed (at instantiation)
 #[test]
-fn wasm_host_missing_exports() {
-    // Only memory, no actr_* functions
-    let incomplete_wat = r#"
-(module
-  (memory (export "memory") 1)
-)
-"#;
-    let wasm_bytes = wat::parse_str(incomplete_wat).unwrap();
-    let host = WasmHost::compile(&wasm_bytes).unwrap();
-    let result = host.instantiate();
+#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
+fn wasm_host_compile_and_echo() {}
 
-    assert!(
-        result.is_err(),
-        "missing exports should error at instantiation, got: {result:?}"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        matches!(err, actr_hyper::wasm::WasmError::LoadFailed(_)),
-        "error type should be WasmLoadFailed, got: {err:?}"
-    );
-}
+#[test]
+#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
+fn wasm_host_multiple_dispatches() {}
 
-/// Scenario 5: empty request (0 bytes) -> dispatch should return empty response
-#[tokio::test]
-async fn wasm_host_empty_dispatch() {
-    let host = WasmHost::compile(fixture_bytes()).unwrap();
-    let mut instance = host.instantiate().unwrap();
-    instance.init(&test_config()).unwrap();
+#[test]
+#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
+fn wasm_host_missing_exports() {}
 
-    let req_bytes = make_envelope("test/echo", Vec::new());
-    let response = instance
-        .handle(&req_bytes, noop_ctx(), |_| async {
-            HostOperationResult::Done
-        })
-        .await
-        .expect("empty request dispatch should succeed");
-    assert!(
-        response.is_empty(),
-        "empty request should return empty response"
-    );
-}
+#[test]
+#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
+fn wasm_host_empty_dispatch() {}
 
-/// Scenario 6: large request (16KB) -> verify memory operations correctness
-#[tokio::test]
-async fn wasm_host_large_dispatch() {
-    let host = WasmHost::compile(fixture_bytes()).unwrap();
-    let mut instance = host.instantiate().unwrap();
-    instance.init(&test_config()).unwrap();
-
-    let large_req: Vec<u8> = (0..16384u16).map(|i| (i % 251) as u8).collect();
-    let req_bytes = make_envelope("test/echo", large_req.clone());
-    let resp = instance
-        .handle(&req_bytes, noop_ctx(), |_| async {
-            HostOperationResult::Done
-        })
-        .await
-        .expect("large request dispatch should succeed");
-    assert_eq!(
-        resp, large_req,
-        "large request echo content should match exactly"
-    );
-}
+#[test]
+#[ignore = "Phase 1 Commit 6 rewrites these tests against Component Model guests"]
+fn wasm_host_large_dispatch() {}

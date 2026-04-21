@@ -1103,9 +1103,9 @@ pub(crate) async fn load_workload_package_inner(
         .await?;
     let binary_kind = detect_binary_kind(&verified.manifest)?;
     let workload = match binary_kind {
-        BinaryKind::Wasm => load_wasm_workload_inner(inner, bytes, &verified.manifest),
-        BinaryKind::DynClib => load_dynclib_workload_inner(inner, bytes, &verified.manifest),
-    }?;
+        BinaryKind::Wasm => load_wasm_workload_inner(inner, bytes, &verified.manifest).await?,
+        BinaryKind::DynClib => load_dynclib_workload_inner(inner, bytes, &verified.manifest)?,
+    };
     Ok(LoadedWorkload {
         verified,
         binary_kind,
@@ -1114,7 +1114,7 @@ pub(crate) async fn load_workload_package_inner(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_wasm_workload_inner(
+async fn load_wasm_workload_inner(
     _inner: &HyperInner,
     bytes: &[u8],
     manifest: &PackageManifest,
@@ -1133,7 +1133,7 @@ fn load_wasm_workload_inner(
                 manifest.binary.target
             ))
         })?;
-        let mut instance = host.instantiate().map_err(|e| {
+        let mut instance = host.instantiate().await.map_err(|e| {
             HyperError::Runtime(format!(
                 "failed to instantiate WASM package target `{}`: {e}",
                 manifest.binary.target

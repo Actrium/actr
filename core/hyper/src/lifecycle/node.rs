@@ -555,7 +555,7 @@ impl Inner {
             request_id: envelope.request_id.clone(),
         };
         let ctx_for_executor = ctx.clone();
-        let call_executor: crate::workload::HostAbiFn = Box::new(move |pending| {
+        let call_executor: crate::workload::HostAbiFn = std::sync::Arc::new(move |pending| {
             let ctx = ctx_for_executor.clone();
             Box::pin(async move { host_operation_handler(ctx, pending).await })
         });

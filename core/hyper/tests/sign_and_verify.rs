@@ -186,6 +186,8 @@ async fn verify_rejects_unknown_format() {
 
 #[cfg(feature = "wasm-engine")]
 #[tokio::test]
+#[ignore = "Phase 1 Commit 3 rebuilds the .actr fixture as a Component; the \
+ core-wasm-module fixture embedded in echo_guest_wasm() no longer loads"]
 async fn load_workload_package_selects_wasm_backend() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
