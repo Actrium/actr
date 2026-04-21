@@ -1,0 +1,73 @@
+package actr:spike@0.1.0;
+
+interface types {
+    record actr-id {
+        serial-number: u64,
+    }
+
+    variant spike-error {
+        internal(string),
+        bad-payload(string),
+    }
+
+    record rpc-envelope {
+        route-key: string,
+        payload: list<u8>,
+        request-id: string,
+    }
+
+    // Nested record test: mirrors actr's PeerEvent / ErrorEvent complexity
+    record peer-info {
+        peer-id: string,
+        relayed: bool,
+    }
+
+    record peer-event {
+        peer: peer-info,
+        timestamp-ms: u64,
+    }
+
+    // Deeply nested + variant inside record (error-category)
+    variant error-category {
+        network,
+        protocol,
+        workload,
+        other(string),
+    }
+
+    record error-event {
+        source: string,
+        category: error-category,
+        context: list<tuple<string, string>>,
+    }
+}
+
+// Host-side API that guest can import and call
+interface host {
+    use types.{actr-id, spike-error};
+
+    call-raw: func(
+        target: actr-id,
+        route-key: string,
+        payload: list<u8>,
+    ) -> result<list<u8>, spike-error>;
+
+    log-message: func(level: string, msg: string);
+}
+
+// Guest-side API that host calls
+interface workload {
+    use types.{rpc-envelope, spike-error, peer-event, error-event};
+
+    on-start: func() -> result<_, spike-error>;
+    dispatch: func(env: rpc-envelope) -> result<list<u8>, spike-error>;
+
+    // Exercise nested records end-to-end
+    on-peer-event: func(evt: peer-event) -> result<_, spike-error>;
+    report-error: func(evt: error-event) -> result<_, spike-error>;
+}
+
+world spike-guest {
+    import host;
+    export workload;
+}
