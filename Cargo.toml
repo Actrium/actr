@@ -159,8 +159,20 @@ rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 
 # === WASM Runtime ===
-wasmtime = { version = "29", default-features = false, features = ["runtime", "cranelift", "component-model"] }
-wasmtime-wasi = "29"
+# Pinned to 43.0.1 for Component Model + async bindings (Phase 1 migration).
+# 44.0.0 requires rustc >= 1.92, which exceeds the workspace MSRV of 1.88;
+# revisit the pin once MSRV catches up.
+# The `component-model-async` + `async` features are required because
+# wit-bindgen 0.57 guest components emit async-ABI custom sections even when
+# every WIT function is declared sync.
+wasmtime = { version = "=43.0.1", default-features = false, features = [
+    "runtime",
+    "cranelift",
+    "component-model",
+    "component-model-async",
+    "async",
+] }
+wasmtime-wasi = "=43.0.1"
 
 # === Networking ===
 tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
