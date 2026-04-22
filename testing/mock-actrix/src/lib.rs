@@ -247,6 +247,7 @@ impl Drop for MockActrixServer {
 /// endpoints on the same port.
 fn build_router(state: Arc<MockState>) -> Router {
     use axum::routing::{get, post};
+    use tower_http::cors::{Any, CorsLayer};
 
     let ais_routes = Router::new()
         .route("/register", post(http::register_handler))
@@ -282,4 +283,13 @@ fn build_router(state: Arc<MockState>) -> Router {
         // AIS routes mounted under `/ais/*` for callers whose configured AIS
         // endpoint is e.g. `http://localhost:8081/ais`.
         .merge(Router::new().nest("/ais", ais_routes))
+        // Permissive CORS so browser-resident Service Workers (served from
+        // e.g. `http://localhost:5173`) can POST to AIS / MFR endpoints.
+        // Dev-only; a production signaling stack would restrict origins.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
 }

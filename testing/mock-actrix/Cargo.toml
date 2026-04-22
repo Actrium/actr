@@ -31,6 +31,7 @@ base64 = { workspace = true }
 
 # HTTP + WebSocket server (axum handles same-port WS upgrade + REST routes)
 axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
