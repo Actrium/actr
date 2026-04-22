@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 /// `includes` is the list of `-I` search paths passed to `protoc`. If empty,
 /// each proto file's parent directory is used as a fallback include path so
 /// that relative imports still resolve.
-pub fn compile_to_descriptor_set(
+pub(crate) fn compile_to_descriptor_set(
     proto_files: &[PathBuf],
     includes: &[PathBuf],
 ) -> crate::error::Result<FileDescriptorSet> {
@@ -144,7 +144,7 @@ pub fn file_to_proto_service(file: &FileDescriptorProto) -> Option<ProtoService>
 /// Locate a top-level message by name and return its field list in the form
 /// `(field_name, proto_wire_type_token)` expected by the WASM scaffold
 /// generator.
-pub fn message_fields_for_scaffold(
+pub(crate) fn message_fields_for_scaffold(
     file: &FileDescriptorProto,
     message_name: &str,
 ) -> Option<Vec<(String, String)>> {
@@ -232,7 +232,7 @@ fn scalar_type_token(field: &FieldDescriptorProto) -> String {
 /// Strip the package prefix and leading dot from a fully-qualified proto type
 /// name, yielding the short symbol that downstream TypeScript / Rust emitters
 /// consume.
-pub fn short_type_name(raw: &str) -> String {
+fn short_type_name(raw: &str) -> String {
     raw.trim_start_matches('.')
         .rsplit('.')
         .next()
@@ -245,7 +245,7 @@ pub fn short_type_name(raw: &str) -> String {
 /// `protoc` records files by the name it was invoked with (typically the
 /// path relative to an `-I` include root). We therefore try a few
 /// normalisations: exact match, basename match, and `ends_with` match.
-pub fn find_file<'a>(
+pub(crate) fn find_file<'a>(
     set: &'a FileDescriptorSet,
     proto_path: &Path,
 ) -> Option<&'a FileDescriptorProto> {

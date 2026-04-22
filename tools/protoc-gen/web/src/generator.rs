@@ -12,7 +12,7 @@ use crate::{
 /// Files without a service are skipped with a warning — this mirrors the
 /// previous behaviour, where `parse_proto_content` would bail on such files
 /// as "invalid".
-pub fn parse_proto_files(config: &WebCodegenConfig) -> Result<Vec<ProtoService>> {
+pub(crate) fn parse_proto_files(config: &WebCodegenConfig) -> Result<Vec<ProtoService>> {
     let set = descriptor::compile_to_descriptor_set(&config.proto_files, &config.includes)?;
 
     let mut services = Vec::new();
@@ -39,7 +39,7 @@ pub fn parse_proto_files(config: &WebCodegenConfig) -> Result<Vec<ProtoService>>
 }
 
 /// Generate Rust Actor code
-pub fn generate_rust_actors(
+pub(crate) fn generate_rust_actors(
     config: &WebCodegenConfig,
     services: &[ProtoService],
 ) -> Result<Vec<GeneratedFile>> {

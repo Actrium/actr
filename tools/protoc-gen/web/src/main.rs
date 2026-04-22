@@ -32,7 +32,7 @@ fn run_codegen_mode() -> anyhow::Result<()> {
     let request: WebCodegenRequest = serde_json::from_str(&input)
         .map_err(|e| anyhow::anyhow!("Failed to parse WebCodegenRequest: {e}"))?;
 
-    let response = actr_web_protoc_codegen::codegen::generate(&request);
+    let response = actr_web_protoc_codegen::generate(&request);
 
     let json = serde_json::to_string(&response)?;
     io::stdout().write_all(json.as_bytes())?;

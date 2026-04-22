@@ -3,7 +3,7 @@
 use crate::{GeneratedFile, ProtoService, config::WebCodegenConfig, error::Result};
 
 /// Generate TypeScript type definitions.
-pub fn generate_types(
+pub(crate) fn generate_types(
     config: &WebCodegenConfig,
     services: &[ProtoService],
 ) -> Result<Vec<GeneratedFile>> {
@@ -553,7 +553,7 @@ function skipField(bytes: Uint8Array, offset: number, wireType: number): number 
 }
 
 /// Generate ActorRef wrappers.
-pub fn generate_actor_refs(
+pub(crate) fn generate_actor_refs(
     config: &WebCodegenConfig,
     services: &[ProtoService],
 ) -> Result<Vec<GeneratedFile>> {
@@ -683,7 +683,7 @@ fn generate_ts_actor_ref_method(method: &crate::ProtoMethod, service_name: &str)
 }
 
 /// Generate React Hooks.
-pub fn generate_react_hooks(
+pub(crate) fn generate_react_hooks(
     config: &WebCodegenConfig,
     services: &[ProtoService],
 ) -> Result<Vec<GeneratedFile>> {

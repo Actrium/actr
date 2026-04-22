@@ -43,23 +43,19 @@
 
 use std::path::PathBuf;
 
-pub mod codegen;
+pub(crate) mod codegen;
 mod config;
 pub mod descriptor;
 mod error;
 mod generator;
-pub mod request;
+mod request;
 mod templates;
 mod typescript;
 
 pub use codegen::generate;
-pub use config::*;
-pub use error::*;
-pub use generator::*;
-pub use request::{
-    ActrTypeInfo, DependencyInfo, FileInfo, MethodInfo, ObservabilityInfo, ServiceInfo,
-    WebCodegenRequest, WebCodegenResponse,
-};
+pub use config::{WebCodegenConfig, WebCodegenConfigBuilder};
+pub(crate) use error::Result;
+pub use request::WebCodegenRequest;
 
 /// Code generator for the web platform.
 pub struct WebCodegen {
