@@ -9,6 +9,5 @@ pub mod error;
 pub mod host;
 
 pub use error::WasmError;
-pub(crate) use error::WasmResult;
 pub use host::WasmHost;
 pub(crate) use host::WasmWorkload;

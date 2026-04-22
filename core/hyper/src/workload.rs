@@ -56,10 +56,6 @@ pub type HostAbiFn = Arc<
         + Sync,
 >;
 
-/// Result type for runtime workload handling.
-#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
-pub(crate) type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
-
 /// Object-safe handle to a workload linked directly into the host process
 /// (e.g. an embedded Swift / Kotlin app, or a Rust process that owns the
 /// actor's business code as a struct rather than a packaged binary).

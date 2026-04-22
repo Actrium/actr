@@ -22,7 +22,7 @@ use tokio::sync::RwLock;
 /// fetching it from a remote source (e.g. AIS/signaling).
 /// Returns `(key_id, pubkey_bytes)`, where `pubkey_bytes` must be a 32-byte Ed25519 raw public key.
 #[async_trait]
-pub trait KeyFetcher: Send + Sync {
+pub(crate) trait KeyFetcher: Send + Sync {
     async fn fetch_key(&self, key_id: u32) -> HyperResult<(u32, Vec<u8>)>;
 }
 
@@ -31,13 +31,13 @@ pub trait KeyFetcher: Send + Sync {
 /// Thread-safe, shared via `Arc<AisKeyCache>`.
 /// Public keys are stored permanently by key_id; key_id is monotonically assigned by AIS,
 /// with very few actual entries.
-pub struct AisKeyCache {
+pub(crate) struct AisKeyCache {
     cache: RwLock<HashMap<u32, VerifyingKey>>,
 }
 
 impl AisKeyCache {
     /// Create a new empty cache, returned in an `Arc` wrapper for sharing
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             cache: RwLock::new(HashMap::new()),
         })
@@ -47,7 +47,7 @@ impl AisKeyCache {
     ///
     /// `pubkey_bytes` must be a 32-byte Ed25519 raw public key.
     /// If key_id already exists, it is overwritten (should not normally occur, kept idempotent).
-    pub async fn seed(&self, key_id: u32, pubkey_bytes: &[u8]) -> HyperResult<()> {
+    pub(crate) async fn seed(&self, key_id: u32, pubkey_bytes: &[u8]) -> HyperResult<()> {
         let verifying_key = VerifyingKey::from_bytes(pubkey_bytes.try_into().map_err(|_| {
             HyperError::InvalidManifest("signing pubkey must be 32 bytes".to_string())
         })?)
@@ -61,7 +61,7 @@ impl AisKeyCache {
     /// Get public key by key_id; returns directly on local hit, fetches via fetcher on miss
     ///
     /// Fetch failure is treated as an unrecoverable error; the caller decides whether to retry.
-    pub async fn get_or_fetch(
+    pub(crate) async fn get_or_fetch(
         &self,
         key_id: u32,
         fetcher: &dyn KeyFetcher,

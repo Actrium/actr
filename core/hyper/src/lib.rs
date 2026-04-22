@@ -85,7 +85,7 @@ pub mod actr_ref;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ais_client;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod key_cache;
+pub(crate) mod key_cache;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 
@@ -216,10 +216,6 @@ pub use workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
     Workload, WorkloadAdapter,
 };
-
-// AIS key cache
-#[cfg(not(target_arch = "wasm32"))]
-pub use key_cache::AisKeyCache;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
