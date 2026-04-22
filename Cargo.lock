@@ -6725,6 +6725,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wit-lint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "syn",
+ "wit-parser 0.247.0",
+]
+
+[[package]]
 name = "wit-parser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# wit-lint: drift guard between the WIT contract
+# (core/framework/wit/actr-workload.wit) and the hand-rolled DynClib C ABI
+# (core/framework/src/guest/abi.rs).
+#
+# DynClib cannot consume wit-bindgen-generated bindings (`wit-bindgen c` emits
+# wasm-targeted code, not portable C ABI) so its ABI is hand-written. To keep
+# the two surfaces in sync this crate cross-checks their shapes at build time
+# via a CI gate; see `.github/workflows/ci-rust.yml`.
+
+[package]
+name = "wit-lint"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Drift guard between actr-workload.wit and the DynClib guest C ABI"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "wit-lint"
+path = "src/main.rs"
+
+[lib]
+name = "wit_lint"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned to the wit-parser version that wit-bindgen 0.57.1 itself uses, to
+# avoid duplicate wit-parser entries in Cargo.lock and ABI skew between the
+# lint view and the bindgen view of the same WIT file.
+wit-parser = "=0.247.0"
+syn = { version = "2", features = ["full", "extra-traits"] }
+proc-macro2 = { workspace = true }
+anyhow = { workspace = true }
