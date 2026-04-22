@@ -135,11 +135,8 @@ impl RunCommand {
         let package_info = self.build_package_info(&manifest);
 
         // 4. Load runtime configuration
-        let config = actr_config::ConfigParser::from_runtime_file(
-            &config_path,
-            package_info.clone(),
-            vec![],
-        )?;
+        let config =
+            actr_config::ConfigParser::from_runtime_file(&config_path, package_info.clone())?;
 
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
         info!("🔐 Trust anchors: {} configured", config.trust.len());

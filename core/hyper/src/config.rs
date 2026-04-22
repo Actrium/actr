@@ -197,13 +197,9 @@ pub(crate) async fn node_from_config_file(
         authors: vec![],
         license: None,
     };
-    let runtime_config = actr_config::ConfigParser::parse_runtime(
-        raw_runtime,
-        path,
-        package_info,
-        vec![],
-    )
-    .map_err(|e| HyperError::Config(format!("failed to parse runtime config: {e}")))?;
+    let runtime_config =
+        actr_config::ConfigParser::parse_runtime(raw_runtime, path, package_info)
+            .map_err(|e| HyperError::Config(format!("failed to parse runtime config: {e}")))?;
 
     // Parse the optional [hyper] section.
     let hyper_section: HyperSectionWrapper = toml::from_str(&raw_text).map_err(|e| {

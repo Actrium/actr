@@ -21,7 +21,7 @@
 //!
 //! // Parse actr.toml (runtime deployment config) — requires package info
 //! let package = manifest.package.clone();
-//! let runtime = ConfigParser::from_runtime_file("actr.toml", package, manifest.tags.clone())?;
+//! let runtime = ConfigParser::from_runtime_file("actr.toml", package)?;
 //! println!("Signaling: {}", runtime.signaling_url);
 //! println!("Realm: {}", runtime.realm.realm_id);
 //! # Ok(())

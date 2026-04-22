@@ -21,12 +21,8 @@ async fn main() -> Result<()> {
         .context("failed to parse manifest.toml")?;
     ensure_package_built(Path::new(PACKAGE_PATH))?;
 
-    let runtime = ConfigParser::from_runtime_file(
-        "actr.toml",
-        package_info(&manifest.package),
-        manifest.tags.clone(),
-    )
-    .context("failed to parse actr.toml")?;
+    let runtime = ConfigParser::from_runtime_file("actr.toml", package_info(&manifest.package))
+        .context("failed to parse actr.toml")?;
 
     let _observability = init_observability(&runtime.observability)?;
 

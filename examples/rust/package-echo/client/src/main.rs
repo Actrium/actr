@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     // 2. Load runtime configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info)?;
 
     let _obs_guard = init_observability(&config.observability)?;
 

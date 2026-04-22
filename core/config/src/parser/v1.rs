@@ -110,7 +110,6 @@ impl ParserV1 {
         &self,
         raw: RuntimeRawConfig,
         package: PackageInfo,
-        tags: Vec<String>,
     ) -> Result<RuntimeConfig> {
         // Validate required runtime fields
         let signaling_url_str = raw
@@ -172,7 +171,6 @@ impl ParserV1 {
             visible_in_discovery: raw.discovery.visible.unwrap_or(true),
             acl,
             mailbox_path: None,
-            tags,
             scripts: raw.scripts,
             webrtc: self.parse_webrtc(&raw.webrtc)?,
             websocket_listen_port: raw.websocket.listen_port,

@@ -76,9 +76,6 @@ pub struct RuntimeConfig {
     /// - `None`: use in-memory mode (`:memory:`)
     pub mailbox_path: Option<PathBuf>,
 
-    /// Service tags
-    pub tags: Vec<String>,
-
     /// Script commands
     pub scripts: HashMap<String, String>,
 
@@ -572,7 +569,6 @@ mod tests {
             visible_in_discovery: true,
             acl: None,
             mailbox_path: None,
-            tags: vec![],
             scripts: HashMap::new(),
             webrtc: WebRtcConfig::default(),
             websocket_listen_port: None,

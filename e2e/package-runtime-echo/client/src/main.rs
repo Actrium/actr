@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     };
 
     let config_path = runtime_config_path();
-    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info)?;
 
     let _obs_guard = init_observability(&config.observability)?;
     info!("Package Runtime Echo client host starting");
