@@ -54,7 +54,7 @@ impl BinaryKind {
     /// `binary.kind` field. Old packages were always core-modules on the
     /// wasm side; assuming that keeps the error path crisp ("this is a
     /// pre-Phase-1 package") rather than silently upgrading.
-    pub fn legacy_default_for(target: &str) -> Self {
+    pub(crate) fn legacy_default_for(target: &str) -> Self {
         if target.starts_with("wasm32-") {
             BinaryKind::CoreModule
         } else {
