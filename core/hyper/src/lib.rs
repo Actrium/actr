@@ -258,8 +258,6 @@ pub mod prelude {
     // ── Core structures (native-only) ───────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::actr_ref::ActrRef;
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::lifecycle::{CompatLockFile, CompatLockManager, CompatibilityCheck};
 
     // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]

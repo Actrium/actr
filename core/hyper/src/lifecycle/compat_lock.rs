@@ -19,6 +19,13 @@
 //!
 //! ## Note
 //! This file should not be committed to version control as it reflects runtime state.
+//!
+//! ## Status
+//! Reserved for future runtime compatibility negotiation wiring. The module is
+//! kept compiled (exercised by tests) but no caller invokes it yet, so all
+//! public items are crate-private and tagged `allow(dead_code)`.
+
+#![allow(dead_code)]
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,7 +69,7 @@ fn get_compat_lock_dir(project_root: &Path) -> PathBuf {
 
 /// Compatibility negotiation entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NegotiationEntry {
+pub(crate) struct NegotiationEntry {
     /// Service name (e.g. "user-service")
     pub service_name: String,
 
@@ -85,7 +92,7 @@ pub struct NegotiationEntry {
 /// Compatibility check result
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompatibilityCheck {
+pub(crate) enum CompatibilityCheck {
     /// Fully compatible (exact match)
     ExactMatch,
     /// Backward compatible
@@ -106,7 +113,7 @@ impl std::fmt::Display for CompatibilityCheck {
 
 /// compat.lock.toml file structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompatLockFile {
+pub(crate) struct CompatLockFile {
     /// File header comment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _comment: Option<String>,
@@ -285,7 +292,8 @@ impl NegotiationEntry {
 
 /// compat.lock related errors
 #[derive(Debug, thiserror::Error)]
-pub enum CompatLockError {
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum CompatLockError {
     #[error("IO error at {path}: {source}")]
     IoError {
         path: PathBuf,
@@ -308,7 +316,7 @@ pub enum CompatLockError {
 }
 
 /// Compatibility negotiation manager - used at runtime
-pub struct CompatLockManager {
+pub(crate) struct CompatLockManager {
     /// Lock file directory (computed temp directory path)
     base_path: PathBuf,
     /// Project root directory (used for logging)

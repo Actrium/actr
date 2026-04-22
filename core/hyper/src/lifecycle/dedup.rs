@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 /// Default TTL: must be comfortably longer than the longest RpcReliable retry window.
 /// RpcReliable: 5 attempts, up to 5s per gap → worst-case ~20s total; 15s covers most cases.
-pub const DEDUP_TTL: Duration = Duration::from_secs(15);
+pub(crate) const DEDUP_TTL: Duration = Duration::from_secs(15);
 
 /// Cached outcome of a completed request.
 #[derive(Clone, Debug)]
@@ -43,14 +43,14 @@ struct Entry {
 ///
 /// Not `Clone` intentionally; share via `Arc<Mutex<DedupState>>`.
 #[derive(Debug, Default)]
-pub struct DedupState {
+pub(crate) struct DedupState {
     entries: HashMap<String, Entry>,
     ttl: Duration,
 }
 
 /// Outcome of `check_or_mark`.
 #[derive(Debug)]
-pub enum DedupOutcome {
+pub(crate) enum DedupOutcome {
     /// First time we see this request_id; proceed with handling.
     Fresh,
     /// Request is already being processed concurrently.
@@ -61,7 +61,7 @@ pub enum DedupOutcome {
 
 impl DedupState {
     /// Create a dedup state with the default 15 s TTL.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
             ttl: DEDUP_TTL,
@@ -73,7 +73,7 @@ impl DedupState {
     /// - If fresh: inserts an `InFlight` marker and returns `DedupOutcome::Fresh`.
     /// - If already seen and still in TTL: returns `InFlight` or `Duplicate`.
     /// - Expired entries are evicted on every call.
-    pub fn check_or_mark(&mut self, request_id: &str) -> DedupOutcome {
+    pub(crate) fn check_or_mark(&mut self, request_id: &str) -> DedupOutcome {
         let now = Instant::now();
         self.evict_expired(now);
 
@@ -98,7 +98,7 @@ impl DedupState {
     /// Record the completed response for `request_id`.
     ///
     /// Call this after the handler finishes (success or error).
-    pub fn complete(&mut self, request_id: &str, result: ActorResult<Bytes>) {
+    pub(crate) fn complete(&mut self, request_id: &str, result: ActorResult<Bytes>) {
         if let Some(entry) = self.entries.get_mut(request_id) {
             entry.result = CachedResult::Done(result);
         }
@@ -112,14 +112,8 @@ impl DedupState {
 
     /// Number of entries currently tracked (for monitoring / tests).
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
-    }
-
-    /// Whether there are no tracked entries.
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 }
 
