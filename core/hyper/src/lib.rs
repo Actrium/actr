@@ -140,7 +140,8 @@ pub mod resource;
 
 pub use actr_pack::{PackageManifest, VerifiedPackage};
 pub use config::HyperConfig;
-pub use error::{HyperError, HyperResult};
+pub use error::HyperError;
+pub(crate) use error::HyperResult;
 
 // Core protocol types
 pub use actr_protocol::{Acl, ActrId, ActrType, ServiceSpec};
@@ -251,7 +252,7 @@ pub mod prelude {
     pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{Attached, Hyper, Init, Node, Registered, storage::ActorStore};
-    pub use crate::{HyperConfig, HyperError, HyperResult};
+    pub use crate::{HyperConfig, HyperError};
     pub use actr_pack::{PackageManifest, VerifiedPackage};
 
     // ── Core structures (native-only) ───────────────────────────────────────

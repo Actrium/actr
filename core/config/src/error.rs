@@ -49,7 +49,7 @@ pub enum ConfigError {
     InvalidConfig(String),
 }
 
-pub type Result<T> = std::result::Result<T, ConfigError>;
+pub(crate) type Result<T> = std::result::Result<T, ConfigError>;
 
 // Backward compatibility alias
 #[deprecated(since = "0.2.0", note = "Use ConfigError instead")]

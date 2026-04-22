@@ -143,7 +143,7 @@ pub enum CompatibilityError {
     InvalidService(String),
 }
 
-pub type Result<T> = std::result::Result<T, CompatibilityError>;
+pub(crate) type Result<T> = std::result::Result<T, CompatibilityError>;
 
 #[cfg(test)]
 mod tests {
