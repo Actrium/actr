@@ -4,9 +4,11 @@
 //! Phase 1 Commit 2; see `core/framework/wit/actr-workload.wit` for the
 //! contract.
 
-pub mod component_bindings;
+pub(crate) mod component_bindings;
 pub mod error;
 pub mod host;
 
-pub use error::{WasmError, WasmResult};
-pub use host::{WasmHost, WasmWorkload};
+pub use error::WasmError;
+pub(crate) use error::WasmResult;
+pub use host::WasmHost;
+pub(crate) use host::WasmWorkload;

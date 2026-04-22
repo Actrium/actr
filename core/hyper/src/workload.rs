@@ -4,9 +4,10 @@
 //! directly into a runtime `Workload` enum.
 
 use actr_framework::guest::dynclib_abi::{
-    self as guest_abi, AbiPayload, GuestHandleV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
-    HostTellV1,
+    self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1,
 };
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1};
 use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
     Workload as FrameworkWorkload,
@@ -56,7 +57,8 @@ pub type HostAbiFn = Arc<
 >;
 
 /// Result type for runtime workload handling.
-pub type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub(crate) type WorkloadDispatchResult = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Object-safe handle to a workload linked directly into the host process
 /// (e.g. an embedded Swift / Kotlin app, or a Rust process that owns the
@@ -364,7 +366,7 @@ impl std::fmt::Debug for Workload {
 
 impl Workload {
     /// Dispatch one inbound RPC envelope.
-    pub fn dispatch_envelope<'a>(
+    pub(crate) fn dispatch_envelope<'a>(
         &'a mut self,
         envelope: RpcEnvelope,
         ctx: crate::context::RuntimeContext,
@@ -400,43 +402,6 @@ impl Workload {
         })
     }
 
-    /// Handle one incoming request through the selected backend.
-    ///
-    /// The `Linked` variant is not reachable through this path — linked
-    /// dispatch goes through [`Workload::dispatch_envelope`] with a
-    /// concrete [`RpcEnvelope`]; `handle` is the guest-ABI raw-bytes path
-    /// used exclusively by WASM / dynclib guests.
-    #[allow(unused_variables)]
-    pub fn handle<'a>(
-        &'a mut self,
-        request_bytes: &[u8],
-        ctx: InvocationContext,
-        host_abi: &'a HostAbiFn,
-    ) -> Pin<Box<dyn Future<Output = WorkloadDispatchResult> + Send + 'a>> {
-        let request_bytes = request_bytes.to_vec();
-        Box::pin(async move {
-            match self {
-                Workload::None => Err(Box::new(std::io::Error::other(
-                    "this node has no dispatchable workload (client-only attach)",
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>),
-                Workload::Linked(_) => Err(Box::new(std::io::Error::other(
-                    "linked workloads dispatch through RpcEnvelope, not raw guest-ABI bytes",
-                ))
-                    as Box<dyn std::error::Error + Send + Sync>),
-                #[cfg(feature = "wasm-engine")]
-                Workload::Wasm(workload) => workload
-                    .handle(&request_bytes, ctx, host_abi)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-                #[cfg(feature = "dynclib-engine")]
-                Workload::DynClib(workload) => workload
-                    .handle(&request_bytes, ctx, host_abi)
-                    .await
-                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-            }
-        })
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,7 +411,8 @@ impl Workload {
 /// Decode an [`guest_abi::AbiFrame`] into a strongly-typed [`HostOperation`].
 ///
 /// Shared by both WASM and DynClib host backends.
-pub fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOperation, i32> {
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOperation, i32> {
     if frame.abi_version != guest_abi::version::V1 {
         return Err(guest_abi::code::PROTOCOL_ERROR);
     }
@@ -473,7 +439,8 @@ pub fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOperation
 }
 
 /// Encode an inbound guest dispatch as `GuestHandleV1` wrapped in `AbiFrame`.
-pub fn encode_guest_handle_request(
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub(crate) fn encode_guest_handle_request(
     request_bytes: &[u8],
     ctx: InvocationContext,
 ) -> Result<Vec<u8>, i32> {
@@ -488,7 +455,7 @@ pub fn encode_guest_handle_request(
 /// Decode guest-encoded [`DestV1`] back to [`actr_framework::Dest`].
 ///
 /// Re-exported from `actr_framework::guest::dynclib_abi` for host-side convenience.
-pub fn decode_dest(
+pub(crate) fn decode_dest(
     v1: &actr_framework::guest::dynclib_abi::DestV1,
 ) -> Option<actr_framework::Dest> {
     actr_framework::guest::dynclib_abi::dest_v1_to_dest(v1)

@@ -6,5 +6,7 @@
 mod error;
 mod host;
 
-pub use error::{DynclibError, DynclibResult};
-pub use host::{DynClibWorkload, DynclibHost};
+pub use error::DynclibError;
+pub(crate) use error::DynclibResult;
+pub use host::DynclibHost;
+pub(crate) use host::DynClibWorkload;

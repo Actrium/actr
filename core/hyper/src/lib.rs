@@ -126,13 +126,14 @@ pub mod wasm;
 #[cfg(all(not(target_arch = "wasm32"), feature = "dynclib-engine"))]
 pub mod dynclib;
 
-// Monitoring, observability, and resource management (native-only)
+// Observability is public so bindings can bootstrap tracing. Monitoring
+// and resource management are reserved scaffolding; they stay crate-private.
 #[cfg(not(target_arch = "wasm32"))]
-pub mod monitoring;
+pub(crate) mod monitoring;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod observability;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod resource;
+pub(crate) mod resource;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Re-exports: Cross-platform
@@ -209,17 +210,11 @@ pub use actr_runtime_mailbox::{
 // Bootstrap context builder (lifecycle hooks + ActrRef app-side context) is
 // crate-internal; consumers go through the Node / ActrRef lifecycle.
 
-// Monitoring and resource management
-#[cfg(not(target_arch = "wasm32"))]
-pub use monitoring::{Alert, AlertConfig, AlertSeverity, Monitor, MonitoringConfig};
-#[cfg(not(target_arch = "wasm32"))]
-pub use resource::{ResourceConfig, ResourceManager, ResourceQuota, ResourceUsage};
-
 // Runtime workload abstraction
 #[cfg(not(target_arch = "wasm32"))]
 pub use workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
-    Workload, WorkloadAdapter, WorkloadDispatchResult,
+    Workload, WorkloadAdapter,
 };
 
 // AIS key cache
@@ -289,12 +284,6 @@ pub mod prelude {
 
     // ── Error types ─────────────────────────────────────────────────────────
     pub use crate::runtime_error::{ActorResult, ActrError};
-
-    // ── Monitoring / Resource (native-only) ─────────────────────────────────
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::monitoring::{Alert, AlertSeverity, Monitor};
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::resource::{ResourceManager, ResourceQuota, ResourceUsage};
 
     // ── Base types ──────────────────────────────────────────────────────────
     pub use actr_protocol::ActrId;
@@ -533,11 +522,6 @@ impl LoadedWorkload {
     /// Convenience accessor for the parsed package manifest.
     pub fn manifest(&self) -> &PackageManifest {
         &self.verified.manifest
-    }
-
-    /// Consume the wrapper and return its individual components.
-    pub fn into_parts(self) -> (VerifiedPackage, BinaryKind, crate::workload::Workload) {
-        (self.verified, self.binary_kind, self.workload)
     }
 }
 
