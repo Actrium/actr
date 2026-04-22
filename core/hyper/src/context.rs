@@ -616,46 +616,25 @@ impl Context for RuntimeContext {
         })
     }
 
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(
-            skip_all,
-            name = "RuntimeContext.call_raw",
-            fields(actr_id = %self.self_id)
-        )
-    )]
     async fn call_raw(
         &self,
         target: &ActrId,
         route_key: &str,
         payload: Bytes,
     ) -> ActorResult<Bytes> {
-        // 1. Construct RpcEnvelope with raw payload
-        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-        let mut envelope = RpcEnvelope {
-            route_key: route_key.to_string(),
-            payload: Some(payload),
-            error: None,
-            traceparent: None,
-            tracestate: None,
-            request_id: uuid::Uuid::new_v4().to_string(),
-            metadata: vec![],
-            timeout_ms: 30000, // Default 30 second timeout
-        };
-
-        // Inject tracing context from current span
-        #[cfg(feature = "opentelemetry")]
-        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-
-        // 2. Select outproc gate (raw calls are always remote)
-        let gate = self.outproc_gate.as_ref().ok_or_else(|| {
-            ActrError::Internal(
-                "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
-            )
-        })?;
-
-        // 3. Send request and return raw response bytes
-        gate.send_request(target, envelope).await
+        // Guest-facing trait entry: remote raw RPC with reliable lane and a
+        // 30 s default timeout. Delegate to the inherent `call_raw` so both
+        // entry points share one RpcEnvelope construction / gate-selection
+        // path and stay in sync.
+        RuntimeContext::call_raw(
+            self,
+            &Dest::Actor(target.clone()),
+            route_key.to_string(),
+            PayloadType::RpcReliable,
+            payload,
+            30_000,
+        )
+        .await
     }
 
     // ========== Fast Path: MediaTrack Methods ==========
