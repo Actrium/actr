@@ -67,6 +67,12 @@ main().catch(console.error);
 - `ActrRef.tell(target, routeKey, payloadType, payload)`：发送单向远端消息。
 - `ActrRef.stop()`：关闭 actor 并等待完成。
 
+## 与 Rust Node Typestate 的关系
+
+Rust 宿主暴露的是 typestate 链
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+（`from_config_file` → `attach_*` → `register` → `start`），方便系统层代码观察并自定义每一次状态迁移。TypeScript 绑定有意把这条流水线压扁成一步 `ActrNode.fromConfig(path).start()`：应用开发者几乎用不到中间态，扁平接口更适合 client-only SDK 的身位。需要精细控制（自定义 `TrustProvider`、复用已有 `Hyper`、挂接 Rust `Workload` 等）时，请下沉到原生 Rust 的 `actr_hyper::{Hyper, Node}` 接口。
+
 ## 当前边界
 
 - 支持：client-only 节点、服务发现、远端 RPC、关闭流程。

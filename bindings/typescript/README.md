@@ -68,6 +68,19 @@ main().catch(console.error);
 - `ActrRef.tell(target, routeKey, payloadType, payload)` sends a one-way remote message.
 - `ActrRef.stop()` shuts down the actor and waits for completion.
 
+## Relationship to the Rust Node Typestate
+
+The Rust host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`) so system-level
+code can observe and customize each transition. The TypeScript binding
+deliberately collapses that pipeline into a single
+`ActrNode.fromConfig(path).start()` call: application developers rarely
+need the intermediate states, and the flatter surface is the simplest
+shape for a client-only SDK. If you need fine-grained control (custom
+`TrustProvider`, pre-built `Hyper`, attaching a Rust `Workload`, etc.),
+drop down to the `actr_hyper::{Hyper, Node}` API in native Rust.
+
 ## Current Scope
 
 - Supported: client-only nodes, discovery, remote RPC, shutdown.

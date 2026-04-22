@@ -32,6 +32,19 @@ async def main() -> None:
 - `ActrRef.call(target, route_key, request, timeout_ms=30000, payload_type=...)` sends a remote RPC.
 - `ActrRef.tell(target, route_key, message, payload_type=...)` sends a one-way remote message.
 
+## Relationship to the Rust Node Typestate
+
+The Rust host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`) so system-level
+code can observe and customize each transition. The Python binding
+deliberately collapses that pipeline into a single
+`ActrNode.from_toml(path).start()` call: application developers rarely
+need the intermediate states, and the flatter surface is the simplest
+shape for a client-only SDK. If you need fine-grained control (custom
+`TrustProvider`, pre-built `Hyper`, attaching a Rust `Workload`, etc.),
+drop down to the `actr_hyper::{Hyper, Node}` API in native Rust.
+
 ## Current Scope
 
 - Supported: client-only nodes, discovery, remote RPC, shutdown.

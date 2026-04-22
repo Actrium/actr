@@ -34,6 +34,20 @@ ACTR Kotlin provides seamless integration between the ACTR framework and Android
 - Use type-safe Kotlin APIs with automatic code generation
 - Integrate with existing Android applications
 
+## Relationship to the Rust Node Typestate
+
+The native host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`) so Rust-side
+system code can hook into each transition. The Kotlin API collapses the
+pipeline into a one-shot `ActrNode.fromPackageFile(...)` followed by
+`start()`: Android/Kotlin app developers only see the node and the live
+`ActrRef`. The `Node<S>` typestate is intentionally Rust-layer
+power-user territory — bindings do not re-export it. When fine-grained
+control is required (custom `TrustProvider`, pre-built `Hyper`,
+attaching a Rust `Workload`, etc.), use the `actr_hyper::{Hyper, Node}`
+API directly from native Rust.
+
 ## 🏗️ Architecture
 
 ```
