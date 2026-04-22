@@ -13,11 +13,11 @@ use std::sync::Arc;
 use webrtc::util::vnet::net::Net;
 
 // Re-export types from actr-config
-pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
+pub use actr_config::{IceTransportPolicy, WebRtcConfig};
 
 /// WebRTC negotiator
 #[derive(Clone)]
-pub struct WebRtcNegotiator {
+pub(crate) struct WebRtcNegotiator {
     /// Base WebRTC configuration (URLs + policy)
     config: WebRtcConfig,
     /// Latest credential state (updated on register/renew, contains TurnCredential)

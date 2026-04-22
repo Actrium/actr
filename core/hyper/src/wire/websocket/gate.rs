@@ -39,19 +39,19 @@ type PendingRequestsMap =
 /// When configured, gate will perform Ed25519 credential verification for each inbound connection:
 /// - Connections that fail verification are dropped without starting lane readers
 /// - Connections without credentials are treated as verification failures
-pub struct WsAuthContext {
+pub(crate) struct WsAuthContext {
     /// AIS signing public key cache (local hit verifies directly, miss fetches via signaling)
-    pub ais_key_cache: Arc<AisKeyCache>,
+    pub(crate) ais_key_cache: Arc<AisKeyCache>,
     /// Local ActrId (needed when requesting public key from signaling on cache miss)
-    pub actor_id: ActrId,
+    pub(crate) actor_id: ActrId,
     /// Local credential state (needed for signaling authentication on cache miss)
-    pub credential_state: CredentialState,
+    pub(crate) credential_state: CredentialState,
     /// Signaling client (used to fetch public key on cache miss)
-    pub signaling_client: Arc<dyn SignalingClient>,
+    pub(crate) signaling_client: Arc<dyn SignalingClient>,
 }
 
 /// WebSocketGate - receives and routes inbound WebSocket messages
-pub struct WebSocketGate {
+pub(crate) struct WebSocketGate {
     /// Inbound connection channel (taken once and moved into background task)
     conn_rx: tokio::sync::Mutex<Option<mpsc::Receiver<InboundWsConn>>>,
 

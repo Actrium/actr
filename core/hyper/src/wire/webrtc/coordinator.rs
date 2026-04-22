@@ -2203,7 +2203,7 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = ?dest.as_actor_id().map(|id| id)))
     )]
-    pub async fn create_connection(
+    pub(crate) async fn create_connection(
         self: &Arc<Self>,
         dest: &crate::transport::Dest,
         cancel_token: Option<CancellationToken>,

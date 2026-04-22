@@ -5,19 +5,19 @@
 //! - Connect build independent andManage
 //! - OutboundGate Implementation
 
-pub mod connection; // WebRtcConnection Implementation
+pub(crate) mod connection; // WebRtcConnection Implementation
 pub mod coordinator;
-pub mod gate;
-pub mod negotiator;
+pub(crate) mod gate;
+pub(crate) mod negotiator;
 pub mod signaling;
 pub(crate) mod trace;
 
-// Re-export core center Type
-pub use connection::WebRtcConnection;
+// Re-export core center Type. Submodule-internal structs (WebRtcConnection /
+// WebRtcGate / WebRtcNegotiator) stay reachable via `webrtc::<module>::Name`
+// for internal callers.
 pub use coordinator::WebRtcCoordinator;
-pub use gate::WebRtcGate;
-pub use negotiator::{IceServer, IceTransportPolicy, WebRtcConfig, WebRtcNegotiator};
+pub use negotiator::WebRtcConfig;
 pub use signaling::{
-    AuthConfig, AuthType, ConnectionState, DisconnectReason, ReconnectConfig, SignalingClient,
-    SignalingConfig, SignalingEvent, SignalingStats, WebSocketSignalingClient,
+    ConnectionState, DisconnectReason, ReconnectConfig, SignalingClient, SignalingConfig,
+    SignalingEvent, SignalingStats, WebSocketSignalingClient,
 };

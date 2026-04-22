@@ -79,7 +79,7 @@ impl TransportMessage {
 
 /// WebSocketConnection - WebSocket C/S Connect
 #[derive(Clone, Debug)]
-pub struct WebSocketConnection {
+pub(crate) struct WebSocketConnection {
     /// URL
     url: String,
     /// Local node identity (hex-encoded protobuf ActrId bytes), sent as X-Actr-Source-ID in handshake request for direct-connect mode

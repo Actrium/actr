@@ -35,7 +35,7 @@ use tracing::Instrument as _;
 /// - Use pending_requests to distinguish: exists = Response, doesn't exist = Request
 /// - Gateway layer doesn't deserialize payloads, raw bytes go directly to Mailbox
 /// - **IMPORTANT**: pending_requests should be shared with PeerGate
-pub struct WebRtcGate {
+pub(crate) struct WebRtcGate {
     /// Local Actor ID
     local_id: Arc<RwLock<Option<ActrId>>>,
 

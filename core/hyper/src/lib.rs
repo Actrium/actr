@@ -197,9 +197,8 @@ pub use transport::{
 // Layer 0: Wire layer
 #[cfg(not(target_arch = "wasm32"))]
 pub use wire::{
-    AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-    SignalingEvent, SignalingStats, WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator,
-    WebSocketConnection, WebSocketGate, WebSocketServer, WebSocketSignalingClient, WsAuthContext,
+    ReconnectConfig, SignalingClient, SignalingConfig, SignalingEvent, SignalingStats,
+    WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
 };
 
 // Mailbox (from actr-runtime-mailbox crate)
@@ -279,8 +278,8 @@ pub mod prelude {
     // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::wire::webrtc::{
-        AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-        WebRtcConfig, WebRtcCoordinator, WebRtcGate, WebRtcNegotiator, WebSocketSignalingClient,
+        ReconnectConfig, SignalingClient, SignalingConfig, WebRtcConfig, WebRtcCoordinator,
+        WebSocketSignalingClient,
     };
 
     // ── Mailbox (native-only) ───────────────────────────────────────────────

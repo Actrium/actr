@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 const ACCEPT_CHANNEL_CAPACITY: usize = 64;
 
 /// Inbound connection info: connection instance, sender `ActrId` bytes, and optional sender `AIdCredential`.
-pub type InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>);
+pub(crate) type InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>);
 
 /// WebSocketServer listening for inbound WebSocket connections.
 ///
@@ -43,7 +43,7 @@ pub type InboundWsConn = (WebSocketConnection, Vec<u8>, Option<AIdCredential>);
 ///     gate.handle_inbound(conn, source_id, credential).await;
 /// }
 /// ```
-pub struct WebSocketServer {
+pub(crate) struct WebSocketServer {
     listener: TcpListener,
     conn_tx: mpsc::Sender<InboundWsConn>,
     local_addr: SocketAddr,
@@ -72,11 +72,6 @@ impl WebSocketServer {
             },
             conn_rx,
         ))
-    }
-
-    /// Return the actual listening address, including the OS-assigned port when binding to `0`.
-    pub fn local_addr(&self) -> SocketAddr {
-        self.local_addr
     }
 
     /// Start the accept loop in a background task.

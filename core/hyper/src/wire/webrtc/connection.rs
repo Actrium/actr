@@ -27,7 +27,7 @@ type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
-pub struct WebRtcConnection {
+pub(crate) struct WebRtcConnection {
     /// Peer ID for event identification
     peer_id: ActrId,
 
@@ -105,18 +105,8 @@ impl WebRtcConnection {
         }
     }
 
-    /// Get peer ID
-    pub fn peer_id(&self) -> &ActrId {
-        &self.peer_id
-    }
-
-    /// Get session reference
-    pub fn session(&self) -> &ConnectionSession {
-        &self.session
-    }
-
     /// Get session ID
-    pub fn session_id(&self) -> u64 {
+    pub(crate) fn session_id(&self) -> u64 {
         self.session.session_id
     }
 
@@ -232,26 +222,11 @@ impl WebRtcConnection {
         }
     }
 
-    /// Install a state-change handler on the underlying RTCPeerConnection.
+    /// Mark the connection as connected.
     ///
-    /// This keeps `connected` in sync with the WebRTC connection state and
-    /// proactively closes the PeerConnection and clears internal caches when
-    /// entering a terminal state (Disconnected/Failed/Closed).
-    pub fn install_state_change_handler(&self) {
-        let this = self.clone();
-
-        self.peer_connection
-            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-                let this = this.clone();
-
-                Box::pin(async move {
-                    this.handle_state_change(state).await;
-                })
-            }));
-    }
-
-    /// establish Connect（WebRTC Connect already alreadyvia signaling establish ， this in only is mark record ）
-    pub async fn connect(&self) -> NetworkResult<()> {
+    /// The underlying WebRTC connection has already been established via
+    /// signaling; this call only records the local "connected" flag.
+    pub(crate) async fn connect(&self) -> NetworkResult<()> {
         *self.connected.write().await = true;
         Ok(())
     }
@@ -271,14 +246,9 @@ impl WebRtcConnection {
         });
     }
 
-    /// Subscribe to connection events
-    pub fn subscribe_events(&self) -> broadcast::Receiver<ConnectionEvent> {
-        self.event_tx.subscribe()
-    }
-
-    /// Checkwhether already Connect
+    /// Whether the session is still open.
     #[inline]
-    pub fn is_connected(&self) -> bool {
+    pub(crate) fn is_connected(&self) -> bool {
         !self.session.is_closed()
     }
 
@@ -827,16 +797,6 @@ impl WebRtcConnection {
     pub async fn get_ssrc(&self, track_id: &str) -> Option<u32> {
         let ssrcs = self.track_ssrcs.read().await;
         ssrcs.get(track_id).copied()
-    }
-
-    /// GetorCreate MediaTrack Lane（ carry Cache）
-    ///
-    /// # Arguments
-    /// - `_stream_id`: Media stream ID
-    ///
-    /// backwardaftercompatible hold Method：create_lane adjust usage get_lane
-    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
-        self.get_lane(payload_type).await
     }
 
     /// Register received DataChannel (for passive side)

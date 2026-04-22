@@ -7,7 +7,7 @@
 //! **Note**: For intra-process communication, use `crate::transport::HostTransport`
 
 pub mod webrtc;
-pub mod websocket;
+pub(crate) mod websocket;
 
 use crate::key_cache::KeyFetcher;
 use actr_protocol::{AIdCredential, ActrId};
@@ -18,10 +18,10 @@ use async_trait::async_trait;
 /// `KeyFetcher::fetch_key` only accepts `key_id`, while `SignalingClient::get_signing_key` also
 /// requires `actor_id` and `credential`. This adapter holds the context and forwards calls to the
 /// underlying signaling client.
-pub struct SignalingKeyFetcher {
-    pub client: std::sync::Arc<dyn webrtc::SignalingClient>,
-    pub actor_id: ActrId,
-    pub credential: AIdCredential,
+pub(crate) struct SignalingKeyFetcher {
+    pub(crate) client: std::sync::Arc<dyn webrtc::SignalingClient>,
+    pub(crate) actor_id: ActrId,
+    pub(crate) credential: AIdCredential,
 }
 
 #[async_trait]
@@ -39,10 +39,10 @@ impl KeyFetcher for SignalingKeyFetcher {
     }
 }
 
-// Re-export commonly used types
+// Re-export commonly used types. Submodule-internal types (gate / negotiator /
+// connection / websocket) stay reachable via module paths rather than
+// duplicated re-exports here.
 pub use webrtc::{
-    AuthConfig, AuthType, IceServer, ReconnectConfig, SignalingClient, SignalingConfig,
-    SignalingEvent, SignalingStats, WebRtcConfig, WebRtcConnection, WebRtcCoordinator, WebRtcGate,
-    WebRtcNegotiator, WebSocketSignalingClient,
+    ReconnectConfig, SignalingClient, SignalingConfig, SignalingEvent, SignalingStats,
+    WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
 };
-pub use websocket::{WebSocketConnection, WebSocketGate, WebSocketServer, WsAuthContext};
