@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/common",
-    "crates/runtime-sw",
-    "crates/runtime-dom",
+    "crates/sw-host",
+    "crates/dom-bridge",
     "crates/mailbox-web",
     "crates/platform-web",
 ]

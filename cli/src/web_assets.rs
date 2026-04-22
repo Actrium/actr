@@ -5,16 +5,16 @@
 //! external runtime WASM files, JS glue, or HTML pages.
 //!
 //! Assets:
-//! - `actr_runtime_sw_bg.wasm` — shared runtime WASM (wasm-pack from runtime-sw)
-//! - `actr_runtime_sw.js`      — wasm-bindgen JS glue for the runtime
-//! - `actor.sw.js`             — Service Worker entry point
-//! - `actr-host.html`          — self-contained host page with inline @actr/dom
+//! - `actr_sw_host_bg.wasm` — shared SW host WASM (wasm-pack from sw-host)
+//! - `actr_sw_host.js`      — wasm-bindgen JS glue for the SW host
+//! - `actor.sw.js`          — Service Worker entry point
+//! - `actr-host.html`       — self-contained host page with inline @actr/dom
 
-/// Shared runtime WASM binary (compiled from actr-runtime-sw via wasm-pack).
-pub const RUNTIME_WASM: &[u8] = include_bytes!("../assets/web-runtime/actr_runtime_sw_bg.wasm");
+/// Shared SW host WASM binary (compiled from actr-sw-host via wasm-pack).
+pub const RUNTIME_WASM: &[u8] = include_bytes!("../assets/web-runtime/actr_sw_host_bg.wasm");
 
-/// wasm-bindgen JS glue for the shared runtime.
-pub const RUNTIME_JS: &str = include_str!("../assets/web-runtime/actr_runtime_sw.js");
+/// wasm-bindgen JS glue for the shared SW host.
+pub const RUNTIME_JS: &str = include_str!("../assets/web-runtime/actr_sw_host.js");
 
 /// Generic Service Worker entry point (actor.sw.js).
 pub const ACTOR_SW_JS: &str = include_str!("../assets/web-runtime/actor.sw.js");

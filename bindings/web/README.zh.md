@@ -189,8 +189,8 @@ node test-wasm.js
 ```
 actr-web/
 ├── crates/              # Rust crates (WASM 核心)
-│   ├── runtime-sw/      # Service Worker 运行时
-│   ├── runtime-dom/     # DOM 运行时
+│   ├── sw-host/         # Service Worker host（Component Model 桥 + 运行时）
+│   ├── dom-bridge/      # DOM 侧到 SW host 的桥
 │   └── mailbox-web/     # IndexedDB Mailbox
 │
 ├── packages/            # JavaScript/TypeScript 包

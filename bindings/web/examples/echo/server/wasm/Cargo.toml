@@ -12,8 +12,8 @@ description = "Echo Server WASM for Web - Runtime Host (guest loaded separately)
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Actor-RTC Service Worker Runtime (includes framework code)
-actr-runtime-sw = { path = "../../../../crates/runtime-sw" }
+# Actor-RTC Service Worker host (Component Model bridge + runtime wiring)
+actr-sw-host = { path = "../../../../crates/sw-host" }
 actr-web-common = { path = "../../../../crates/common" }
 
 # WASM bindings

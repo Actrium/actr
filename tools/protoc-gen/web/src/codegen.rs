@@ -664,7 +664,7 @@ rust-version = "1.88"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-actr-runtime-sw = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
+actr-sw-host = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
 actr-web-common = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
 
 wasm-bindgen = "0.2"
@@ -776,7 +776,7 @@ fn gen_server_handler(service: &ServiceInfo) -> String {
     let sn = &service.name;
     let mut out = String::new();
     out.push_str(&format!("//! {sn} implementation\n\n"));
-    out.push_str("use std::rc::Rc;\nuse actr_runtime_sw::RuntimeContext;\nuse prost::Message;\n\n");
+    out.push_str("use std::rc::Rc;\nuse actr_sw_host::RuntimeContext;\nuse prost::Message;\n\n");
 
     let pkg = to_snake_case(&service.package);
     for m in &service.methods {
@@ -845,14 +845,14 @@ fn gen_client_handler(service: &ServiceInfo, req: &WebCodegenRequest) -> String 
         "//! {sn} local handler — forwards requests to remote service\n\n"
     ));
     out.push_str("use std::rc::Rc;\nuse std::sync::OnceLock;\n");
-    out.push_str("use actr_runtime_sw::RuntimeContext;\nuse actr_runtime_sw::WebContext;\n\n");
+    out.push_str("use actr_sw_host::RuntimeContext;\nuse actr_sw_host::WebContext;\n\n");
 
     let remote_target = req.dependencies.first().and_then(|d| d.actr_type.as_ref());
 
     if let Some(target) = remote_target {
-        out.push_str("static TARGET_TYPE: OnceLock<actr_runtime_sw::actr_protocol::ActrType> = OnceLock::new();\n\n");
-        out.push_str("fn target_type() -> &'static actr_runtime_sw::actr_protocol::ActrType {\n");
-        out.push_str("    TARGET_TYPE.get_or_init(|| actr_runtime_sw::actr_protocol::ActrType {\n");
+        out.push_str("static TARGET_TYPE: OnceLock<actr_sw_host::actr_protocol::ActrType> = OnceLock::new();\n\n");
+        out.push_str("fn target_type() -> &'static actr_sw_host::actr_protocol::ActrType {\n");
+        out.push_str("    TARGET_TYPE.get_or_init(|| actr_sw_host::actr_protocol::ActrType {\n");
         out.push_str(&format!(
             "        manufacturer: \"{}\".to_string(),\n",
             target.manufacturer
@@ -916,7 +916,7 @@ fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("mod {m};\n"));
     }
     out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
+        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n",
     );
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
@@ -925,7 +925,7 @@ fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("pub fn {rf}() {{\n"));
         out.push_str(&format!("    log::info!(\"Registering {hn}...\");\n\n"));
         out.push_str(
-            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+            "    actr_sw_host::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
         );
         out.push_str(
             "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",
@@ -973,7 +973,7 @@ fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("mod {m};\n"));
     }
     out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
+        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n",
     );
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
@@ -982,7 +982,7 @@ fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("pub fn {rf}() {{\n"));
         out.push_str("    log::info!(\"Registering handler...\");\n\n");
         out.push_str(
-            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+            "    actr_sw_host::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
         );
         out.push_str(
             "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",

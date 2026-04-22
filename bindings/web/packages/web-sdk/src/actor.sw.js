@@ -160,7 +160,7 @@ function emitSwLog(level, message, detail) {
  *      `bindings/web/scripts/transpile-component.sh`.
  *   5. Call the module's `instantiate(getCoreModule, imports)` with an
  *      import object that binds the WIT `actr:workload/host@0.1.0`
- *      functions to the wasm-bindgen exports from `actr-runtime-sw`
+ *      functions to the wasm-bindgen exports from `actr-sw-host`
  *      (`host_call_raw_async`, `host_discover_async`, etc.).
  *   6. Register `workload.dispatch` with the runtime via
  *      `register_component_workload`.
@@ -238,11 +238,11 @@ async function loadWithComponentBridge(packageUrl, runtimeWasmUrl) {
         );
     }
 
-    // ── 4. Build the host import object bound to runtime-sw wasm-bindgen ──
+    // ── 4. Build the host import object bound to sw-host wasm-bindgen ──
     //
     // jco's `instantiate()` expects an ImportObject keyed by the fully-
     // qualified WIT interface name (`actr:workload/host@0.1.0`). Each
-    // field maps to a function matching the WIT signature; runtime-sw
+    // field maps to a function matching the WIT signature; sw-host
     // provides the Rust implementations as async wasm-bindgen exports.
     const hostImports = {
         'actr:workload/host@0.1.0': {

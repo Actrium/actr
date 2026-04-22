@@ -714,8 +714,8 @@ impl RunCommand {
         // Build router:
         // 1. /actr-runtime-config.json — generated runtime config
         // 2. /actor.sw.js — embedded Service Worker
-        // 3. /packages/actr_runtime_sw_bg.wasm — embedded runtime WASM
-        // 4. /packages/actr_runtime_sw.js — embedded runtime JS glue
+        // 3. /packages/actr_sw_host_bg.wasm — embedded SW host WASM
+        // 4. /packages/actr_sw_host.js — embedded SW host JS glue
         // 5. /packages/<name>.actr — the .actr package from [package].path
         // 6. /packages/<name>.jco/* — jco-transpiled Component ES module
         //    bundle (sibling of the .actr; produced at build time by
@@ -725,8 +725,8 @@ impl RunCommand {
         let mut app = Router::new()
             .route("/actr-runtime-config.json", get(serve_runtime_config))
             .route("/actor.sw.js", get(serve_actor_sw_js))
-            .route("/packages/actr_runtime_sw_bg.wasm", get(serve_runtime_wasm))
-            .route("/packages/actr_runtime_sw.js", get(serve_runtime_js))
+            .route("/packages/actr_sw_host_bg.wasm", get(serve_runtime_wasm))
+            .route("/packages/actr_sw_host.js", get(serve_runtime_js))
             .route("/packages/{filename}", get(serve_actr_package))
             .with_state(shared_state.clone());
 
@@ -878,7 +878,7 @@ impl RunCommand {
             .unwrap_or_else(|| format!("/packages/{}", package_filename));
         let runtime_wasm_url = web
             .and_then(|w| w.runtime_wasm_url.clone())
-            .unwrap_or_else(|| "/packages/actr_runtime_sw_bg.wasm".to_string());
+            .unwrap_or_else(|| "/packages/actr_sw_host_bg.wasm".to_string());
 
         // Serialise `[[trust]]` anchors to the web runtime in the same shape
         // the Rust side uses (see `actr_config::TrustAnchor`). Browser-side

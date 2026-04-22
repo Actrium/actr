@@ -6,8 +6,8 @@
 
 use wasm_bindgen::prelude::*;
 
-// Re-export the public SW runtime API (including guest_bridge).
-pub use actr_runtime_sw::*;
+// Re-export the public SW host API (including guest_bridge).
+pub use actr_sw_host::*;
 
 /// WASM initialization entry point
 #[wasm_bindgen(start)]

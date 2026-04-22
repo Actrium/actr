@@ -3,6 +3,32 @@
 version = 4
 
 [[package]]
+name = "actr-dom-bridge"
+version = "0.2.0"
+dependencies = [
+ "actr-protocol",
+ "actr-web-common",
+ "async-trait",
+ "bytes",
+ "console_error_panic_hook",
+ "dashmap",
+ "futures",
+ "js-sys",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm-logger",
+ "web-sys",
+]
+
+[[package]]
 name = "actr-framework"
 version = "0.2.0"
 dependencies = [
@@ -105,32 +131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-runtime-dom"
-version = "0.2.0"
-dependencies = [
- "actr-protocol",
- "actr-web-common",
- "async-trait",
- "bytes",
- "console_error_panic_hook",
- "dashmap",
- "futures",
- "js-sys",
- "log",
- "parking_lot",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "thiserror 1.0.69",
- "uuid",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test",
- "wasm-logger",
- "web-sys",
-]
-
-[[package]]
 name = "actr-runtime-mailbox"
 version = "0.2.0"
 dependencies = [
@@ -147,7 +147,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "actr-runtime-sw"
+name = "actr-sw-host"
 version = "0.2.0"
 dependencies = [
  "actr-framework",

@@ -72,8 +72,8 @@
 **修复**: 更新为 `actr` 路径
 **影响文件**:
 - `crates/common/Cargo.toml`
-- `crates/runtime-sw/Cargo.toml`
-- `crates/runtime-dom/Cargo.toml`
+- `crates/sw-host/Cargo.toml`
+- `crates/dom-bridge/Cargo.toml`
 - `crates/runtime-web/Cargo.toml`
 
 ### 2. Service 方法解析失败

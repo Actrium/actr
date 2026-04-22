@@ -140,7 +140,7 @@ ES module + core .wasm + JS glue (jco transpile --instantiation async)
 Browser: Service Worker `loadWithComponentBridge`
     ├─ verifies .actr and extracts the Component binary
     ├─ dynamically imports the jco-generated ES module
-    ├─ binds WIT `actr:workload/host` imports to runtime-sw wasm-bindgen
+    ├─ binds WIT `actr:workload/host` imports to sw-host wasm-bindgen
     │  exports (`host_call_raw_async`, `host_discover_async`, ...)
     └─ registers `workload.dispatch` via `register_component_workload`
 ```
@@ -237,8 +237,8 @@ npm install
 ```
 actr-web/
 ├── crates/              # Rust crates (WASM core)
-│   ├── runtime-sw/      # Service Worker runtime
-│   ├── runtime-dom/     # DOM runtime
+│   ├── sw-host/         # Service Worker host (Component Model bridge + runtime)
+│   ├── dom-bridge/      # DOM-side bridge to the SW host
 │   └── mailbox-web/     # IndexedDB Mailbox
 │
 ├── packages/            # JavaScript/TypeScript packages

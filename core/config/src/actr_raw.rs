@@ -171,7 +171,7 @@ pub struct RawWebConfig {
     /// URL path to the .actr package (served from static dir, e.g. "/packages/echo-server.actr")
     pub package_url: Option<String>,
 
-    /// URL path to the shared runtime WASM (e.g. "/packages/actr_runtime_sw_bg.wasm")
+    /// URL path to the shared runtime WASM (e.g. "/packages/actr_sw_host_bg.wasm")
     pub runtime_wasm_url: Option<String>,
 }
 

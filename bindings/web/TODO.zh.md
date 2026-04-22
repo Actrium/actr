@@ -148,7 +148,7 @@
 
 ### 6. Web 环境生命周期恢复机制 (0% → 100%) ✅ **已完成**
 **完成日期**: 2026-01-08
-**文件位置**: `crates/runtime-dom/src/lifecycle.rs`, `crates/runtime-sw/src/lifecycle.rs`, `crates/runtime-sw/src/webrtc_recovery.rs`
+**文件位置**: `crates/dom-bridge/src/lifecycle.rs`, `crates/sw-host/src/lifecycle.rs`, `crates/sw-host/src/webrtc_recovery.rs`
 **设计文档**: [Web 生命周期恢复机制设计](./docs/architecture/web-lifecycle-recovery.zh.md)
 **提交**: c0f561d, 8e159e0
 
@@ -158,7 +158,7 @@
 - 现已实现完整恢复机制，系统可从刷新中恢复
 
 #### 6.1 DOM 重启检测（P0） ✅ 100%
-**文件**: `crates/runtime-dom/src/lifecycle.rs` (新建，~230 行)
+**文件**: `crates/dom-bridge/src/lifecycle.rs` (新建，~230 行)
 - [x] 监听 `load` 事件
 - [x] 发送 "DOM_READY" 到 SW
 - [x] 监听 `beforeunload` 事件
@@ -167,7 +167,7 @@
 - [x] 生成唯一 session_id
 
 #### 6.2 SW 生命周期监听（P0） ✅ 100%
-**文件**: `crates/runtime-sw/src/lifecycle.rs` (新建，~220 行)
+**文件**: `crates/sw-host/src/lifecycle.rs` (新建，~220 行)
 - [x] 监听 SW `message` 事件
 - [x] 处理 "DOM_READY" 消息
 - [x] 处理 "DOM_UNLOADING" 消息
@@ -175,14 +175,14 @@
 - [x] 清理失效的 WebRTC 连接
 
 #### 6.3 MessagePort 失效检测（P0） ✅ 100%
-**文件**: `crates/runtime-sw/src/transport/lane.rs` (修改)
+**文件**: `crates/sw-host/src/transport/lane.rs` (修改)
 - [x] `port.post_message()` 错误捕获
 - [x] 失效通知机制（PortFailureNotifier）
 - [x] 通知 WirePool 连接失效
 - [x] 日志记录和监控
 
 #### 6.4 WirePool 连接管理增强（P0） ✅ 100%
-**文件**: `crates/runtime-sw/src/transport/wire_pool.rs` (扩展，+80 行)
+**文件**: `crates/sw-host/src/transport/wire_pool.rs` (扩展，+80 行)
 - [x] `mark_connection_failed()` - 标记连接失效
 - [x] `remove_connection()` - 移除失效连接
 - [x] `reconnect()` - 重新添加连接
@@ -190,7 +190,7 @@
 - [x] `get_all_status()` - 获取所有连接状态
 
 #### 6.5 WebRTC 重建流程（P0） ✅ 100%
-**文件**: `crates/runtime-sw/src/webrtc_recovery.rs` (新建，~200 行)
+**文件**: `crates/sw-host/src/webrtc_recovery.rs` (新建，~200 行)
 - [x] `handle_dom_restart()` - 处理 DOM 重启
 - [x] 清理旧 WebRTC 连接
 - [x] 请求 DOM 重建 WebRTC（框架设计）
@@ -198,7 +198,7 @@
 - [x] 重新添加到 WirePool
 
 #### 6.6 Registry 重建提示（P1） ✅ 100%
-**文件**: `crates/runtime-dom/src/fastpath.rs` (修改，+100 行)
+**文件**: `crates/dom-bridge/src/fastpath.rs` (修改，+100 行)
 - [x] Registry 清空回调（`on_cleared()`）
 - [x] 导出注册状态（`export_state()`）
 - [x] 注册数量查询（`count()`）
@@ -218,7 +218,7 @@
 
 ### 7. 跨进程错误处理机制 (0% → 100%) ✅ **已完成**
 **完成日期**: 2026-01-08
-**文件位置**: `crates/runtime-dom/src/error_reporter.rs`, `crates/runtime-sw/src/error_handler.rs`
+**文件位置**: `crates/dom-bridge/src/error_reporter.rs`, `crates/sw-host/src/error_handler.rs`
 **设计文档**: [错误处理机制](./docs/error-handling.md)
 **提交**: c5e4e7b
 
@@ -236,7 +236,7 @@
 - [x] ControlMessage::ErrorReport 变体
 
 #### 7.2 DOM 错误报告器（P0） ✅ 100%
-**文件**: `crates/runtime-dom/src/error_reporter.rs` (新建，~210 行)
+**文件**: `crates/dom-bridge/src/error_reporter.rs` (新建，~210 行)
 - [x] DomErrorReporter 结构
 - [x] report_webrtc_error()
 - [x] report_messageport_error()
@@ -245,7 +245,7 @@
 - [x] 全局单例模式
 
 #### 7.3 SW 错误处理器（P0） ✅ 100%
-**文件**: `crates/runtime-sw/src/error_handler.rs` (新建，~250 行)
+**文件**: `crates/sw-host/src/error_handler.rs` (新建，~250 行)
 - [x] SwErrorHandler 结构
 - [x] 自动更新 WirePool 连接状态
 - [x] 错误历史记录（最近 100 条）

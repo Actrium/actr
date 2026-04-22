@@ -40,7 +40,7 @@ export interface SwRuntimeConfig {
   /** URL of the signed .actr workload package (e.g. "/packages/echo.actr"). */
   package_url?: string;
 
-  /** URL of the SW runtime WASM (wasm-pack output, e.g. "/packages/actr_runtime_sw_bg.wasm").
+  /** URL of the SW host WASM (wasm-pack output, e.g. "/packages/actr_sw_host_bg.wasm").
    *  Loaded independently of the workload: Hyper (runtime) and workload (guest) are
    *  always separate artifacts. The SW derives the JS glue URL from this (`_bg.wasm` → `.js`). */
   runtime_wasm_url?: string;
