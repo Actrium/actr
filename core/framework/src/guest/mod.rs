@@ -24,7 +24,7 @@
 //! - **cdylib** (`feature = "cdylib"`): HostVTable function-pointer
 //!   bridge used for native shared-library guests (iOS / Android).
 
-pub mod abi;
+pub mod dynclib_abi;
 pub mod vtable;
 
 #[cfg(target_arch = "wasm32")]
@@ -303,7 +303,7 @@ macro_rules! entry {
                 init_len: usize,
             ) -> i32 {
                 if vtable.is_null() {
-                    return $crate::guest::abi::code::INIT_FAILED;
+                    return $crate::guest::dynclib_abi::code::INIT_FAILED;
                 }
 
                 let init_bytes = if init_ptr.is_null() || init_len == 0 {
@@ -316,23 +316,23 @@ macro_rules! entry {
                 // is decodable. The payload fields themselves are not yet
                 // consumed by the guest runtime on the dynclib path. This is a
                 // legacy gap carried forward from the previous init model.
-                if $crate::guest::abi::decode_message::<$crate::guest::abi::InitPayloadV1>(
+                if $crate::guest::dynclib_abi::decode_message::<$crate::guest::dynclib_abi::InitPayloadV1>(
                     init_bytes,
                 )
                 .is_err()
                 {
-                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                    return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR;
                 }
 
                 let workload: $workload_type = $init_expr;
                 unsafe {
                     if __ACTR_WORKLOAD.is_some() {
-                        return $crate::guest::abi::code::INIT_FAILED;
+                        return $crate::guest::dynclib_abi::code::INIT_FAILED;
                     }
                     __ACTR_VTABLE = Some(vtable);
                     __ACTR_WORKLOAD = Some(workload);
                 }
-                $crate::guest::abi::code::SUCCESS
+                $crate::guest::dynclib_abi::code::SUCCESS
             }
 
             /// Handle one runtime ABI frame.
@@ -349,48 +349,48 @@ macro_rules! entry {
                 // Get vtable
                 let vtable = match unsafe { __ACTR_VTABLE } {
                     Some(vt) => vt,
-                    None => return $crate::guest::abi::code::INIT_FAILED,
+                    None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
                 };
 
                 // Read runtime frame
                 if req_ptr.is_null() {
-                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                    return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR;
                 }
                 let req_bytes = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
 
-                let frame = match $crate::guest::abi::decode_message::<
-                    $crate::guest::abi::AbiFrame,
+                let frame = match $crate::guest::dynclib_abi::decode_message::<
+                    $crate::guest::dynclib_abi::AbiFrame,
                 >(req_bytes) {
                     Ok(f) => f,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
-                if frame.op != $crate::guest::abi::op::GUEST_HANDLE {
-                    return $crate::guest::abi::code::UNSUPPORTED_OP;
+                if frame.op != $crate::guest::dynclib_abi::op::GUEST_HANDLE {
+                    return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP;
                 }
 
-                let handle = match <$crate::guest::abi::GuestHandleV1 as $crate::guest::abi::AbiPayload>::decode_payload(&frame.payload) {
+                let handle = match <$crate::guest::dynclib_abi::GuestHandleV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                     Ok(handle) => handle,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
                 let envelope = match actr_protocol::RpcEnvelope::decode(handle.rpc_envelope.as_slice()) {
                     Ok(e) => e,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
                 let ctx = match unsafe {
                     $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, handle.ctx)
                 } {
                     Ok(c) => c,
-                    Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
+                    Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                 };
 
                 // Get workload reference
                 let workload = unsafe {
                     match __ACTR_WORKLOAD.as_ref() {
                         Some(w) => w,
-                        None => return $crate::guest::abi::code::INIT_FAILED,
+                        None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
                     }
                 };
 
@@ -409,18 +409,18 @@ macro_rules! entry {
                     match pinned.as_mut().poll(&mut cx) {
                         std::task::Poll::Ready(v) => v,
                         std::task::Poll::Pending => {
-                            return $crate::guest::abi::code::HANDLE_FAILED;
+                            return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
                         }
                     }
                 };
 
                 let resp_bytes = match resp_result {
-                    Ok(b) => match $crate::guest::abi::success_reply(b.to_vec()) {
+                    Ok(b) => match $crate::guest::dynclib_abi::success_reply(b.to_vec()) {
                         Ok(bytes) => bytes,
                         Err(code) => return code,
                     },
-                    Err(err) => match $crate::guest::abi::error_reply(
-                        $crate::guest::abi::code::HANDLE_FAILED,
+                    Err(err) => match $crate::guest::dynclib_abi::error_reply(
+                        $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                         err.to_string().into_bytes(),
                     ) {
                         Ok(bytes) => bytes,
@@ -432,11 +432,11 @@ macro_rules! entry {
                 let resp_len = resp_bytes.len();
                 let layout = match std::alloc::Layout::from_size_align(resp_len.max(1), 1) {
                     Ok(l) => l,
-                    Err(_) => return $crate::guest::abi::code::GENERIC_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::GENERIC_ERROR,
                 };
                 let ptr = unsafe { std::alloc::alloc(layout) };
                 if ptr.is_null() {
-                    return $crate::guest::abi::code::GENERIC_ERROR;
+                    return $crate::guest::dynclib_abi::code::GENERIC_ERROR;
                 }
 
                 unsafe {
@@ -445,7 +445,7 @@ macro_rules! entry {
                     *resp_len_out = resp_len;
                 }
 
-                $crate::guest::abi::code::SUCCESS
+                $crate::guest::dynclib_abi::code::SUCCESS
             }
 
             /// Free guest-allocated response buffer

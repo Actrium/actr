@@ -1,7 +1,7 @@
 // actr workload contract — Component Model WIT
 //
 // Phase 1 migration target: replaces the handwritten ptr/len ABI
-// (core/hyper/src/wasm/abi.rs, core/framework/src/guest/abi.rs,
+// (core/hyper/src/wasm/abi.rs, core/framework/src/guest/dynclib_abi.rs,
 // entry!-generated actr_init / actr_handle / actr_alloc / actr_free)
 // with the Component Model canonical ABI.
 //
@@ -20,7 +20,7 @@
 //
 // 2. Host imports mirror the current runtime guest->host surface
 //    (HostCallV1 / HostTellV1 / HostCallRawV1 / HostDiscoverV1 from
-//    core/framework/src/guest/abi.rs) plus the three context getters
+//    core/framework/src/guest/dynclib_abi.rs) plus the three context getters
 //    currently threaded through `InvocationContextV1`.
 //
 // 3. Guest exports mirror the framework `Workload` trait

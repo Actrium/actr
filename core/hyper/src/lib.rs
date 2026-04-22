@@ -1147,8 +1147,8 @@ async fn load_wasm_workload_inner(
             ))
         })?;
         instance
-            .init(&actr_framework::guest::abi::InitPayloadV1 {
-                version: actr_framework::guest::abi::version::V1,
+            .init(&actr_framework::guest::dynclib_abi::InitPayloadV1 {
+                version: actr_framework::guest::dynclib_abi::version::V1,
                 actr_type: manifest.actr_type_str(),
                 credential: Vec::new(),
                 actor_id: Vec::new(),
@@ -1183,8 +1183,8 @@ fn load_dynclib_workload_inner(
         let cache_path = ensure_dynclib_cache_path(&_inner.config.data_dir, bytes, manifest)?;
         let host = load_dynclib_host_with_rebuild(&cache_path, bytes, manifest)?;
         let instance = host
-            .instantiate(&actr_framework::guest::abi::InitPayloadV1 {
-                version: actr_framework::guest::abi::version::V1,
+            .instantiate(&actr_framework::guest::dynclib_abi::InitPayloadV1 {
+                version: actr_framework::guest::dynclib_abi::version::V1,
                 actr_type: manifest.actr_type_str(),
                 credential: Vec::new(),
                 actor_id: Vec::new(),

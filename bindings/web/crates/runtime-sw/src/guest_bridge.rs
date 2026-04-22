@@ -60,7 +60,7 @@
 //! The previous handwritten prost `AbiFrame` / `GuestHandleV1` bridge and the
 //! cdylib `actr_init` / `actr_handle` entry points are gone from this crate
 //! as of the Component Model browser migration. The Rust-side legacy ABI
-//! types in `actr_framework::guest::abi` remain in use by the native
+//! types in `actr_framework::guest::dynclib_abi` remain in use by the native
 //! **DynClib** backend and are untouched here.
 
 use std::cell::RefCell;

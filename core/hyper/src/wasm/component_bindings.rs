@@ -2,7 +2,7 @@
 //!
 //! Phase 1, Commit 2: these bindings now back the single path the wasm
 //! workload runtime takes — the legacy handwritten ptr/len ABI
-//! (core/hyper/src/wasm/abi.rs, core/framework/src/guest/abi.rs,
+//! (core/hyper/src/wasm/abi.rs, core/framework/src/guest/dynclib_abi.rs,
 //! entry!-generated `actr_init` / `actr_handle` / `actr_alloc` / `actr_free`)
 //! is replaced by the Component Model canonical ABI.
 //!

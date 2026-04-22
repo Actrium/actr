@@ -29,7 +29,7 @@ pub enum ShapeDriftKind {
     FieldMismatch,
     /// A Rust enum variant differs in name or payload shape.
     VariantMismatch,
-    /// A declared ABI op constant is missing from `abi::op`.
+    /// A declared ABI op constant is missing from `dynclib_abi::op`.
     MissingOpConstant,
     /// Rust const ABI value differs from the mapping expectation.
     OpConstantValueMismatch,

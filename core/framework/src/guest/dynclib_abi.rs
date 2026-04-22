@@ -1,6 +1,12 @@
-//! Guest-host ABI data structures and error codes.
+//! DynClib-only C ABI for actr workloads.
 //!
-//! Shared by both WASM and dynclib guest runtimes.
+//! This module is the handwritten C ABI used by the DynClib workload variant
+//! (loaded via dlopen). The WASM variant does NOT consume these types — it
+//! goes through wit-bindgen-generated code against `core/framework/wit/actr-workload.wit`.
+//!
+//! Do NOT add wasm-path code paths here. Do NOT reference this module from
+//! the wasm guest adapter. This module is kept in sync with the WIT contract
+//! by `tools/wit-lint`.
 
 use crate::Dest;
 use actr_protocol::prost::Message as ProstMessage;
@@ -60,9 +66,9 @@ pub struct InitPayloadV1 {
 ///
 /// TODO: This type is temporarily `pub` because `actr_hyper` still performs
 /// cross-crate host-side ABI encoding and decoding through
-/// `actr_framework::guest::abi`. Once the shared runtime ABI types are moved to
-/// a better ownership boundary, narrow this visibility to the intended
-/// internal-only surface.
+/// `actr_framework::guest::dynclib_abi`. Once the shared runtime ABI types
+/// are moved to a better ownership boundary, narrow this visibility to the
+/// intended internal-only surface.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct AbiFrame {
     #[prost(uint32, tag = "1")]

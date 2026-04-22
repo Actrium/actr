@@ -1,7 +1,7 @@
 //! Dynclib guest-side `Context` implementation backed by the compressed ABI.
 
-use crate::guest::abi::{
-    self, AbiPayload, AbiReply, HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1,
+use crate::guest::dynclib_abi::{
+    self as abi, AbiPayload, AbiReply, HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1,
     InvocationContextV1, abi_error_to_actr, dest_to_v1, reply_to_actr_error,
 };
 use crate::guest::vtable::HostVTable;

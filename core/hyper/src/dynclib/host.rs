@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::ptr;
 
-use actr_framework::guest::abi::{self as guest_abi, AbiReply, InitPayloadV1};
+use actr_framework::guest::dynclib_abi::{self as guest_abi, AbiReply, InitPayloadV1};
 use libloading::Library;
 
 /// Wrapper around a raw pointer that is `Send`.

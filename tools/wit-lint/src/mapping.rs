@@ -61,7 +61,7 @@ pub struct FunctionMapping {
     pub wit_key: &'static str,
     /// Rust struct name carrying the serialized parameter set.
     pub rust_payload: &'static str,
-    /// ABI op constant ident in `abi::op`.
+    /// ABI op constant ident in `dynclib_abi::op`.
     pub op_const: &'static str,
     /// Expected numeric value of the op constant (decimal).
     pub op_value: u32,
@@ -286,7 +286,10 @@ fn check_function(
         drifts.push(ShapeDrift {
             kind: ShapeDriftKind::MissingRustPayload,
             location: location.clone(),
-            message: format!("payload struct `{}` not found in abi.rs", map.rust_payload),
+            message: format!(
+                "payload struct `{}` not found in dynclib_abi.rs",
+                map.rust_payload
+            ),
         });
         return;
     };
@@ -306,7 +309,7 @@ fn check_function(
         drifts.push(ShapeDrift {
             kind: ShapeDriftKind::MissingOpConstant,
             location,
-            message: "`pub mod op` not found in abi.rs".into(),
+            message: "`pub mod op` not found in dynclib_abi.rs".into(),
         });
         return;
     };
@@ -365,7 +368,7 @@ pub fn default_mapping() -> Mapping {
                 // because prost-oneof requires a non-unit type per
                 // arm. The `bool` is an ABI-level discriminant-only
                 // placeholder (always true) — documented in
-                // abi.rs's DestKind declaration.
+                // dynclib_abi.rs's DestKind declaration.
                 ("shell", "Shell", Some("(bool)")),
                 ("local", "Local", Some("(bool)")),
                 ("actor", "Actor", Some("(ActrId)")),

@@ -3,7 +3,7 @@
 //! This module replaces the old executor adapter layer. `ActrNode` dispatches
 //! directly into a runtime `Workload` enum.
 
-use actr_framework::guest::abi::{
+use actr_framework::guest::dynclib_abi::{
     self as guest_abi, AbiPayload, GuestHandleV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
     HostTellV1,
 };
@@ -487,9 +487,11 @@ pub fn encode_guest_handle_request(
 
 /// Decode guest-encoded [`DestV1`] back to [`actr_framework::Dest`].
 ///
-/// Re-exported from `actr_framework::guest::abi` for host-side convenience.
-pub fn decode_dest(v1: &actr_framework::guest::abi::DestV1) -> Option<actr_framework::Dest> {
-    actr_framework::guest::abi::dest_v1_to_dest(v1)
+/// Re-exported from `actr_framework::guest::dynclib_abi` for host-side convenience.
+pub fn decode_dest(
+    v1: &actr_framework::guest::dynclib_abi::DestV1,
+) -> Option<actr_framework::Dest> {
+    actr_framework::guest::dynclib_abi::dest_v1_to_dest(v1)
 }
 
 #[cfg(test)]

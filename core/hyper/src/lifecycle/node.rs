@@ -239,7 +239,7 @@ async fn host_operation_handler(
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
-    use actr_framework::guest::abi::code as abi_code;
+    use actr_framework::guest::dynclib_abi::code as abi_code;
     use actr_framework::{Context as _, Dest};
     use actr_protocol::PayloadType;
 

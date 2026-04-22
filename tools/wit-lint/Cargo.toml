@@ -2,7 +2,7 @@
 #
 # wit-lint: drift guard between the WIT contract
 # (core/framework/wit/actr-workload.wit) and the hand-rolled DynClib C ABI
-# (core/framework/src/guest/abi.rs).
+# (core/framework/src/guest/dynclib_abi.rs).
 #
 # DynClib cannot consume wit-bindgen-generated bindings (`wit-bindgen c` emits
 # wasm-targeted code, not portable C ABI) so its ABI is hand-written. To keep

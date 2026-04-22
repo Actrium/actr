@@ -34,7 +34,7 @@
 
 use std::sync::Arc;
 
-use actr_framework::guest::abi::InitPayloadV1;
+use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrError, ActrId, ActrType, Realm, RpcEnvelope};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -51,8 +51,8 @@ use super::component_bindings::actr::workload::types::{
 use crate::wasm::error::{WasmError, WasmResult};
 use crate::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 
-use actr_framework::guest::abi as guest_abi;
-use actr_framework::guest::abi::{HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1};
+use actr_framework::guest::dynclib_abi as guest_abi;
+use actr_framework::guest::dynclib_abi::{HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine configuration

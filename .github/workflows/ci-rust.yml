@@ -28,7 +28,7 @@ jobs:
 
   # DynClib cannot consume `wit-bindgen c` output (it is wasm-targeted, not
   # portable C ABI), so its hand-written ABI lives in
-  # core/framework/src/guest/abi.rs. `wit-lint` is the drift guard that
+  # core/framework/src/guest/dynclib_abi.rs. `wit-lint` is the drift guard that
   # keeps that file aligned with the WIT contract. Runs separately and
   # fast-fails before the heavier build / test jobs.
   wit-lint:

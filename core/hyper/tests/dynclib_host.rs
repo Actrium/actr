@@ -7,7 +7,7 @@
 
 #![cfg(feature = "dynclib-engine")]
 
-use actr_framework::guest::abi::{InitPayloadV1, version};
+use actr_framework::guest::dynclib_abi::{InitPayloadV1, version};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

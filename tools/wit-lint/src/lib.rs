@@ -4,7 +4,7 @@
 //!
 //! Cross-checks the canonical WIT contract at
 //! `core/framework/wit/actr-workload.wit` against the hand-rolled C ABI in
-//! `core/framework/src/guest/abi.rs`, surfacing field-, type-, variant- and
+//! `core/framework/src/guest/dynclib_abi.rs`, surfacing field-, type-, variant- and
 //! function-shape drift between the two.
 //!
 //! ## Why a lint and not codegen
@@ -34,7 +34,7 @@
 //! - WIT variants match Rust enum variants and payload shapes.
 //! - WIT functions in `interface host` and `interface workload` map to the
 //!   declared Rust payload type (its prost fields capture the canonical
-//!   parameter set) and have an ABI op code defined in `abi::op`.
+//!   parameter set) and have an ABI op code defined in `dynclib_abi::op`.
 
 use std::path::Path;
 
