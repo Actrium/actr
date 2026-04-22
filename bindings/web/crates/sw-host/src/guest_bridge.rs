@@ -296,8 +296,8 @@ pub async fn host_call_raw_async(
     let target = parse_actr_id(&target)?;
     let payload_bytes = payload.to_vec();
 
-    log::debug!(
-        "[GuestBridge] host.call-raw target=<{}> route={} len={}",
+    log::info!(
+        "[SW][GuestBridge] host.call-raw target=<{}> route={} len={}",
         target.serial_number,
         route_key,
         payload_bytes.len()
@@ -336,6 +336,13 @@ pub async fn host_call_async(
             )));
         }
     };
+
+    log::info!(
+        "[SW][GuestBridge] host.call target=<{}> route={} len={}",
+        actor_id.serial_number,
+        route_key,
+        payload_bytes.len()
+    );
 
     match ctx
         .call_raw(&actor_id, &route_key, &payload_bytes, 30_000)
@@ -381,8 +388,8 @@ pub async fn host_discover_async(target_type: JsValue) -> Result<JsValue, JsValu
     let ctx = current_ctx()?;
     let target_type = parse_actr_type(&target_type)?;
 
-    log::debug!(
-        "[GuestBridge] host.discover target={}:{}:{}",
+    log::info!(
+        "[SW][GuestBridge] host.discover target={}:{}:{}",
         target_type.manufacturer,
         target_type.name,
         target_type.version
@@ -470,8 +477,8 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
             let body = body.to_vec();
 
             Box::pin(async move {
-                log::debug!(
-                    "[GuestBridge] dispatch route={} body_len={}",
+                log::info!(
+                    "[SW][GuestBridge] dispatch enter route={} body_len={}",
                     route_key,
                     body.len()
                 );
@@ -500,9 +507,15 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     Ok(v) => v,
                     Err(e) => {
                         clear_ctx();
+                        log::error!("[SW][GuestBridge] dispatch threw synchronously: {e:?}");
                         return Err(format!("guest dispatch threw: {e:?}"));
                     }
                 };
+
+                log::info!(
+                    "[SW][GuestBridge] dispatch_fn invoked, awaiting promise (is_promise={})",
+                    result.is_instance_of::<js_sys::Promise>()
+                );
 
                 // jco `workload.dispatch` is async; the return is always a
                 // Promise. Await it, then convert to bytes.
@@ -512,6 +525,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                         Ok(v) => v,
                         Err(e) => {
                             clear_ctx();
+                            log::error!("[SW][GuestBridge] dispatch promise rejected: {e:?}");
                             // jco rejects with the jco `Error`-shaped variant;
                             // tag/message was set by `actr_error_to_js` on the
                             // host side, or by the guest-thrown error directly.
@@ -524,6 +538,8 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                 };
 
                 clear_ctx();
+
+                log::info!("[SW][GuestBridge] dispatch promise resolved");
 
                 if resolved.is_null() || resolved.is_undefined() {
                     return Err("guest dispatch returned null/undefined".to_string());
