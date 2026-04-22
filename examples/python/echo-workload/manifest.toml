@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# actr build manifest for the Python echo workload.
+#
+# Compilation is driven by `build.sh` (componentize-py), so this manifest
+# does **not** declare a `[build]` section. Run packaging with:
+#
+#     ./build.sh                                 # produce dist/echo-python-...wasm
+#     actr build --no-compile -m manifest.toml   # pack the wasm into .actr
+#
+# Produces: dist/acme-EchoWorkloadPython-0.1.0-wasm32-wasip2.actr
+
+edition = 1
+
+[package]
+name = "EchoWorkloadPython"
+manufacturer = "acme"
+version = "0.1.0"
+description = "Echo workload authored in Python (componentize-py, alpha), Component Model guest"
+authors = ["Actr Dev Team"]
+license = "Apache-2.0"
+tags = ["dev", "example", "python-guest", "component-model"]
+exports = []
+
+# ── Binary artifact ──────────────────────────────────────────────────────────
+#
+# `wasm32-wasip2` triggers BinaryKind::Component in actr_pack — the host
+# loads this through `Component::from_binary` (Phase 1 Component Model).
+[binary]
+path = "dist/echo-python-0.1.0-wasm32-wasip2.wasm"
+target = "wasm32-wasip2"
+
+[dependencies]
