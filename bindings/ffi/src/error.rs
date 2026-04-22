@@ -96,7 +96,7 @@ impl ActrError {
     ///
     /// Exposed to UniFFI consumers so they can branch on classification
     /// rather than pattern-matching every variant.
-    pub fn kind(&self) -> ErrorKind {
+    pub(crate) fn kind(&self) -> ErrorKind {
         match self {
             ActrError::Unavailable { .. } | ActrError::TimedOut => ErrorKind::Transient,
 
@@ -114,13 +114,13 @@ impl ActrError {
     }
 
     /// Returns `true` if the operation may be retried (Transient only).
-    pub fn is_retryable(&self) -> bool {
+    pub(crate) fn is_retryable(&self) -> bool {
         matches!(self.kind(), ErrorKind::Transient)
     }
 
     /// Returns `true` if the message should be routed to a Dead Letter Queue
     /// (Corrupt only).
-    pub fn requires_dlq(&self) -> bool {
+    pub(crate) fn requires_dlq(&self) -> bool {
         matches!(self.kind(), ErrorKind::Corrupt)
     }
 }

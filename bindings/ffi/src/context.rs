@@ -38,15 +38,11 @@ pub struct ContextBridge {
 }
 
 impl ContextBridge {
-    pub fn new(inner: RuntimeContext) -> Arc<Self> {
-        Arc::new(Self { inner })
-    }
-
     /// Try to create a ContextBridge from a generic Context implementation.
     ///
     /// This performs a runtime type check and fails if the context is not a
     /// `RuntimeContext`.
-    pub fn try_from_context<C: Context + 'static>(ctx: &C) -> ActrResult<Arc<Self>> {
+    pub(crate) fn try_from_context<C: Context + 'static>(ctx: &C) -> ActrResult<Arc<Self>> {
         if TypeId::of::<C>() != TypeId::of::<RuntimeContext>() {
             return Err(ActrError::Internal {
                 msg: format!(

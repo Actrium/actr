@@ -20,7 +20,6 @@ mod types;
 mod workload;
 
 pub use error::*;
-pub use logger::*;
 pub use opus::*;
 pub use runtime::*;
 pub use types::*;
