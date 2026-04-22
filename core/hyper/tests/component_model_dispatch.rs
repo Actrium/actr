@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use actr_hyper::test_support::instantiate_wasm_workload;
 use actr_hyper::wasm::{WasmError, WasmHost};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
@@ -118,7 +119,7 @@ fn unreachable_bridge() -> HostAbiFn {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_basic_echo_round_trip() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // NB: `call_on_start` is skipped in every test in this module. The
     // Phase 1 Commit 3 guest adapter unconditionally builds a
     // `WasmContext` via the `get-self-id` / `get-caller-id` /
@@ -144,8 +145,12 @@ async fn component_model_basic_echo_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn component_model_cross_instance_parallelism() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl_a = host.instantiate().await.expect("instantiate A");
-    let mut wl_b = host.instantiate().await.expect("instantiate B");
+    let mut wl_a = instantiate_wasm_workload(&host)
+        .await
+        .expect("instantiate A");
+    let mut wl_b = instantiate_wasm_workload(&host)
+        .await
+        .expect("instantiate B");
 
     // on_start skipped on both instances — see
     // `component_model_basic_echo_round_trip` for why.
@@ -196,7 +201,7 @@ async fn component_model_cross_instance_parallelism() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_executor_non_blocking_during_host_await() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // on_start skipped — see `component_model_basic_echo_round_trip`.
 
     let tick_count = Arc::new(AtomicU64::new(0));
@@ -239,7 +244,7 @@ async fn component_model_executor_non_blocking_during_host_await() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_error_variant_propagates() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // on_start skipped — see `component_model_basic_echo_round_trip`.
 
     let bridge = unreachable_bridge();
@@ -266,7 +271,7 @@ async fn component_model_error_variant_propagates() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_panic_after_await_surfaces_as_trap() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // on_start skipped — see `component_model_basic_echo_round_trip`.
 
     // Bridge replies with any bytes; the guest panics immediately after
@@ -317,7 +322,7 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_per_call_overhead() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // on_start skipped — see `component_model_basic_echo_round_trip`.
 
     let bridge = unreachable_bridge();
@@ -358,7 +363,7 @@ async fn component_model_per_call_overhead() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_call_on_start_does_not_trap() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = host.instantiate().await.expect("instantiate");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
 
     // Fixture uses the default no-op `on_start`. Before the followup this
     // trapped at the first `get-self-id` import; after the followup it

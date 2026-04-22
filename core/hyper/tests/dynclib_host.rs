@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::{DynclibError, DynclibHost};
+use actr_hyper::test_support::instantiate_dynclib_workload;
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
@@ -97,9 +98,8 @@ fn test_load_nonexistent_library() {
 fn test_load_and_instantiate() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load should succeed");
-    let _instance = host
-        .instantiate(&test_config())
-        .expect("instantiate should succeed");
+    let _instance =
+        instantiate_dynclib_workload(host, &test_config()).expect("instantiate should succeed");
 }
 
 /// Basic echo dispatch through loaded instance
@@ -108,7 +108,7 @@ fn test_load_and_instantiate() {
 async fn test_basic_echo_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let payload = b"hello dynclib".to_vec();
     let req_bytes = make_envelope("test/echo", payload.clone());
@@ -130,7 +130,7 @@ async fn test_basic_echo_dispatch() {
 async fn test_basic_double_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let x: i32 = 21;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());

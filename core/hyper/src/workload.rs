@@ -334,7 +334,7 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
 ///   calls / discovery.
 #[derive(Default)]
 #[allow(clippy::large_enum_variant)]
-pub enum Workload {
+pub(crate) enum Workload {
     /// Client-only node: no local guest, no dispatch target.
     #[default]
     None,

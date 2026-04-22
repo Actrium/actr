@@ -212,7 +212,7 @@ pub use actr_runtime_mailbox::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
-    Workload, WorkloadAdapter,
+    WorkloadAdapter,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

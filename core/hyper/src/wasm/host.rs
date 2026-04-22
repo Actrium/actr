@@ -1,9 +1,8 @@
 //! WasmHost — Wasmtime Component Model host engine.
 //!
 //! Drives wasm workloads packaged as Component Model components. A single
-//! [`WasmHost`] compiles a component once; multiple [`WasmWorkload`]
-//! instances can be derived from that compilation, each corresponding to
-//! one logical actor instance.
+//! [`WasmHost`] compiles a component once; Hyper can then derive multiple
+//! internal runtime instances from that compilation, one per logical actor.
 //!
 //! # Contract
 //!
@@ -29,7 +28,7 @@
 //! Same-instance single-threadedness is compile-time-enforced: each
 //! dispatch takes `&mut Store<HostState>`, so the Rust borrow checker
 //! forbids concurrent hooks on the same actor. Cross-instance
-//! parallelism still works because each [`WasmWorkload`] owns its own
+//! parallelism still works because each instantiated runtime owns its own
 //! `Store`.
 
 use std::sync::Arc;
@@ -90,7 +89,7 @@ fn build_engine() -> WasmResult<Engine> {
 ///   `call_dispatch` and cleared after);
 /// - an optional [`HostAbiFn`] bridge servicing guest->host operations;
 ///   forwards to the host runtime's outbound RPC executor (registered
-///   by the [`WasmWorkload::handle`] call path).
+///   by Hyper's internal workload dispatch path).
 pub(crate) struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
@@ -405,9 +404,8 @@ fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
 
 /// Compiled wasm Component engine.
 ///
-/// One `WasmHost` corresponds to one compiled component. Instantiation
-/// produces a fresh `WasmWorkload` per actor instance; each instance
-/// owns its own `Store<HostState>`.
+/// One `WasmHost` corresponds to one compiled component. Hyper uses it
+/// internally to instantiate one runtime workload per actor instance.
 pub struct WasmHost {
     engine: Engine,
     component: Component,
@@ -440,15 +438,15 @@ impl WasmHost {
         Ok(Self { engine, component })
     }
 
-    /// Instantiate the component into a runnable [`WasmWorkload`].
+    /// Instantiate the component into a runnable internal workload.
     ///
     /// Builds a fresh [`Linker`] per instance (cheap), registers WASI
     /// p2 as well as the generated `actr:workload/host` linker, and
     /// runs `Component::instantiate_async` which drives any
     /// component-model initialisation through the host reactor. The
-    /// resulting bindings are cached on the returned `WasmWorkload`
+    /// resulting bindings are cached on the returned workload
     /// for subsequent `call_dispatch` and hook invocations.
-    pub async fn instantiate(&self) -> WasmResult<WasmWorkload> {
+    pub(crate) async fn instantiate(&self) -> WasmResult<WasmWorkload> {
         let mut linker: Linker<HostState> = Linker::new(&self.engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
             WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
@@ -482,7 +480,7 @@ impl WasmHost {
 /// borrow checker rejects any caller attempting to drive two hooks on
 /// the same instance concurrently — the single-threaded-actor invariant
 /// is compile-time-enforced.
-pub struct WasmWorkload {
+pub(crate) struct WasmWorkload {
     store: Store<HostState>,
     bindings: ActrWorkloadGuest,
 }
@@ -502,7 +500,7 @@ impl WasmWorkload {
     /// payload flow through the WIT hooks directly.
     ///
     /// For now this simply logs the intent and returns Ok.
-    pub fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
+    pub(crate) fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
         tracing::debug!(
             actr_type = %init_payload.actr_type,
             realm_id = init_payload.realm_id,
@@ -516,7 +514,7 @@ impl WasmWorkload {
     /// Phase 1 exposes this as a distinct entry point so the host can
     /// pump the lifecycle after instantiation. Returns `Err` on a host
     /// trap or an `actr-error` variant from the guest.
-    pub async fn call_on_start(&mut self) -> WasmResult<()> {
+    pub(crate) async fn call_on_start(&mut self) -> WasmResult<()> {
         let result = self
             .bindings
             .actr_workload_workload()
@@ -538,7 +536,7 @@ impl WasmWorkload {
     /// for the duration of this call. The `host_abi` bridge services
     /// any guest-initiated `call` / `tell` / `call-raw` / `discover`
     /// operations during `.await` points inside the guest.
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,

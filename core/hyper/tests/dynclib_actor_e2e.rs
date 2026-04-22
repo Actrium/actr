@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::DynclibHost;
+use actr_hyper::test_support::instantiate_dynclib_workload;
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
@@ -96,7 +97,7 @@ fn noop_executor() -> HostAbiFn {
 async fn dynclib_unknown_route_returns_error() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
     let executor = noop_executor();
@@ -112,7 +113,7 @@ async fn dynclib_unknown_route_returns_error() {
 async fn dynclib_echo_returns_payload() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let req_bytes = make_envelope("test/echo", payload.clone());
@@ -132,7 +133,7 @@ async fn dynclib_echo_returns_payload() {
 async fn dynclib_double_dispatch() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let x: i32 = 7;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
@@ -183,7 +184,7 @@ async fn dynclib_double_dispatch() {
 async fn dynclib_multiple_dispatches() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     for x in [1i32, 5, 42, 100] {
         let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());

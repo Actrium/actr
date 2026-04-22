@@ -350,7 +350,10 @@ impl DynclibHost {
     /// Initialise an actor instance inside the loaded library.
     ///
     /// Calls the guest's `actr_init(vtable, init_ptr, init_len)`.
-    pub fn instantiate(&self, init_payload: &InitPayloadV1) -> DynclibResult<DynclibInstance> {
+    pub(crate) fn instantiate(
+        &self,
+        init_payload: &InitPayloadV1,
+    ) -> DynclibResult<DynclibInstance> {
         let init_bytes = guest_abi::encode_message(init_payload).map_err(|code| {
             DynclibError::DispatchFailed(format!("init payload encode failed: {code}"))
         })?;
@@ -389,7 +392,7 @@ impl DynclibHost {
 /// `actr_init` initializes exactly one logical actor state inside this instance.
 /// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynClibWorkload>`)
 /// and must not enter `actr_handle` concurrently for the same instance.
-pub struct DynclibInstance {
+pub(crate) struct DynclibInstance {
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
 }
@@ -409,7 +412,7 @@ unsafe impl Send for DynclibInstance {}
 /// (which holds raw function pointers into the loaded library) must be dropped
 /// before `_host` (which unloads the library).
 #[derive(Debug)]
-pub struct DynClibWorkload {
+pub(crate) struct DynClibWorkload {
     instance: DynclibInstance,
     _host: DynclibHost,
 }
@@ -436,7 +439,7 @@ impl DynclibInstance {
     /// `actr_handle`. Those trampolines use `Handle::block_on` to execute the
     /// async `call_executor` — this is safe because `actr_handle` runs inside
     /// `spawn_blocking` (off the tokio worker pool).
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,
@@ -530,7 +533,7 @@ impl DynclibInstance {
 }
 
 impl DynClibWorkload {
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,
