@@ -915,9 +915,7 @@ fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
     for m in &handler_mods {
         out.push_str(&format!("mod {m};\n"));
     }
-    out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n",
-    );
+    out.push_str("\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n");
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
     for (rf, hn, sm) in &register_calls {
@@ -972,9 +970,7 @@ fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
     for m in &handler_mods {
         out.push_str(&format!("mod {m};\n"));
     }
-    out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n",
-    );
+    out.push_str("\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n");
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
     for (rf, mn, sm) in &register_calls {
