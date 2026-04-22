@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
     })?;
     info!(
         "✅ ActrNode started with ID: {}",
-        actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id())
+        actr_protocol::ActrId::to_string_repr(actr_ref.actor_id())
     );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

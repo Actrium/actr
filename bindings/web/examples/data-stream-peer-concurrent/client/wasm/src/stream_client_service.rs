@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-use actr_runtime_sw::actr_protocol::{ActrIdExt, ActrType, ActrTypeExt};
+use actr_runtime_sw::actr_protocol::ActrType;
 use actr_runtime_sw::{RuntimeContext, WebContext};
 use bytes::Bytes;
 use gloo_timers::future::TimeoutFuture;

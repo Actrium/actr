@@ -5,7 +5,7 @@ use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::command_exists;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};

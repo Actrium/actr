@@ -10,8 +10,8 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ActrTypeExt, PayloadType,
-    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RouteCandidatesRequest,
+    RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActorResult, ActrId, ActrIdExt, ActrType, MetadataEntry, RpcEnvelope, RpcRequest,
+    ActorResult, ActrId, ActrType, MetadataEntry, RpcEnvelope, RpcRequest,
 };
 use bytes::Bytes;
 

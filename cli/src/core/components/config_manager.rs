@@ -1,5 +1,4 @@
 use actr_config::ManifestConfig;
-use actr_protocol::ActrTypeExt;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};

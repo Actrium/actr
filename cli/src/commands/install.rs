@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::utils::command_exists;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use actr_service_compat::{
     CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility, ServiceSpecInput,
     build_service_spec,
@@ -398,8 +398,6 @@ impl InstallCommand {
         actr_type: &ActrType,
         fingerprint: Option<&str>,
     ) -> Result<CommandResult> {
-        use actr_protocol::ActrTypeExt;
-
         println!(
             "actr deps install {} --actr-type {}",
             alias,

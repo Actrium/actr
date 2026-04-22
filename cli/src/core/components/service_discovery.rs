@@ -9,7 +9,6 @@ use actr_protocol::{
     discovery_response, get_service_spec_response, register_response, signaling_envelope,
     signaling_to_actr,
 };
-use actr_protocol::{ActrIdExt, ActrTypeExt};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use base64::Engine as _;

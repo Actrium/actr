@@ -4,7 +4,6 @@ use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
-use actr_protocol::{ActrIdExt, ActrTypeExt};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info};

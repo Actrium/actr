@@ -544,7 +544,7 @@ impl WebSocketSignalingClient {
         let mut url = self.config.server_url.clone();
         let actor_id_opt = self.actor_id.lock().await.clone();
         if let Some(actor_id) = actor_id_opt {
-            let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
+            let actor_str = actr_protocol::ActrId::to_string_repr(&actor_id);
             url.query_pairs_mut().append_pair("actor_id", &actor_str);
         }
 

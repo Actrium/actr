@@ -32,25 +32,11 @@ pub enum ActrIdError {
     InvalidTypeFormat(String),
 }
 
-/// Helpers for `ActrType` string conversions.
-pub trait ActrTypeExt: Sized {
+impl ActrType {
     /// Convert to stable string representation.
     ///
     /// Always returns `"manufacturer:name:version"`.
-    fn to_string_repr(&self) -> String;
-
-    /// Parse from string representation.
-    ///
-    /// Accepts:
-    /// - `"manufacturer:name:version"` — with version (required)
-    ///
-    /// Returns `Err(ActrIdError::InvalidTypeFormat)` if version is absent,
-    /// as `ActrType.version` is now a required field.
-    fn from_string_repr(s: &str) -> Result<Self, ActrIdError>;
-}
-
-impl ActrTypeExt for ActrType {
-    fn to_string_repr(&self) -> String {
+    pub fn to_string_repr(&self) -> String {
         debug_assert!(
             !self.version.is_empty(),
             "ActrType.version must be non-empty"
@@ -59,7 +45,14 @@ impl ActrTypeExt for ActrType {
         format!("{}:{}:{}", self.manufacturer, self.name, self.version)
     }
 
-    fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
+    /// Parse from string representation.
+    ///
+    /// Accepts:
+    /// - `"manufacturer:name:version"` — with version (required)
+    ///
+    /// Returns `Err(ActrIdError::InvalidTypeFormat)` if version is absent,
+    /// as `ActrType.version` is now a required field.
+    pub fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
         // Require exactly 3 segments: manufacturer, name, version
         let parts: Vec<&str> = s.splitn(4, ':').collect();
         let (manufacturer, name, version) = match parts.as_slice() {
@@ -96,20 +89,12 @@ impl std::fmt::Display for ActrType {
     }
 }
 
-/// Helpers for `ActrId` string conversions.
-pub trait ActrIdExt: Sized {
+impl ActrId {
     /// Convert to `"<serial_hex>@<realm_id>/<actr_type>"`.
     ///
     /// The `/` separates the realm ID from the ActrType string, avoiding
     /// ambiguity with the `:` separators used inside ActrType.
-    fn to_string_repr(&self) -> String;
-
-    /// Parse from string representation.
-    fn from_string_repr(s: &str) -> Result<Self, ActrIdError>;
-}
-
-impl ActrIdExt for ActrId {
-    fn to_string_repr(&self) -> String {
+    pub fn to_string_repr(&self) -> String {
         format!(
             "{:x}@{}/{}",
             self.serial_number,
@@ -118,7 +103,8 @@ impl ActrIdExt for ActrId {
         )
     }
 
-    fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
+    /// Parse from string representation.
+    pub fn from_string_repr(s: &str) -> Result<Self, ActrIdError> {
         // Format: "<serial_hex>@<realm_id>/<actr_type>"
         let (serial_part, rest) = s
             .split_once('@')

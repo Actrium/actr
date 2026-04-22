@@ -7,7 +7,7 @@ use crate::generated::{
     file_transfer::*, local_file::*, file_actor::LocalFileServiceHandler,
 };
 use actr_framework::Context;
-use actr_protocol::{ActrIdExt, ActrType, ActrTypeExt, DataStream};
+use actr_protocol::{ActrType, DataStream};
 use actr_hyper::prelude::*;
 use bytes::Bytes;
 

@@ -5,7 +5,7 @@
 //! - Workload trait: business workload, associates Dispatcher type
 //! - {Service}Handler trait: user-implemented business logic interface
 
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use anyhow::{Result, anyhow};
 use heck::ToSnakeCase;
 use prost_types::MethodDescriptorProto;

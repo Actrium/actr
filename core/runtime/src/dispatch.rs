@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use actr_framework::{Context, ErrorCategory, ErrorEvent, MessageDispatcher, Workload};
-use actr_protocol::{Acl, ActorResult, ActrError, ActrId, ActrIdExt as _, RpcEnvelope};
+use actr_protocol::{Acl, ActorResult, ActrError, ActrId, RpcEnvelope};
 use bytes::Bytes;
 use futures_util::FutureExt as _;
 

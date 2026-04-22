@@ -30,7 +30,6 @@ use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
 use actr_framework::Bytes;
-use actr_protocol::ActrIdExt;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::{

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrIdExt, ActrToSignaling, ActrType, ActrTypeExt, Ping,
+    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping,
     RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
     ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
     route_candidates_request, session_description, signaling_envelope, signaling_to_actr,

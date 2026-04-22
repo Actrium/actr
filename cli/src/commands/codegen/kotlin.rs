@@ -2,7 +2,7 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;

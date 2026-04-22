@@ -55,7 +55,7 @@ graph TD
 为 `ActrId` 提供了字符串表示的互相转换能力，格式定义为：`<serial_number>@<realm_id>:<manufacturer>+<name>`。
 
 ```rust
-use actr_protocol::{ActrId, ActrType, Realm, ActrIdExt};
+use actr_protocol::{ActrId, ActrType, Realm};
 
 // 示例
 let id = ActrId {

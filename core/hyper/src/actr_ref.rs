@@ -148,7 +148,7 @@ impl ActrRef {
     pub fn shutdown(&self) {
         tracing::info!(
             "🛑 Shutdown requested for Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.shared.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.shared.actor_id)
         );
         self.shared.shutdown_token.cancel();
     }
@@ -241,7 +241,7 @@ impl Drop for ActrRefShared {
     fn drop(&mut self) {
         tracing::info!(
             "🧹 ActrRefShared dropping - cleaning up Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.actor_id)
         );
 
         // Cancel shutdown token
@@ -259,7 +259,7 @@ impl Drop for ActrRefShared {
 
         tracing::debug!(
             "✅ All background tasks aborted for Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.actor_id)
         );
     }
 }

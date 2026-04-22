@@ -3,7 +3,6 @@
 //! Defines three core operation pipelines for cross-command logic reuse
 
 use actr_config::{LockFile, LockedDependency, ProtoFileMeta, ServiceSpecMeta};
-use actr_protocol::ActrTypeExt;
 use anyhow::Result;
 use std::sync::Arc;
 

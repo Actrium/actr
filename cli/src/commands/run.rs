@@ -466,7 +466,7 @@ impl RunCommand {
         detached_runtime: &DetachedRuntimeContext,
         actr_ref: &actr_hyper::ActrRef,
     ) -> Result<()> {
-        let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
+        let actr_id_str = actr_protocol::ActrId::to_string_repr(actr_ref.actor_id());
 
         // Upsert: if a record already exists for this wid (start/restart scenario),
         // update pid/started_at and clear stopped_at while preserving wid and actr_id.

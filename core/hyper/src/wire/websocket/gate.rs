@@ -22,9 +22,7 @@ use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
-};
+use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
@@ -489,7 +487,7 @@ impl WebSocketGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::{ActrIdExt, ActrType, IdentityClaims, Realm};
+    use actr_protocol::{ActrType, IdentityClaims, Realm};
     use actr_runtime_mailbox::{MailboxStats, MessageRecord, StorageResult};
     use async_trait::async_trait;
     use ed25519_dalek::{Signer, SigningKey};

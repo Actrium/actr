@@ -1,7 +1,7 @@
 use actr_framework::Dest as RtDest;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrId as RtActrId, ActrIdExt, ActrType as RtActrType, PayloadType as RpPayloadType,
+    ActrId as RtActrId, ActrType as RtActrType, PayloadType as RpPayloadType,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
