@@ -85,7 +85,7 @@ typealias Workload = WorkloadBridge
  * @param configPath Path to the TOML configuration file
  * @param packagePath Path to the `.actr` package file
  * @return A new ActrNode instance
- * @throws ActrException.ConfigException if the config file is invalid
+ * @throws ActrException.Config if the config file is invalid
  */
 suspend fun ActrNodeGenerated.Companion.fromPackageFile(
     configPath: String,
@@ -105,7 +105,7 @@ suspend fun ActrNodeGenerated.Companion.fromPackageFile(
  * @param configPath Path to the TOML configuration file
  * @param packagePath Path to the `.actr` package file
  * @return A new ActrNode instance
- * @throws ActrException.ConfigException if the config file is invalid
+ * @throws ActrException.Config if the config file is invalid
  */
 suspend fun createActrNode(configPath: String, packagePath: String): ActrNode {
     return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)

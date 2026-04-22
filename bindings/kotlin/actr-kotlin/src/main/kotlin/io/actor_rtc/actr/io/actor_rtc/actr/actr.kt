@@ -883,6 +883,12 @@ internal object IntegrityCheckingUniffiLib {
         uniffiCheckContractApiVersion(this)
         uniffiCheckApiChecksums(this)
     }
+    external fun uniffi_actr_checksum_func_actr_error_is_retryable(
+    ): Short
+    external fun uniffi_actr_checksum_func_actr_error_kind(
+    ): Short
+    external fun uniffi_actr_checksum_func_actr_error_requires_dlq(
+    ): Short
     external fun uniffi_actr_checksum_method_actrnode_create_network_event_handle(
     ): Short
     external fun uniffi_actr_checksum_method_actrnode_start(
@@ -1103,6 +1109,12 @@ external fun uniffi_actr_fn_init_callback_vtable_websocketobserverbridge(`vtable
 ): Unit
 external fun uniffi_actr_fn_init_callback_vtable_workloadlifecyclebridge(`vtable`: UniffiVTableCallbackInterfaceWorkloadLifecycleBridge,
 ): Unit
+external fun uniffi_actr_fn_func_actr_error_is_retryable(`err`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+external fun uniffi_actr_fn_func_actr_error_kind(`err`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_func_actr_error_requires_dlq(`err`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
 external fun ffi_actr_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 external fun ffi_actr_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1222,6 +1234,15 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_actr_checksum_func_actr_error_is_retryable() != 53552.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_func_actr_error_kind() != 63189.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_func_actr_error_requires_dlq() != 47593.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 48586.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -4755,11 +4776,15 @@ public object FfiConverterTypeRpcEnvelopeBridge: FfiConverterRustBuffer<RpcEnvel
 
 
 /**
- * Error type for actr operations
+ * Error type for actr operations.
+ *
+ * The first ten variants mirror `actr_protocol::ActrError` exactly; the
+ * remaining binding-local variants capture pre-protocol failures that
+ * originate inside the FFI shell (config parsing, package loading, etc.).
  */
 sealed class ActrException: kotlin.Exception() {
     
-    class ConfigException(
+    class Unavailable(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4767,7 +4792,13 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class ConnectionException(
+    class TimedOut(
+        ) : ActrException() {
+        override val message
+            get() = ""
+    }
+    
+    class NotFound(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4775,7 +4806,7 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class RpcException(
+    class PermissionDenied(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4783,7 +4814,7 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class StateException(
+    class InvalidArgument(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4791,7 +4822,7 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class InternalException(
+    class UnknownRoute(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4799,7 +4830,17 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class TimeoutException(
+    class DependencyNotFound(
+        
+        val `serviceName`: kotlin.String, 
+        
+        val `message`: kotlin.String
+        ) : ActrException() {
+        override val message
+            get() = "serviceName=${ `serviceName` }, message=${ `message` }"
+    }
+    
+    class DecodeFailure(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4807,7 +4848,30 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
-    class WorkloadException(
+    class NotImplemented(
+        
+        val `msg`: kotlin.String
+        ) : ActrException() {
+        override val message
+            get() = "msg=${ `msg` }"
+    }
+    
+    class Internal(
+        
+        val `msg`: kotlin.String
+        ) : ActrException() {
+        override val message
+            get() = "msg=${ `msg` }"
+    }
+    
+    /**
+     * Config file parsing / trust resolution failed before the runtime could
+     * hand the request over to the protocol layer.
+     *
+     * Classified as `ErrorKind::Client` — the caller supplied a bad manifest
+     * or runtime config.
+     */
+    class Config(
         
         val `msg`: kotlin.String
         ) : ActrException() {
@@ -4831,25 +4895,36 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
         
 
         return when(buf.getInt()) {
-            1 -> ActrException.ConfigException(
+            1 -> ActrException.Unavailable(
                 FfiConverterString.read(buf),
                 )
-            2 -> ActrException.ConnectionException(
+            2 -> ActrException.TimedOut()
+            3 -> ActrException.NotFound(
                 FfiConverterString.read(buf),
                 )
-            3 -> ActrException.RpcException(
+            4 -> ActrException.PermissionDenied(
                 FfiConverterString.read(buf),
                 )
-            4 -> ActrException.StateException(
+            5 -> ActrException.InvalidArgument(
                 FfiConverterString.read(buf),
                 )
-            5 -> ActrException.InternalException(
+            6 -> ActrException.UnknownRoute(
                 FfiConverterString.read(buf),
                 )
-            6 -> ActrException.TimeoutException(
+            7 -> ActrException.DependencyNotFound(
+                FfiConverterString.read(buf),
                 FfiConverterString.read(buf),
                 )
-            7 -> ActrException.WorkloadException(
+            8 -> ActrException.DecodeFailure(
+                FfiConverterString.read(buf),
+                )
+            9 -> ActrException.NotImplemented(
+                FfiConverterString.read(buf),
+                )
+            10 -> ActrException.Internal(
+                FfiConverterString.read(buf),
+                )
+            11 -> ActrException.Config(
                 FfiConverterString.read(buf),
                 )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
@@ -4858,37 +4933,57 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
 
     override fun allocationSize(value: ActrException): ULong {
         return when(value) {
-            is ActrException.ConfigException -> (
+            is ActrException.Unavailable -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.ConnectionException -> (
+            is ActrException.TimedOut -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+            is ActrException.NotFound -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.RpcException -> (
+            is ActrException.PermissionDenied -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.StateException -> (
+            is ActrException.InvalidArgument -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.InternalException -> (
+            is ActrException.UnknownRoute -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.TimeoutException -> (
+            is ActrException.DependencyNotFound -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`serviceName`)
+                + FfiConverterString.allocationSize(value.`message`)
+            )
+            is ActrException.DecodeFailure -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
             )
-            is ActrException.WorkloadException -> (
+            is ActrException.NotImplemented -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`msg`)
+            )
+            is ActrException.Internal -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`msg`)
+            )
+            is ActrException.Config -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`msg`)
@@ -4898,38 +4993,58 @@ public object FfiConverterTypeActrError : FfiConverterRustBuffer<ActrException> 
 
     override fun write(value: ActrException, buf: ByteBuffer) {
         when(value) {
-            is ActrException.ConfigException -> {
+            is ActrException.Unavailable -> {
                 buf.putInt(1)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.ConnectionException -> {
+            is ActrException.TimedOut -> {
                 buf.putInt(2)
-                FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.RpcException -> {
+            is ActrException.NotFound -> {
                 buf.putInt(3)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.StateException -> {
+            is ActrException.PermissionDenied -> {
                 buf.putInt(4)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.InternalException -> {
+            is ActrException.InvalidArgument -> {
                 buf.putInt(5)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.TimeoutException -> {
+            is ActrException.UnknownRoute -> {
                 buf.putInt(6)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
-            is ActrException.WorkloadException -> {
+            is ActrException.DependencyNotFound -> {
                 buf.putInt(7)
+                FfiConverterString.write(value.`serviceName`, buf)
+                FfiConverterString.write(value.`message`, buf)
+                Unit
+            }
+            is ActrException.DecodeFailure -> {
+                buf.putInt(8)
+                FfiConverterString.write(value.`msg`, buf)
+                Unit
+            }
+            is ActrException.NotImplemented -> {
+                buf.putInt(9)
+                FfiConverterString.write(value.`msg`, buf)
+                Unit
+            }
+            is ActrException.Internal -> {
+                buf.putInt(10)
+                FfiConverterString.write(value.`msg`, buf)
+                Unit
+            }
+            is ActrException.Config -> {
+                buf.putInt(11)
                 FfiConverterString.write(value.`msg`, buf)
                 Unit
             }
@@ -4968,6 +5083,57 @@ public object FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer<ErrorC
     override fun allocationSize(value: ErrorCategoryBridge) = 4UL
 
     override fun write(value: ErrorCategoryBridge, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Fault domain classification exposed to UniFFI consumers.
+ *
+ * Mirrors `actr_protocol::ErrorKind` so downstream generic policy code
+ * (retry / DLQ routing / alerting) can be written once and reused across
+ * Swift, Kotlin, and any future UniFFI language target.
+ */
+
+enum class ErrorKind {
+    
+    /**
+     * Environmental fluctuation — retry with exponential backoff.
+     */
+    TRANSIENT,
+    /**
+     * Caller error — bad request or system state; do not retry.
+     */
+    CLIENT,
+    /**
+     * Framework bug or panic — do not retry; alert.
+     */
+    INTERNAL,
+    /**
+     * Data corruption — route to Dead Letter Queue; manual intervention.
+     */
+    CORRUPT;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeErrorKind: FfiConverterRustBuffer<ErrorKind> {
+    override fun read(buf: ByteBuffer) = try {
+        ErrorKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: ErrorKind) = 4UL
+
+    override fun write(value: ErrorKind, buf: ByteBuffer) {
         buf.putInt(value.ordinal + 1)
     }
 }
@@ -6608,5 +6774,44 @@ public object FfiConverterSequenceTypeMetadataEntry: FfiConverterRustBuffer<List
 
 
 
+
+        /**
+         * `true` iff the error is in the Transient fault domain — safe to retry.
+         */ fun `actrErrorIsRetryable`(`err`: ActrException): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_func_actr_error_is_retryable(
+    
+        FfiConverterTypeActrError.lower(`err`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Fault-domain classification of `err` (see [`ErrorKind`]).
+         */ fun `actrErrorKind`(`err`: ActrException): ErrorKind {
+            return FfiConverterTypeErrorKind.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_func_actr_error_kind(
+    
+        FfiConverterTypeActrError.lower(`err`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * `true` iff the error is in the Corrupt fault domain — route to DLQ.
+         */ fun `actrErrorRequiresDlq`(`err`: ActrException): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_func_actr_error_requires_dlq(
+    
+        FfiConverterTypeActrError.lower(`err`),_status)
+}
+    )
+    }
+    
 
 

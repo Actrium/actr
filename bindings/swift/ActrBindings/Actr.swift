@@ -2756,25 +2756,43 @@ public func FfiConverterTypeRpcEnvelopeBridge_lower(_ value: RpcEnvelopeBridge) 
 
 
 /**
- * Error type for actr operations
+ * Error type for actr operations.
+ *
+ * The first ten variants mirror `actr_protocol::ActrError` exactly; the
+ * remaining binding-local variants capture pre-protocol failures that
+ * originate inside the FFI shell (config parsing, package loading, etc.).
  */
 public enum ActrError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
-    case ConfigError(msg: String
+    case Unavailable(msg: String
     )
-    case ConnectionError(msg: String
+    case TimedOut
+    case NotFound(msg: String
     )
-    case RpcError(msg: String
+    case PermissionDenied(msg: String
     )
-    case StateError(msg: String
+    case InvalidArgument(msg: String
     )
-    case InternalError(msg: String
+    case UnknownRoute(msg: String
     )
-    case TimeoutError(msg: String
+    case DependencyNotFound(serviceName: String, message: String
     )
-    case WorkloadError(msg: String
+    case DecodeFailure(msg: String
+    )
+    case NotImplemented(msg: String
+    )
+    case Internal(msg: String
+    )
+    /**
+     * Config file parsing / trust resolution failed before the runtime could
+     * hand the request over to the protocol layer.
+     *
+     * Classified as `ErrorKind::Client` — the caller supplied a bad manifest
+     * or runtime config.
+     */
+    case Config(msg: String
     )
 
     
@@ -2803,25 +2821,36 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
         
 
         
-        case 1: return .ConfigError(
+        case 1: return .Unavailable(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 2: return .ConnectionError(
+        case 2: return .TimedOut
+        case 3: return .NotFound(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 3: return .RpcError(
+        case 4: return .PermissionDenied(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 4: return .StateError(
+        case 5: return .InvalidArgument(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 5: return .InternalError(
+        case 6: return .UnknownRoute(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 6: return .TimeoutError(
+        case 7: return .DependencyNotFound(
+            serviceName: try FfiConverterString.read(from: &buf), 
+            message: try FfiConverterString.read(from: &buf)
+            )
+        case 8: return .DecodeFailure(
             msg: try FfiConverterString.read(from: &buf)
             )
-        case 7: return .WorkloadError(
+        case 9: return .NotImplemented(
+            msg: try FfiConverterString.read(from: &buf)
+            )
+        case 10: return .Internal(
+            msg: try FfiConverterString.read(from: &buf)
+            )
+        case 11: return .Config(
             msg: try FfiConverterString.read(from: &buf)
             )
 
@@ -2836,38 +2865,58 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
 
         
         
-        case let .ConfigError(msg):
+        case let .Unavailable(msg):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .ConnectionError(msg):
+        case .TimedOut:
             writeInt(&buf, Int32(2))
-            FfiConverterString.write(msg, into: &buf)
-            
         
-        case let .RpcError(msg):
+        
+        case let .NotFound(msg):
             writeInt(&buf, Int32(3))
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .StateError(msg):
+        case let .PermissionDenied(msg):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .InternalError(msg):
+        case let .InvalidArgument(msg):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .TimeoutError(msg):
+        case let .UnknownRoute(msg):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .WorkloadError(msg):
+        case let .DependencyNotFound(serviceName,message):
             writeInt(&buf, Int32(7))
+            FfiConverterString.write(serviceName, into: &buf)
+            FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .DecodeFailure(msg):
+            writeInt(&buf, Int32(8))
+            FfiConverterString.write(msg, into: &buf)
+            
+        
+        case let .NotImplemented(msg):
+            writeInt(&buf, Int32(9))
+            FfiConverterString.write(msg, into: &buf)
+            
+        
+        case let .Internal(msg):
+            writeInt(&buf, Int32(10))
+            FfiConverterString.write(msg, into: &buf)
+            
+        
+        case let .Config(msg):
+            writeInt(&buf, Int32(11))
             FfiConverterString.write(msg, into: &buf)
             
         }
@@ -2969,6 +3018,104 @@ public func FfiConverterTypeErrorCategoryBridge_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeErrorCategoryBridge_lower(_ value: ErrorCategoryBridge) -> RustBuffer {
     return FfiConverterTypeErrorCategoryBridge.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Fault domain classification exposed to UniFFI consumers.
+ *
+ * Mirrors `actr_protocol::ErrorKind` so downstream generic policy code
+ * (retry / DLQ routing / alerting) can be written once and reused across
+ * Swift, Kotlin, and any future UniFFI language target.
+ */
+
+public enum ErrorKind: Equatable, Hashable {
+    
+    /**
+     * Environmental fluctuation — retry with exponential backoff.
+     */
+    case transient
+    /**
+     * Caller error — bad request or system state; do not retry.
+     */
+    case client
+    /**
+     * Framework bug or panic — do not retry; alert.
+     */
+    case `internal`
+    /**
+     * Data corruption — route to Dead Letter Queue; manual intervention.
+     */
+    case corrupt
+
+
+
+}
+
+#if compiler(>=6)
+extension ErrorKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeErrorKind: FfiConverterRustBuffer {
+    typealias SwiftType = ErrorKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ErrorKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .transient
+        
+        case 2: return .client
+        
+        case 3: return .`internal`
+        
+        case 4: return .corrupt
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ErrorKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .transient:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .client:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .`internal`:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .corrupt:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorKind_lift(_ buf: RustBuffer) throws -> ErrorKind {
+    return try FfiConverterTypeErrorKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeErrorKind_lower(_ value: ErrorKind) -> RustBuffer {
+    return FfiConverterTypeErrorKind.lower(value)
 }
 
 
@@ -5322,6 +5469,36 @@ private func uniffiForeignFutureDroppedCallback(handle: UInt64) {
 public func uniffiForeignFutureHandleCountActr() -> Int {
     UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.count
 }
+/**
+ * `true` iff the error is in the Transient fault domain — safe to retry.
+ */
+public func actrErrorIsRetryable(err: ActrError) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_actr_fn_func_actr_error_is_retryable(
+        FfiConverterTypeActrError_lower(err),$0
+    )
+})
+}
+/**
+ * Fault-domain classification of `err` (see [`ErrorKind`]).
+ */
+public func actrErrorKind(err: ActrError) -> ErrorKind  {
+    return try!  FfiConverterTypeErrorKind_lift(try! rustCall() {
+    uniffi_actr_fn_func_actr_error_kind(
+        FfiConverterTypeActrError_lower(err),$0
+    )
+})
+}
+/**
+ * `true` iff the error is in the Corrupt fault domain — route to DLQ.
+ */
+public func actrErrorRequiresDlq(err: ActrError) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_actr_fn_func_actr_error_requires_dlq(
+        FfiConverterTypeActrError_lower(err),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -5337,6 +5514,15 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_actr_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_actr_checksum_func_actr_error_is_retryable() != 53552) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_func_actr_error_kind() != 63189) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_func_actr_error_requires_dlq() != 47593) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 48586) {
         return InitializationResult.apiChecksumMismatch

@@ -29,10 +29,10 @@ public final class ActrNode: Sendable {
     /// Creates a package-backed node from config and package file URLs.
     public static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrNode {
         guard configURL.isFileURL else {
-            throw ActrError.ConfigError(msg: "packageConfig URL must be a file URL")
+            throw ActrError.Config(msg: "packageConfig URL must be a file URL")
         }
         guard packageURL.isFileURL else {
-            throw ActrError.ConfigError(msg: "packageURL must be a file URL")
+            throw ActrError.Config(msg: "packageURL must be a file URL")
         }
         return try await from(packageConfig: configURL.path, packagePath: packageURL.path)
     }

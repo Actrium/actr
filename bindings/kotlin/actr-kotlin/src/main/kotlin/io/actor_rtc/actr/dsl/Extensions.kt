@@ -3,8 +3,12 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
+import io.actor_rtc.actr.ErrorKind
 import io.actor_rtc.actr.NetworkEventResult
 import io.actor_rtc.actr.PayloadType
+import io.actor_rtc.actr.actrErrorIsRetryable
+import io.actor_rtc.actr.actrErrorKind
+import io.actor_rtc.actr.actrErrorRequiresDlq
 
 // ============================================================================
 // ActrRef Call Extensions - Convenience wrappers with default parameters
@@ -141,40 +145,67 @@ suspend fun NetworkEventHandle.handleNetworkTypeChangedCatching(
 // ============================================================================
 // Exception Extensions
 // ============================================================================
+//
+// The underlying sealed `ActrException` mirrors `actr_protocol::ActrError`
+// 1:1 (10 variants) plus a small number of binding-local variants. Rather
+// than reasoning about each concrete subclass, consumers typically branch
+// on fault domain via `ErrorKind` — see `actrErrorKind(ex)` below.
 
-/** Get a user-friendly error message. */
+/** Get a user-friendly error message for logs or UI. */
 val ActrException.userMessage: String
     get() =
             when (this) {
-                is ActrException.ConfigException -> "Configuration error: $msg"
-                is ActrException.ConnectionException -> "Connection error: $msg"
-                is ActrException.RpcException -> "RPC error: $msg"
-                is ActrException.StateException -> "State error: $msg"
-                is ActrException.InternalException -> "Internal error: $msg"
-                is ActrException.TimeoutException -> "Timeout: $msg"
-                is ActrException.WorkloadException -> "Workload error: $msg"
+                is ActrException.Unavailable -> "Peer unavailable: $msg"
+                is ActrException.TimedOut -> "Request timed out"
+                is ActrException.NotFound -> "Not found: $msg"
+                is ActrException.PermissionDenied -> "Permission denied: $msg"
+                is ActrException.InvalidArgument -> "Invalid argument: $msg"
+                is ActrException.UnknownRoute -> "Unknown route: $msg"
+                is ActrException.DependencyNotFound ->
+                        "Dependency '$serviceName' not found: $message"
+                is ActrException.DecodeFailure -> "Decode failure: $msg"
+                is ActrException.NotImplemented -> "Not implemented: $msg"
+                is ActrException.Internal -> "Internal error: $msg"
+                is ActrException.Config -> "Configuration error: $msg"
             }
 
 /** Check if the exception is a timeout. */
 val ActrException.isTimeout: Boolean
-    get() = this is ActrException.TimeoutException
+    get() = this is ActrException.TimedOut
 
-/** Check if the exception is a connection error. */
+/**
+ * Check if the exception is a transient connectivity error — use this as a
+ * hint for retrying with backoff.
+ *
+ * Prefer [isRecoverable] (which consults the fault-domain classification)
+ * for new code.
+ */
 val ActrException.isConnectionError: Boolean
-    get() = this is ActrException.ConnectionException
+    get() = this is ActrException.Unavailable
 
-/** Check if the exception is recoverable (worth retrying). */
+/**
+ * Check if the exception is recoverable (worth retrying).
+ *
+ * Delegates to the fault-domain classifier exported by the Rust binding:
+ * only `ErrorKind.TRANSIENT` errors are retryable, everything else is a
+ * terminal failure.
+ */
 val ActrException.isRecoverable: Boolean
-    get() =
-            when (this) {
-                is ActrException.TimeoutException -> true
-                is ActrException.ConnectionException -> true
-                is ActrException.RpcException -> false
-                is ActrException.ConfigException -> false
-                is ActrException.StateException -> false
-                is ActrException.InternalException -> false
-                is ActrException.WorkloadException -> false
-            }
+    get() = actrErrorIsRetryable(this)
+
+/**
+ * Fault-domain bucket for this exception — one of `Transient` / `Client` /
+ * `Internal` / `Corrupt`.
+ */
+val ActrException.kind: ErrorKind
+    get() = actrErrorKind(this)
+
+/**
+ * `true` iff the underlying payload should be routed to a Dead Letter
+ * Queue (only `ErrorKind.Corrupt` errors).
+ */
+val ActrException.requiresDlq: Boolean
+    get() = actrErrorRequiresDlq(this)
 
 // ============================================================================
 // Retry Utilities

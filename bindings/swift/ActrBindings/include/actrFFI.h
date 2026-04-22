@@ -685,6 +685,21 @@ void uniffi_actr_fn_init_callback_vtable_websocketobserverbridge(const UniffiVTa
 void uniffi_actr_fn_init_callback_vtable_workloadlifecyclebridge(const UniffiVTableCallbackInterfaceWorkloadLifecycleBridge* _Nonnull vtable
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_IS_RETRYABLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_IS_RETRYABLE
+int8_t uniffi_actr_fn_func_actr_error_is_retryable(RustBuffer err, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_KIND
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_KIND
+RustBuffer uniffi_actr_fn_func_actr_error_kind(RustBuffer err, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_REQUIRES_DLQ
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_REQUIRES_DLQ
+int8_t uniffi_actr_fn_func_actr_error_requires_dlq(RustBuffer err, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_ACTR_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_ACTR_RUSTBUFFER_ALLOC
 RustBuffer ffi_actr_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -943,6 +958,24 @@ void ffi_actr_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_ACTR_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_ACTR_RUST_FUTURE_COMPLETE_VOID
 void ffi_actr_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_IS_RETRYABLE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_IS_RETRYABLE
+uint16_t uniffi_actr_checksum_func_actr_error_is_retryable(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_KIND
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_KIND
+uint16_t uniffi_actr_checksum_func_actr_error_kind(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_REQUIRES_DLQ
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_ACTR_ERROR_REQUIRES_DLQ
+uint16_t uniffi_actr_checksum_func_actr_error_requires_dlq(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
