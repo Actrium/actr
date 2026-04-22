@@ -51,12 +51,8 @@ impl Dest {
 }
 
 impl Dest {
-    pub fn inner(&self) -> &RtDest {
+    pub(crate) fn inner(&self) -> &RtDest {
         &self.inner
-    }
-
-    pub fn from_rust(dest: RtDest) -> Self {
-        Dest { inner: dest }
     }
 }
 
@@ -86,11 +82,11 @@ impl ActrId {
 }
 
 impl ActrId {
-    pub fn inner(&self) -> &RtActrId {
+    pub(crate) fn inner(&self) -> &RtActrId {
         &self.inner
     }
 
-    pub fn from_rust(id: RtActrId) -> Self {
+    pub(crate) fn from_rust(id: RtActrId) -> Self {
         ActrId { inner: id }
     }
 }
@@ -153,12 +149,8 @@ impl ActrType {
 }
 
 impl ActrType {
-    pub fn inner(&self) -> &RtActrType {
+    pub(crate) fn inner(&self) -> &RtActrType {
         &self.inner
-    }
-
-    pub fn from_rust(actr_type: RtActrType) -> Self {
-        ActrType { inner: actr_type }
     }
 }
 
@@ -233,11 +225,11 @@ impl DataStream {
 }
 
 impl DataStream {
-    pub fn inner(&self) -> &actr_protocol::DataStream {
+    pub(crate) fn inner(&self) -> &actr_protocol::DataStream {
         &self.inner
     }
 
-    pub fn from_rust(ds: actr_protocol::DataStream) -> Self {
+    pub(crate) fn from_rust(ds: actr_protocol::DataStream) -> Self {
         DataStream { inner: ds }
     }
 }
@@ -252,7 +244,7 @@ pub enum PayloadType {
 }
 
 impl PayloadType {
-    pub fn to_rust(self) -> RpPayloadType {
+    pub(crate) fn to_rust(self) -> RpPayloadType {
         match self {
             PayloadType::RpcReliable => RpPayloadType::RpcReliable,
             PayloadType::RpcSignal => RpPayloadType::RpcSignal,

@@ -98,7 +98,7 @@ fn attach_metadata(err: PyErr, kind: ErrorKind, code: &str) -> PyErr {
 /// `except ActrNotFoundError` / `except ActrDependencyNotFoundError` /
 /// etc. being raised exactly when the core framework raised the matching
 /// variant.
-pub fn map_protocol_error(err: ActrError) -> PyErr {
+pub(crate) fn map_protocol_error(err: ActrError) -> PyErr {
     let kind = err.kind();
     match err {
         ActrError::Unavailable(msg) => {
