@@ -7,7 +7,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-actr-web-protoc-codegen = { path = "../../crates/web-protoc-codegen" }
+actr-web-protoc-codegen = { path = "../../../../tools/protoc-gen/web" }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
