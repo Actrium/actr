@@ -100,7 +100,7 @@ fn build_payload(kind: ErrorKind, code: &str, message: &str, service_name: Optio
 
 /// Convert a protocol-level error into a `napi::Error` carrying the
 /// structured JSON payload.
-pub fn actr_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
+pub(crate) fn actr_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
     let kind = e.kind();
     let (code, message, service_name) = discriminate(&e);
     let payload = build_payload(kind, code, &message, service_name.as_deref());
@@ -109,14 +109,13 @@ pub fn actr_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
 
 /// Same shape as [`actr_error_to_napi`] — retained so existing call sites
 /// don't need to migrate in one giant patch.
-#[allow(dead_code)]
-pub fn protocol_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
+pub(crate) fn protocol_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
     actr_error_to_napi(e)
 }
 
 /// Pre-protocol config failure. Classified as `Client` (the caller gave us
 /// a bad manifest / config file).
-pub fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
+pub(crate) fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
     let payload = build_payload(ErrorKind::Client, "Config", &e.to_string(), None);
     napi::Error::new(napi::Status::GenericFailure, payload)
 }
@@ -125,7 +124,7 @@ pub fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
 /// the underlying failure — we lean `Internal` because hyper bootstrap
 /// failures almost always indicate a platform/runtime problem rather than
 /// bad caller input.
-pub fn hyper_error_to_napi(e: actr_hyper::HyperError) -> napi::Error {
+pub(crate) fn hyper_error_to_napi(e: actr_hyper::HyperError) -> napi::Error {
     let payload = build_payload(ErrorKind::Internal, "HyperBootstrap", &e.to_string(), None);
     napi::Error::new(napi::Status::GenericFailure, payload)
 }

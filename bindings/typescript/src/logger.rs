@@ -1,7 +1,7 @@
 use actr_config::ObservabilityConfig;
 
 /// Initialize logging and observability (tracing).
-pub fn init_observability(config: ObservabilityConfig) {
+pub(crate) fn init_observability(config: ObservabilityConfig) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
