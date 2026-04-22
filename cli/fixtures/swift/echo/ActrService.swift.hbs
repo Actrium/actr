@@ -25,10 +25,10 @@ final class ActrService: ObservableObject {
         do {
             let bundle = Bundle.main
             guard let configPath = bundle.path(forResource: "manifest", ofType: "toml") else {
-                throw ActrError.StateError(msg: "manifest.toml not found in bundle")
+                throw ActrError.Internal(msg: "manifest.toml not found in bundle")
             }
             guard let packagePath = bundle.paths(forResourcesOfType: "actr", inDirectory: nil).first else {
-                throw ActrError.StateError(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")
+                throw ActrError.Internal(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")
             }
 
             let result = try await Task.detached(priority: .userInitiated) { () throws
@@ -99,12 +99,12 @@ extension ActrService {
     /// Send an echo RPC request
     func sendEcho(_ message: String) async throws -> String {
         guard connectionStatus == .connected else {
-            let error = ActrError.StateError(msg: "Not connected to server")
+            let error = ActrError.Internal(msg: "Not connected to server")
             return "Error: \(error.localizedDescription)"
         }
 
         guard let actr = actr else {
-            let error = ActrError.StateError(msg: "Actor reference not available")
+            let error = ActrError.Internal(msg: "Actor reference not available")
             return "Error: \(error.localizedDescription)"
         }
 

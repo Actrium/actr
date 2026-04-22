@@ -29,10 +29,10 @@ final class ActrService: ObservableObject {
         do {
             let bundle = Bundle.main
             guard let configPath = bundle.path(forResource: "manifest", ofType: "toml") else {
-                throw ActrError.StateError(msg: "manifest.toml not found in bundle")
+                throw ActrError.Internal(msg: "manifest.toml not found in bundle")
             }
             guard let packagePath = bundle.paths(forResourcesOfType: "actr", inDirectory: nil).first else {
-                throw ActrError.StateError(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")
+                throw ActrError.Internal(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")
             }
 
             let result = try await Task.detached(priority: .userInitiated) { () throws
@@ -99,11 +99,11 @@ extension ActrService {
     /// - Returns: PrepareStreamResponse containing the result
     func prepareClientStream(expectedCount: Int32) async throws -> {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse {
         guard connectionStatus == .connected else {
-            throw ActrError.StateError(msg: "Not connected to server")
+            throw ActrError.Internal(msg: "Not connected to server")
         }
 
         guard let actr = actr else {
-            throw ActrError.StateError(msg: "Actor reference not available")
+            throw ActrError.Internal(msg: "Actor reference not available")
         }
 
         var request = {{PROJECT_NAME_PASCAL}}_PrepareClientStreamRequest()

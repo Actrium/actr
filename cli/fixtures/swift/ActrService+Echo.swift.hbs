@@ -5,12 +5,12 @@ extension ActrService {
     /// Send an echo RPC request
     func sendEcho(_ message: String) async throws -> String {
         guard connectionStatus == .connected else {
-            let error = ActrError.StateError(msg: "Not connected to server")
+            let error = ActrError.Internal(msg: "Not connected to server")
             return "Error: \(error.localizedDescription)"
         }
 
         guard let actr = actr else {
-            let error = ActrError.StateError(msg: "Actor reference not available")
+            let error = ActrError.Internal(msg: "Actor reference not available")
             return "Error: \(error.localizedDescription)"
         }
 

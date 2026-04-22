@@ -26,7 +26,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
         self.mediaSender = MediaSender(encoder: encoder)
 
         guard let configURL = Bundle.module.url(forResource: "Actr", withExtension: "toml") else {
-            throw ActrError.ConfigError(msg: "Missing bundled actr.toml")
+            throw ActrError.Config(msg: "Missing bundled actr.toml")
         }
 
         let actrNode = try await ActrNode.from(tomlConfig: configURL)
@@ -47,7 +47,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
 
     func startCapture() async throws {
         guard let context, let actrRef else {
-            throw ActrError.InternalError(msg: "Not connected")
+            throw ActrError.Internal(msg: "Not connected")
         }
 
         guard await AudioEngine.requestMicrophoneAccess() else {
@@ -57,7 +57,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
         let targetType = ActrType(manufacturer: "acme", name: "AudioRecorder", version: "1.0.0")
         let targets = try await actrRef.discover(targetType: targetType, count: 1)
         guard let target = targets.first else {
-            throw ActrError.InternalError(msg: "AudioRecorder not found")
+            throw ActrError.Internal(msg: "AudioRecorder not found")
         }
 
         self.targetId = target
@@ -170,6 +170,6 @@ private final class AudioCaptureWorkloadBridge: Workload, @unchecked Sendable {
     }
 
     func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
-        throw ActrError.InternalError(msg: "AudioCapture has no RPC handlers")
+        throw ActrError.Internal(msg: "AudioCapture has no RPC handlers")
     }
 }

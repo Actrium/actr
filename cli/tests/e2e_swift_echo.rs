@@ -75,7 +75,7 @@ struct EchoServiceCLI {
             .contentsOfDirectory(atPath: distPath)
             .first(where: { $0.hasSuffix(".actr") })
         guard let packageName else {
-            throw ActrError.StateError(msg: "No .actr package found in dist/")
+            throw ActrError.Internal(msg: "No .actr package found in dist/")
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
@@ -120,7 +120,7 @@ struct EchoAppCLI {
             .contentsOfDirectory(atPath: distPath)
             .first(where: { $0.hasSuffix(".actr") })
         guard let packageName else {
-            throw ActrError.StateError(msg: "No .actr package found in dist/")
+            throw ActrError.Internal(msg: "No .actr package found in dist/")
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 

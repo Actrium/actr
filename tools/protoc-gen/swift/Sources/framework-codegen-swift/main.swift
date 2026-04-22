@@ -251,7 +251,7 @@ struct ActrFrameworkGenerator {
         content += """
 
                   default:
-                      throw ActrError.WorkloadError(msg: "Unknown route: \\(envelope.routeKey)")
+                      throw ActrError.UnknownRoute(msg: "Unknown route: \\(envelope.routeKey)")
                   }
               }
           }
@@ -391,7 +391,7 @@ struct ActrFrameworkGenerator {
             content += """
 
                       default:
-                          throw ActrError.WorkloadError(msg: "Unknown route: \\(envelope.routeKey)")
+                          throw ActrError.UnknownRoute(msg: "Unknown route: \\(envelope.routeKey)")
                       }
                   }
               }
