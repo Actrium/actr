@@ -72,12 +72,14 @@ for PORT in "$MOCK_PORT" 5173 5174; do
     fi
 done
 
-# Reset MFR pubkey placeholder.
+# Reset MFR pubkey placeholder. The canonical field in actr.toml `[[trust]]`
+# blocks is `pubkey_b64` (see core/pack StaticTrust); keep the regex aligned
+# with that name so stale keys from a previous run do not leak into the next.
 sed_inplace \
-    "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
+    "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
     "$SERVER_ACTR_TOML" 2>/dev/null || true
 sed_inplace \
-    "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
+    "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
     "$CLIENT_ACTR_TOML" 2>/dev/null || true
 
 echo -e "${GREEN}Stale data cleaned${NC}"
@@ -102,10 +104,10 @@ cleanup() {
         kill "$MOCK_PID" 2>/dev/null || true
     fi
     sed_inplace \
-        "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
+        "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
         "$SERVER_ACTR_TOML" 2>/dev/null || true
     sed_inplace \
-        "s|mfr_pubkey = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|mfr_pubkey = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
+        "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
         "$CLIENT_ACTR_TOML" 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cleanup complete"
