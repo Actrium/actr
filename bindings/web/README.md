@@ -56,8 +56,13 @@ See: [Completion Status](./docs/architecture/completion-status.zh.md)
 ### Prerequisites
 
 - Rust 1.88+ and wasm-pack
-- Node.js 18+ and npm
-- Modern browser with WebRTC support
+- `wasm32-wasip2` target (`rustup target add wasm32-wasip2`)
+- `wasm-component-ld 0.5.22+` (`cargo install wasm-component-ld --version 0.5.22`);
+  Rust 1.91's bundled 0.5.17 cannot parse the async-aware component
+  custom sections wit-bindgen emits
+- Node.js 20+ and npm 10+ (required by `@bytecodealliance/jco`)
+- Modern browser with WebRTC support and dynamic ES module `import()`
+  inside Service Workers
 
 ### Run Echo Example
 
@@ -113,6 +118,47 @@ For framework contributors and developers seeking deep understanding:
 - [Architecture Overview](./docs/architecture/overview.zh.md) - Dual-process model and core components
 - [Technical Decision Records](./docs/architecture/decisions.zh.md) - 9 TDRs
 - [Completion Assessment](./docs/architecture/completion-status.zh.md) - Completion relative to actr Native (78%)
+
+---
+
+## 📦 Build Pipeline (Component Model)
+
+The browser runtime consumes user guests as **Component Model** binaries,
+not handwritten-ABI core-wasm modules. The toolchain mirrors the native
+path (`core/hyper`) and adds a browser-specific transpile step.
+
+```
+User's Rust workload source
+    │
+    ▼  cargo build --target wasm32-wasip2 + wasm-component-ld
+Component .wasm (actr:workload/actr-workload-guest world)
+    │
+    ▼  scripts/transpile-component.sh <component.wasm> <out-dir>
+ES module + core .wasm + JS glue (jco transpile --instantiation async)
+    │
+    ▼  served alongside the .actr package; SW fetches both
+Browser: Service Worker `loadWithComponentBridge`
+    ├─ verifies .actr and extracts the Component binary
+    ├─ dynamically imports the jco-generated ES module
+    ├─ binds WIT `actr:workload/host` imports to runtime-sw wasm-bindgen
+    │  exports (`host_call_raw_async`, `host_discover_async`, ...)
+    └─ registers `workload.dispatch` via `register_component_workload`
+```
+
+The jco-transpiled bundle **must** be produced at build time — jco is a
+Node-only tool that cannot run in a browser. Package the transpile output
+alongside the `.actr` (convention: `<package_url>.jco/guest.js`, overridable
+via `RUNTIME_CONFIG.jco_module_url`).
+
+Smoke-test the pipeline against the async spike component:
+
+```bash
+cd bindings/web
+npm install
+./scripts/transpile-component.sh \
+    ../../experiments/component-spike-async/guest/target/wasm32-wasip2/release/spike_guest_async.wasm \
+    /tmp/actr-jco-smoketest
+```
 
 ---
 
