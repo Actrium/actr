@@ -75,48 +75,6 @@ let wasm_bindgen = (function(exports) {
     exports.ExtractedPackage = ExtractedPackage;
 
     /**
-     * Encode an `InitPayloadV1` for guest WASM initialization.
-     *
-     * Returns protobuf-encoded bytes that can be passed to the guest's `actr_init`.
-     * @param {string} actr_type
-     * @param {number} realm_id
-     * @returns {Uint8Array}
-     */
-    function encode_guest_init_payload(actr_type, realm_id) {
-        const ptr0 = passStringToWasm0(actr_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.encode_guest_init_payload(ptr0, len0, realm_id);
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
-    }
-    exports.encode_guest_init_payload = encode_guest_init_payload;
-
-    /**
-     * Handle a guest's outbound host invocation asynchronously.
-     *
-     * Called from JS when the guest WASM invokes `actr_host_invoke`.
-     * The current `RuntimeContext` must be available in `GUEST_CTX`
-     * (set by `register_guest_workload` during dispatch).
-     *
-     * Supports:
-     * - `HOST_DISCOVER` (op=4): discover a target actor by `ActrType`
-     * - `HOST_CALL_RAW` (op=3): raw RPC call to a target actor
-     * - `HOST_CALL` (op=1): typed RPC call to a destination
-     *
-     * Returns protobuf-encoded `AbiReply` bytes.
-     * @param {Uint8Array} frame_bytes
-     * @returns {Promise<Uint8Array>}
-     */
-    function guest_host_invoke_async(frame_bytes) {
-        const ptr0 = passArray8ToWasm0(frame_bytes, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.guest_host_invoke_async(ptr0, len0);
-        return ret;
-    }
-    exports.guest_host_invoke_async = guest_host_invoke_async;
-
-    /**
      * Handle an RPC control request originating from the DOM side.
      *
      * Message flow in unified-dispatcher mode:
@@ -163,6 +121,141 @@ let wasm_bindgen = (function(exports) {
     }
     exports.handle_dom_webrtc_event = handle_dom_webrtc_event;
 
+    /**
+     * WIT `host.call(target, route_key, payload) -> result<list<u8>, actr-error>`
+     *
+     * The web runtime only supports `dest::actor` for typed calls today (it has
+     * no in-browser Shell/Local routing); other variants return
+     * `not-implemented`. Keeps the WIT contract uniform between server and
+     * browser — the variant arm exists, it just isn't wired.
+     * @param {any} target
+     * @param {string} route_key
+     * @param {Uint8Array} payload
+     * @returns {Promise<Uint8Array>}
+     */
+    function host_call_async(target, route_key, payload) {
+        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_call_async(target, ptr0, len0, payload);
+        return ret;
+    }
+    exports.host_call_async = host_call_async;
+
+    /**
+     * WIT `host.call-raw(target, route_key, payload) -> result<list<u8>, actr-error>`
+     *
+     * Async; returns a Promise that resolves to a `Uint8Array` on success or
+     * rejects with a JS `Error` whose `actrErrorTag` names the WIT variant.
+     * @param {any} target
+     * @param {string} route_key
+     * @param {Uint8Array} payload
+     * @returns {Promise<Uint8Array>}
+     */
+    function host_call_raw_async(target, route_key, payload) {
+        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_call_raw_async(target, ptr0, len0, payload);
+        return ret;
+    }
+    exports.host_call_raw_async = host_call_raw_async;
+
+    /**
+     * WIT `host.discover(target_type) -> result<actr-id, actr-error>`.
+     * @param {any} target_type
+     * @returns {Promise<any>}
+     */
+    function host_discover_async(target_type) {
+        const ret = wasm.host_discover_async(target_type);
+        return ret;
+    }
+    exports.host_discover_async = host_discover_async;
+
+    /**
+     * WIT `host.get-caller-id() -> option<actr-id>`. Returns `null` when the
+     * host did not install a caller for this dispatch (lifecycle hooks).
+     * @returns {any}
+     */
+    function host_get_caller_id() {
+        const ret = wasm.host_get_caller_id();
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    exports.host_get_caller_id = host_get_caller_id;
+
+    /**
+     * WIT `host.get-request-id() -> string`.
+     * @returns {string}
+     */
+    function host_get_request_id() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.host_get_request_id();
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    exports.host_get_request_id = host_get_request_id;
+
+    /**
+     * WIT `host.get-self-id() -> actr-id`.
+     * @returns {any}
+     */
+    function host_get_self_id() {
+        const ret = wasm.host_get_self_id();
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    exports.host_get_self_id = host_get_self_id;
+
+    /**
+     * WIT `host.log-message(level, message)`.
+     *
+     * Maps to `log` crate levels. Levels outside the `trace/debug/info/warn/error`
+     * set silently fall through to `info`.
+     * @param {string} level
+     * @param {string} message
+     */
+    function host_log_message(level, message) {
+        const ptr0 = passStringToWasm0(level, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.host_log_message(ptr0, len0, ptr1, len1);
+    }
+    exports.host_log_message = host_log_message;
+
+    /**
+     * WIT `host.tell(target, route_key, payload) -> result<_, actr-error>`.
+     *
+     * Fire-and-forget semantics. The web runtime maps this to `call_raw` with
+     * `timeout_ms=0`; the result is discarded. Only `Dest::Actor` is wired.
+     * @param {any} target
+     * @param {string} route_key
+     * @param {Uint8Array} payload
+     * @returns {Promise<void>}
+     */
+    function host_tell_async(target, route_key, payload) {
+        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_tell_async(target, ptr0, len0, payload);
+        return ret;
+    }
+    exports.host_tell_async = host_tell_async;
+
     function init_global() {
         const ret = wasm.init_global();
         if (ret[1]) {
@@ -191,6 +284,37 @@ let wasm_bindgen = (function(exports) {
     exports.register_client = register_client;
 
     /**
+     * Register a Component Model guest workload.
+     *
+     * `dispatch_fn` is a JS callback that forwards to the jco-transpiled
+     * component's `workload.dispatch(envelope)` export. Its signature must match:
+     *
+     * ```text
+     * async (envelope: RpcEnvelopeJs) => Uint8Array
+     * ```
+     *
+     * where `RpcEnvelopeJs` is the jco-emitted record:
+     * `{ requestId: string, routeKey: string, payload: Uint8Array }`.
+     *
+     * The JS side is responsible for:
+     * 1. Loading the jco-transpiled ES module (`<name>.js`) and calling its
+     *    `instantiate(getCoreModule, imports)` with `imports['actr:workload/host@0.1.0']`
+     *    bound to the `host_*_async` / `host_*` wasm-bindgen exports from this crate.
+     * 2. Calling `instantiate(...)` exactly once and holding the returned
+     *    exports object.
+     * 3. Passing `(envelope) => exports['actr:workload/workload@0.1.0'].dispatch(envelope)`
+     *    here as `dispatch_fn`.
+     *
+     * When this function is invoked the runtime installs the `ServiceHandlerFn`
+     * used by [`WasmWorkload`], which the inbound dispatcher drives.
+     * @param {Function} dispatch_fn
+     */
+    function register_component_workload(dispatch_fn) {
+        wasm.register_component_workload(dispatch_fn);
+    }
+    exports.register_component_workload = register_component_workload;
+
+    /**
      * Register a dedicated DataChannel `MessagePort` received from the DOM side.
      *
      * After the DOM creates the DataChannel bridge:
@@ -214,25 +338,6 @@ let wasm_bindgen = (function(exports) {
         return ret;
     }
     exports.register_datachannel_port = register_datachannel_port;
-
-    /**
-     * Register a guest workload backed by a JS dispatch function.
-     *
-     * `dispatch_fn` signature (JS):
-     *   `(abiFrameBytes: Uint8Array) => Uint8Array | Promise<Uint8Array>`
-     *
-     *   - **Input**: protobuf-encoded `AbiFrame` with `op = GUEST_HANDLE`
-     *   - **Output**: protobuf-encoded `AbiReply` (sync or async via JSPI)
-     *
-     * This enables the SW runtime to dispatch RPC requests to a standard
-     * guest WASM (built with `entry!` macro) loaded separately via
-     * `WebAssembly.instantiate`.
-     * @param {Function} dispatch_fn
-     */
-    function register_guest_workload(dispatch_fn) {
-        wasm.register_guest_workload(dispatch_fn);
-    }
-    exports.register_guest_workload = register_guest_workload;
 
     /**
      * Unregister a client (browser tab) from the SW runtime.
@@ -748,6 +853,10 @@ let wasm_bindgen = (function(exports) {
                 const ret = new AbortController();
                 return ret;
             }, arguments); },
+            __wbg_new_d15cb560a6a0e5f0: function(arg0, arg1) {
+                const ret = new Error(getStringFromWasm0(arg0, arg1));
+                return ret;
+            },
             __wbg_new_dd50bcc3f60ba434: function() { return handleError(function (arg0, arg1) {
                 const ret = new WebSocket(getStringFromWasm0(arg0, arg1));
                 return ret;
@@ -1029,38 +1138,38 @@ let wasm_bindgen = (function(exports) {
                 return ret;
             },
             __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 19, function: Function { arguments: [Externref], shim_idx: 20, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h05a733a6e905fde4, wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 310, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 311, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__heb81f796904eeabb, wasm_bindgen__convert__closures_____invoke__h95e7c8e1bd13b5cb);
                 return ret;
             },
             __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 19, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 20, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h05a733a6e905fde4, wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_1);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 364, function: Function { arguments: [], shim_idx: 365, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h49de89ef63a886b3, wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211);
                 return ret;
             },
             __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 19, function: Function { arguments: [NamedExternref("ExtendableMessageEvent")], shim_idx: 20, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h05a733a6e905fde4, wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_2);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [Externref], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h212b34844bc72518, wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1);
                 return ret;
             },
             __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 19, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 20, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h05a733a6e905fde4, wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_3);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h212b34844bc72518, wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_3);
                 return ret;
             },
             __wbindgen_cast_0000000000000005: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 293, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 294, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__ha7c1f3b28c068909, wasm_bindgen__convert__closures_____invoke__h0033ad6de4373fb3);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("ExtendableMessageEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h212b34844bc72518, wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_4);
                 return ret;
             },
             __wbindgen_cast_0000000000000006: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 348, function: Function { arguments: [], shim_idx: 349, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h49de89ef63a886b3, wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h212b34844bc72518, wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_5);
                 return ret;
             },
             __wbindgen_cast_0000000000000007: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 562, function: Function { arguments: [NamedExternref("Event")], shim_idx: 563, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h98a4f1d75b76f16b, wasm_bindgen__convert__closures_____invoke__hffe96f4a575f2b4a);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcfab7346d26cf62b, wasm_bindgen__convert__closures_____invoke__h246a745c818e306e);
                 return ret;
             },
             __wbindgen_cast_0000000000000008: function(arg0, arg1) {
@@ -1093,13 +1202,6 @@ let wasm_bindgen = (function(exports) {
                 const ret = BigInt.asUintN(64, arg0);
                 return ret;
             },
-            __wbindgen_cast_000000000000000e: function(arg0, arg1) {
-                var v0 = getArrayU8FromWasm0(arg0, arg1).slice();
-                wasm.__wbindgen_free(arg0, arg1 * 1, 1);
-                // Cast intrinsic for `Vector(U8) -> Externref`.
-                const ret = v0;
-                return ret;
-            },
             __wbindgen_init_externref_table: function() {
                 const table = wasm.__wbindgen_externrefs;
                 const offset = table.grow(4);
@@ -1120,28 +1222,28 @@ let wasm_bindgen = (function(exports) {
         wasm.wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211(arg0, arg1);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h95e7c8e1bd13b5cb(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h95e7c8e1bd13b5cb(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_1(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_1(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_2(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_2(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_3(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_3(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_3(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h1e10949492a075eb_3(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_4(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_4(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h0033ad6de4373fb3(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h0033ad6de4373fb3(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_5(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h97ac3ce5aa8608d1_5(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__hffe96f4a575f2b4a(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__hffe96f4a575f2b4a(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h246a745c818e306e(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h246a745c818e306e(arg0, arg1, arg2);
     }
 
     function wasm_bindgen__convert__closures_____invoke__h6427da94e6b0a761(arg0, arg1, arg2) {

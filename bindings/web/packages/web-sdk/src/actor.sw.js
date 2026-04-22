@@ -222,17 +222,64 @@ async function loadWithComponentBridge(packageUrl, runtimeWasmUrl) {
         (packageUrl.replace(/\.actr$/, '') + '.jco/guest.js');
     emitSwLog('info', 'component_bridge_jco_url', jcoModuleUrl);
 
-    // Service Workers can dynamically import ES modules on recent browsers.
-    // If the host environment does not support `import()` inside an SW
-    // (older browsers), the page is expected to fall back to a non-SW
-    // runtime; we surface a clear error here.
+    // Service Workers forbid dynamic `import()` on ServiceWorkerGlobalScope
+    // (WHATWG ServiceWorker issue #1356), and the module graph is frozen at
+    // install time, so we cannot use a static top-level import either.
+    //
+    // The jco-transpiled `guest.js` produced by `transpile-component.sh` is a
+    // self-contained ES module whose only export is `instantiate(...)` and
+    // which has zero inbound `import` statements (all core wasm is loaded via
+    // the `getCoreModule` callback). We fetch its source, rewrite the single
+    // `export function instantiate` into a global assignment, and eval it in
+    // SW global scope. This sidesteps the dynamic-import restriction while
+    // preserving the jco instantiation semantics.
     let jcoModule;
     try {
-        jcoModule = await import(/* webpackIgnore: true */ jcoModuleUrl);
+        const jcoResp = await fetch(jcoModuleUrl, { cache: 'no-store' });
+        if (!jcoResp.ok) {
+            throw new Error('HTTP ' + jcoResp.status + ' fetching ' + jcoModuleUrl);
+        }
+        const jcoSrc = await jcoResp.text();
+        // Guard against future jco output shapes (static imports, multiple
+        // exports, etc.). Fail loudly — otherwise the bridge would silently
+        // run with a partial module.
+        if (/^\s*import\s+/m.test(jcoSrc)) {
+            throw new Error(
+                'jco output contains top-level `import` statements which cannot ' +
+                'be loaded inside a Service Worker. Re-transpile with an ' +
+                'instantiation mode that does not emit inbound imports.'
+            );
+        }
+        const exportMatches = jcoSrc.match(/^\s*export\s+(?:async\s+)?function\s+(\w+)/gm) || [];
+        if (exportMatches.length !== 1 || !/instantiate/.test(exportMatches[0])) {
+            throw new Error(
+                'jco output expected to expose exactly one `instantiate` export, ' +
+                'found: ' + JSON.stringify(exportMatches)
+            );
+        }
+        let patched = jcoSrc.replace(
+            /^\s*export\s+(async\s+)?function\s+instantiate/m,
+            'self.__actr_jco_instantiate = $1function instantiate',
+        );
+        // jco emits `import.meta.url` inside the default `getCoreModule`
+        // fallback. We always pass an explicit `getCoreModule`, so the
+        // fallback branch is dead code, but the parser still rejects
+        // `import.meta` outside a module. Rewrite to a deterministic URL
+        // derived from `self.location`, which in an SW always points at the
+        // SW script origin.
+        patched = patched.replace(/import\.meta\.url/g, 'self.location.href');
+        // Indirect eval runs in global scope; required so
+        // `self.__actr_jco_instantiate` is reachable after evaluation and so
+        // `WebAssembly`, `fetch`, etc. bind to the SW globals.
+        (0, eval)(patched);
+        if (typeof self.__actr_jco_instantiate !== 'function') {
+            throw new Error('jco instantiate function not installed after eval');
+        }
+        jcoModule = { instantiate: self.__actr_jco_instantiate };
     } catch (e) {
         emitSwLog('error', 'component_bridge_jco_import_failed', String(e));
         throw new Error(
-            '[SW] Failed to import jco-transpiled component module at ' + jcoModuleUrl +
+            '[SW] Failed to load jco-transpiled component module at ' + jcoModuleUrl +
             ': ' + e.message + '. Ensure scripts/transpile-component.sh has been run ' +
             'against the Component .wasm and its output is served alongside the .actr.'
         );
@@ -244,21 +291,66 @@ async function loadWithComponentBridge(packageUrl, runtimeWasmUrl) {
     // qualified WIT interface name (`actr:workload/host@0.1.0`). Each
     // field maps to a function matching the WIT signature; sw-host
     // provides the Rust implementations as async wasm-bindgen exports.
+    // jco-transpiled output destructures host imports by their *unversioned*
+    // interface key (`actr:workload/host`), even though the WIT-level name is
+    // `actr:workload/host@0.1.0`. Keep both aliases to be robust against
+    // future jco output that might switch back to the versioned form.
+    const hostIface = {
+        call: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_call_async(target, routeKey, payload),
+        tell: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_tell_async(target, routeKey, payload),
+        callRaw: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_call_raw_async(target, routeKey, payload),
+        discover: async (targetType) =>
+            await wasm_bindgen.host_discover_async(targetType),
+        logMessage: (level, message) =>
+            wasm_bindgen.host_log_message(level, message),
+        getSelfId: () => wasm_bindgen.host_get_self_id(),
+        getCallerId: () => wasm_bindgen.host_get_caller_id(),
+        getRequestId: () => wasm_bindgen.host_get_request_id(),
+    };
+    // wasi preview2 baseline: the wasip2 guests pull a handful of WASI
+    // interfaces (cli/environment, cli/exit, cli/stderr, io/error, io/streams)
+    // even when the workload code does not actively use them (e.g. Rust stdlib
+    // initializers reference stderr). Provide minimal stubs that keep the
+    // Component instantiable; any actually-used method would surface as a
+    // clear runtime error from jco's trampoline.
+    class _SwStderrOutputStream {
+        blockingWriteAndFlush(_bytes) { /* noop */ }
+        write(_bytes) { /* noop */ }
+        flush() { /* noop */ }
+        blockingFlush() { /* noop */ }
+        checkWrite() { return BigInt(1 << 20); }
+        subscribe() { return { ready: async () => {}, [Symbol.dispose]: () => {} }; }
+        [Symbol.dispose]() { /* noop */ }
+    }
+    const _swSharedStderr = new _SwStderrOutputStream();
+    class _SwIoError {
+        toDebugString() { return 'SW WASI stub error'; }
+    }
     const hostImports = {
-        'actr:workload/host@0.1.0': {
-            call: async (target, routeKey, payload) =>
-                await wasm_bindgen.host_call_async(target, routeKey, payload),
-            tell: async (target, routeKey, payload) =>
-                await wasm_bindgen.host_tell_async(target, routeKey, payload),
-            callRaw: async (target, routeKey, payload) =>
-                await wasm_bindgen.host_call_raw_async(target, routeKey, payload),
-            discover: async (targetType) =>
-                await wasm_bindgen.host_discover_async(targetType),
-            logMessage: (level, message) =>
-                wasm_bindgen.host_log_message(level, message),
-            getSelfId: () => wasm_bindgen.host_get_self_id(),
-            getCallerId: () => wasm_bindgen.host_get_caller_id(),
-            getRequestId: () => wasm_bindgen.host_get_request_id(),
+        'actr:workload/host': hostIface,
+        'actr:workload/host@0.1.0': hostIface,
+        'wasi:cli/environment': {
+            getEnvironment: () => [],
+            getArguments: () => [],
+            initialCwd: () => undefined,
+        },
+        'wasi:cli/exit': {
+            exit: (status) => {
+                throw new Error('[SW] wasi:cli/exit called with status=' + status);
+            },
+        },
+        'wasi:cli/stderr': {
+            getStderr: () => _swSharedStderr,
+        },
+        'wasi:io/error': {
+            Error: _SwIoError,
+        },
+        'wasi:io/streams': {
+            OutputStream: _SwStderrOutputStream,
+            InputStream: class { [Symbol.dispose]() {} },
         },
     };
 
@@ -268,7 +360,10 @@ async function loadWithComponentBridge(packageUrl, runtimeWasmUrl) {
     // compiled `WebAssembly.Module` for each core wasm emitted alongside
     // the main module (typically `<name>.core.wasm` plus adapter modules).
     // The sibling files live in the same directory as the JS module.
-    const jcoBaseUrl = new URL('.', jcoModuleUrl);
+    // `jcoModuleUrl` is typically a site-absolute path (e.g. `/packages/...`).
+    // `new URL('.', relPath)` throws without a base, so anchor off the SW
+    // origin (`self.location`) before computing the directory.
+    const jcoBaseUrl = new URL('.', new URL(jcoModuleUrl, self.location.href));
     async function getCoreModule(path) {
         const moduleUrl = new URL(path, jcoBaseUrl);
         const moduleResp = await fetch(moduleUrl, { cache: 'no-store' });

@@ -139,32 +139,38 @@ function emitSwLog(level, message, detail) {
 
 /**
  * Load runtime WASM, verify + extract the `.actr` workload in Rust, then
- * instantiate the guest WASM behind host import stubs.
+ * instantiate the Component Model guest via its jco-transpiled ES module.
  *
  * Hyper (SW runtime) and workload (guest) are separate artifacts. The
- * runtime is loaded from `runtime_wasm_url`; the workload from the signed
- * `.actr` at `package_url`. The runtime's `verify_and_extract_actr_package`
- * is the sole verifier — it hard-fails if no static trust anchor is
- * configured, mirroring native Hyper's mandatory-verify contract.
+ * runtime is loaded from `runtime_wasm_url`; the workload Component from the
+ * signed `.actr` at `package_url`. The runtime's
+ * `verify_and_extract_actr_package` is the sole verifier — it hard-fails if
+ * no static trust anchor is configured, mirroring native Hyper's
+ * mandatory-verify contract.
  *
  * Flow:
  *   1. Load runtime WASM + wasm-bindgen JS glue from `runtime_wasm_url`.
  *   2. Fetch the `.actr` bytes.
  *   3. Call `verify_and_extract_actr_package(bytes, trust_json)` in Rust
- *      to verify Ed25519 + binary hash and extract the guest WASM binary.
- *   4. Instantiate the guest with host import stubs (JSPI path if
- *      available, sync fallback otherwise).
- *   5. Run `actr_init` on the guest.
- *   6. Register a JS dispatch callback bridging AbiFrame → actr_handle →
- *      AbiReply with the runtime via `register_guest_workload`.
+ *      to verify Ed25519 + binary hash and extract the guest Component
+ *      binary (`application/wasm`, Component Model).
+ *   4. Dynamically import the companion jco-transpiled ES module at
+ *      `package_url + '.jco/<name>.js'` (or `RUNTIME_CONFIG.jco_module_url`
+ *      when set). The ES module is produced at build time by
+ *      `bindings/web/scripts/transpile-component.sh`.
+ *   5. Call the module's `instantiate(getCoreModule, imports)` with an
+ *      import object that binds the WIT `actr:workload/host@0.1.0`
+ *      functions to the wasm-bindgen exports from `actr-sw-host`
+ *      (`host_call_raw_async`, `host_discover_async`, etc.).
+ *   6. Register `workload.dispatch` with the runtime via
+ *      `register_component_workload`.
  */
-async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
-    emitSwLog('info', 'guest_bridge_start', { packageUrl, runtimeWasmUrl });
+async function loadWithComponentBridge(packageUrl, runtimeWasmUrl) {
+    emitSwLog('info', 'component_bridge_start', { packageUrl, runtimeWasmUrl });
 
     // ── 1. Load runtime WASM + JS glue ──
-    // Derive JS glue URL from WASM URL: "foo_bg.wasm" → "foo.js"
     const jsUrl = runtimeWasmUrl.replace(/_bg\.wasm$/, '.js');
-    emitSwLog('info', 'guest_bridge_runtime_js', jsUrl);
+    emitSwLog('info', 'component_bridge_runtime_js', jsUrl);
 
     const jsResp = await fetch(jsUrl, { cache: 'no-store' });
     if (!jsResp.ok) {
@@ -173,20 +179,19 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     const jsText = await jsResp.text();
     const patchedText = jsText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
     (0, eval)(patchedText);
-    emitSwLog('info', 'guest_bridge_runtime_js_loaded', jsText.length);
+    emitSwLog('info', 'component_bridge_runtime_js_loaded', jsText.length);
 
-    // Init runtime WASM
     await wasm_bindgen({ module_or_path: runtimeWasmUrl });
     wasm_bindgen.init_global();
-    emitSwLog('info', 'guest_bridge_runtime_ready', null);
+    emitSwLog('info', 'component_bridge_runtime_ready', null);
 
-    // ── 2. Fetch + Rust-side verify + extract guest WASM ──
+    // ── 2. Fetch + Rust-side verify + extract guest Component ──
     const resp = await fetch(packageUrl, { cache: 'no-store' });
     if (!resp.ok) {
         throw new Error('[SW] Failed to fetch .actr package: ' + resp.status);
     }
     const buffer = await resp.arrayBuffer();
-    emitSwLog('info', 'guest_bridge_actr_size', buffer.byteLength);
+    emitSwLog('info', 'component_bridge_actr_size', buffer.byteLength);
 
     const trustJson = JSON.stringify(
         (RUNTIME_CONFIG && Array.isArray(RUNTIME_CONFIG.trust)) ? RUNTIME_CONFIG.trust : []
@@ -197,291 +202,218 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
             new Uint8Array(buffer),
             trustJson,
         );
-        emitSwLog('info', 'guest_bridge_verify_ok', null);
+        emitSwLog('info', 'component_bridge_verify_ok', null);
     } catch (verifyError) {
-        emitSwLog('error', 'guest_bridge_verify_failed', String(verifyError));
+        emitSwLog('error', 'component_bridge_verify_failed', String(verifyError));
         throw verifyError;
     }
 
-    const guestWasmBytes = extracted.binary;
-    emitSwLog('info', 'guest_bridge_guest_wasm', guestWasmBytes.byteLength);
+    // `extracted.binary` is the verified Component Model wasm. The SW cannot
+    // transpile it at runtime (jco is Node-only); the companion jco output
+    // must be delivered alongside the .actr as a build-time artifact.
+    emitSwLog('info', 'component_bridge_component_bytes', extracted.binary.byteLength);
 
-    // ── 3. Detect JSPI support ──
-    // JSPI (JavaScript Promise Integration) allows WASM imports to suspend
-    // execution when they return a Promise, without needing asyncify.
-    // Available in Chrome 129+ (Sep 2024).
-    const hasJSPI = typeof WebAssembly.Suspending === 'function'
-        && typeof WebAssembly.promising === 'function';
-    emitSwLog('info', 'guest_bridge_jspi', hasJSPI);
+    // ── 3. Resolve jco-transpiled ES module URL ──
+    // Default convention: the build pipeline places the transpile output at
+    // `<packageUrl>.jco/<name>.js` (sibling bundle). Callers can override by
+    // providing `RUNTIME_CONFIG.jco_module_url` explicitly.
+    const jcoModuleUrl =
+        (RUNTIME_CONFIG && RUNTIME_CONFIG.jco_module_url) ||
+        (packageUrl.replace(/\.actr$/, '') + '.jco/guest.js');
+    emitSwLog('info', 'component_bridge_jco_url', jcoModuleUrl);
 
-    // ── 4. Instantiate guest WASM with host imports ──
-    let guest;
-    let promisingActrHandle = null;  // JSPI-wrapped actr_handle (returns Promise)
+    // Service Workers forbid dynamic `import()` on ServiceWorkerGlobalScope
+    // (WHATWG ServiceWorker issue #1356), and the module graph is frozen at
+    // install time, so we cannot use a static top-level import either.
+    //
+    // The jco-transpiled `guest.js` produced by `transpile-component.sh` is a
+    // self-contained ES module whose only export is `instantiate(...)` and
+    // which has zero inbound `import` statements (all core wasm is loaded via
+    // the `getCoreModule` callback). We fetch its source, rewrite the single
+    // `export function instantiate` into a global assignment, and eval it in
+    // SW global scope. This sidesteps the dynamic-import restriction while
+    // preserving the jco instantiation semantics.
+    let jcoModule;
+    try {
+        const jcoResp = await fetch(jcoModuleUrl, { cache: 'no-store' });
+        if (!jcoResp.ok) {
+            throw new Error('HTTP ' + jcoResp.status + ' fetching ' + jcoModuleUrl);
+        }
+        const jcoSrc = await jcoResp.text();
+        // Guard against future jco output shapes (static imports, multiple
+        // exports, etc.). Fail loudly — otherwise the bridge would silently
+        // run with a partial module.
+        if (/^\s*import\s+/m.test(jcoSrc)) {
+            throw new Error(
+                'jco output contains top-level `import` statements which cannot ' +
+                'be loaded inside a Service Worker. Re-transpile with an ' +
+                'instantiation mode that does not emit inbound imports.'
+            );
+        }
+        const exportMatches = jcoSrc.match(/^\s*export\s+(?:async\s+)?function\s+(\w+)/gm) || [];
+        if (exportMatches.length !== 1 || !/instantiate/.test(exportMatches[0])) {
+            throw new Error(
+                'jco output expected to expose exactly one `instantiate` export, ' +
+                'found: ' + JSON.stringify(exportMatches)
+            );
+        }
+        let patched = jcoSrc.replace(
+            /^\s*export\s+(async\s+)?function\s+instantiate/m,
+            'self.__actr_jco_instantiate = $1function instantiate',
+        );
+        // jco emits `import.meta.url` inside the default `getCoreModule`
+        // fallback. We always pass an explicit `getCoreModule`, so the
+        // fallback branch is dead code, but the parser still rejects
+        // `import.meta` outside a module. Rewrite to a deterministic URL
+        // derived from `self.location`, which in an SW always points at the
+        // SW script origin.
+        patched = patched.replace(/import\.meta\.url/g, 'self.location.href');
+        // Indirect eval runs in global scope; required so
+        // `self.__actr_jco_instantiate` is reachable after evaluation and so
+        // `WebAssembly`, `fetch`, etc. bind to the SW globals.
+        (0, eval)(patched);
+        if (typeof self.__actr_jco_instantiate !== 'function') {
+            throw new Error('jco instantiate function not installed after eval');
+        }
+        jcoModule = { instantiate: self.__actr_jco_instantiate };
+    } catch (e) {
+        emitSwLog('error', 'component_bridge_jco_import_failed', String(e));
+        throw new Error(
+            '[SW] Failed to load jco-transpiled component module at ' + jcoModuleUrl +
+            ': ' + e.message + '. Ensure scripts/transpile-component.sh has been run ' +
+            'against the Component .wasm and its output is served alongside the .actr.'
+        );
+    }
 
-    if (hasJSPI) {
-        // ── JSPI path: async actr_host_invoke, promising actr_handle ──
-        // The guest's actr_host_invoke import is wrapped with WebAssembly.Suspending
-        // so the WASM execution suspends while the host performs async operations
-        // (discover, call_raw). No wasm-opt --asyncify needed.
-        const asyncHostInvoke = async function (frame_ptr, frame_len, reply_ptr, reply_cap, reply_len_out) {
-            try {
-                // Read ABI frame from guest memory
-                const mem = new Uint8Array(guest.memory.buffer);
-                const frameData = mem.slice(frame_ptr, frame_ptr + frame_len);
-
-                // Call runtime's guest_host_invoke_async (returns a Promise)
-                const replyBytes = await wasm_bindgen.guest_host_invoke_async(frameData);
-
-                if (replyBytes.length > reply_cap) {
-                    // BUFFER_TOO_SMALL: write needed size and return error
-                    const view = new DataView(guest.memory.buffer);
-                    view.setInt32(reply_len_out, replyBytes.length, true);
-                    return -6; // BUFFER_TOO_SMALL
-                }
-
-                // Write reply into guest memory
-                const writeMem = new Uint8Array(guest.memory.buffer);
-                writeMem.set(replyBytes, reply_ptr);
-                const writeView = new DataView(guest.memory.buffer);
-                writeView.setInt32(reply_len_out, replyBytes.length, true);
-
-                return 0; // SUCCESS
-            } catch (e) {
-                emitSwLog('error', 'guest_host_invoke_error', String(e));
-                return -1; // GENERIC_ERROR
-            }
-        };
-
-        const guestImports = {
-            env: {
-                actr_host_invoke: new WebAssembly.Suspending(asyncHostInvoke),
-                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
+    // ── 4. Build the host import object bound to sw-host wasm-bindgen ──
+    //
+    // jco's `instantiate()` expects an ImportObject keyed by the fully-
+    // qualified WIT interface name (`actr:workload/host@0.1.0`). Each
+    // field maps to a function matching the WIT signature; sw-host
+    // provides the Rust implementations as async wasm-bindgen exports.
+    // jco-transpiled output destructures host imports by their *unversioned*
+    // interface key (`actr:workload/host`), even though the WIT-level name is
+    // `actr:workload/host@0.1.0`. Keep both aliases to be robust against
+    // future jco output that might switch back to the versioned form.
+    const hostIface = {
+        call: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_call_async(target, routeKey, payload),
+        tell: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_tell_async(target, routeKey, payload),
+        callRaw: async (target, routeKey, payload) =>
+            await wasm_bindgen.host_call_raw_async(target, routeKey, payload),
+        discover: async (targetType) =>
+            await wasm_bindgen.host_discover_async(targetType),
+        logMessage: (level, message) =>
+            wasm_bindgen.host_log_message(level, message),
+        getSelfId: () => wasm_bindgen.host_get_self_id(),
+        getCallerId: () => wasm_bindgen.host_get_caller_id(),
+        getRequestId: () => wasm_bindgen.host_get_request_id(),
+    };
+    // wasi preview2 baseline: the wasip2 guests pull a handful of WASI
+    // interfaces (cli/environment, cli/exit, cli/stderr, io/error, io/streams)
+    // even when the workload code does not actively use them (e.g. Rust stdlib
+    // initializers reference stderr). Provide minimal stubs that keep the
+    // Component instantiable; any actually-used method would surface as a
+    // clear runtime error from jco's trampoline.
+    class _SwStderrOutputStream {
+        blockingWriteAndFlush(_bytes) { /* noop */ }
+        write(_bytes) { /* noop */ }
+        flush() { /* noop */ }
+        blockingFlush() { /* noop */ }
+        checkWrite() { return BigInt(1 << 20); }
+        subscribe() { return { ready: async () => {}, [Symbol.dispose]: () => {} }; }
+        [Symbol.dispose]() { /* noop */ }
+    }
+    const _swSharedStderr = new _SwStderrOutputStream();
+    class _SwIoError {
+        toDebugString() { return 'SW WASI stub error'; }
+    }
+    const hostImports = {
+        'actr:workload/host': hostIface,
+        'actr:workload/host@0.1.0': hostIface,
+        'wasi:cli/environment': {
+            getEnvironment: () => [],
+            getArguments: () => [],
+            initialCwd: () => undefined,
+        },
+        'wasi:cli/exit': {
+            exit: (status) => {
+                throw new Error('[SW] wasi:cli/exit called with status=' + status);
             },
-        };
+        },
+        'wasi:cli/stderr': {
+            getStderr: () => _swSharedStderr,
+        },
+        'wasi:io/error': {
+            Error: _SwIoError,
+        },
+        'wasi:io/streams': {
+            OutputStream: _SwStderrOutputStream,
+            InputStream: class { [Symbol.dispose]() {} },
+        },
+    };
 
-        let guestModule;
-        try {
-            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
-        } catch (firstErr) {
-            try {
-                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
-            } catch (secondErr) {
-                throw new Error('[SW] Guest WASM instantiation failed (JSPI): ' + firstErr.message);
-            }
+    // ── 5. Instantiate the Component via jco ──
+    //
+    // The transpile output's `getCoreModule(path)` callback must return the
+    // compiled `WebAssembly.Module` for each core wasm emitted alongside
+    // the main module (typically `<name>.core.wasm` plus adapter modules).
+    // The sibling files live in the same directory as the JS module.
+    // `jcoModuleUrl` is typically a site-absolute path (e.g. `/packages/...`).
+    // `new URL('.', relPath)` throws without a base, so anchor off the SW
+    // origin (`self.location`) before computing the directory.
+    const jcoBaseUrl = new URL('.', new URL(jcoModuleUrl, self.location.href));
+    async function getCoreModule(path) {
+        const moduleUrl = new URL(path, jcoBaseUrl);
+        const moduleResp = await fetch(moduleUrl, { cache: 'no-store' });
+        if (!moduleResp.ok) {
+            throw new Error('[SW] Failed to fetch core wasm ' + moduleUrl + ': ' + moduleResp.status);
         }
-        guest = guestModule.instance.exports;
-
-        // Wrap actr_handle as promising (returns Promise instead of i32)
-        promisingActrHandle = WebAssembly.promising(guest.actr_handle);
-        emitSwLog('info', 'guest_bridge_guest_instantiated_jspi', Object.keys(guest));
-    } else {
-        // ── Sync-only path: stubs for actr_host_invoke ──
-        // Guest WASMs that don't make outbound calls (e.g. echo server) work fine.
-        // Guest WASMs requiring outbound calls will fail with UNSUPPORTED_OP.
-        const guestImports = {
-            env: {
-                actr_host_invoke: (_frame_ptr, _frame_len, _reply_ptr, _reply_cap, _reply_len_out) => {
-                    console.error('[SW Guest] actr_host_invoke called but JSPI not available');
-                    return -7; // UNSUPPORTED_OP
-                },
-                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
-            },
-        };
-
-        let guestModule;
-        try {
-            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
-        } catch (firstErr) {
-            try {
-                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
-            } catch (secondErr) {
-                throw new Error('[SW] Guest WASM instantiation failed: ' + firstErr.message);
-            }
-        }
-        guest = guestModule.instance.exports;
-        emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(guest));
+        const moduleBytes = await moduleResp.arrayBuffer();
+        return await WebAssembly.compile(moduleBytes);
     }
 
-    // ── 5. Initialize guest (actr_init) ──
-    const actrType = RUNTIME_CONFIG.client_actr_type || '';
-    const realmId = RUNTIME_CONFIG.realm_id || 0;
-    const initPayload = wasm_bindgen.encode_guest_init_payload(actrType, realmId);
-
-    const initPtr = guest.actr_alloc(initPayload.length);
-    if (initPtr === 0) {
-        throw new Error('[SW] Guest actr_alloc failed for init payload');
-    }
-    let guestMem = new Uint8Array(guest.memory.buffer);
-    guestMem.set(new Uint8Array(initPayload), initPtr);
-
-    const initResult = guest.actr_init(initPtr, initPayload.length);
-    guest.actr_free(initPtr, initPayload.length);
-
-    if (initResult !== 0) {
-        throw new Error('[SW] Guest actr_init failed with code: ' + initResult);
-    }
-    emitSwLog('info', 'guest_bridge_init_ok', null);
-
-    // ── 6. Create dispatch callback ──
-    // When JSPI is available, actr_handle may suspend (returns Promise).
-    // When JSPI is not available, actr_handle is synchronous.
-    const actrHandleFn = promisingActrHandle || guest.actr_handle;
-    const isAsync = !!promisingActrHandle;
-
-    async function guestDispatchAsync(abiFrameBytes) {
-        try {
-            const frameData = new Uint8Array(abiFrameBytes);
-            emitSwLog('info', 'guest_dispatch_called', frameData.length);
-
-            // Allocate memory in guest for the request frame
-            const reqPtr = guest.actr_alloc(frameData.length);
-            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
-
-            let mem = new Uint8Array(guest.memory.buffer);
-            mem.set(frameData, reqPtr);
-
-            // Allocate memory for output pointers (2 × i32 = 8 bytes)
-            const outBuf = guest.actr_alloc(8);
-            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
-
-            // Call actr_handle (may return Promise with JSPI, or i32 without)
-            const result = isAsync
-                ? await actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4)
-                : actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4);
-            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
-
-            // Re-get memory view (buffer may have grown during actr_handle)
-            mem = new Uint8Array(guest.memory.buffer);
-            const view = new DataView(guest.memory.buffer);
-
-            // Read response pointer and length
-            const respPtr = view.getInt32(outBuf, true);
-            const respLen = view.getInt32(outBuf + 4, true);
-            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
-
-            // Copy response bytes before freeing
-            let response = null;
-            if (result === 0 && respPtr !== 0 && respLen > 0) {
-                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
-            }
-
-            // Free all guest memory
-            guest.actr_free(reqPtr, frameData.length);
-            guest.actr_free(outBuf, 8);
-            if (respPtr !== 0 && respLen > 0) {
-                guest.actr_free(respPtr, respLen);
-            }
-
-            if (result !== 0) {
-                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-            if (!response) {
-                const err = new Error('[SW Guest] actr_handle returned empty response');
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-
-            emitSwLog('info', 'guest_dispatch_ok', response.length);
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
-                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
-            }
-            return response;
-        } catch (e) {
-            emitSwLog('error', 'guest_dispatch_exception', String(e));
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
-            }
-            throw e;
-        }
+    let exports_;
+    try {
+        const instantiated = jcoModule.instantiate(getCoreModule, hostImports);
+        exports_ = instantiated instanceof Promise ? await instantiated : instantiated;
+        emitSwLog('info', 'component_bridge_instantiated', Object.keys(exports_));
+    } catch (e) {
+        emitSwLog('error', 'component_bridge_instantiate_failed', String(e));
+        throw new Error('[SW] Component instantiation failed: ' + e.message);
     }
 
-    // Sync wrapper for backward compatibility when JSPI is not available
-    function guestDispatchSync(abiFrameBytes) {
-        try {
-            const frameData = new Uint8Array(abiFrameBytes);
-            emitSwLog('info', 'guest_dispatch_called', frameData.length);
-
-            const reqPtr = guest.actr_alloc(frameData.length);
-            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
-
-            let mem = new Uint8Array(guest.memory.buffer);
-            mem.set(frameData, reqPtr);
-
-            const outBuf = guest.actr_alloc(8);
-            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
-
-            const result = guest.actr_handle(reqPtr, frameData.length, outBuf, outBuf + 4);
-            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
-
-            mem = new Uint8Array(guest.memory.buffer);
-            const view = new DataView(guest.memory.buffer);
-
-            const respPtr = view.getInt32(outBuf, true);
-            const respLen = view.getInt32(outBuf + 4, true);
-            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
-
-            let response = null;
-            if (result === 0 && respPtr !== 0 && respLen > 0) {
-                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
-            }
-
-            guest.actr_free(reqPtr, frameData.length);
-            guest.actr_free(outBuf, 8);
-            if (respPtr !== 0 && respLen > 0) {
-                guest.actr_free(respPtr, respLen);
-            }
-
-            if (result !== 0) {
-                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-            if (!response) {
-                const err = new Error('[SW Guest] actr_handle returned empty response');
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-
-            emitSwLog('info', 'guest_dispatch_ok', response.length);
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
-                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
-            }
-            return response;
-        } catch (e) {
-            emitSwLog('error', 'guest_dispatch_exception', String(e));
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
-            }
-            throw e;
-        }
+    // ── 6. Register the guest dispatch function ──
+    //
+    // jco exposes the guest's `workload` interface either by its fully-
+    // qualified WIT name or the short alias. Probe both for robustness.
+    const workloadExport =
+        exports_['actr:workload/workload@0.1.0'] ||
+        exports_['workload'];
+    if (!workloadExport || typeof workloadExport.dispatch !== 'function') {
+        throw new Error(
+            '[SW] jco-transpiled component is missing `workload.dispatch` export'
+        );
     }
 
-    // ── 7. Register guest workload with runtime ──
-    // Use async dispatch when JSPI is available (returns Promise → Rust awaits it).
-    // Use sync dispatch when JSPI is not available (returns Uint8Array directly).
-    const dispatchFn = isAsync ? guestDispatchAsync : guestDispatchSync;
-    wasm_bindgen.register_guest_workload(dispatchFn);
-    emitSwLog('info', 'guest_bridge_ready', 'Guest workload registered via JS bridge (JSPI=' + hasJSPI + ')');
+    const dispatchFn = async (envelope) => {
+        const result = workloadExport.dispatch(envelope);
+        // jco async exports return a Promise; await unconditionally.
+        return await result;
+    };
+
+    wasm_bindgen.register_component_workload(dispatchFn);
+    emitSwLog('info', 'component_bridge_ready', 'Component workload registered');
 }
 
 /**
  * Bring up the Service Worker's WASM runtime and workload.
  *
- * Always runs via `loadWithGuestBridge`: hyper (runtime) and workload
- * (guest) are separate artifacts. `runtime_wasm_url` and `package_url` are
- * both required — the SW never loads an unverified monolithic bundle.
+ * Always runs via `loadWithComponentBridge`: hyper (runtime) and workload
+ * (Component Model guest + jco-transpiled ES module) are separate artifacts.
+ * `runtime_wasm_url` and `package_url` are both required — the SW never
+ * loads an unverified monolithic bundle.
  */
 async function ensureWasmReady() {
     if (wasmReady) return;
@@ -525,7 +457,7 @@ async function ensureWasmReady() {
                 '[SW] RUNTIME_CONFIG requires both `runtime_wasm_url` and `package_url`'
             );
         }
-        await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
+        await loadWithComponentBridge(packageUrl, runtimeWasmUrl);
 
         wasmReady = true;
         emitSwLog('info', 'wasm_ready', null);
