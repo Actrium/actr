@@ -7,6 +7,13 @@
 //! AST to that slice and keeps prost tag attributes alongside each field so
 //! the mapping layer can detect silent renames that preserve the wire
 //! ordering.
+//!
+//! Some projected fields (e.g. `RustStruct::name`, `RustConst::{name, ty}`)
+//! are recorded for a structurally complete model even when the current
+//! mapping layer does not read them; dead-code is suppressed at module scope
+//! so the representation stays faithful to the source AST.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::Path;

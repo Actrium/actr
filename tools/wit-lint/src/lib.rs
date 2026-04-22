@@ -38,12 +38,12 @@
 
 use std::path::Path;
 
-pub mod mapping;
-pub mod report;
-pub mod rust_model;
-pub mod wit_model;
+pub(crate) mod mapping;
+pub(crate) mod report;
+pub(crate) mod rust_model;
+pub(crate) mod wit_model;
 
-pub use report::{LintReport, ShapeDrift, ShapeDriftKind};
+pub use report::LintReport;
 
 /// Run the default lint configuration: load the canonical mapping table and
 /// compare the two source files against it.

@@ -7,6 +7,14 @@
 //! resolved graph once and re-indexes every record / variant / function the
 //! lint cares about under its WIT name, so the mapping layer can look up
 //! items directly.
+//!
+//! Several projected fields (e.g. `WitRecord::name`, `WitFunction::params`)
+//! are kept as a structurally complete model even though the current mapping
+//! layer only queries a subset; they are also exercised by the in-module
+//! unit tests. Dead-code is suppressed at module scope rather than field by
+//! field to keep the data shape honest.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::Path;

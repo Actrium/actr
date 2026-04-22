@@ -15,7 +15,7 @@
 //! ABI op codes, status codes, `InvocationContextV1`, `InitPayloadV1`,
 //! `DestV1` kinds, helper impls). Those have no WIT counterpart and are
 //! listed in `dynclib_only` purely for documentation — they do not
-//! participate in the check loop.
+//! participate in the check loop, so both sets are flagged `allow(dead_code)`.
 
 use std::collections::HashSet;
 
@@ -74,8 +74,16 @@ pub struct Mapping {
     pub variants: Vec<VariantMapping>,
     pub functions: Vec<FunctionMapping>,
     /// WIT items acknowledged as WASM-only (wit-bindgen generated).
+    ///
+    /// Recorded for audit / documentation purposes only; the check loop does
+    /// not consult it.
+    #[allow(dead_code)]
     pub wit_only: HashSet<&'static str>,
     /// Rust items acknowledged as DynClib-only (no WIT counterpart).
+    ///
+    /// Recorded for audit / documentation purposes only; the check loop does
+    /// not consult it.
+    #[allow(dead_code)]
     pub dynclib_only: HashSet<&'static str>,
 }
 
