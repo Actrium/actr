@@ -39,10 +39,7 @@ impl ActrNode {
         let init = Node::from_config_file(&config_path).await.map_err(|e| {
             error!("Failed to load runtime config: {}", e);
             ActrError::ConfigError {
-                msg: format!(
-                    "Failed to load runtime config `{}`: {}",
-                    config_path, e
-                ),
+                msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
             }
         })?;
         crate::logger::init_observability(init.runtime_config().observability.clone());

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_hyper::{Hyper, HyperConfig, BinaryKind, StaticTrust, WorkloadPackage};
+use actr_hyper::{BinaryKind, Hyper, HyperConfig, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use std::sync::Arc;

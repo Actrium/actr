@@ -251,10 +251,10 @@ pub mod prelude {
 
     // ── Platform types (cross-platform) ─────────────────────────────────────
     pub use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
-    pub use actr_pack::{PackageManifest, VerifiedPackage};
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{Attached, Hyper, Init, Node, Registered, storage::ActorStore};
     pub use crate::{HyperConfig, HyperError, HyperResult};
+    pub use actr_pack::{PackageManifest, VerifiedPackage};
 
     // ── Core structures (native-only) ───────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -633,10 +633,7 @@ impl Hyper {
     /// Delegates entirely to the configured [`crate::verify::TrustProvider`];
     /// the provider decides how to authenticate the package (static key,
     /// registry lookup, keyless transparency log, etc).
-    pub async fn verify_package(
-        &self,
-        package: &WorkloadPackage,
-    ) -> HyperResult<VerifiedPackage> {
+    pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<VerifiedPackage> {
         self.inner
             .config
             .trust_provider
@@ -656,7 +653,6 @@ impl Hyper {
     ) -> HyperResult<LoadedWorkload> {
         load_workload_package_inner(&self.inner, package).await
     }
-
 }
 
 // ── Node entry methods (unparameterized) ─────────────────────────────────────
@@ -1096,11 +1092,7 @@ pub(crate) async fn load_workload_package_inner(
     package: &WorkloadPackage,
 ) -> HyperResult<LoadedWorkload> {
     let bytes = package.bytes();
-    let verified = inner
-        .config
-        .trust_provider
-        .verify_package(bytes)
-        .await?;
+    let verified = inner.config.trust_provider.verify_package(bytes).await?;
     let binary_kind = detect_binary_kind(&verified.manifest)?;
     let workload = match binary_kind {
         BinaryKind::Wasm => load_wasm_workload_inner(inner, bytes, &verified.manifest).await?,
@@ -1176,8 +1168,7 @@ async fn load_wasm_workload_inner(
     {
         let _ = (bytes, manifest);
         Err(HyperError::Runtime(
-            "package target requires the `wasm-engine` feature, but it is not enabled"
-                .to_string(),
+            "package target requires the `wasm-engine` feature, but it is not enabled".to_string(),
         ))
     }
 }
@@ -1190,8 +1181,7 @@ fn load_dynclib_workload_inner(
 ) -> HyperResult<crate::workload::Workload> {
     #[cfg(feature = "dynclib-engine")]
     {
-        let cache_path =
-            ensure_dynclib_cache_path(&_inner.config.data_dir, bytes, manifest)?;
+        let cache_path = ensure_dynclib_cache_path(&_inner.config.data_dir, bytes, manifest)?;
         let host = load_dynclib_host_with_rebuild(&cache_path, bytes, manifest)?;
         let instance = host
             .instantiate(&actr_framework::guest::abi::InitPayloadV1 {

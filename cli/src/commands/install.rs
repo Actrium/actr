@@ -1039,9 +1039,7 @@ impl InstallCommand {
                 // package-based derivation.
                 let current_spec = match build_service_spec(ServiceSpecInput {
                     name: &spec.name,
-                    description: Some(
-                        current_service.info.description.clone().unwrap_or_default(),
-                    ),
+                    description: Some(current_service.info.description.clone().unwrap_or_default()),
                     tags: current_service.info.tags.clone(),
                     proto_files: current_proto_files.clone(),
                 }) {

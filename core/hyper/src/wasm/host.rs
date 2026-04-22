@@ -43,11 +43,11 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use super::component_bindings::ActrWorkloadGuest;
 use super::component_bindings::actr::workload::host::Host as HostImports;
+use super::component_bindings::actr::workload::types::Host as TypesHost;
 use super::component_bindings::actr::workload::types::{
     self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
     Dest as WitDest, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
 };
-use super::component_bindings::actr::workload::types::Host as TypesHost;
 use crate::wasm::error::{WasmError, WasmResult};
 use crate::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 
@@ -159,9 +159,7 @@ fn forward_host_operation(
         match (host_abi)(op).await {
             HostOperationResult::Bytes(bytes) => Ok(Ok(bytes)),
             HostOperationResult::Done => Ok(Ok(Vec::new())),
-            HostOperationResult::Error(code) => {
-                Ok(Err(actr_error_from_abi_code(code)))
-            }
+            HostOperationResult::Error(code) => Ok(Err(actr_error_from_abi_code(code))),
         }
     }
 }
@@ -281,11 +279,15 @@ impl HostImports for HostState {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn wit_realm_to_proto(r: &WitRealm) -> Realm {
-    Realm { realm_id: r.realm_id }
+    Realm {
+        realm_id: r.realm_id,
+    }
 }
 
 fn proto_realm_to_wit(r: &Realm) -> WitRealm {
-    WitRealm { realm_id: r.realm_id }
+    WitRealm {
+        realm_id: r.realm_id,
+    }
 }
 
 fn wit_actr_type_to_proto(t: &WitActrType) -> ActrType {
@@ -357,12 +359,10 @@ fn actr_error_to_wit(e: &ActrError) -> WitActrError {
         ActrError::DependencyNotFound {
             service_name,
             message,
-        } => WitActrError::DependencyNotFound(
-            wit_types::DependencyNotFoundPayload {
-                service_name: service_name.clone(),
-                message: message.clone(),
-            },
-        ),
+        } => WitActrError::DependencyNotFound(wit_types::DependencyNotFoundPayload {
+            service_name: service_name.clone(),
+            message: message.clone(),
+        }),
         ActrError::DecodeFailure(msg) => WitActrError::DecodeFailure(msg.clone()),
         ActrError::NotImplemented(msg) => WitActrError::NotImplemented(msg.clone()),
         ActrError::Internal(msg) => WitActrError::Internal(msg.clone()),
@@ -398,7 +398,6 @@ fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
             .unwrap_or_default(),
     }
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WasmHost
@@ -524,8 +523,7 @@ impl WasmWorkload {
             .call_on_start(&mut self.store)
             .await
             .map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
-        result
-            .map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
+        result.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
         Ok(())
     }
 
@@ -599,4 +597,3 @@ impl WasmWorkload {
         }
     }
 }
-

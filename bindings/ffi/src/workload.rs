@@ -182,11 +182,7 @@ pub trait WorkloadLifecycleBridge: Send + Sync + 'static {
     async fn on_stop(&self, ctx: Arc<ContextBridge>) -> ActrResult<()>;
 
     /// Called when the framework catches a runtime error.
-    async fn on_error(
-        &self,
-        ctx: Arc<ContextBridge>,
-        event: ErrorEventBridge,
-    ) -> ActrResult<()>;
+    async fn on_error(&self, ctx: Arc<ContextBridge>, event: ErrorEventBridge) -> ActrResult<()>;
 
     /// Dispatch an incoming RPC message and return the response bytes.
     async fn dispatch(
@@ -235,11 +231,7 @@ pub trait CredentialObserverBridge: Send + Sync + 'static {
 #[uniffi::export(callback_interface)]
 #[async_trait::async_trait]
 pub trait MailboxObserverBridge: Send + Sync + 'static {
-    async fn on_backpressure(
-        &self,
-        ctx: Arc<ContextBridge>,
-        event: BackpressureEventBridge,
-    );
+    async fn on_backpressure(&self, ctx: Arc<ContextBridge>, event: BackpressureEventBridge);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,11 +439,7 @@ impl Workload for DynamicWorkload {
 
     // ── Mailbox observers ────────────────────────────────────────────────
 
-    async fn on_mailbox_backpressure<C: Context>(
-        &self,
-        ctx: &C,
-        event: &BackpressureEvent,
-    ) {
+    async fn on_mailbox_backpressure<C: Context>(&self, ctx: &C, event: &BackpressureEvent) {
         let Some(obs) = self.mailbox.clone() else {
             return;
         };

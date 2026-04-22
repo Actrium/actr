@@ -45,19 +45,18 @@ pub mod __wasm_macro_support {
     // here so the macro has a single stable `$crate::guest::__wasm_macro_support::*`
     // prefix to poke at.
     pub use super::wasm::adapter::{
-        run_dispatch, run_on_credential_expiring, run_on_credential_renewed, run_on_error,
-        run_on_mailbox_backpressure, run_on_ready, run_on_signaling_connected,
-        run_on_signaling_connecting, run_on_signaling_disconnected, run_on_start,
-        run_on_stop, run_on_webrtc_connected, run_on_webrtc_connecting,
-        run_on_webrtc_disconnected, run_on_websocket_connected,
-        run_on_websocket_connecting, run_on_websocket_disconnected, WorkloadCell,
+        WorkloadCell, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
+        run_on_error, run_on_mailbox_backpressure, run_on_ready, run_on_signaling_connected,
+        run_on_signaling_connecting, run_on_signaling_disconnected, run_on_start, run_on_stop,
+        run_on_webrtc_connected, run_on_webrtc_connecting, run_on_webrtc_disconnected,
+        run_on_websocket_connected, run_on_websocket_connecting, run_on_websocket_disconnected,
     };
-    pub use super::wasm::generated::exports::actr::workload::workload::Guest;
     pub use super::wasm::generated::actr::workload::types::{
         ActrError as WitActrError, BackpressureEvent as WitBackpressureEvent,
         CredentialEvent as WitCredentialEvent, ErrorEvent as WitErrorEvent,
         PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
     };
+    pub use super::wasm::generated::exports::actr::workload::workload::Guest;
 }
 
 /// Generate Component Model exports for a [`Workload`][crate::Workload]

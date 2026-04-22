@@ -9,9 +9,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use actr_hyper::{
-    ActorStore, Hyper, HyperConfig, HyperError, StaticTrust, VerifiedPackage,
-};
+use actr_hyper::{ActorStore, Hyper, HyperConfig, HyperError, StaticTrust, VerifiedPackage};
 use actr_protocol::{Acl, ServiceSpec};
 use actr_protocol::{ErrorResponse, RegisterResponse, register_response};
 use ed25519_dalek::SigningKey;

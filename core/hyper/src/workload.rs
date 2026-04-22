@@ -108,12 +108,7 @@ pub trait LinkedWorkloadHandle: Send + Sync + 'static {
     async fn on_credential_expiring(&self, _ctx: &RuntimeContext, _event: &CredentialEvent) {}
 
     // Mailbox
-    async fn on_mailbox_backpressure(
-        &self,
-        _ctx: &RuntimeContext,
-        _event: &BackpressureEvent,
-    ) {
-    }
+    async fn on_mailbox_backpressure(&self, _ctx: &RuntimeContext, _event: &BackpressureEvent) {}
 
     /// Dispatch one inbound RPC envelope into the linked workload.
     ///
@@ -319,11 +314,7 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
     async fn on_credential_expiring(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
         self.handle.on_credential_expiring(ctx, event).await
     }
-    async fn on_mailbox_backpressure(
-        &self,
-        ctx: &RuntimeContext,
-        event: &BackpressureEvent,
-    ) {
+    async fn on_mailbox_backpressure(&self, ctx: &RuntimeContext, event: &BackpressureEvent) {
         self.handle.on_mailbox_backpressure(ctx, event).await
     }
 }
@@ -504,8 +495,8 @@ pub fn decode_dest(v1: &actr_framework::guest::abi::DestV1) -> Option<actr_frame
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_framework::test_support::DummyContext;
     use actr_framework::Context as FrameworkContext;
+    use actr_framework::test_support::DummyContext;
     use actr_protocol::{ActrId, ActrType, Realm};
 
     fn make_id(serial: u64) -> ActrId {

@@ -133,8 +133,7 @@ pub(crate) struct Inner {
     /// invocations are dispatched through `lifecycle::hooks::spawn_hook`
     /// so panics in observer code cannot unwind into the event source.
     #[allow(dead_code)]
-    pub(crate) hook_observer:
-        Option<crate::lifecycle::hooks::WorkloadHookObserverRef>,
+    pub(crate) hook_observer: Option<crate::lifecycle::hooks::WorkloadHookObserverRef>,
 
     /// Queue-length threshold at which the mailbox backpressure
     /// watchdog fires the framework `on_mailbox_backpressure` hook.
@@ -762,10 +761,7 @@ impl Inner {
     /// the signaling registration step.
     ///
     /// Called by the Hyper layer between `Hyper::register()` and `Hyper::start()`.
-    pub fn set_preregistered_credential(
-        &mut self,
-        register_ok: register_response::RegisterOk,
-    ) {
+    pub fn set_preregistered_credential(&mut self, register_ok: register_response::RegisterOk) {
         tracing::debug!("Pre-registered credential attached; start() will skip AIS registration");
         self.preregistered_credential = Some(register_ok);
     }
@@ -905,18 +901,17 @@ impl Inner {
                 .context_factory
                 .clone()
                 .expect("ContextFactory must be initialized in build()");
-            let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
-                Arc::new(move || {
-                    let context_factory = context_factory.clone();
-                    let actor_id = actor_id.clone();
-                    let credential_state = credential_state.clone();
-                    Box::pin(async move {
-                        Some(context_factory.create_bootstrap(
-                            &actor_id,
-                            &credential_state.credential().await,
-                        ))
-                    })
-                });
+            let ctx_builder: crate::lifecycle::hooks::HookContextBuilder = Arc::new(move || {
+                let context_factory = context_factory.clone();
+                let actor_id = actor_id.clone();
+                let credential_state = credential_state.clone();
+                Box::pin(async move {
+                    Some(
+                        context_factory
+                            .create_bootstrap(&actor_id, &credential_state.credential().await),
+                    )
+                })
+            });
             let cb = crate::lifecycle::hooks::build_hook_callback(
                 self.hook_observer.clone(),
                 ctx_builder,
@@ -976,30 +971,31 @@ impl Inner {
             // above — this second callback only carries credential and
             // mailbox-backpressure events, so no overlap with the
             // signaling-event plumbing.
-            node_hook_callback = {
-                let actor_id_for_hook = actor_id.clone();
-                let credential_state_for_hook = credential_state.clone();
-                let context_factory = self
-                    .context_factory
-                    .clone()
-                    .expect("ContextFactory must exist");
-                let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
-                    Arc::new(move || {
-                        let context_factory = context_factory.clone();
-                        let actor_id = actor_id_for_hook.clone();
-                        let credential_state = credential_state_for_hook.clone();
-                        Box::pin(async move {
-                            Some(context_factory.create_bootstrap(
-                                &actor_id,
-                                &credential_state.credential().await,
-                            ))
-                        })
-                    });
-                Some(crate::lifecycle::hooks::build_hook_callback(
-                    self.hook_observer.clone(),
-                    ctx_builder,
-                ))
-            };
+            node_hook_callback =
+                {
+                    let actor_id_for_hook = actor_id.clone();
+                    let credential_state_for_hook = credential_state.clone();
+                    let context_factory = self
+                        .context_factory
+                        .clone()
+                        .expect("ContextFactory must exist");
+                    let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
+                        Arc::new(move || {
+                            let context_factory = context_factory.clone();
+                            let actor_id = actor_id_for_hook.clone();
+                            let credential_state = credential_state_for_hook.clone();
+                            Box::pin(async move {
+                                Some(context_factory.create_bootstrap(
+                                    &actor_id,
+                                    &credential_state.credential().await,
+                                ))
+                            })
+                        });
+                    Some(crate::lifecycle::hooks::build_hook_callback(
+                        self.hook_observer.clone(),
+                        ctx_builder,
+                    ))
+                };
 
             // Fire `on_credential_renewed` at initial registration: the
             // credential is considered "renewed" from "nothing" to the
@@ -1009,10 +1005,8 @@ impl Inner {
                 let new_expiry = std::time::UNIX_EPOCH
                     + std::time::Duration::from_secs(expires_at.seconds.max(0) as u64);
                 if let Some(cb) = node_hook_callback.as_ref() {
-                    cb(crate::wire::webrtc::signaling::HookEvent::CredentialRenewed {
-                        new_expiry,
-                    })
-                    .await;
+                    cb(crate::wire::webrtc::signaling::HookEvent::CredentialRenewed { new_expiry })
+                        .await;
                 } else {
                     tracing::info!(new_expiry = ?new_expiry, "credential renewed");
                 }
@@ -1090,10 +1084,12 @@ impl Inner {
                         let actor_id = actor_id_for_hook.clone();
                         let credential_state = credential_state_for_hook.clone();
                         Box::pin(async move {
-                            Some(context_factory.create_bootstrap(
-                                &actor_id,
-                                &credential_state.credential().await,
-                            ))
+                            Some(
+                                context_factory.create_bootstrap(
+                                    &actor_id,
+                                    &credential_state.credential().await,
+                                ),
+                            )
                         })
                     });
                 let cb = crate::lifecycle::hooks::build_hook_callback(
@@ -1237,9 +1233,8 @@ impl Inner {
                                 .context_factory
                                 .clone()
                                 .expect("ContextFactory must exist");
-                            let ctx_builder:
-                                crate::lifecycle::hooks::HookContextBuilder = Arc::new(
-                                move || {
+                            let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
+                                Arc::new(move || {
                                     let context_factory = context_factory.clone();
                                     let actor_id = actor_id_for_hook.clone();
                                     let credential_state = credential_state_for_hook.clone();
@@ -1249,8 +1244,7 @@ impl Inner {
                                             &credential_state.credential().await,
                                         ))
                                     })
-                                },
-                            );
+                                });
                             let cb = crate::lifecycle::hooks::build_hook_callback(
                                 self.hook_observer.clone(),
                                 ctx_builder,
@@ -1845,9 +1839,7 @@ impl Inner {
             };
 
             if installed {
-                tracing::debug!(
-                    "mailbox backpressure watchdog: push notifications enabled"
-                );
+                tracing::debug!("mailbox backpressure watchdog: push notifications enabled");
             } else {
                 tracing::debug!(
                     "mailbox backpressure watchdog: backend does not support push, falling back to 1 Hz polling"
@@ -1857,9 +1849,7 @@ impl Inner {
                 let fire_for_poll = fire_if_rising.clone();
                 let watchdog_handle = tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(Duration::from_secs(1));
-                    ticker.set_missed_tick_behavior(
-                        tokio::time::MissedTickBehavior::Delay,
-                    );
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         tokio::select! {
                             _ = shutdown_for_poll.cancelled() => {

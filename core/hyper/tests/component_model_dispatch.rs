@@ -28,9 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use actr_hyper::wasm::{WasmError, WasmHost};
-use actr_hyper::workload::{
-    HostAbiFn, HostOperation, HostOperationResult, InvocationContext,
-};
+use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
 #[path = "wasm_actor_fixture.rs"]
@@ -78,9 +76,7 @@ fn make_envelope(route_key: &str, payload: Vec<u8>) -> Vec<u8> {
 ///
 /// Returns (bridge, invocation counter). The counter is shared with the
 /// bridge so tests can assert the bridge was actually reached.
-fn doubling_bridge(
-    sleep: Option<Duration>,
-) -> (HostAbiFn, Arc<AtomicU64>) {
+fn doubling_bridge(sleep: Option<Duration>) -> (HostAbiFn, Arc<AtomicU64>) {
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = counter.clone();
     let bridge: HostAbiFn = Arc::new(move |op| {
@@ -114,9 +110,7 @@ fn doubling_bridge(
 /// Bridge that never gets called (every test/echo dispatch is expected
 /// to stay inside the guest without issuing a host import).
 fn unreachable_bridge() -> HostAbiFn {
-    Arc::new(|_| {
-        Box::pin(async move { HostOperationResult::Error(-1) })
-    })
+    Arc::new(|_| Box::pin(async move { HostOperationResult::Error(-1) }))
 }
 
 // ─── Test 1 — basic async dispatch round-trip ───────────────────────────────
@@ -331,10 +325,7 @@ async fn component_model_per_call_overhead() {
     let req = make_envelope("test/echo", payload);
 
     // Warm-up: first dispatch often amortises JIT / paging costs.
-    let _ = wl
-        .handle(&req, test_ctx(), &bridge)
-        .await
-        .expect("warm-up");
+    let _ = wl.handle(&req, test_ctx(), &bridge).await.expect("warm-up");
 
     let iters: u64 = 1000;
     let t0 = Instant::now();

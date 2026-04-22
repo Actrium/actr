@@ -31,9 +31,7 @@ use std::sync::OnceLock;
 use actr_protocol::{ActrError, RpcEnvelope};
 use bytes::Bytes;
 
-use crate::workload::{
-    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent,
-};
+use crate::workload::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
 use crate::{MessageDispatcher, Workload};
 
 use super::context::{WasmContext, proto_actr_error_to_wit, wit_actr_error_to_proto};
@@ -116,8 +114,7 @@ fn error_category_from_wit(c: wit_types::ErrorCategory) -> ErrorCategory {
 }
 
 fn timestamp_from_wit(t: wit_types::Timestamp) -> std::time::SystemTime {
-    std::time::UNIX_EPOCH
-        + std::time::Duration::new(t.seconds, t.nanoseconds)
+    std::time::UNIX_EPOCH + std::time::Duration::new(t.seconds, t.nanoseconds)
 }
 
 fn error_event_from_wit(e: wit_types::ErrorEvent) -> ErrorEvent {
@@ -255,28 +252,19 @@ pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W) {
 
 // ── WebSocket C/S (3, infallible) ─────────────────────────────────────────
 
-pub async fn run_on_websocket_connecting<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_websocket_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_websocket_connecting(&ctx, &event).await;
 }
 
-pub async fn run_on_websocket_connected<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_websocket_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_websocket_connected(&ctx, &event).await;
 }
 
-pub async fn run_on_websocket_disconnected<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_websocket_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_websocket_disconnected(&ctx, &event).await;
@@ -284,28 +272,19 @@ pub async fn run_on_websocket_disconnected<W: Workload>(
 
 // ── WebRTC P2P (3, infallible) ────────────────────────────────────────────
 
-pub async fn run_on_webrtc_connecting<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_webrtc_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connecting(&ctx, &event).await;
 }
 
-pub async fn run_on_webrtc_connected<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_webrtc_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connected(&ctx, &event).await;
 }
 
-pub async fn run_on_webrtc_disconnected<W: Workload>(
-    workload: &W,
-    event: wit_types::PeerEvent,
-) {
+pub async fn run_on_webrtc_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();
     let event = peer_event_from_wit(event);
     workload.on_webrtc_disconnected(&ctx, &event).await;

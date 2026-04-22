@@ -9,7 +9,9 @@
 //! suspend / asyncify is involved; the Component Model canonical ABI
 //! suspends the guest task at await points directly.
 
-use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcRequest};
+use actr_protocol::{
+    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcRequest,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -17,9 +19,7 @@ use prost::Message as ProstMessage;
 
 use crate::{Context, Dest, MediaSample};
 
-use super::context_helpers::{
-    actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, dest_to_wit,
-};
+use super::context_helpers::{actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, dest_to_wit};
 use super::generated::actr::workload::host as wit_host;
 use super::generated::actr::workload::types as wit_types;
 
@@ -92,7 +92,9 @@ impl WasmContext {
     /// one the host traps with a clear error message.
     pub async fn from_host() -> Self {
         let self_id = actr_id_from_wit(&wit_host::get_self_id().await);
-        let caller_id = wit_host::get_caller_id().await.map(|id| actr_id_from_wit(&id));
+        let caller_id = wit_host::get_caller_id()
+            .await
+            .map(|id| actr_id_from_wit(&id));
         let request_id = wit_host::get_request_id().await;
         Self {
             self_id,
@@ -135,11 +137,7 @@ impl Context for WasmContext {
         &self.request_id
     }
 
-    async fn call<R: RpcRequest>(
-        &self,
-        target: &Dest,
-        request: R,
-    ) -> ActorResult<R::Response> {
+    async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
         let payload = request.encode_to_vec();
         // NB: with `async: true`, wit-bindgen emits owned-value signatures
         // for imports (futures cannot hold borrows across await). We
@@ -152,11 +150,7 @@ impl Context for WasmContext {
         }
     }
 
-    async fn tell<R: RpcRequest>(
-        &self,
-        target: &Dest,
-        message: R,
-    ) -> ActorResult<()> {
+    async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
         let payload = message.encode_to_vec();
         wit_host::tell(dest_to_wit(target), R::route_key().to_string(), payload)
             .await

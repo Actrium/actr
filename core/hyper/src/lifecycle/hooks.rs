@@ -77,26 +77,19 @@ pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
     async fn on_credential_expiring(&self, _ctx: &RuntimeContext, _event: &CredentialEvent) {}
 
     // Mailbox
-    async fn on_mailbox_backpressure(
-        &self,
-        _ctx: &RuntimeContext,
-        _event: &BackpressureEvent,
-    ) {
-    }
+    async fn on_mailbox_backpressure(&self, _ctx: &RuntimeContext, _event: &BackpressureEvent) {}
 }
 
 /// Shared observer handle held by the running node.
 pub(crate) type WorkloadHookObserverRef = Arc<dyn WorkloadHookObserver>;
 
 /// Future type produced by a [`HookContextBuilder`].
-pub(crate) type HookContextFut =
-    Pin<Box<dyn Future<Output = Option<RuntimeContext>> + Send>>;
+pub(crate) type HookContextFut = Pin<Box<dyn Future<Output = Option<RuntimeContext>> + Send>>;
 
 /// Lazy builder that produces a `RuntimeContext` (or `None`, when the node
 /// does not yet have an identity) used by hook callbacks to invoke the
 /// observer trait methods.
-pub(crate) type HookContextBuilder =
-    Arc<dyn Fn() -> HookContextFut + Send + Sync + 'static>;
+pub(crate) type HookContextBuilder = Arc<dyn Fn() -> HookContextFut + Send + Sync + 'static>;
 
 /// Run a workload-hook invocation in a detached task with panic isolation.
 ///

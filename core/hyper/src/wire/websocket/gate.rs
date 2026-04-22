@@ -433,9 +433,7 @@ impl WebSocketGate {
                 // inbound connection, before verification — this mirrors
                 // how the WebRTC path emits `WebRtcConnectStart` before
                 // the selected ICE candidate pair is known.
-                if let (Some(cb), Ok(peer)) =
-                    (hook_cb.clone(), ActrId::decode(&source_id[..]))
-                {
+                if let (Some(cb), Ok(peer)) = (hook_cb.clone(), ActrId::decode(&source_id[..])) {
                     let peer_clone = peer.clone();
                     tokio::spawn(async move {
                         cb(HookEvent::WebSocketConnectStart {

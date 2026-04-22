@@ -12,11 +12,15 @@ use crate::Dest;
 use super::generated::actr::workload::types as wit_types;
 
 pub fn realm_to_wit(r: &Realm) -> wit_types::Realm {
-    wit_types::Realm { realm_id: r.realm_id }
+    wit_types::Realm {
+        realm_id: r.realm_id,
+    }
 }
 
 pub fn realm_from_wit(r: &wit_types::Realm) -> Realm {
-    Realm { realm_id: r.realm_id }
+    Realm {
+        realm_id: r.realm_id,
+    }
 }
 
 pub fn actr_type_to_wit(t: &ActrType) -> wit_types::ActrType {
