@@ -722,18 +722,41 @@ fn gen_proto_rs_types(file_info: &FileInfo) -> String {
         "//! Auto-generated protobuf types\n\nuse prost::Message;\nuse serde::{Deserialize, Serialize};\n\n",
     );
 
-    let proto_content = std::fs::read_to_string(&file_info.proto_file).unwrap_or_default();
+    // Compile the proto through protoc and walk the resulting descriptor for
+    // structured field information. Failure here degrades to an empty type
+    // body (matching the previous regex parser, which silently emitted no
+    // fields when the file could not be read) so the rest of the scaffold
+    // still writes.
+    let set = match crate::descriptor::compile_to_descriptor_set(
+        std::slice::from_ref(&file_info.proto_file),
+        &[],
+    ) {
+        Ok(set) => set,
+        Err(err) => {
+            tracing::warn!(
+                "{}: protoc descriptor compile failed ({}); emitting empty message bodies",
+                file_info.proto_file.display(),
+                err
+            );
+            prost_types::FileDescriptorSet::default()
+        }
+    };
+    let file_desc = crate::descriptor::find_file(&set, &file_info.proto_file);
+
+    // Fast lookup of service names so we can skip them in the message loop.
+    let service_names: std::collections::HashSet<&str> = file_desc
+        .map(|f| f.service.iter().map(|s| s.name()).collect())
+        .unwrap_or_default();
+
     for type_name in &file_info.declared_type_names {
-        // Skip service names
-        let is_service = file_info
-            .declared_type_names
-            .iter()
-            .any(|n| n == type_name && proto_content.contains(&format!("service {type_name}")));
-        if is_service && proto_content.contains(&format!("service {type_name}")) {
+        if service_names.contains(type_name.as_str()) {
             continue;
         }
 
-        let fields = extract_message_fields(&proto_content, type_name);
+        let fields = file_desc
+            .and_then(|f| crate::descriptor::message_fields_for_scaffold(f, type_name))
+            .unwrap_or_default();
+
         out.push_str("#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]\n");
         out.push_str(&format!("pub struct {type_name} {{\n"));
         for (i, (field_name, field_type)) in fields.iter().enumerate() {
@@ -1041,51 +1064,6 @@ fn to_snake_case(name: &str) -> String {
 
 fn to_camel_case(name: &str) -> String {
     name.to_lower_camel_case()
-}
-
-fn extract_message_fields(proto_content: &str, message_name: &str) -> Vec<(String, String)> {
-    let mut fields = Vec::new();
-    let mut in_message = false;
-    let mut brace_depth = 0;
-    for line in proto_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with(&format!("message {message_name}")) && trimmed.contains('{') {
-            in_message = true;
-            brace_depth = 1;
-            continue;
-        }
-        if in_message {
-            brace_depth += trimmed.matches('{').count();
-            brace_depth -= trimmed.matches('}').count();
-            if brace_depth == 0 {
-                break;
-            }
-            if let Some((ft, fn_)) = parse_proto_field(trimmed) {
-                fields.push((fn_, ft));
-            }
-        }
-    }
-    fields
-}
-
-fn parse_proto_field(line: &str) -> Option<(String, String)> {
-    let line = line.trim();
-    if line.is_empty()
-        || line.starts_with("//")
-        || line.starts_with("reserved")
-        || line.starts_with("option")
-        || line.starts_with("oneof")
-        || line.starts_with("message")
-        || line.starts_with("enum")
-    {
-        return None;
-    }
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() >= 3 && parts.iter().any(|p| p.contains('=')) {
-        Some((parts[0].to_string(), parts[1].to_string()))
-    } else {
-        None
-    }
 }
 
 fn proto_type_to_rust(proto_type: &str) -> String {

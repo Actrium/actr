@@ -45,6 +45,7 @@ use std::path::PathBuf;
 
 pub mod codegen;
 mod config;
+pub mod descriptor;
 mod error;
 mod generator;
 pub mod request;
@@ -124,9 +125,21 @@ impl WebCodegen {
     /// Generate TypeScript output only.
     pub fn generate_typescript_only(&self) -> Result<Vec<GeneratedFile>> {
         let services = self.parse_proto_files()?;
+        self.generate_typescript_from_services(&services)
+    }
+
+    /// Generate TypeScript output from an already-materialised service list.
+    ///
+    /// Useful for the protoc plugin mode, which receives structured
+    /// descriptors on stdin and can skip the extra `protoc` invocation that
+    /// `parse_proto_files` performs.
+    pub fn generate_typescript_from_services(
+        &self,
+        services: &[ProtoService],
+    ) -> Result<Vec<GeneratedFile>> {
         let mut files = Vec::new();
-        files.extend(self.generate_typescript_types(&services)?);
-        files.extend(self.generate_actor_refs(&services)?);
+        files.extend(self.generate_typescript_types(services)?);
+        files.extend(self.generate_actor_refs(services)?);
         Ok(files)
     }
 

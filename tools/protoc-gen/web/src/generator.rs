@@ -1,258 +1,41 @@
 //! Rust code generator
 
 use crate::{
-    GeneratedFile, ProtoField, ProtoMessage, ProtoMethod, ProtoService, config::WebCodegenConfig,
-    error::Result,
+    GeneratedFile, ProtoMessage, ProtoMethod, ProtoService, config::WebCodegenConfig, descriptor,
+    error::CodegenError, error::Result,
 };
-use std::path::Path;
 
-/// Parse proto files
+/// Parse proto files by compiling them into a `FileDescriptorSet` via
+/// `protoc` and walking the structured output, yielding one `ProtoService`
+/// per file that declares a service.
+///
+/// Files without a service are skipped with a warning — this mirrors the
+/// previous behaviour, where `parse_proto_content` would bail on such files
+/// as "invalid".
 pub fn parse_proto_files(config: &WebCodegenConfig) -> Result<Vec<ProtoService>> {
-    use std::fs;
+    let set = descriptor::compile_to_descriptor_set(&config.proto_files, &config.includes)?;
 
     let mut services = Vec::new();
+    for proto_path in &config.proto_files {
+        let file = descriptor::find_file(&set, proto_path).ok_or_else(|| {
+            CodegenError::proto_parse(format!(
+                "protoc emitted no descriptor for {}; check --include paths",
+                proto_path.display()
+            ))
+        })?;
 
-    for proto_file in &config.proto_files {
-        let content = fs::read_to_string(proto_file)?;
-        let service = parse_proto_content(&content, proto_file)?;
-        services.push(service);
+        match descriptor::file_to_proto_service(file) {
+            Some(service) => services.push(service),
+            None => {
+                tracing::warn!(
+                    "{}: no service declaration found, skipping",
+                    proto_path.display()
+                );
+            }
+        }
     }
 
     Ok(services)
-}
-
-/// Parse proto file content
-fn parse_proto_content(content: &str, path: &Path) -> Result<ProtoService> {
-    use crate::error::CodegenError;
-
-    // Extract package name
-    let package = extract_package(content);
-
-    // Extract service name
-    let service_name = extract_service_name(content)
-        .ok_or_else(|| CodegenError::InvalidProtoFile(path.to_path_buf()))?;
-
-    // Extract methods
-    let methods = extract_methods(content, &service_name);
-
-    // Extract message types
-    let messages = extract_messages(content);
-
-    Ok(ProtoService {
-        name: service_name,
-        package,
-        methods,
-        messages,
-    })
-}
-
-/// Extract package name
-fn extract_package(content: &str) -> String {
-    content
-        .lines()
-        .find(|line| line.trim().starts_with("package"))
-        .and_then(|line| {
-            line.split_whitespace()
-                .nth(1)
-                .map(|s| s.trim_end_matches(';').to_string())
-        })
-        .unwrap_or_else(|| "default".to_string())
-}
-
-/// Extract service name
-fn extract_service_name(content: &str) -> Option<String> {
-    content
-        .lines()
-        .find(|line| line.trim().starts_with("service"))
-        .and_then(|line| line.split_whitespace().nth(1).map(String::from))
-}
-
-/// Extract methods from a service
-fn extract_methods(content: &str, service_name: &str) -> Vec<ProtoMethod> {
-    let mut methods = Vec::new();
-    let mut in_service = false;
-    let mut brace_count = 0;
-    let mut service_started = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Detect service start
-        if trimmed.starts_with("service") && trimmed.contains(service_name) {
-            in_service = true;
-        }
-
-        if !in_service {
-            continue;
-        }
-
-        // Track braces
-        brace_count += trimmed.matches('{').count() as i32;
-        brace_count -= trimmed.matches('}').count() as i32;
-
-        // Mark service actually started (encountered first {)
-        if brace_count > 0 {
-            service_started = true;
-        }
-
-        // Service ended (encountered matching })
-        if service_started && brace_count == 0 {
-            break;
-        }
-
-        // Parse rpc method
-        if trimmed.starts_with("rpc") {
-            if let Some(method) = parse_rpc_method(trimmed) {
-                methods.push(method);
-            }
-        }
-    }
-
-    methods
-}
-
-/// Parse a single rpc method definition
-fn parse_rpc_method(line: &str) -> Option<ProtoMethod> {
-    // rpc MethodName(RequestType) returns (ResponseType);
-    // rpc StreamMethod(stream RequestType) returns (stream ResponseType);
-
-    // Check for required keywords
-    if !line.contains("returns") {
-        return None;
-    }
-
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 4 {
-        // Need at least: rpc, MethodName(...), returns, (...)
-        return None;
-    }
-
-    // Extract method name (strip parentheses and everything after)
-    let name = parts[1].split('(').next().unwrap_or("").to_string();
-
-    // Extract input type
-    let input_start = line.find('(')? + 1;
-    let input_end = line.find(')')?;
-    let input_part = line[input_start..input_end].trim();
-    let (input_type, input_streaming) = if input_part.starts_with("stream") {
-        (input_part.strip_prefix("stream")?.trim().to_string(), true)
-    } else {
-        (input_part.to_string(), false)
-    };
-
-    // Extract output type
-    let output_start = line.rfind('(')? + 1;
-    let output_end = line.rfind(')')?;
-    let output_part = line[output_start..output_end].trim();
-    let (output_type, output_streaming) = if output_part.starts_with("stream") {
-        (output_part.strip_prefix("stream")?.trim().to_string(), true)
-    } else {
-        (output_part.to_string(), false)
-    };
-
-    Some(ProtoMethod {
-        name,
-        input_type,
-        output_type,
-        is_streaming: input_streaming || output_streaming,
-    })
-}
-
-/// Extract message type definitions
-fn extract_messages(content: &str) -> Vec<ProtoMessage> {
-    let mut messages = Vec::new();
-    let mut current_message: Option<(String, Vec<ProtoField>)> = None;
-    let mut brace_count = 0;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Detect message start
-        if trimmed.starts_with("message") {
-            let name = trimmed
-                .split_whitespace()
-                .nth(1)
-                .and_then(|s| s.strip_suffix('{').or(Some(s)))
-                .map(String::from);
-
-            if let Some(name) = name {
-                current_message = Some((name, Vec::new()));
-                brace_count = trimmed.matches('{').count() as i32;
-            }
-            continue;
-        }
-
-        if let Some((msg_name, fields)) = &mut current_message {
-            // Track braces
-            brace_count += trimmed.matches('{').count() as i32;
-            brace_count -= trimmed.matches('}').count() as i32;
-
-            // Message ended
-            if brace_count == 0 {
-                messages.push(ProtoMessage {
-                    name: msg_name.clone(),
-                    fields: fields.clone(),
-                });
-                current_message = None;
-                continue;
-            }
-
-            // Parse field
-            if let Some(field) = parse_message_field(trimmed) {
-                fields.push(field);
-            }
-        }
-    }
-
-    messages
-}
-
-/// Parse a message field
-fn parse_message_field(line: &str) -> Option<ProtoField> {
-    // repeated string items = 1;
-    // optional int32 count = 2;
-    // string name = 3;
-
-    // Skip empty lines, comments, and proto option directives
-    if line.is_empty() || line.starts_with("//") {
-        return None;
-    }
-
-    // Skip proto option directives (but not optional fields)
-    if line.starts_with("option ") {
-        return None;
-    }
-
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 4 {
-        return None;
-    }
-
-    let (is_repeated, is_optional, type_idx, name_idx) = if parts[0] == "repeated" {
-        (true, false, 1, 2)
-    } else if parts[0] == "optional" {
-        (false, true, 1, 2)
-    } else {
-        (false, false, 0, 1)
-    };
-
-    let field_type = parts[type_idx].to_string();
-    let name = parts[name_idx].trim_end_matches('=').to_string();
-
-    // Extract field number (format: name = N;)
-    let number = line
-        .split('=')
-        .nth(1)
-        .and_then(|s| s.trim().trim_end_matches(';').trim().parse::<u32>().ok())
-        .unwrap_or(0);
-
-    Some(ProtoField {
-        name,
-        field_type,
-        number,
-        is_repeated,
-        is_optional,
-    })
 }
 
 /// Generate Rust Actor code
