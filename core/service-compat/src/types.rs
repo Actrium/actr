@@ -28,4 +28,3 @@ pub struct ProtoFile {
     /// Optional file path (for local development)
     pub path: Option<String>,
 }
-

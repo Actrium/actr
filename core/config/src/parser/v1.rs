@@ -9,7 +9,7 @@ use crate::config::{
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawBuildConfig, ManifestRawConfig, RawDependency, RawPackageConfig, WebConfig};
+use crate::{ManifestRawConfig, RawBuildConfig, RawDependency, RawPackageConfig, WebConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -531,7 +531,11 @@ impl ParserV1 {
         })
     }
 
-    fn merge_inheritance(&self, child: ManifestRawConfig, parent_path: PathBuf) -> Result<ManifestRawConfig> {
+    fn merge_inheritance(
+        &self,
+        child: ManifestRawConfig,
+        parent_path: PathBuf,
+    ) -> Result<ManifestRawConfig> {
         let parent_full_path = self.base_dir.join(&parent_path);
         let mut parent = ManifestRawConfig::from_file(&parent_full_path)?;
 
