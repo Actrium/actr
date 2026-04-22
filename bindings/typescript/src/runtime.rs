@@ -20,8 +20,8 @@ impl ActrNode {
         // and let Node::from_config_file own config + trust + Hyper
         // construction. TypeScript bindings are client-only so we finish
         // with attach_none.
-        let manifest =
-            ConfigParser::from_manifest_file(&config_path).map_err(crate::error::config_error_to_napi)?;
+        let manifest = ConfigParser::from_manifest_file(&config_path)
+            .map_err(crate::error::config_error_to_napi)?;
         let runtime_path = manifest.config_dir.join("actr.toml");
 
         let init = Node::from_config_file(&runtime_path)
@@ -47,8 +47,13 @@ impl ActrNode {
     /// One-shot: consumes the internal Hyper handle. A second call resolves
     /// with `Node already started`.
     ///
-    /// The `unsafe` marker is required by napi-rs for async methods taking
-    /// `&mut self` — it is not surfaced to JavaScript callers.
+    /// # Safety
+    ///
+    /// The `unsafe` marker is imposed by napi-rs for async methods that take
+    /// `&mut self`; it is a plumbing requirement of the FFI layer and is not
+    /// surfaced to JavaScript callers, who always invoke this method through
+    /// the generated wrapper. There is no memory-safety contract for Rust
+    /// callers to uphold beyond the usual `&mut self` aliasing rules.
     #[napi]
     pub async unsafe fn start(&mut self) -> Result<ActrRef> {
         let hyper = self
@@ -136,8 +141,8 @@ impl ActrRef {
             proto_payload_type,
             bytes::Bytes::from(message_payload.to_vec()),
         )
-            .await
-            .map_err(crate::error::protocol_error_to_napi)?;
+        .await
+        .map_err(crate::error::protocol_error_to_napi)?;
 
         Ok(())
     }

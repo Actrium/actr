@@ -4,6 +4,7 @@ import {
   ActrType,
   PayloadType,
 } from '../index';
+import { callNative } from './error';
 
 /**
  * ActrRef – reference to a running actor.
@@ -38,7 +39,7 @@ export class ActrRef {
    * ```
    */
   async discover(targetType: ActrType, count: number): Promise<ActrId[]> {
-    return await this.native.discover(targetType, count);
+    return await callNative(() => this.native.discover(targetType, count));
   }
 
   /**
@@ -70,12 +71,8 @@ export class ActrRef {
     requestPayload: Buffer,
     timeoutMs: number = 30000,
   ): Promise<Buffer> {
-    return await this.native.call(
-      target,
-      routeKey,
-      payloadType,
-      requestPayload,
-      timeoutMs,
+    return await callNative(() =>
+      this.native.call(target, routeKey, payloadType, requestPayload, timeoutMs),
     );
   }
 
@@ -148,7 +145,9 @@ export class ActrRef {
     payloadType: PayloadType,
     messagePayload: Buffer,
   ): Promise<void> {
-    await this.native.tell(target, routeKey, payloadType, messagePayload);
+    await callNative(() =>
+      this.native.tell(target, routeKey, payloadType, messagePayload),
+    );
   }
 
   /**

@@ -1,6 +1,11 @@
+# Standalone crate: napi-rs builds this independently, outside the main
+# Rust workspace. The empty [workspace] table keeps Cargo from auto-joining
+# any workspace it finds above this path.
+[workspace]
+
 [package]
 name = "actr-ts"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"

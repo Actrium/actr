@@ -1,4 +1,5 @@
 import { ActrNode as NativeActrNode } from '../index';
+import { callNative } from './error';
 import { ActrRef } from './ref';
 
 /**
@@ -17,7 +18,7 @@ export class ActrNode {
    * @returns ActrNode instance
    */
   static async fromConfig(configPath: string): Promise<ActrNode> {
-    const nativeNode = await NativeActrNode.fromFile(configPath);
+    const nativeNode = await callNative(() => NativeActrNode.fromFile(configPath));
     return new ActrNode(nativeNode);
   }
 
@@ -33,7 +34,7 @@ export class ActrNode {
    * ```
    */
   async start(): Promise<ActrRef> {
-    const nativeRef = await this.native.start();
+    const nativeRef = await callNative(() => this.native.start());
     return new ActrRef(nativeRef);
   }
 }
