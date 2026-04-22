@@ -26,6 +26,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  # DynClib cannot consume `wit-bindgen c` output (it is wasm-targeted, not
+  # portable C ABI), so its hand-written ABI lives in
+  # core/framework/src/guest/abi.rs. `wit-lint` is the drift guard that
+  # keeps that file aligned with the WIT contract. Runs separately and
+  # fast-fails before the heavier build / test jobs.
+  wit-lint:
+    name: WIT shape consistency
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: WIT <-> DynClib ABI drift check
+        run: cargo run -p wit-lint --release
+
   build:
     name: Build
     runs-on: ubuntu-latest
