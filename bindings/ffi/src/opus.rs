@@ -24,7 +24,7 @@ impl OpusEncoder {
             1 => Channels::Mono,
             2 => Channels::Stereo,
             _ => {
-                return Err(ActrError::InternalError {
+                return Err(ActrError::Internal {
                     msg: format!("Unsupported Opus channel count: {channels}"),
                 });
             }
@@ -32,13 +32,13 @@ impl OpusEncoder {
 
         let mut encoder =
             Encoder::new(sample_rate, opus_channels, Application::Audio).map_err(|err| {
-                ActrError::InternalError {
+                ActrError::Internal {
                     msg: format!("Failed to create Opus encoder: {err}"),
                 }
             })?;
         encoder
             .set_bitrate(Bitrate::Bits(32_000))
-            .map_err(|err| ActrError::InternalError {
+            .map_err(|err| ActrError::Internal {
                 msg: format!("Failed to configure Opus bitrate: {err}"),
             })?;
 
@@ -53,7 +53,7 @@ impl OpusEncoder {
     pub fn encode(&self, pcm: Vec<f32>) -> ActrResult<Vec<u8>> {
         let expected_len = self.frame_size * self.channels;
         if pcm.len() != expected_len {
-            return Err(ActrError::InternalError {
+            return Err(ActrError::Internal {
                 msg: format!(
                     "Expected {expected_len} PCM samples for Opus frame, got {}",
                     pcm.len()
@@ -66,7 +66,7 @@ impl OpusEncoder {
             .inner
             .lock()
             .encode_float(&pcm, &mut output)
-            .map_err(|err| ActrError::InternalError {
+            .map_err(|err| ActrError::Internal {
                 msg: format!("Failed to encode Opus frame: {err}"),
             })?;
         output.truncate(encoded_len);

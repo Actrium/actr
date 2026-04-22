@@ -48,7 +48,7 @@ impl ContextBridge {
     /// `RuntimeContext`.
     pub fn try_from_context<C: Context + 'static>(ctx: &C) -> ActrResult<Arc<Self>> {
         if TypeId::of::<C>() != TypeId::of::<RuntimeContext>() {
-            return Err(ActrError::InternalError {
+            return Err(ActrError::Internal {
                 msg: format!(
                     "Context type mismatch: expected RuntimeContext, got {}",
                     std::any::type_name::<C>()

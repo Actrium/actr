@@ -25,7 +25,7 @@ impl ActrNode {
     ) -> ActrResult<Arc<Self>> {
         let package_bytes = std::fs::read(&package_path).map_err(|e| {
             error!("Failed to read package at {}: {}", package_path, e);
-            ActrError::ConfigError {
+            ActrError::Config {
                 msg: format!("Failed to read package at {}: {}", package_path, e),
             }
         })?;
@@ -37,7 +37,7 @@ impl ActrNode {
         // of the returned Node<Init>.
         let init = Node::from_config_file(&config_path).await.map_err(|e| {
             error!("Failed to load runtime config: {}", e);
-            ActrError::ConfigError {
+            ActrError::Config {
                 msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
             }
         })?;
@@ -51,14 +51,14 @@ impl ActrNode {
 
         let attached = init.attach(&package).await.map_err(|e| {
             error!("Failed to attach package-backed node: {}", e);
-            ActrError::InternalError {
+            ActrError::Internal {
                 msg: format!("Failed to attach package-backed node: {e}"),
             }
         })?;
         let ais_endpoint = attached.ais_endpoint().to_string();
         let registered = attached.register(&ais_endpoint).await.map_err(|e| {
             error!("AIS registration failed: {}", e);
-            ActrError::InternalError {
+            ActrError::Internal {
                 msg: format!("AIS registration failed: {e}"),
             }
         })?;
@@ -81,7 +81,7 @@ impl ActrNode {
         }
 
         let mut node_guard = self.inner.lock();
-        let node = node_guard.as_mut().ok_or_else(|| ActrError::StateError {
+        let node = node_guard.as_mut().ok_or_else(|| ActrError::Internal {
             msg: "runtime node is no longer available".to_string(),
         })?;
 
@@ -100,16 +100,11 @@ impl ActrNode {
             .inner
             .lock()
             .take()
-            .ok_or_else(|| ActrError::StateError {
+            .ok_or_else(|| ActrError::Internal {
                 msg: "ActrNode already started".to_string(),
             })?;
 
-        let actr_ref = hyper.start().await.map_err(|e| {
-            error!("Failed to start package-backed actor: {}", e);
-            ActrError::ConnectionError {
-                msg: format!("Failed to start actor: {e}"),
-            }
-        })?;
+        let actr_ref = hyper.start().await.map_err(ActrError::from)?;
 
         Ok(Arc::new(ActrRefWrapper { inner: actr_ref }))
     }
@@ -129,7 +124,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_available()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -139,7 +134,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_lost()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -153,7 +148,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_type_changed(is_wifi, is_cellular)
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -163,7 +158,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .cleanup_connections()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 }
@@ -203,9 +198,7 @@ impl ActrRefWrapper {
             }
             Err(e) => {
                 error!("discover failed: {}", e);
-                Err(ActrError::RpcError {
-                    msg: format!("Discovery failed: {e}"),
-                })
+                Err(ActrError::from(e))
             }
         }
     }
