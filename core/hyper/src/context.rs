@@ -42,7 +42,7 @@ pub struct RuntimeContext {
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
-    actr_lock: Option<LockFile>, // packaged manifest.lock.toml for fingerprint lookups
+    actr_lock: Option<Arc<LockFile>>, // packaged manifest.lock.toml for fingerprint lookups
 }
 
 impl RuntimeContext {
@@ -59,7 +59,7 @@ impl RuntimeContext {
     /// - `media_frame_registry`: callback registry for `MediaTrack`
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
-    /// - `actr_lock`: dependency config from the packaged `manifest.lock.toml` used for fingerprint lookup
+    /// - `actr_lock`: shared packaged `manifest.lock.toml` used for fingerprint lookup (wrapped in `Arc` so context clones stay cheap)
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub fn new(
         self_id: ActrId,
@@ -71,7 +71,7 @@ impl RuntimeContext {
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
-        actr_lock: Option<LockFile>,
+        actr_lock: Option<Arc<LockFile>>,
     ) -> Self {
         Self {
             self_id,
@@ -326,7 +326,7 @@ pub struct BootstrapContextBuilder {
     data_stream_registry: Arc<DataStreamRegistry>,
     media_frame_registry: Arc<MediaFrameRegistry>,
     signaling_client: Arc<dyn SignalingClient>,
-    actr_lock: Option<LockFile>,
+    actr_lock: Option<Arc<LockFile>>,
 }
 
 impl BootstrapContextBuilder {
@@ -341,7 +341,7 @@ impl BootstrapContextBuilder {
         data_stream_registry: Arc<DataStreamRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
-        actr_lock: Option<LockFile>,
+        actr_lock: Option<Arc<LockFile>>,
     ) -> Self {
         Self {
             inproc_gate,

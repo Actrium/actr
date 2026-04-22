@@ -99,8 +99,11 @@ pub(crate) struct Inner {
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
 
-    /// Packaged manifest.lock.toml content loaded at startup for fingerprint lookups
-    pub(crate) actr_lock: Option<actr_config::lock::LockFile>,
+    /// Packaged manifest.lock.toml content loaded at startup for fingerprint lookups.
+    ///
+    /// Wrapped in `Arc` so per-request `RuntimeContext` clones only bump a refcount
+    /// instead of deep-cloning the dependency vector.
+    pub(crate) actr_lock: Option<Arc<actr_config::lock::LockFile>>,
     /// Network event receiver (from NetworkEventHandle)
     pub(crate) network_event_rx:
         Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>>,
@@ -691,7 +694,7 @@ impl Inner {
                 "📋 Loaded packaged manifest.lock.toml with {} dependencies",
                 lock.dependencies.len()
             );
-            Some(lock)
+            Some(Arc::new(lock))
         } else {
             tracing::warn!(
                 "⚠️ manifest.lock.toml not found in package. Continuing without dependency fingerprints."
