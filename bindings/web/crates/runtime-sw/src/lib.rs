@@ -10,7 +10,6 @@ pub mod actr_ref;
 pub mod context;
 pub mod error_handler;
 pub mod guest_bridge;
-pub mod guest_bridge_wit;
 pub mod inbound;
 pub mod lifecycle;
 pub mod outbound;
@@ -38,7 +37,9 @@ pub use error_handler::{
     ErrorCallback, ErrorStats, SwErrorHandler, get_global_error_handler, init_global_error_handler,
 };
 pub use guest_bridge::{
-    encode_guest_init_payload, guest_host_invoke_async, register_guest_workload,
+    host_call_async, host_call_raw_async, host_discover_async, host_get_caller_id,
+    host_get_request_id, host_get_self_id, host_log_message, host_tell_async,
+    register_component_workload,
 };
 pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcessor};
 pub use lifecycle::SwLifecycleManager;
