@@ -29,21 +29,3 @@ pub struct ProtoFile {
     pub path: Option<String>,
 }
 
-impl ProtoFile {
-    /// Extract filename from URI or path
-    /// e.g., "actr://service/proto/user.proto" → "user.proto"
-    /// Used for compatibility with old URI-based references
-    pub fn name_from_uri(uri: &str) -> String {
-        uri.rsplit('/').next().unwrap_or(uri).to_string()
-    }
-
-    /// Create from protocol Protobuf message (package-level)
-    /// The Protobuf structure represents a merged package, so we use package name directly
-    pub fn from_protobuf(proto: &actr_protocol::service_spec::Protobuf) -> Self {
-        Self {
-            name: proto.package.clone(), // Package name (e.g., "user.v1")
-            content: proto.content.clone(),
-            path: None,
-        }
-    }
-}
