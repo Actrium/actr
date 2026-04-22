@@ -13,30 +13,36 @@ pub mod connection_event;
 mod dest_transport;
 pub mod error;
 mod host_transport;
-mod lane;
+pub(crate) mod lane;
 mod peer_transport;
 mod route_table;
 mod wire_builder;
 mod wire_handle;
-mod wire_pool;
+pub(crate) mod wire_pool;
 
-// Re-export Dest from actr-framework (unified API layer)
+// Re-export Dest from actr-framework (unified API layer).
 pub use actr_framework::Dest;
 
-// DataLane core abstraction (trait + concrete types)
-pub use lane::{DataLane, MpscLane, WebRtcDataLane, WebSocketDataLane, WsSink};
-pub use route_table::{DataChannelQoS, DataLaneType, PayloadTypeExt, RetryPolicy};
+// Submodule-internal types (lanes, wire pool, sessions, dest_transport,
+// connection events broadcasters) stay reachable via their module paths
+// without duplicating re-exports here.
+
+// DataLane core abstraction (trait kept pub for sw-host/peer_transport).
+pub use lane::DataLane;
+pub(crate) use lane::{MpscLane, WebRtcDataLane, WebSocketDataLane, WsSink};
+pub(crate) use route_table::PayloadTypeExt;
+
+// ConnType leaks through the public `WireHandle::connection_type` method,
+// so it must stay pub even though the `wire_pool` module itself is private.
+pub use wire_pool::ConnType;
 
 // Transport management
 pub use host_transport::HostTransport;
 pub use peer_transport::{PeerTransport, WireBuilder};
 
-pub use dest_transport::DestTransport;
-
 // Wire layer management
 pub use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
 pub use wire_handle::WireHandle;
-pub use wire_pool::{ConnType, WirePool};
 
 // Error types
 pub use error::{NetworkError, NetworkResult};
@@ -44,9 +50,9 @@ pub use error::{NetworkError, NetworkResult};
 // Retry and backoff strategies
 pub use backoff::ExponentialBackoff;
 
-// Connection events
-pub use connection_event::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
+// Connection events (trait consumers reach the broadcaster via
+// `crate::transport::connection_event::*` where needed).
+pub use connection_event::ConnectionEvent;
 
 // Connection session
-pub mod session;
-pub use session::ConnectionSession;
+pub(crate) mod session;

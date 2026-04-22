@@ -4,7 +4,6 @@
 //! Uses watch channels to broadcast connection status, implementing zero-polling event-driven architecture.
 
 use super::backoff::ExponentialBackoff;
-use super::error::NetworkResult;
 use super::wire_handle::{WireHandle, WireStatus};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,23 +31,17 @@ impl ConnType {
     const ALL: [ConnType; 2] = [ConnType::WebSocket, ConnType::WebRTC];
 }
 
-impl ConnType {
-    /// Derive ConnType from a WireHandle trait object
-    pub fn from_wire(handle: &dyn WireHandle) -> Self {
-        handle.connection_type()
-    }
-}
 
 /// Set of ready connections
-pub type ReadySet = HashSet<ConnType>;
+pub(crate) type ReadySet = HashSet<ConnType>;
 
 /// Retry configuration
 #[derive(Debug, Clone, Copy)]
-pub struct RetryConfig {
-    pub max_attempts: u32,
-    pub initial_delay_ms: u64,
-    pub max_delay_ms: u64,
-    pub multiplier: f64,
+pub(crate) struct RetryConfig {
+    pub(crate) max_attempts: u32,
+    pub(crate) initial_delay_ms: u64,
+    pub(crate) max_delay_ms: u64,
+    pub(crate) multiplier: f64,
 }
 
 impl Default for RetryConfig {
@@ -64,7 +57,7 @@ impl Default for RetryConfig {
 
 impl RetryConfig {
     /// Create ExponentialBackoff from this config
-    pub fn create_backoff(&self) -> ExponentialBackoff {
+    pub(crate) fn create_backoff(&self) -> ExponentialBackoff {
         ExponentialBackoff::with_multiplier(
             Duration::from_millis(self.initial_delay_ms),
             Duration::from_millis(self.max_delay_ms),
@@ -86,7 +79,7 @@ impl RetryConfig {
 /// - **Event-driven**: Use watch channels to notify status changes
 /// - **Zero-polling**: Callers use `await ready_rx.changed()` to wait for connection readiness
 /// - **Array optimization**: Use fixed-size array instead of HashMap
-pub struct WirePool {
+pub(crate) struct WirePool {
     /// Connection status (array optimization: WebSocket=0, WebRTC=1)
     connections: Arc<RwLock<[Option<WireStatus>; 2]>>,
 
@@ -106,7 +99,7 @@ pub struct WirePool {
 
 impl WirePool {
     /// Create new wire connection pool
-    pub fn new(retry_config: RetryConfig) -> Self {
+    pub(crate) fn new(retry_config: RetryConfig) -> Self {
         let (tx, rx) = watch::channel(HashSet::new());
 
         Self {
@@ -126,7 +119,7 @@ impl WirePool {
     /// # Behavior
     /// - **Unconditionally starts**: Always starts connection attempt, even if a connection already exists
     /// - Use `add_connection_smart()` if you want to skip already-ready connections
-    pub fn add_connection(&self, connection: Arc<dyn WireHandle>) {
+    pub(crate) fn add_connection(&self, connection: Arc<dyn WireHandle>) {
         let connections = Arc::clone(&self.connections);
         let ready_tx = self.ready_tx.clone();
         let pending = Arc::clone(&self.pending);
@@ -253,7 +246,7 @@ impl WirePool {
     /// # Use Case
     /// Perfect for reconnection scenarios where you want to retry failed connections
     /// without disrupting working ones.
-    pub async fn add_connection_smart(&self, connection: Arc<dyn WireHandle>) {
+    pub(crate) async fn add_connection_smart(&self, connection: Arc<dyn WireHandle>) {
         let conn_type = connection.connection_type();
 
         // Check current status
@@ -305,17 +298,15 @@ impl WirePool {
     }
 
     /// Watch for connection status changes
-    pub fn watch_ready(&self) -> watch::Receiver<ReadySet> {
+    pub(crate) fn watch_ready(&self) -> watch::Receiver<ReadySet> {
         self.ready_rx.clone()
     }
 
-    /// Get current ready connection set
-    pub fn get_ready(&self) -> ReadySet {
-        self.ready_rx.borrow().clone()
-    }
-
     /// Get connection of specified type
-    pub async fn get_connection(&self, conn_type: ConnType) -> Option<Arc<dyn WireHandle>> {
+    pub(crate) async fn get_connection(
+        &self,
+        conn_type: ConnType,
+    ) -> Option<Arc<dyn WireHandle>> {
         let conns = self.connections.read().await;
 
         match &conns[conn_type.as_index()] {
@@ -324,24 +315,11 @@ impl WirePool {
         }
     }
 
-    /// Wait for any connection to become ready
-    pub async fn wait_for_any(&self) -> NetworkResult<()> {
-        let mut rx = self.ready_rx.clone();
-
-        rx.wait_for(|ready_set| !ready_set.is_empty())
-            .await
-            .map_err(|_| {
-                super::error::NetworkError::ChannelClosed("watch channel closed".to_string())
-            })?;
-
-        Ok(())
-    }
-
     /// Mark a connection as closed/failed
     ///
     /// Called by upper layers (DestTransport) when closing connections.
     /// This replaces the per-connection event listener pattern.
-    pub async fn mark_connection_closed(&self, conn_type: ConnType) {
+    pub(crate) async fn mark_connection_closed(&self, conn_type: ConnType) {
         {
             let mut conns = self.connections.write().await;
             conns[conn_type.as_index()] = Some(WireStatus::Failed);
@@ -357,7 +335,7 @@ impl WirePool {
     ///
     /// Called by DestTransport.close() to clean up all connections.
     /// This also terminates all background connection tasks.
-    pub async fn close_all(&self) {
+    pub(crate) async fn close_all(&self) {
         // 1. Set closed flag to terminate background tasks
         self.closed.store(true, Ordering::Relaxed);
 
@@ -372,7 +350,7 @@ impl WirePool {
     }
 
     /// Check if pool is closed
-    pub fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
 }

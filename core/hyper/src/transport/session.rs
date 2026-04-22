@@ -20,17 +20,17 @@ static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 /// All three fields are `Clone`-shared via Arc/CancellationToken,
 /// so cloning a session gives a handle to the same underlying state.
 #[derive(Clone, Debug)]
-pub struct ConnectionSession {
+pub(crate) struct ConnectionSession {
     /// Globally unique session ID
-    pub session_id: u64,
+    pub(crate) session_id: u64,
     /// Cancellation token: cancelled during cleanup to silence stale callbacks
-    pub cancel_token: CancellationToken,
+    pub(crate) cancel_token: CancellationToken,
     /// Close-once flag: ensures close() executes exactly once
     closed: Arc<AtomicBool>,
 }
 
 impl ConnectionSession {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             session_id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             cancel_token: CancellationToken::new(),
@@ -39,21 +39,21 @@ impl ConnectionSession {
     }
 
     /// Attempt to mark as closed. Returns `true` if this is the first close.
-    pub fn try_close(&self) -> bool {
+    pub(crate) fn try_close(&self) -> bool {
         self.closed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
-    pub fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }
 
-    pub fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         self.cancel_token.cancel();
     }
 
-    pub fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.cancel_token.is_cancelled()
     }
 }

@@ -156,7 +156,10 @@ impl PeerTransport {
         name = "PeerTransport.get_or_create_transport",
         fields(dest = ?dest.as_actor_id().map(|id| id))
     ))]
-    pub async fn get_or_create_transport(&self, dest: &Dest) -> NetworkResult<Arc<DestTransport>> {
+    pub(crate) async fn get_or_create_transport(
+        &self,
+        dest: &Dest,
+    ) -> NetworkResult<Arc<DestTransport>> {
         // 0. Check if dest is being closed - fast fail
         // if self.closing_peers.read().await.contains(dest) {
         //     return Err(NetworkError::ConnectionClosed(format!(

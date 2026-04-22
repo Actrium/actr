@@ -80,7 +80,7 @@ struct FragmentEntry {
 ///
 /// - **TTL eviction**: Stale entries older than [`REASSEMBLY_TTL`] are removed
 ///   on each `insert()` call to prevent unbounded memory growth.
-pub struct ReassemblyBuffer {
+pub(crate) struct ReassemblyBuffer {
     pending: HashMap<u32, FragmentEntry>,
 }
 
@@ -196,7 +196,7 @@ fn decode_fragment_header(raw: bytes::Bytes) -> NetworkResult<(u32, u16, u16, by
 // ── Type alias ────────────────────────────────────────────────────────────────
 
 /// Type alias for WebSocket sink (shared across all PayloadTypes)
-pub type WsSink =
+pub(crate) type WsSink =
     Arc<Mutex<Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>>>>;
 
 // ── DataLane trait ────────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ pub trait DataLane: Send + Sync + std::fmt::Debug {
 /// Directly passes RpcEnvelope objects via tokio mpsc channels.
 /// Used for Guest <-> Shell communication within a single process.
 #[derive(Clone, Debug)]
-pub struct MpscLane {
+pub(crate) struct MpscLane {
     /// PayloadType identifier
     #[allow(dead_code)]
     payload_type: PayloadType,
@@ -292,9 +292,12 @@ pub struct MpscLane {
 }
 
 impl MpscLane {
-    /// Create MpscLane (accepts plain Receiver, wraps in Arc<Mutex<>>)
+    /// Create MpscLane (accepts plain Receiver, wraps in Arc<Mutex<>>).
+    /// Only used by in-crate tests; production paths build `MpscLane` via
+    /// `MpscLane::new_shared`.
+    #[cfg(test)]
     #[inline]
-    pub fn new(
+    pub(crate) fn new(
         payload_type: PayloadType,
         tx: mpsc::Sender<actr_protocol::RpcEnvelope>,
         rx: mpsc::Receiver<actr_protocol::RpcEnvelope>,
@@ -308,7 +311,7 @@ impl MpscLane {
 
     /// Create MpscLane (accepts shared Receiver)
     #[inline]
-    pub fn new_shared(
+    pub(crate) fn new_shared(
         payload_type: PayloadType,
         tx: mpsc::Sender<actr_protocol::RpcEnvelope>,
         rx: Arc<Mutex<mpsc::Receiver<actr_protocol::RpcEnvelope>>>,
@@ -358,7 +361,7 @@ impl DataLane for MpscLane {
 /// Transmits messages via WebRTC DataChannel with transparent fragmentation
 /// for messages exceeding [`DC_MAX_PAYLOAD_SIZE`].
 #[derive(Clone)]
-pub struct WebRtcDataLane {
+pub(crate) struct WebRtcDataLane {
     /// Underlying DataChannel
     pub(crate) data_channel: Arc<RTCDataChannel>,
 
@@ -381,7 +384,7 @@ impl std::fmt::Debug for WebRtcDataLane {
 impl WebRtcDataLane {
     /// Create WebRTC DataChannel DataLane
     #[inline]
-    pub fn new(data_channel: Arc<RTCDataChannel>, rx: mpsc::Receiver<bytes::Bytes>) -> Self {
+    pub(crate) fn new(data_channel: Arc<RTCDataChannel>, rx: mpsc::Receiver<bytes::Bytes>) -> Self {
         Self {
             data_channel,
             rx: Arc::new(Mutex::new(rx)),
@@ -554,7 +557,7 @@ impl DataLane for WebRtcDataLane {
 /// All PayloadTypes share the same underlying WebSocket connection,
 /// distinguished by a message header.
 #[derive(Clone)]
-pub struct WebSocketDataLane {
+pub(crate) struct WebSocketDataLane {
     /// Shared Sink (all PayloadTypes share the same WebSocket connection)
     pub(crate) sink: WsSink,
 
@@ -574,7 +577,11 @@ impl std::fmt::Debug for WebSocketDataLane {
 impl WebSocketDataLane {
     /// Create WebSocket DataLane
     #[inline]
-    pub fn new(sink: WsSink, payload_type: PayloadType, rx: mpsc::Receiver<bytes::Bytes>) -> Self {
+    pub(crate) fn new(
+        sink: WsSink,
+        payload_type: PayloadType,
+        rx: mpsc::Receiver<bytes::Bytes>,
+    ) -> Self {
         Self {
             sink,
             payload_type,

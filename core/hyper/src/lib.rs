@@ -189,9 +189,8 @@ pub use outbound::{Gate, HostGate, PeerGate};
 // Layer 1: Transport layer
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{
-    DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport,
-    ExponentialBackoff, HostTransport, NetworkError, NetworkResult, PeerTransport, WireBuilder,
-    WireHandle,
+    DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, ExponentialBackoff,
+    HostTransport, NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
 };
 
 // Layer 0: Wire layer
@@ -291,8 +290,8 @@ pub mod prelude {
     // ── Layer 1: Transport (native-only) ────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::transport::{
-        DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, DestTransport, HostTransport,
-        NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
+        DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, HostTransport, NetworkError,
+        NetworkResult, PeerTransport, WireBuilder, WireHandle,
     };
 
     // ── Error types ─────────────────────────────────────────────────────────
