@@ -303,6 +303,78 @@ struct InternalDiscoveryResult {
     candidates: Vec<ActrId>,
 }
 
+/// Template used to materialize `RuntimeContext` instances for lifecycle
+/// bootstrap / observation paths (on_start / on_stop, signaling hooks, WebRTC
+/// hooks, ActrRef::app_context, ...).
+///
+/// Unlike the per-request dispatch path, which constructs `RuntimeContext`
+/// directly from `Inner`, this builder is a **detachable snapshot** of the
+/// handles needed to build a context. It is cloned into long-lived hook
+/// closures and into `ActrRefShared` so those paths don't need to retain a
+/// reference back to `Inner`.
+///
+/// # Fields
+///
+/// Mirrors `RuntimeContext`'s non-per-request state. `outproc_gate` is
+/// `Option` because hook builders can be captured *before* WebRTC
+/// initialization finishes; such snapshots will simply emit contexts with
+/// `outproc_gate = None`, matching the pre-existing semantics.
+#[derive(Clone)]
+pub struct BootstrapContextBuilder {
+    inproc_gate: Gate,
+    outproc_gate: Option<Gate>,
+    data_stream_registry: Arc<DataStreamRegistry>,
+    media_frame_registry: Arc<MediaFrameRegistry>,
+    signaling_client: Arc<dyn SignalingClient>,
+    actr_lock: Option<LockFile>,
+}
+
+impl BootstrapContextBuilder {
+    /// Assemble a new builder from the runtime handles. All parameters are
+    /// snapshotted by clone; later mutations on the origin (e.g. the node's
+    /// own `actr_lock`) are intentionally not observed — callers that need
+    /// a fresh snapshot must re-build.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        inproc_gate: Gate,
+        outproc_gate: Option<Gate>,
+        data_stream_registry: Arc<DataStreamRegistry>,
+        media_frame_registry: Arc<MediaFrameRegistry>,
+        signaling_client: Arc<dyn SignalingClient>,
+        actr_lock: Option<LockFile>,
+    ) -> Self {
+        Self {
+            inproc_gate,
+            outproc_gate,
+            data_stream_registry,
+            media_frame_registry,
+            signaling_client,
+            actr_lock,
+        }
+    }
+
+    /// Materialize a bootstrap `RuntimeContext` for lifecycle hooks.
+    ///
+    /// The produced context has no caller (`caller_id = None`) and a freshly
+    /// generated `request_id`; it is intended for on_start / on_stop /
+    /// transport-event observation where no inbound envelope drives the
+    /// request identity.
+    pub fn build_bootstrap(&self, self_id: &ActrId, credential: &AIdCredential) -> RuntimeContext {
+        RuntimeContext::new(
+            self_id.clone(),
+            None,
+            uuid::Uuid::new_v4().to_string(),
+            self.inproc_gate.clone(),
+            self.outproc_gate.clone(),
+            self.data_stream_registry.clone(),
+            self.media_frame_registry.clone(),
+            self.signaling_client.clone(),
+            credential.clone(),
+            self.actr_lock.clone(),
+        )
+    }
+}
+
 #[async_trait]
 impl Context for RuntimeContext {
     // ========== Data Access Methods ==========

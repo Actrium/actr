@@ -7,8 +7,10 @@
 
 use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
-use crate::context_factory::ContextFactory;
+use crate::context::{BootstrapContextBuilder, RuntimeContext};
+use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
 use crate::lifecycle::dedup::{DedupOutcome, DedupState};
+use crate::outbound::Gate;
 use crate::transport::HostTransport;
 use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
@@ -44,8 +46,27 @@ pub(crate) struct Inner {
     /// Dead Letter Queue for poison messages
     pub(crate) dlq: Arc<dyn DeadLetterQueue>,
 
-    /// Context factory (created in start() after obtaining ActorId)
-    pub(crate) context_factory: Option<ContextFactory>,
+    /// In-process gate for `Dest::Shell` / `Dest::Local` calls.
+    ///
+    /// Created in `build()` together with `shell_to_workload` so the inproc
+    /// lane is usable as soon as the node exists, even before registration.
+    pub(crate) inproc_gate: Gate,
+
+    /// Cross-process gate for `Dest::Actor(_)` calls.
+    ///
+    /// `None` until `start()` finishes WebRTC / PeerGate initialization. Any
+    /// outbound call issued before that point returns `Internal("PeerGate
+    /// not initialized yet")` — see `RuntimeContext::select_gate`.
+    pub(crate) outproc_gate: Option<Gate>,
+
+    /// DataStream callback registry shared between the inbound WebRTC / WS
+    /// gates (which dispatch into it) and `RuntimeContext`
+    /// (register_stream / send_data_stream).
+    pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
+
+    /// MediaTrack callback registry shared between WebRTC media tracks and
+    /// `RuntimeContext` (register_media_track / send_media_sample).
+    pub(crate) media_frame_registry: Arc<MediaFrameRegistry>,
 
     /// Signaling client
     pub(crate) signaling_client: Arc<dyn SignalingClient>,
@@ -536,16 +557,12 @@ impl Inner {
                 "Credential not set - node must be started before handling messages".to_string(),
             )
         })?;
-        let ctx = self
-            .context_factory
-            .as_ref()
-            .expect("ContextFactory must be initialized in start()")
-            .create(
-                actor_id,
-                caller_id, // caller_id from transport layer (MessageRecord.from)
-                &envelope.request_id,
-                &credential_state.credential().await,
-            );
+        let ctx = self.make_runtime_context(
+            actor_id,
+            caller_id, // caller_id from transport layer (MessageRecord.from)
+            &envelope.request_id,
+            &credential_state.credential().await,
+        );
 
         // 2. Dispatch
         let dispatch_ctx = crate::workload::InvocationContext {
@@ -664,17 +681,8 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        let data_stream_registry = Arc::new(crate::inbound::DataStreamRegistry::new());
-        let media_frame_registry = Arc::new(crate::inbound::MediaFrameRegistry::new());
-
-        let context_factory = ContextFactory::new(
-            inproc_gate,
-            shell_to_workload.clone(),
-            workload_to_shell.clone(),
-            data_stream_registry,
-            media_frame_registry,
-            signaling_client.clone(),
-        );
+        let data_stream_registry = Arc::new(DataStreamRegistry::new());
+        let media_frame_registry = Arc::new(MediaFrameRegistry::new());
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
 
@@ -697,15 +705,18 @@ impl Inner {
             config,
             mailbox,
             dlq,
-            context_factory: Some(context_factory),
+            inproc_gate,
+            outproc_gate: None, // Populated in start() once WebRTC / PeerGate is ready.
+            data_stream_registry,
+            media_frame_registry,
             signaling_client,
             actor_id: None,
             credential_state: None,
             webrtc_coordinator: None,
             webrtc_gate: None,
             websocket_gate: None,
-            shell_to_workload: None,
-            workload_to_shell: None,
+            shell_to_workload: Some(shell_to_workload),
+            workload_to_shell: Some(workload_to_shell),
             shutdown_token: CancellationToken::new(),
             actr_lock,
             network_event_rx: None,
@@ -722,6 +733,49 @@ impl Inner {
             mailbox_backpressure_threshold,
             credential_expiry_warning,
         })
+    }
+
+    /// Snapshot the current runtime handles into a `BootstrapContextBuilder`.
+    ///
+    /// The returned builder is cloned into long-lived hook closures and into
+    /// `ActrRefShared` so those paths can materialize bootstrap contexts
+    /// without retaining a reference back to `Inner`. The snapshot freezes
+    /// `outproc_gate` and `actr_lock` at call time — callers that want to
+    /// observe a later-initialized `outproc_gate` must rebuild.
+    pub(crate) fn bootstrap_ctx_builder(&self) -> BootstrapContextBuilder {
+        BootstrapContextBuilder::new(
+            self.inproc_gate.clone(),
+            self.outproc_gate.clone(),
+            self.data_stream_registry.clone(),
+            self.media_frame_registry.clone(),
+            self.signaling_client.clone(),
+            self.actr_lock.clone(),
+        )
+    }
+
+    /// Build a `RuntimeContext` for the per-request dispatch path.
+    ///
+    /// Unlike `BootstrapContextBuilder::build_bootstrap`, this carries the
+    /// envelope's caller identity and request id through into the context.
+    pub(crate) fn make_runtime_context(
+        &self,
+        self_id: &ActrId,
+        caller_id: Option<&ActrId>,
+        request_id: &str,
+        credential: &AIdCredential,
+    ) -> RuntimeContext {
+        RuntimeContext::new(
+            self_id.clone(),
+            caller_id.cloned(),
+            request_id.to_string(),
+            self.inproc_gate.clone(),
+            self.outproc_gate.clone(),
+            self.data_stream_registry.clone(),
+            self.media_frame_registry.clone(),
+            self.signaling_client.clone(),
+            credential.clone(),
+            self.actr_lock.clone(),
+        )
     }
 
     /// Create network event processing infrastructure (called on demand, before `start()`).
@@ -897,19 +951,16 @@ impl Inner {
         {
             let actor_id = register_ok.actr_id.clone();
             let credential_state = pre_connect_credential_state.clone();
-            let context_factory = self
-                .context_factory
-                .clone()
-                .expect("ContextFactory must be initialized in build()");
+            // Snapshot at this point — outproc_gate is still None here, so
+            // signaling-event contexts will carry None for outproc_gate
+            // (matching the pre-existing behavior prior to B13 refactor).
+            let ctx_builder_snapshot = self.bootstrap_ctx_builder();
             let ctx_builder: crate::lifecycle::hooks::HookContextBuilder = Arc::new(move || {
-                let context_factory = context_factory.clone();
+                let snapshot = ctx_builder_snapshot.clone();
                 let actor_id = actor_id.clone();
                 let credential_state = credential_state.clone();
                 Box::pin(async move {
-                    Some(
-                        context_factory
-                            .create_bootstrap(&actor_id, &credential_state.credential().await),
-                    )
+                    Some(snapshot.build_bootstrap(&actor_id, &credential_state.credential().await))
                 })
             });
             let cb = crate::lifecycle::hooks::build_hook_callback(
@@ -975,17 +1026,18 @@ impl Inner {
                 {
                     let actor_id_for_hook = actor_id.clone();
                     let credential_state_for_hook = credential_state.clone();
-                    let context_factory = self
-                        .context_factory
-                        .clone()
-                        .expect("ContextFactory must exist");
+                    // Snapshot at this point — outproc_gate is still None
+                    // here; credential / mailbox hook contexts inherit that
+                    // and therefore cannot issue Dest::Actor(_) calls (same
+                    // behavior as before B13 refactor).
+                    let ctx_builder_snapshot = self.bootstrap_ctx_builder();
                     let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
                         Arc::new(move || {
-                            let context_factory = context_factory.clone();
+                            let snapshot = ctx_builder_snapshot.clone();
                             let actor_id = actor_id_for_hook.clone();
                             let credential_state = credential_state_for_hook.clone();
                             Box::pin(async move {
-                                Some(context_factory.create_bootstrap(
+                                Some(snapshot.build_bootstrap(
                                     &actor_id,
                                     &credential_state.credential().await,
                                 ))
@@ -1015,35 +1067,10 @@ impl Inner {
             // Note: actor_id and credential_state were already set on signaling_client
             // before connect (step 3 above), so reconnect URLs already carry correct auth.
 
-            // Persist identity into ContextFactory for later Context creation
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // 1.2. Set actr_lock in ContextFactory for fingerprint lookups
+            // 1.3. Inproc transports were filled in during `build()`; nothing
+            //      to stage here now that ContextFactory has been removed.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            if let Some(actr_lock) = self.actr_lock.clone() {
-                self.context_factory
-                    .as_mut()
-                    .expect("ContextFactory must exist")
-                    .set_actr_lock(actr_lock);
-                tracing::info!(
-                    "✅ manifest.lock.toml set in ContextFactory for fingerprint lookups"
-                );
-            }
-
-            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // 1.3. Store references to both inproc managers (created in ActrNode::build())
-            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            let shell_to_workload = self
-                .context_factory
-                .as_ref()
-                .expect("ContextFactory must exist")
-                .shell_to_workload();
-            let workload_to_shell = self
-                .context_factory
-                .as_ref()
-                .expect("ContextFactory must exist")
-                .workload_to_shell();
-            self.shell_to_workload = Some(shell_to_workload);
-            self.workload_to_shell = Some(workload_to_shell);
             tracing::info!("✅ Inproc infrastructure already ready (created in ActrNode::build())");
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1051,13 +1078,7 @@ impl Inner {
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             tracing::info!("🌐 Initializing WebRTC infrastructure");
 
-            // Get MediaFrameRegistry from ContextFactory
-            let media_frame_registry = self
-                .context_factory
-                .as_ref()
-                .expect("ContextFactory must exist")
-                .media_frame_registry
-                .clone();
+            let media_frame_registry = self.media_frame_registry.clone();
 
             // Create WebRtcCoordinator
             let coordinator = Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
@@ -1074,18 +1095,18 @@ impl Inner {
             {
                 let actor_id_for_hook = actor_id.clone();
                 let credential_state_for_hook = credential_state.clone();
-                let context_factory = self
-                    .context_factory
-                    .clone()
-                    .expect("ContextFactory must exist");
+                // Snapshot before outproc_gate is wired up (just below). This
+                // preserves the pre-refactor behavior where WebRTC-event
+                // hook contexts carry outproc_gate = None.
+                let ctx_builder_snapshot = self.bootstrap_ctx_builder();
                 let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
                     Arc::new(move || {
-                        let context_factory = context_factory.clone();
+                        let snapshot = ctx_builder_snapshot.clone();
                         let actor_id = actor_id_for_hook.clone();
                         let credential_state = credential_state_for_hook.clone();
                         Box::pin(async move {
                             Some(
-                                context_factory.create_bootstrap(
+                                snapshot.build_bootstrap(
                                     &actor_id,
                                     &credential_state.credential().await,
                                 ),
@@ -1131,19 +1152,13 @@ impl Inner {
             let transport_manager = Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
 
             // Create PeerGate with WebRTC coordinator for MediaTrack support
-            use crate::outbound::{Gate, PeerGate};
+            use crate::outbound::PeerGate;
             let outproc_gate =
                 Arc::new(PeerGate::new(transport_manager, Some(coordinator.clone())));
             let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
             tracing::info!("PeerTransport + PeerGate initialized");
 
-            // Get DataStreamRegistry from ContextFactory
-            let data_stream_registry = self
-                .context_factory
-                .as_ref()
-                .expect("ContextFactory must exist")
-                .data_stream_registry
-                .clone();
+            let data_stream_registry = self.data_stream_registry.clone();
 
             // Create WebRtcGate with shared pending_requests and DataStreamRegistry
             let pending_requests = outproc_gate.get_pending_requests();
@@ -1159,14 +1174,14 @@ impl Inner {
             );
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            // 1.7. Set outproc_gate in ContextFactory (completing initialization)
+            // 1.7. Wire the outproc gate into Inner so subsequent
+            //      `make_runtime_context` / `bootstrap_ctx_builder` calls
+            //      observe it. All per-request contexts created by
+            //      `handle_incoming` go through this field live.
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            tracing::info!("🔧 Setting outproc_gate in ContextFactory");
-            self.context_factory
-                .as_mut()
-                .expect("ContextFactory must exist")
-                .set_outproc_gate(outproc_gate_enum);
-            tracing::info!("✅ ContextFactory fully initialized (inproc + outproc gates ready)");
+            tracing::info!("🔧 Wiring outproc_gate into node");
+            self.outproc_gate = Some(outproc_gate_enum);
+            tracing::info!("✅ Node runtime gates fully initialized (inproc + outproc)");
 
             // Save references
             self.webrtc_coordinator = Some(coordinator.clone());
@@ -1229,17 +1244,17 @@ impl Inner {
                         {
                             let actor_id_for_hook = actor_id.clone();
                             let credential_state_for_hook = credential_state.clone();
-                            let context_factory = self
-                                .context_factory
-                                .clone()
-                                .expect("ContextFactory must exist");
+                            // Snapshot taken after outproc_gate is live: ws
+                            // peer-lifecycle hook contexts can issue
+                            // Dest::Actor(_) calls.
+                            let ctx_builder_snapshot = self.bootstrap_ctx_builder();
                             let ctx_builder: crate::lifecycle::hooks::HookContextBuilder =
                                 Arc::new(move || {
-                                    let context_factory = context_factory.clone();
+                                    let snapshot = ctx_builder_snapshot.clone();
                                     let actor_id = actor_id_for_hook.clone();
                                     let credential_state = credential_state_for_hook.clone();
                                     Box::pin(async move {
-                                        Some(context_factory.create_bootstrap(
+                                        Some(snapshot.build_bootstrap(
                                             &actor_id,
                                             &credential_state.credential().await,
                                         ))
@@ -1435,10 +1450,10 @@ impl Inner {
             .as_ref()
             .ok_or_else(|| ActrError::Internal("Actor ID not set".to_string()))?
             .clone();
-        let context_factory = self
-            .context_factory
-            .clone()
-            .expect("ContextFactory must be initialized in start()");
+        // Snapshot now that outproc_gate has been wired above; this builder
+        // is shared between on_start / on_stop hooks and the ActrRefShared
+        // handle returned to the caller.
+        let bootstrap_ctx_builder = self.bootstrap_ctx_builder();
         let credential_state = self
             .credential_state
             .clone()
@@ -1454,8 +1469,8 @@ impl Inner {
         // held here. If no observer is installed we still get the built-in
         // framework tracing default by emitting it directly.
         {
-            let startup_ctx =
-                context_factory.create_bootstrap(&actor_id, &credential_state.credential().await);
+            let startup_ctx = bootstrap_ctx_builder
+                .build_bootstrap(&actor_id, &credential_state.credential().await);
             if let Some(observer) = node_ref.hook_observer.clone() {
                 let ctx_for_hook = startup_ctx.clone();
                 crate::lifecycle::hooks::spawn_hook("on_start", async move {
@@ -1475,10 +1490,8 @@ impl Inner {
             let on_stop_handle = tokio::spawn(async move {
                 shutdown.cancelled().await;
                 let stop_ctx = node
-                    .context_factory
-                    .as_ref()
-                    .expect("ContextFactory must be initialized in start()")
-                    .create_bootstrap(&actor_id, &credential_state.credential().await);
+                    .bootstrap_ctx_builder()
+                    .build_bootstrap(&actor_id, &credential_state.credential().await);
                 if let Some(observer) = node.hook_observer.clone() {
                     let ctx_for_hook = stop_ctx.clone();
                     crate::lifecycle::hooks::spawn_hook("on_stop", async move {
@@ -2096,7 +2109,7 @@ impl Inner {
         // Create ActrRefShared
         let shared = Arc::new(ActrRefShared {
             actor_id,
-            context_factory,
+            bootstrap_ctx_builder,
             credential_state,
             shutdown_token,
             task_handles: Mutex::new(task_handles),

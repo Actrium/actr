@@ -105,11 +105,9 @@ pub mod wire;
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
 pub mod test_support;
 
-// Context and context factory (native-only, depend on transport/wire)
+// Context (native-only, depends on transport/wire)
 #[cfg(not(target_arch = "wasm32"))]
 pub mod context;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod context_factory;
 
 // Runtime workload abstraction (native-only, WASM/dynclib host)
 #[cfg(not(target_arch = "wasm32"))]
@@ -209,9 +207,9 @@ pub use actr_runtime_mailbox::{
     Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
 };
 
-// Context factory
+// Bootstrap context builder (lifecycle hooks + ActrRef app-side context)
 #[cfg(not(target_arch = "wasm32"))]
-pub use context_factory::ContextFactory;
+pub use context::BootstrapContextBuilder;
 
 // Monitoring and resource management
 #[cfg(not(target_arch = "wasm32"))]
@@ -277,7 +275,7 @@ pub mod prelude {
 
     // ── Context (native-only) ───────────────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::context_factory::ContextFactory;
+    pub use crate::context::BootstrapContextBuilder;
 
     // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]

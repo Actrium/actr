@@ -28,8 +28,7 @@
 //! → ActrRef`. `Node::from_hyper` is the escape hatch when you need to own
 //! `HyperConfig` construction yourself.
 
-use crate::context::RuntimeContext;
-use crate::context_factory::ContextFactory;
+use crate::context::{BootstrapContextBuilder, RuntimeContext};
 use crate::lifecycle::CredentialState;
 use actr_framework::{Context as _, Dest};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
@@ -46,8 +45,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ActrRefShared {
     /// Actor ID
     pub(crate) actor_id: ActrId,
-    /// Context factory used to create application-side runtime contexts.
-    pub(crate) context_factory: ContextFactory,
+    /// Builder used to materialize application-side runtime contexts on demand.
+    pub(crate) bootstrap_ctx_builder: BootstrapContextBuilder,
     /// Current credential state for building application-side contexts.
     pub(crate) credential_state: CredentialState,
     /// Shutdown signal
@@ -138,8 +137,8 @@ impl ActrRef {
     pub async fn app_context(&self) -> RuntimeContext {
         let credential = self.shared.credential_state.credential().await;
         self.shared
-            .context_factory
-            .create_bootstrap(&self.shared.actor_id, &credential)
+            .bootstrap_ctx_builder
+            .build_bootstrap(&self.shared.actor_id, &credential)
     }
 
     /// Trigger Actor shutdown
