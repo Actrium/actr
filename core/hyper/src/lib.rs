@@ -180,11 +180,11 @@ pub use lifecycle::{CredentialState, NetworkEventHandle};
 
 // Layer 3: Inbound dispatch layer
 #[cfg(not(target_arch = "wasm32"))]
-pub use inbound::{DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback};
+pub use inbound::MediaFrameRegistry;
 
 // Layer 2: Outbound gate abstraction layer
 #[cfg(not(target_arch = "wasm32"))]
-pub use outbound::{Gate, HostGate, PeerGate};
+pub use outbound::{HostGate, PeerGate};
 
 // Layer 1: Transport layer
 #[cfg(not(target_arch = "wasm32"))]
@@ -206,9 +206,8 @@ pub use actr_runtime_mailbox::{
     Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
 };
 
-// Bootstrap context builder (lifecycle hooks + ActrRef app-side context)
-#[cfg(not(target_arch = "wasm32"))]
-pub use context::BootstrapContextBuilder;
+// Bootstrap context builder (lifecycle hooks + ActrRef app-side context) is
+// crate-internal; consumers go through the Node / ActrRef lifecycle.
 
 // Monitoring and resource management
 #[cfg(not(target_arch = "wasm32"))]
@@ -259,20 +258,14 @@ pub mod prelude {
 
     // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::inbound::{
-        DataStreamCallback, DataStreamRegistry, MediaFrameRegistry, MediaTrackCallback,
-    };
+    pub use crate::inbound::MediaFrameRegistry;
 
     // Re-export MediaSample and MediaType from framework (dependency inversion)
     pub use actr_framework::{MediaSample, MediaType};
 
     // ── Layer 2: Outbound gate (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::outbound::{Gate, HostGate, PeerGate};
-
-    // ── Context (native-only) ───────────────────────────────────────────────
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::context::BootstrapContextBuilder;
+    pub use crate::outbound::{HostGate, PeerGate};
 
     // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]

@@ -7,7 +7,7 @@
 mod data_stream_registry;
 mod media_frame_registry;
 
-pub use data_stream_registry::{DataStreamCallback, DataStreamRegistry};
-pub use media_frame_registry::{MediaFrameRegistry, MediaTrackCallback};
+pub(crate) use data_stream_registry::DataStreamRegistry;
+pub use media_frame_registry::MediaFrameRegistry;
 
 // MediaSample and MediaType are now re-exported from actr-framework, not here

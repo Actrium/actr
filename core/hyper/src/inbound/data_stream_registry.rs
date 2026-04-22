@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// - Only passes sender ActrId (to know where data comes from)
 /// - Doesn't pass Context (avoids confusing RPC and Stream semantics)
 /// - If reverse signaling needed, user should send via OutboundGate
-pub type DataStreamCallback =
+pub(crate) type DataStreamCallback =
     Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 /// DataStreamRegistry - Stream chunk callback manager
@@ -27,7 +27,7 @@ pub type DataStreamCallback =
 /// - Real-time collaborative editing (multi-user editing sync)
 /// - Game state streams (position updates, event streams)
 /// - Log streams, sensor data streams, metrics streams
-pub struct DataStreamRegistry {
+pub(crate) struct DataStreamRegistry {
     /// Concurrent mapping of stream_id → callback function
     callbacks: DashMap<String, DataStreamCallback>,
 }
@@ -39,7 +39,7 @@ impl Default for DataStreamRegistry {
 }
 
 impl DataStreamRegistry {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             callbacks: DashMap::new(),
         }
@@ -50,7 +50,7 @@ impl DataStreamRegistry {
     /// # Arguments
     /// - `stream_id`: stream identifier (must be globally unique)
     /// - `callback`: data stream handler callback
-    pub fn register(&self, stream_id: String, callback: DataStreamCallback) {
+    pub(crate) fn register(&self, stream_id: String, callback: DataStreamCallback) {
         self.callbacks.insert(stream_id.clone(), callback);
         tracing::info!("📡 Registered data stream handler: {}", stream_id);
     }
@@ -59,7 +59,7 @@ impl DataStreamRegistry {
     ///
     /// # Arguments
     /// - `stream_id`: stream identifier to unregister
-    pub fn unregister(&self, stream_id: &str) {
+    pub(crate) fn unregister(&self, stream_id: &str) {
         self.callbacks.remove(stream_id);
         tracing::info!("🚫 Unregistered data stream handler: {}", stream_id);
     }
@@ -74,7 +74,7 @@ impl DataStreamRegistry {
     /// - Direct callback invocation, no queueing overhead
     /// - Latency: ~10μs
     /// - Concurrent execution, doesn't block other streams
-    pub async fn dispatch(&self, chunk: DataStream, sender_id: ActrId) {
+    pub(crate) async fn dispatch(&self, chunk: DataStream, sender_id: ActrId) {
         let start = std::time::Instant::now();
 
         if let Some(callback) = self.callbacks.get(&chunk.stream_id) {
@@ -89,10 +89,5 @@ impl DataStreamRegistry {
         } else {
             tracing::warn!("⚠️ No callback registered for stream: {}", chunk.stream_id);
         }
-    }
-
-    /// Get active stream count
-    pub fn active_streams(&self) -> usize {
-        self.callbacks.len()
     }
 }

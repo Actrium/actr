@@ -61,7 +61,7 @@ impl RuntimeContext {
     /// - `credential`: credentials used when calling signaling interfaces
     /// - `actr_lock`: shared packaged `manifest.lock.toml` used for fingerprint lookup (wrapped in `Arc` so context clones stay cheap)
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
-    pub fn new(
+    pub(crate) fn new(
         self_id: ActrId,
         caller_id: Option<ActrId>,
         request_id: String,
@@ -320,7 +320,7 @@ struct InternalDiscoveryResult {
 /// initialization finishes; such snapshots will simply emit contexts with
 /// `outproc_gate = None`, matching the pre-existing semantics.
 #[derive(Clone)]
-pub struct BootstrapContextBuilder {
+pub(crate) struct BootstrapContextBuilder {
     inproc_gate: Gate,
     outproc_gate: Option<Gate>,
     data_stream_registry: Arc<DataStreamRegistry>,
@@ -335,7 +335,7 @@ impl BootstrapContextBuilder {
     /// own `actr_lock`) are intentionally not observed — callers that need
     /// a fresh snapshot must re-build.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         inproc_gate: Gate,
         outproc_gate: Option<Gate>,
         data_stream_registry: Arc<DataStreamRegistry>,
@@ -359,7 +359,11 @@ impl BootstrapContextBuilder {
     /// generated `request_id`; it is intended for on_start / on_stop /
     /// transport-event observation where no inbound envelope drives the
     /// request identity.
-    pub fn build_bootstrap(&self, self_id: &ActrId, credential: &AIdCredential) -> RuntimeContext {
+    pub(crate) fn build_bootstrap(
+        &self,
+        self_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> RuntimeContext {
         RuntimeContext::new(
             self_id.clone(),
             None,

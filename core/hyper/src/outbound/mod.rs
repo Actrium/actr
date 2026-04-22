@@ -41,7 +41,7 @@ use std::sync::Arc;
 ///   - CPU branch prediction hit rate above 95%
 /// ```
 #[derive(Clone)]
-pub enum Gate {
+pub(crate) enum Gate {
     /// Host: in-process outbound transport with zero serialization.
     Host(Arc<HostGate>),
 
@@ -50,31 +50,8 @@ pub enum Gate {
 }
 
 impl Gate {
-    /// Send a request and wait for the response.
-    ///
-    /// # Parameters
-    ///
-    /// - `target`: target actor ID
-    /// - `envelope`: message envelope containing `route_key` and payload
-    ///
-    /// # Returns
-    ///
-    /// The response bytes.
-    ///
-    /// # Implementation
-    ///
-    /// Uses enum dispatch to statically dispatch to the concrete implementation:
-    /// - `Host`: zero serialization and direct `RpcEnvelope` passing
-    /// - `Peer`: Protobuf serialization through the transport layer
-    pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
-        match self {
-            Gate::Host(gate) => gate.send_request(target, envelope).await,
-            Gate::Peer(gate) => gate.send_request(target, envelope).await,
-        }
-    }
-
     /// Send a request and wait for the response with an explicit `PayloadType`.
-    pub async fn send_request_with_type(
+    pub(crate) async fn send_request_with_type(
         &self,
         target_id: &ActrId,
         payload_type: PayloadType,
@@ -92,25 +69,8 @@ impl Gate {
         }
     }
 
-    /// Send a one-way message without waiting for a response.
-    ///
-    /// # Parameters
-    ///
-    /// - `target`: target actor ID
-    /// - `envelope`: message envelope
-    ///
-    /// # Semantics
-    ///
-    /// Fire-and-forget: return immediately after sending.
-    pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        match self {
-            Gate::Host(gate) => gate.send_message(target, envelope).await,
-            Gate::Peer(gate) => gate.send_message(target, envelope).await,
-        }
-    }
-
     /// Send a one-way message with an explicit `PayloadType`.
-    pub async fn send_message_with_type(
+    pub(crate) async fn send_message_with_type(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
@@ -141,7 +101,7 @@ impl Gate {
     /// - Supported only for `Peer` (WebRTC)
     /// - `Host` returns `NotImplemented`
     /// - Uses `RTCRtpSender` without protobuf overhead
-    pub async fn send_media_sample(
+    pub(crate) async fn send_media_sample(
         &self,
         target: &ActrId,
         track_id: &str,
@@ -159,7 +119,7 @@ impl Gate {
     }
 
     /// Add a media track to the WebRTC connection
-    pub async fn add_media_track(
+    pub(crate) async fn add_media_track(
         &self,
         target: &ActrId,
         track_id: &str,
@@ -178,7 +138,11 @@ impl Gate {
     }
 
     /// Remove a media track from the WebRTC connection.
-    pub async fn remove_media_track(&self, target: &ActrId, track_id: &str) -> ActorResult<()> {
+    pub(crate) async fn remove_media_track(
+        &self,
+        target: &ActrId,
+        track_id: &str,
+    ) -> ActorResult<()> {
         match self {
             Gate::Host(_gate) => Err(ActrError::NotImplemented(
                 "MediaTrack is only supported for remote actors via WebRTC".to_string(),
@@ -199,7 +163,7 @@ impl Gate {
     ///
     /// - Host: sends through an `mpsc` channel
     /// - Peer: sends through WebRTC DataChannel or WebSocket
-    pub async fn send_data_stream(
+    pub(crate) async fn send_data_stream(
         &self,
         target: &ActrId,
         payload_type: actr_protocol::PayloadType,
