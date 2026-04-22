@@ -81,7 +81,7 @@ impl<W: 'static> Default for WorkloadCell<W> {
 
 /// Map an [`ActrError`] to the WIT `actr-error` variant the host expects
 /// as the error arm of every fallible export.
-pub fn actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
+pub(crate) fn actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
     proto_actr_error_to_wit(e)
 }
 
@@ -89,7 +89,7 @@ pub fn actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
 /// adapter needs to translate host-reported errors that surface through
 /// an export's return value (not currently used, but pairs with
 /// [`actr_error_to_wit`] and keeps the surface symmetrical).
-pub fn actr_error_from_wit(e: wit_types::ActrError) -> ActrError {
+pub(crate) fn actr_error_from_wit(e: wit_types::ActrError) -> ActrError {
     wit_actr_error_to_proto(e)
 }
 

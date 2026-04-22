@@ -20,9 +20,7 @@
 //! the Component's exports through the bindings in
 //! `core/hyper/src/wasm/component_bindings.rs`.
 
-pub mod adapter;
-pub mod context;
-pub mod context_helpers;
+pub(crate) mod adapter;
+pub(crate) mod context;
+pub(crate) mod context_helpers;
 pub mod generated;
-
-pub use context::WasmContext;

@@ -26,12 +26,6 @@ impl DummyContext {
         }
     }
 
-    /// Set caller id (useful for tests that verify propagation).
-    pub fn with_caller_id(mut self, caller_id: Option<ActrId>) -> Self {
-        self.caller_id = caller_id;
-        self
-    }
-
     /// Override request id for deterministic testing.
     pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
         self.request_id = request_id.into();

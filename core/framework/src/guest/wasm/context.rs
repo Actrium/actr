@@ -80,7 +80,7 @@ pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
 /// All outbound calls (`call`, `tell`, `call-raw`, `discover`) forward
 /// directly to the corresponding WIT import.
 #[derive(Clone)]
-pub struct WasmContext {
+pub(crate) struct WasmContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
@@ -90,7 +90,7 @@ impl WasmContext {
     /// Build a context by querying the host for the per-dispatch identity
     /// triple. Must be called from inside an active dispatch — outside of
     /// one the host traps with a clear error message.
-    pub async fn from_host() -> Self {
+    pub(crate) async fn from_host() -> Self {
         let self_id = actr_id_from_wit(&wit_host::get_self_id().await);
         let caller_id = wit_host::get_caller_id()
             .await
@@ -114,7 +114,7 @@ impl WasmContext {
     /// `ctx.call` / `ctx.tell` / `ctx.discover` operations route through
     /// the host's standalone `host-abi` bridge (when installed for the
     /// lifecycle path) and do not require these identity fields.
-    pub fn lifecycle_placeholder() -> Self {
+    pub(crate) fn lifecycle_placeholder() -> Self {
         Self {
             self_id: ActrId::default(),
             caller_id: None,
