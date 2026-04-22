@@ -56,11 +56,7 @@ impl DestTransport {
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "DestTransport.send")
     )]
-    pub(crate) async fn send(
-        &self,
-        payload_type: PayloadType,
-        data: &[u8],
-    ) -> NetworkResult<()> {
+    pub(crate) async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
         tracing::debug!(
             "📤 Sending message: type={:?}, size={}",
             payload_type,

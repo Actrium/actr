@@ -31,7 +31,6 @@ impl ConnType {
     const ALL: [ConnType; 2] = [ConnType::WebSocket, ConnType::WebRTC];
 }
 
-
 /// Set of ready connections
 pub(crate) type ReadySet = HashSet<ConnType>;
 
@@ -303,10 +302,7 @@ impl WirePool {
     }
 
     /// Get connection of specified type
-    pub(crate) async fn get_connection(
-        &self,
-        conn_type: ConnType,
-    ) -> Option<Arc<dyn WireHandle>> {
+    pub(crate) async fn get_connection(&self, conn_type: ConnType) -> Option<Arc<dyn WireHandle>> {
         let conns = self.connections.read().await;
 
         match &conns[conn_type.as_index()] {

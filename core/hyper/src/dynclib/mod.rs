@@ -7,5 +7,5 @@ mod error;
 mod host;
 
 pub use error::DynclibError;
-pub use host::DynclibHost;
 pub(crate) use host::DynClibWorkload;
+pub use host::DynclibHost;
