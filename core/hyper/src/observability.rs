@@ -25,7 +25,7 @@ use tracing_subscriber::{
 ///
 /// Platform-specific bindings (e.g., `libactr` for Swift/Kotlin) can create
 /// layers using `tracing-android` or `tracing-oslog` and pass them here.
-pub type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
+type BoxedLayer<S> = Box<dyn Layer<S> + Send + Sync + 'static>;
 
 /// Guard for observability resources. Shuts down tracing exporter on drop.
 #[derive(Default)]

@@ -68,11 +68,11 @@ pub struct HyperConfig {
 /// attention. Tune per-actor via
 /// [`HyperConfig::mailbox_backpressure_threshold`].
 #[cfg(not(target_arch = "wasm32"))]
-pub const DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD: usize = 1024;
+pub(crate) const DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD: usize = 1024;
 
 /// Default credential-expiry warning lead time.
 #[cfg(not(target_arch = "wasm32"))]
-pub const DEFAULT_CREDENTIAL_EXPIRY_WARNING: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_CREDENTIAL_EXPIRY_WARNING: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for HyperConfig {
@@ -98,7 +98,7 @@ impl std::fmt::Debug for HyperConfig {
 /// can pick whichever style they prefer.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct HyperSection {
+pub(crate) struct HyperSection {
     /// Root data directory (`{data_dir}` template variable).
     #[serde(default)]
     pub data_dir: Option<std::path::PathBuf>,
@@ -120,7 +120,7 @@ pub struct HyperSection {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum HyperTrustAnchor {
+pub(crate) enum HyperTrustAnchor {
     /// Accept any package — for tests and local development **only**.
     ///
     /// When selected by `Node::from_config_file`, emits a prominent
@@ -143,7 +143,7 @@ pub enum HyperTrustAnchor {
 /// section in isolation. Ignores every other field.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct HyperSectionWrapper {
+pub(crate) struct HyperSectionWrapper {
     #[serde(default)]
     pub hyper: HyperSection,
 }

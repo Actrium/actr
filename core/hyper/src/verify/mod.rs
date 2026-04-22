@@ -10,4 +10,4 @@ pub mod trust;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cert_cache::MfrCertCache;
 #[cfg(not(target_arch = "wasm32"))]
-pub use trust::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider, verify_ed25519_manifest};
+pub use trust::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};

@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use actr_hyper::test_support::inspect_workload_package;
 use actr_hyper::{Hyper, HyperConfig, StaticTrust, WorkloadPackage};
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -54,11 +55,10 @@ pub async fn load_package(package_path: &Path, pubkey_path: &Path) -> Result<Str
         .await
         .context("failed to initialize Hyper")?;
 
-        let loaded = hyper
-            .load_workload_package(&WorkloadPackage::new(package_bytes.clone()))
+        let loaded = inspect_workload_package(&hyper, &WorkloadPackage::new(package_bytes.clone()))
             .await
             .context("failed to load package workload")?;
-        return Ok(format!("{:?}", loaded.backend));
+        return Ok(format!("{:?}", loaded.binary_kind));
     }
 
     let binary = actr_pack::load_binary(&package_bytes)?;

@@ -39,9 +39,8 @@ pub trait TrustProvider: Send + Sync + std::fmt::Debug {
 
 /// Verify an `.actr` package against a single Ed25519 public key.
 ///
-/// Shared helper used by [`StaticTrust`] and [`RegistryTrust`]; also available
-/// to custom providers that want the standard signature + hash chain.
-pub fn verify_ed25519_manifest(
+/// Shared helper used by [`StaticTrust`] and [`RegistryTrust`].
+pub(crate) fn verify_ed25519_manifest(
     bytes: &[u8],
     pubkey: &VerifyingKey,
 ) -> HyperResult<VerifiedPackage> {

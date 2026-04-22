@@ -91,7 +91,7 @@ fn build_engine() -> WasmResult<Engine> {
 /// - an optional [`HostAbiFn`] bridge servicing guest->host operations;
 ///   forwards to the host runtime's outbound RPC executor (registered
 ///   by the [`WasmWorkload::handle`] call path).
-pub struct HostState {
+pub(crate) struct HostState {
     wasi: WasiCtx,
     table: ResourceTable,
     pub(crate) invocation: Option<InvocationContext>,

@@ -8,6 +8,7 @@
 
 #[cfg(feature = "wasm-engine")]
 use actr_hyper::BinaryKind;
+use actr_hyper::test_support::inspect_workload_package;
 use actr_hyper::{Hyper, HyperConfig, HyperError, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -211,8 +212,7 @@ async fn load_workload_package_selects_wasm_backend() {
         .await
         .unwrap();
 
-    let loaded = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
+    let loaded = inspect_workload_package(&hyper, &WorkloadPackage::new(package))
         .await
         .unwrap();
 
@@ -245,9 +245,7 @@ async fn load_workload_package_rejects_legacy_core_module() {
         .await
         .unwrap();
 
-    let result = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
-        .await;
+    let result = inspect_workload_package(&hyper, &WorkloadPackage::new(package)).await;
     let err = result.expect_err("legacy core-module package must be refused");
     match err {
         HyperError::InvalidManifest(msg) => {
@@ -302,9 +300,7 @@ async fn load_workload_package_rejects_invalid_target() {
         .await
         .unwrap();
 
-    let result = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
-        .await;
+    let result = inspect_workload_package(&hyper, &WorkloadPackage::new(package)).await;
     assert!(
         matches!(result, Err(HyperError::InvalidManifest(ref msg)) if msg.contains("unsupported binary target")),
         "invalid target should be rejected, got: {result:?}"

@@ -165,9 +165,7 @@ pub use ais_client::AisClient;
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]
-pub use verify::{
-    ChainTrust, MfrCertCache, RegistryTrust, StaticTrust, TrustProvider, verify_ed25519_manifest,
-};
+pub use verify::{ChainTrust, MfrCertCache, RegistryTrust, StaticTrust, TrustProvider};
 
 // Observability
 #[cfg(not(target_arch = "wasm32"))]
@@ -221,7 +219,8 @@ pub use workload::{
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub const INITIAL_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const INITIAL_CONNECTION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Prelude
@@ -502,7 +501,7 @@ impl WorkloadPackage {
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Result of verifying a package and preparing a runtime workload from it.
-pub struct LoadedWorkload {
+pub(crate) struct LoadedWorkload {
     /// Verified package retained for downstream bootstrap and storage
     /// operations — carries the parsed manifest plus the raw manifest bytes
     /// and signature needed for transparent forwarding to AIS.
@@ -511,14 +510,6 @@ pub struct LoadedWorkload {
     pub binary_kind: BinaryKind,
     /// Ready-to-attach runtime workload.
     pub workload: crate::workload::Workload,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl LoadedWorkload {
-    /// Convenience accessor for the parsed package manifest.
-    pub fn manifest(&self) -> &PackageManifest {
-        &self.verified.manifest
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -612,10 +603,8 @@ impl Hyper {
     /// Verify a package, select the execution backend from `binary.target`,
     /// and prepare a runtime workload from it.
     ///
-    /// This is an explicit helper for test / diagnostic code that wants the
-    /// [`LoadedWorkload`] parts without building a running node. Host code
-    /// should call [`Node::from_hyper`] + [`Node::attach`] instead.
-    pub async fn load_workload_package(
+    /// Internal helper used by attachment flow and test-support shims.
+    pub(crate) async fn load_workload_package(
         &self,
         package: &WorkloadPackage,
     ) -> HyperResult<LoadedWorkload> {

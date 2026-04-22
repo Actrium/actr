@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use actr_hyper::test_support::inspect_workload_package;
 use actr_hyper::{BinaryKind, Hyper, HyperConfig, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -111,7 +112,7 @@ async fn dynclib_cache_is_created_on_first_load() {
         .await
         .unwrap();
 
-    let first = hyper.load_workload_package(&package).await.unwrap();
+    let first = inspect_workload_package(&hyper, &package).await.unwrap();
     assert_eq!(first.binary_kind, BinaryKind::DynClib);
     let binary_hash = first.manifest().binary.hash_bytes().unwrap();
     let cache_file = cache_path(dir.path(), &binary_hash);
@@ -135,7 +136,7 @@ async fn dynclib_cache_rebuilds_after_corruption() {
     fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
     fs::write(&cache_file, b"corrupted dynclib bytes").unwrap();
 
-    let loaded = hyper.load_workload_package(&package).await.unwrap();
+    let loaded = inspect_workload_package(&hyper, &package).await.unwrap();
     assert_eq!(loaded.binary_kind, BinaryKind::DynClib);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
 }
