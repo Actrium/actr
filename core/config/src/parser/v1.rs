@@ -9,7 +9,7 @@ use crate::config::{
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawBuildConfig, RawConfig, RawDependency, RawPackageConfig, WebConfig};
+use crate::{RawBuildConfig, ManifestRawConfig, RawDependency, RawPackageConfig, WebConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ impl ParserV1 {
         Self { base_dir }
     }
 
-    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<ManifestConfig> {
+    pub fn parse_manifest(&self, mut raw: ManifestRawConfig) -> Result<ManifestConfig> {
         // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
@@ -531,9 +531,9 @@ impl ParserV1 {
         })
     }
 
-    fn merge_inheritance(&self, child: RawConfig, parent_path: PathBuf) -> Result<RawConfig> {
+    fn merge_inheritance(&self, child: ManifestRawConfig, parent_path: PathBuf) -> Result<ManifestRawConfig> {
         let parent_full_path = self.base_dir.join(&parent_path);
-        let mut parent = RawConfig::from_file(&parent_full_path)?;
+        let mut parent = ManifestRawConfig::from_file(&parent_full_path)?;
 
         // Check edition consistency
         if parent.edition != child.edition {
@@ -551,7 +551,7 @@ impl ParserV1 {
         };
 
         // Merge logic — system config is no longer part of manifest.toml
-        Ok(RawConfig {
+        Ok(ManifestRawConfig {
             edition: child.edition, // Verified consistent
             inherit: None,
             config_dir: child.config_dir,
@@ -597,7 +597,7 @@ fn resolve_trust_paths(anchor: TrustAnchor, base_dir: &Path) -> TrustAnchor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RawConfig;
+    use crate::ManifestRawConfig;
     use std::fs;
     use tempfile::TempDir;
 
@@ -630,7 +630,7 @@ run = "cargo run"
         fs::write(&config_path, toml_content).unwrap();
 
         // Parse
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -658,7 +658,7 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -687,7 +687,7 @@ manufacturer = "acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -711,7 +711,7 @@ manufacturer = "1acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
         assert!(result.is_err());
@@ -736,7 +736,7 @@ manufacturer = "acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
         assert!(result.is_err());
@@ -775,7 +775,7 @@ post_build = ["echo build"]
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -809,7 +809,7 @@ tool = "cargo"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
 
@@ -833,7 +833,7 @@ manufacturer = "acme"
         fs::write(&path, toml_content).unwrap();
 
         let config = ParserV1::new(&path)
-            .parse_manifest(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(ManifestRawConfig::from_file(&path).unwrap())
             .unwrap();
         // ManifestConfig fields are present; no execution_mode field exists on ManifestConfig
         assert_eq!(config.package.name, "test");

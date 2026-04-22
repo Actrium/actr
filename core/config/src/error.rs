@@ -50,7 +50,3 @@ pub enum ConfigError {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, ConfigError>;
-
-// Backward compatibility alias
-#[deprecated(since = "0.2.0", note = "Use ConfigError instead")]
-pub type ActrConfigError = ConfigError;

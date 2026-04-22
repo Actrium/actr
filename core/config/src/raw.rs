@@ -49,8 +49,6 @@ pub struct ManifestRawConfig {
     pub build: Option<RawBuildConfig>,
 }
 
-pub type RawConfig = ManifestRawConfig;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
     /// Package name (also used as the actor type name)

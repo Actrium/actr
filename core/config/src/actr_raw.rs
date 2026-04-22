@@ -123,8 +123,6 @@ pub struct RuntimeRawConfig {
     pub web: Option<RawWebConfig>,
 }
 
-pub type ActrRawConfig = RuntimeRawConfig;
-
 /// Workload package path configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RawPackagePathConfig {
@@ -318,7 +316,7 @@ test = "cargo test"
     #[test]
     fn test_parse_empty_actr_config() {
         let toml_content = "edition = 1\n";
-        let config = ActrRawConfig::from_str(toml_content).unwrap();
+        let config = RuntimeRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert!(config.signaling.url.is_none());
         assert!(config.capabilities.is_none());
