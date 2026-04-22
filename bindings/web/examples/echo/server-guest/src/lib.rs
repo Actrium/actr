@@ -1,3 +1,17 @@
+//! Echo Server Guest WASM for Web.
+//!
+//! Built for `wasm32-wasip2` and linked by `wasm-component-ld` into a
+//! Component Model binary that implements the `actr:workload/actr-workload-guest`
+//! world (see `core/framework/wit/actr-workload.wit`). The `entry!` macro
+//! auto-selects the Component Model export path for `target_arch = "wasm32"`,
+//! so the source below is identical to a native actr workload.
+//!
+//! After `cargo build --target wasm32-wasip2`, the resulting
+//! `target/wasm32-wasip2/release/echo_guest.wasm` is a Component and must be
+//! transpiled by `jco transpile --instantiation async`
+//! (see `bindings/web/scripts/transpile-component.sh`) before the browser
+//! Service Worker can load it.
+
 // ── Proto-generated types ────────────────────────────────────────────────────
 mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));

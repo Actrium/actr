@@ -13,5 +13,5 @@ tags = ["dev", "client"]
 EchoService = { actr_type = "acme:EchoService:0.1.0" }
 
 [binary]
-path = "target/wasm32-unknown-unknown/release/echo_client_guest_web.wasm"
-target = "wasm32-unknown-unknown"
+path = "target/wasm32-wasip2/release/echo_client_guest_web.wasm"
+target = "wasm32-wasip2"

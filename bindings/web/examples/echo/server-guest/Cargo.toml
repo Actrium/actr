@@ -3,18 +3,16 @@ name = "echo-server-guest-web"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Echo Server Guest WASM for Web — standard entry! FFI (mirrors echo-actr)"
+description = "Echo Server Guest WASM for Web — Component Model (wasm32-wasip2)"
 
 # Standalone project, not part of any workspace
 [workspace]
 
 [lib]
 name = "echo_guest"
+# cdylib is the correct crate-type for wasm32-wasip2 Component Model
+# builds — wasm-component-ld wraps a cdylib into a Component binary.
 crate-type = ["cdylib"]
-
-[features]
-default = []
-cdylib = ["actr-framework/cdylib"]
 
 [dependencies]
 actr-framework = { path = "../../../../../core/framework" }
@@ -27,3 +25,14 @@ serde = { version = "1.0", features = ["derive"] }
 
 [build-dependencies]
 prost-build = "0.14"
+
+# `actr-framework` gates its native-shared-library `entry!` branch behind
+# a `cdylib` Cargo feature. On `wasm32-wasip2` the `entry!` macro auto-
+# selects the Component Model path via `#[cfg(target_arch = "wasm32")]`,
+# so the framework feature stays off here — silence the check-cfg lint
+# that would otherwise fire from the downstream crate.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
+
+[profile.release]
+opt-level = "s"

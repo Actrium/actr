@@ -6,10 +6,18 @@
 //! 3. Return the reply to the host
 //! 4. On failure with a cached target, clear cache and retry once
 //!
-//! Built as a standalone cdylib guest that exports `actr_alloc`, `actr_free`,
-//! `actr_init`, and `actr_handle` via the `entry!` macro. The host runtime
-//! (runtime-sw) loads this WASM through the guest bridge and handles the
-//! `actr_host_invoke` import for outbound discover/call operations.
+//! Built for `wasm32-wasip2` and linked by `wasm-component-ld` into a
+//! Component Model binary that implements the `actr:workload/actr-workload-guest`
+//! world (see `core/framework/wit/actr-workload.wit`). The `entry!` macro
+//! auto-selects the Component Model export path for `target_arch = "wasm32"`,
+//! so this file reads like any other actr workload — the same source compiles
+//! against the native runtime's Component Model bindings.
+//!
+//! After `cargo build --target wasm32-wasip2`, the resulting
+//! `target/wasm32-wasip2/release/echo_client_guest_web.wasm` is a Component
+//! and must be further transpiled by `jco transpile --instantiation async`
+//! (see `bindings/web/scripts/transpile-component.sh`) before the browser
+//! Service Worker can load it.
 
 pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));

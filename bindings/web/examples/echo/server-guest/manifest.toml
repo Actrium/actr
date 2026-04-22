@@ -11,5 +11,5 @@ license = "Apache-2.0"
 tags = ["dev", "server"]
 
 [binary]
-path = "target/wasm32-unknown-unknown/release/echo_guest.wasm"
-target = "wasm32-unknown-unknown"
+path = "target/wasm32-wasip2/release/echo_guest.wasm"
+target = "wasm32-wasip2"
