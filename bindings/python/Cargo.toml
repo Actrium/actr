@@ -1,6 +1,12 @@
+# Standalone crate: maturin builds this independently, outside the main
+# Rust workspace. The empty [workspace] table stops Cargo from auto-joining
+# any workspace it finds above this path (for example, when the repo is
+# checked out as a nested worktree).
+[workspace]
+
 [package]
 name = "actr-python"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
