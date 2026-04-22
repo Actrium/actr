@@ -1,7 +1,7 @@
 edition = 1
 
 [package]
-path = "release/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
+path = "release/acme-EchoService-0.1.0-wasm32-wasip2.actr"
 
 [signaling]
 url = "ws://localhost:8081/signaling/ws"

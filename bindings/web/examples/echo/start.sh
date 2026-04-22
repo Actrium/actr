@@ -1,14 +1,18 @@
 #!/bin/bash
 # Web Echo Example - Full Package Verification Flow (actr run --web)
 #
-# Demonstrates the complete signing/verification/AIS registration flow for Web:
-#   1. Build guest WASMs (cargo build, standard entry! FFI)
-#   2. actr build - pack guest WASMs into signed .actr packages (MFR key)
-#   3. Start actrix (signaling + AIS + MFR)
-#   4. Seed realm + MFR manufacturer + publish packages (register.sh)
-#   5. actr run --web -c server-actr.toml - start server (embedded runtime + host page)
-#   6. actr run --web -c client-actr.toml - start client (embedded runtime + host page)
-#   7. Run automated test
+# Demonstrates the complete signing/verification/AIS registration flow for Web,
+# running on the Phase 3 Component Model browser pipeline:
+#   1. Build guest WASMs (cargo build --target wasm32-wasip2 + wasm-component-ld)
+#   2. actr build - pack Component Model guests into signed .actr packages
+#   3. jco transpile - produce the `.jco/` ES module bundle each SW dynamically
+#      imports at runtime (placed alongside the .actr in release/)
+#   4. Start actrix (signaling + AIS + MFR)
+#   5. Seed realm + MFR manufacturer + publish packages (register.sh)
+#   6. actr run --web -c server-actr.toml - start server (embedded runtime +
+#      host page + .jco sibling served under /packages/<name>.jco/)
+#   7. actr run --web -c client-actr.toml - start client
+#   8. Run automated test
 #
 # Usage:
 #   ./start.sh
@@ -119,34 +123,56 @@ else
 fi
 echo -e "${GREEN}actr CLI: $ACTR_CMD${NC}"
 
-# ---- Step 1: Build guest WASMs ----
+# ---- Preflight: Component Model toolchain ----
+
+# `wasm-component-ld 0.5.22+` is required to link the wasm32-wasip2
+# Components the guests are now built as. Rust 1.91 ships 0.5.17 which
+# rejects the async custom sections wit-bindgen 0.57 emits.
+if [ -x "${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}" ]; then
+    WASM_COMPONENT_LD="${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}"
+elif command -v wasm-component-ld > /dev/null 2>&1; then
+    WASM_COMPONENT_LD="$(command -v wasm-component-ld)"
+else
+    echo -e "${RED}wasm-component-ld not found${NC}"
+    echo "   Install with: cargo install wasm-component-ld --version 0.5.22"
+    exit 1
+fi
+echo -e "${GREEN}wasm-component-ld: $WASM_COMPONENT_LD${NC}"
+export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
+
+if ! rustup target list --installed | grep -q wasm32-wasip2; then
+    echo "Installing wasm32-wasip2 target..."
+    rustup target add wasm32-wasip2
+fi
+
+# ---- Step 1: Build guest Components (wasm32-wasip2) ----
 
 echo ""
-echo -e "${BLUE}Step 1: Building guest WASMs...${NC}"
+echo -e "${BLUE}Step 1: Building guest Components (wasm32-wasip2)...${NC}"
 
-echo "Building echo server guest WASM..."
+echo "Building echo server guest Component..."
 cd "$SERVER_GUEST_DIR"
-cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
+cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
+SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
 if [ ! -f "$SERVER_GUEST_WASM" ]; then
-    echo -e "${RED}Server guest WASM build failed${NC}"
+    echo -e "${RED}Server guest Component build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}Server guest WASM: $(du -h "$SERVER_GUEST_WASM" | cut -f1)${NC}"
+echo -e "${GREEN}Server guest Component: $(du -h "$SERVER_GUEST_WASM" | cut -f1)${NC}"
 
-echo "Building echo-client guest WASM..."
+echo "Building echo-client guest Component..."
 cd "$CLIENT_GUEST_DIR"
-cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5
+cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 cd "$SCRIPT_DIR"
 
-CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_client_guest_web.wasm"
+CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
 if [ ! -f "$CLIENT_GUEST_WASM" ]; then
-    echo -e "${RED}Client guest WASM build failed${NC}"
+    echo -e "${RED}Client guest Component build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}Client guest WASM: $(du -h "$CLIENT_GUEST_WASM" | cut -f1)${NC}"
+echo -e "${GREEN}Client guest Component: $(du -h "$CLIENT_GUEST_WASM" | cut -f1)${NC}"
 
 # ---- Step 2: Build signed .actr packages ----
 
@@ -158,10 +184,10 @@ $ACTR_CMD pkg keygen --output "$MFR_KEY_FILE" --force
 MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['public_key'])")
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
-SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
+SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.actr"
 (cd "$SERVER_GUEST_DIR" && $ACTR_CMD build \
     --no-compile \
-    --target "wasm32-unknown-unknown" \
+    --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE")
 if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
@@ -170,10 +196,10 @@ if [ ! -f "$SERVER_ACTR_PACKAGE" ]; then
 fi
 echo -e "${GREEN}Server .actr: $(du -h "$SERVER_ACTR_PACKAGE" | cut -f1)${NC}"
 
-CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
+CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
 (cd "$CLIENT_GUEST_DIR" && $ACTR_CMD build \
     --no-compile \
-    --target "wasm32-unknown-unknown" \
+    --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
     --output "$CLIENT_ACTR_PACKAGE")
 if [ ! -f "$CLIENT_ACTR_PACKAGE" ]; then
@@ -181,6 +207,37 @@ if [ ! -f "$CLIENT_ACTR_PACKAGE" ]; then
     exit 1
 fi
 echo -e "${GREEN}Client .actr: $(du -h "$CLIENT_ACTR_PACKAGE" | cut -f1)${NC}"
+
+# ---- Step 2b: jco transpile Component -> ES module bundle ----
+
+echo ""
+echo -e "${BLUE}Step 2b: Transpiling Components via jco...${NC}"
+
+TRANSPILE_SCRIPT="$PROJECT_ROOT/scripts/transpile-component.sh"
+if [ ! -x "$TRANSPILE_SCRIPT" ]; then
+    echo -e "${RED}transpile-component.sh not found or not executable: $TRANSPILE_SCRIPT${NC}"
+    exit 1
+fi
+
+# Default SW URL convention is `<package_url>.jco/guest.js`. The .actr sits
+# at `release/<name>.actr`, so the sibling bundle goes to `release/<name>.jco/`.
+SERVER_JCO_DIR="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.jco"
+rm -rf "$SERVER_JCO_DIR"
+"$TRANSPILE_SCRIPT" "$SERVER_GUEST_WASM" "$SERVER_JCO_DIR" --name guest 2>&1 | tail -5
+if [ ! -f "$SERVER_JCO_DIR/guest.js" ]; then
+    echo -e "${RED}Server jco transpile produced no guest.js${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Server jco bundle: $SERVER_JCO_DIR ($(du -h "$SERVER_JCO_DIR/guest.js" | cut -f1))${NC}"
+
+CLIENT_JCO_DIR="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.jco"
+rm -rf "$CLIENT_JCO_DIR"
+"$TRANSPILE_SCRIPT" "$CLIENT_GUEST_WASM" "$CLIENT_JCO_DIR" --name guest 2>&1 | tail -5
+if [ ! -f "$CLIENT_JCO_DIR/guest.js" ]; then
+    echo -e "${RED}Client jco transpile produced no guest.js${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Client jco bundle: $CLIENT_JCO_DIR ($(du -h "$CLIENT_JCO_DIR/guest.js" | cut -f1))${NC}"
 
 # ---- Step 3: Start actrix (signaling + AIS + MFR) ----
 

@@ -678,6 +678,32 @@ impl RunCommand {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "package.actr".to_string());
 
+        // Resolve the jco-transpiled bundle directory sibling of the .actr.
+        // The Phase 3 browser pipeline packages the Component Model guest as
+        // a `.actr` (binary.kind=Component) plus a companion `<stem>.jco/`
+        // directory produced by `bindings/web/scripts/transpile-component.sh`.
+        // The Service Worker loads `<package_url>.jco/guest.js` at runtime;
+        // we expose the directory under the matching URL so the SW default
+        // convention works out-of-the-box.
+        let jco_dir = package_path.as_ref().and_then(|pkg_path| {
+            let stem = pkg_path.file_stem().map(|s| s.to_os_string())?;
+            let mut jco = pkg_path.with_file_name(stem);
+            jco.as_mut_os_string().push(".jco");
+            if jco.is_dir() { Some(jco) } else { None }
+        });
+        let jco_route_prefix = if jco_dir.is_some() {
+            // Derive the URL prefix from `<package_filename stem>.jco`. Must
+            // mirror the default SW convention (`<packageUrl>.jco/...`).
+            let stem = package_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "package".to_string());
+            Some(format!("/packages/{}.jco", stem))
+        } else {
+            None
+        };
+
         // Build runtime config JSON — auto-inject embedded asset URLs
         let runtime_config_json =
             self.build_web_runtime_config(&raw_config, &config_path, &package_filename)?;
@@ -694,14 +720,29 @@ impl RunCommand {
         // 3. /packages/actr_runtime_sw_bg.wasm — embedded runtime WASM
         // 4. /packages/actr_runtime_sw.js — embedded runtime JS glue
         // 5. /packages/<name>.actr — the .actr package from [package].path
-        // 6. / — embedded host HTML (fallback: static_dir)
-        let app = Router::new()
+        // 6. /packages/<name>.jco/* — jco-transpiled Component ES module
+        //    bundle (sibling of the .actr; produced at build time by
+        //    `bindings/web/scripts/transpile-component.sh`). Only mounted
+        //    when the directory exists.
+        // 7. / — embedded host HTML (fallback: static_dir)
+        let mut app = Router::new()
             .route("/actr-runtime-config.json", get(serve_runtime_config))
             .route("/actor.sw.js", get(serve_actor_sw_js))
             .route("/packages/actr_runtime_sw_bg.wasm", get(serve_runtime_wasm))
             .route("/packages/actr_runtime_sw.js", get(serve_runtime_js))
             .route("/packages/{filename}", get(serve_actr_package))
-            .with_state(shared_state.clone())
+            .with_state(shared_state.clone());
+
+        if let (Some(jco_dir), Some(prefix)) = (jco_dir.as_ref(), jco_route_prefix.as_ref()) {
+            info!(
+                "📦 Mounting jco-transpiled bundle at {} -> {}",
+                prefix,
+                jco_dir.display()
+            );
+            app = app.nest_service(prefix, ServeDir::new(jco_dir));
+        }
+
+        let app = app
             .fallback_service(if static_dir.exists() {
                 ServeDir::new(&static_dir)
             } else {

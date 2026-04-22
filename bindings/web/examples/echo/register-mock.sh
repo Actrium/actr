@@ -22,8 +22,8 @@ RELEASE_DIR="$SCRIPT_DIR/release"
 MFR_KEY_FILE="$RELEASE_DIR/dev-key.json"
 MFR_NAME="acme"
 
-SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
-CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
+SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.actr"
+CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
 
 SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"
 CLIENT_ACTR_TOML="$SCRIPT_DIR/client-actr.toml"

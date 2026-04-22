@@ -142,20 +142,33 @@ if [ ! -x "$MOCK_BIN" ]; then
 fi
 echo -e "${GREEN}mock-actrix: $MOCK_BIN${NC}"
 
-# ---- Step 1: Build guest WASMs ----
+# ---- Preflight: Component Model toolchain ----
+
+# `wasm-component-ld 0.5.22+` is required to link wasm32-wasip2 Components.
+if [ -x "${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}" ]; then
+    WASM_COMPONENT_LD="${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}"
+elif command -v wasm-component-ld > /dev/null 2>&1; then
+    WASM_COMPONENT_LD="$(command -v wasm-component-ld)"
+else
+    echo -e "${RED}wasm-component-ld not found (install: cargo install wasm-component-ld --version 0.5.22)${NC}"
+    exit 1
+fi
+export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
+
+# ---- Step 1: Build guest Components (wasm32-wasip2) ----
 
 echo ""
-echo -e "${BLUE}Step 1: Building guest WASMs...${NC}"
+echo -e "${BLUE}Step 1: Building guest Components (wasm32-wasip2)...${NC}"
 
-(cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5)
-SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_guest.wasm"
-[ -f "$SERVER_GUEST_WASM" ] || { echo -e "${RED}server guest WASM missing${NC}"; exit 1; }
+(cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5)
+SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
+[ -f "$SERVER_GUEST_WASM" ] || { echo -e "${RED}server guest Component missing${NC}"; exit 1; }
 
-(cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-unknown-unknown --release 2>&1 | tail -5)
-CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-unknown-unknown/release/echo_client_guest_web.wasm"
-[ -f "$CLIENT_GUEST_WASM" ] || { echo -e "${RED}client guest WASM missing${NC}"; exit 1; }
+(cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5)
+CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
+[ -f "$CLIENT_GUEST_WASM" ] || { echo -e "${RED}client guest Component missing${NC}"; exit 1; }
 
-echo -e "${GREEN}Guest WASMs built${NC}"
+echo -e "${GREEN}Guest Components built${NC}"
 
 # ---- Step 2: Build signed .actr packages ----
 
@@ -167,21 +180,39 @@ MFR_KEY_FILE="$RELEASE_DIR/dev-key.json"
 MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['public_key'])")
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
-SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
+SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.actr"
 (cd "$SERVER_GUEST_DIR" && "$ACTR_CMD" build \
     --no-compile \
-    --target "wasm32-unknown-unknown" \
+    --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE")
 
-CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
+CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
 (cd "$CLIENT_GUEST_DIR" && "$ACTR_CMD" build \
     --no-compile \
-    --target "wasm32-unknown-unknown" \
+    --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
     --output "$CLIENT_ACTR_PACKAGE")
 
 echo -e "${GREEN}.actr packages built${NC}"
+
+# ---- Step 2b: jco transpile ----
+
+echo ""
+echo -e "${BLUE}Step 2b: Transpiling Components via jco...${NC}"
+
+TRANSPILE_SCRIPT="$PROJECT_ROOT/scripts/transpile-component.sh"
+SERVER_JCO_DIR="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.jco"
+rm -rf "$SERVER_JCO_DIR"
+"$TRANSPILE_SCRIPT" "$SERVER_GUEST_WASM" "$SERVER_JCO_DIR" --name guest 2>&1 | tail -5
+[ -f "$SERVER_JCO_DIR/guest.js" ] || { echo -e "${RED}server jco transpile failed${NC}"; exit 1; }
+
+CLIENT_JCO_DIR="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.jco"
+rm -rf "$CLIENT_JCO_DIR"
+"$TRANSPILE_SCRIPT" "$CLIENT_GUEST_WASM" "$CLIENT_JCO_DIR" --name guest 2>&1 | tail -5
+[ -f "$CLIENT_JCO_DIR/guest.js" ] || { echo -e "${RED}client jco transpile failed${NC}"; exit 1; }
+
+echo -e "${GREEN}jco bundles built${NC}"
 
 # ---- Step 3: Start mock-actrix ----
 
